@@ -1,0 +1,603 @@
+name: bdr-outreach
+version: "0.1.0"
+source_skill: ../../../examples/bdr-outreach/skill
+description: |
+  End-to-end BDR outreach campaign workflow. Two entry paths:
+  (1) ZoomInfo lead generation — target research, search, enrich, vet, review gate,
+  CRM upload, MANDATORY exclusion checks, email personalization, BDR handoff.
+  (2) Conference list enrichment — filter pharma contacts, user confirms exclusions,
+  ZoomInfo enrichment, XLSX output, then continues to CRM upload.
+  Both paths converge at hubspot_upsert (Phase 4). The campaign_type input field
+  routes the adapter between paths.
+
+config:
+  on_failure: notify_owner
+  observability:
+    traces: true
+    eval_set_dir: ./evals/
+  hitl:
+    default_timeout: 7d
+
+input:
+  type: CampaignBrief
+  required:
+    - drug_brand
+    - drug_generic
+    - condition_full
+    - condition_acronym
+    - therapeutic_area
+    - manufacturer
+    - campaign_type       # "drug-specific" | "condition-specific" | "general-capabilities" | "conference"
+  optional:
+    - job_focus           # filters ZoomInfo search to specific function
+    - target_quota        # number of vetted contacts to find (default: 30)
+    - conference_file_path  # required for conference path; path to CSV/XLSX/Sheet
+
+nodes:
+
+  # ── Standard path ──────────────────────────────────────────────────────────
+  # taxonomy_lookup and target_research start in parallel immediately after brief.
+
+  - id: taxonomy_lookup
+    kind: external_call
+    phase: "2"
+    description: |
+      Resolve ZoomInfo IDs for management levels (VP Level Exec, Director),
+      pharma and biotech industry codes, and Medical & Health department ID.
+      Four parallel lookups; results feed lead_generation_loop search parameters.
+      IDs are stable — cached for 30 days to avoid repeated setup calls.
+    impl: extracted/zoominfo.py:lookup_taxonomy_ids
+    input:
+      brief: CampaignBrief
+    output:
+      taxonomy_ids: TaxonomyIds
+    timeout: 2m
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    cache:
+      strategy: persistent
+      ttl: 30d
+    constants:
+      lookups:
+        - {field: management-levels, values: ["VP Level Exec", "Director"]}
+        - {field: industries, fuzzyMatch: pharmaceutical}
+        - {field: industries, fuzzyMatch: biotechnology}
+        - {field: departments, fuzzyMatch: medical}
+
+  - id: target_research
+    kind: agent_loop
+    phase: "1.5"
+    description: |
+      Exploratory parallel research on the target company + indication.
+      Searches Bright Data web, ClinicalTrials.gov, Acme enterprise knowledge
+      base, and Salesforce account history. Produces an IntelBrief that feeds:
+        - lead_generation_loop (search terms, vetting signals)
+        - personalize_email (messaging angles, program references)
+      Not a user-facing deliverable; it is working context only.
+    input:
+      brief: CampaignBrief
+    output:
+      intel: IntelBrief
+    tools:
+      - search_engine
+      - scrape_as_markdown
+      - search_clinical_trials
+      - salesforce_query
+      - salesforce_search
+      - search_corpus
+    termination:
+      condition: intel_brief_complete
+      max_iterations: 5
+    timeout: 10m
+
+  - id: lead_generation_loop
+    kind: agent_loop
+    phase: "2"
+    description: |
+      Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo
+      searches (ideal persona by title, manufacturer internal team, TA broad net).
+      After each enrichment batch, vets contacts against the quality rubric.
+      Runs backfill searches with varied title keywords or seniority levels until
+      target_quota vetted contacts are accumulated. Do not surface contacts to the
+      user until this loop exits.
+    input:
+      brief: CampaignBrief
+      intel: IntelBrief
+      taxonomy_ids: TaxonomyIds
+      target_quota: int
+    output:
+      vetted_contacts: list[VettedContact]
+      discard_summary: DiscardSummary
+      total_searched: int
+    tools:
+      - zoominfo_search_contacts
+      - zoominfo_search_companies
+    loop_body:
+      - enrich_contact_batch
+      - vet_contact
+    termination:
+      condition: "len(vetted_contacts) >= target_quota"
+      max_iterations: 10
+    timeout: 20m
+
+  - id: enrich_contact_batch
+    kind: external_call
+    phase: "2"
+    description: |
+      Batch enrich up to 10 contacts via ZoomInfo enrich_contacts. Always
+      requests employmentHistory — required for vet_contact to apply the
+      red-flags rubric. Returns accuracy scores and do-not-call flags.
+    impl: extracted/zoominfo.py:enrich_contacts_batch
+    input:
+      contacts: list[Contact]
+    output:
+      enriched: list[EnrichedContact]
+    constants:
+      batch_size: 10
+      output_fields:
+        - firstName
+        - lastName
+        - jobTitle
+        - email
+        - phone
+        - mobilePhone
+        - contactAccuracyScore
+        - companyName
+        - externalUrls
+        - employmentHistory
+        - directPhoneDoNotCall
+        - mobilePhoneDoNotCall
+        - validDate
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+
+  - id: vet_contact
+    kind: llm_judge
+    phase: "2"
+    description: |
+      Apply the BDR quality rubric to a single enriched contact.
+      Pre-filters (in forward()) short-circuit on hard thresholds:
+        - accuracy < 85 → discard:low_accuracy (no LLM call)
+        - no valid email → discard:no_valid_email (no LLM call)
+      LLM applies: indication mismatch, MSL/biomarker/translational/sales red
+      flags, operations/program-management red flags, core test ("Would this
+      person commission, design, or approve an RWE study?"), and tier assignment.
+    signature: signatures/vet_contact.py:VetContact
+    input:
+      contact: EnrichedContact
+      brief: CampaignBrief
+      intel: IntelBrief
+    output:
+      decision: VetDecision
+      tier: ContactTier
+      discard_reason: DiscardReason
+      relevance_evidence: str
+    constants:
+      min_accuracy_score: 85
+    eval_set: evals/vet_contact.jsonl
+    fan_out: true
+    timeout: 30s
+
+  - id: build_contact_table
+    kind: pure_function
+    phase: "2"
+    description: |
+      Render the final ranked contact table (sorted by tier), campaign narrative
+      (3–5 sentences on searches, discards, tier breakdown, top picks), and
+      discarded contacts summary with aggregate counts by reason. Fixed markdown
+      template — no LLM.
+    impl: extracted/report.py:build_contact_table
+    input:
+      vetted_contacts: list[VettedContact]
+      drug_name: str
+      condition: str
+      discard_summary: DiscardSummary
+      total_searched: int
+    output:
+      table_markdown: str
+    timeout: 5s
+
+  - id: contact_review_gate
+    kind: hitl_gate
+    phase: "3"
+    description: |
+      Present the vetted contact table to the BDR for approval. The BDR may
+      add, remove, or reprioritize contacts before CRM upload proceeds.
+      Pipeline suspends until signal fires. Output is the BDR-approved contact
+      list (may differ from vetted_contacts).
+    input:
+      table_markdown: str
+      vetted_contacts: list[VettedContact]
+    output:
+      approved_contacts: list[VettedContact]
+    signal: contact_review_approved
+    timeout: 7d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        BDR campaign ready for review: {drug_brand} / {condition_acronym}.
+        {vetted_count} contacts vetted. Approve or modify before CRM upload.
+
+  # ── Conference path (alternative entry) ────────────────────────────────────
+
+  - id: conf_load_file
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Load a conference attendee CSV, XLSX, or Google Sheet into a normalized
+      list of contact dicts. Minimum required columns: Company, First Name,
+      Last Name. Job Title is optional but used by downstream vetting.
+    impl: extracted/conference_filter.py:load_attendee_file
+    input:
+      file_path: str
+    output:
+      raw_contacts: list[RawContact]
+    timeout: 30s
+
+  - id: conf_pharma_filter
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Apply the is_pharma() keyword classifier to partition the attendee list
+      into pharma_contacts (included) and excluded_contacts (non-pharma).
+      Exclude keywords take precedence over include keywords.
+      Ambiguous companies (no keyword match) default to excluded.
+    impl: extracted/conference_filter.py:partition_contacts
+    input:
+      raw_contacts: list[RawContact]
+    output:
+      pharma_contacts: list[RawContact]
+      excluded_contacts: list[RawContact]
+    timeout: 5s
+
+  - id: conf_exclusion_review_gate
+    kind: hitl_gate
+    phase: "2-alt"
+    description: |
+      Present the excluded (non-pharma) company list to the BDR for confirmation
+      before ZoomInfo enrichment begins. The BDR may move misclassified companies
+      back to pharma. Source: conference-enrichment.md line 87.
+      Faster to add back now than to re-run enrichment after the fact.
+    input:
+      pharma_contacts: list[RawContact]
+      excluded_contacts: list[RawContact]
+    output:
+      confirmed_pharma: list[RawContact]
+    signal: exclusion_review_confirmed
+    timeout: 2d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        Conference list filtered: {pharma_count} pharma contacts found,
+        {excluded_count} excluded as non-pharma. Confirm before enrichment.
+
+  - id: conf_enrich_batch
+    kind: external_call
+    phase: "2-alt"
+    description: |
+      Enrich pharma conference contacts via ZoomInfo using the minimal field set
+      needed for outreach (email, LinkedIn URL, job title). Batch size 10 per
+      ZoomInfo API limit. Uses same underlying function as enrich_contact_batch
+      but with a smaller output_fields set (no employmentHistory needed).
+    impl: extracted/zoominfo.py:enrich_contacts_batch
+    input:
+      contacts: list[RawContact]
+    output:
+      enriched_contacts: list[EnrichedContact]
+    constants:
+      batch_size: 10
+      output_fields:
+        - firstName
+        - lastName
+        - email
+        - externalUrls
+        - companyName
+        - jobTitle
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+
+  - id: conf_build_xlsx
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Build a formatted XLSX from enriched conference contacts. Fixed column
+      structure (Company, First Name, Last Name, Job Title, LinkedIn, Email),
+      dark navy header (#1F4E79), alternating light-blue rows (#EBF3FB),
+      frozen pane, auto-filter. Filename: YYYY_ConferenceName_Pharma_Contacts.xlsx.
+      Side artifact — pipeline continues to CRM upload in parallel.
+    impl: extracted/conference_xlsx.py:build_conference_xlsx
+    input:
+      enriched_contacts: list[EnrichedContact]
+      conference_name: str
+    output:
+      xlsx_path: str
+      coverage_summary: dict
+    timeout: 30s
+
+  # ── Shared path: CRM upload (both paths converge here) ─────────────────────
+
+  - id: hubspot_upsert
+    kind: external_call
+    phase: "4"
+    description: |
+      Batch upsert contacts to HubSpot (create or update by email address).
+      Handles internal chunking at the 100-contact API limit. Tracks created
+      vs updated counts. Source of HubSpot contact IDs used by exclusion checks.
+    impl: extracted/hubspot.py:batch_upsert_contacts
+    input:
+      contacts: list[VettedContact]
+    output:
+      upserted: list[HubSpotContact]
+      created_count: int
+      updated_count: int
+    constants:
+      batch_size: 100
+    retry:
+      max: 5
+      backoff: exponential
+      retry_on: [rate_limit, network, server_error]
+    timeout: 5m
+
+  - id: hubspot_create_list
+    kind: external_call
+    phase: "4"
+    description: |
+      Create a static HubSpot list for the campaign using the naming convention
+      from hubspot-operations.md (e.g. "Rare Disease Campaign - Q1 2026").
+      Produces the list_id needed by hubspot_add_to_list.
+    impl: extracted/hubspot.py:create_campaign_list
+    input:
+      campaign_name: str
+    output:
+      list_id: str
+      list_name: str
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network, server_error]
+    timeout: 30s
+
+  - id: hubspot_add_to_list
+    kind: external_call
+    phase: "4"
+    description: |
+      Add upserted contacts to the campaign list. Handles chunking at the
+      250-contact add-to-list API limit. Requires both list_id (from
+      hubspot_create_list) and contact IDs (from hubspot_upsert).
+    impl: extracted/hubspot.py:add_contacts_to_list
+    input:
+      list_id: str
+      contacts: list[HubSpotContact]
+    output:
+      added_count: int
+    constants:
+      batch_size: 250
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 2m
+
+  # ── Exclusion checks (MANDATORY x3, Phase 5) ───────────────────────────────
+  # Run in parallel after hubspot_upsert. All three MUST complete before
+  # pre_enrollment_report. mandatory: true prevents adapters from making these
+  # conditional or skippable.
+
+  - id: exclusion_check_dnc
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact against the "BDR do not contact" HubSpot list.
+      Setup (once per campaign): search for DNC list ID.
+      Per contact: check hubspot_get_contact_list_memberships.
+      Any match → excluded from enrollment recommendation.
+      Source: hubspot-operations.md lines 51–60.
+    impl: extracted/exclusion_checks.py:check_do_not_contact
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    constants:
+      dnc_list_query: "BDR do not contact"
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  - id: exclusion_check_recent
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact for outbound emails in the last 30 days.
+      Calls hubspot_get_contact_emails(daysBack=30, direction=OUTBOUND).
+      If wasEmailedInPeriod is true → excluded.
+      Source: hubspot-operations.md lines 62–70.
+    impl: extracted/exclusion_checks.py:check_recently_emailed
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    constants:
+      days_back: 30
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  - id: exclusion_check_sequence
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact for active HubSpot sequence enrollment.
+      A contact can only be in one sequence at a time. Calls
+      hubspot_get_contact_enrollment; if isEnrolled is true → excluded.
+      Source: hubspot-operations.md lines 72–79.
+    impl: extracted/exclusion_checks.py:check_active_sequence
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  # ── Email templates (Phase 6) ───────────────────────────────────────────────
+
+  - id: personalize_email
+    kind: llm_judge
+    phase: "6"
+    description: |
+      Draft a personalized outreach email (subject + HubSpot HTML body, < 200
+      words) for each vetted contact. Uses enrichment data (title, career history,
+      company pipeline) and intel brief (messaging angles, key programs). Base
+      template structure and principles are injected as system context. The model
+      fills personalization variables only — not structural boilerplate.
+      Acme experience claims MUST come from validated acme_experience input only.
+    signature: signatures/personalize_email.py:PersonalizeEmail
+    input:
+      contact: VettedContactSummary
+      brief: CampaignBrief
+      intel: IntelBrief
+      acme_experience: str
+    output:
+      subject: str
+      body_html: str
+      campaign_type_used: str
+      personalization_hook: str
+    eval_set: evals/personalize_email.jsonl
+    fan_out: true
+    timeout: 60s
+
+  - id: hubspot_save_template
+    kind: external_call
+    phase: "6"
+    description: |
+      Create a new or update an existing HubSpot sales template via the internal
+      API (not the CMS Design Manager). Requires browser cookie auth (5 cookies:
+      csrf.app, hubspotapi, hubspotapi-csrf, hubspotapi-strict, hubspotapi-lax).
+      Template changes do NOT affect contacts already enrolled — they use a
+      snapshot from enrollment time.
+    impl: extracted/hubspot.py:save_sales_template
+    input:
+      name: str
+      subject: str
+      body_html: str
+      template_id: str
+    output:
+      template_id: str
+      template_url: str
+    retry:
+      max: 2
+      backoff: constant
+      retry_on: [network]
+    timeout: 30s
+
+  # ── Reports and handoff ─────────────────────────────────────────────────────
+
+  - id: pre_enrollment_report
+    kind: pure_function
+    phase: "5"
+    description: |
+      Render the pre-enrollment markdown report for the BDR. Aggregates
+      exclusion results from all three checks into counts (DNC, recently emailed,
+      active sequence), computes ready-to-enroll count, and fills the fixed
+      report template from hubspot-operations.md lines 86–103. No LLM.
+    impl: extracted/report.py:generate_pre_enrollment_report
+    input:
+      campaign_name: str
+      total_enriched: int
+      already_in_hubspot: int
+      new_contacts: int
+      exclusion_results: list[ExclusionResult]
+      template_ids: list[str]
+    output:
+      report_markdown: str
+      ready_to_enroll_count: int
+    timeout: 5s
+
+  - id: manual_enrollment_handoff
+    kind: hitl_gate
+    phase: "7"
+    description: |
+      Final handoff. Presents the pre-enrollment report and waits for the BDR
+      to confirm manual enrollment in the HubSpot UI. Sequence enrollment MUST
+      be done manually — API enrollment sends emails immediately with no
+      verification, cannot be paused, and cannot be undone. The pipeline remains
+      suspended until the BDR signals completion.
+    input:
+      report_markdown: str
+      ready_to_enroll_count: int
+    output:
+      enrollment_confirmed: bool
+    signal: bdr_enrollment_complete
+    timeout: 14d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        BDR campaign ready for enrollment: {campaign_name}.
+        {ready_to_enroll_count} contacts cleared all exclusion checks.
+        Enroll manually in HubSpot UI, then signal bdr_enrollment_complete.
+
+edges:
+  # Standard path: research (parallel start)
+  - {from: taxonomy_lookup,              to: lead_generation_loop}
+  - {from: target_research,              to: lead_generation_loop}
+  # Standard path: lead gen → contact table → review gate → CRM upload
+  - {from: lead_generation_loop,         to: build_contact_table}
+  - {from: build_contact_table,          to: contact_review_gate}
+  - {from: contact_review_gate,          to: hubspot_upsert,             on_signal: contact_review_approved}
+  # Conference path: load → classify → confirm exclusions → enrich
+  - {from: conf_load_file,               to: conf_pharma_filter}
+  - {from: conf_pharma_filter,           to: conf_exclusion_review_gate}
+  - {from: conf_exclusion_review_gate,   to: conf_enrich_batch,          on_signal: exclusion_review_confirmed}
+  # Conference path: enrich → XLSX artifact (side) + CRM upload (main)
+  - {from: conf_enrich_batch,            to: conf_build_xlsx}
+  - {from: conf_enrich_batch,            to: hubspot_upsert}
+  # CRM upload → list management (create_list and add_to_list sequential)
+  - {from: hubspot_upsert,               to: hubspot_create_list}
+  - {from: hubspot_upsert,               to: hubspot_add_to_list}
+  - {from: hubspot_create_list,          to: hubspot_add_to_list}
+  # CRM upload → exclusion checks (parallel with list management)
+  - {from: hubspot_upsert,               to: exclusion_check_dnc}
+  - {from: hubspot_upsert,               to: exclusion_check_recent}
+  - {from: hubspot_upsert,               to: exclusion_check_sequence}
+  # All three exclusion checks must complete before the report
+  - {from: exclusion_check_dnc,          to: pre_enrollment_report}
+  - {from: exclusion_check_recent,       to: pre_enrollment_report}
+  - {from: exclusion_check_sequence,     to: pre_enrollment_report}
+  # Email personalization: intel from target_research (data dependency) + contacts from report
+  - {from: target_research,              to: personalize_email}
+  - {from: pre_enrollment_report,        to: personalize_email}
+  - {from: personalize_email,            to: hubspot_save_template}
+  # Final handoff waits for BOTH the report AND the saved templates
+  - {from: pre_enrollment_report,        to: manual_enrollment_handoff}
+  - {from: hubspot_save_template,        to: manual_enrollment_handoff}
+
+entry_nodes:
+  - taxonomy_lookup    # standard path — starts in parallel with target_research
+  - target_research    # standard path — starts in parallel with taxonomy_lookup
+  - conf_load_file     # conference path — alternative entry point
+
+exit_nodes:
+  - manual_enrollment_handoff  # single exit — both paths end with BDR handoff

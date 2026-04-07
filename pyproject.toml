@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rote"
+version = "0.1.0"
+description = "Graduate fuzzy AI skills into deterministic, reliable workflows"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Trevor Hudson" }]
+keywords = [
+    "ai",
+    "llm",
+    "agent",
+    "skill",
+    "workflow",
+    "temporal",
+    "inngest",
+    "claude",
+    "anthropic",
+    "dspy",
+    "graduation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+temporal = [
+    "temporalio>=1.7",
+]
+api = [
+    "anthropic>=0.89",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-pyyaml",
+    "temporalio>=1.7",
+    "anthropic>=0.89",
+]
+
+[project.scripts]
+rote = "rote.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/trevhud/rote"
+Repository = "https://github.com/trevhud/rote"
+Issues = "https://github.com/trevhud/rote/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rote"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true

@@ -1,0 +1,101 @@
+# ── Python byte-compiled / optimized / DLL files ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ── Distribution / packaging ──
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+*.whl
+MANIFEST
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ── Testing / type checking / linting caches ──
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+.tox/
+nosetests.xml
+
+# ── Notebooks ──
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── IDE / editor ──
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+\#*\#
+.\#*
+
+# ── OS ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── direnv / dotenv / shell env overlays ──
+.envrc
+.direnv/
+.env
+.env.*
+!.env.example
+
+# ── Credentials / keys / service-account files ──
+# Catches common shapes accidentally left in the repo root.
+# If you need to commit a fixture that matches one of these, scope
+# it to a tests/ subdirectory and whitelist it explicitly.
+*.pem
+*.key
+*.pfx
+*.p12
+*_credentials.json
+*-credentials.json
+credentials.json
+service-account*.json
+service_account*.json
+gcp-key*.json
+aws-credentials*
+
+# ── Logs ──
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── rote-specific artifacts ──
+# The graduator writes scratch work dirs via tempfile.TemporaryDirectory
+# (they land in /tmp by default so they don't affect the repo), but in
+# case a user points --out or a test fixture at the repo root, ignore
+# the standard output dir name here too.
+/graduated/
+/runtimes/generated/
+/examples/**/generated/
+
+# Bash script output files
+/tmp_output/
+
+# ── Local notes / scratch files ──
+SCRATCH.md
+NOTES.md
+TODO.local.md

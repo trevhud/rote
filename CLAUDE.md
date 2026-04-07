@@ -1,0 +1,340 @@
+# CLAUDE.md — context for AI collaborators
+
+This file is for Claude Code (and similar coding agents) working in
+the `rote` repository. Read it before making non-trivial changes.
+It captures the project's mental model, architectural invariants,
+gotchas, and the canonical examples you should imitate.
+
+If you're a human reading this, you probably want
+[README.md](README.md) or [CONTRIBUTING.md](CONTRIBUTING.md)
+instead — this file is deliberately oriented toward an AI that
+needs a fast mental model before it starts editing code.
+
+---
+
+## What rote is
+
+`rote` is a CLI that takes an Anthropic-style Skill (a `SKILL.md` +
+`references/`) and graduates it into a runnable background pipeline:
+
+1. An LLM agent (itself defined as a skill at
+   [`skills/rote-graduate/`](skills/rote-graduate/)) reads the
+   source skill and applies a structured rubric.
+2. The agent produces a `pipeline.yaml` (runtime-agnostic IR) plus
+   extracted Python modules and typed LLM-judge signatures.
+3. A runtime adapter (currently Temporal, more planned) consumes
+   the IR and emits `workflow.py` + `activities.py`.
+
+The result is a deterministic workflow that replaces a fuzzy
+10-20 minute agent loop. That's the whole product in one paragraph.
+
+---
+
+## Three-layer architecture
+
+Every piece of code in this repo belongs to exactly one layer.
+**Respect the layer boundaries** — most of the project's value
+comes from keeping them clean.
+
+### Layer 1 — The graduator agent (the "brain")
+
+- **Lives at:** [`skills/rote-graduate/`](skills/rote-graduate/)
+- **Consists of:** a `SKILL.md` plus four rubric files
+  (`node-kinds.md`, `crystallization-heuristics.md`, `ir-schema.md`,
+  `llm-judge-extraction.md`)
+- **What it does:** classifies every step of a source skill into
+  one of 5 node kinds, extracts deterministic procedures into
+  Python modules, designs typed signatures for LLM-judge steps, and
+  assembles the whole thing into a `pipeline.yaml`
+- **Runs under:** a pluggable driver layer (see Layer 2)
+
+**When you edit this layer:** you are changing how the agent
+behaves. Changes are testable by running `rote graduate` end-to-end
+against `examples/bdr-outreach/skill` and diffing the output
+against the previously committed snapshot in
+`examples/bdr-outreach/runs/`.
+
+### Layer 2 — The driver layer (the "runtime for the agent")
+
+- **Lives at:** [`src/rote/graduator/drivers/`](src/rote/graduator/drivers/)
+- **Protocol:** every driver implements `GraduatorDriver` with
+  `name`, `is_available() -> (bool, str)`, and
+  `async run(skill_dir, graduator_skill_dir, work_dir) -> DriverResult`
+- **Three concrete drivers:** `ClaudeDriver` (subprocess to `claude -p`),
+  `CodexDriver` (stub), `AnthropicApiDriver` (in-process via the
+  `anthropic` SDK)
+- **The contract is the filesystem:** every driver writes
+  `work_dir/pipeline.yaml` and returns a `DriverResult` pointing at it.
+  Do not invent new return-shape fields or side-channel comms.
+
+**When you edit this layer:** you are changing how the agent is
+invoked, not what it does. Changes are testable by mocking
+subprocess spawning (see
+[`tests/test_claude_driver.py`](tests/test_claude_driver.py)) or
+the Anthropic SDK client (see
+[`tests/test_anthropic_driver.py`](tests/test_anthropic_driver.py)).
+
+### Layer 3 — The runtime adapters (the "code emitter")
+
+- **Lives at:** [`src/rote/adapters/`](src/rote/adapters/)
+- **One adapter today:** `TemporalAdapter`
+  ([`src/rote/adapters/temporal.py`](src/rote/adapters/temporal.py))
+- **What it does:** consumes a validated `Pipeline` IR and writes
+  `workflow.py` + `activities.py` into an output directory
+- **Never runs an agent loop.** Code emission is pure template
+  substitution. The agent's job ends when the IR is valid; the
+  adapter's job begins there.
+
+**When you edit this layer:** you are changing the output code
+format or adding a new runtime. Changes are testable with unit
+tests covering emission + a time-skipping end-to-end test (see
+[`tests/test_temporal_e2e.py`](tests/test_temporal_e2e.py)).
+
+---
+
+## The IR is the source of truth
+
+[`src/rote/ir.py`](src/rote/ir.py) defines the Pydantic models that
+every layer agrees on. If you're uncertain about a field's semantics,
+read that file — it's ~290 lines, fully typed, and the authoritative
+reference (not the rubric's `ir-schema.md`, which is agent-facing
+prose that can drift).
+
+**The five node kinds:**
+
+| Kind | Required field | Where the LLM lives |
+| --- | --- | --- |
+| `pure_function` | `impl` | Not involved |
+| `external_call` | `impl` | Not involved |
+| `llm_judge` | `signature` | Typed signature (DSPy / BAML) |
+| `agent_loop` | `tools` | Bounded agent loop |
+| `hitl_gate` | `signal` | Durable suspend/resume |
+
+**The canonical skill that covers all 5 kinds:** the BDR outreach
+example in `examples/bdr-outreach/skill/`. If you need an IR that
+exercises every code path, its hand-drafted baseline is at
+`examples/bdr-outreach/expected/pipeline.yaml`.
+
+---
+
+## Gotchas (things you will absolutely trip on if you don't read this)
+
+### `claude -p` and the `ANTHROPIC_API_KEY` trap
+
+Claude Code's print mode (`claude -p`) has a documented behavior
+where `ANTHROPIC_API_KEY` **always wins** over any active OAuth
+session. If your system has the env var set, `claude -p` will use
+API-key billing even though the user expected subscription auth.
+
+**The fix:** `ClaudeDriver._build_child_env()` scrubs
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the child
+environment before spawning. **Do not remove this.** If you need
+API-key auth to Anthropic, use `AnthropicApiDriver` instead — it's
+a separate driver precisely so the Claude driver can force
+subscription auth.
+
+### YAML 1.1 parses `on:` as boolean `True`
+
+PyYAML follows YAML 1.1, which has historical bool keys (`on`,
+`off`, `yes`, `no`). A field literally named `on` in a YAML file
+becomes the Python value `True`, not the string `"on"`. This
+**broke the first IR test run** when I tried to use `on:` for
+retry trigger conditions.
+
+**The fix:** the IR uses `retry_on:` (with the `_on` suffix), not
+`on:`. Propagate this convention if you add new fields.
+
+### Loop body sub-nodes are excluded from top-level waves
+
+An `agent_loop` node can declare a `loop_body: [node_id, ...]`
+listing sub-nodes invoked per iteration. Those sub-nodes also
+exist as top-level entries in the `nodes:` list (so they can be
+tested in isolation) but the adapter's `_execution_waves` function
+filters them out of the top-level DAG — otherwise the workflow
+would dispatch them twice. See `rote.adapters.temporal._execution_waves`
+for the reference implementation.
+
+### Driver factories accept `**kwargs`
+
+The driver registry's factories have signature `**kwargs ->
+GraduatorDriver` because `Graduator(model=...)` needs to pass
+kwargs through at construction time. Drivers that don't care about
+a particular kwarg should swallow it via `**kwargs` in their
+`__init__`, not hard-fail. **Do not change the factory signature
+to typed keyword args** — that breaks the registry's polymorphism.
+
+### The emitted code must never reference MCP
+
+The Temporal adapter emits activities that lazy-import from
+`extracted/*.py` and `signatures/*.py`. **No `mcp` module imports,
+no `@mcp.tool()` decorators, no MCP SDK dependencies anywhere in
+the emitted `activities.py`.** The graduator's job is specifically
+to replace MCP tool calls with direct vendor API calls.
+
+This is enforced by
+`tests/test_temporal_adapter.py::test_emitted_activities_never_reference_mcp`
+which walks the AST and asserts no `mcp` substring in imports,
+function names, or attribute accesses. If you add a second adapter,
+copy this test.
+
+### Sonnet is the default, not Opus
+
+Both `ClaudeDriver` and `AnthropicApiDriver` default to
+`claude-sonnet-4-6` rather than Opus, because Opus is ~5× more
+expensive and Sonnet is fully capable of following the structured
+rubric. We learned this the hard way — the first two BDR runs with
+Opus exhausted a Claude Max/Pro "extra usage" budget in two
+attempts (~$3.50 each). Don't "fix" the default to Opus unless you
+have specific evidence that a skill needs it.
+
+### `DEFAULT_MAX_TURNS = 60`
+
+BDR-scale skills need ~25 tool calls minimum, realistically 40-50
+with exploration. The initial default of 30 caused an
+`error_max_turns` failure on the first real run. 60 leaves headroom.
+Don't reduce it without measuring.
+
+---
+
+## Canonical examples to imitate
+
+When adding new code, the fastest way to stay consistent is to
+copy the shape of an existing canonical example.
+
+| What you want to do | Imitate |
+| --- | --- |
+| Add a new node kind to the IR | `rote.ir.Node` — add an enum variant, a kind-specific required field, and a branch in `_validate_kind_specific_fields` |
+| Add a new runtime adapter | `src/rote/adapters/temporal.py` (~450 lines) |
+| Add a subprocess-based driver | `src/rote/graduator/drivers/claude.py` + `tests/test_claude_driver.py` |
+| Add an in-process driver | `src/rote/graduator/drivers/anthropic_api.py` + `tests/test_anthropic_driver.py` |
+| Add a new CLI subcommand | `_cmd_emit` in `src/rote/cli.py` (simple) or `_cmd_graduate` (which calls into the Graduator orchestrator) |
+| Test a full pipeline end-to-end | `tests/test_temporal_e2e.py` (uses Temporal's `WorkflowEnvironment.start_time_skipping`) |
+| Test the CLI via subprocess | `tests/test_cli.py::test_subprocess_emit_bdr` |
+| Add a rubric file | Any file in `skills/rote-graduate/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
+
+---
+
+## Invariants that must hold
+
+These are the things that, if violated, break the project's design.
+If a change of yours would violate any of them, stop and reconsider.
+
+1. **The IR is runtime-agnostic.** No Temporal-specific or
+   Inngest-specific concepts in `rote.ir`. If a field is meaningful
+   only to one runtime, it belongs in that adapter's config, not
+   the IR.
+2. **Drivers contract on the filesystem only.** `work_dir/pipeline.yaml`
+   is the deliverable. No stdout parsing, no side channels.
+3. **Emitted code never imports MCP.** Enforced by test.
+4. **Mandatory nodes cannot become conditional.** The IR validator
+   rejects `mandatory: true` on `agent_loop` nodes, and the
+   Temporal adapter emits mandatory nodes as unconditional
+   activities. Adding a conditional-skip mechanism would destroy
+   the "MANDATORY prose check becomes impossible-to-skip code"
+   value prop.
+5. **The repo is PH-free and secret-free.** `scripts/sanity-check.sh`
+   is the source of truth. Run it before any push. If you add a
+   new example skill or a new test fixture, run the script
+   afterward.
+6. **Two adapters before declaring the IR generic.** As of v0.1.0
+   there's only Temporal. Until Inngest (or another adapter with a
+   genuinely different programming model) lands, treat any IR
+   addition as potentially Temporal-shaped by accident.
+
+---
+
+## Workflow expectations
+
+### Running tests
+
+```sh
+.venv/bin/pytest tests/                  # full suite, ~1s
+.venv/bin/pytest tests/test_ir.py        # fast iteration on IR changes
+```
+
+The suite is intentionally fast (no real API calls, no real
+subprocess spawns, no real LLM invocations). Every slow thing is
+mocked. Keep it that way — if a new test needs to be slow, gate
+it behind a `@pytest.mark.slow` decorator and document why.
+
+### Running the real graduator
+
+```sh
+.venv/bin/rote graduate examples/bdr-outreach/skill \
+  --runtime temporal \
+  --out /tmp/bdr-graduated
+```
+
+~13 minutes wall clock on BDR. Expect 30-40 turns with Sonnet 4.6.
+The output landing at `/tmp/bdr-graduated` (or wherever you point
+`--out`) is what you'd commit as a new regression snapshot if the
+rubric or IR changed in a way that requires re-graduating.
+
+### Sanity-checking before commit
+
+```sh
+./scripts/sanity-check.sh
+```
+
+Must exit 0. If it exits non-zero, either the scan found real leaks
+(fix them) or the pattern needs adjustment (be careful — err on
+the side of false positives over false negatives).
+
+### Before a PR
+
+- [ ] `pytest tests/` — all tests pass
+- [ ] `./scripts/sanity-check.sh` — clean
+- [ ] `ruff check . && ruff format .`
+- [ ] `mypy src/rote` — strict, no ignores
+- [ ] If the rubric or IR changed materially: re-run the graduator
+      on BDR and diff the snapshot
+- [ ] Commit message explains the *why*, not just the *what*
+
+---
+
+## What's stubbed vs. working
+
+Don't waste time debugging stubs. These are intentional.
+
+**Intentionally stubbed:**
+
+- `CodexDriver.run()` — has a working `is_available()`, `run()`
+  raises `NotImplementedError` with a clear task-number marker
+- The BDR example's `extracted/*.py` modules raise
+  `NotImplementedError` — users fill them in with real API client
+  code; the graduator produces scaffolding, not production code
+- Workflow payloads are `{}` in the emitted Temporal code — typed
+  data-flow threading between activities is planned for v0.2
+
+**Working end-to-end:**
+
+- IR load + validate
+- `rote emit` (IR → Temporal code)
+- `rote graduate` (SKILL.md → IR → Temporal code)
+- `ClaudeDriver`, `AnthropicApiDriver`
+- 98 tests across 9 files
+
+If you find something in the "working" column that doesn't work,
+file it as a bug. If you find something in the "stubbed" column
+that frustrates you, that's the roadmap — pick it up.
+
+---
+
+## What this file is not
+
+- **Not a README.** The [README.md](README.md) is the public-facing
+  front door; it explains what `rote` is to someone landing on the
+  repo cold.
+- **Not CONTRIBUTING.md.** The [CONTRIBUTING.md](CONTRIBUTING.md) is
+  the human-facing collaboration guide.
+- **Not design doc.** The canonical design record is
+  [`docs/agent-runtime.md`](docs/agent-runtime.md), which captures
+  the driver-layer decisions with research citations. Read it if
+  you're touching the driver layer.
+- **Not the rubric.** The graduator's rubric lives in
+  [`skills/rote-graduate/references/`](skills/rote-graduate/references/) —
+  that's what the agent reads. This CLAUDE.md is what *you* read.
+
+If information in this file contradicts information in `ir.py`, the
+test suite, or `scripts/sanity-check.sh`, **those are the source of
+truth and this file is out of date.** Please fix it.
