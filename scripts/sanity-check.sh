@@ -33,6 +33,7 @@ if command -v rg >/dev/null 2>&1; then
             --glob '!.venv' \
             --glob '!node_modules' \
             --glob '!*.egg-info' \
+            --glob '!launch' \
             --glob '!scripts/sanity-check.sh' \
             "$@" \
             "$pattern" . || true
@@ -45,6 +46,7 @@ else
             --exclude-dir=.venv \
             --exclude-dir=node_modules \
             --exclude-dir='*.egg-info' \
+            --exclude-dir=launch \
             --exclude='sanity-check.sh' \
             "$pattern" . 2>/dev/null || true
     }

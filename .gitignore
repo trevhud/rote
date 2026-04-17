@@ -99,3 +99,9 @@ pip-delete-this-directory.txt
 SCRATCH.md
 NOTES.md
 TODO.local.md
+
+# ── Launch / marketing drafts ──
+# Co-located with the project for convenience but explicitly not part of
+# the OSS artifact. May contain unsanitized internal framing, cost
+# estimates, or personal attribution choices. Do not commit.
+/launch/
