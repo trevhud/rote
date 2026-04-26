@@ -213,7 +213,129 @@ For each `llm_judge` node:
      logic included; LLM dispatch raises `NotImplementedError`)
 2. A file at `evals/<node_name>.jsonl` with 3–10 seed examples, one
    per distinct decision path.
+3. A `signature_spec:` block embedded directly in the
+   `pipeline.yaml` node — see "Cross-runtime signature_spec" below.
 
 Record every signature extracted in the Phase 7 graduation report with
 the source rubric location and a one-line summary of the output schema.
 This is the audit trail for the human reviewer.
+
+## Cross-runtime signature_spec
+
+Python signature files (item 1 above) work for the Temporal adapter,
+which emits Python and can `import` them directly. They do **not**
+work for runtimes that emit a different language — the Cloudflare
+adapter emits TypeScript, can't read Python, and has no way to call
+into a Python BAML/DSPy client (those have native Rust binaries that
+don't run on Cloudflare Workers' V8 isolate).
+
+The IR carries a runtime-agnostic structured form alongside the path:
+`signature_spec`. Every `llm_judge` node should populate it. The
+adapter that consumes the IR converts the schemas to whatever native
+shape its target language expects — Pydantic for Python, Zod for
+TypeScript, etc.
+
+### Field shape
+
+```yaml
+signature_spec:
+  input_schema: { ... }          # JSON Schema for the input model
+  output_schema: { ... }          # JSON Schema for the output model
+  prompt: |                       # Jinja-style {{ var }} interpolation
+    <multi-line prompt template>
+  client: anthropic               # 'anthropic' | 'openai'
+  model: claude-sonnet-4-6        # optional; adapter chooses default
+  temperature: 0.0                # optional
+```
+
+### Deriving the JSON Schemas
+
+The Pydantic models you wrote in step 3 (input model) and step 4
+(output model) already know how to emit JSON Schema:
+
+```python
+VetContactInput.model_json_schema()
+VetContactOutput.model_json_schema()
+```
+
+Embed those dictionaries verbatim under `input_schema` and
+`output_schema`. The `$defs` block stays inline — adapters resolve
+references at emit time.
+
+If you can't run Python, derive the JSON Schema by hand from the
+Pydantic source:
+
+| Pydantic | JSON Schema |
+| --- | --- |
+| `field: str` (required) | `{"type": "string"}` in `properties`, name in `required` |
+| `field: int` | `{"type": "integer"}` |
+| `field: float` | `{"type": "number"}` |
+| `field: bool` | `{"type": "boolean"}` |
+| `field: list[X]` | `{"type": "array", "items": <X>}` |
+| `field: SomeEnum` | `{"enum": [<member values>]}` (or `$ref` to a `$defs` entry) |
+| `field: X \| None = None` | `{"anyOf": [<X>, {"type": "null"}], "default": null}`, optional in `required` |
+| `model_config = ConfigDict(extra="forbid")` | `"additionalProperties": false` on the object |
+
+For nested Pydantic models, hoist the inner model into a `$defs`
+entry and use `{"$ref": "#/$defs/InnerModelName"}` at the use site.
+This matches Pydantic's own emission shape and lets adapters resolve
+references with a single helper.
+
+### Designing the prompt template
+
+The prompt is a Jinja-style template. Variables are addressed by the
+input model's field names (top-level only — adapters use simple
+`{{ contact }}` substitution that JSON-stringifies non-string
+values). Three rules:
+
+1. **Always end with a directive that names the structured-output
+   tool** — the adapter wraps the call in tool-use mode and the LLM
+   needs the cue to invoke it. Example: *"Return your decision via
+   the structured output tool."*
+2. **Reproduce the discard-categories table inline.** The schema
+   already constrains the output enum, but the prompt should still
+   describe each category in prose so the LLM has the rubric.
+3. **Don't paste the source skill's entire reference file** — just
+   the rubric. The skill bundle has plenty of context that's
+   irrelevant at decision time and inflates token cost per call.
+
+### Worked example: vet_contact prompt
+
+```yaml
+prompt: |
+  You are vetting a contact for a BDR outreach campaign.
+
+  Apply this rubric:
+  - Discard if job title indicates MSL, Biomarker/Discovery,
+    Translational Research, Sales/Commercial, Operations/Strategy,
+    or Program Management.
+  - Discard on indication mismatch with the campaign therapeutic
+    area.
+  - Tier surviving contacts: ideal / strong / good based on RWE/HEOR
+    signal density.
+
+  Core test: would this person commission, design, or approve a
+  real-world evidence study?
+
+  Contact: {{ contact }}
+  Campaign brief: {{ brief }}
+  Intel brief: {{ intel }}
+
+  Return your decision via the structured output tool.
+```
+
+### Pre-filter logic and signature_spec
+
+Hard thresholds (the Step 5 pre-filter) live in **Python**, not in the
+prompt. Cross-language emission is the responsibility of the runtime
+adapter. The Temporal adapter calls the Python signature class, which
+runs the pre-filter then dispatches to the LLM. The Cloudflare adapter
+emits a TS function that calls the LLM directly — a future iteration
+will model the pre-filter as a separate `pure_function` node so it
+runs cross-runtime, but for v0.2 the signature_spec is "schema +
+prompt only" and the pre-filter only short-circuits in the Python
+runtime.
+
+If you want a hard rule to apply on every runtime today, model it as
+a separate `pure_function` node *before* the `llm_judge` and route
+short-circuited inputs around the LLM via an explicit edge.

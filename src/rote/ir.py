@@ -81,6 +81,56 @@ class NotifyConfig(BaseModel):
     )
 
 
+class LLMSignature(BaseModel):
+    """Runtime-agnostic, structured form of an llm_judge signature.
+
+    Carries everything an adapter needs to emit a working LLM call in any
+    target language: JSON Schema for the I/O contract (which Pydantic and
+    Zod both derive cleanly from), a prompt template, and the vendor
+    client config. The legacy ``signature: 'path/to/file.py:Class'`` form
+    on :class:`Node` continues to work for Temporal back-compat; new
+    runtimes (Cloudflare Workflows, future TS targets) require this
+    structured form because there's no shared Python module to import.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_schema: dict[str, Any] = Field(
+        description="JSON Schema for the typed input. Adapters convert to Pydantic / Zod.",
+    )
+    output_schema: dict[str, Any] = Field(
+        description="JSON Schema for the typed output. Adapters convert to Pydantic / Zod.",
+    )
+    prompt: str = Field(
+        description=(
+            "Prompt template (Jinja-style {{ var }} interpolation). "
+            "Variables resolve against the input schema's properties."
+        ),
+    )
+    client: str = Field(
+        default="anthropic",
+        description="LLM vendor identifier. Currently 'anthropic' | 'openai'.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Vendor-specific model id. None = adapter chooses default.",
+    )
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description="Sampling temperature; None = vendor default.",
+    )
+
+    @field_validator("client")
+    @classmethod
+    def _validate_client(cls, v: str) -> str:
+        allowed = {"anthropic", "openai"}
+        if v not in allowed:
+            raise ValueError(f"client must be one of {sorted(allowed)}, got {v!r}")
+        return v
+
+
 class Node(BaseModel):
     """A single step in the graduated pipeline.
 
@@ -106,6 +156,7 @@ class Node(BaseModel):
         if v is None:
             return None
         return str(v)
+
     description: str = Field(description="What this node does, in prose")
     input: dict[str, str] = Field(
         default_factory=dict,
@@ -143,7 +194,19 @@ class Node(BaseModel):
     # llm_judge fields
     signature: str | None = Field(
         default=None,
-        description="Path to typed signature, e.g., 'signatures/foo.py:Foo'",
+        description=(
+            "Legacy: path to a Python signature class, e.g., 'signatures/foo.py:Foo'. "
+            "The Temporal adapter accepts this for back-compat. New runtimes "
+            "(Cloudflare, etc.) require ``signature_spec`` instead — see below."
+        ),
+    )
+    signature_spec: LLMSignature | None = Field(
+        default=None,
+        description=(
+            "Structured, runtime-agnostic signature: JSON Schema in/out + prompt "
+            "+ client config. Required for non-Python adapters; optional for "
+            "Temporal (which can fall back to ``signature`` path)."
+        ),
     )
     eval_set: str | None = Field(
         default=None,
@@ -178,7 +241,9 @@ class Node(BaseModel):
             if not self.impl:
                 missing.append("impl")
         elif kind is NodeKind.LLM_JUDGE:
-            if not self.signature:
+            # Either the legacy path or the structured spec is acceptable.
+            # Both being absent is the failure mode.
+            if not self.signature and self.signature_spec is None:
                 missing.append("signature")
         elif kind is NodeKind.AGENT_LOOP:
             if not self.tools:
@@ -196,9 +261,7 @@ class Node(BaseModel):
         # mandatory only meaningful for non-agentic kinds (you can't make an
         # agent loop "mandatory" — that's a no-op)
         if self.mandatory and kind is NodeKind.AGENT_LOOP:
-            raise ValueError(
-                f"Node {self.id!r}: mandatory=true is not allowed on agent_loop nodes"
-            )
+            raise ValueError(f"Node {self.id!r}: mandatory=true is not allowed on agent_loop nodes")
 
         return self
 

@@ -22,8 +22,11 @@ needs a fast mental model before it starts editing code.
    source skill and applies a structured rubric.
 2. The agent produces a `pipeline.yaml` (runtime-agnostic IR) plus
    extracted Python modules and typed LLM-judge signatures.
-3. A runtime adapter (currently Temporal, more planned) consumes
-   the IR and emits `workflow.py` + `activities.py`.
+3. A runtime adapter (Temporal or Cloudflare Workflows; more planned)
+   consumes the IR and emits the runtime's native code shape — a
+   `workflow.py` + `activities.py` pair for Temporal, a single
+   TypeScript `WorkflowEntrypoint` class plus `wrangler.jsonc` /
+   `package.json` for Cloudflare.
 
 The result is a deterministic workflow that replaces a fuzzy
 10-20 minute agent loop. That's the whole product in one paragraph.
@@ -77,18 +80,28 @@ the Anthropic SDK client (see
 ### Layer 3 — The runtime adapters (the "code emitter")
 
 - **Lives at:** [`src/rote/adapters/`](src/rote/adapters/)
-- **One adapter today:** `TemporalAdapter`
-  ([`src/rote/adapters/temporal.py`](src/rote/adapters/temporal.py))
-- **What it does:** consumes a validated `Pipeline` IR and writes
-  `workflow.py` + `activities.py` into an output directory
-- **Never runs an agent loop.** Code emission is pure template
+- **Two adapters today:**
+  - `TemporalAdapter`
+    ([`src/rote/adapters/temporal.py`](src/rote/adapters/temporal.py))
+    — emits Python (`workflow.py` + `activities.py`)
+  - `CloudflareAdapter`
+    ([`src/rote/adapters/cloudflare.py`](src/rote/adapters/cloudflare.py))
+    — emits TypeScript (`src/workflow.ts` extending
+    `WorkflowEntrypoint`, plus `signatures/*.ts`, `extracted/*.ts`,
+    and a `wrangler.jsonc` / `package.json` / `tsconfig.json`)
+- **What they do:** consume a validated `Pipeline` IR and write
+  runtime-native code into an output directory
+- **Never run an agent loop.** Code emission is pure template
   substitution. The agent's job ends when the IR is valid; the
   adapter's job begins there.
 
 **When you edit this layer:** you are changing the output code
 format or adding a new runtime. Changes are testable with unit
-tests covering emission + a time-skipping end-to-end test (see
-[`tests/test_temporal_e2e.py`](tests/test_temporal_e2e.py)).
+tests covering emission (AST / textual invariants), plus a real
+runtime smoke test — `tests/test_temporal_e2e.py` for Temporal
+(time-skipping `WorkflowEnvironment`); `tests/test_cloudflare_e2e.py`
+for Cloudflare (runs `npm install` + `tsc --noEmit` on the emitted
+output, gated by `@pytest.mark.slow`).
 
 ---
 
@@ -106,9 +119,17 @@ prose that can drift).
 | --- | --- | --- |
 | `pure_function` | `impl` | Not involved |
 | `external_call` | `impl` | Not involved |
-| `llm_judge` | `signature` | Typed signature (DSPy / BAML) |
+| `llm_judge` | `signature` (legacy path) and/or `signature_spec` (structured) | Typed signature (DSPy / BAML in Python; Zod + vendor SDK in TS) |
 | `agent_loop` | `tools` | Bounded agent loop |
 | `hitl_gate` | `signal` | Durable suspend/resume |
+
+**The `signature_spec` model** ([`src/rote/ir.py`](src/rote/ir.py))
+carries a JSON Schema for input + output, a Jinja-style prompt
+template, and the LLM client config (anthropic / openai). It's the
+runtime-agnostic alternative to the legacy `signature: 'path/to/file.py:Class'`
+form, which only works for Python adapters. Cloudflare requires
+`signature_spec`; Temporal accepts either and prefers `signature_spec`
+when present.
 
 **The canonical skill that covers all 5 kinds:** the BDR outreach
 example in `examples/bdr-outreach/skill/`. If you need an IR that
@@ -166,16 +187,24 @@ to typed keyword args** — that breaks the registry's polymorphism.
 ### The emitted code must never reference MCP
 
 The Temporal adapter emits activities that lazy-import from
-`extracted/*.py` and `signatures/*.py`. **No `mcp` module imports,
-no `@mcp.tool()` decorators, no MCP SDK dependencies anywhere in
-the emitted `activities.py`.** The graduator's job is specifically
-to replace MCP tool calls with direct vendor API calls.
+`extracted/*.py` and `signatures/*.py`. The Cloudflare adapter emits
+TS modules that import the same logical layout in `src/extracted/*.ts`
+and `src/signatures/*.ts`. **No `mcp` module imports, no
+`@mcp.tool()` decorators, no MCP SDK dependencies anywhere in the
+emitted code, regardless of target runtime or language.** The
+graduator's job is specifically to replace MCP tool calls with
+direct vendor API calls.
 
-This is enforced by
-`tests/test_temporal_adapter.py::test_emitted_activities_never_reference_mcp`
-which walks the AST and asserts no `mcp` substring in imports,
-function names, or attribute accesses. If you add a second adapter,
-copy this test.
+This is enforced for each adapter:
+- Temporal: `tests/test_temporal_adapter.py::test_emitted_activities_never_reference_mcp`
+  walks the Python AST.
+- Cloudflare: `tests/test_cloudflare_adapter.py::test_emitted_files_never_reference_mcp`
+  scans every emitted `.ts` file with comments + string literals
+  stripped (so MCP can be *mentioned* in JSDoc to explain the
+  graduation history, but never appears in executable code).
+
+If you add a third adapter, copy whichever invariant test matches
+the emitted language.
 
 ### Sonnet is the default, not Opus
 
@@ -204,11 +233,13 @@ copy the shape of an existing canonical example.
 | What you want to do | Imitate |
 | --- | --- |
 | Add a new node kind to the IR | `rote.ir.Node` — add an enum variant, a kind-specific required field, and a branch in `_validate_kind_specific_fields` |
-| Add a new runtime adapter | `src/rote/adapters/temporal.py` (~450 lines) |
+| Add a Python-emitting runtime adapter | `src/rote/adapters/temporal.py` (~570 lines) |
+| Add a TS-emitting runtime adapter | `src/rote/adapters/cloudflare.py` (~750 lines) — includes the JSON-Schema-to-Zod converter and signal-name validator |
 | Add a subprocess-based driver | `src/rote/graduator/drivers/claude.py` + `tests/test_claude_driver.py` |
 | Add an in-process driver | `src/rote/graduator/drivers/anthropic_api.py` + `tests/test_anthropic_driver.py` |
 | Add a new CLI subcommand | `_cmd_emit` in `src/rote/cli.py` (simple) or `_cmd_graduate` (which calls into the Graduator orchestrator) |
-| Test a full pipeline end-to-end | `tests/test_temporal_e2e.py` (uses Temporal's `WorkflowEnvironment.start_time_skipping`) |
+| Test a Python-emitting adapter end-to-end | `tests/test_temporal_e2e.py` (uses Temporal's `WorkflowEnvironment.start_time_skipping`) |
+| Test a TS-emitting adapter end-to-end | `tests/test_cloudflare_e2e.py` (real `npm install` + `tsc --noEmit`; `@pytest.mark.slow`) |
 | Test the CLI via subprocess | `tests/test_cli.py::test_subprocess_emit_bdr` |
 | Add a rubric file | Any file in `skills/rote-graduate/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
 
@@ -236,10 +267,25 @@ If a change of yours would violate any of them, stop and reconsider.
    is the source of truth. Run it before any push. If you add a
    new example skill or a new test fixture, run the script
    afterward.
-6. **Two adapters before declaring the IR generic.** As of v0.1.0
-   there's only Temporal. Until Inngest (or another adapter with a
-   genuinely different programming model) lands, treat any IR
-   addition as potentially Temporal-shaped by accident.
+6. **Two adapters before declaring the IR generic.** *(Satisfied as
+   of v0.2.0.)* The IR was stress-tested by the Cloudflare adapter,
+   which emits TypeScript with a single-class programming model
+   (vs. Temporal's workflow + activities split). Two pressure points
+   surfaced:
+
+   - The retry `backoff` enum already maps cleanly to Cloudflare's
+     categorical enum — no IR change needed.
+   - HITL signal names need a `[A-Za-z0-9_-]+` constraint for
+     Cloudflare's `waitForEvent`, but this is enforced at adapter
+     emission time, not in the IR.
+   - LLM signatures needed a structured cross-language form — solved
+     by adding `signature_spec` (JSON Schema + prompt) alongside the
+     legacy Python-path `signature` field.
+
+   Future adapters (Inngest, Restate, etc.) shouldn't require IR
+   changes for their core programming model — but if one does, that's
+   a real signal to revisit the IR shape rather than papering over it
+   in the adapter.
 
 ---
 

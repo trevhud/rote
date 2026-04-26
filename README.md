@@ -13,7 +13,10 @@ applies a structured graduation rubric, and emits:
 - and runtime code for your durable execution engine of choice.
 
 ```sh
-rote graduate ./examples/bdr-outreach/skill --runtime temporal --out ./graduated/
+# Two runtimes shipped today — emit Python for Temporal, or TypeScript
+# for Cloudflare Workflows:
+rote graduate ./examples/bdr-outreach/skill --runtime temporal   --out ./graduated/
+rote graduate ./examples/bdr-outreach/skill --runtime cloudflare --out ./graduated/
 ```
 
 The name comes from *rote learning* — doing something so many times, so
@@ -57,13 +60,23 @@ The graduator independently:
   external_call nodes — via the impl Python function or via an MCP
   tool registry?"*).
 
-After the agent finishes, the Temporal adapter consumes the IR and
-emits `workflow.py` (the orchestration class with `@workflow.defn` and
-signal handlers for the HITL gates) and `activities.py` (one
-`@activity.defn` per node, lazy-importing the extracted functions).
-None of the emitted code references an MCP runtime — the agent's
-crystallization step replaces tool calls with deterministic
-implementations.
+After the agent finishes, a runtime adapter consumes the IR and emits
+the target runtime's native code shape:
+
+- The **Temporal** adapter emits `workflow.py` (the orchestration
+  class with `@workflow.defn` and signal handlers for the HITL gates)
+  and `activities.py` (one `@activity.defn` per node, lazy-importing
+  the extracted functions).
+- The **Cloudflare Workflows** adapter emits a TypeScript
+  `WorkflowEntrypoint` class with `step.do(...)` for each unit of
+  work and `step.waitForEvent(...)` for each HITL gate, plus
+  `signatures/*.ts` (Zod schemas + Anthropic SDK calls) and the
+  supporting `wrangler.jsonc` / `package.json` / `tsconfig.json`. The
+  output is `wrangler deploy`-ready.
+
+None of the emitted code references an MCP runtime, in either
+language — the agent's crystallization step replaces tool calls with
+deterministic implementations.
 
 ---
 
@@ -226,7 +239,7 @@ guidance lives in
 | --- | --- | --- |
 | `pure_function` | Fixed logic, deterministic I/O | Not involved |
 | `external_call` | Vendor API call with fixed semantics + retries | Not involved |
-| `llm_judge` | Fuzzy classification against a rubric, typed I/O | Typed signature (DSPy / BAML) |
+| `llm_judge` | Fuzzy classification against a rubric, typed I/O | Typed signature: DSPy/BAML in Python; Zod + vendor SDK in TypeScript. The IR carries a runtime-agnostic `signature_spec` (JSON Schema + prompt) so each adapter derives the right native shape. |
 | `agent_loop` | Genuinely exploratory tool use | Bounded agent loop |
 | `hitl_gate` | Explicit human approval, suspend until signal | Durable suspend/resume |
 
@@ -269,13 +282,15 @@ Opus's extra reasoning earns its cost.
 ## Status
 
 `rote` is **pre-1.0**. The end-to-end flow works on the BDR example
-and the test suite covers each layer (98 tests, including 6 that
-assert the real graduator output against semantic invariants).
+and the test suite covers each layer (132 tests in the fast suite,
+plus 2 slow tests that compile the emitted Cloudflare TypeScript
+against the real `@cloudflare/workers-types` definitions).
 
 | Component | Status |
 | --- | --- |
 | IR (Pydantic schema, validation, YAML loader) | working |
 | Temporal adapter | working (validated with mocked-activities e2e test) |
+| Cloudflare Workflows adapter | working (validated with `tsc --noEmit` over the real emitted output) |
 | Graduator orchestrator | working |
 | `rote graduate` / `rote emit` CLI commands | working |
 | `claude` driver | working |
@@ -323,7 +338,8 @@ rote/
 │   │       └── anthropic_api.py             # AnthropicApiDriver (in-process)
 │   └── adapters/
 │       ├── __init__.py                      # adapter registry
-│       └── temporal.py                      # TemporalAdapter
+│       ├── temporal.py                      # TemporalAdapter (Python emitter)
+│       └── cloudflare.py                    # CloudflareAdapter (TypeScript emitter)
 ├── examples/
 │   └── bdr-outreach/
 │       ├── skill/                           # the source skill (graduator input)
@@ -336,11 +352,11 @@ rote/
 
 ## How it differs from other tools
 
-- **vs. raw Temporal / Inngest / Restate:** durable execution engines
-  give you the workflow runtime; they don't help you decide *what
-  should be a workflow in the first place*. `rote` is the missing
-  step that converts a working skill into something worth running on
-  a durable engine.
+- **vs. raw Temporal / Cloudflare Workflows / Inngest / Restate:**
+  durable execution engines give you the workflow runtime; they don't
+  help you decide *what should be a workflow in the first place*.
+  `rote` is the missing step that converts a working skill into
+  something worth running on a durable engine.
 - **vs. LangGraph:** LangGraph is an excellent state machine for
   agent loops, but its graph is hand-built. `rote` produces a graph
   from prose, classifies its nodes by determinism, and pushes work
@@ -383,17 +399,31 @@ In rough priority order:
 
 1. **`CodexDriver` implementation.** Same shape as `ClaudeDriver` but
    spawning `codex exec`. Unlocks ChatGPT subscribers.
-2. **A second runtime adapter.** Probably Inngest, since its
-   programming model is the most different from Temporal's. Until two
-   adapters work, the IR isn't proven runtime-agnostic.
-3. **Explicit data-flow threading.** The current adapter passes empty
-   payloads between activities. Real production usage needs typed
+2. **End-to-end re-graduation of BDR with `signature_spec`.** The
+   current bundled `pipeline.yaml` was hand-extended with structured
+   schemas for the Cloudflare adapter; the rubric in
+   `skills/rote-graduate/references/` was updated to teach the
+   graduator the new field, but no real graduator run has produced
+   one yet. Re-running `rote graduate examples/bdr-outreach/skill`
+   should produce the structured form natively.
+3. **A third runtime adapter.** Probably Inngest, since its
+   programming model is meaningfully different from both Temporal and
+   Cloudflare. Each new adapter is also a stress test on whether the
+   IR is genuinely runtime-agnostic vs. accidentally shaped like one
+   of the existing targets.
+4. **Pre-filter as `pure_function` node.** Today the rubric lifts
+   hard thresholds into a Python `forward()` method, which works for
+   Temporal but not for Cloudflare. Modeling the pre-filter as a
+   separate `pure_function` node before the `llm_judge` makes the
+   short-circuit work uniformly across runtimes.
+5. **Explicit data-flow threading.** Both adapters currently pass
+   empty payloads between steps. Real production usage needs typed
    payloads derived from each node's `input:` and `output:` schema.
-4. **More example skills.** BDR is rich but it's one shape of skill.
+6. **More example skills.** BDR is rich but it's one shape of skill.
    Additional examples (research-heavy, retrieval-heavy, code-review)
    stress-test the IR and the rubric in different ways.
-5. **PyPI distribution.** Once the API is stable enough.
-6. **The graduator graduating itself.** The `rote-graduate` skill is
+7. **PyPI distribution.** Once the API is stable enough.
+8. **The graduator graduating itself.** The `rote-graduate` skill is
    itself a SKILL.md. Pointing `rote graduate` at it should produce a
    graduated meta-graduator where the rubric-grade pieces are
    crystallized into Python and only the genuinely fuzzy judgments

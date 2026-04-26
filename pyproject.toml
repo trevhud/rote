@@ -75,6 +75,12 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.pytest.ini_options]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: tests that need an external toolchain (Node/npm/tsc) or take >5s. Run with `pytest -m slow` to include.",
+]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

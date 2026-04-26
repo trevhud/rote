@@ -103,14 +103,59 @@ kind. The validator enforces kind-specific requirements.
 
 ### `llm_judge`
 
-**Required:** `signature` — path to a typed signature in
-`"signatures/foo.py:FooClass"` format.
+**Required:** at least one of `signature` (legacy) or `signature_spec`
+(structured). **Strongly preferred: emit both.** The Temporal adapter
+prefers `signature_spec` when present and falls back to the legacy
+path; the Cloudflare adapter and any future non-Python target *require*
+`signature_spec` because there's no shared Python module to import.
+
+- **`signature`** — path to a typed Python signature class in
+  `"signatures/foo.py:FooClass"` format. Used by the Temporal adapter
+  and by humans iterating on the signature with DSPy / BAML. Always
+  emit this for runtimes that share Python with the extracted modules.
+
+- **`signature_spec`** — runtime-agnostic structured form: JSON Schema
+  for input + output (the same schemas Pydantic emits via
+  `model_json_schema()`), the prompt template, and the LLM client
+  config. This is the cross-language source of truth — adapters
+  derive Pydantic / Zod / Go types from the schemas as needed. See
+  [`llm-judge-extraction.md`](llm-judge-extraction.md) for the full
+  derivation procedure.
 
 ```yaml
 - id: vet_contact
   kind: llm_judge
   description: Apply the BDR red-flags rubric to a single contact.
-  signature: signatures/vet_contact.py:VetContact
+  signature: signatures/vet_contact.py:VetContact     # legacy path (Temporal)
+  signature_spec:                                      # structured form (all runtimes)
+    input_schema:
+      type: object
+      required: [contact, brief, intel]
+      properties:
+        contact: {$ref: "#/$defs/EnrichedContact"}
+        brief: {$ref: "#/$defs/CampaignBrief"}
+        intel: {$ref: "#/$defs/IntelBrief"}
+      $defs:
+        # ... full Pydantic model_json_schema() output
+    output_schema:
+      type: object
+      required: [decision, relevance_evidence]
+      properties:
+        decision: {enum: [keep, discard]}
+        tier:
+          anyOf: [{enum: [ideal, strong, good]}, {type: "null"}]
+        discard_reason:
+          anyOf: [{enum: [indication_mismatch, msl_role, ...]}, {type: "null"}]
+        relevance_evidence: {type: string}
+    prompt: |
+      Apply the BDR vetting rubric to this contact.
+      Contact: {{ contact }}
+      Brief: {{ brief }}
+      Intel: {{ intel }}
+      Return your decision via the structured output tool.
+    client: anthropic           # 'anthropic' | 'openai'
+    model: claude-sonnet-4-6    # optional; adapter chooses default if omitted
+    temperature: 0.0            # optional
   input:
     contact: EnrichedContact
     brief: CampaignBrief
@@ -218,9 +263,12 @@ these constraints in mind:
 4. **All `entry_nodes` and `exit_nodes` reference real node IDs.**
 5. **Kind-specific required fields are present:**
    - `pure_function` / `external_call` → `impl`
-   - `llm_judge` → `signature`
+   - `llm_judge` → `signature` (legacy path) or `signature_spec`
+     (structured) — at least one. Strongly preferred: emit both.
    - `agent_loop` → `tools`
-   - `hitl_gate` → `signal`
+   - `hitl_gate` → `signal`. Cloudflare additionally requires the
+     signal name to match `[A-Za-z0-9_-]+` (no dots, spaces, etc.) —
+     this is enforced at adapter emission time.
 6. **`mandatory: true` is not allowed on `agent_loop` nodes.**
 7. **No YAML key named `on:`** — YAML 1.1 parses it as boolean
    `True`. The IR uses `retry_on:` instead.

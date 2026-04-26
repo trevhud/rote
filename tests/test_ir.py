@@ -203,6 +203,66 @@ def test_agent_loop_cannot_be_mandatory() -> None:
         )
 
 
+def test_llm_judge_accepts_signature_spec_without_path() -> None:
+    """The structured signature_spec is a valid alternative to the legacy path."""
+    from rote.ir import LLMSignature, Node
+
+    node = Node(
+        id="vet",
+        kind=NodeKind.LLM_JUDGE,
+        description="vet a contact",
+        signature_spec=LLMSignature(
+            input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+            output_schema={"type": "object", "properties": {"y": {"type": "string"}}},
+            prompt="Classify {{ x }}.",
+        ),
+    )
+    assert node.signature is None
+    assert node.signature_spec is not None
+    assert node.signature_spec.client == "anthropic"  # default
+
+
+def test_llm_judge_rejects_when_both_signature_forms_missing() -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import Node
+
+    with pytest.raises(ValidationError, match="missing required field"):
+        Node(
+            id="bad",
+            kind=NodeKind.LLM_JUDGE,
+            description="no signature in any form",
+        )
+
+
+def test_llm_signature_rejects_unknown_client() -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import LLMSignature
+
+    with pytest.raises(ValidationError, match="client must be one of"):
+        LLMSignature(
+            input_schema={"type": "object"},
+            output_schema={"type": "object"},
+            prompt="x",
+            client="cohere",
+        )
+
+
+def test_llm_signature_temperature_bounded() -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import LLMSignature
+
+    with pytest.raises(ValidationError):
+        LLMSignature(
+            input_schema={"type": "object"},
+            output_schema={"type": "object"},
+            prompt="x",
+            temperature=3.0,
+        )
+
+
 def test_pipeline_rejects_unknown_edge_target() -> None:
     from pydantic import ValidationError
 
