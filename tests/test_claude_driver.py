@@ -355,6 +355,36 @@ async def test_nonzero_exit_raises_driver_error_with_stderr(
 
 
 @pytest.mark.asyncio
+async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """If the agent wrote pipeline.yaml before the subprocess errored
+    out (e.g. transient ECONNRESET on a final validation turn), we
+    treat the run as success and surface the error in metadata.
+
+    The deliverable is a file on disk, not a clean exit code — losing
+    a $2+ run because of a network blip after the work was done is
+    unacceptable."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    fake_claude_subprocess(
+        stdout_text=(
+            '{"result": "API Error: ECONNRESET", "is_error": true, '
+            '"total_cost_usd": 2.5}'
+        ),
+        stderr_text="",
+        returncode=1,
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+
+    driver = ClaudeDriver()
+    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    assert result.pipeline_yaml_path.is_file()
+    assert "subprocess_warning" in result.metadata
+    assert "exited with code 1" in result.metadata["subprocess_warning"]
+
+
+@pytest.mark.asyncio
 async def test_exit_zero_without_pipeline_yaml_raises_driver_error(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001

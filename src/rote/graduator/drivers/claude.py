@@ -169,14 +169,22 @@ class ClaudeDriver(GraduatorDriver):
         stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
 
-        if proc.returncode != 0:
-            raise DriverError(
-                f"claude CLI exited with code {proc.returncode}",
-                details=stderr or stdout or "(no output)",
-            )
-
         pipeline_yaml = work_dir / "pipeline.yaml"
+
+        # The agent's deliverable is a file on disk, not a clean exit
+        # code. A real-world failure mode: the agent writes a complete
+        # pipeline.yaml at turn N, then runs an extra validation step at
+        # turn N+1 that hits a transient API error (ECONNRESET, rate
+        # limit, etc.) — the subprocess returns nonzero but the work is
+        # done. Treating that as fatal would discard a $2+ run over a
+        # blip, so we check for the file FIRST and only fail if it's
+        # missing.
         if not pipeline_yaml.is_file():
+            if proc.returncode != 0:
+                raise DriverError(
+                    f"claude CLI exited with code {proc.returncode}",
+                    details=stderr or stdout or "(no output)",
+                )
             raise DriverError(
                 f"claude CLI finished successfully but did not produce "
                 f"{pipeline_yaml}.",
@@ -184,6 +192,12 @@ class ClaudeDriver(GraduatorDriver):
             )
 
         metadata = self._parse_metadata(stdout)
+        if proc.returncode != 0:
+            metadata["subprocess_warning"] = (
+                f"claude CLI exited with code {proc.returncode} but "
+                f"pipeline.yaml was produced. Treating as success."
+            )
+
         return DriverResult(
             pipeline_yaml_path=pipeline_yaml,
             work_dir=work_dir,
