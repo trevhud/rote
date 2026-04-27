@@ -223,6 +223,44 @@ with exploration. The initial default of 30 caused an
 `error_max_turns` failure on the first real run. 60 leaves headroom.
 Don't reduce it without measuring.
 
+### Cloudflare local-dev `status` stays `"running"` while parked on `waitForEvent`
+
+The Cloudflare e2e test (`tests/test_cloudflare_e2e.py`) needs to know
+when a workflow instance has parked on a `step.waitForEvent` so it
+can deliver the resume signal. The intuitive check —
+`status.status === "waiting"` — does **not** work in local dev. The
+top-level `status` field stays `"running"` the entire time; only the
+human-readable `wrangler workflows instances describe` output
+distinguishes "💤 Waiting for event".
+
+**The fix:** the test infers parking by step-output stability. Once
+`__LOCAL_DEV_STEP_OUTPUTS` reaches the expected count *and* stops
+growing for a few consecutive polls, the workflow is necessarily
+either at a HITL gate or done. See `_wait_until_parked_or_complete`
+in the e2e test for the canonical implementation. Production behavior
+may differ — this is a local-dev quirk; document it if anything
+changes upstream.
+
+Related: `__LOCAL_DEV_STEP_OUTPUTS` includes both `step.do` results
+*and* `waitForEvent` payloads in the same array. Don't rely on the
+length matching node count; compare node-name **sets** instead.
+
+### ClaudeDriver recovers `pipeline.yaml` if subprocess errors after writing
+
+The agent's deliverable is a file on disk, not a clean exit code. A
+real-world failure mode hit during this project: the agent wrote a
+complete `pipeline.yaml` at turn N, then ran a self-validation turn
+at N+1 that hit `ECONNRESET` — the subprocess returned nonzero, the
+orchestrator's `TemporaryDirectory` cleanup ran, ~$2.50 of Sonnet 4.6
+work disappeared.
+
+The driver now checks for `pipeline.yaml` **before** failing on
+returncode. If the file exists, the run succeeded materially; the
+subprocess error is surfaced in `metadata["subprocess_warning"]`
+rather than treated as fatal. Don't undo this — losing $2 runs to a
+network blip is unacceptable. See
+`tests/test_claude_driver.py::test_nonzero_exit_with_pipeline_yaml_recovers_run`.
+
 ---
 
 ## Canonical examples to imitate
@@ -358,7 +396,9 @@ Don't waste time debugging stubs. These are intentional.
 - `rote emit` (IR → Temporal code)
 - `rote graduate` (SKILL.md → IR → Temporal code)
 - `ClaudeDriver`, `AnthropicApiDriver`
-- 98 tests across 9 files
+- 136 tests across 11 files (133 fast + 3 slow). Run with
+  `pytest tests/` (fast only — what runs by default). Slow tests
+  require a Node toolchain and run with `pytest tests/ -m slow`.
 
 If you find something in the "working" column that doesn't work,
 file it as a bug. If you find something in the "stubbed" column

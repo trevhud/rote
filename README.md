@@ -282,9 +282,12 @@ Opus's extra reasoning earns its cost.
 ## Status
 
 `rote` is **pre-1.0**. The end-to-end flow works on the BDR example
-and the test suite covers each layer (132 tests in the fast suite,
-plus 2 slow tests that compile the emitted Cloudflare TypeScript
-against the real `@cloudflare/workers-types` definitions).
+and the test suite covers each layer (133 tests in the fast suite,
+plus 3 slow tests that compile the emitted Cloudflare TypeScript
+against the real `@cloudflare/workers-types` definitions and drive a
+real workflow instance through both HITL gates via `wrangler dev`).
+Run `pytest tests/` for the fast suite; `pytest tests/ -m slow` for
+the toolchain-dependent integration tests.
 
 | Component | Status |
 | --- | --- |
@@ -345,7 +348,7 @@ rote/
 │       ├── skill/                           # the source skill (graduator input)
 │       ├── expected/                        # hand-drafted IR + stubs (regression baseline)
 │       └── runs/                            # snapshots of real graduator runs
-└── tests/                                   # 98 passing tests across 9 files
+└── tests/                                   # 136 passing tests across 11 files
 ```
 
 ---
