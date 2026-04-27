@@ -1,0 +1,939 @@
+# BDR Outreach Campaign — Graduated Pipeline IR
+#
+# Produced by the rote graduator from examples/bdr-outreach/skill/SKILL.md.
+# Two entry paths:
+#   (1) Standard campaign: taxonomy_lookup + target_research (parallel) →
+#       lead_generation_loop → build_contact_table → contact_review_gate →
+#       hubspot_upsert → hubspot_create_list + hubspot_add_to_list →
+#       exclusion checks (MANDATORY x3, parallel) → pre_enrollment_report →
+#       personalize_email → hubspot_save_template → manual_enrollment_handoff
+#   (2) Conference list: conf_load_file → conf_pharma_filter →
+#       conf_exclusion_review_gate → conf_enrich_batch → conf_build_xlsx
+#       + hubspot_upsert (converges with standard path at Phase 4)
+#
+# Both paths exit at manual_enrollment_handoff.
+
+name: bdr-campaign
+version: "0.1.0"
+source_skill: ../../skill
+description: |
+  End-to-end BDR outreach campaign workflow for pharma/biotech research targets.
+  Two entry paths: (1) ZoomInfo lead generation — target research, iterative
+  search/enrich/vet loop, contact review gate, CRM upload, MANDATORY exclusion
+  checks, email personalization, BDR handoff. (2) Conference list enrichment —
+  filter pharma contacts, user confirms exclusions, ZoomInfo enrichment, XLSX
+  output, then continues to CRM upload. Both paths converge at hubspot_upsert.
+
+config:
+  schedule: null
+  on_failure: notify_owner
+  observability:
+    traces: true
+    eval_set_dir: ./evals/
+  hitl:
+    default_timeout: 7d
+
+input:
+  type: CampaignBrief
+  required:
+    - drug_brand           # e.g., "Orladeyo"
+    - drug_generic         # e.g., "berotralstat"
+    - condition_full       # e.g., "hereditary angioedema"
+    - condition_acronym    # e.g., "HAE"
+    - therapeutic_area     # e.g., "Rare Disease, Hematology"
+    - manufacturer         # e.g., "BioCryst Pharmaceuticals"
+    - campaign_type        # enum: drug-specific | condition-specific | general-capabilities | conference
+  optional:
+    - job_focus            # enum: medical | rwe | heor | clinical-development
+    - target_quota         # int (default 30) — vetted contacts to deliver
+    - conference_file_path # required for conference path; CSV/XLSX/Sheet path
+
+nodes:
+
+  # ── Phase 1.5: Target Company Research ────────────────────────────────────
+  # Genuinely exploratory: tool choices and iteration count vary per indication.
+  # Produces IntelBrief that feeds lead_generation_loop (search terms, vetting)
+  # and personalize_email (messaging angles, program references).
+
+  - id: target_research
+    kind: agent_loop
+    phase: "1.5"
+    description: |
+      Run external research (Bright Data web search, ClinicalTrials.gov) and
+      internal research (Airweave enterprise knowledge base, Salesforce account
+      history) in parallel. Produce an IntelBrief covering pipeline, RWE/HEOR
+      signals, key programs/teams, prior account interactions, and validated
+      Acme TA experience. Not a user-facing deliverable — working context only.
+    input:
+      brief: CampaignBrief
+    output:
+      intel: IntelBrief
+    tools:
+      - search_engine
+      - scrape_as_markdown
+      - search_clinical_trials
+      - salesforce_query
+      - salesforce_search
+      - search_corpus
+    termination:
+      condition: intel_brief_complete
+      max_iterations: 5
+    timeout: 10m
+
+  # ── Phase 2: Taxonomy + Lead Generation ───────────────────────────────────
+
+  - id: taxonomy_lookup
+    kind: external_call
+    phase: "2"
+    description: |
+      Resolve ZoomInfo IDs for management levels (VP Level Exec, Director),
+      pharma and biotech industry codes, and Medical & Health department ID.
+      Four parallel lookups. Results feed lead_generation_loop search parameters.
+      IDs are stable across runs — cached for 30 days.
+    impl: extracted/zoominfo.py:lookup_taxonomy_ids
+    input:
+      brief: CampaignBrief
+    output:
+      taxonomy_ids: TaxonomyIds
+    timeout: 2m
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    cache:
+      strategy: persistent
+      ttl: 30d
+    constants:
+      lookups:
+        - {field: management-levels, values: ["VP Level Exec", "Director"]}
+        - {field: industries, fuzzyMatch: pharmaceutical}
+        - {field: industries, fuzzyMatch: biotechnology}
+        - {field: departments, fuzzyMatch: medical}
+
+  - id: lead_generation_loop
+    kind: agent_loop
+    phase: "2"
+    description: |
+      Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo
+      searches (ideal persona by title, manufacturer internal team, TA broad
+      net). After each enrichment batch, vets contacts against the quality
+      rubric. Runs backfill searches with varied title keywords or seniority
+      levels until target_quota vetted contacts are accumulated. Contacts are
+      not surfaced to the user until this loop exits.
+    input:
+      brief: CampaignBrief
+      intel: IntelBrief
+      taxonomy_ids: TaxonomyIds
+      target_quota: int
+    output:
+      vetted_contacts: list[VettedContact]
+      discard_summary: DiscardSummary
+      total_searched: int
+    tools:
+      - zoominfo_search_contacts
+      - zoominfo_search_companies
+    loop_body:
+      - enrich_contact_batch
+      - vet_contact
+    termination:
+      condition: "len(vetted_contacts) >= target_quota"
+      max_iterations: 10
+    timeout: 20m
+
+  - id: enrich_contact_batch
+    kind: external_call
+    phase: "2"
+    description: |
+      Batch enrich up to 10 contacts via ZoomInfo enrich_contacts. Always
+      requests employmentHistory — required by vet_contact to apply the
+      red-flags rubric. Returns accuracy scores and do-not-call flags.
+    impl: extracted/zoominfo.py:enrich_contacts_batch
+    input:
+      contacts: list[Contact]
+    output:
+      enriched: list[EnrichedContact]
+    constants:
+      batch_size: 10
+      output_fields:
+        - firstName
+        - lastName
+        - jobTitle
+        - email
+        - phone
+        - mobilePhone
+        - contactAccuracyScore
+        - companyName
+        - externalUrls
+        - employmentHistory
+        - directPhoneDoNotCall
+        - mobilePhoneDoNotCall
+        - validDate
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+
+  - id: vet_contact
+    kind: llm_judge
+    phase: "2"
+    description: |
+      Apply the BDR quality rubric to a single enriched contact.
+      Pre-filters in forward() short-circuit on hard thresholds before LLM:
+        - accuracy < 85  → discard:low_accuracy  (no LLM call)
+        - no valid email → discard:no_valid_email (no LLM call)
+      LLM evaluates: indication mismatch, MSL, biomarker/discovery, translational
+      research, sales/commercial, ops/strategy MA, program management red flags,
+      and the core test ("Would this person commission, design, or approve an
+      RWE study?"). Tiers survivors as ideal / strong / good.
+    signature: signatures/vet_contact.py:VetContact
+    signature_spec:
+      input_schema:
+        type: object
+        title: VetContactInput
+        required: [contact, brief, intel]
+        additionalProperties: false
+        properties:
+          contact:
+            $ref: "#/$defs/EnrichedContact"
+          brief:
+            $ref: "#/$defs/CampaignBrief"
+          intel:
+            $ref: "#/$defs/IntelBrief"
+        $defs:
+          EmploymentEntry:
+            type: object
+            title: EmploymentEntry
+            required: [company, title]
+            additionalProperties: false
+            properties:
+              company: {type: string, title: Company}
+              title: {type: string, title: Title}
+              start_year:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+                title: Start Year
+              end_year:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+                title: End Year
+          EnrichedContact:
+            type: object
+            title: EnrichedContact
+            description: A contact after ZoomInfo enrichment with full employment history.
+            required: [zoominfo_id, first_name, last_name, job_title, company_name]
+            additionalProperties: false
+            properties:
+              zoominfo_id: {type: string, title: Zoominfo Id}
+              first_name: {type: string, title: First Name}
+              last_name: {type: string, title: Last Name}
+              job_title: {type: string, title: Job Title}
+              company_name: {type: string, title: Company Name}
+              email:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+                title: Email
+              phone:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+                title: Phone
+              mobile_phone:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+                title: Mobile Phone
+              accuracy_score: {type: integer, default: 0, title: Accuracy Score}
+              linkedin_url:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+                title: Linkedin Url
+              employment_history:
+                type: array
+                items: {$ref: "#/$defs/EmploymentEntry"}
+                title: Employment History
+              direct_phone_dnc: {type: boolean, default: false, title: Direct Phone Dnc}
+              mobile_phone_dnc: {type: boolean, default: false, title: Mobile Phone Dnc}
+          CampaignBrief:
+            type: object
+            title: CampaignBrief
+            description: "Top-level pipeline input — one campaign, one drug, one indication."
+            required: [drug_brand, drug_generic, condition_full, condition_acronym, therapeutic_area, manufacturer, campaign_type, target_quota]
+            additionalProperties: false
+            properties:
+              drug_brand: {type: string, title: Drug Brand}
+              drug_generic: {type: string, title: Drug Generic}
+              condition_full: {type: string, title: Condition Full}
+              condition_acronym: {type: string, title: Condition Acronym}
+              therapeutic_area: {type: string, title: Therapeutic Area}
+              manufacturer: {type: string, title: Manufacturer}
+              campaign_type:
+                enum: [drug-specific, condition-specific, general-capabilities]
+                title: Campaign Type
+              target_quota: {type: integer, minimum: 1, title: Target Quota}
+              job_focus:
+                anyOf:
+                  - enum: [medical, rwe, heor, clinical-development]
+                  - type: "null"
+                default: null
+                title: Job Focus
+          IntelBrief:
+            type: object
+            title: IntelBrief
+            description: Working context produced by Phase 1.5 target research.
+            required: [pipeline_summary]
+            additionalProperties: false
+            properties:
+              pipeline_summary: {type: string, title: Pipeline Summary}
+              rwe_signals:
+                type: array
+                items: {type: string}
+                title: Rwe Signals
+              key_programs:
+                type: array
+                items: {type: string}
+                title: Key Programs
+              prior_interactions: {type: string, default: "", title: Prior Interactions}
+              relevant_experience: {type: string, default: "", title: Relevant Experience}
+              messaging_angles:
+                type: array
+                items: {type: string}
+                title: Messaging Angles
+      output_schema:
+        type: object
+        title: VetContactOutput
+        required: [decision, relevance_evidence]
+        additionalProperties: false
+        properties:
+          decision:
+            $ref: "#/$defs/VetDecision"
+          tier:
+            anyOf:
+              - $ref: "#/$defs/ContactTier"
+              - type: "null"
+            default: null
+          discard_reason:
+            anyOf:
+              - $ref: "#/$defs/DiscardReason"
+              - type: "null"
+            default: null
+          relevance_evidence: {type: string, title: Relevance Evidence}
+        $defs:
+          VetDecision:
+            enum: [keep, discard]
+            title: VetDecision
+            type: string
+          ContactTier:
+            enum: [ideal, strong, good]
+            title: ContactTier
+            type: string
+          DiscardReason:
+            enum:
+              - indication_mismatch
+              - msl_role
+              - biomarker_discovery
+              - translational
+              - sales_commercial
+              - ops_strategy
+              - program_management
+              - low_accuracy
+              - no_valid_email
+              - other
+            title: DiscardReason
+            type: string
+      prompt: |
+        You are vetting a contact for a BDR outreach campaign targeting pharma/biotech
+        research buyers for real-world evidence (RWE) studies.
+
+        Apply this rubric:
+        - DISCARD if job title indicates MSL or Field Medical (not research buyers).
+        - DISCARD if job title indicates Biomarker/Discovery science (not RWE buyers).
+        - DISCARD if Translational Research without clear RWE/outcomes signals in history.
+        - DISCARD if Sales/Commercial or Brand Management background dominates.
+        - DISCARD if Operations/Strategy MA or Program/Portfolio Management.
+        - DISCARD if indication mismatch: contact's domain does not match the campaign
+          therapeutic area at the franchise level. Check employment history carefully.
+
+        Core test: Would this person commission, design, or approve a real-world
+        evidence study? If no — even if senior and in the right TA — discard.
+
+        Tier surviving contacts:
+        - ideal: drug/condition explicitly in title, OR career entirely in RWE/HEOR for this TA
+        - strong: RWE/HEOR/Evidence Generation/Medical Affairs (scientific) Director+ with TA history
+        - good: TA-relevant Director/VP with credible path to research commissioning
+
+        Contact: {{ contact }}
+        Campaign brief: {{ brief }}
+        Intel brief: {{ intel }}
+
+        Return your decision via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.0
+    input:
+      contact: EnrichedContact
+      brief: CampaignBrief
+      intel: IntelBrief
+    output:
+      decision: VetDecision
+      tier: ContactTier
+      discard_reason: DiscardReason
+      relevance_evidence: str
+    constants:
+      min_accuracy_score: 85
+    eval_set: evals/vet_contact.jsonl
+    fan_out: true
+    timeout: 30s
+
+  # ── Phase 2: Contact table (pure rendering) ────────────────────────────────
+
+  - id: build_contact_table
+    kind: pure_function
+    phase: "2"
+    description: |
+      Render the ranked contact table (sorted by tier), campaign narrative
+      (3-5 sentences covering searches, discards, tier breakdown, top picks),
+      and discarded contacts summary with aggregate counts by reason.
+      Fixed Markdown template from references/lead-generation.md lines 124-133.
+      No LLM required.
+    impl: extracted/report.py:build_contact_table
+    input:
+      vetted_contacts: list[VettedContact]
+      drug_name: str
+      condition: str
+      discard_summary: DiscardSummary
+      total_searched: int
+    output:
+      table_markdown: str
+    timeout: 5s
+
+  # ── Phase 3: Contact Review Gate ───────────────────────────────────────────
+
+  - id: contact_review_gate
+    kind: hitl_gate
+    phase: "3"
+    description: |
+      Present the vetted contact table to the BDR for approval. The BDR may
+      add, remove, or reprioritize contacts before CRM upload proceeds.
+      Pipeline suspends until signal fires. Output is the BDR-approved
+      contact list (may differ from vetted_contacts after manual edits).
+    input:
+      table_markdown: str
+      vetted_contacts: list[VettedContact]
+    output:
+      approved_contacts: list[VettedContact]
+    signal: contact_review_approved
+    timeout: 7d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        BDR campaign ready for review: {drug_brand} / {condition_acronym}.
+        {vetted_count} contacts vetted. Approve or modify before CRM upload.
+
+  # ── Phase 2-alt: Conference List Path ─────────────────────────────────────
+
+  - id: conf_load_file
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Load a conference attendee CSV or XLSX into a normalized list of contact
+      dicts. Minimum required columns: Company (or Organization), First Name,
+      Last Name. Job Title optional but used downstream.
+    impl: extracted/conference_filter.py:load_attendee_file
+    input:
+      file_path: str
+    output:
+      raw_contacts: list[RawContact]
+    timeout: 30s
+
+  - id: conf_pharma_filter
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Apply the is_pharma() keyword classifier (lifted verbatim from
+      references/conference-enrichment.md lines 52-85) to partition the
+      attendee list into pharma_contacts and excluded_contacts.
+      Exclude keywords take precedence over include keywords.
+      Ambiguous names default to excluded.
+    impl: extracted/conference_filter.py:partition_contacts
+    input:
+      raw_contacts: list[RawContact]
+    output:
+      pharma_contacts: list[RawContact]
+      excluded_contacts: list[RawContact]
+    timeout: 5s
+
+  - id: conf_exclusion_review_gate
+    kind: hitl_gate
+    phase: "2-alt"
+    description: |
+      Present the excluded (non-pharma) company list to the BDR for
+      confirmation before ZoomInfo enrichment begins. The BDR may move
+      misclassified companies back to pharma. Source: conference-enrichment.md
+      line 87 — faster to add back now than to re-run enrichment.
+    input:
+      pharma_contacts: list[RawContact]
+      excluded_contacts: list[RawContact]
+    output:
+      confirmed_pharma: list[RawContact]
+    signal: exclusion_review_confirmed
+    timeout: 2d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        Conference list filtered: {pharma_count} pharma contacts found,
+        {excluded_count} excluded as non-pharma. Confirm before enrichment.
+
+  - id: conf_enrich_batch
+    kind: external_call
+    phase: "2-alt"
+    description: |
+      Enrich pharma conference contacts via ZoomInfo. Uses the minimal field
+      set needed for outreach (email, LinkedIn URL, job title) — no
+      employmentHistory required for conference contacts. Batch size 10 per
+      ZoomInfo API limit.
+    impl: extracted/zoominfo.py:enrich_contacts_batch
+    input:
+      contacts: list[RawContact]
+    output:
+      enriched_contacts: list[EnrichedContact]
+    constants:
+      batch_size: 10
+      output_fields:
+        - firstName
+        - lastName
+        - email
+        - externalUrls
+        - companyName
+        - jobTitle
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+
+  - id: conf_build_xlsx
+    kind: pure_function
+    phase: "2-alt"
+    description: |
+      Build a formatted XLSX from enriched conference contacts. Fixed column
+      structure (Company, First Name, Last Name, Job Title, LinkedIn, Email),
+      dark navy header (#1F4E79), alternating light-blue rows (#EBF3FB),
+      frozen pane at A2, auto-filter on header row. Output filename:
+      YYYY_ConferenceName_Pharma_Contacts.xlsx. Side artifact — pipeline also
+      continues to CRM upload.
+      Source: references/conference-enrichment.md lines 148-174.
+    impl: extracted/conference_xlsx.py:build_conference_xlsx
+    input:
+      enriched_contacts: list[EnrichedContact]
+      conference_name: str
+    output:
+      xlsx_path: str
+      coverage_summary: dict
+    timeout: 30s
+
+  # ── Phase 4: CRM Upload + List Creation ───────────────────────────────────
+  # Both paths (standard and conference) converge here.
+
+  - id: hubspot_upsert
+    kind: external_call
+    phase: "4"
+    description: |
+      Batch upsert contacts to HubSpot (create or update by email). Internally
+      chunks at the 100-contact API limit. Returns HubSpot contact IDs needed
+      by exclusion checks and list management.
+    impl: extracted/hubspot.py:batch_upsert_contacts
+    input:
+      contacts: list[VettedContact]
+    output:
+      upserted: list[HubSpotContact]
+      created_count: int
+      updated_count: int
+    constants:
+      batch_size: 100
+    retry:
+      max: 5
+      backoff: exponential
+      retry_on: [rate_limit, network, server_error]
+    timeout: 5m
+
+  - id: hubspot_create_list
+    kind: external_call
+    phase: "4"
+    description: |
+      Create a static HubSpot list for the campaign. Naming convention from
+      hubspot-operations.md: "Rare Disease Campaign - Q1 2026",
+      "Denver Conference 2026 - Pharma Speakers". Produces the list_id needed
+      by hubspot_add_to_list.
+    impl: extracted/hubspot.py:create_campaign_list
+    input:
+      campaign_name: str
+    output:
+      list_id: str
+      list_name: str
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network, server_error]
+    timeout: 30s
+
+  - id: hubspot_add_to_list
+    kind: external_call
+    phase: "4"
+    description: |
+      Add upserted contacts to the campaign list. Internally chunks at the
+      250-contact add-to-list API limit.
+    impl: extracted/hubspot.py:add_contacts_to_list
+    input:
+      list_id: str
+      contacts: list[HubSpotContact]
+    output:
+      added_count: int
+    constants:
+      batch_size: 250
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 2m
+
+  # ── Phase 5: Exclusion Checks (MANDATORY x3) ──────────────────────────────
+  # Run in parallel after hubspot_upsert. All three MUST complete before
+  # pre_enrollment_report. mandatory: true prevents adapters from making these
+  # conditional or skippable — codifies the MANDATORY prose from
+  # references/hubspot-operations.md lines 48-79.
+
+  - id: exclusion_check_dnc
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact against the "BDR do not contact" HubSpot
+      list. Setup (once): hubspot_search_lists(query="BDR do not contact") →
+      get list_id. Per contact: hubspot_get_contact_list_memberships → check
+      for DNC list_id. Any match → excluded from enrollment.
+      Source: references/hubspot-operations.md lines 51-60.
+    impl: extracted/exclusion_checks.py:check_do_not_contact
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    constants:
+      dnc_list_query: "BDR do not contact"
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  - id: exclusion_check_recent
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact for outbound emails in the last 30 days.
+      Calls hubspot_get_contact_emails(daysBack=30, direction=OUTBOUND).
+      If wasEmailedInPeriod is true → excluded.
+      Source: references/hubspot-operations.md lines 62-70.
+    impl: extracted/exclusion_checks.py:check_recently_emailed
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    constants:
+      days_back: 30
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  - id: exclusion_check_sequence
+    kind: external_call
+    phase: "5"
+    mandatory: true
+    description: |
+      MANDATORY: Check each contact for active HubSpot sequence enrollment.
+      A contact can only be in one sequence at a time. Calls
+      hubspot_get_contact_enrollment; if isEnrolled is true → excluded.
+      Source: references/hubspot-operations.md lines 72-79.
+    impl: extracted/exclusion_checks.py:check_active_sequence
+    input:
+      contacts: list[HubSpotContact]
+    output:
+      exclusion_results: list[ExclusionResult]
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 5m
+    fan_out: true
+
+  # ── Phase 5: Pre-enrollment Report ────────────────────────────────────────
+
+  - id: pre_enrollment_report
+    kind: pure_function
+    phase: "5"
+    description: |
+      Render the pre-enrollment Markdown report for the BDR. Aggregates
+      exclusion results from all three checks into counts (DNC, recently
+      emailed, active sequence), computes ready-to-enroll count, fills the
+      fixed report template from references/hubspot-operations.md lines 86-103.
+      No LLM required.
+    impl: extracted/report.py:generate_pre_enrollment_report
+    input:
+      campaign_name: str
+      total_enriched: int
+      already_in_hubspot: int
+      new_contacts: int
+      exclusion_results: list[ExclusionResult]
+      template_ids: list[str]
+    output:
+      report_markdown: str
+      ready_to_enroll_count: int
+    timeout: 5s
+
+  # ── Phase 6: Email Templates ───────────────────────────────────────────────
+
+  - id: personalize_email
+    kind: llm_judge
+    phase: "6"
+    description: |
+      Generate a personalized opening line and TA-relevant callout for each
+      vetted contact's outreach email. The base template structure (from
+      references/email-templates.md) is injected as context; the LLM fills
+      only the personalization variables. Acme experience claims MUST come
+      from the acme_experience input field only — never fabricated.
+      Target email: 150-200 words total.
+    signature: signatures/personalize_email.py:PersonalizeEmail
+    signature_spec:
+      input_schema:
+        type: object
+        title: PersonalizeEmailInput
+        required: [contact, brief_campaign_type, brief_drug_brand, brief_condition, brief_therapeutic_area, intel, acme_experience]
+        additionalProperties: false
+        properties:
+          contact:
+            $ref: "#/$defs/VettedContact"
+          brief_campaign_type:
+            enum: [drug-specific, condition-specific, general-capabilities]
+            title: Brief Campaign Type
+          brief_drug_brand: {type: string, title: Brief Drug Brand}
+          brief_condition: {type: string, title: Brief Condition}
+          brief_therapeutic_area: {type: string, title: Brief Therapeutic Area}
+          intel:
+            $ref: "#/$defs/IntelBrief"
+          acme_experience: {type: string, title: Acme Experience}
+        $defs:
+          ContactTier:
+            enum: [ideal, strong, good]
+            title: ContactTier
+            type: string
+          EmploymentEntry:
+            type: object
+            title: EmploymentEntry
+            required: [company, title]
+            additionalProperties: false
+            properties:
+              company: {type: string, title: Company}
+              title: {type: string, title: Title}
+              start_year:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+              end_year:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+          EnrichedContact:
+            type: object
+            title: EnrichedContact
+            required: [zoominfo_id, first_name, last_name, job_title, company_name]
+            additionalProperties: false
+            properties:
+              zoominfo_id: {type: string}
+              first_name: {type: string}
+              last_name: {type: string}
+              job_title: {type: string}
+              company_name: {type: string}
+              email:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              accuracy_score: {type: integer, default: 0}
+              linkedin_url:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              employment_history:
+                type: array
+                items: {$ref: "#/$defs/EmploymentEntry"}
+          VettedContact:
+            type: object
+            title: VettedContact
+            required: [contact, tier, relevance_evidence]
+            additionalProperties: false
+            properties:
+              contact: {$ref: "#/$defs/EnrichedContact"}
+              tier: {$ref: "#/$defs/ContactTier"}
+              relevance_evidence: {type: string}
+          IntelBrief:
+            type: object
+            title: IntelBrief
+            required: [pipeline_summary]
+            additionalProperties: false
+            properties:
+              pipeline_summary: {type: string}
+              rwe_signals:
+                type: array
+                items: {type: string}
+              key_programs:
+                type: array
+                items: {type: string}
+              prior_interactions: {type: string, default: ""}
+              relevant_experience: {type: string, default: ""}
+              messaging_angles:
+                type: array
+                items: {type: string}
+      output_schema:
+        type: object
+        title: PersonalizeEmailOutput
+        required: [opening_line, ta_callout]
+        additionalProperties: false
+        properties:
+          opening_line: {type: string, title: Opening Line}
+          ta_callout: {type: string, title: Ta Callout}
+      prompt: |
+        Generate a personalized opening line and TA-relevant callout for a BDR
+        outreach email. The rest of the email is templated boilerplate.
+
+        Rules:
+        - opening_line: 1-2 sentences. Lead with a specific, non-generic observation
+          about this contact's work (title, career history, or known programs from intel).
+          Never start with "I hope this email finds you well" or similar.
+        - ta_callout: 1 sentence connecting Acme's validated experience to their
+          therapeutic area. Ground this ONLY in the acme_experience field — never
+          invent or assume Acme experience.
+        - Campaign type context:
+            drug-specific: reference the drug directly.
+            condition-specific: reference the condition and Acme TA experience.
+            general-capabilities: broader RWE/registry platform reference.
+
+        Contact: {{ contact }}
+        Campaign type: {{ brief_campaign_type }}
+        Drug: {{ brief_drug_brand }}
+        Condition: {{ brief_condition }}
+        Therapeutic area: {{ brief_therapeutic_area }}
+        Intel brief: {{ intel }}
+        Acme's validated experience (use only this): {{ acme_experience }}
+
+        Return both fields via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.3
+    input:
+      contact: VettedContact
+      brief: CampaignBrief
+      intel: IntelBrief
+      acme_experience: str
+    output:
+      opening_line: str
+      ta_callout: str
+    eval_set: evals/personalize_email.jsonl
+    fan_out: true
+    timeout: 60s
+
+  - id: hubspot_save_template
+    kind: external_call
+    phase: "6"
+    description: |
+      Create a new or update an existing HubSpot sales template via the
+      internal API (not the CMS Design Manager). Requires browser cookie auth
+      (5 cookies: csrf.app, hubspotapi, hubspotapi-csrf, hubspotapi-strict,
+      hubspotapi-lax). Cookies expire periodically — rotate via your
+      rotate-hubspot-cookie script. Template changes do NOT affect contacts
+      already enrolled (they use an enrollment-time snapshot).
+    impl: extracted/hubspot.py:save_sales_template
+    input:
+      name: str
+      subject: str
+      body_html: str
+      template_id: str
+    output:
+      template_id: str
+      template_url: str
+    retry:
+      max: 2
+      backoff: constant
+      retry_on: [network]
+    timeout: 30s
+
+  # ── Phase 7: Handoff ────────────────────────────────────────────────────────
+
+  - id: manual_enrollment_handoff
+    kind: hitl_gate
+    phase: "7"
+    description: |
+      Final handoff. Presents the pre-enrollment report and waits for the BDR
+      to confirm manual enrollment in HubSpot UI. Sequence enrollment MUST be
+      done manually — API enrollment sends emails immediately with no
+      verification, cannot be paused, and cannot be undone. Pipeline remains
+      suspended until the BDR signals completion.
+      Source: references/hubspot-operations.md lines 106-113.
+    input:
+      report_markdown: str
+      ready_to_enroll_count: int
+    output:
+      enrollment_confirmed: bool
+    signal: bdr_enrollment_complete
+    timeout: 14d
+    notify:
+      channel: slack
+      target: "#bdr-reviews"
+      message_template: |
+        BDR campaign ready for enrollment: {campaign_name}.
+        {ready_to_enroll_count} contacts cleared all exclusion checks.
+        Enroll manually in HubSpot UI, then signal bdr_enrollment_complete.
+
+edges:
+  # Standard path: parallel start (taxonomy + research)
+  - {from: taxonomy_lookup,             to: lead_generation_loop}
+  - {from: target_research,             to: lead_generation_loop}
+  # Standard path: lead gen → contact table → review gate → CRM upload
+  - {from: lead_generation_loop,        to: build_contact_table}
+  - {from: build_contact_table,         to: contact_review_gate}
+  - {from: contact_review_gate,         to: hubspot_upsert,            on_signal: contact_review_approved}
+  # Conference path: load → classify → confirm exclusions → enrich
+  - {from: conf_load_file,              to: conf_pharma_filter}
+  - {from: conf_pharma_filter,          to: conf_exclusion_review_gate}
+  - {from: conf_exclusion_review_gate,  to: conf_enrich_batch,         on_signal: exclusion_review_confirmed}
+  # Conference path: enrich → XLSX side artifact + CRM upload (converges)
+  - {from: conf_enrich_batch,           to: conf_build_xlsx}
+  - {from: conf_enrich_batch,           to: hubspot_upsert}
+  # CRM upload → list management (create then add, sequential)
+  - {from: hubspot_upsert,              to: hubspot_create_list}
+  - {from: hubspot_upsert,              to: hubspot_add_to_list}
+  - {from: hubspot_create_list,         to: hubspot_add_to_list}
+  # CRM upload → exclusion checks in parallel (all three)
+  - {from: hubspot_upsert,              to: exclusion_check_dnc}
+  - {from: hubspot_upsert,              to: exclusion_check_recent}
+  - {from: hubspot_upsert,              to: exclusion_check_sequence}
+  # All three exclusion checks feed pre-enrollment report (fan-in)
+  - {from: exclusion_check_dnc,         to: pre_enrollment_report}
+  - {from: exclusion_check_recent,      to: pre_enrollment_report}
+  - {from: exclusion_check_sequence,    to: pre_enrollment_report}
+  # Email personalization: needs intel from research + contacts from report
+  - {from: target_research,             to: personalize_email}
+  - {from: pre_enrollment_report,       to: personalize_email}
+  - {from: personalize_email,           to: hubspot_save_template}
+  # Final handoff waits for BOTH report AND saved templates
+  - {from: pre_enrollment_report,       to: manual_enrollment_handoff}
+  - {from: hubspot_save_template,       to: manual_enrollment_handoff}
+
+# Parallel entry nodes — both standard paths start in parallel.
+# The conference path uses conf_load_file as its entry point instead.
+entry_nodes:
+  - taxonomy_lookup    # standard path — parallel with target_research
+  - target_research    # standard path — parallel with taxonomy_lookup
+  - conf_load_file     # conference path — alternative entry point
+
+exit_nodes:
+  - manual_enrollment_handoff  # single exit — both paths end at BDR handoff
