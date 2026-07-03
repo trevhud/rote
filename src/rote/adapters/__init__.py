@@ -66,7 +66,5 @@ def get_adapter(name: str) -> Adapter:
         factory = ADAPTERS[name]
     except KeyError:
         available = ", ".join(sorted(ADAPTERS))
-        raise KeyError(
-            f"Unknown runtime {name!r}. Available: {available}"
-        ) from None
+        raise KeyError(f"Unknown runtime {name!r}. Available: {available}") from None
     return factory()

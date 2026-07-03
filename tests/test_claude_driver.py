@@ -38,7 +38,6 @@ from rote.graduator.drivers.claude import (
     ClaudeDriver,
 )
 
-
 # ───────── Fake subprocess ─────────
 
 
@@ -369,8 +368,7 @@ async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
     skill_dir, graduator_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=(
-            '{"result": "API Error: ECONNRESET", "is_error": true, '
-            '"total_cost_usd": 2.5}'
+            '{"result": "API Error: ECONNRESET", "is_error": true, "total_cost_usd": 2.5}'
         ),
         stderr_text="",
         returncode=1,
@@ -466,7 +464,8 @@ async def test_json_on_last_line_after_preamble(
     stdout = (
         "Loading skills...\n"
         "Loaded 2 skills.\n"
-        '{"result": "ok", "cost_usd": 0.25, "num_turns": 10, "session_id": "s1", "duration_ms": 1000}\n'
+        '{"result": "ok", "cost_usd": 0.25, "num_turns": 10, '
+        '"session_id": "s1", "duration_ms": 1000}\n'
     )
     fake_claude_subprocess(
         stdout_text=stdout,

@@ -71,7 +71,7 @@ def parse_input_ref(ref: str) -> InputRef:
     return InputRef(node_id=m.group("node"), field=m.group("field"))
 
 
-class NodeKind(str, Enum):
+class NodeKind(StrEnum):
     """The five kinds a graduated step can be classified as.
 
     Every node in a graduated pipeline is exactly one kind. Adapters
@@ -313,9 +313,8 @@ class Node(BaseModel):
         elif kind is NodeKind.AGENT_LOOP:
             if not self.tools:
                 missing.append("tools")
-        elif kind is NodeKind.HITL_GATE:
-            if not self.signal:
-                missing.append("signal")
+        elif kind is NodeKind.HITL_GATE and not self.signal:
+            missing.append("signal")
 
         if missing:
             raise ValueError(

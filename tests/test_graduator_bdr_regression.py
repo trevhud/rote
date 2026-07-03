@@ -179,13 +179,8 @@ def test_snapshot_reasonable_codifiable_percentage(snapshot_pipeline) -> None:  
     non-HITL nodes are pure_function or external_call). The graduator
     should land within a generous window of that.
     """
-    non_hitl = [
-        n for n in snapshot_pipeline.nodes if n.kind is not NodeKind.HITL_GATE
-    ]
-    codifiable = [
-        n for n in non_hitl
-        if n.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL)
-    ]
+    non_hitl = [n for n in snapshot_pipeline.nodes if n.kind is not NodeKind.HITL_GATE]
+    codifiable = [n for n in non_hitl if n.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL)]
     pct = len(codifiable) / len(non_hitl) * 100 if non_hitl else 0
     assert 30 <= pct <= 90, (
         f"Codifiable percentage {pct:.0f}% is outside the reasonable 30-90% "
