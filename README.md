@@ -384,6 +384,7 @@ the toolchain-dependent integration tests.
 | Cloudflare Workflows adapter | working (validated with `tsc --noEmit` over the real emitted output) |
 | DBOS adapter | working (validated against a real DBOS runtime over SQLite in the e2e test) |
 | DBOS TypeScript adapter (`dbos-ts`) | working (validated with `tsc --noEmit` over the real emitted output and a live run on the DBOS TS runtime against Docker Postgres) |
+| Raw Python adapter (`python`) | working (emitted script executed as a subprocess in the e2e test: wave order, payload threading, and a live retry loop; refuses `hitl_gate` pipelines at emit time) |
 | Graduator orchestrator | working |
 | `rote graduate` / `rote emit` CLI commands | working |
 | `claude` driver | working |
