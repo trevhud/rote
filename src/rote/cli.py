@@ -34,7 +34,6 @@ from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
 from rote.ir import load_pipeline
 
-
 # ───────── Subcommand: emit ─────────
 
 
@@ -125,9 +124,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     print(f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}")
     print(f"  driver: {result.driver_name}")
     if result.driver_metadata:
-        meta_str = ", ".join(
-            f"{k}={v}" for k, v in result.driver_metadata.items()
-        )
+        meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}")
     print(f"  graduated artifacts: {graduated_dir}")
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
@@ -190,7 +187,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         default="temporal",
         choices=available_runtimes,
-        help=f"Target workflow runtime (default: temporal). Available: {', '.join(available_runtimes)}",
+        help="Target workflow runtime (default: temporal). "
+        f"Available: {', '.join(available_runtimes)}",
     )
     emit.add_argument(
         "--out",
@@ -270,9 +268,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not getattr(args, "command", None):
         # No subcommand — print a helpful banner and usage.
-        print(
-            f"rote {__version__} — graduate fuzzy AI skills into deterministic workflows"
-        )
+        print(f"rote {__version__} — graduate fuzzy AI skills into deterministic workflows")
         print()
         parser.print_help()
         return 0

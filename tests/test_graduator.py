@@ -92,9 +92,7 @@ class _FailingDriver(GraduatorDriver):
     def is_available(self) -> tuple[bool, str]:
         return (True, "")
 
-    async def run(
-        self, skill_dir: Path, graduator_skill_dir: Path, work_dir: Path
-    ) -> DriverResult:
+    async def run(self, skill_dir: Path, graduator_skill_dir: Path, work_dir: Path) -> DriverResult:
         raise DriverError("simulated failure", details="extra context here")
 
 
@@ -135,9 +133,7 @@ nodes:
 def fake_skill_dir(tmp_path: Path) -> Path:
     skill_dir = tmp_path / "fake-skill"
     skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: fake\n---\n\n# Fake skill\n", encoding="utf-8"
-    )
+    (skill_dir / "SKILL.md").write_text("---\nname: fake\n---\n\n# Fake skill\n", encoding="utf-8")
     return skill_dir
 
 
@@ -191,10 +187,7 @@ async def test_graduate_happy_path(
     # Driver was called with the right paths
     assert fake_driver.run_called_with is not None
     assert fake_driver.run_called_with["skill_dir"] == fake_skill_dir.resolve()
-    assert (
-        fake_driver.run_called_with["graduator_skill_dir"]
-        == fake_graduator_skill_dir
-    )
+    assert fake_driver.run_called_with["graduator_skill_dir"] == fake_graduator_skill_dir
 
 
 @pytest.mark.asyncio
@@ -226,9 +219,7 @@ async def test_explicit_unknown_agent_raises(
     fake_graduator_skill_dir: Path,
     tmp_path: Path,
 ) -> None:
-    graduator = Graduator(
-        agent="bogus", graduator_skill_dir=fake_graduator_skill_dir
-    )
+    graduator = Graduator(agent="bogus", graduator_skill_dir=fake_graduator_skill_dir)
     with pytest.raises(GraduatorError, match="bogus"):
         await graduator.graduate(fake_skill_dir, tmp_path / "out")
 
@@ -242,12 +233,8 @@ async def test_explicit_unavailable_agent_raises_with_reason(
 ) -> None:
     """User asks for `--agent claude` but claude isn't installed."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value=None
-    ):
-        graduator = Graduator(
-            agent="claude", graduator_skill_dir=fake_graduator_skill_dir
-        )
+    with patch("rote.graduator.drivers.claude.which", return_value=None):
+        graduator = Graduator(agent="claude", graduator_skill_dir=fake_graduator_skill_dir)
         with pytest.raises(GraduatorError, match="not available"):
             await graduator.graduate(fake_skill_dir, tmp_path / "out")
 
@@ -260,10 +247,9 @@ async def test_auto_detect_with_no_drivers_available_raises_helpful_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value=None
-    ), patch(
-        "rote.graduator.drivers.codex.which", return_value=None
+    with (
+        patch("rote.graduator.drivers.claude.which", return_value=None),
+        patch("rote.graduator.drivers.codex.which", return_value=None),
     ):
         graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
         with pytest.raises(GraduatorError) as excinfo:
@@ -285,9 +271,7 @@ async def test_missing_skill_dir_raises(
 ) -> None:
     graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
     with pytest.raises(GraduatorError, match="does not exist"):
-        await graduator.graduate(
-            tmp_path / "nonexistent", tmp_path / "out"
-        )
+        await graduator.graduate(tmp_path / "nonexistent", tmp_path / "out")
 
 
 @pytest.mark.asyncio

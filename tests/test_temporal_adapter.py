@@ -132,9 +132,7 @@ def test_emitted_activities_contain_all_nodes(
     for node in bdr_pipeline.nodes:
         if node.kind is NodeKind.HITL_GATE:
             continue
-        assert f'@activity.defn(name="{node.id}")' in src, (
-            f"Missing activity for node {node.id}"
-        )
+        assert f'@activity.defn(name="{node.id}")' in src, f"Missing activity for node {node.id}"
 
 
 def test_emitted_workflow_has_signal_handlers(
@@ -219,7 +217,10 @@ def imported_modules(emit_result: dict[str, Path]):  # noqa: ANN201
         for mod in list(sys.modules):
             if mod.startswith("expected."):
                 del sys.modules[mod]
-        from expected.runtimes.temporal import activities, workflow  # type: ignore[import-not-found]
+        from expected.runtimes.temporal import (  # type: ignore[import-not-found]
+            activities,
+            workflow,
+        )
 
         yield workflow, activities
     finally:
@@ -246,9 +247,7 @@ def test_emitted_activities_register_with_temporal(
         if callable(obj) and hasattr(obj, "__temporal_activity_definition"):
             registered.add(obj.__temporal_activity_definition.name)
 
-    expected = {
-        n.id for n in bdr_pipeline.nodes if n.kind is not NodeKind.HITL_GATE
-    }
+    expected = {n.id for n in bdr_pipeline.nodes if n.kind is not NodeKind.HITL_GATE}
     missing = expected - registered
     extra = registered - expected
     assert not missing, f"Missing activity registrations: {missing}"

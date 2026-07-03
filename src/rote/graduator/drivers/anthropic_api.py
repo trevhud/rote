@@ -43,9 +43,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+
+if TYPE_CHECKING:
+    from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 
 # Detect the optional dep at import time so is_available() can report
 # a specific "pip install rote[api]" message instead of a cryptic
@@ -82,7 +85,7 @@ MAX_FILE_READ_BYTES = 200_000
 # ───────── Tool schemas ─────────
 
 
-def _build_tool_schemas() -> list[dict[str, Any]]:
+def _build_tool_schemas() -> list[ToolParam]:
     return [
         {
             "name": "read_file",
@@ -170,17 +173,13 @@ def _check_read_path(path_str: str, read_roots: list[Path]) -> Path:
         if _path_within(p, root):
             return p
     roots_str = ", ".join(str(r) for r in read_roots)
-    raise PermissionError(
-        f"Path {path_str!r} is not within allowed read roots: {roots_str}"
-    )
+    raise PermissionError(f"Path {path_str!r} is not within allowed read roots: {roots_str}")
 
 
 def _check_write_path(path_str: str, write_root: Path) -> Path:
     p = Path(path_str)
     if not _path_within(p, write_root):
-        raise PermissionError(
-            f"Path {path_str!r} is not within allowed write root: {write_root}"
-        )
+        raise PermissionError(f"Path {path_str!r} is not within allowed write root: {write_root}")
     return p
 
 
@@ -201,10 +200,7 @@ def _handle_list_directory(path_str: str, read_roots: list[Path]) -> str:
     p = _check_read_path(path_str, read_roots)
     if not p.is_dir():
         raise NotADirectoryError(f"Not a directory: {path_str}")
-    entries = sorted(
-        f"{entry.name}{'/' if entry.is_dir() else ''}"
-        for entry in p.iterdir()
-    )
+    entries = sorted(f"{entry.name}{'/' if entry.is_dir() else ''}" for entry in p.iterdir())
     return "\n".join(entries) if entries else "(empty)"
 
 
@@ -298,10 +294,7 @@ class AnthropicApiDriver(GraduatorDriver):
         work_dir: Path,
     ) -> DriverResult:
         if not _ANTHROPIC_AVAILABLE:
-            raise DriverError(
-                "anthropic package is not installed. "
-                "Run: pip install rote[api]"
-            )
+            raise DriverError("anthropic package is not installed. Run: pip install rote[api]")
 
         skill_dir = skill_dir.resolve()
         graduator_skill_dir = graduator_skill_dir.resolve()
@@ -326,7 +319,7 @@ class AnthropicApiDriver(GraduatorDriver):
         client = anthropic.AsyncAnthropic()
         tool_schemas = _build_tool_schemas()
 
-        messages: list[dict[str, Any]] = [
+        messages: list[MessageParam] = [
             {
                 "role": "user",
                 "content": (
@@ -364,27 +357,23 @@ class AnthropicApiDriver(GraduatorDriver):
             if response.stop_reason != "tool_use":
                 # Capture the final text for diagnostics
                 for block in response.content:
-                    if getattr(block, "type", None) == "text":
-                        last_text = getattr(block, "text", "") or last_text
+                    if block.type == "text":
+                        last_text = block.text or last_text
                 break
 
             # Dispatch tool calls
-            tool_results: list[dict[str, Any]] = []
+            tool_results: list[ToolResultBlockParam] = []
             for block in response.content:
-                if getattr(block, "type", None) != "tool_use":
+                if block.type != "tool_use":
                     continue
 
                 tool_name = block.name
-                tool_input = block.input or {}
+                tool_input = cast(dict[str, Any], block.input or {})
                 try:
                     if tool_name == "read_file":
-                        result_text = _handle_read_file(
-                            tool_input["path"], read_roots
-                        )
+                        result_text = _handle_read_file(tool_input["path"], read_roots)
                     elif tool_name == "list_directory":
-                        result_text = _handle_list_directory(
-                            tool_input["path"], read_roots
-                        )
+                        result_text = _handle_list_directory(tool_input["path"], read_roots)
                     elif tool_name == "write_file":
                         result_text = _handle_write_file(
                             tool_input["path"],

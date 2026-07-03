@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-
 # ───────── Shared types ─────────
 
 
@@ -170,9 +169,7 @@ def get_driver(name: str, **kwargs: Any) -> GraduatorDriver:
         factory = DRIVERS[name]
     except KeyError:
         available = ", ".join(sorted(DRIVERS))
-        raise KeyError(
-            f"Unknown agent driver {name!r}. Available: {available}"
-        ) from None
+        raise KeyError(f"Unknown agent driver {name!r}. Available: {available}") from None
     return factory(**kwargs)
 
 

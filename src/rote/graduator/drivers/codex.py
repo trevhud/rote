@@ -80,6 +80,4 @@ class CodexDriver(GraduatorDriver):
           + ``/tmp`` and disables network access (consistent with our
           read-the-skill / write-pipeline.yaml contract).
         """
-        raise NotImplementedError(
-            "CodexDriver.run: to be implemented in task #13"
-        )
+        raise NotImplementedError("CodexDriver.run: to be implemented in task #13")

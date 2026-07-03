@@ -15,6 +15,7 @@ the CLI (``rote emit --runtime <name>``).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -43,7 +44,7 @@ def _cloudflare_adapter_factory() -> Adapter:
 
 #: Name → factory. Keep the values as zero-arg callables so adapters can
 #: lazy-import their heavy dependencies.
-ADAPTERS: dict[str, callable] = {  # type: ignore[type-arg]
+ADAPTERS: dict[str, Callable[[], Adapter]] = {
     "temporal": _temporal_adapter_factory,
     "cloudflare": _cloudflare_adapter_factory,
 }
@@ -58,7 +59,5 @@ def get_adapter(name: str) -> Adapter:
         factory = ADAPTERS[name]
     except KeyError:
         available = ", ".join(sorted(ADAPTERS))
-        raise KeyError(
-            f"Unknown runtime {name!r}. Available: {available}"
-        ) from None
+        raise KeyError(f"Unknown runtime {name!r}. Available: {available}") from None
     return factory()

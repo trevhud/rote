@@ -30,7 +30,6 @@ from pathlib import Path
 
 from rote.ir import Node, NodeKind, Pipeline
 
-
 # ───────── Adapter configuration ─────────
 
 
@@ -150,9 +149,9 @@ def _retry_policy_args(node: Node) -> str:
     parts = [f"maximum_attempts={node.retry.max + 1}"]  # Temporal counts initial + retries
     backoff = node.retry.backoff
     if backoff == "exponential":
-        parts.append('backoff_coefficient=2.0')
+        parts.append("backoff_coefficient=2.0")
     elif backoff == "linear":
-        parts.append('backoff_coefficient=1.0')
+        parts.append("backoff_coefficient=1.0")
     return f"RetryPolicy({', '.join(parts)})"
 
 
@@ -240,8 +239,9 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
             + "\n"
         )
 
-    return textwrap.dedent(
-        f'''
+    return (
+        textwrap.dedent(
+            f'''
         @activity.defn(name="{node.id}")
         async def {node.id}(payload: dict) -> dict:
             """{node.description.strip().splitlines()[0]}
@@ -252,8 +252,13 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
             """
             # Tools the agent should be allowed to call inside the loop:
         '''
-    ).lstrip("\n") + (tools_doc + "\n" if tools_doc else "") + sub_nodes_doc + (
-        f'    raise NotImplementedError("agent_loop activity {node.id!r}: requires an agent runtime")\n'
+        ).lstrip("\n")
+        + (tools_doc + "\n" if tools_doc else "")
+        + sub_nodes_doc
+        + (
+            f'    raise NotImplementedError("agent_loop activity {node.id!r}: '
+            'requires an agent runtime")\n'
+        )
     )
 
 
@@ -340,10 +345,7 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
     """
     gates = [n for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE]
     if not gates:
-        return (
-            "    def __init__(self) -> None:\n"
-            "        pass\n\n"
-        )
+        return "    def __init__(self) -> None:\n        pass\n\n"
 
     init_lines = ["    def __init__(self) -> None:"]
     for gate in gates:
@@ -386,14 +388,14 @@ def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
     retry = _retry_policy_args(node)
 
     lines = [
-        f'        {node.id}_result = await workflow.execute_activity(',
+        f"        {node.id}_result = await workflow.execute_activity(",
         f'            "{node.id}",',
-        '            {},  # TODO: pass real payload from upstream nodes',
+        "            {},  # TODO: pass real payload from upstream nodes",
         f'            start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),',
     ]
     if retry:
-        lines.append(f'            retry_policy={retry},')
-    lines.append('        )')
+        lines.append(f"            retry_policy={retry},")
+    lines.append("        )")
     return "\n".join(lines) + "\n"
 
 
@@ -401,24 +403,25 @@ def _emit_hitl_block(node: Node) -> str:
     assert node.kind is NodeKind.HITL_GATE
     assert node.signal is not None
     return (
-        f'        # ─── HITL gate: {node.id} ───\n'
-        f'        # Workflow suspends here until the {node.signal!r} signal\n'
-        f'        # arrives. Survives worker restarts; resumes immediately\n'
-        f'        # when the signal fires.\n'
-        f'        await workflow.wait_condition(\n'
-        f'            lambda: self._{node.signal}_payload is not None\n'
-        f'        )\n'
-        f'        {node.id}_result = self._{node.signal}_payload\n'
+        f"        # ─── HITL gate: {node.id} ───\n"
+        f"        # Workflow suspends here until the {node.signal!r} signal\n"
+        f"        # arrives. Survives worker restarts; resumes immediately\n"
+        f"        # when the signal fires.\n"
+        f"        await workflow.wait_condition(\n"
+        f"            lambda: self._{node.signal}_payload is not None\n"
+        f"        )\n"
+        f"        {node.id}_result = self._{node.signal}_payload\n"
     )
 
 
 def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
     waves = _execution_waves(pipeline)
 
-    body_lines: list[str] = ['    @workflow.run', '    async def run(self, brief: dict) -> dict:']
-    body_lines.append(
-        f'        """{pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name}"""'
+    body_lines: list[str] = ["    @workflow.run", "    async def run(self, brief: dict) -> dict:"]
+    docstring = (
+        pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
     )
+    body_lines.append(f'        """{docstring}"""')
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
@@ -438,11 +441,12 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
             for n in non_hitl:
                 timeout = _activity_timeout(n, cfg.default_activity_timeout)
                 body_lines.append(
-                    f'            workflow.execute_activity(\n'
+                    f"            workflow.execute_activity(\n"
                     f'                "{n.id}",\n'
-                    f'                {{}},\n'
-                    f'                start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),\n'
-                    f'            ),'
+                    f"                {{}},\n"
+                    "                start_to_close_timeout="
+                    f'timedelta(minutes=_parse_minutes("{timeout}")),\n'
+                    f"            ),"
                 )
             body_lines.append("        )")
 

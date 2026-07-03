@@ -19,7 +19,6 @@ What's covered here:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -30,7 +29,6 @@ from rote.graduator.drivers import (
     DRIVERS,
     DriverError,
     DriverResult,
-    GraduatorDriver,
     auto_detect,
     available_drivers,
     get_driver,
@@ -38,7 +36,6 @@ from rote.graduator.drivers import (
 from rote.graduator.drivers.anthropic_api import AnthropicApiDriver
 from rote.graduator.drivers.claude import ClaudeDriver
 from rote.graduator.drivers.codex import CodexDriver
-
 
 # ───────── Registry + Protocol shape ─────────
 
@@ -86,8 +83,8 @@ def test_drivers_satisfy_protocol_at_runtime() -> None:
     for name in DRIVERS:
         driver = get_driver(name)
         assert hasattr(driver, "name")
-        assert callable(getattr(driver, "is_available"))
-        assert callable(getattr(driver, "run"))
+        assert callable(driver.is_available)
+        assert callable(driver.run)
 
 
 # ───────── is_available() behavior ─────────
@@ -152,9 +149,7 @@ def test_api_driver_reports_missing_package_when_anthropic_not_importable(
 ) -> None:
     """Simulate the case where the `anthropic` extra wasn't installed."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    with patch(
-        "rote.graduator.drivers.anthropic_api._ANTHROPIC_AVAILABLE", False
-    ):
+    with patch("rote.graduator.drivers.anthropic_api._ANTHROPIC_AVAILABLE", False):
         driver = AnthropicApiDriver()
         available, reason = driver.is_available()
         assert available is False
@@ -166,10 +161,9 @@ def test_api_driver_reports_missing_package_when_anthropic_not_importable(
 
 def test_auto_detect_returns_first_available() -> None:
     """With claude available (mocked) and others unavailable, pick claude."""
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value="/usr/local/bin/claude"
-    ), patch(
-        "rote.graduator.drivers.codex.which", return_value=None
+    with (
+        patch("rote.graduator.drivers.claude.which", return_value="/usr/local/bin/claude"),
+        patch("rote.graduator.drivers.codex.which", return_value=None),
     ):
         driver = auto_detect()
         assert driver is not None
@@ -177,10 +171,9 @@ def test_auto_detect_returns_first_available() -> None:
 
 
 def test_auto_detect_falls_through_to_codex_when_claude_missing() -> None:
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value=None
-    ), patch(
-        "rote.graduator.drivers.codex.which", return_value="/usr/local/bin/codex"
+    with (
+        patch("rote.graduator.drivers.claude.which", return_value=None),
+        patch("rote.graduator.drivers.codex.which", return_value="/usr/local/bin/codex"),
     ):
         driver = auto_detect()
         assert driver is not None
@@ -191,10 +184,9 @@ def test_auto_detect_returns_none_when_no_driver_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value=None
-    ), patch(
-        "rote.graduator.drivers.codex.which", return_value=None
+    with (
+        patch("rote.graduator.drivers.claude.which", return_value=None),
+        patch("rote.graduator.drivers.codex.which", return_value=None),
     ):
         driver = auto_detect()
         assert driver is None
@@ -205,10 +197,9 @@ def test_available_drivers_returns_triples_for_all(
 ) -> None:
     """Diagnostic function returns status for every registered driver."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    with patch(
-        "rote.graduator.drivers.claude.which", return_value=None
-    ), patch(
-        "rote.graduator.drivers.codex.which", return_value=None
+    with (
+        patch("rote.graduator.drivers.claude.which", return_value=None),
+        patch("rote.graduator.drivers.codex.which", return_value=None),
     ):
         triples = available_drivers()
 
