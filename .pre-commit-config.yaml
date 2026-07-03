@@ -1,0 +1,26 @@
+# Optional but recommended: `pip install pre-commit && pre-commit install`
+# runs these on every commit so ruff/mypy issues are caught before CI.
+# The same checks run in .github/workflows/ci.yml.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-yaml
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: sanity-check
+        name: sanity-check (no leaked identifiers/secrets)
+        entry: ./scripts/sanity-check.sh
+        language: script
+        pass_filenames: false

@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest a new capability, runtime adapter, or driver.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that rote doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >
+        What you'd like to see. For a new runtime adapter or driver, see
+        the "Adding a new runtime adapter" / "Adding a new graduator
+        driver" sections in CONTRIBUTING.md.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
