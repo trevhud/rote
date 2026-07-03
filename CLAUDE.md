@@ -22,12 +22,13 @@ needs a fast mental model before it starts editing code.
    source skill and applies a structured rubric.
 2. The agent produces a `pipeline.yaml` (runtime-agnostic IR) plus
    extracted Python modules and typed LLM-judge signatures.
-3. A runtime adapter (DBOS by default; Temporal and Cloudflare
-   Workflows too; more planned) consumes the IR and emits the
-   runtime's native code shape — a single `main.py` DBOS app, a
-   `workflow.py` + `activities.py` pair for Temporal, or a TypeScript
-   `WorkflowEntrypoint` class plus `wrangler.jsonc` / `package.json`
-   for Cloudflare.
+3. A runtime adapter (DBOS by default; Temporal, Cloudflare
+   Workflows, DBOS-TS, and Inngest too; more planned) consumes the
+   IR and emits the runtime's native code shape — a single `main.py`
+   DBOS app, a `workflow.py` + `activities.py` pair for Temporal, a
+   TypeScript `WorkflowEntrypoint` class plus `wrangler.jsonc` /
+   `package.json` for Cloudflare, or an Inngest function app that
+   mounts into an existing Node/Next.js service.
 
 The result is a deterministic workflow that replaces a fuzzy
 10-20 minute agent loop. That's the whole product in one paragraph.
@@ -81,7 +82,7 @@ the Anthropic SDK client (see
 ### Layer 3 — The runtime adapters (the "code emitter")
 
 - **Lives at:** [`src/rote/adapters/`](src/rote/adapters/)
-- **Three adapters today:**
+- **Five adapters today:**
   - `DbosAdapter`
     ([`src/rote/adapters/dbos.py`](src/rote/adapters/dbos.py))
     — the CLI default; emits a single durable Python app (`main.py`
@@ -120,6 +121,17 @@ the Anthropic SDK client (see
     Postgres-only (no SQLite parity with DBOS Python), and its
     `DBOS.recv` defaults to a 60s timeout — the emitter always passes
     the IR timeout explicitly.
+  - `InngestAdapter`
+    ([`src/rote/adapters/inngest.py`](src/rote/adapters/inngest.py),
+    registered as `inngest`) — emits a TypeScript Inngest app (one
+    durable `inngest.createFunction` in `src/inngest/pipeline.ts`
+    running the DAG waves, `step.waitForEvent` per HITL gate on a
+    `<pipeline>/<signal>` event, plus a framework-neutral
+    `inngest/node` serve entrypoint and a README documenting the
+    Next.js mount). Shares `_ts_common.py` with the other TS
+    adapters. Note: Inngest v4 retries are **function-level only** —
+    the emitter maps max-across-nodes and comments the per-node
+    deltas (see the Inngest gotcha below).
 - **What they do:** consume a validated `Pipeline` IR and write
   runtime-native code into an output directory
 - **Never run an agent loop.** Code emission is pure template
@@ -134,7 +146,10 @@ runtime smoke test — `tests/test_temporal_e2e.py` for Temporal
 for Cloudflare (runs `npm install` + `tsc --noEmit` on the emitted
 output, gated by `@pytest.mark.slow`); `tests/test_dbos_ts_e2e.py`
 for DBOS TypeScript (`npm install` + `tsc --noEmit`, plus a live run
-on the real DBOS TS runtime against a Docker Postgres).
+on the real DBOS TS runtime against a Docker Postgres);
+`tests/test_inngest_e2e.py` for Inngest (`npm install` +
+`tsc --noEmit`, plus a live run through both HITL gates against the
+real Inngest dev server, `inngest-cli dev`).
 
 ---
 
@@ -296,6 +311,34 @@ against both the stubs and whatever concrete type the user fills in
 later. Verified by `tests/test_cloudflare_e2e.py::test_emitted_typescript_compiles`
 — run it after touching the Cloudflare emitter's typing story.
 
+### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
+
+Three traps hit while building the Inngest adapter, all verified
+empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
+
+1. **`createFunction` is two-argument in v4.** Triggers live in the
+   options object: `createFunction({ id, retries, triggers: [{ event }] },
+   handler)`. The classic `createFunction(opts, { event }, handler)` form
+   from docs/blog posts **throws at runtime**. tsc alone won't catch a
+   regression to the old form in emitted-string templates — the e2e's
+   live run does.
+2. **Per-step retry/timeout config does not exist.** `StepOptions` is
+   `{ id, name?, parallelMode? }`. The IR's per-node `RetryPolicy` maps
+   to a single function-level `retries` (max across nodes, clamped 0–20);
+   per-node deltas, `backoff`, `retry_on`, and per-node `timeout` are
+   emitted as comments. Don't "fix" the adapter to pass per-step retry
+   options — there's nowhere to put them.
+3. **`GET /v1/events/{id}/runs` lies while a run is parked.** During
+   probing it reported `status: "Completed"` while the run was parked on
+   `step.waitForEvent`. Use it only to discover the `run_id`, then poll
+   `GET /v1/runs/{run_id}` (truthful `Running`/`Completed`). The run's
+   *return value* is only available via the dev server's GraphQL API
+   (`POST /v0/gql`, `run(runID:){output}` → `RunComplete` op JSON); the
+   v1 REST `output` field comes back empty. Also: with `--no-poll` the
+   dev server's single startup sync can race the app boot and never
+   register it — the e2e sends an explicit `PUT` to the app's serve
+   handler to force registration. See `tests/test_inngest_e2e.py`.
+
 ### ClaudeDriver recovers `pipeline.yaml` if subprocess errors after writing
 
 The agent's deliverable is a file on disk, not a clean exit code. A
@@ -371,10 +414,19 @@ If a change of yours would violate any of them, stop and reconsider.
      by adding `signature_spec` (JSON Schema + prompt) alongside the
      legacy Python-path `signature` field.
 
-   Future adapters (Inngest, Restate, etc.) shouldn't require IR
-   changes for their core programming model — but if one does, that's
-   a real signal to revisit the IR shape rather than papering over it
-   in the adapter.
+   The Inngest adapter added a third pressure point without requiring
+   an IR change: Inngest v4 has **no per-step retry/timeout config**,
+   so the per-node `RetryPolicy` degrades to a function-level budget
+   (max across nodes) with per-node deltas emitted as comments. That's
+   a lossy mapping documented at the adapter layer — acceptable
+   because the IR stays the richer form; a runtime that can't express
+   a policy documents the gap rather than forcing the IR down to the
+   lowest common denominator.
+
+   Future adapters (Restate, etc.) shouldn't require IR changes for
+   their core programming model — but if one does, that's a real
+   signal to revisit the IR shape rather than papering over it in the
+   adapter.
 
 7. **IR string fields that reach emitted code are charset-constrained
    at the IR boundary, not in the adapters.** A `pipeline.yaml` is
@@ -481,11 +533,12 @@ Don't waste time debugging stubs. These are intentional.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
-- 232 tests (227 fast + 5 slow). Run with `pytest tests/` (fast
+- 327 tests (316 fast + 11 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
-  suites (Temporal, Cloudflare, DBOS, MCP-over-stdio); the
-  Cloudflare one requires a Node toolchain. Run them with
-  `pytest tests/ -m slow`.
+  suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
+  MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS
+  needs Docker, and Inngest downloads the `inngest-cli` binary. Run
+  them with `pytest tests/ -m slow`.
 
 If you find something in the "working" column that doesn't work,
 file it as a bug. If you find something in the "stubbed" column
