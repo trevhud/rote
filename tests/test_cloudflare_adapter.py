@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from rote.adapters import get_adapter
+from rote.adapters._ts_common import json_schema_to_zod
 from rote.adapters.cloudflare import (
     CloudflareAdapter,
     CloudflareAdapterConfig,
@@ -32,7 +33,6 @@ from rote.adapters.cloudflare import (
     _to_camel_case,
     _to_pascal_case,
     _validate_signal_name,
-    json_schema_to_zod,
 )
 from rote.ir import LLMSignature, NodeKind, Pipeline, load_pipeline
 
