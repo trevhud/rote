@@ -396,7 +396,10 @@ Don't waste time debugging stubs. These are intentional.
 - `rote emit` (IR → Temporal code)
 - `rote graduate` (SKILL.md → IR → Temporal code)
 - `ClaudeDriver`, `AnthropicApiDriver`
-- 136 tests across 11 files (133 fast + 3 slow). Run with
+- `rote register` + `rote serve` (graduated pipelines as MCP tools,
+  FastMCP 3.x, stdio + Streamable HTTP — see
+  [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
+- 164 tests across 13 files (160 fast + 4 slow). Run with
   `pytest tests/` (fast only — what runs by default). Slow tests
   require a Node toolchain and run with `pytest tests/ -m slow`.
 

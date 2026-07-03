@@ -47,6 +47,10 @@ temporal = [
 api = [
     "anthropic>=0.89",
 ]
+serve = [
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -55,6 +59,8 @@ dev = [
     "types-pyyaml",
     "temporalio>=1.7",
     "anthropic>=0.89",
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
 ]
 
 [project.scripts]
