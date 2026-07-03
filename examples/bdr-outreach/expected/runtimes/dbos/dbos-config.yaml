@@ -4,4 +4,6 @@ name: bdr-campaign
 language: python
 runtimeConfig:
   start:
-    - python3 main.py
+    # Long-lived worker mode: executes runs enqueued externally
+    # (rote serve / DBOSClient). One-shot runs: python3 main.py '{...}'.
+    - python3 main.py --serve

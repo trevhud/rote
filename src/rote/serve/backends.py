@@ -1,12 +1,14 @@
 """Runtime trigger backends for ``rote serve``.
 
-Each registry entry names a runtime trigger (Temporal or Cloudflare).
-This module knows how to *start* a graduated workflow on that runtime
-and how to *poll* its status. Tool calls never block on workflow
-completion — graduated pipelines run for minutes to days (HITL gates),
-and their durability lives in the workflow engine, not in this process.
-Starting returns ``{workflow_id, status: "started", ...}`` immediately;
-the companion ``<tool>_status`` MCP tool polls via :func:`workflow_status`.
+Each registry entry names a runtime trigger (Temporal, Cloudflare, or
+DBOS). This module knows how to *start* a graduated workflow on that
+runtime, how to *poll* its status, and — where the runtime makes it a
+single durable call (DBOS) — how to *signal* a HITL gate. Tool calls
+never block on workflow completion — graduated pipelines run for
+minutes to days (HITL gates), and their durability lives in the
+workflow engine, not in this process. Starting returns
+``{workflow_id, status: "started", ...}`` immediately; the companion
+``<tool>_status`` MCP tool polls via :func:`workflow_status`.
 
 Clients are connected lazily, per call, so ``rote serve`` starts (and
 lists tools) even when the runtime is unreachable — the error surfaces
@@ -17,10 +19,17 @@ was unreachable.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import re
 import uuid
 from typing import Any
 
-from rote.serve.registry import CloudflareTrigger, RegistryEntry, TemporalTrigger
+from rote.serve.registry import (
+    CloudflareTrigger,
+    DbosTrigger,
+    RegistryEntry,
+    TemporalTrigger,
+)
 
 #: How long to wait for a Temporal frontend connection before declaring
 #: it unreachable. Temporal's client otherwise retries indefinitely.
@@ -42,6 +51,8 @@ async def start_workflow(entry: RegistryEntry, payload: dict[str, Any]) -> dict[
     trigger = entry.trigger
     if isinstance(trigger, TemporalTrigger):
         return await _start_temporal(trigger, entry.name, payload)
+    if isinstance(trigger, DbosTrigger):
+        return await _start_dbos(trigger, entry.name, payload)
     return await _start_cloudflare(trigger, payload)
 
 
@@ -50,7 +61,29 @@ async def workflow_status(entry: RegistryEntry, workflow_id: str) -> dict[str, A
     trigger = entry.trigger
     if isinstance(trigger, TemporalTrigger):
         return await _status_temporal(trigger, workflow_id)
+    if isinstance(trigger, DbosTrigger):
+        return await _status_dbos(trigger, workflow_id)
     return await _status_cloudflare(trigger, workflow_id)
+
+
+async def signal_workflow(
+    entry: RegistryEntry, workflow_id: str, signal: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Resume a workflow parked at a HITL gate by delivering its signal.
+
+    Only DBOS triggers support this today — ``DBOSClient.send`` is a
+    single durable call from any process that can reach the system
+    database. Temporal/Cloudflare gates are resumed with the runtime's
+    own tooling for now.
+    """
+    trigger = entry.trigger
+    if isinstance(trigger, DbosTrigger):
+        return await _signal_dbos(trigger, workflow_id, signal, payload)
+    raise BackendError(
+        f"Signaling is only supported for the dbos runtime; tool "
+        f"{entry.name!r} runs on {trigger.runtime}. Resume this gate with "
+        f"the runtime's own tooling instead."
+    )
 
 
 # ───────── Temporal ─────────
@@ -184,4 +217,127 @@ async def _status_cloudflare(trigger: CloudflareTrigger, workflow_id: str) -> di
         "workflow_id": workflow_id,
         "status": data.get("status", data),
         "runtime": "cloudflare",
+    }
+
+
+# ───────── DBOS ─────────
+#
+# DBOS has no orchestrator: the trigger contract is the *system database*
+# shared with the emitted app process. `DBOSClient.enqueue` inserts an
+# ENQUEUED workflow row; the app (running `python main.py --serve` or
+# `dbos start` against the same database, with the matching registered
+# workflow name and queue) dequeues and executes it. Enqueueing with no
+# app running never fails — the run just stays in `enqueued` status —
+# which is why the status tool reports that state verbatim.
+
+
+def _redacted_db_url(url: str) -> str:
+    """Strip the password from a database URL for error messages."""
+    return re.sub(r"(://[^/@:]+):[^@/]+@", r"\1:***@", url)
+
+
+async def _dbos_client(trigger: DbosTrigger) -> Any:
+    try:
+        from dbos import DBOSClient
+    except ImportError as e:  # pragma: no cover - environment-dependent
+        raise BackendError(
+            "dbos is not installed. Install the DBOS extra: pip install 'rote[dbos]'"
+        ) from e
+
+    # Construction connects eagerly (DBOSClient runs a connection check),
+    # and it is synchronous — run it off the event loop.
+    try:
+        return await asyncio.to_thread(DBOSClient, system_database_url=trigger.system_database_url)
+    except Exception as e:
+        raise BackendError(
+            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"is unreachable: {e}"
+        ) from e
+
+
+async def _destroy_dbos_client(client: Any) -> None:
+    """Release the client's connection pool; never mask the real error."""
+    with contextlib.suppress(Exception):
+        await asyncio.to_thread(client.destroy)
+
+
+async def _start_dbos(
+    trigger: DbosTrigger, tool_name: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    client = await _dbos_client(trigger)
+    workflow_id = f"{tool_name}-{uuid.uuid4().hex[:12]}"
+    try:
+        await client.enqueue_async(
+            {
+                "workflow_name": trigger.workflow_name,
+                "queue_name": trigger.queue_name,
+                "workflow_id": workflow_id,
+            },
+            payload,
+        )
+    except Exception as e:
+        raise BackendError(
+            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"refused to enqueue workflow {trigger.workflow_name!r} on queue "
+            f"{trigger.queue_name!r}: {e}"
+        ) from e
+    finally:
+        await _destroy_dbos_client(client)
+    return {
+        "workflow_id": workflow_id,
+        "status": "started",
+        "runtime": "dbos",
+    }
+
+
+async def _status_dbos(trigger: DbosTrigger, workflow_id: str) -> dict[str, Any]:
+    client = await _dbos_client(trigger)
+    try:
+        handle = await client.retrieve_workflow_async(workflow_id)
+        status = await handle.get_status()
+    except Exception as e:
+        raise BackendError(
+            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"could not retrieve workflow {workflow_id!r}: {e}"
+        ) from e
+    finally:
+        await _destroy_dbos_client(client)
+    # DBOS statuses: ENQUEUED, DELAYED, PENDING, SUCCESS, ERROR, CANCELLED,
+    # MAX_RECOVERY_ATTEMPTS_EXCEEDED. Lowercased to match the Temporal
+    # backend's convention. Note `enqueued` means no app process has
+    # dequeued the run yet — the emitted app is probably not running.
+    return {
+        "workflow_id": workflow_id,
+        "status": str(status.status).lower(),
+        "runtime": "dbos",
+    }
+
+
+async def _signal_dbos(
+    trigger: DbosTrigger, workflow_id: str, signal: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    # Sending to a topic no gate ever recv's on succeeds silently (the
+    # message just sits in the database), so an unknown signal name would
+    # be a debugging trap. The register-time gate list closes it.
+    if trigger.gate_signals and signal not in trigger.gate_signals:
+        raise BackendError(
+            f"Unknown signal {signal!r}: this pipeline's HITL gates listen on "
+            f"{trigger.gate_signals}. A message sent to any other topic is "
+            f"silently ignored, so it is rejected instead."
+        )
+    client = await _dbos_client(trigger)
+    try:
+        await client.send_async(workflow_id, payload, topic=signal)
+    except Exception as e:
+        raise BackendError(
+            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"could not deliver signal {signal!r} to workflow {workflow_id!r}: {e}"
+        ) from e
+    finally:
+        await _destroy_dbos_client(client)
+    return {
+        "workflow_id": workflow_id,
+        "signal": signal,
+        "status": "signaled",
+        "runtime": "dbos",
     }
