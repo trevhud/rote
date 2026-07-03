@@ -715,3 +715,32 @@ def emit_extracted_module(
         )
 
     return "".join(parts)
+
+
+# ───────── Emitted runtime helpers ─────────
+
+_SERIALIZE_TEMPLATE = '''\
+def _serialize(obj: Any) -> Any:
+    """Convert pydantic models / tuples to plain JSON-safe values.
+
+    {purpose}
+    """
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, (list, tuple)):
+        return [_serialize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {{k: _serialize(v) for k, v in obj.items()}}
+    return obj
+'''
+
+
+def serialize_helper(purpose: str) -> str:
+    """The ``_serialize`` function emitted into every Python runtime's main.
+
+    Behavioral emitted code: if the runtimes' serializers drift, the
+    same pipeline produces differently-shaped results per target.
+    ``purpose`` is the runtime-specific docstring line explaining why
+    payloads must be JSON-safe (continuation lines indented 4 spaces).
+    """
+    return _SERIALIZE_TEMPLATE.format(purpose=purpose)

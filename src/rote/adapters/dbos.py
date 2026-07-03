@@ -80,6 +80,7 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    serialize_helper,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
@@ -444,22 +445,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         # Parallel waves fan out onto this queue; each enqueued step runs as
         # a one-step workflow with its own durable handle.
         queue = Queue("{queue_name}")
-
-
-        def _serialize(obj: Any) -> Any:
-            """Convert pydantic models / tuples to plain JSON-safe values.
-
-            Steps return JSON-serializable payloads so workflow state stays
-            portable across the system database.
-            """
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-            if isinstance(obj, (list, tuple)):
-                return [_serialize(x) for x in obj]
-            if isinstance(obj, dict):
-                return {{k: _serialize(v) for k, v in obj.items()}}
-            return obj
         '''
+    )
+
+    header += "\n\n" + serialize_helper(
+        "Steps return JSON-serializable payloads so workflow state stays\n"
+        "    portable across the system database."
     )
 
     step_parts: list[str] = []

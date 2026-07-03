@@ -72,6 +72,7 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    serialize_helper,
 )
 from rote.adapters._py_common import (
     emit_extracted_module as _shared_emit_extracted_module,
@@ -404,24 +405,9 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
             f"RETRY_BASE_DELAY_SECONDS = {cfg.retry_base_delay_seconds!r}\n"
         )
 
-    serialize_block = textwrap.dedent(
-        '''\
-
-
-        def _serialize(obj: Any) -> Any:
-            """Convert pydantic models / tuples to plain JSON-safe values.
-
-            Node functions return JSON-serializable payloads so the final
-            result prints cleanly and pastes into other systems.
-            """
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-            if isinstance(obj, (list, tuple)):
-                return [_serialize(x) for x in obj]
-            if isinstance(obj, dict):
-                return {k: _serialize(v) for k, v in obj.items()}
-            return obj
-        '''
+    serialize_block = "\n\n" + serialize_helper(
+        "Node functions return JSON-serializable payloads so the final\n"
+        "    result prints cleanly and pastes into other systems."
     )
 
     node_parts: list[str] = []
@@ -503,7 +489,10 @@ def emit_readme(pipeline: Pipeline, cfg: PythonAdapterConfig) -> str:
     judges = pipeline.nodes_by_kind(NodeKind.LLM_JUDGE)
     judge_note = (
         "LLM judge steps call the vendor SDK directly and read the standard\n"
-        "`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.\n"
+        "`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each\n"
+        "judge also honors per-node `ROTE_MODEL_<NODE_ID>` and\n"
+        "`ROTE_BASE_URL_<NODE_ID>` overrides, so you can swap the model or\n"
+        "point at an OpenAI-compatible endpoint without re-emitting.\n"
         if judges
         else "This pipeline has no LLM-judge nodes — no API keys required.\n"
     )
