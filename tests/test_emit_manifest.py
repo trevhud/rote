@@ -146,7 +146,7 @@ def test_manifest_carries_forward_entries_for_files_not_reemitted(tmp_path: Path
 
 # ───────── Adapter integration ─────────
 
-ADAPTER_NAMES = ["dbos", "temporal", "cloudflare", "dbos-ts"]
+ADAPTER_NAMES = ["dbos", "temporal", "cloudflare", "dbos-ts", "inngest"]
 
 
 @pytest.mark.parametrize("runtime", ADAPTER_NAMES)
@@ -159,6 +159,39 @@ def test_double_emit_is_clean_and_manifest_exists(
 
     assert (tmp_path / MANIFEST_NAME).is_file()
     assert not [p for p in written.values() if p.name.endswith(".new")]
+
+
+def test_python_adapter_routes_through_the_guard(tmp_path: Path) -> None:
+    """The python adapter refuses HITL pipelines (so it can't run the BDR
+    parametrization above) — cover it with a gate-free mini pipeline."""
+    from rote.ir import Node, NodeKind
+
+    pipeline = Pipeline(
+        name="mini",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[
+            Node(
+                id="only",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="extracted/only.py:only",
+            )
+        ],
+        edges=[],
+        entry_nodes=["only"],
+        exit_nodes=["only"],
+    )
+    adapter = get_adapter("python")
+    first = adapter.emit(pipeline, tmp_path)
+    assert (tmp_path / MANIFEST_NAME).is_file()
+
+    target = first["extracted/only"]
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "\n# user implementation\n", encoding="utf-8")
+
+    second = adapter.emit(pipeline, tmp_path)
+    assert target.read_text(encoding="utf-8").endswith("# user implementation\n")
+    assert second["extracted/only"] == target.with_name(target.name + ".new")
 
 
 @pytest.mark.parametrize("runtime", ADAPTER_NAMES)

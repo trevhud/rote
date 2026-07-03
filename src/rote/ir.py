@@ -639,6 +639,20 @@ class Pipeline(BaseModel):
     def nodes_by_kind(self, kind: NodeKind) -> list[Node]:
         return [n for n in self.nodes if n.kind is kind]
 
+    @property
+    def requires_durable_execution(self) -> bool:
+        """Whether this pipeline needs a durable-execution runtime.
+
+        Derived, not stored — the IR stays runtime-agnostic; this just
+        names a property the DAG already has. A pipeline that parks on a
+        human approval (``hitl_gate``) cannot run as a plain in-process
+        script: the park must survive process restarts, which requires
+        checkpointed state. Adapters without a durable parking primitive
+        refuse such pipelines at emit time; durable runtimes may use it
+        for warnings or ignore it.
+        """
+        return any(n.kind is NodeKind.HITL_GATE for n in self.nodes)
+
 
 def load_pipeline(path: str | Path) -> Pipeline:
     """Load and validate a pipeline.yaml file."""

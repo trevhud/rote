@@ -23,11 +23,11 @@ import pytest
 import yaml
 
 from rote.adapters import get_adapter
+from rote.adapters._py_common import _pascal_ident
 from rote.adapters.dbos import (
     DbosAdapter,
     DbosAdapterConfig,
     _duration_to_seconds,
-    _pascal_ident,
     emit_main,
     emit_signature_module,
 )
