@@ -9,7 +9,7 @@ building block for that flow:
 
     rote emit    <pipeline.yaml> --runtime temporal  # IR → code only
     rote analyze <skill-path>                        # graduator dry run
-    rote eval    <skill-path>                        # regression against expected/
+    rote eval    <graduated-dir>                     # before/after scorecard
 
 Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
 loop, which reads the source skill, produces a ``pipeline.yaml``, stubs
@@ -28,11 +28,15 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
-from rote.ir import load_pipeline
+from rote.ir import Pipeline, load_pipeline
+
+if TYPE_CHECKING:
+    from rote.eval.scorecard import Scorecard
 
 # ───────── Subcommand: emit ─────────
 
@@ -127,6 +131,28 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
     written = adapter.emit(result.pipeline, runtime_dir)
 
+    # ── Scorecard (auxiliary: a price-fetch outage must not sink a
+    # just-completed, real-money graduation run) ──
+    scorecard_path: Path | None = None
+    if not args.no_eval:
+        from rote.eval.pricing import PricingError
+
+        try:
+            scorecard = _build_scorecard_for(
+                result.pipeline,
+                graduated_dir / "pipeline.yaml",
+                skill_path,
+                provider="anthropic",
+            )
+            scorecard_path = graduated_dir / "scorecard.md"
+            scorecard_path.write_text(scorecard.to_markdown() + "\n", encoding="utf-8")
+        except PricingError as e:
+            print(
+                f"rote graduate: warning: skipped scorecard (live price fetch "
+                f"failed: {e}). Generate it later with: rote eval {out_dir}",
+                file=sys.stderr,
+            )
+
     # ── Summary ──
     print(f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}")
     print(f"  driver: {result.driver_name}")
@@ -134,6 +160,8 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}")
     print(f"  graduated artifacts: {graduated_dir}")
+    if scorecard_path is not None:
+        print(f"  eval scorecard: {scorecard_path}")
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
     for label, path in written.items():
         print(f"    {label}: {path}")
@@ -334,9 +362,125 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     return 70
 
 
+def _resolve_eval_skill_dir(
+    args_skill: str | None, pipeline_yaml: Path, source_skill: str | None
+) -> Path | None:
+    """Locate the source-skill directory for the 'before' baseline.
+
+    Explicit ``--skill`` wins; otherwise try the pipeline's recorded
+    ``source_skill`` relative to the current directory and to the
+    pipeline.yaml's own location. None = no baseline (after-only card).
+    """
+    if args_skill:
+        p = Path(args_skill)
+        return p if (p / "SKILL.md").is_file() else None
+    if source_skill:
+        # source_skill was recorded relative to wherever the graduation
+        # ran (often a temp work dir), so no single base is reliable —
+        # try the cwd, then every ancestor of the pipeline.yaml.
+        pipeline_dir = pipeline_yaml.resolve().parent
+        bases = [Path.cwd(), pipeline_dir, *pipeline_dir.parents]
+        for base in bases[:10]:
+            candidate = (base / source_skill).resolve()
+            if (candidate / "SKILL.md").is_file():
+                return candidate
+    return None
+
+
+def _build_scorecard_for(
+    pipeline: Pipeline,
+    pipeline_yaml: Path,
+    skill_dir: Path | None,
+    provider: str,
+) -> Scorecard:
+    """Shared eval flow: estimate both sides, fetch live prices, assemble.
+
+    Raises ``rote.eval.pricing.PricingError`` when the live price source
+    is unreachable — callers decide whether that's fatal (``rote eval``)
+    or a warning (``rote graduate``'s auxiliary scorecard).
+    """
+    from datetime import UTC, datetime
+
+    from rote.eval import Priors, estimate_pipeline, estimate_skill, load_eval_estimates
+    from rote.eval.pricing import fetch_catalog
+    from rote.eval.scorecard import build_scorecard
+    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
+    from rote.eval.tokens import pick_token_counter
+
+    priors = Priors()
+    counter = pick_token_counter(priors)
+    pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
+
+    skill_estimate = None
+    if skill_dir is not None:
+        sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
+        sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
+        skill_estimate = estimate_skill(skill_dir, counter, priors, sidecar=sidecar)
+
+    prices = fetch_catalog().sample(provider=provider)
+    return build_scorecard(
+        pipeline_name=pipeline.name,
+        pipeline_estimate=pipeline_estimate,
+        skill_estimate=skill_estimate,
+        prices=prices,
+        priors=priors,
+        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
-    print("rote eval: not yet implemented.", file=sys.stderr)
-    return 70
+    """Static before/after scorecard: speed, cost, determinism.
+
+    'Before' models the source skill running as raw agent instructions;
+    'after' is derived from the pipeline IR. Prices are fetched live —
+    a network failure is a loud error, never a stale builtin table.
+    """
+    import json
+
+    from rote.eval.pricing import PricingError
+
+    target = Path(args.target)
+    pipeline_yaml = _resolve_pipeline_yaml(target)
+    if pipeline_yaml is None:
+        print(
+            f"error: no pipeline.yaml found at or under {target} — "
+            f"pass a graduated dir, a graduate --out dir, or the file itself",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        pipeline = load_pipeline(pipeline_yaml)
+    except Exception as e:
+        print(f"error: failed to load pipeline: {e}", file=sys.stderr)
+        return 1
+
+    skill_dir = _resolve_eval_skill_dir(args.skill, pipeline_yaml, pipeline.source_skill)
+    if skill_dir is None:
+        if args.skill:
+            print(f"error: --skill {args.skill} has no SKILL.md", file=sys.stderr)
+            return 2
+        print(
+            "rote eval: no source skill found (no --skill, and the pipeline's "
+            "source_skill did not resolve) — emitting the after-side only",
+            file=sys.stderr,
+        )
+
+    try:
+        scorecard = _build_scorecard_for(pipeline, pipeline_yaml, skill_dir, args.provider)
+    except PricingError as e:
+        print(f"error: could not fetch live prices: {e}", file=sys.stderr)
+        return 1
+
+    rendered = json.dumps(scorecard.to_dict(), indent=2) if args.json else scorecard.to_markdown()
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"rote eval: wrote {out_path}")
+    else:
+        print(rendered)
+    return 0
 
 
 # ───────── Argument parsing ─────────
@@ -441,6 +585,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "(e.g. 'claude-opus-4-6' for higher-quality / higher-cost "
             "runs on complex skills). Defaults to the driver's default, "
             "which is Sonnet 4.6 for the subscription path."
+        ),
+    )
+    graduate.add_argument(
+        "--no-eval",
+        action="store_true",
+        help=(
+            "Skip the before/after eval scorecard (scorecard.md). The "
+            "scorecard needs one network fetch for live model prices; "
+            "everything else about it is static."
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)
@@ -586,12 +739,44 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("skill_path")
     analyze.set_defaults(func=_cmd_analyze)
 
-    # rote eval (stub)
+    # rote eval
     eval_cmd = subparsers.add_parser(
         "eval",
-        help="Compare graduator output against an expected/ baseline",
+        help="Before/after scorecard: speed, cost, determinism (static, no execution)",
+        description=(
+            "Estimate what a skill costs to run as raw agent instructions "
+            "versus as its graduated pipeline — wall clock, dollars across "
+            "a sampling of current models at live official prices, and "
+            "determinism (LLM sampling surface). Static: nothing executes."
+        ),
     )
-    eval_cmd.add_argument("skill_path")
+    eval_cmd.add_argument(
+        "target",
+        help=("A graduated directory, a graduate --out directory, or a pipeline.yaml path"),
+    )
+    eval_cmd.add_argument(
+        "--skill",
+        default=None,
+        help=(
+            "Source skill directory for the 'before' baseline (default: the "
+            "pipeline's recorded source_skill, if it resolves)"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--provider",
+        default="anthropic",
+        help="LLM provider whose current model lineup to price (default: anthropic)",
+    )
+    eval_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the scorecard as JSON instead of Markdown",
+    )
+    eval_cmd.add_argument(
+        "--out",
+        default=None,
+        help="Write the scorecard to a file instead of stdout",
+    )
     eval_cmd.set_defaults(func=_cmd_eval)
 
     return parser
