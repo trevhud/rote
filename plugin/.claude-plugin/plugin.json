@@ -1,0 +1,22 @@
+{
+  "name": "rote",
+  "displayName": "Rote",
+  "version": "0.3.0",
+  "description": "Graduate fuzzy AI skills into deterministic workflows: /rote:graduate compiles a SKILL.md into a runnable pipeline (Temporal, Cloudflare Workflows, or DBOS); /rote:serve exposes graduated pipelines as MCP tools.",
+  "author": {
+    "name": "Trevor Hudson",
+    "email": "trevhud@gmail.com"
+  },
+  "homepage": "https://github.com/trevhud/rote",
+  "repository": "https://github.com/trevhud/rote",
+  "license": "Apache-2.0",
+  "keywords": [
+    "skills",
+    "workflow",
+    "graduation",
+    "temporal",
+    "cloudflare",
+    "dbos",
+    "mcp"
+  ]
+}
