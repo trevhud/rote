@@ -96,6 +96,18 @@ the Anthropic SDK client (see
     — emits TypeScript (`src/workflow.ts` extending
     `WorkflowEntrypoint`, plus `signatures/*.ts`, `extracted/*.ts`,
     and a `wrangler.jsonc` / `package.json` / `tsconfig.json`)
+  - `PythonAdapter`
+    ([`src/rote/adapters/python.py`](src/rote/adapters/python.py),
+    registered as `python`) — the maximum-legibility target: emits a
+    plain, orchestrator-free Python script (`main.py` with one function
+    per node, visible inline retry loops, stdlib `ThreadPoolExecutor`
+    for parallel waves, plus `extracted/`, `signatures/`,
+    `requirements.txt`). **Refuses pipelines with `hitl_gate` nodes at
+    emit time** (via the derived `Pipeline.requires_durable_execution`
+    property) — a plain script cannot durably park for human approval;
+    the error points at `--runtime dbos`. Shares the Pydantic
+    signature / extracted-stub emitters with the DBOS adapter via
+    [`src/rote/adapters/_py_common.py`](src/rote/adapters/_py_common.py).
   - `DbosTsAdapter`
     ([`src/rote/adapters/dbos_ts.py`](src/rote/adapters/dbos_ts.py),
     registered as `dbos-ts`) — emits TypeScript for DBOS Transact
