@@ -30,12 +30,36 @@ input:                          # required, pipeline input contract
     - drug_generic
   optional:
     - job_focus
+  input_schema:                 # strongly preferred: full JSON Schema
+    type: object                # for the input payload (see below)
+    title: CampaignBrief
+    properties: { ... }
+    required: [drug_brand, drug_generic, ...]
 
 nodes: [ ... ]                  # required, list of Node objects
 edges: [ ... ]                  # required, list of Edge objects
 entry_nodes: [target_research, taxonomy_lookup]
 exit_nodes: [manual_enrollment_handoff]
 ```
+
+### `input.input_schema` — promote the entry payload schema
+
+When you design the entry nodes' `signature_spec.input_schema`, you
+already produce a full JSON Schema for the pipeline's input type (the
+BDR example has `CampaignBrief` with its `$defs` for `CampaignType`
+and `JobFocus`). **Promote that same schema to `input.input_schema`**
+so adapters can validate the pipeline input before the workflow
+starts:
+
+- Take the input type's object schema (with any enums/nested types it
+  needs inlined under its own `$defs`) — the same dictionaries
+  Pydantic emits via `model_json_schema()`.
+- The schema's `required` list must match `input.required`, and its
+  `properties` must cover every name in `input.required` +
+  `input.optional`.
+- `input_schema` is optional in the validator (old pipelines stay
+  valid), but always emit it for new graduations — it is the typed
+  contract everything downstream keys off.
 
 ## Node object
 
@@ -52,6 +76,8 @@ kind. The validator enforces kind-specific requirements.
     Resolve ZoomInfo IDs for management levels...
   input:                         # optional, field→type mapping
     brief: CampaignBrief
+  inputs:                        # data-flow bindings: param → source ref
+    brief: pipeline.input        # (see "Data-flow bindings" below)
   output: TaxonomyIds            # optional, type name or field mapping
   timeout: 5m                    # optional, duration string
   retry:                         # optional
@@ -66,6 +92,67 @@ kind. The validator enforces kind-specific requirements.
     ttl: 30d
   fan_out: false                 # optional, if true node invoked per input element
 ```
+
+### Data-flow bindings (`inputs:`)
+
+`input:` documents *types*; `inputs:` binds *where the values come
+from at runtime*. Adapters render `inputs:` into real payloads — a
+node without `inputs:` receives an empty payload, so **emit `inputs:`
+for every top-level node whose upstream sources you can name.**
+
+The grammar is exactly four forms. There is no expression language —
+no arithmetic, no aggregation, no deep paths:
+
+| Reference form               | Meaning                                     |
+|------------------------------|---------------------------------------------|
+| `pipeline.input`             | the whole pipeline input payload            |
+| `pipeline.input.<field>`     | one top-level field of the pipeline input   |
+| `<node_id>.output`           | the whole output of an upstream node        |
+| `<node_id>.output.<field>`   | one top-level field of an upstream node's output |
+
+BDR examples:
+
+```yaml
+- id: lead_generation_loop
+  inputs:
+    brief: pipeline.input                    # whole input payload
+    intel: target_research.output           # whole upstream output
+    taxonomy: taxonomy_lookup.output
+    target_quota: pipeline.input.target_quota  # one input field
+
+- id: hubspot_upsert
+  inputs:
+    # HITL gate outputs work too — this is the reviewer's signal payload:
+    contacts: contact_review_gate.output.approved_contacts
+
+- id: exclusion_check_recent
+  inputs:
+    contacts: exclusion_check_dnc.output.passed   # chain node → node
+```
+
+Rules and edge cases:
+
+1. **Reference only upstream nodes.** A reference to a node that runs
+   in a later wave — or to a loop-body sub-node, which has no
+   top-level result — fails at emission time.
+2. **Pipeline input fields must be declared.** `pipeline.input.<field>`
+   is validated against `input.required` + `input.optional` +
+   `input_schema.properties`.
+3. **Leave a parameter unbound when the grammar can't express it** and
+   say why in a comment. BDR has two deliberate examples:
+   `dnc_list_id` (deployment configuration, not pipeline data) and
+   `vetted_count` (an aggregate — `len()` of a list — which belongs in
+   the extracted function, not the reference syntax).
+4. **Loop-body sub-nodes:** their `inputs:` describe what the parent
+   loop passes per iteration. Adapters don't resolve them at the top
+   level, so treat them as documentation for the loop harness.
+5. **`fan_out` nodes:** bind the element parameter to the upstream
+   *list* (e.g. `contact: exclusion_check_sequence.output.passed`).
+   The runtime is responsible for per-element dispatch; v0 adapters
+   pass the whole list in a single invocation.
+6. **HITL gates need no `inputs:`** — a gate's "output" is the signal
+   payload the human sends, and downstream nodes reference it as
+   `<gate_id>.output[...]`.
 
 ### `pure_function` and `external_call`
 
@@ -272,6 +359,10 @@ these constraints in mind:
 6. **`mandatory: true` is not allowed on `agent_loop` nodes.**
 7. **No YAML key named `on:`** — YAML 1.1 parses it as boolean
    `True`. The IR uses `retry_on:` instead.
+8. **All `inputs:` references parse and resolve.** Each value must
+   match one of the four reference forms (see "Data-flow bindings"),
+   node references must name real nodes (and never the node itself),
+   and `pipeline.input.<field>` must name a declared input field.
 
 ## Duration strings
 

@@ -245,6 +245,24 @@ Related: `__LOCAL_DEV_STEP_OUTPUTS` includes both `step.do` results
 *and* `waitForEvent` payloads in the same array. Don't rely on the
 length matching node count; compare node-name **sets** instead.
 
+### Cloudflare `step.do` rejects `Record<string, unknown>` returns
+
+`step.do`'s generic is `T extends Rpc.Serializable<T>`, and
+`Record<string, unknown>` does **not** satisfy it — `unknown` values
+aren't structurally serializable, so annotating an emitted stub with
+that return type breaks overload resolution at every `step.do` call
+site. Leaving the return inferred is no better: a throwing function
+declaration infers `Promise<void>`, and `void as Record<...>` fails
+TS2352 at the data-flow reference sites.
+
+**The fix:** emitted stubs declare `Promise<never>` (honest for an
+always-throwing stub; `never` satisfies any constraint and casts to
+anything), and the workflow emits node-output field access as
+`(<id>_result as Record<string, unknown>)["field"]` so it compiles
+against both the stubs and whatever concrete type the user fills in
+later. Verified by `tests/test_cloudflare_e2e.py::test_emitted_typescript_compiles`
+— run it after touching the Cloudflare emitter's typing story.
+
 ### ClaudeDriver recovers `pipeline.yaml` if subprocess errors after writing
 
 The agent's deliverable is a file on disk, not a clean exit code. A
@@ -387,8 +405,9 @@ Don't waste time debugging stubs. These are intentional.
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
   code; the graduator produces scaffolding, not production code
-- Workflow payloads are `{}` in the emitted Temporal code — typed
-  data-flow threading between activities is planned for v0.2
+- `fan_out` nodes receive the whole upstream list in one invocation —
+  per-element dispatch is a planned enhancement on top of data-flow
+  threading
 
 **Working end-to-end:**
 
@@ -396,7 +415,11 @@ Don't waste time debugging stubs. These are intentional.
 - `rote emit` (IR → Temporal code)
 - `rote graduate` (SKILL.md → IR → Temporal code)
 - `ClaudeDriver`, `AnthropicApiDriver`
-- 136 tests across 11 files (133 fast + 3 slow). Run with
+- Data-flow threading: nodes declare `inputs:` (param → source
+  reference, grammar in `rote.ir.parse_input_ref`) and both adapters
+  thread real payloads through the DAG — validated empirically in both
+  runtime e2e tests
+- 170 tests across 11 files (167 fast + 3 slow). Run with
   `pytest tests/` (fast only — what runs by default). Slow tests
   require a Node toolchain and run with `pytest tests/ -m slow`.
 

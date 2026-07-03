@@ -301,7 +301,7 @@ the toolchain-dependent integration tests.
 | `codex` driver | stub (`is_available` works; `run` not implemented) |
 | Inngest / Restate / DBOS adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
-| Workflow data flow between activities | empty payloads in v0; explicit input/output threading is a planned enhancement |
+| Workflow data flow between activities | working — nodes declare `inputs:` bindings and both adapters thread real payloads through the DAG (validated in both runtime e2e tests) |
 | Distribution via PyPI | not yet — install from source |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
@@ -419,9 +419,13 @@ In rough priority order:
    Temporal but not for Cloudflare. Modeling the pre-filter as a
    separate `pure_function` node before the `llm_judge` makes the
    short-circuit work uniformly across runtimes.
-5. **Explicit data-flow threading.** Both adapters currently pass
-   empty payloads between steps. Real production usage needs typed
-   payloads derived from each node's `input:` and `output:` schema.
+5. **Explicit data-flow threading.** *(Done.)* Nodes declare
+   `inputs:` — a parameter → source-reference mapping with a
+   deliberately tiny grammar (`pipeline.input[.field]` /
+   `<node_id>.output[.field]`) — and both adapters thread real
+   payloads through the DAG. Remaining follow-up: per-element
+   dispatch for `fan_out` nodes, which currently receive the whole
+   upstream list in one invocation.
 6. **More example skills.** BDR is rich but it's one shape of skill.
    Additional examples (research-heavy, retrieval-heavy, code-review)
    stress-test the IR and the rubric in different ways.
