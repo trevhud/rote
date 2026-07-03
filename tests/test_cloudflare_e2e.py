@@ -159,13 +159,15 @@ export default {
 
 
 def _write_test_overlay(out_dir: Path) -> None:
-    """Replace stubs with passthrough mocks and overlay the test index.ts.
+    """Replace stubs with echo mocks and overlay the test index.ts.
 
     The emitted ``extracted/*.ts`` and ``signatures/*.ts`` modules all
     throw NotImplementedError. For an integration test that exercises
     step orchestration (not real I/O), we replace each with a function
     that returns a serializable canned object so the workflow can
-    progress through its waves.
+    progress through its waves. The mock echoes the input it received
+    (``received``) so the test can assert that data-flow threading
+    delivered real payloads between steps.
     """
     src = out_dir / "src"
     for sub in ("extracted", "signatures"):
@@ -177,9 +179,10 @@ def _write_test_overlay(out_dir: Path) -> None:
             fn = _to_camel_case(node_id)
             f.write_text(
                 f"export async function {fn}("
-                f"_input?: unknown, _env?: unknown"
+                f"input?: unknown, _env?: unknown"
                 f"): Promise<Record<string, unknown>> {{\n"
-                f"  return {{ mocked: true, node: {json.dumps(node_id)} }};\n"
+                f"  return {{ mocked: true, node: {json.dumps(node_id)}, "
+                f"received: input ?? null }};\n"
                 f"}}\n",
                 encoding="utf-8",
             )
@@ -362,6 +365,13 @@ def test_workflow_executes_through_hitl_gates(
             if isinstance(o, dict) and o.get("node")
         }
 
+    def _step_output(state: dict, node: str) -> dict:
+        return next(
+            o
+            for o in state.get("__LOCAL_DEV_STEP_OUTPUTS", [])
+            if isinstance(o, dict) and o.get("node") == node
+        )
+
     pre_gate_nodes = {"target_research", "taxonomy_lookup", "lead_generation_loop"}
     post_gate_nodes = pre_gate_nodes | {
         "hubspot_upsert",
@@ -374,8 +384,20 @@ def test_workflow_executes_through_hitl_gates(
         "pre_enrollment_report",
     }
 
-    # Step 1: create instance.
-    create = _http_post(f"http://127.0.0.1:{port}/start", {})
+    # Step 1: create instance with a complete campaign brief — the emitted
+    # workflow threads real payloads now, so the input contract matters.
+    # Values reuse the fictionalized examples from the IR's comments.
+    brief = {
+        "drug_brand": "Orladeyo",
+        "drug_generic": "berotralstat",
+        "condition_full": "hereditary angioedema",
+        "condition_acronym": "HAE",
+        "therapeutic_area": "rare disease, hematology",
+        "manufacturer": "BioCryst Pharmaceuticals",
+        "campaign_type": "drug-specific",
+        "target_quota": 3,
+    }
+    create = _http_post(f"http://127.0.0.1:{port}/start", brief)
     instance_id = create["id"]
     assert re.fullmatch(r"[0-9a-f-]{36}", instance_id), (
         f"unexpected instance id format: {instance_id!r}"
@@ -442,3 +464,26 @@ def test_workflow_executes_through_hitl_gates(
         f"second event payload didn't survive into the workflow return: "
         f"got {output['manual_enrollment_handoff']!r}"
     )
+
+    # ─── Data-flow threading assertions ───
+    # The overlay mocks echo the payload they received, so the step
+    # outputs prove real data moved between steps inside the actual
+    # Cloudflare Workflows runtime.
+
+    # Pipeline input reached both entry nodes intact.
+    assert _step_output(final, "target_research")["received"] == {"brief": brief}
+    assert _step_output(final, "taxonomy_lookup")["received"] == {"brief": brief}
+
+    # The first gate's event payload flowed into hubspot_upsert via
+    # `contacts: contact_review_gate.output.approved_contacts`.
+    assert _step_output(final, "hubspot_upsert")["received"] == {"contacts": [{"id": "test"}]}
+
+    # A whole-output binding: create_sales_template received
+    # personalize_email's full step result.
+    sales_template_received = _step_output(final, "create_sales_template")["received"]
+    assert sales_template_received["personalizations"]["node"] == "personalize_email"
+    assert sales_template_received["campaign_name"] == brief["drug_brand"]
+
+    # Pipeline input field selection at the end of the chain.
+    report_received = _step_output(final, "pre_enrollment_report")["received"]
+    assert report_received["campaign_name"] == brief["drug_brand"]

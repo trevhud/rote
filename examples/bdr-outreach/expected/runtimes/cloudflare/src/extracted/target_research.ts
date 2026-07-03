@@ -21,6 +21,6 @@ import { type Env } from "../workflow";
 export async function targetResearch(
     _input: unknown,
     _env: Env,
-) {
+): Promise<never> {
     throw new Error("agent_loop target_research: requires an agent runtime — implement me");
 }

@@ -355,6 +355,101 @@ def test_package_json_has_required_deps(emit_result: dict[str, Path]) -> None:
     assert "@cloudflare/workers-types" in pkg["devDependencies"]
 
 
+# ───────── Data-flow threading ─────────
+
+
+def test_workflow_binds_pipeline_input(emit_result: dict[str, Path]) -> None:
+    """The workflow binds the instance params once, up front."""
+    src = emit_result["workflow"].read_text()
+    assert "const pipelineInput = event.payload;" in src
+
+
+def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> None:
+    src = emit_result["workflow"].read_text()
+    payload = "{\n                brief: pipelineInput,\n            }"
+    assert f"targetResearch({payload}, this.env)" in src
+    assert f"taxonomyLookup({payload})" in src
+
+
+def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path]) -> None:
+    """The committed BDR bindings appear as real payload expressions."""
+    src = emit_result["workflow"].read_text()
+    # HITL gate output field → downstream step payload. Field access on
+    # node results goes through a Record cast (step.do's Rpc.Serializable
+    # constraint widens inferred result types — see _ref_to_ts_expr).
+    rec = "as Record<string, unknown>"
+    assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in src
+    # Node output fields chain through the exclusion checks.
+    assert f'contacts: (hubspot_upsert_result {rec})["upserted"],' in src
+    assert f'contacts: (exclusion_check_dnc_result {rec})["passed"],' in src
+    # Pipeline input field selection (Params is already a Record — no cast).
+    assert 'target_quota: pipelineInput["target_quota"],' in src
+    # Fan-in on the report node.
+    assert f'template_ids: (create_sales_template_result {rec})["template_ids"],' in src
+    # No node is left passing the placeholder empty payload in BDR.
+    assert "async () => hubspotUpsert({})" not in src
+
+
+def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
+    """Back-compat: nodes with no ``inputs`` still receive {} and the
+    workflow skips the pipelineInput binding entirely."""
+    from rote.ir import Node, NodeKind, Pipeline, PipelineInput
+
+    pipeline = Pipeline(
+        name="no-bindings",
+        input=PipelineInput(type="X"),
+        nodes=[
+            Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[],
+        entry_nodes=["only"],
+        exit_nodes=["only"],
+    )
+    src = CloudflareAdapter().emit_workflow(pipeline)
+    assert "async () => only({})" in src
+    assert "pipelineInput" not in src
+
+
+def test_emit_rejects_forward_reference() -> None:
+    """Inputs referencing a later wave must fail at emit time, not as an
+    undefined-variable error inside the deployed worker."""
+    from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
+
+    pipeline = Pipeline(
+        name="forward-ref",
+        input=PipelineInput(type="X"),
+        nodes=[
+            Node(
+                id="first",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="x.py:y",
+                inputs={"data": "second.output"},  # runs before `second`
+            ),
+            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[Edge(**{"from": "first", "to": "second"})],
+        entry_nodes=["first"],
+        exit_nodes=["second"],
+    )
+    with pytest.raises(ValueError, match="no result available"):
+        CloudflareAdapter().emit_workflow(pipeline)
+
+
+def test_extracted_stub_return_type_is_never(
+    emit_result: dict[str, Path],
+) -> None:
+    """Stubs declare Promise<never>: honest for an always-throwing stub,
+    satisfies step.do's Rpc.Serializable constraint, and keeps the
+    workflow's `(<id>_result as Record<...>)["field"]` casts compiling.
+    (Promise<Record<string, unknown>> breaks step.do overload resolution —
+    `unknown` isn't structurally serializable.)"""
+    src = emit_result["extracted/hubspot_upsert"].read_text()
+    assert "Promise<never> {" in src
+    loop_src = emit_result["extracted/lead_generation_loop"].read_text()
+    assert "Promise<never> {" in loop_src
+
+
 # ───────── Custom config ─────────
 
 

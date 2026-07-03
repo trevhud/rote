@@ -43,23 +43,34 @@ export type Params = Record<string, unknown>;
 
 export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
     async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
+        const pipelineInput = event.payload;
+
         // ─── Wave 1 ───
         const target_research_result = await step.do(
             "target_research",
             { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" },
-            async () => targetResearch({}, this.env),
+            async () => targetResearch({
+                brief: pipelineInput,
+            }, this.env),
         );
         const taxonomy_lookup_result = await step.do(
             "taxonomy_lookup",
             { timeout: "10 minutes" },
-            async () => taxonomyLookup({}),
+            async () => taxonomyLookup({
+                brief: pipelineInput,
+            }),
         );
 
         // ─── Wave 2 ───
         const lead_generation_loop_result = await step.do(
             "lead_generation_loop",
             { timeout: "15 minutes" },
-            async () => leadGenerationLoop({}, this.env),
+            async () => leadGenerationLoop({
+                brief: pipelineInput,
+                intel: target_research_result,
+                taxonomy: taxonomy_lookup_result,
+                target_quota: pipelineInput["target_quota"],
+            }, this.env),
         );
 
         // ─── Wave 3 ───
@@ -77,56 +88,79 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         const hubspot_upsert_result = await step.do(
             "hubspot_upsert",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "60 seconds" },
-            async () => hubspotUpsert({}),
+            async () => hubspotUpsert({
+                contacts: (contact_review_gate_result as Record<string, unknown>)["approved_contacts"],
+            }),
         );
 
         // ─── Wave 5 ───
         const hubspot_create_list_result = await step.do(
             "hubspot_create_list",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
-            async () => hubspotCreateList({}),
+            async () => hubspotCreateList({
+                campaign_name: pipelineInput["drug_brand"],
+                contacts: (hubspot_upsert_result as Record<string, unknown>)["upserted"],
+            }),
         );
 
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await step.do(
             "exclusion_check_dnc",
             { timeout: "10 minutes" },
-            async () => exclusionCheckDnc({}),
+            async () => exclusionCheckDnc({
+                contacts: (hubspot_upsert_result as Record<string, unknown>)["upserted"],
+            }),
         );
 
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await step.do(
             "exclusion_check_recent",
             { timeout: "10 minutes" },
-            async () => exclusionCheckRecent({}),
+            async () => exclusionCheckRecent({
+                contacts: (exclusion_check_dnc_result as Record<string, unknown>)["passed"],
+            }),
         );
 
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await step.do(
             "exclusion_check_sequence",
             { timeout: "10 minutes" },
-            async () => exclusionCheckSequence({}),
+            async () => exclusionCheckSequence({
+                contacts: (exclusion_check_recent_result as Record<string, unknown>)["passed"],
+            }),
         );
 
         // ─── Wave 9 ───
         const personalize_email_result = await step.do(
             "personalize_email",
             { timeout: "10 minutes" },
-            async () => personalizeEmail({}, this.env),
+            async () => personalizeEmail({
+                contact: (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
+                intel: target_research_result,
+                campaign_type: pipelineInput["campaign_type"],
+            }, this.env),
         );
 
         // ─── Wave 10 ───
         const create_sales_template_result = await step.do(
             "create_sales_template",
             { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
-            async () => createSalesTemplate({}),
+            async () => createSalesTemplate({
+                campaign_name: pipelineInput["drug_brand"],
+                personalizations: personalize_email_result,
+            }),
         );
 
         // ─── Wave 11 ───
         const pre_enrollment_report_result = await step.do(
             "pre_enrollment_report",
             { timeout: "10 minutes" },
-            async () => preEnrollmentReport({}),
+            async () => preEnrollmentReport({
+                campaign_name: pipelineInput["drug_brand"],
+                passed_contacts: (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
+                exclusions: (exclusion_check_sequence_result as Record<string, unknown>)["excluded"],
+                template_ids: (create_sales_template_result as Record<string, unknown>)["template_ids"],
+            }),
         );
 
         // ─── Wave 12 ───
