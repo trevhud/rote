@@ -13,8 +13,13 @@ applies a structured graduation rubric, and emits:
 - and runtime code for your durable execution engine of choice.
 
 ```sh
-# Two runtimes shipped today — emit Python for Temporal, or TypeScript
-# for Cloudflare Workflows:
+pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
+
+# Default target is DBOS — durable execution as a plain Python library,
+# no orchestrator to run, SQLite for dev / Postgres for prod:
+rote graduate ./examples/bdr-outreach/skill --out ./graduated/
+
+# Or target Temporal (Python) or Cloudflare Workflows (TypeScript):
 rote graduate ./examples/bdr-outreach/skill --runtime temporal   --out ./graduated/
 rote graduate ./examples/bdr-outreach/skill --runtime cloudflare --out ./graduated/
 ```
@@ -94,6 +99,10 @@ The graduator independently:
 After the agent finishes, a runtime adapter consumes the IR and emits
 the target runtime's native code shape:
 
+- The **DBOS** adapter (the default) emits a single `main.py` — one
+  `@DBOS.workflow` DAG plus a `@DBOS.step` per node, checkpointing to
+  SQLite or Postgres. `python main.py` *is* the runtime; there is no
+  orchestrator to deploy.
 - The **Temporal** adapter emits `workflow.py` (the orchestration
   class with `@workflow.defn` and signal handlers for the HITL gates)
   and `activities.py` (one `@activity.defn` per node, lazy-importing
@@ -251,10 +260,11 @@ The repository includes a real BDR outreach skill in
 `examples/bdr-outreach/skill/`. Graduate it:
 
 ```sh
-rote graduate examples/bdr-outreach/skill \
-  --runtime temporal \
-  --out /tmp/bdr-graduated
+rote graduate examples/bdr-outreach/skill --out /tmp/bdr-graduated
 ```
+
+This targets DBOS by default; pass `--runtime temporal` or
+`--runtime cloudflare` for the other adapters.
 
 By default `rote` auto-detects an available agent driver in this
 order: `claude` (Claude Code CLI) → `codex` (Codex CLI) → `api`
@@ -274,10 +284,12 @@ The output directory is structured as:
 │   ├── signatures/*.py          # typed LLM-judge signatures
 │   ├── evals/*.jsonl            # seed eval examples
 │   └── graduation-report.md     # human-readable summary
-└── runtime/temporal/            # produced by the adapter
-    ├── workflow.py
-    ├── activities.py
-    └── __init__.py
+└── runtime/dbos/                # produced by the adapter
+    ├── main.py                  # @DBOS.workflow + one @DBOS.step per node
+    ├── extracted/*.py           # copied deterministic functions
+    ├── signatures/*.py          # generated Pydantic + vendor-SDK judges
+    ├── dbos-config.yaml
+    └── README.md                # how to run, signal HITL gates, deploy
 ```
 
 ### Render an IR without re-running the agent
@@ -286,6 +298,7 @@ If you already have a `pipeline.yaml` (hand-written or from a previous
 graduation), `rote emit` runs just the adapter step:
 
 ```sh
+rote emit /path/to/pipeline.yaml --out /tmp/emitted/            # dbos (default)
 rote emit /path/to/pipeline.yaml --runtime temporal --out /tmp/emitted/
 ```
 
@@ -347,10 +360,12 @@ Opus's extra reasoning earns its cost.
 ## Status
 
 `rote` is **pre-1.0**. The end-to-end flow works on the BDR example
-and the test suite covers each layer (133 tests in the fast suite,
-plus 3 slow tests that compile the emitted Cloudflare TypeScript
-against the real `@cloudflare/workers-types` definitions and drive a
-real workflow instance through both HITL gates via `wrangler dev`).
+and the test suite covers each layer (231 tests in the fast suite,
+plus 5 slow tests that run the emitted code against real runtimes:
+a DBOS runtime over SQLite, Temporal's time-skipping test server, the
+emitted Cloudflare TypeScript compiled against real
+`@cloudflare/workers-types` and driven through both HITL gates via
+`wrangler dev`, and the MCP server over a real stdio transport).
 Run `pytest tests/` for the fast suite; `pytest tests/ -m slow` for
 the toolchain-dependent integration tests.
 
@@ -368,7 +383,7 @@ the toolchain-dependent integration tests.
 | Inngest / Restate adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
 | Workflow data flow between activities | working — nodes declare `inputs:` bindings and all three adapters (Temporal, Cloudflare, DBOS) thread real payloads through the DAG, validated in the runtime e2e tests |
-| Distribution via PyPI | not yet published — install from source. The release pipeline (tag-driven, Trusted Publishing) is in place; see [docs/releasing.md](docs/releasing.md) |
+| Distribution via PyPI | published as [`rote-cli`](https://pypi.org/project/rote-cli/) (`pip install rote-cli`); tag-driven Trusted Publishing releases — see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
 Anthropic's terms of service forbid third-party agents built on the

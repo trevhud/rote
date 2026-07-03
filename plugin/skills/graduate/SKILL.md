@@ -40,8 +40,9 @@ Ask the user which runtime, with these tradeoffs (one line each):
 | `cloudflare` | You want serverless, fully managed execution on Cloudflare Workers | TypeScript |
 | `temporal` | You already operate (or want) a Temporal cluster | Python |
 
-If the user has no opinion and no existing infra, suggest `dbos` — it
-is the only target with zero standing infrastructure.
+If the user has no opinion and no existing infra, use `dbos` — it is
+the CLI's default and the only target with zero standing
+infrastructure (you can omit `--runtime` entirely in that case).
 
 ## 3. Resolve the CLI (uv)
 
