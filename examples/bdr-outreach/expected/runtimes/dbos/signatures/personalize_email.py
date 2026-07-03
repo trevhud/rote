@@ -144,8 +144,6 @@ def _interpolate(template: str, variables: dict[str, Any]) -> str:
 
 def _log_usage(response: Any) -> None:
     """Append token usage as JSONL to $ROTE_USAGE_LOG, if set."""
-    import os
-
     path = os.environ.get("ROTE_USAGE_LOG")
     if not path:
         return
@@ -153,7 +151,7 @@ def _log_usage(response: Any) -> None:
         usage = getattr(response, "usage", None)
         record = {
             "node": "personalize_email",
-            "model": "claude-sonnet-4-6",
+            "model": MODEL,
             "input_tokens": getattr(usage, "input_tokens", None),
             "output_tokens": getattr(usage, "output_tokens", None),
         }

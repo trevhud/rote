@@ -13,7 +13,7 @@
     "extracted/zoominfo.py": "9509863b14f2626fcd8154752c09e0bd7a5a4c6d5dc16071e33aac72eeb0b194",
     "main.py": "f9ce5b0f384db65a71b6c452a519c1b3ad9363142714123d416ec1a20677f503",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/personalize_email.py": "9ccf24e38f721391057c77e0e5c94a91a17f1610d1706004b98685a63b03bb38",
-    "signatures/vet_contact.py": "dd30a93697dd09748a076b55fe5ae3fa5373858d6c597da20019394d04546428"
+    "signatures/personalize_email.py": "eeeded9f4f1a4ddde0ceb04e510c3ff4eec319f1b6d7381b1d2be556c68b3d6e",
+    "signatures/vet_contact.py": "899f20082f067e8c621e6d1cf4172e998f09163a48a6d7e4884bd14928a21389"
   }
 }
