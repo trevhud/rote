@@ -42,11 +42,18 @@ def _cloudflare_adapter_factory() -> Adapter:
     return CloudflareAdapter()
 
 
+def _dbos_adapter_factory() -> Adapter:
+    from rote.adapters.dbos import DbosAdapter
+
+    return DbosAdapter()
+
+
 #: Name → factory. Keep the values as zero-arg callables so adapters can
 #: lazy-import their heavy dependencies.
 ADAPTERS: dict[str, Callable[[], Adapter]] = {
     "temporal": _temporal_adapter_factory,
     "cloudflare": _cloudflare_adapter_factory,
+    "dbos": _dbos_adapter_factory,
 }
 
 
