@@ -121,6 +121,16 @@ the target runtime's native code shape:
   Zero-orchestrator like the Python DBOS target — `node dist/main.js`
   *is* the runtime — but note the TS SDK is Postgres-only (no SQLite
   mode; `npx dbos postgres start` covers local dev).
+- The **Inngest** adapter (`--runtime inngest`) emits a TypeScript
+  Inngest app for teams whose graduated skill should live inside the
+  Node/Next.js service they already deploy: `src/inngest/pipeline.ts`
+  is one durable `inngest.createFunction` running the DAG waves
+  (`step.run` per node, `Promise.all` fan-out, `step.waitForEvent`
+  parking each HITL gate until its namespaced resume event), plus a
+  framework-neutral `inngest/node` serve entrypoint. The emitted
+  README shows the drop-in Next.js mount (`inngest/next`). Note:
+  Inngest v4 retries are function-level only — the emitter sets the
+  max across per-node policies and documents the deltas as comments.
 
 None of the emitted code references an MCP runtime, in either
 language — the agent's crystallization step replaces tool calls with
@@ -390,9 +400,10 @@ the toolchain-dependent integration tests.
 | `claude` driver | working |
 | `api` (Anthropic SDK) driver | working |
 | `codex` driver | stub (`is_available` works; `run` not implemented) |
-| Inngest / Restate adapters | planned |
+| Inngest adapter (`inngest`) | working (validated with `tsc --noEmit` over the real emitted output and a live run through both HITL gates against the Inngest dev server) |
+| Restate adapter | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
-| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all four adapters (Temporal, Cloudflare, DBOS, DBOS-TS) thread real payloads through the DAG, validated in the runtime e2e tests |
+| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all five adapters (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest) thread real payloads through the DAG, validated in the runtime e2e tests |
 | Distribution via PyPI | published as [`rote-cli`](https://pypi.org/project/rote-cli/) (`pip install rote-cli`); tag-driven Trusted Publishing releases — see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
@@ -502,11 +513,15 @@ In rough priority order:
    graduator the new field, but no real graduator run has produced
    one yet. Re-running `rote graduate examples/bdr-outreach/skill`
    should produce the structured form natively.
-3. **A third runtime adapter.** Probably Inngest, since its
-   programming model is meaningfully different from both Temporal and
-   Cloudflare. Each new adapter is also a stress test on whether the
-   IR is genuinely runtime-agnostic vs. accidentally shaped like one
-   of the existing targets.
+3. **A third runtime adapter.** *(Done — the Inngest adapter shipped,
+   alongside DBOS Python/TS.)* Its programming model is meaningfully
+   different from both Temporal and Cloudflare — retries are
+   function-level, the platform drives execution from outside the
+   process — and the IR survived without changes (the per-node retry
+   gap is documented at emission, not papered over in the IR). Each
+   new adapter remains a stress test on whether the IR is genuinely
+   runtime-agnostic vs. accidentally shaped like one of the existing
+   targets.
 4. **Pre-filter as `pure_function` node.** Today the rubric lifts
    hard thresholds into a Python `forward()` method, which works for
    Temporal but not for Cloudflare. Modeling the pre-filter as a
@@ -540,7 +555,7 @@ The most useful contributions right now are:
   needs to be tested against more.
 - **Add a runtime adapter.** The Temporal adapter in
   `src/rote/adapters/temporal.py` is ~450 lines and follows a clear
-  pattern. Inngest, Restate, and Hatchet are all good targets.
+  pattern. Restate and Hatchet are both good targets.
 - **Add a graduator driver.** The Protocol in
   `src/rote/graduator/drivers/__init__.py` is simple. Aider, Gemini
   CLI, and Cursor Agent are reasonable additions.
