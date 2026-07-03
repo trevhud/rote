@@ -26,7 +26,6 @@ as the Temporal adapter, enforced by AST tests.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import textwrap
@@ -34,7 +33,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rote.adapters.temporal import _execution_waves
+from rote.adapters._common import (
+    _execution_waves,
+    _pipeline_hash,
+    _to_camel_case,
+    _to_pascal_case,
+)
+from rote.adapters._common import (
+    ir_duration_to_human as _ir_duration_to_cf,
+)
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline
 
 # ───────── Adapter configuration ─────────
@@ -64,50 +71,6 @@ class CloudflareAdapterConfig:
 
 _SIGNAL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALID_BACKOFFS = {"constant", "linear", "exponential"}
-_IR_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h|d)$")
-
-
-def _to_pascal_case(s: str) -> str:
-    parts = s.replace("-", "_").split("_")
-    return "".join(p.capitalize() for p in parts if p)
-
-
-def _to_camel_case(s: str) -> str:
-    pascal = _to_pascal_case(s)
-    if not pascal:
-        return ""
-    return pascal[0].lower() + pascal[1:]
-
-
-def _pipeline_hash(pipeline: Pipeline) -> str:
-    """Stable 8-char identity hash. Embedded in a comment for traceability."""
-    payload = f"{pipeline.name}|{pipeline.version}|{len(pipeline.nodes)}|{len(pipeline.edges)}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
-
-
-_UNIT_TO_HUMAN = {
-    "ms": "milliseconds",
-    "s": "seconds",
-    "m": "minutes",
-    "h": "hours",
-    "d": "days",
-}
-
-
-def _ir_duration_to_cf(s: str) -> str:
-    """Convert an IR duration string ('5m', '30s', '7d') to Cloudflare's form.
-
-    Cloudflare accepts numeric ms or human-readable strings like
-    '5 minutes', '30 seconds', '7 days'. We always emit the human form
-    for readability. Strings that don't match the IR shorthand pattern
-    are passed through unchanged (they're assumed to already be in a
-    Cloudflare-acceptable form).
-    """
-    s = s.strip()
-    m = _IR_DURATION_RE.fullmatch(s)
-    if not m:
-        return s
-    return f"{m.group(1)} {_UNIT_TO_HUMAN[m.group(2)]}"
 
 
 def _validate_signal_name(name: str, node_id: str) -> None:

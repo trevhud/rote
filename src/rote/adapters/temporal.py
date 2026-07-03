@@ -23,13 +23,12 @@ is plain string templates.
 
 from __future__ import annotations
 
-import hashlib
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
+from rote.adapters._common import _execution_waves, _pipeline_hash, _to_pascal_case
 from rote.ir import Node, NodeKind, Pipeline
-
 
 # ───────── Adapter configuration ─────────
 
@@ -55,69 +54,6 @@ class TemporalAdapterConfig:
 
 
 # ───────── Helpers ─────────
-
-
-def _to_pascal_case(s: str) -> str:
-    """Convert kebab-case or snake_case to PascalCase."""
-    parts = s.replace("-", "_").split("_")
-    return "".join(p.capitalize() for p in parts if p)
-
-
-def _pipeline_hash(pipeline: Pipeline) -> str:
-    """Stable 8-char hash of the pipeline's identity.
-
-    Used to version the emitted workflow class name. The Temporal docs
-    warn that changing workflow code while workflows are running causes
-    determinism errors. The fix this adapter takes is "make every
-    regeneration a new workflow type" — old in-flight workflows continue
-    on the old code, new workflows use the new code, no migration needed.
-    """
-    payload = f"{pipeline.name}|{pipeline.version}|{len(pipeline.nodes)}|{len(pipeline.edges)}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
-
-
-def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
-    """Topologically sort the pipeline into parallel-execution waves.
-
-    A "wave" is a set of nodes whose dependencies have all been satisfied
-    by the time the wave starts; nodes within a wave can run in parallel.
-
-    Nodes that appear inside another node's ``loop_body`` are excluded
-    from the top-level waves — they're orchestrated from inside the
-    parent loop activity, not by the workflow.
-    """
-    nested_ids: set[str] = set()
-    for n in pipeline.nodes:
-        if n.loop_body:
-            nested_ids.update(n.loop_body)
-
-    eligible = [n for n in pipeline.nodes if n.id not in nested_ids]
-    eligible_ids = {n.id for n in eligible}
-
-    in_degree: dict[str, int] = {n.id: 0 for n in eligible}
-    for edge in pipeline.edges:
-        if edge.from_ in eligible_ids and edge.to in eligible_ids:
-            in_degree[edge.to] += 1
-
-    waves: list[list[Node]] = []
-    remaining: set[str] = set(in_degree.keys())
-
-    while remaining:
-        # Sort by id for stable, deterministic emission order.
-        wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
-        if not wave_ids:
-            raise ValueError(
-                f"Cycle detected in pipeline {pipeline.name!r}; "
-                f"remaining nodes: {sorted(remaining)}"
-            )
-        waves.append([pipeline.node_by_id(nid) for nid in wave_ids])
-        for nid in wave_ids:
-            remaining.remove(nid)
-            for edge in pipeline.edges:
-                if edge.from_ == nid and edge.to in eligible_ids:
-                    in_degree[edge.to] -= 1
-
-    return waves
 
 
 def _impl_path_parts(impl: str) -> tuple[str, str]:
