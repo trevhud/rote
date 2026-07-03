@@ -522,8 +522,26 @@ Don't waste time debugging stubs. These are intentional.
 **Working end-to-end:**
 
 - IR load + validate
-- `rote emit` (IR → runtime code; DBOS default)
-- `rote graduate` (SKILL.md → IR → Temporal code)
+- `rote emit` (IR → runtime code; DBOS default), with hash-guarded
+  re-emission: every adapter writes through
+  `rote.adapters._common.EmitWriter`, which records what rote wrote in
+  `.rote-manifest.json` and, on re-emit, preserves any file the user
+  edited (fresh content lands in a `<name>.new` sibling and the CLI
+  reports it). Never write emitted files with bare `write_text` in an
+  adapter — route through the writer.
+- `rote graduate` (SKILL.md → IR → Temporal code), stamping a
+  `provenance.json` sidecar (section hashes; see `rote.skill_source`)
+- `rote graduate --update` — incremental re-graduation: diffs the
+  skill against the stamped provenance, re-derives only nodes whose
+  source sections changed, enforces that unchanged nodes' ids survive,
+  and merges file-level so user-filled stubs are kept. No section
+  changes → no agent run at all.
+- Per-node inference overrides in emitted judges: `ROTE_MODEL_<ID>` /
+  `ROTE_BASE_URL_<ID>` env vars beat the IR defaults on all four
+  runtimes, and `signature_spec.base_url` reaches any
+  OpenAI-compatible endpoint. Node.source (provenance) is excluded
+  from the pipeline hash on purpose — metadata must not re-version
+  in-flight workflows.
 - `ClaudeDriver`, `AnthropicApiDriver`
 - Data-flow threading: nodes declare `inputs:` (param → source
   reference, grammar in `rote.ir.parse_input_ref`) and all three
@@ -533,7 +551,7 @@ Don't waste time debugging stubs. These are intentional.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
-- 327 tests (316 fast + 11 slow). Run with `pytest tests/` (fast
+- 435 tests (423 fast + 12 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

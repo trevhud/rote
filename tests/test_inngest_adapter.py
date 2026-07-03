@@ -512,7 +512,7 @@ def test_custom_config_overrides_models_and_port(bdr_pipeline: Pipeline, tmp_pat
     adapter.emit(bdr_pipeline, out)
 
     sig_src = (out / "src" / "signatures" / "vet_contact.ts").read_text(encoding="utf-8")
-    assert 'model: "claude-opus-4-7"' in sig_src
+    assert 'model: env.ROTE_MODEL_VET_CONTACT ?? "claude-opus-4-7"' in sig_src
 
     index_src = (out / "src" / "index.ts").read_text(encoding="utf-8")
     assert "process.env.PORT ?? 4111" in index_src

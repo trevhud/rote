@@ -12,6 +12,7 @@ DO NOT EDIT BY HAND. Re-run ``rote emit --runtime dbos`` to regenerate.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Literal
 
@@ -147,6 +148,12 @@ OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(
     "actOutput\",\"type\":\"object\"}"
 )
 
+# Operator overrides: change the model or point at a different
+# endpoint (proxy, gateway, OpenAI-compatible server) without
+# re-emitting. Unset means the default below / the vendor's endpoint.
+MODEL = os.environ.get("ROTE_MODEL_VET_CONTACT", "claude-sonnet-4-6")
+BASE_URL = os.environ.get("ROTE_BASE_URL_VET_CONTACT")
+
 
 def _interpolate(template: str, variables: dict[str, Any]) -> str:
     """Resolve ``{{ dotted.path }}`` placeholders against the input dict.
@@ -182,9 +189,9 @@ class VetContact:
         # module stays importable in environments without it.
         import anthropic
 
-        client = anthropic.Anthropic()
+        client = anthropic.Anthropic(base_url=BASE_URL)
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=MODEL,
             max_tokens=4096,
             tools=[
                 {

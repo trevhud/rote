@@ -355,6 +355,7 @@ def emit_signature_module(
         f"from __future__ import annotations\n"
         f"\n"
         f"import json\n"
+        f"import os\n"
         f"import re\n"
         f"from typing import {typing_names}\n"
         f"\n"
@@ -373,6 +374,20 @@ def emit_signature_module(
         "OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(\n"
         f"{_chunked_call_arg(schema_json, indent='    ')}\n"
         ")"
+    )
+
+    # Operator knobs: the model and endpoint bake in defaults from the IR
+    # but stay overridable per-node at runtime, so switching models (or
+    # pointing at an OpenAI-compatible server / gateway) never requires a
+    # re-emit.
+    env_suffix = node.id.upper()
+    base_url_default = f", {json.dumps(spec.base_url)}" if spec.base_url else ""
+    overrides_block = (
+        "# Operator overrides: change the model or point at a different\n"
+        "# endpoint (proxy, gateway, OpenAI-compatible server) without\n"
+        "# re-emitting. Unset means the default below / the vendor's endpoint.\n"
+        f'MODEL = os.environ.get("ROTE_MODEL_{env_suffix}", {json.dumps(model)})\n'
+        f'BASE_URL = os.environ.get("ROTE_BASE_URL_{env_suffix}"{base_url_default})'
     )
 
     interpolate_block = textwrap.dedent(
@@ -405,9 +420,9 @@ def emit_signature_module(
     )
 
     if spec.client == "anthropic":
-        call_block = _emit_forward_anthropic(node, pascal, model, spec)
+        call_block = _emit_forward_anthropic(node, pascal, spec)
     elif spec.client == "openai":
-        call_block = _emit_forward_openai(node, pascal, model, spec)
+        call_block = _emit_forward_openai(node, pascal, spec)
     else:  # pragma: no cover — LLMSignature validates the client field
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
 
@@ -420,6 +435,8 @@ def emit_signature_module(
         + "\n\n"
         + description_block
         + schema_block
+        + "\n\n"
+        + overrides_block
         + "\n\n\n"
         + interpolate_block
         + "\n\n"
@@ -441,7 +458,7 @@ def _temperature_line(spec: LLMSignature) -> str:
     return f"            temperature={spec.temperature},\n"
 
 
-def _emit_forward_anthropic(node: Node, pascal: str, model: str, spec: LLMSignature) -> str:
+def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
     temp = _temperature_line(spec)
     return (
         f"class {pascal}:\n"
@@ -452,9 +469,9 @@ def _emit_forward_anthropic(node: Node, pascal: str, model: str, spec: LLMSignat
         f"        # module stays importable in environments without it.\n"
         f"        import anthropic\n"
         f"\n"
-        f"        client = anthropic.Anthropic()\n"
+        f"        client = anthropic.Anthropic(base_url=BASE_URL)\n"
         f"        response = client.messages.create(\n"
-        f"            model={json.dumps(model)},\n"
+        f"            model=MODEL,\n"
         f"            max_tokens=4096,\n"
         f"{temp}"
         f"            tools=[\n"
@@ -481,7 +498,7 @@ def _emit_forward_anthropic(node: Node, pascal: str, model: str, spec: LLMSignat
     )
 
 
-def _emit_forward_openai(node: Node, pascal: str, model: str, spec: LLMSignature) -> str:
+def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
     temp = _temperature_line(spec)
     return (
         f"class {pascal}:\n"
@@ -492,9 +509,9 @@ def _emit_forward_openai(node: Node, pascal: str, model: str, spec: LLMSignature
         f"        # module stays importable in environments without it.\n"
         f"        import openai\n"
         f"\n"
-        f"        client = openai.OpenAI()\n"
+        f"        client = openai.OpenAI(base_url=BASE_URL)\n"
         f"        response = client.chat.completions.create(\n"
-        f"            model={json.dumps(model)},\n"
+        f"            model=MODEL,\n"
         f"{temp}"
         f"            response_format={{\n"
         f'                "type": "json_schema",\n'

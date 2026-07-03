@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "files": {
+    "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
+    "activities.py": "301c24bbe5e24d996dc81ee15e3ba48640ac25ae82f154db27689f56d3d5541d",
+    "workflow.py": "906e6d39ba1cfe4b3d51df07c3fb60d5d6f1c130080728fe2e18356a900c3f7a"
+  }
+}

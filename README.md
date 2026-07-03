@@ -322,6 +322,42 @@ rote emit /path/to/pipeline.yaml --runtime temporal --out /tmp/emitted/
 
 This is the cheap inner loop while iterating on adapters or IR shapes.
 
+Re-emitting into a directory you've been working in is safe: every emit
+records a `.rote-manifest.json` of what rote wrote, and files you've
+edited since (filled-in `extracted/` stubs, say) are left untouched —
+the fresh version lands next to them as `<name>.new` for you to merge
+or discard.
+
+### Update a graduated pipeline when the skill changes
+
+The skill stays the source of truth after graduation. When someone
+edits the SKILL.md, re-run with `--update` instead of paying for a full
+graduation:
+
+```sh
+rote graduate ./my-skill --out ./graduated/ --update
+```
+
+rote diffs the skill against the previous run's `provenance.json`
+(section-level content hashes, stamped at graduation) and instructs the
+agent to re-derive only the nodes whose source sections changed.
+Untouched nodes are preserved verbatim — same ids, so in-flight durable
+workflows aren't orphaned — and stub files you've already implemented
+are kept. If nothing changed, the agent isn't invoked at all.
+
+### Choose your own inference
+
+`llm_judge` nodes call the vendor SDK directly with defaults from the
+IR (`signature_spec.client` / `model` / `base_url`). Emitted judges also
+read two per-node environment variables at runtime, so you can swap the
+model or point at any OpenAI-compatible endpoint (Ollama, vLLM, a
+gateway) without re-emitting:
+
+```sh
+export ROTE_MODEL_VET_CONTACT=gpt-4.1
+export ROTE_BASE_URL_VET_CONTACT=http://localhost:11434/v1
+```
+
 ---
 
 ## The five node kinds

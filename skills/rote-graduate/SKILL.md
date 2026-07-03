@@ -141,6 +141,9 @@ Assemble the full DAG as `pipeline.yaml`. Include:
   `inputs:` data-flow bindings (param → `pipeline.input[.field]` /
   `<node_id>.output[.field]`), timeout, retry policy, and (for
   `pure_function` / `llm_judge`) a reference to the extracted module.
+  Give every node a `source.section` naming the exact SKILL.md heading
+  it was derived from — this provenance is what makes incremental
+  re-graduation (`rote graduate --update`) possible.
 - `edges`: data flow between nodes, including fan-out for batch
   processing.
 - `hitl_gates`: for every `hitl_gate` node, the signal name, timeout,
