@@ -58,16 +58,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# NOTE(_common migration): these helpers are being extracted to
-# rote.adapters._common on a concurrent branch. Import from
-# rote.adapters._common once that lands; temporal.py is the canonical
-# home today (cloudflare.py imports from there too).
-from rote.adapters.temporal import (
+from rote.adapters._common import (
     _execution_waves,
-    _impl_path_parts,
     _pipeline_hash,
-    _signature_path_parts,
     _to_pascal_case,
+)
+from rote.adapters.temporal import (
+    _impl_path_parts,
+    _signature_path_parts,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline
 
