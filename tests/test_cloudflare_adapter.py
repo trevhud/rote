@@ -526,35 +526,25 @@ def test_custom_config_overrides_workflow_binding(bdr_pipeline: Pipeline, tmp_pa
 # ───────── Signal validation at emit time ─────────
 
 
-def test_emit_rejects_invalid_hitl_signal_name(tmp_path: Path) -> None:
-    """A pipeline whose hitl_gate.signal contains a dot must fail at emit time
-    (before the user discovers it as a Cloudflare runtime error)."""
-    from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
+def test_ir_rejects_invalid_hitl_signal_name() -> None:
+    """A hitl_gate.signal containing a dot must be rejected at IR validation
+    (before any adapter sees it, and long before a Cloudflare runtime error).
 
-    pipeline = Pipeline(
-        name="bad-signals",
-        input=PipelineInput(type="X", required=[]),
-        nodes=[
-            Node(
-                id="entry",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="extracted/foo.py:bar",
-            ),
-            Node(
-                id="gate",
-                kind=NodeKind.HITL_GATE,
-                description="bad signal",
-                signal="invalid.signal",  # dot is not allowed by Cloudflare
-            ),
-        ],
-        edges=[Edge(**{"from": "entry", "to": "gate"})],
-        entry_nodes=["entry"],
-        exit_nodes=["gate"],
-    )
-    adapter = CloudflareAdapter()
-    with pytest.raises(ValueError, match="invalid characters"):
-        adapter.emit(pipeline, tmp_path / "x")
+    The constraint moved from the Cloudflare adapter to the IR so every
+    adapter inherits it and a crafted pipeline.yaml can't inject a
+    non-identifier signal into emitted signal-handler names. The adapter's
+    ``_validate_signal_name`` remains as defense-in-depth."""
+    from pydantic import ValidationError
+
+    from rote.ir import Node, NodeKind
+
+    with pytest.raises(ValidationError, match="must be a valid identifier"):
+        Node(
+            id="gate",
+            kind=NodeKind.HITL_GATE,
+            description="bad signal",
+            signal="invalid.signal",  # dot is not a valid identifier
+        )
 
 
 # ───────── Signature-spec requirement for Cloudflare ─────────

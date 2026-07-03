@@ -391,3 +391,45 @@ def test_custom_config_is_respected(bdr_pipeline: Pipeline) -> None:
     activities_src = adapter.emit_activities(bdr_pipeline)
     assert "from myproj.extracted.taxonomy import" in activities_src
     assert "from myproj.signatures.vet_contact import" in activities_src
+
+
+# ───────── Code-injection hardening ─────────
+
+
+def test_malicious_description_cannot_break_out_of_docstring() -> None:
+    """A node ``description`` engineered to close the emitted ``\"\"\"`` docstring
+    and inject code must be neutralized: the emitted module still parses as
+    Python and the payload survives only as inert escaped text in the docstring.
+
+    Regression for the confirmed security finding — the first line of
+    ``description`` was spliced raw into a docstring; ``safe_docstring_line``
+    now escapes quotes and backslashes."""
+    from rote.ir import Node, NodeKind, Pipeline, PipelineInput
+
+    node = Node(
+        id="n",
+        kind=NodeKind.EXTERNAL_CALL,
+        description='ok"""; import os; os.system("echo PWNED"); _junk = r"""',
+        impl="extracted/x.py:run",
+    )
+    pipeline = Pipeline(
+        name="t",
+        input=PipelineInput(type="X", required=[]),
+        nodes=[node],
+        edges=[],
+        entry_nodes=["n"],
+        exit_nodes=["n"],
+    )
+    src = TemporalAdapter().emit_activities(pipeline)
+    tree = ast.parse(src)  # must be valid Python
+
+    # The injected statements must NOT exist as executable AST nodes — they
+    # can only appear inside string/docstring literals.
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "system"
+    ]
+    assert not calls, "os.system injected as executable code"
+    # And the raw (unescaped) breakout sequence must be gone.
+    assert '"""; import os' not in src

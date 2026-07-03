@@ -364,6 +364,31 @@ If a change of yours would violate any of them, stop and reconsider.
    a real signal to revisit the IR shape rather than papering over it
    in the adapter.
 
+7. **IR string fields that reach emitted code are charset-constrained
+   at the IR boundary, not in the adapters.** A `pipeline.yaml` is
+   untrusted input (it's LLM-generated from a possibly third-party
+   `SKILL.md`, or shared directly), yet every adapter splices certain
+   fields *verbatim* into emitted source and filenames. `Node.id`
+   (emitted as `async def {id}` / `@activity.defn(name=…)` and as
+   `signatures/{id}.py`), `signal` (a Temporal signal-handler method /
+   DBOS topic), and the two halves of `impl`/`signature`
+   (`from … import {symbol}` + call site, and the module path) are all
+   validated to a safe identifier / relative-path shape by
+   `field_validator`s in `rote.ir` — see `_IDENTIFIER_RE`,
+   `_validate_impl_ref`, and the `Node._validate_id/_validate_signal/
+   _validate_impl_signature` validators. Prose fields (`description`)
+   can't be charset-restricted, so they're escaped at emission via
+   `rote.adapters._common.safe_docstring_line` (Python docstrings) and
+   `safe_block_comment_line` (TS JSDoc). Emitted-file writes also pass
+   through `resolve_within` as defense-in-depth. **Do not add a new IR
+   string field that an adapter emits verbatim without giving it an
+   equivalent validator**, and don't move these checks down into a
+   single adapter — the IR boundary is where all three (and every
+   future) adapter inherit them. Regression coverage:
+   `tests/test_ir.py::test_node_id_must_be_a_safe_identifier`,
+   `::test_impl_symbol_injection_is_rejected`, and
+   `tests/test_temporal_adapter.py::test_malicious_description_cannot_break_out_of_docstring`.
+
 ---
 
 ## Workflow expectations

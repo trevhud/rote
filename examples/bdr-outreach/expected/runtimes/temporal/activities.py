@@ -135,7 +135,7 @@ async def hubspot_create_list(payload: dict) -> dict:
 
 @activity.defn(name="exclusion_check_dnc")
 async def exclusion_check_dnc(payload: dict) -> dict:
-    """For each contact, look up "BDR do not contact" list memberships.
+    """For each contact, look up \"BDR do not contact\" list memberships.
 
     Graduated from MCP tool call → deterministic API call. See
     ``expected.extracted.exclusion_checks`` for implementation.

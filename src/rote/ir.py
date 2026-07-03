@@ -40,6 +40,58 @@ _INPUT_REF_RE = re.compile(
     r"(?:\.(?P<field>[A-Za-z_][A-Za-z0-9_]*))?$"
 )
 
+# ───────── Identifier / code-safety constraints ─────────
+#
+# Several string fields are interpolated *verbatim* into emitted source
+# code (Python def names, Temporal signal-handler methods, `from … import`
+# targets) and into emitted filenames (``signatures/<id>.py``,
+# ``extracted/<id>.ts``). Without a charset constraint a crafted
+# pipeline.yaml can inject code or traverse the filesystem at emit time —
+# so these fields are pinned to a safe identifier shape at the IR
+# boundary, which every adapter inherits. See ``Node.id`` / ``Node.signal``
+# / ``Node.impl`` validators below.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# A path segment in an ``impl``/``signature`` reference (the part before
+# ``:``). Directory and filename segments allow ``.`` and ``-`` but never
+# ``..`` (traversal) or path separators inside a segment.
+_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def _validate_impl_ref(value: str, field_name: str) -> str:
+    """Validate a ``'relative/path.py:symbol'`` reference.
+
+    Both halves reach emitted source code: the trailing symbol is spliced
+    in as a ``from … import <symbol>`` target and call site, and the
+    module component (last path segment, ``.py`` stripped) becomes an
+    import module name. Constrain them to safe identifiers, and forbid
+    absolute paths and ``..`` traversal in the path half.
+    """
+    if ":" not in value:
+        raise ValueError(f"{field_name} {value!r} must be of the form 'path/to/file.py:symbol'")
+    file_part, symbol = value.split(":", 1)
+    if not _IDENTIFIER_RE.fullmatch(symbol):
+        raise ValueError(
+            f"{field_name} symbol {symbol!r} must be a valid identifier "
+            f"(letters, digits, underscore; not starting with a digit)"
+        )
+    if not file_part or file_part.startswith("/"):
+        raise ValueError(f"{field_name} path {file_part!r} must be a non-absolute relative path")
+    segments = file_part.split("/")
+    for seg in segments:
+        if seg in ("", "..") or not _PATH_SEGMENT_RE.fullmatch(seg):
+            raise ValueError(
+                f"{field_name} path {file_part!r} has an unsafe segment {seg!r} "
+                f"(no '..', no empty segments, no path-breaking characters)"
+            )
+    module_name = segments[-1].removesuffix(".py")
+    if not _IDENTIFIER_RE.fullmatch(module_name):
+        raise ValueError(
+            f"{field_name} module name {module_name!r} (from {file_part!r}) "
+            f"must be a valid identifier"
+        )
+    return value
+
 
 @dataclass(frozen=True)
 class InputRef:
@@ -199,6 +251,39 @@ class Node(BaseModel):
         default=None,
         description="Metadata pointing back to the source skill's phase number",
     )
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, v: str) -> str:
+        """``id`` is emitted verbatim as a code identifier and a filename.
+
+        Adapters splice it into ``async def {id}``, ``@activity.defn(name=…)``,
+        and ``signatures/{id}.py`` / ``extracted/{id}.ts`` paths. Pinning it
+        to a valid identifier closes both the code-injection and the
+        filesystem-traversal vectors at the source.
+        """
+        if not _IDENTIFIER_RE.fullmatch(v):
+            raise ValueError(
+                f"Node id {v!r} must be a valid identifier "
+                f"(letters, digits, underscore; not starting with a digit)"
+            )
+        return v
+
+    @field_validator("signal")
+    @classmethod
+    def _validate_signal(cls, v: str | None) -> str | None:
+        """``signal`` becomes a Temporal signal-handler method / DBOS topic."""
+        if v is not None and not _IDENTIFIER_RE.fullmatch(v):
+            raise ValueError(f"Node signal {v!r} must be a valid identifier")
+        return v
+
+    @field_validator("impl", "signature")
+    @classmethod
+    def _validate_impl_signature(cls, v: str | None) -> str | None:
+        """``impl``/``signature`` halves reach emitted imports and call sites."""
+        if v is None:
+            return None
+        return _validate_impl_ref(v, "impl/signature reference")
 
     @field_validator("phase", mode="before")
     @classmethod

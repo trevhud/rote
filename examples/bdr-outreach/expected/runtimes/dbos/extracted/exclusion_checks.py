@@ -14,7 +14,7 @@ from typing import Any
 
 def check_do_not_contact(**payload: Any) -> Any:
     """
-    For each contact, look up "BDR do not contact" list memberships.
+    For each contact, look up \"BDR do not contact\" list memberships.
 
     STUB — replace with the deterministic API call.
 

@@ -13,8 +13,62 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 
 from rote.ir import Node, Pipeline, parse_input_ref
+
+# ───────── Prose → safe code comment/docstring ─────────
+
+
+def safe_docstring_line(text: str, fallback: str = "") -> str:
+    """First line of ``text``, escaped so it cannot break out of a docstring.
+
+    Node ``description`` is prose (it legitimately contains quotes and
+    backslashes), yet adapters splice its first line straight into a
+    ``\"\"\"…\"\"\"`` Python docstring / block comment. An unescaped
+    ``\"\"\"`` — or a trailing backslash that escapes the closing quote —
+    lets a crafted pipeline.yaml close the docstring early and inject
+    code. Escaping backslashes and double-quotes neutralizes both without
+    charset-restricting prose at the IR layer.
+    """
+    stripped = text.strip() if text else ""
+    first = stripped.splitlines()[0] if stripped else fallback
+    return first.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def safe_block_comment_line(text: str, fallback: str = "") -> str:
+    """First line of ``text``, safe to splice into a ``/* … */`` block comment.
+
+    The TypeScript adapter emits ``description`` first-lines into JSDoc
+    comments. An unescaped ``*/`` would close the comment early and let a
+    crafted pipeline.yaml inject code after it; neutralize the sequence by
+    inserting a space (``*/`` → ``* /``). Newlines are already dropped by
+    taking the first line.
+    """
+    stripped = text.strip() if text else ""
+    first = stripped.splitlines()[0] if stripped else fallback
+    return first.replace("*/", "* /")
+
+
+# ───────── Output-path containment ─────────
+
+
+def resolve_within(base: Path, *parts: str) -> Path:
+    """Join ``parts`` onto ``base`` and assert the result stays inside it.
+
+    Defense-in-depth for emitted-file paths. IR validation already pins
+    ``node.id`` to an identifier, but this guard means any future field
+    that reaches a filename cannot escape the output directory via an
+    absolute segment or ``..`` traversal — it fails loudly at emit time.
+    """
+    base_resolved = base.resolve()
+    target = base_resolved.joinpath(*parts).resolve()
+    if target != base_resolved and base_resolved not in target.parents:
+        raise ValueError(
+            f"Refusing to write outside output directory: {target} is not within {base_resolved}"
+        )
+    return target
+
 
 # ───────── Case conversion ─────────
 

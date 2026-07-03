@@ -32,6 +32,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    safe_docstring_line,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
@@ -122,7 +123,7 @@ def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) 
         f'''
         @activity.defn(name="{node.id}")
         async def {node.id}(payload: dict) -> dict:
-            """{node.description.strip().splitlines()[0]}
+            """{safe_docstring_line(node.description)}
 
             Graduated from MCP tool call → deterministic API call. See
             ``{cfg.extracted_module}.{module_name}`` for implementation.
@@ -146,7 +147,7 @@ def _emit_activity_for_llm_judge(node: Node, cfg: TemporalAdapterConfig) -> str:
         f'''
         @activity.defn(name="{node.id}")
         async def {node.id}(payload: dict) -> dict:
-            """{node.description.strip().splitlines()[0]}
+            """{safe_docstring_line(node.description)}
 
             LLM judge — typed input/output, bounded decision space. The
             non-determinism lives inside this activity, not the workflow.
@@ -186,7 +187,7 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
             f'''
         @activity.defn(name="{node.id}")
         async def {node.id}(payload: dict) -> dict:
-            """{node.description.strip().splitlines()[0]}
+            """{safe_docstring_line(node.description)}
 
             STUB — agent loops require an LLM agent runtime. Implement
             this against the project's preferred agent harness (Anthropic
@@ -302,7 +303,7 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
             f'''
             @workflow.signal(name="{gate.signal}")
             def {gate.signal}(self, payload: dict) -> None:
-                """{gate.description.strip().splitlines()[0]}"""
+                """{safe_docstring_line(gate.description)}"""
                 self._{gate.signal}_payload = payload
             '''
         ).lstrip("\n")
@@ -404,7 +405,7 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
         "    @workflow.run",
         "    async def run(self, pipeline_input: dict) -> dict:",
     ]
-    desc = pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
+    desc = safe_docstring_line(pipeline.description, fallback=pipeline.name)
     body_lines.append(f'        """{desc}"""')
 
     # Node ids whose results are bound by the time each wave starts —

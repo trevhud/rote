@@ -149,6 +149,75 @@ def test_pure_function_node_requires_impl() -> None:
         )
 
 
+# ───────── Code-injection / traversal hardening on emitted-verbatim fields ─────────
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    [
+        "/tmp/rote_abs_pwned",  # absolute path → escapes output dir via pathlib join
+        "../../../../etc/pwned",  # ../ traversal out of the output dir
+        "ok\n    import os",  # newline → breaks out of `async def {id}` line
+        "has-hyphen",  # not a valid Python/TS identifier
+        "has space",
+        "1leading_digit",
+        "",  # empty
+    ],
+)
+def test_node_id_must_be_a_safe_identifier(bad_id: str) -> None:
+    """``id`` is emitted verbatim as a code identifier and a filename, so a
+    non-identifier must be rejected at the IR boundary (closes the code-
+    injection and path-traversal findings for every adapter at once)."""
+    from pydantic import ValidationError
+
+    from rote.ir import Node
+
+    with pytest.raises(ValidationError, match="must be a valid identifier"):
+        Node(id=bad_id, kind=NodeKind.PURE_FUNCTION, description="x", impl="extracted/foo.py:bar")
+
+
+def test_impl_symbol_injection_is_rejected() -> None:
+    """The trailing symbol of ``impl`` reaches ``from … import {symbol}`` and a
+    call site; a newline-laden payload (the confirmed RCE PoC) must fail."""
+    from pydantic import ValidationError
+
+    from rote.ir import Node
+
+    payload = "extracted/x.py:run\n    import os\n    os.system('id')\n    _x = run"
+    with pytest.raises(ValidationError, match="must be a valid identifier"):
+        Node(id="n", kind=NodeKind.EXTERNAL_CALL, description="x", impl=payload)
+
+
+@pytest.mark.parametrize(
+    "bad_impl",
+    [
+        "/abs/foo.py:bar",  # absolute path half
+        "../foo.py:bar",  # traversal in path half
+        "extracted/foo.py",  # missing :symbol
+        "extracted/foo-bar.py:baz",  # module name not an identifier
+    ],
+)
+def test_impl_path_half_is_validated(bad_impl: str) -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import Node
+
+    with pytest.raises(ValidationError):
+        Node(id="n", kind=NodeKind.EXTERNAL_CALL, description="x", impl=bad_impl)
+
+
+def test_node_id_accepts_normal_snake_case() -> None:
+    from rote.ir import Node
+
+    node = Node(
+        id="enrich_contact_batch",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="normal",
+        impl="extracted/zoominfo.py:enrich_batch",
+    )
+    assert node.id == "enrich_contact_batch"
+
+
 def test_llm_judge_node_requires_signature() -> None:
     from pydantic import ValidationError
 
