@@ -86,8 +86,10 @@ from pathlib import Path
 
 from rote.adapters._common import (
     EmitWriter,
+    _duration_to_seconds,
     _execution_waves,
     _pipeline_hash,
+    _seconds_literal,
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
@@ -99,7 +101,6 @@ from rote.adapters._ts_common import (
     json_schema_to_zod,
     override_env_vars,
 )
-from rote.adapters.dbos import _duration_to_seconds
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 _GENERATED_BY = "rote.adapters.dbos_ts"
@@ -121,13 +122,6 @@ class DbosTsAdapterConfig:
 
 
 # ───────── Duration / retry / timeout mapping ─────────
-
-
-def _seconds_literal(seconds: float) -> str:
-    """Render a seconds value as a compact TS numeric literal."""
-    if seconds == int(seconds):
-        return str(int(seconds))
-    return repr(seconds)
 
 
 def _duration_to_ms(s: str) -> int:

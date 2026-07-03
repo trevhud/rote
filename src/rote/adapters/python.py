@@ -67,17 +67,15 @@ from rote.adapters._common import (
 )
 from rote.adapters._py_common import (
     _extracted_layout,
+    _impl_path_parts,
+    _payload_literal,
+    _signature_path_parts,
 )
 from rote.adapters._py_common import (
     emit_extracted_module as _shared_emit_extracted_module,
 )
 from rote.adapters._py_common import (
     emit_signature_module as _shared_emit_signature_module,
-)
-from rote.adapters.temporal import (
-    _impl_path_parts,
-    _payload_literal,
-    _signature_path_parts,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
