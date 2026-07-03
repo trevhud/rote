@@ -174,6 +174,27 @@ def _interpolate(template: str, variables: dict[str, Any]) -> str:
     return re.sub(r"\{\{\s*([\w.]+)\s*\}\}", _resolve, template)
 
 
+def _log_usage(response: Any) -> None:
+    """Append token usage as JSONL to $ROTE_USAGE_LOG, if set."""
+    import os
+
+    path = os.environ.get("ROTE_USAGE_LOG")
+    if not path:
+        return
+    try:
+        usage = getattr(response, "usage", None)
+        record = {
+            "node": "vet_contact",
+            "model": "claude-sonnet-4-6",
+            "input_tokens": getattr(usage, "input_tokens", None),
+            "output_tokens": getattr(usage, "output_tokens", None),
+        }
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
 class VetContact:
     """Typed LLM judge for vet_contact (Anthropic structured output)."""
 
@@ -201,6 +222,7 @@ class VetContact:
                 }
             ],
         )
+        _log_usage(response)
         for block in response.content:
             if block.type == "tool_use":
                 return VetContactOutput.model_validate(block.input)

@@ -476,7 +476,24 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         print(f"error: could not fetch live prices: {e}", file=sys.stderr)
         return 1
 
-    rendered = json.dumps(scorecard.to_dict(), indent=2) if args.json else scorecard.to_markdown()
+    measured_md = ""
+    measured_json: dict[str, object] | None = None
+    if args.run:
+        try:
+            measured_md, measured_json = _run_empirical(args, pipeline, pipeline_yaml, skill_dir)
+        except Exception as e:
+            print(f"error: empirical run failed: {e}", file=sys.stderr)
+            return 1
+
+    if args.json:
+        payload = scorecard.to_dict()
+        if measured_json is not None:
+            payload["measured"] = measured_json
+        rendered = json.dumps(payload, indent=2)
+    else:
+        rendered = scorecard.to_markdown()
+        if measured_md:
+            rendered += "\n" + measured_md
     if args.out:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -485,6 +502,125 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     else:
         print(rendered)
     return 0
+
+
+def _resolve_runtime_dir(explicit: str | None, pipeline_yaml: Path) -> Path:
+    """Locate the emitted runtime app for empirical pipeline trials.
+
+    Explicit ``--runtime-dir`` wins; otherwise try the ``rote graduate
+    --out`` layout's siblings (runtime/dbos, runtime/python) and the
+    pipeline's own directory.
+    """
+    if explicit:
+        p = Path(explicit)
+        if (p / "main.py").is_file():
+            return p
+        raise ValueError(f"--runtime-dir {explicit} has no main.py")
+    base = pipeline_yaml.resolve().parent.parent
+    candidates = (
+        base / "runtime" / "dbos",
+        base / "runtime" / "python",
+        pipeline_yaml.resolve().parent,
+    )
+    for candidate in candidates:
+        if (candidate / "main.py").is_file():
+            return candidate
+    raise ValueError(
+        "no emitted runtime app found (looked for main.py in "
+        + ", ".join(str(c) for c in candidates)
+        + ") — emit one with `rote emit` or pass --runtime-dir"
+    )
+
+
+def _run_empirical(
+    args: argparse.Namespace,
+    pipeline: Pipeline,
+    pipeline_yaml: Path,
+    skill_dir: Path | None,
+) -> tuple[str, dict[str, object]]:
+    """Execute the --run trials and return (markdown section, JSON section).
+
+    Pipeline trials run first: they're fast and cheap, so a
+    misconfigured runtime dir fails before any agent money is spent.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    from rote.eval.empirical import (
+        EmpiricalResult,
+        append_corpus,
+        measured_to_dict,
+        render_measured_markdown,
+        run_pipeline_trial,
+        run_skill_trial,
+    )
+    from rote.eval.pricing import fetch_catalog
+
+    if not args.input:
+        raise ValueError("--run requires --input <task.json> (the pipeline input payload)")
+    task = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    if isinstance(task, dict) and "input" in task and set(task) <= {"input", "signals"}:
+        input_payload = task["input"]
+        signals = task.get("signals") or {}
+    else:
+        input_payload = task
+        signals = {}
+
+    runtime_dir = _resolve_runtime_dir(args.runtime_dir, pipeline_yaml)
+    catalog = fetch_catalog(provider=args.provider)
+    sample = catalog.sample(provider=args.provider)
+    # Default the agent to the mid tier — the realistic "run it as a
+    # skill" model — resolved from the live lineup, never hardcoded.
+    skill_model = args.model or (sample[1].model_id if len(sample) > 1 else sample[0].model_id)
+
+    output_fields: set[str] = set()
+    for exit_id in pipeline.exit_nodes:
+        node_output = pipeline.node_by_id(exit_id).output
+        if isinstance(node_output, dict):
+            output_fields.update(node_output.keys())
+
+    pipeline_runs = []
+    for i in range(args.trials):
+        print(f"rote eval: pipeline trial {i + 1}/{args.trials} ({runtime_dir})", file=sys.stderr)
+        pipeline_runs.append(
+            run_pipeline_trial(
+                runtime_dir,
+                input_payload,
+                signals=signals or None,
+                python_executable=args.python,
+            )
+        )
+
+    skill_runs = []
+    if skill_dir is not None:
+        for i in range(args.trials):
+            print(
+                f"rote eval: skill trial {i + 1}/{args.trials} "
+                f"(claude -p, {skill_model}, subscription auth) — this takes minutes",
+                file=sys.stderr,
+            )
+            skill_runs.append(
+                run_skill_trial(
+                    skill_dir,
+                    input_payload,
+                    model=skill_model,
+                    max_turns=args.max_turns,
+                    output_fields=sorted(output_fields) or None,
+                )
+            )
+    else:
+        print("rote eval: no source skill — measuring the pipeline side only", file=sys.stderr)
+
+    result = EmpiricalResult(
+        trials=args.trials,
+        skill_runs=tuple(skill_runs),
+        pipeline_runs=tuple(pipeline_runs),
+        skill_model=skill_model if skill_runs else None,
+    )
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    corpus_path = append_corpus(result, generated_at=generated_at)
+    print(f"rote eval: measurements appended to {corpus_path}", file=sys.stderr)
+    return render_measured_markdown(result, catalog), measured_to_dict(result, catalog)
 
 
 # ───────── Argument parsing ─────────
@@ -780,6 +916,59 @@ def _build_parser() -> argparse.ArgumentParser:
         "--out",
         default=None,
         help="Write the scorecard to a file instead of stdout",
+    )
+    eval_cmd.add_argument(
+        "--run",
+        action="store_true",
+        help=(
+            "Empirical mode: actually execute both sides --trials times and "
+            "append a Measured section. Runs the emitted pipeline (fast, "
+            "cheap) and the raw skill via `claude -p` (minutes per trial, "
+            "billed to your Claude subscription). Requires --input."
+        ),
+    )
+    eval_cmd.add_argument(
+        "--trials",
+        type=int,
+        default=3,
+        help="Trials per side in --run mode (default: 3)",
+    )
+    eval_cmd.add_argument(
+        "--input",
+        default=None,
+        help=(
+            "Task file for --run: the pipeline input payload as JSON, or an "
+            'envelope {"input": {...}, "signals": {"<signal>": <payload>}} '
+            "for pipelines with HITL gates"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--model",
+        default=None,
+        help=("Model for the skill-side agent trials (default: the live lineup's mid tier)"),
+    )
+    eval_cmd.add_argument(
+        "--max-turns",
+        type=int,
+        default=60,
+        help="Turn budget per skill-side trial (default: 60)",
+    )
+    eval_cmd.add_argument(
+        "--runtime-dir",
+        default=None,
+        help=(
+            "Emitted runtime app for the pipeline trials (default: the "
+            "graduate --out layout's runtime/dbos or runtime/python sibling)"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--python",
+        default=None,
+        dest="python",
+        help=(
+            "Python executable for pipeline trials (default: the current "
+            "interpreter; point at your app's venv if it has its own deps)"
+        ),
     )
     eval_cmd.set_defaults(func=_cmd_eval)
 

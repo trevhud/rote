@@ -565,7 +565,12 @@ Don't waste time debugging stubs. These are intentional.
 - `rote eval` + the auto-emitted `graduated/scorecard.md` (static
   before/after estimate of speed, cost, determinism; live-fetched
   prices — see the eval gotchas below)
-- 421 tests (409 fast + 12 slow). Run with `pytest tests/` (fast
+- `rote eval --run` (empirical mode: real trials of both sides —
+  `claude -p` for the skill, the emitted python/DBOS app for the
+  pipeline with cross-process gate signaling via `DBOSClient`; real
+  judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
+  measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
+- 448 tests (435 fast + 13 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

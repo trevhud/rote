@@ -411,6 +411,8 @@ def emit_signature_module(
     else:  # pragma: no cover — LLMSignature validates the client field
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
 
+    usage_block = _emit_usage_logger(node, model, spec)
+
     return (
         header
         + "\n\n"
@@ -423,7 +425,46 @@ def emit_signature_module(
         + "\n\n\n"
         + interpolate_block
         + "\n\n"
+        + usage_block
+        + "\n\n"
         + call_block
+    )
+
+
+def _emit_usage_logger(node: Node, model: str, spec: LLMSignature) -> str:
+    """Emit the opt-in usage log hook.
+
+    When ``ROTE_USAGE_LOG`` names a file, every judge call appends one
+    JSONL record with its real token usage. This is what lets
+    ``rote eval --run`` measure the graduated pipeline's actual LLM
+    footprint instead of estimating it — and it doubles as a zero-setup
+    observability tap in production. No env var → no-op, and a logging
+    failure never breaks the judge call itself.
+    """
+    if spec.client == "openai":
+        in_attr, out_attr = "prompt_tokens", "completion_tokens"
+    else:
+        in_attr, out_attr = "input_tokens", "output_tokens"
+    return (
+        f"def _log_usage(response: Any) -> None:\n"
+        f'    """Append token usage as JSONL to $ROTE_USAGE_LOG, if set."""\n'
+        f"    import os\n"
+        f"\n"
+        f'    path = os.environ.get("ROTE_USAGE_LOG")\n'
+        f"    if not path:\n"
+        f"        return\n"
+        f"    try:\n"
+        f'        usage = getattr(response, "usage", None)\n'
+        f"        record = {{\n"
+        f'            "node": {json.dumps(node.id)},\n'
+        f'            "model": {json.dumps(model)},\n'
+        f'            "input_tokens": getattr(usage, {json.dumps(in_attr)}, None),\n'
+        f'            "output_tokens": getattr(usage, {json.dumps(out_attr)}, None),\n'
+        f"        }}\n"
+        f'        with open(path, "a", encoding="utf-8") as f:\n'
+        f'            f.write(json.dumps(record) + "\\n")\n'
+        f"    except OSError:\n"
+        f"        pass\n"
     )
 
 
@@ -472,6 +513,7 @@ def _emit_forward_anthropic(node: Node, pascal: str, model: str, spec: LLMSignat
         f"                }}\n"
         f"            ],\n"
         f"        )\n"
+        f"        _log_usage(response)\n"
         f"        for block in response.content:\n"
         f'            if block.type == "tool_use":\n'
         f"                return {pascal}Output.model_validate(block.input)\n"
@@ -511,6 +553,7 @@ def _emit_forward_openai(node: Node, pascal: str, model: str, spec: LLMSignature
         f"                }}\n"
         f"            ],\n"
         f"        )\n"
+        f"        _log_usage(response)\n"
         f"        content = response.choices[0].message.content\n"
         f"        if not content:\n"
         f'            raise RuntimeError("OpenAI returned no content for {node.id}")\n'

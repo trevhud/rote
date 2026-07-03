@@ -354,6 +354,23 @@ turn estimates come from the graduator's per-step `eval.yaml` sidecar
 when available — and every assumption is printed so you can audit or
 override it.
 
+When you'd rather measure than model, add `--run`:
+
+```sh
+rote eval /tmp/graduated-bdr --run --trials 3 --input task.json
+```
+
+Empirical mode executes both sides for real — the emitted pipeline as
+a subprocess (with real per-judge token usage captured via the
+emitted `$ROTE_USAGE_LOG` hook), and the raw skill via `claude -p` on
+your Claude subscription — then appends a Measured section: wall
+clock, cost, agent turns, and output *agreement* across trials (the
+determinism number, measured instead of estimated). Pipelines with
+HITL gates run on the DBOS target; supply resume payloads in the task
+file as `{"input": {...}, "signals": {"<signal>": {...}}}`. Every
+measurement also lands in `~/.local/share/rote/eval-corpus.jsonl`, and
+the card suggests re-fitted priors from your own runs.
+
 ---
 
 ## The five node kinds

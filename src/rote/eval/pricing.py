@@ -30,7 +30,7 @@ import contextlib
 import json
 import time
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -92,12 +92,23 @@ class ModelPrice:
 
 @dataclass(frozen=True)
 class PricingCatalog:
-    """A fetched set of current models with prices."""
+    """A fetched set of current models with prices.
+
+    ``prices`` holds the tier representatives the scorecard samples;
+    ``reference_prices`` holds every priced model from the fetch
+    (normalized id → (input, output) USD per Mtok) so measured usage
+    from arbitrary judge models can be priced too.
+    """
 
     prices: tuple[ModelPrice, ...]
+    reference_prices: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     def by_provider(self, provider: str) -> list[ModelPrice]:
         return [p for p in self.prices if p.provider == provider]
+
+    def price_for(self, model_id: str) -> tuple[float, float] | None:
+        """(input, output) USD per Mtok for any fetched model, else None."""
+        return self.reference_prices.get(_normalize_model_id(model_id))
 
     def sample(self, provider: str = "anthropic") -> list[ModelPrice]:
         """The scorecard's model sampling: one model per tier, newest
@@ -366,7 +377,10 @@ def build_catalog(
                 fetched_at=fetched_at,
             )
         )
-    return PricingCatalog(prices=tuple(prices))
+    reference = {
+        _normalize_model_id(m.model_id): (m.input_per_mtok, m.output_per_mtok) for m in raw_models
+    }
+    return PricingCatalog(prices=tuple(prices), reference_prices=reference)
 
 
 # ───────── Disk cache + entry point ─────────
@@ -386,7 +400,12 @@ def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog |
         prices = tuple(
             ModelPrice(**{**entry, "tier": ModelTier(entry["tier"])}) for entry in raw["prices"]
         )
-        return PricingCatalog(prices=prices) if prices else None
+        reference = {
+            str(k): (float(v[0]), float(v[1])) for k, v in raw.get("reference_prices", {}).items()
+        }
+        if not prices:
+            return None
+        return PricingCatalog(prices=prices, reference_prices=reference)
     except Exception:
         return None  # any unreadable/stale/foreign cache means refetch
 
@@ -396,6 +415,7 @@ def _store_cache(path: Path, catalog: PricingCatalog, provider: str) -> None:
         "cached_at_epoch": time.time(),
         "provider": provider,
         "prices": [asdict(p) | {"tier": p.tier.value} for p in catalog.prices],
+        "reference_prices": {k: list(v) for k, v in catalog.reference_prices.items()},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
