@@ -125,7 +125,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     graduator = Graduator(agent=args.agent, model=args.model)
 
     try:
-        result = asyncio.run(graduator.graduate(skill_path, graduated_dir))
+        result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
     except GraduatorError as e:
         print(f"rote graduate: {e}", file=sys.stderr)
         return 1
@@ -401,6 +401,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "(e.g. 'claude-opus-4-6' for higher-quality / higher-cost "
             "runs on complex skills). Defaults to the driver's default, "
             "which is Sonnet 4.6 for the subscription path."
+        ),
+    )
+    graduate.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "Incremental re-graduation: requires a previous graduation in "
+            "--out. Diffs the skill against the previous run's provenance "
+            "and re-derives only nodes whose source sections changed — "
+            "unchanged nodes are preserved verbatim (ids and all), and a "
+            "skill with no changes skips the agent entirely."
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)

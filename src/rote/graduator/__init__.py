@@ -34,8 +34,14 @@ from rote.graduator.drivers import (
     available_drivers,
     get_driver,
 )
+from rote.graduator.update import (
+    UPDATE_CONTEXT_DIRNAME,
+    UpdatePlan,
+    build_update_plan,
+    render_update_brief,
+)
 from rote.ir import Pipeline, load_pipeline
-from rote.skill_source import PROVENANCE_FILENAME, write_provenance
+from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
 
 
 class GraduatorError(RuntimeError):
@@ -167,6 +173,7 @@ class Graduator:
         self,
         skill_dir: Path | str,
         output_dir: Path | str,
+        update: bool = False,
     ) -> GraduationResult:
         """Run the full graduation flow.
 
@@ -177,6 +184,13 @@ class Graduator:
         output_dir
             Where to write the graduated artifacts. Created if missing;
             existing files of the same name are overwritten.
+        update
+            Incremental mode: require a previous graduation (with its
+            provenance sidecar) in ``output_dir``, diff the current
+            SKILL.md against the stamped section hashes, and instruct
+            the agent to re-derive only nodes whose source material
+            changed. A skill with no section changes returns without
+            invoking the agent at all.
 
         Returns
         -------
@@ -188,8 +202,9 @@ class Graduator:
         ------
         GraduatorError
             For any user-actionable failure: missing skill bundle,
-            unavailable driver, driver failure, or invalid produced
-            pipeline.yaml.
+            unavailable driver, driver failure, invalid produced
+            pipeline.yaml — or, in update mode, a missing previous run
+            or an update that dropped provenance-preserved nodes.
         """
         skill_dir = Path(skill_dir).resolve()
         output_dir = Path(output_dir).resolve()
@@ -199,16 +214,38 @@ class Graduator:
         if not (skill_dir / "SKILL.md").is_file():
             raise GraduatorError(f"Not a skill bundle (no SKILL.md found): {skill_dir}")
 
+        skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+        plan: UpdatePlan | None = None
+        if update:
+            prev_pipeline, plan = self._plan_update(output_dir, skill_md_text)
+            if plan.is_noop:
+                return GraduationResult(
+                    pipeline=prev_pipeline,
+                    output_dir=output_dir,
+                    driver_name="(no-op)",
+                    driver_metadata={
+                        "update": "no source sections changed; previous pipeline kept"
+                    },
+                )
+
         driver = self.select_driver()
 
         with tempfile.TemporaryDirectory(prefix="rote-graduate-") as work_dir_str:
             work_dir = Path(work_dir_str)
+
+            run_kwargs: dict[str, Any] = {}
+            if plan is not None:
+                run_kwargs["extra_instructions"] = self._materialize_update_context(
+                    work_dir, output_dir, plan
+                )
 
             try:
                 result = await driver.run(
                     skill_dir=skill_dir,
                     graduator_skill_dir=self.graduator_skill_dir,
                     work_dir=work_dir,
+                    **run_kwargs,
                 )
             except DriverError as e:
                 detail = f"\n\n{e.details}" if getattr(e, "details", None) else ""
@@ -222,18 +259,35 @@ class Graduator:
                     f"pipeline.yaml at {result.pipeline_yaml_path}: {e}"
                 ) from e
 
+            if plan is not None:
+                produced_ids = {n.id for n in pipeline.nodes}
+                missing = [nid for nid in plan.preserved_node_ids if nid not in produced_ids]
+                if missing:
+                    raise GraduatorError(
+                        f"Update run dropped or renamed nodes whose source sections "
+                        f"did not change: {missing}. Node ids version the emitted "
+                        f"workflow, so this would orphan in-flight runs. The previous "
+                        f"output was left untouched — re-run, or run a full graduation "
+                        f"if the restructure is intentional."
+                    )
+
             # Stamp provenance: hash every SKILL.md section so a later
             # `graduate --update` can tell exactly which nodes' source
             # material changed. The agent wrote `source.section` per
             # node; the hashes are ours to compute.
-            skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
             write_provenance(
                 Path(result.pipeline_yaml_path).parent / PROVENANCE_FILENAME,
                 pipeline,
                 skill_md_text,
             )
 
-            self._move_work_dir_to_output(result.work_dir, output_dir)
+            if plan is not None:
+                # The context dir was reference material for the agent,
+                # not output.
+                shutil.rmtree(work_dir / UPDATE_CONTEXT_DIRNAME, ignore_errors=True)
+                self._merge_work_dir_to_output(result.work_dir, output_dir)
+            else:
+                self._move_work_dir_to_output(result.work_dir, output_dir)
 
             # Re-point the result's path to the moved location for the
             # caller's benefit.
@@ -243,6 +297,77 @@ class Graduator:
                 driver_name=result.driver_name,
                 driver_metadata=result.metadata,
             )
+
+    def _plan_update(self, output_dir: Path, skill_md_text: str) -> tuple[Pipeline, UpdatePlan]:
+        """Load the previous run and diff the skill against its provenance."""
+        prev_yaml = output_dir / "pipeline.yaml"
+        prev_prov_path = output_dir / PROVENANCE_FILENAME
+        if not prev_yaml.is_file():
+            raise GraduatorError(
+                f"--update requires a previous graduation in {output_dir} "
+                f"(no pipeline.yaml found). Run a full graduation first."
+            )
+        if not prev_prov_path.is_file():
+            raise GraduatorError(
+                f"--update requires the previous run's provenance sidecar, but "
+                f"{prev_prov_path} is missing (the pipeline predates provenance "
+                f"stamping). Run one full graduation to establish it."
+            )
+        try:
+            prev_pipeline = load_pipeline(prev_yaml)
+        except Exception as e:
+            raise GraduatorError(f"Previous pipeline at {prev_yaml} is invalid: {e}") from e
+        try:
+            prev_prov = load_provenance(prev_prov_path)
+        except Exception as e:
+            raise GraduatorError(f"Provenance sidecar {prev_prov_path} is invalid: {e}") from e
+        return prev_pipeline, build_update_plan(prev_pipeline, prev_prov, skill_md_text)
+
+    @staticmethod
+    def _materialize_update_context(work_dir: Path, output_dir: Path, plan: UpdatePlan) -> str:
+        """Copy previous artifacts + the brief into the work dir.
+
+        Drivers only expose the skill, rubric, and work directories to
+        the agent, so the previous pipeline and stubs must travel into
+        the work dir to be readable. Returns the extra prompt
+        instructions pointing the agent at the brief.
+        """
+        ctx_dir = work_dir / UPDATE_CONTEXT_DIRNAME
+        ctx_dir.mkdir(parents=True)
+        shutil.copy2(output_dir / "pipeline.yaml", ctx_dir / "pipeline.yaml")
+        for sub in ("extracted", "signatures"):
+            prev_sub = output_dir / sub
+            if prev_sub.is_dir():
+                shutil.copytree(prev_sub, ctx_dir / sub)
+        (ctx_dir / "UPDATE.md").write_text(render_update_brief(plan), encoding="utf-8")
+        return (
+            f"IMPORTANT: This is an incremental UPDATE run, not a from-scratch "
+            f"graduation. Before starting the procedure, read "
+            f"{ctx_dir}/UPDATE.md — it lists exactly which source sections "
+            f"changed and which existing nodes must be preserved verbatim. "
+            f"Start from the previous pipeline at {ctx_dir}/pipeline.yaml and "
+            f"make the minimal changes the brief describes."
+        )
+
+    @staticmethod
+    def _merge_work_dir_to_output(work_dir: Path, output_dir: Path) -> None:
+        """File-level merge of ``work_dir`` into ``output_dir``.
+
+        Update runs produce only what the agent rewrote; everything it
+        left alone (unchanged extracted modules — possibly filled in by
+        the user since graduation) must survive in the output. That
+        rules out :meth:`_move_work_dir_to_output`, whose top-level
+        directory replacement would delete the untouched siblings.
+        """
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for item in sorted(work_dir.rglob("*")):
+            if item.is_dir():
+                continue
+            target = output_dir / item.relative_to(work_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                target.unlink()
+            shutil.move(str(item), str(target))
 
     @staticmethod
     def _move_work_dir_to_output(work_dir: Path, output_dir: Path) -> None:

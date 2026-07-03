@@ -91,6 +91,7 @@ class GraduatorDriver(Protocol):
         skill_dir: Path,
         graduator_skill_dir: Path,
         work_dir: Path,
+        extra_instructions: str | None = None,
     ) -> DriverResult:
         """Run the graduator agent against ``skill_dir``.
 
@@ -103,7 +104,15 @@ class GraduatorDriver(Protocol):
         work_dir
             A scratch directory where the agent writes ``pipeline.yaml``
             and any extracted/signature stubs. The caller ensures this
-            directory exists and is empty.
+            directory exists and is empty — except in incremental-update
+            runs, where the orchestrator pre-materializes read-only
+            context the instructions point at.
+        extra_instructions
+            Optional run-specific instructions appended to the agent's
+            task prompt (e.g. the incremental-update pointer). The
+            orchestrator only passes this when it has something to say,
+            so drivers that predate the parameter keep working on full
+            runs.
 
         Returns
         -------
