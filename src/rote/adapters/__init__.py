@@ -6,8 +6,8 @@ adapters are template substitution.
 
 The "two adapters minimum" rule applies: until at least two adapters
 work end-to-end, assume the IR shape is secretly leaking the first
-runtime's mental model. Inngest is the planned second target after
-Temporal.
+runtime's mental model. (Satisfied — five adapters share the IR today:
+Temporal, Cloudflare, DBOS Python, DBOS TypeScript, and Inngest.)
 
 Adapters are registered in :data:`ADAPTERS` and dispatched by name from
 the CLI (``rote emit --runtime <name>``).
@@ -54,6 +54,12 @@ def _dbos_ts_adapter_factory() -> Adapter:
     return DbosTsAdapter()
 
 
+def _inngest_adapter_factory() -> Adapter:
+    from rote.adapters.inngest import InngestAdapter
+
+    return InngestAdapter()
+
+
 #: Name → factory. Keep the values as zero-arg callables so adapters can
 #: lazy-import their heavy dependencies.
 ADAPTERS: dict[str, Callable[[], Adapter]] = {
@@ -61,6 +67,7 @@ ADAPTERS: dict[str, Callable[[], Adapter]] = {
     "cloudflare": _cloudflare_adapter_factory,
     "dbos": _dbos_adapter_factory,
     "dbos-ts": _dbos_ts_adapter_factory,
+    "inngest": _inngest_adapter_factory,
 }
 
 
