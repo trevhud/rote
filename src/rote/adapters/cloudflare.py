@@ -33,12 +33,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_block_comment_line,
 )
 from rote.adapters._common import (
@@ -825,53 +825,42 @@ class CloudflareAdapter:
         return emit_index(pipeline, self.config)
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
-        out = Path(output_dir)
-        src = out / "src"
-        sigs = src / "signatures"
-        extracted = src / "extracted"
-        for d in (out, src, sigs, extracted):
-            d.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        wf_path = src / "workflow.ts"
-        wf_path.write_text(self.emit_workflow(pipeline), encoding="utf-8")
-        written["workflow"] = wf_path
-
-        idx_path = src / "index.ts"
-        idx_path.write_text(self.emit_index(pipeline), encoding="utf-8")
-        written["index"] = idx_path
+        written["workflow"] = writer.write(
+            "src", "workflow.ts", content=self.emit_workflow(pipeline)
+        )
+        written["index"] = writer.write("src", "index.ts", content=self.emit_index(pipeline))
 
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = resolve_within(sigs, f"{node.id}.ts")
-                p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
-                written[f"signatures/{node.id}"] = p
+                written[f"signatures/{node.id}"] = writer.write(
+                    "src",
+                    "signatures",
+                    f"{node.id}.ts",
+                    content=emit_signature_module(node, self.config),
+                )
             else:
-                p = resolve_within(extracted, f"{node.id}.ts")
-                p.write_text(emit_extracted_module(node), encoding="utf-8")
-                written[f"extracted/{node.id}"] = p
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=emit_extracted_module(node),
+                )
 
-        wrangler_path = out / "wrangler.jsonc"
-        wrangler_path.write_text(emit_wrangler(pipeline, self.config), encoding="utf-8")
-        written["wrangler"] = wrangler_path
+        written["wrangler"] = writer.write(
+            "wrangler.jsonc", content=emit_wrangler(pipeline, self.config)
+        )
+        written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
+        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
+        written[".dev.vars.example"] = writer.write(
+            ".dev.vars.example", content=emit_dev_vars_example(pipeline)
+        )
 
-        pkg_path = out / "package.json"
-        pkg_path.write_text(emit_package_json(pipeline), encoding="utf-8")
-        written["package.json"] = pkg_path
-
-        ts_path = out / "tsconfig.json"
-        ts_path.write_text(emit_tsconfig(), encoding="utf-8")
-        written["tsconfig.json"] = ts_path
-
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
-
-        dev_vars_path = out / ".dev.vars.example"
-        dev_vars_path.write_text(emit_dev_vars_example(pipeline), encoding="utf-8")
-        written[".dev.vars.example"] = dev_vars_path
-
+        writer.finalize()
         return written

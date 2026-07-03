@@ -85,12 +85,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
@@ -862,45 +862,36 @@ class DbosTsAdapter:
         return emit_main(pipeline, self.config)
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
-        out = Path(output_dir)
-        src = out / "src"
-        sigs = src / "signatures"
-        extracted = src / "extracted"
-        for d in (out, src, sigs, extracted):
-            d.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        main_path = src / "main.ts"
-        main_path.write_text(self.emit_main(pipeline), encoding="utf-8")
-        written["main"] = main_path
+        written["main"] = writer.write("src", "main.ts", content=self.emit_main(pipeline))
 
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = resolve_within(sigs, f"{node.id}.ts")
-                p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
-                written[f"signatures/{node.id}"] = p
+                written[f"signatures/{node.id}"] = writer.write(
+                    "src",
+                    "signatures",
+                    f"{node.id}.ts",
+                    content=emit_signature_module(node, self.config),
+                )
             else:
-                p = resolve_within(extracted, f"{node.id}.ts")
-                p.write_text(emit_extracted_module(node), encoding="utf-8")
-                written[f"extracted/{node.id}"] = p
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=emit_extracted_module(node),
+                )
 
-        pkg_path = out / "package.json"
-        pkg_path.write_text(emit_package_json(pipeline), encoding="utf-8")
-        written["package.json"] = pkg_path
+        written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
+        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
+        written["dbos-config"] = writer.write(
+            "dbos-config.yaml", content=emit_dbos_config(pipeline)
+        )
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
-        ts_path = out / "tsconfig.json"
-        ts_path.write_text(emit_tsconfig(), encoding="utf-8")
-        written["tsconfig.json"] = ts_path
-
-        config_path = out / "dbos-config.yaml"
-        config_path.write_text(emit_dbos_config(pipeline), encoding="utf-8")
-        written["dbos-config"] = config_path
-
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
-
+        writer.finalize()
         return written
