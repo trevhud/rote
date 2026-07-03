@@ -85,12 +85,18 @@ async def _start_temporal(
 ) -> dict[str, Any]:
     client = await _temporal_client(trigger)
     workflow_id = f"{tool_name}-{uuid.uuid4().hex[:12]}"
-    handle = await client.start_workflow(
-        trigger.workflow_name,
-        payload,
-        id=workflow_id,
-        task_queue=trigger.task_queue,
-    )
+    try:
+        handle = await client.start_workflow(
+            trigger.workflow_name,
+            payload,
+            id=workflow_id,
+            task_queue=trigger.task_queue,
+        )
+    except Exception as e:
+        raise BackendError(
+            f"Temporal at {trigger.address} refused to start workflow "
+            f"{trigger.workflow_name!r} on task queue {trigger.task_queue!r}: {e}"
+        ) from e
     return {
         "workflow_id": workflow_id,
         "run_id": handle.first_execution_run_id or "",
@@ -102,7 +108,12 @@ async def _start_temporal(
 async def _status_temporal(trigger: TemporalTrigger, workflow_id: str) -> dict[str, Any]:
     client = await _temporal_client(trigger)
     handle = client.get_workflow_handle(workflow_id)
-    description = await handle.describe()
+    try:
+        description = await handle.describe()
+    except Exception as e:
+        raise BackendError(
+            f"Temporal at {trigger.address} could not describe workflow {workflow_id!r}: {e}"
+        ) from e
     status = description.status.name.lower() if description.status else "unknown"
     return {
         "workflow_id": workflow_id,
@@ -124,10 +135,24 @@ async def _start_cloudflare(trigger: CloudflareTrigger, payload: dict[str, Any])
             data = resp.json()
     except httpx.HTTPError as e:
         raise BackendError(f"Cloudflare worker at {trigger.url} failed: {e}") from e
+    except ValueError as e:
+        raise BackendError(
+            f"Cloudflare worker at {trigger.url} returned a non-JSON response "
+            f"(HTTP {resp.status_code}): {resp.text[:200]!r}"
+        ) from e
 
-    # The emitted src/index.ts responds with {id, status}.
+    # The emitted src/index.ts responds with {id, status}. A 2xx JSON body
+    # without an id means the URL is not the emitted worker (an auth proxy,
+    # a different service) — nothing started, so say so instead of
+    # fabricating success with an empty workflow_id.
+    if not isinstance(data, dict) or not data.get("id"):
+        raise BackendError(
+            f"Cloudflare worker at {trigger.url} did not return a workflow id. "
+            f"Expected the emitted worker's {{id, status}} response, got: "
+            f"{str(data)[:200]}"
+        )
     return {
-        "workflow_id": str(data.get("id", "")),
+        "workflow_id": str(data["id"]),
         "status": "started",
         "runtime": "cloudflare",
         "details": data.get("status"),

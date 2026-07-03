@@ -212,7 +212,15 @@ def _cmd_register(args: argparse.Namespace) -> int:
         return 1
 
     registry_path = Path(args.registry) if args.registry else default_registry_path()
-    registry = Registry.load(registry_path)
+    try:
+        registry = Registry.load(registry_path)
+    except Exception as e:
+        print(
+            f"error: failed to load registry {registry_path}: {e}\n"
+            f"Fix or delete the file and re-run.",
+            file=sys.stderr,
+        )
+        return 1
     replaced = registry.upsert(entry)
     registry.save(registry_path)
 

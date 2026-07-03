@@ -258,6 +258,46 @@ async def test_tool_list_fresh_without_notification(registry_path: Path) -> None
         assert "another-pipeline" in names
 
 
+@pytest.mark.asyncio
+async def test_corrupt_registry_survives_and_recovers(registry_path: Path) -> None:
+    """A corrupt registry file must not kill the watcher or pin the stale
+    digest: the server keeps serving the previous tool list, and once the
+    file is fixed the next poll picks it up and notifies."""
+    handler = _ToolListChangedRecorder()
+    server = build_server(registry_path, poll_interval=0.05)
+
+    async with Client(server, message_handler=handler) as client:
+        before = {t.name for t in await client.list_tools()}
+        assert "bdr-campaign" in before
+
+        # Corrupt the file (hand-edit typo). Give the watcher several polls:
+        # it must neither die nor notify.
+        registry_path.write_text("{ not json", encoding="utf-8")
+        await asyncio.sleep(0.3)
+        assert not handler.changed.is_set()
+
+        # Fix the file with a new entry. The watcher must still be alive to
+        # see it — this fails if the corrupt poll killed the task or if the
+        # corrupt digest was committed as "seen".
+        registry = Registry()
+        registry.upsert(_bdr_entry())
+        registry.upsert(_cf_entry())
+        registry.upsert(
+            RegistryEntry(
+                name="post-recovery",
+                description="Registered after the corrupt write was fixed",
+                pipeline_yaml=str(BDR_PIPELINE_YAML),
+                input_schema={"type": "object"},
+                trigger=TemporalTrigger(task_queue="q", workflow_name="R_abc123"),
+            )
+        )
+        registry.save(registry_path)
+
+        await asyncio.wait_for(handler.changed.wait(), timeout=5.0)
+        after = {t.name for t in await client.list_tools()}
+        assert "post-recovery" in after
+
+
 # ───────── Backend units (no server) ─────────
 
 
@@ -299,6 +339,45 @@ async def test_cloudflare_status_url_template_is_hit(monkeypatch: pytest.MonkeyP
     result = await backends.workflow_status(entry, "wf-42")
     assert seen == ["https://wf.example.workers.dev/status/wf-42"]
     assert result == {"workflow_id": "wf-42", "status": "complete", "runtime": "cloudflare"}
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_start_without_id_is_backend_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 2xx JSON response without an `id` means the URL is not the emitted
+    worker — that must be a BackendError, not a fabricated success with an
+    empty workflow_id."""
+    entry = _cf_entry()
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict[str, Any]:
+            return {"message": "welcome to some unrelated service"}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *exc: Any) -> None:
+            pass
+
+        async def post(self, url: str, json: Any = None) -> FakeResponse:
+            return FakeResponse()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(backends.BackendError, match="did not return a workflow id"):
+        await backends.start_workflow(entry, {"x": "y"})
 
 
 # ───────── Temporal backend against a real (test) server ─────────

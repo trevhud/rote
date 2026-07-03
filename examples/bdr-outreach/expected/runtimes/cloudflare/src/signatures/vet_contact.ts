@@ -149,7 +149,15 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
                     : undefined,
             vars,
         );
-        if (value === undefined) return "";
+        if (value === undefined) {
+            // A hole in a judge prompt produces confident garbage that is
+            // far harder to debug than an error naming the missing field.
+            throw new Error(
+                `prompt template references {{ ${key} }} but the input has no ` +
+                    `such field; available top-level keys: ${Object.keys(vars).sort().join(", ")}`,
+            );
+        }
+        if (value === null) return "";
         return typeof value === "string" ? value : JSON.stringify(value);
     });
 }

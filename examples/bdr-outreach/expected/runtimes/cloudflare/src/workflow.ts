@@ -3,7 +3,7 @@
  *
  * Pipeline: bdr-campaign v0.1.0
  * Source skill: ../../skill
- * Pipeline hash: ac861059
+ * Pipeline hash: fef3f728
  *
  * DO NOT EDIT BY HAND. Re-run `rote emit --runtime cloudflare` to regenerate.
  *

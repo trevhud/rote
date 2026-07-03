@@ -153,13 +153,11 @@ class Registry(BaseModel):
 def input_schema_for(pipeline_input: PipelineInput) -> dict[str, Any]:
     """Derive the MCP tool's inputSchema from the pipeline's input contract.
 
-    Prefers a structured ``input_schema`` field if the loaded model carries
-    one (being added to :class:`rote.ir.PipelineInput` concurrently — coded
-    defensively via ``getattr`` so this works before and after that lands).
-    Otherwise synthesizes a permissive object schema from the required /
+    Prefers the structured ``input_schema`` field when the pipeline carries
+    one. Otherwise synthesizes a permissive object schema from the required /
     optional name lists, which are untyped in the current IR.
     """
-    explicit = getattr(pipeline_input, "input_schema", None)
+    explicit = pipeline_input.input_schema
     if isinstance(explicit, dict) and explicit:
         return dict(explicit)
 
@@ -191,7 +189,13 @@ def entry_from_pipeline(
     characters replaced by ``-``; description comes from
     ``pipeline.description`` (first paragraph, whitespace-normalized).
     """
-    tool_name = name if name is not None else re.sub(r"[^A-Za-z0-9_-]+", "-", pipeline.name)
+    tool_name = (
+        name
+        if name is not None
+        # Strip leading separators the substitution can leave behind — tool
+        # names must start alphanumeric or RegistryEntry validation raises.
+        else re.sub(r"[^A-Za-z0-9_-]+", "-", pipeline.name).lstrip("-_") or "pipeline"
+    )
     return RegistryEntry(
         name=tool_name,
         description=pipeline.description.strip(),

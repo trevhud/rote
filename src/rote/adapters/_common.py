@@ -42,7 +42,10 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     name) so a regenerated pipeline becomes a new type. Old in-flight
     workflows continue on the old code; new workflows use the new code.
     """
-    payload = f"{pipeline.name}|{pipeline.version}|{len(pipeline.nodes)}|{len(pipeline.edges)}"
+    # Hash the full validated contents: node wiring, inputs, retries, and
+    # edges all participate, so any regeneration that changes behavior gets
+    # a new workflow type — name/version/counts alone miss rewires.
+    payload = pipeline.model_dump_json(by_alias=True, exclude_none=True)
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 

@@ -162,12 +162,22 @@ class RegistryProvider(Provider):
             return None
 
     def _load_if_changed(self) -> bool:
-        """Reload the registry if the file content changed. Returns True on change."""
+        """Reload the registry if the file content changed. Returns True on change.
+
+        The digest is committed only after a successful parse: a corrupt
+        file (hand-edit typo, non-atomic write by another tool) must not
+        be recorded as "seen", or the server would silently serve the
+        previous tool list forever. Leaving the digest uncommitted means
+        every subsequent poll retries, so fixing the file recovers the
+        server without a restart. `Registry.save` itself is atomic
+        (tmp + rename), so `rote register` can never produce a torn read.
+        """
         digest = self._current_digest()
         if digest == self._digest:
             return False
+        registry = Registry.load(self.registry_path)
         self._digest = digest
-        self._registry = Registry.load(self.registry_path)
+        self._registry = registry
         return True
 
     # ── Provider hooks ──
@@ -187,13 +197,28 @@ class RegistryProvider(Provider):
             yield
         finally:
             watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
 
     # ── change notification ──
 
     async def _watch_registry(self) -> None:
         while True:
             await asyncio.sleep(self.poll_interval)
-            if self._load_if_changed():
+            try:
+                changed = self._load_if_changed()
+            except Exception:
+                # A corrupt registry or transient filesystem error must not
+                # kill the watcher task — that would silently end
+                # list_changed notifications for the rest of the server's
+                # life. The digest was not committed, so the next poll
+                # retries and a fixed file recovers automatically.
+                logger.warning(
+                    "registry reload failed; still serving the previous tool list",
+                    exc_info=True,
+                )
+                continue
+            if changed:
                 await self._notify_tool_list_changed()
 
     async def _notify_tool_list_changed(self) -> None:

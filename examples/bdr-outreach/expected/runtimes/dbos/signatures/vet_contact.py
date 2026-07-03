@@ -149,12 +149,24 @@ OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(
 
 
 def _interpolate(template: str, variables: dict[str, Any]) -> str:
-    """Resolve ``{{ dotted.path }}`` placeholders against the input dict."""
+    """Resolve ``{{ dotted.path }}`` placeholders against the input dict.
+
+    An unresolvable placeholder raises instead of interpolating "" —
+    a hole in a judge prompt produces confident garbage that is far
+    harder to debug than a KeyError naming the missing variable.
+    """
 
     def _resolve(match: re.Match[str]) -> str:
+        path = match.group(1)
         value: Any = variables
-        for part in match.group(1).split("."):
-            value = value.get(part) if isinstance(value, dict) else None
+        for part in path.split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise KeyError(
+                    f"prompt template references {{{{ {path} }}}} but the "
+                    f"input has no such field; available top-level keys: "
+                    f"{sorted(variables)}"
+                )
+            value = value[part]
         if value is None:
             return ""
         return value if isinstance(value, str) else json.dumps(value, default=str)
