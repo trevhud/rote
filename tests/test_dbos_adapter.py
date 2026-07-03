@@ -16,6 +16,7 @@ so the fast suite stays runnable in environments without the extra.
 from __future__ import annotations
 
 import ast
+import copy
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ from rote.adapters.dbos import (
     emit_main,
     emit_signature_module,
 )
-from rote.ir import Node, NodeKind, Pipeline, load_pipeline
+from rote.ir import Edge, Node, NodeKind, Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -182,15 +183,16 @@ def test_retry_on_categories_surface_as_comment(main_src: str) -> None:
 def test_parallel_wave_uses_queue_fan_out(main_src: str) -> None:
     """Wave 1 (target_research ∥ taxonomy_lookup) must enqueue both nodes
     before joining either handle — otherwise the wave serializes."""
-    enq_a = main_src.index("target_research_handle = queue.enqueue(target_research, {})")
-    enq_b = main_src.index("taxonomy_lookup_handle = queue.enqueue(taxonomy_lookup, {})")
+    enq_a = main_src.index("target_research_handle = queue.enqueue(")
+    enq_b = main_src.index("taxonomy_lookup_handle = queue.enqueue(")
     join_a = main_src.index("target_research_result = target_research_handle.get_result()")
     join_b = main_src.index("taxonomy_lookup_result = taxonomy_lookup_handle.get_result()")
     assert max(enq_a, enq_b) < min(join_a, join_b)
 
 
 def test_single_node_waves_call_step_directly(main_src: str) -> None:
-    assert "lead_generation_loop_result = lead_generation_loop({})" in main_src
+    assert "lead_generation_loop_result = lead_generation_loop(" in main_src
+    assert "queue.enqueue(\n        lead_generation_loop" not in main_src
     assert "queue.enqueue(lead_generation_loop" not in main_src
 
 
@@ -209,6 +211,122 @@ def test_workflow_returns_exit_nodes(main_src: str, bdr_pipeline: Pipeline) -> N
 
 def test_mandatory_nodes_marked_unconditional(main_src: str) -> None:
     assert main_src.count("MANDATORY: this node was marked mandatory") == 3
+
+
+# ───────── Data-flow threading ─────────
+
+
+def test_workflow_binds_pipeline_input(main_src: str) -> None:
+    """The workflow entrypoint takes the pipeline input as its argument."""
+    assert "def run_pipeline(pipeline_input: dict) -> dict:" in main_src
+
+
+def test_entry_nodes_receive_pipeline_input(main_src: str) -> None:
+    """Entry nodes bound to `pipeline.input` get the run argument, not {}."""
+    # Both entry nodes run in the queue fan-out wave and take the whole brief.
+    assert '"brief": pipeline_input,' in main_src
+
+
+def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
+    """The committed BDR bindings appear as real payload expressions."""
+    # HITL gate resume payload (DBOS.recv result) → downstream step payload.
+    assert '"contacts": contact_review_gate_result["approved_contacts"],' in main_src
+    # Node output field chains through the exclusion checks.
+    assert '"contacts": hubspot_upsert_result["upserted"],' in main_src
+    assert '"contacts": exclusion_check_dnc_result["passed"],' in main_src
+    # Pipeline input field selection.
+    assert '"target_quota": pipeline_input["target_quota"],' in main_src
+    # Fan-in: the report node pulls from several sources.
+    assert '"template_ids": create_sales_template_result["template_ids"],' in main_src
+    # The placeholder TODO is gone for good.
+    assert "TODO: pass real payload" not in main_src
+
+
+def test_emitted_workflow_payloads_parse_as_dict_literals(
+    main_src: str, bdr_pipeline: Pipeline
+) -> None:
+    """AST-level check: every step dispatch inside run_pipeline passes a
+    dict literal whose keys match the node's declared ``inputs`` bindings."""
+    tree = ast.parse(main_src)
+    run_fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_pipeline"
+    )
+
+    node_ids = {n.id for n in bdr_pipeline.nodes}
+    payload_keys_by_node: dict[str, set[str]] = {}
+    for call in ast.walk(run_fn):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if isinstance(func, ast.Attribute) and func.attr == "enqueue":
+            # queue.enqueue(<step>, <payload>)
+            assert len(call.args) == 2, "enqueue must receive (step, payload)"
+            name_arg, payload_arg = call.args
+            assert isinstance(name_arg, ast.Name)
+            step_name = name_arg.id
+        elif isinstance(func, ast.Name) and func.id in node_ids:
+            # <step>(<payload>)
+            assert len(call.args) == 1, f"step call {func.id} must receive (payload)"
+            step_name = func.id
+            payload_arg = call.args[0]
+        else:
+            continue
+        assert isinstance(payload_arg, ast.Dict), (
+            f"payload for {step_name!r} must be a dict literal"
+        )
+        payload_keys_by_node[step_name] = {
+            k.value for k in payload_arg.keys if isinstance(k, ast.Constant)
+        }
+
+    nested_ids = {sub for n in bdr_pipeline.nodes if n.loop_body for sub in n.loop_body}
+    for node in bdr_pipeline.nodes:
+        if node.kind is NodeKind.HITL_GATE or node.id in nested_ids:
+            continue
+        expected_keys = set(node.inputs.keys()) if node.inputs else set()
+        assert payload_keys_by_node[node.id] == expected_keys, (
+            f"payload keys for {node.id!r} don't match its inputs bindings"
+        )
+
+
+def test_node_without_inputs_gets_empty_payload() -> None:
+    """Back-compat: nodes with no ``inputs`` still receive {}."""
+    node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
+    src = emit_main(_mini_pipeline(node), DbosAdapterConfig())
+    assert "only_result = only({})" in src
+
+
+def test_emit_rejects_forward_reference() -> None:
+    """A node whose inputs reference a later wave must fail at emit time,
+    not as a NameError inside a running workflow."""
+    pipeline = Pipeline(
+        name="forward-ref",
+        input={"type": "X", "required": [], "optional": []},
+        nodes=[
+            Node(
+                id="first",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="x.py:y",
+                inputs={"data": "second.output"},  # runs before `second`
+            ),
+            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[Edge(**{"from": "first", "to": "second"})],
+        entry_nodes=["first"],
+        exit_nodes=["second"],
+    )
+    with pytest.raises(ValueError, match="no result available"):
+        emit_main(pipeline, DbosAdapterConfig())
+
+
+def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
+    """Loop-body sub-nodes never bind a top-level result — referencing one
+    from a top-level node must fail at emit time."""
+    pipeline = copy.deepcopy(bdr_pipeline)
+    node = pipeline.node_by_id("hubspot_upsert")
+    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
+    with pytest.raises(ValueError, match="no result available"):
+        emit_main(pipeline, DbosAdapterConfig())
 
 
 def test_dbos_config_yaml_is_valid(emit_result: dict[str, Path]) -> None:

@@ -245,21 +245,37 @@ def pre_enrollment_report(payload: dict) -> dict:
 
 
 @DBOS.workflow(name="BdrCampaign_ac861059")
-def run_pipeline(brief: dict) -> dict:
+def run_pipeline(pipeline_input: dict) -> dict:
     """End-to-end BDR outreach campaign workflow for pharma/biotech research"""
 
     # ─── Wave 1 ───
     # Parallel fan-out: enqueue every node in the wave, then
     # join. Each enqueued step runs as its own one-step
     # workflow; get_result() blocks durably.
-    target_research_handle = queue.enqueue(target_research, {})
-    taxonomy_lookup_handle = queue.enqueue(taxonomy_lookup, {})
+    target_research_handle = queue.enqueue(
+        target_research,
+        {
+            "brief": pipeline_input,
+        },
+    )
+    taxonomy_lookup_handle = queue.enqueue(
+        taxonomy_lookup,
+        {
+            "brief": pipeline_input,
+        },
+    )
     target_research_result = target_research_handle.get_result()
     taxonomy_lookup_result = taxonomy_lookup_handle.get_result()
 
     # ─── Wave 2 ───
-    # TODO: pass real payload from upstream nodes
-    lead_generation_loop_result = lead_generation_loop({})
+    lead_generation_loop_result = lead_generation_loop(
+        {
+            "brief": pipeline_input,
+            "intel": target_research_result,
+            "taxonomy": taxonomy_lookup_result,
+            "target_quota": pipeline_input["target_quota"],
+        }
+    )
 
     # ─── Wave 3 ───
     # ─── HITL gate: contact_review_gate ───
@@ -277,36 +293,67 @@ def run_pipeline(brief: dict) -> dict:
         )
 
     # ─── Wave 4 ───
-    # TODO: pass real payload from upstream nodes
-    hubspot_upsert_result = hubspot_upsert({})
+    hubspot_upsert_result = hubspot_upsert(
+        {
+            "contacts": contact_review_gate_result["approved_contacts"],
+        }
+    )
 
     # ─── Wave 5 ───
-    # TODO: pass real payload from upstream nodes
-    hubspot_create_list_result = hubspot_create_list({})
+    hubspot_create_list_result = hubspot_create_list(
+        {
+            "campaign_name": pipeline_input["drug_brand"],
+            "contacts": hubspot_upsert_result["upserted"],
+        }
+    )
 
     # ─── Wave 6 ───
-    # TODO: pass real payload from upstream nodes
-    exclusion_check_dnc_result = exclusion_check_dnc({})
+    exclusion_check_dnc_result = exclusion_check_dnc(
+        {
+            "contacts": hubspot_upsert_result["upserted"],
+        }
+    )
 
     # ─── Wave 7 ───
-    # TODO: pass real payload from upstream nodes
-    exclusion_check_recent_result = exclusion_check_recent({})
+    exclusion_check_recent_result = exclusion_check_recent(
+        {
+            "contacts": exclusion_check_dnc_result["passed"],
+        }
+    )
 
     # ─── Wave 8 ───
-    # TODO: pass real payload from upstream nodes
-    exclusion_check_sequence_result = exclusion_check_sequence({})
+    exclusion_check_sequence_result = exclusion_check_sequence(
+        {
+            "contacts": exclusion_check_recent_result["passed"],
+        }
+    )
 
     # ─── Wave 9 ───
-    # TODO: pass real payload from upstream nodes
-    personalize_email_result = personalize_email({})
+    personalize_email_result = personalize_email(
+        {
+            "contact": exclusion_check_sequence_result["passed"],
+            "intel": target_research_result,
+            "campaign_type": pipeline_input["campaign_type"],
+        }
+    )
 
     # ─── Wave 10 ───
-    # TODO: pass real payload from upstream nodes
-    create_sales_template_result = create_sales_template({})
+    create_sales_template_result = create_sales_template(
+        {
+            "campaign_name": pipeline_input["drug_brand"],
+            "personalizations": personalize_email_result,
+        }
+    )
 
     # ─── Wave 11 ───
-    # TODO: pass real payload from upstream nodes
-    pre_enrollment_report_result = pre_enrollment_report({})
+    pre_enrollment_report_result = pre_enrollment_report(
+        {
+            "campaign_name": pipeline_input["drug_brand"],
+            "passed_contacts": exclusion_check_sequence_result["passed"],
+            "exclusions": exclusion_check_sequence_result["excluded"],
+            "template_ids": create_sales_template_result["template_ids"],
+        }
+    )
 
     # ─── Wave 12 ───
     # ─── HITL gate: manual_enrollment_handoff ───
@@ -330,13 +377,13 @@ def run_pipeline(brief: dict) -> dict:
 
 if __name__ == "__main__":
     # Launch DBOS (connects to the system database, starts queue
-    # workers and recovery), start one pipeline run with the brief
+    # workers and recovery), start one pipeline run with the input
     # from argv[1] (JSON), and block until it completes. HITL gates
     # are resumed from another process — see README.md.
     DBOS.launch()
     try:
-        brief = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-        handle = DBOS.start_workflow(run_pipeline, brief)
+        pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+        handle = DBOS.start_workflow(run_pipeline, pipeline_input)
         print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
         print(json.dumps(handle.get_result(), indent=2, default=str))
     finally:

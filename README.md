@@ -325,14 +325,15 @@ the toolchain-dependent integration tests.
 | IR (Pydantic schema, validation, YAML loader) | working |
 | Temporal adapter | working (validated with mocked-activities e2e test) |
 | Cloudflare Workflows adapter | working (validated with `tsc --noEmit` over the real emitted output) |
+| DBOS adapter | working (validated against a real DBOS runtime over SQLite in the e2e test) |
 | Graduator orchestrator | working |
 | `rote graduate` / `rote emit` CLI commands | working |
 | `claude` driver | working |
 | `api` (Anthropic SDK) driver | working |
 | `codex` driver | stub (`is_available` works; `run` not implemented) |
-| Inngest / Restate / DBOS adapters | planned |
+| Inngest / Restate adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
-| Workflow data flow between activities | working — nodes declare `inputs:` bindings and the Temporal and Cloudflare adapters thread real payloads through the DAG (validated in both runtime e2e tests); DBOS threading in progress |
+| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all three adapters (Temporal, Cloudflare, DBOS) thread real payloads through the DAG, validated in the runtime e2e tests |
 | Distribution via PyPI | not yet published — install from source. The release pipeline (tag-driven, Trusted Publishing) is in place; see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
@@ -480,7 +481,7 @@ The most useful contributions right now are:
   needs to be tested against more.
 - **Add a runtime adapter.** The Temporal adapter in
   `src/rote/adapters/temporal.py` is ~450 lines and follows a clear
-  pattern. Inngest, Restate, DBOS, and Hatchet are all good targets.
+  pattern. Inngest, Restate, and Hatchet are all good targets.
 - **Add a graduator driver.** The Protocol in
   `src/rote/graduator/drivers/__init__.py` is simple. Aider, Gemini
   CLI, and Cursor Agent are reasonable additions.

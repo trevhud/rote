@@ -37,6 +37,14 @@ Key design choices vs. the other adapters:
   payload, topic=...)`` delivers the message — the officially documented
   human-in-the-loop pattern. The IR ``signal`` name maps to the topic.
 
+* **Data-flow threading matches the Temporal adapter.** The workflow
+  takes the pipeline input dict as ``pipeline_input``, binds every
+  node's result (including HITL gate resume payloads) as
+  ``<id>_result``, and builds each step's payload from the node's
+  ``inputs:`` bindings via the shared reference grammar
+  (:func:`rote.ir.parse_input_ref`). Forward references are rejected at
+  emit time by :func:`rote.adapters._common.check_input_refs_available`.
+
 * **Typed LLM signatures as generated Pydantic modules.** When the IR
   carries ``signature_spec`` (preferred), the adapter converts the JSON
   Schemas to Pydantic model source and emits a direct vendor-SDK call
@@ -62,9 +70,11 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
+    check_input_refs_available,
 )
 from rote.adapters.temporal import (
     _impl_path_parts,
+    _payload_literal,
     _signature_path_parts,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline
@@ -868,28 +878,51 @@ def _emit_workflow_body(pipeline: Pipeline) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
 
+    # Node ids whose results are bound by the time each wave starts —
+    # used to reject inputs that reference a later wave at emit time.
+    # HITL gates count: their DBOS.recv payload binds `<id>_result`, so
+    # gate resume payloads participate as that gate's result downstream.
+    available: set[str] = set()
+
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
+
+        for n in non_hitl:
+            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
 
         if len(non_hitl) == 1:
             node = non_hitl[0]
-            lines.append("    # TODO: pass real payload from upstream nodes")
-            lines.append(f"    {node.id}_result = {node.id}({{}})")
+            payload = _payload_literal(node, indent=" " * 8)
+            if payload == "{}":
+                lines.append(f"    {node.id}_result = {node.id}({{}})")
+            else:
+                lines.append(f"    {node.id}_result = {node.id}(")
+                lines.append(f"        {payload}")
+                lines.append("    )")
         elif len(non_hitl) > 1:
             lines.append("    # Parallel fan-out: enqueue every node in the wave, then")
             lines.append("    # join. Each enqueued step runs as its own one-step")
             lines.append("    # workflow; get_result() blocks durably.")
             for node in non_hitl:
-                lines.append(f"    {node.id}_handle = queue.enqueue({node.id}, {{}})")
+                payload = _payload_literal(node, indent=" " * 8)
+                if payload == "{}":
+                    lines.append(f"    {node.id}_handle = queue.enqueue({node.id}, {{}})")
+                else:
+                    lines.append(f"    {node.id}_handle = queue.enqueue(")
+                    lines.append(f"        {node.id},")
+                    lines.append(f"        {payload},")
+                    lines.append("    )")
             for node in non_hitl:
                 lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
+
+        available.update(n.id for n in wave)
 
     lines.append("")
     lines.append("    return {")
@@ -999,7 +1032,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
     workflow_block = (
         f"\n\n@DBOS.workflow(name={json.dumps(workflow_name)})\n"
-        f"def run_pipeline(brief: dict) -> dict:\n"
+        f"def run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
         f"{_emit_workflow_body(pipeline)}\n"
     )
@@ -1010,13 +1043,13 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
         if __name__ == "__main__":
             # Launch DBOS (connects to the system database, starts queue
-            # workers and recovery), start one pipeline run with the brief
+            # workers and recovery), start one pipeline run with the input
             # from argv[1] (JSON), and block until it completes. HITL gates
             # are resumed from another process — see README.md.
             DBOS.launch()
             try:
-                brief = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-                handle = DBOS.start_workflow(run_pipeline, brief)
+                pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+                handle = DBOS.start_workflow(run_pipeline, pipeline_input)
                 print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
                 print(json.dumps(handle.get_result(), indent=2, default=str))
             finally:

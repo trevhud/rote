@@ -18,7 +18,11 @@ Concretely, against a real DBOS 2.x runtime with a SQLite system database
    ``manual_enrollment_handoff``.
 4. Deliver the second signal; verify completion and that the gate payload
    flowed into the workflow's exit-node result.
-5. Verify durability: the system database's step log contains a
+5. Verify data-flow threading empirically: the pipeline input reached
+   the entry nodes, the first gate's resume payload flowed into
+   ``hubspot_upsert``, and downstream steps received real upstream
+   outputs (not ``{}``).
+6. Verify durability: the system database's step log contains a
    ``DBOS.recv`` checkpoint per gate (the park survives restarts because
    it is *in the database*, not in memory).
 
@@ -56,7 +60,10 @@ pytestmark = pytest.mark.slow
 # The emitted extracted/ stubs raise NotImplementedError and the
 # signatures/ judges call real LLM APIs. For an integration test that
 # exercises orchestration (not I/O), each is replaced by a mock that
-# appends its node id to a JSONL file and returns a canned dict.
+# appends its node id *and the payload it received* to a JSONL file and
+# returns a canned dict shaped like the node's declared output — so the
+# test can assert data-flow threading, not just completion (same
+# technique as the Temporal e2e's CAPTURED_PAYLOADS).
 
 _RECORDER_PRELUDE = """\
 import json
@@ -65,10 +72,33 @@ import time
 _RECORD_PATH = {record_path!r}
 
 
-def _record(name):
+def _record(name, payload):
     with open(_RECORD_PATH, "a") as f:
-        f.write(json.dumps({{"node": name, "t": time.monotonic()}}) + "\\n")
+        f.write(
+            json.dumps(
+                {{"node": name, "t": time.monotonic(), "payload": payload}},
+                default=str,
+            )
+            + "\\n"
+        )
 """
+
+# Canned outputs shaped like each node's declared output, so downstream
+# `<node>.output.<field>` references resolve. Nodes absent here have no
+# downstream field references and get a generic marker dict.
+_MOCK_OUTPUTS: dict[str, dict] = {
+    "lead_generation_loop": {"vetted_contacts": [], "discarded_summary": {}},
+    "hubspot_upsert": {"upserted": [{"vid": "hs-1"}]},
+    "hubspot_create_list": {"list_id": "list-abc123"},
+    "exclusion_check_dnc": {"passed": [], "excluded": []},
+    "exclusion_check_recent": {"passed": [], "excluded": []},
+    "exclusion_check_sequence": {"passed": [], "excluded": []},
+    "create_sales_template": {"template_ids": ["t1", "t2"]},
+}
+
+
+def _mock_output(node_id: str) -> dict:
+    return _MOCK_OUTPUTS.get(node_id, {"mocked": True, "node": node_id})
 
 
 def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) -> None:
@@ -84,8 +114,8 @@ def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) ->
                 _, func = _impl_path_parts(node.impl)
             src += (
                 f"\n\ndef {func}(**payload):\n"
-                f'    _record("{node.id}")\n'
-                f'    return {{"mocked": True, "node": "{node.id}"}}\n'
+                f'    _record("{node.id}", payload)\n'
+                f"    return {_mock_output(node.id)!r}\n"
             )
         (out_dir / "extracted" / f"{module_name}.py").write_text(src, encoding="utf-8")
 
@@ -102,10 +132,10 @@ def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) ->
             f"        self.kwargs = kwargs\n"
             f"\n\nclass _Result:\n"
             f"    def model_dump(self):\n"
-            f'        return {{"mocked": True, "node": "{node.id}"}}\n'
+            f"        return {_mock_output(node.id)!r}\n"
             f"\n\nclass {pascal}:\n"
             f"    def forward(self, inputs):\n"
-            f'        _record("{node.id}")\n'
+            f'        _record("{node.id}", inputs.kwargs)\n'
             f"        return _Result()\n"
         )
         (out_dir / "signatures" / f"{node.id}.py").write_text(src, encoding="utf-8")
@@ -217,7 +247,21 @@ def test_bdr_workflow_runs_through_hitl_gates(
     pre_gate, post_gate = _pre_and_post_gate_nodes(bdr_pipeline)
     assert pre_gate == {"target_research", "taxonomy_lookup", "lead_generation_loop"}
 
-    handle = DBOS.start_workflow(main_module.run_pipeline, {"drug_brand": "TestBrand"})
+    # A complete brief matching the pipeline's input contract. The emitted
+    # workflow now threads real payloads, so every referenced field must
+    # exist. Values reuse the fictionalized examples from the IR's comments.
+    brief = {
+        "drug_brand": "Orladeyo",
+        "drug_generic": "berotralstat",
+        "condition_full": "hereditary angioedema",
+        "condition_acronym": "HAE",
+        "therapeutic_area": "rare disease, hematology",
+        "manufacturer": "BioCryst Pharmaceuticals",
+        "campaign_type": "drug-specific",
+        "target_quota": 3,
+    }
+
+    handle = DBOS.start_workflow(main_module.run_pipeline, brief)
 
     # ── Park at gate 1 ──
     _wait_for_node_set(record_path, pre_gate)
@@ -265,6 +309,33 @@ def test_bdr_workflow_runs_through_hitl_gates(
         "the second gate's payload must flow through to the exit-node result"
     )
     assert handle.get_status().status == "SUCCESS"
+
+    # ── Data-flow threading: real payloads reached the steps ──
+    payloads = {r["node"]: r["payload"] for r in _recorded(record_path)}
+
+    # The pipeline input reached the entry node intact.
+    assert payloads["target_research"] == {"brief": brief}
+
+    # The fan-in loop consumed both wave-1 results plus an input field.
+    loop_payload = payloads["lead_generation_loop"]
+    assert loop_payload["brief"] == brief
+    assert loop_payload["taxonomy"] == _mock_output("taxonomy_lookup")
+    assert loop_payload["target_quota"] == brief["target_quota"]
+
+    # The first HITL gate's resume payload flowed into hubspot_upsert via
+    # `contacts: contact_review_gate.output.approved_contacts`.
+    assert payloads["hubspot_upsert"] == {"contacts": [{"id": "c1"}]}
+
+    # hubspot_upsert's mocked result flowed into the DNC check via
+    # `contacts: hubspot_upsert.output.upserted`.
+    assert payloads["exclusion_check_dnc"] == {"contacts": [{"vid": "hs-1"}]}
+
+    # The report node received a fan-in of upstream results:
+    # pipeline input field + two different upstream nodes.
+    report_payload = payloads["pre_enrollment_report"]
+    assert report_payload["campaign_name"] == brief["drug_brand"]
+    assert report_payload["passed_contacts"] == []
+    assert report_payload["template_ids"] == ["t1", "t2"]
 
     # ── Durability: the gates were checkpointed recv steps in the system
     # database, not in-memory waits. A crashed process would recover the
