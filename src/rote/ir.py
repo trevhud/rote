@@ -12,12 +12,63 @@ speculation.
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+# ───────── Data-flow input references ─────────
+#
+# A node declares where its runtime inputs come from via ``inputs:``,
+# a mapping of parameter name → source reference. The grammar is
+# deliberately tiny — four forms, no expression language:
+#
+#   pipeline.input               the whole pipeline input payload
+#   pipeline.input.<field>       one top-level field of the pipeline input
+#   <node_id>.output             the whole output of an upstream node
+#   <node_id>.output.<field>     one top-level field of an upstream node's output
+#
+# Anything fancier (aggregation, arithmetic, deep paths) belongs in an
+# extracted pure_function node, not in the reference syntax.
+
+_INPUT_REF_RE = re.compile(
+    r"^(?:pipeline\.input|(?P<node>[A-Za-z_][A-Za-z0-9_]*)\.output)"
+    r"(?:\.(?P<field>[A-Za-z_][A-Za-z0-9_]*))?$"
+)
+
+
+@dataclass(frozen=True)
+class InputRef:
+    """A parsed ``inputs:`` source reference.
+
+    ``node_id is None`` means the reference targets the pipeline input;
+    otherwise it targets the named node's output. ``field`` is the
+    optional top-level field selector.
+    """
+
+    node_id: str | None
+    field: str | None
+
+
+def parse_input_ref(ref: str) -> InputRef:
+    """Parse an ``inputs:`` source reference string.
+
+    This is the single source of truth for the reference grammar —
+    the IR validator and every adapter resolve references through it.
+    Raises ``ValueError`` for anything outside the four allowed forms.
+    """
+    m = _INPUT_REF_RE.fullmatch(ref.strip())
+    if not m:
+        raise ValueError(
+            f"Invalid input reference {ref!r}. Allowed forms: "
+            f"'pipeline.input', 'pipeline.input.<field>', "
+            f"'<node_id>.output', '<node_id>.output.<field>'."
+        )
+    return InputRef(node_id=m.group("node"), field=m.group("field"))
 
 
 class NodeKind(str, Enum):
@@ -161,6 +212,20 @@ class Node(BaseModel):
     input: dict[str, str] = Field(
         default_factory=dict,
         description="Input field name → type name (free-form for v0)",
+    )
+    inputs: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Data-flow bindings: parameter name → source reference. "
+            "References use the grammar in parse_input_ref: 'pipeline.input', "
+            "'pipeline.input.<field>', '<node_id>.output', or "
+            "'<node_id>.output.<field>'. Complements ``input`` (which documents "
+            "types); ``inputs`` binds where the values come from at runtime. "
+            "Nodes without ``inputs`` receive an empty payload (back-compat). "
+            "For loop_body sub-nodes the bindings describe what the parent "
+            "loop passes per iteration — adapters do not resolve them at the "
+            "top level."
+        ),
     )
     output: dict[str, str] | str = Field(
         default_factory=dict,
@@ -313,6 +378,16 @@ class PipelineInput(BaseModel):
     type: str = Field(description="Type name for the pipeline input")
     required: list[str] = Field(default_factory=list)
     optional: list[str] = Field(default_factory=list)
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "JSON Schema for the pipeline input payload (the same schema "
+            "Pydantic emits via model_json_schema()). Runtime-agnostic: "
+            "adapters may derive input validation from it before the "
+            "workflow starts. Optional for back-compat with pipelines "
+            "that only declare required/optional field names."
+        ),
+    )
 
 
 class Pipeline(BaseModel):
@@ -363,6 +438,42 @@ class Pipeline(BaseModel):
                     if body_id not in node_ids:
                         raise ValueError(
                             f"Node {node.id!r} loop_body references unknown node: {body_id!r}"
+                        )
+
+        # inputs references must parse and point at real sources.
+        # Pipeline-input field names are checked against the declared
+        # contract (required + optional + input_schema properties) when
+        # one exists; a pipeline with an empty contract skips the check.
+        declared_fields = set(self.input.required) | set(self.input.optional)
+        if self.input.input_schema is not None:
+            props = self.input.input_schema.get("properties")
+            if isinstance(props, dict):
+                declared_fields |= set(props.keys())
+
+        for node in self.nodes:
+            if not node.inputs:
+                continue
+            for param, ref in node.inputs.items():
+                try:
+                    parsed = parse_input_ref(ref)
+                except ValueError as e:
+                    raise ValueError(f"Node {node.id!r} input {param!r}: {e}") from e
+                if parsed.node_id is None:
+                    if parsed.field and declared_fields and parsed.field not in declared_fields:
+                        raise ValueError(
+                            f"Node {node.id!r} input {param!r} references pipeline input "
+                            f"field {parsed.field!r}, which is not declared in the "
+                            f"pipeline's input contract"
+                        )
+                else:
+                    if parsed.node_id not in node_ids:
+                        raise ValueError(
+                            f"Node {node.id!r} input {param!r} references unknown "
+                            f"node: {parsed.node_id!r}"
+                        )
+                    if parsed.node_id == node.id:
+                        raise ValueError(
+                            f"Node {node.id!r} input {param!r} references its own output"
                         )
 
         return self

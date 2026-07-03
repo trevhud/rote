@@ -43,6 +43,71 @@ input:
     - target_quota            # int — number of vetted contacts to deliver
   optional:
     - job_focus               # enum: medical | rwe | heor | clinical-development
+  # Typed contract for the payload above — the same JSON Schema Pydantic
+  # emits for CampaignBrief via model_json_schema(). Promoted from the
+  # entry nodes' signature_spec.input_schema $defs so adapters can
+  # validate the pipeline input before the workflow starts.
+  input_schema:
+    $defs:
+      CampaignType:
+        enum:
+        - drug-specific
+        - condition-specific
+        - general-capabilities
+        title: CampaignType
+        type: string
+      JobFocus:
+        enum:
+        - medical
+        - rwe
+        - heor
+        - clinical-development
+        title: JobFocus
+        type: string
+    additionalProperties: false
+    description: "Top-level pipeline input — one campaign, one drug, one indication."
+    properties:
+      drug_brand:
+        title: Drug Brand
+        type: string
+      drug_generic:
+        title: Drug Generic
+        type: string
+      condition_full:
+        title: Condition Full
+        type: string
+      condition_acronym:
+        title: Condition Acronym
+        type: string
+      therapeutic_area:
+        title: Therapeutic Area
+        type: string
+      manufacturer:
+        title: Manufacturer
+        type: string
+      campaign_type:
+        $ref: '#/$defs/CampaignType'
+      target_quota:
+        description: Number of vetted contacts to deliver
+        minimum: 1
+        title: Target Quota
+        type: integer
+      job_focus:
+        anyOf:
+        - $ref: '#/$defs/JobFocus'
+        - type: 'null'
+        default: null
+    required:
+    - drug_brand
+    - drug_generic
+    - condition_full
+    - condition_acronym
+    - therapeutic_area
+    - manufacturer
+    - campaign_type
+    - target_quota
+    title: CampaignBrief
+    type: object
 
 # Nodes — every distinct step in the pipeline. Each node has exactly one
 # `kind`. The `phase` field is metadata pointing back to the source skill.
@@ -61,6 +126,8 @@ nodes:
       account interactions, and validated TA experience.
     input:
       brief: CampaignBrief
+    inputs:
+      brief: pipeline.input
     output: IntelBrief
     tools:
       - bright_data_search
@@ -85,6 +152,8 @@ nodes:
     impl: extracted/taxonomy.py:resolve_taxonomy_ids
     input:
       brief: CampaignBrief
+    inputs:
+      brief: pipeline.input
     output: TaxonomyIds
     cache:
       strategy: persistent
@@ -104,6 +173,11 @@ nodes:
       intel: IntelBrief
       taxonomy: TaxonomyIds
       target_quota: int
+    inputs:
+      brief: pipeline.input
+      intel: target_research.output
+      taxonomy: taxonomy_lookup.output
+      target_quota: pipeline.input.target_quota
     output:
       vetted_contacts: list[VettedContact]
       discarded_summary: VettingSummary
@@ -490,6 +564,8 @@ nodes:
     impl: extracted/hubspot.py:batch_upsert_contacts
     input:
       contacts: list[VettedContact]
+    inputs:
+      contacts: contact_review_gate.output.approved_contacts
     output:
       upserted: list[HubSpotContact]
     constants:
@@ -509,6 +585,9 @@ nodes:
     input:
       campaign_name: str
       contacts: list[HubSpotContact]
+    inputs:
+      campaign_name: pipeline.input.drug_brand
+      contacts: hubspot_upsert.output.upserted
     output:
       list_id: str
     constants:
@@ -531,6 +610,10 @@ nodes:
     input:
       contacts: list[HubSpotContact]
       dnc_list_id: str
+    # dnc_list_id is deliberately unbound — it's deployment configuration
+    # (the "BDR do not contact" list), not pipeline data flow.
+    inputs:
+      contacts: hubspot_upsert.output.upserted
     output:
       passed: list[HubSpotContact]
       excluded: list[ExclusionRecord]
@@ -545,6 +628,8 @@ nodes:
     impl: extracted/exclusion_checks.py:check_recently_emailed
     input:
       contacts: list[HubSpotContact]
+    inputs:
+      contacts: exclusion_check_dnc.output.passed
     output:
       passed: list[HubSpotContact]
       excluded: list[ExclusionRecord]
@@ -563,6 +648,8 @@ nodes:
     impl: extracted/exclusion_checks.py:check_active_sequence
     input:
       contacts: list[HubSpotContact]
+    inputs:
+      contacts: exclusion_check_recent.output.passed
     output:
       passed: list[HubSpotContact]
       excluded: list[ExclusionRecord]
@@ -775,6 +862,14 @@ nodes:
       contact: VettedContact
       intel: IntelBrief
       campaign_type: CampaignType
+    # contact binds to the surviving-contact list; with fan_out the
+    # runtime dispatches one invocation per element. v0 adapters pass
+    # the whole list in a single invocation (per-element dispatch is a
+    # planned enhancement).
+    inputs:
+      contact: exclusion_check_sequence.output.passed
+      intel: target_research.output
+      campaign_type: pipeline.input.campaign_type
     output:
       opening_line: str
       ta_callout: str
@@ -791,6 +886,9 @@ nodes:
     input:
       campaign_name: str
       personalizations: list[PersonalizationOutput]
+    inputs:
+      campaign_name: pipeline.input.drug_brand
+      personalizations: personalize_email.output
     output:
       template_ids: list[str]
     retry:
@@ -813,6 +911,14 @@ nodes:
       passed_contacts: list[HubSpotContact]
       exclusions: list[ExclusionRecord]
       template_ids: list[str]
+    # vetted_count is deliberately unbound — it's an aggregate (len of a
+    # list), which the reference grammar doesn't express. The extracted
+    # function derives it from passed_contacts.
+    inputs:
+      campaign_name: pipeline.input.drug_brand
+      passed_contacts: exclusion_check_sequence.output.passed
+      exclusions: exclusion_check_sequence.output.excluded
+      template_ids: create_sales_template.output.template_ids
     output:
       report_markdown: str
 
