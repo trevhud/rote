@@ -71,6 +71,8 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    resolve_within,
+    safe_docstring_line,
 )
 from rote.adapters.temporal import (
     _impl_path_parts,
@@ -386,7 +388,7 @@ class _SchemaToPydantic:
         lines = [f"class {class_name}(BaseModel):"]
         description = schema.get("description")
         if description:
-            first = str(description).strip().splitlines()[0]
+            first = safe_docstring_line(str(description))
             lines.append(f'    """{first}"""')
             lines.append("")
         if schema.get("additionalProperties") is False:
@@ -478,7 +480,7 @@ def emit_signature_module(node: Node, cfg: DbosAdapterConfig) -> str:
     converter.emit_root(f"{pascal}Output", spec.output_schema)
 
     model = spec.model or _default_model_for(spec, cfg)
-    desc_first = node.description.strip().splitlines()[0] if node.description else node.id
+    desc_first = safe_docstring_line(node.description, fallback=node.id)
 
     typing_names = "Any, Literal" if converter.uses_literal else "Any"
     schema_json = json.dumps(spec.output_schema, separators=(",", ":"))
@@ -725,7 +727,7 @@ def emit_extracted_module(module_name: str, nodes: list[Node]) -> str:
         if func_name in seen:
             continue
         seen.add(func_name)
-        desc_first = node.description.strip().splitlines()[0] if node.description else node.id
+        desc_first = safe_docstring_line(node.description, fallback=node.id)
 
         doc_lines = [f"    {desc_first}", ""]
         if node.kind is NodeKind.AGENT_LOOP:
@@ -787,7 +789,7 @@ def _emit_step_pure_or_external(node: Node) -> str:
     return (
         f"{_step_decorator(node)}\n"
         f"def {node.id}(payload: dict) -> dict:\n"
-        f'    """{node.description.strip().splitlines()[0]}\n'
+        f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
         f"    Graduated from MCP tool call → deterministic API call. See\n"
         f"    ``extracted.{module_name}`` for the implementation.\n"
@@ -834,7 +836,7 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
     return (
         f"{_step_decorator(node)}\n"
         f"def {node.id}(payload: dict) -> dict:\n"
-        f'    """{node.description.strip().splitlines()[0]}\n'
+        f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
         f"    LLM judge — typed input/output, bounded decision space. The\n"
         f"    non-determinism lives inside this step, not the workflow.\n"
@@ -851,7 +853,7 @@ def _emit_step_agent_loop(node: Node) -> str:
     return (
         f"{_step_decorator(node)}\n"
         f"def {node.id}(payload: dict) -> dict:\n"
-        f'    """{node.description.strip().splitlines()[0]}\n'
+        f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
         f"    Agent loop — bounded, tool-restricted. The stub in\n"
         f"    ``extracted.{node.id}`` raises until implemented against an\n"
@@ -953,9 +955,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
     workflow_name = f"{pascal}_{pipeline_h}"
     queue_name = cfg.queue_name or f"{pipeline.name}-queue"
     sqlite_file = f"{pipeline.name}.dbos.sqlite"
-    desc_first = (
-        pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
-    )
+    desc_first = safe_docstring_line(pipeline.description, fallback=pipeline.name)
 
     header = textwrap.dedent(
         f'''\
@@ -1222,7 +1222,7 @@ class DbosAdapter:
             )
             written["extracted/__init__"] = init
             for module_name, nodes in sorted(extracted_modules.items()):
-                p = extracted_dir / f"{module_name}.py"
+                p = resolve_within(extracted_dir, f"{module_name}.py")
                 p.write_text(emit_extracted_module(module_name, nodes), encoding="utf-8")
                 written[f"extracted/{module_name}"] = p
 
@@ -1240,7 +1240,7 @@ class DbosAdapter:
             )
             written["signatures/__init__"] = init
             for node in spec_judges:
-                p = signatures_dir / f"{node.id}.py"
+                p = resolve_within(signatures_dir, f"{node.id}.py")
                 p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
                 written[f"signatures/{node.id}"] = p
 

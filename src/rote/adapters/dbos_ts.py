@@ -90,6 +90,8 @@ from rote.adapters._common import (
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
+    resolve_within,
+    safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
     emit_signature_anthropic,
@@ -294,7 +296,7 @@ def emit_extracted_module(node: Node) -> str:
     JSDoc only — never in executable code.
     """
     fn_name = _to_camel_case(node.id)
-    desc_first = node.description.strip().splitlines()[0] if node.description else node.id
+    desc_first = safe_block_comment_line(node.description, fallback=node.id)
 
     doc: list[str] = ["/**"]
     doc.append(f" * Stub for {node.kind.value} node: {node.id}")
@@ -391,7 +393,7 @@ def _judge_env_arg(node: Node) -> str:
 def _emit_step_registration(node: Node) -> str:
     """Emit the ``export const <camel>Step = DBOS.registerStep(...)`` block."""
     fn_name = _to_camel_case(node.id)
-    desc_first = node.description.strip().splitlines()[0] if node.description else node.id
+    desc_first = safe_block_comment_line(node.description, fallback=node.id)
     config = _step_config_literal(node)
 
     doc: list[str] = ["/**", f" * {desc_first}", " *"]
@@ -550,9 +552,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     pascal = _to_pascal_case(pipeline.name)
     pipeline_h = _pipeline_hash(pipeline)
     workflow_name = f"{pascal}_{pipeline_h}"
-    desc_first = (
-        pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
-    )
+    desc_first = safe_block_comment_line(pipeline.description, fallback=pipeline.name)
 
     header = textwrap.dedent(
         f"""\
@@ -879,11 +879,11 @@ class DbosTsAdapter:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = sigs / f"{node.id}.ts"
+                p = resolve_within(sigs, f"{node.id}.ts")
                 p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
                 written[f"signatures/{node.id}"] = p
             else:
-                p = extracted / f"{node.id}.ts"
+                p = resolve_within(extracted, f"{node.id}.ts")
                 p.write_text(emit_extracted_module(node), encoding="utf-8")
                 written[f"extracted/{node.id}"] = p
 

@@ -30,6 +30,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from rote.adapters._common import safe_block_comment_line
+
 # ───────── JSON Schema → Zod ─────────
 
 
@@ -173,7 +175,7 @@ def emit_signature_anthropic(
     JSDoc (e.g. ``rote.adapters.cloudflare``) so regeneration
     instructions point at the right runtime.
     """
-    desc_first = description.strip().splitlines()[0] if description else node_id
+    desc_first = safe_block_comment_line(description, fallback=node_id)
     temp_line = f"        temperature: {temperature},\n" if temperature is not None else ""
     quoted_id = json.dumps(node_id)
     quoted_desc = json.dumps(desc_first)
@@ -265,7 +267,7 @@ def emit_signature_openai(
     generated_by: str,
 ) -> str:
     """Emit a signatures/<id>.ts module using OpenAI structured outputs."""
-    desc_first = description.strip().splitlines()[0] if description else node_id
+    desc_first = safe_block_comment_line(description, fallback=node_id)
     temp_line = f"        temperature: {temperature},\n" if temperature is not None else ""
     quoted_id = json.dumps(node_id)
     quoted_model = json.dumps(model)

@@ -38,6 +38,8 @@ from rote.adapters._common import (
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
+    resolve_within,
+    safe_block_comment_line,
 )
 from rote.adapters._common import (
     ir_duration_to_human as _ir_duration_to_cf,
@@ -85,9 +87,11 @@ _VALID_BACKOFFS = {"constant", "linear", "exponential"}
 def _validate_signal_name(name: str, node_id: str) -> None:
     """Cloudflare's waitForEvent ``type`` field accepts only [A-Za-z0-9_-].
 
-    The IR allows arbitrary signal strings; the adapter enforces the
-    Cloudflare constraint at emit time so the user gets a clear error
-    instead of a runtime ``workflow.invalid_event_type`` from Cloudflare.
+    The IR now pins ``signal`` to a valid identifier (a strict subset of
+    this pattern), so a validated pipeline never trips this check. It is
+    retained as defense-in-depth tied to Cloudflare's specific runtime
+    contract: if the IR constraint were ever loosened, emit still fails
+    loudly here instead of surfacing a runtime ``workflow.invalid_event_type``.
     """
     if not _SIGNAL_NAME_RE.fullmatch(name):
         raise ValueError(
@@ -466,7 +470,7 @@ def emit_extracted_module(node: Node) -> str:
     out to a separately-deployed Python worker via service binding).
     """
     fn_name = _to_camel_case(node.id)
-    desc_first = node.description.strip().splitlines()[0] if node.description else node.id
+    desc_first = safe_block_comment_line(node.description, fallback=node.id)
 
     doc: list[str] = ["/**"]
     if node.kind is NodeKind.AGENT_LOOP:
@@ -842,11 +846,11 @@ class CloudflareAdapter:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = sigs / f"{node.id}.ts"
+                p = resolve_within(sigs, f"{node.id}.ts")
                 p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
                 written[f"signatures/{node.id}"] = p
             else:
-                p = extracted / f"{node.id}.ts"
+                p = resolve_within(extracted, f"{node.id}.ts")
                 p.write_text(emit_extracted_module(node), encoding="utf-8")
                 written[f"extracted/{node.id}"] = p
 
