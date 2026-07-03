@@ -2,6 +2,11 @@
 
 **Graduate fuzzy AI skills into deterministic, reliable workflows.**
 
+[![CI](https://github.com/trevhud/rote/actions/workflows/ci.yml/badge.svg)](https://github.com/trevhud/rote/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/rote-cli.svg)](https://pypi.org/project/rote-cli/)
+[![Python versions](https://img.shields.io/pypi/pyversions/rote-cli.svg)](https://pypi.org/project/rote-cli/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 `rote` is a CLI that takes an Anthropic-style Skill (a `SKILL.md` plus
 `references/`) and turns it into a runnable background pipeline in one
 shot. An LLM agent (itself defined as a skill) reads the source skill,
@@ -14,6 +19,11 @@ applies a structured graduation rubric, and emits:
 
 ```sh
 pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
+
+# `rote graduate` runs an LLM agent, so it needs a driver: Claude Code
+# (`claude`) or Codex (`codex`) installed and authed, or ANTHROPIC_API_KEY
+# for the in-process `api` driver. The BDR run below takes ~13 min and
+# ~$0.70 with Sonnet. (`rote emit` needs no LLM — see below.)
 
 # Default target is DBOS — durable execution as a plain Python library,
 # no orchestrator to run, SQLite for dev / Postgres for prod:
@@ -463,12 +473,13 @@ Opus's extra reasoning earns its cost.
 ## Status
 
 `rote` is **pre-1.0**. The end-to-end flow works on the BDR example
-and the test suite covers each layer (231 tests in the fast suite,
-plus 5 slow tests that run the emitted code against real runtimes:
-a DBOS runtime over SQLite, Temporal's time-skipping test server, the
-emitted Cloudflare TypeScript compiled against real
-`@cloudflare/workers-types` and driven through both HITL gates via
-`wrangler dev`, and the MCP server over a real stdio transport).
+and the test suite covers each layer: a fast suite (no real API calls,
+subprocesses, or LLM invocations) plus a `slow`-marked suite that runs
+the emitted code against real runtimes — a DBOS runtime over SQLite,
+Temporal's time-skipping test server, the emitted Cloudflare/DBOS-TS/
+Inngest TypeScript compiled with `tsc --noEmit` and driven through both
+HITL gates on live dev servers, the plain-Python script executed as a
+subprocess, and the MCP server over a real stdio transport.
 Run `pytest tests/` for the fast suite; `pytest tests/ -m slow` for
 the toolchain-dependent integration tests.
 
@@ -507,7 +518,9 @@ rote/
 ├── LICENSE                                  # Apache-2.0
 ├── pyproject.toml                           # rote + optional [temporal] / [api] / [dev] extras
 ├── docs/
-│   └── agent-runtime.md                     # decision record for the driver layer
+│   ├── agent-runtime.md                     # decision record for the driver layer
+│   ├── mcp-trigger.md                       # rote serve: pipelines as MCP tools
+│   └── releasing.md                         # tag-driven PyPI Trusted Publishing
 ├── skills/
 │   └── rote-graduate/
 │       ├── SKILL.md                         # the graduator agent's instructions
@@ -528,14 +541,19 @@ rote/
 │   │       └── anthropic_api.py             # AnthropicApiDriver (in-process)
 │   └── adapters/
 │       ├── __init__.py                      # adapter registry
+│       ├── _common.py / _py_common.py / _ts_common.py  # shared emit helpers
+│       ├── dbos.py                          # DbosAdapter (Python, CLI default)
 │       ├── temporal.py                      # TemporalAdapter (Python emitter)
-│       └── cloudflare.py                    # CloudflareAdapter (TypeScript emitter)
+│       ├── python.py                        # PythonAdapter (plain-script emitter)
+│       ├── cloudflare.py                    # CloudflareAdapter (TypeScript emitter)
+│       ├── dbos_ts.py                       # DbosTsAdapter (TypeScript emitter)
+│       └── inngest.py                       # InngestAdapter (TypeScript emitter)
 ├── examples/
 │   └── bdr-outreach/
 │       ├── skill/                           # the source skill (graduator input)
 │       ├── expected/                        # hand-drafted IR + stubs (regression baseline)
 │       └── runs/                            # snapshots of real graduator runs
-└── tests/                                   # 136 passing tests across 11 files
+└── tests/                                   # fast + slow suites (pytest -m slow)
 ```
 
 ---
@@ -567,6 +585,9 @@ rote/
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for
   the driver abstraction, including the `claude -p` env-var gotcha and
   the explicit non-use of `claude-agent-sdk`
+- [`docs/mcp-trigger.md`](docs/mcp-trigger.md) — `rote register` +
+  `rote serve`: exposing graduated pipelines as MCP tools (FastMCP 3.x,
+  stdio + Streamable HTTP)
 - [`docs/releasing.md`](docs/releasing.md) — how releases work
   (tag-driven, PyPI Trusted Publishing) and the one-time setup
 - [`skills/rote-graduate/SKILL.md`](skills/rote-graduate/SKILL.md) —

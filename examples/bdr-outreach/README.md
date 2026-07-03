@@ -1,8 +1,10 @@
 # Example: BDR Outreach
 
 This directory is the canonical real-world example for `rote` — a BDR
-outreach skill graduated into a Temporal workflow. It's the dogfooding
-target and the regression suite for the graduator.
+outreach skill graduated into a durable pipeline. It's the dogfooding
+target and the regression suite for the graduator. The hand-drafted IR
+is emitted to every runtime under `expected/runtimes/` (DBOS is the CLI
+default; Temporal, Cloudflare, DBOS-TS, and Inngest are also emitted).
 
 ## Layout
 
@@ -23,7 +25,12 @@ examples/bdr-outreach/
 │   ├── types.py                      # shared Pydantic models
 │   ├── extracted/                    # pure-function stubs
 │   ├── signatures/                   # llm_judge stubs
-│   └── runtimes/temporal/            # emitted Temporal code
+│   └── runtimes/                     # emitted code, one dir per runtime
+│       ├── dbos/                     #   Python (CLI default)
+│       ├── temporal/                 #   Python
+│       ├── cloudflare/               #   TypeScript
+│       ├── dbos-ts/                  #   TypeScript
+│       └── inngest/                  #   TypeScript
 └── runs/                             # real graduator run snapshots
     └── <timestamp>/                  # one per committed run
 ```
@@ -31,7 +38,7 @@ examples/bdr-outreach/
 The `skill/` directory is the **input** to `rote graduate`. The
 `expected/` directory is my hand-drafted IR and stubs — the ground
 truth the IR schema was designed against, and the regression baseline
-for the Temporal adapter. The `runs/` directory holds snapshots of
+for every adapter. The `runs/` directory holds snapshots of
 real graduator runs; `tests/test_graduator_bdr_regression.py` loads
 the most recent one and asserts semantic invariants (node kinds,
 mandatory flags, HITL gates, file references, codifiable percentage).

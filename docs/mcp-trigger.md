@@ -9,7 +9,7 @@ re-running the fuzzy skill.
 Built on FastMCP 3.x (>= 3.4.2). Install with the serve extra:
 
 ```sh
-pip install 'rote[serve]'
+pip install 'rote-cli[serve]'
 ```
 
 ## The flow
@@ -101,7 +101,7 @@ Backends connect lazily: the server starts and lists tools even when
 the runtime is down; unreachability surfaces as a clear tool-call error
 (e.g. `Temporal at localhost:7233 ... is unreachable`). Triggering DBOS
 pipelines additionally needs the dbos extra in the serve environment
-(`pip install 'rote[serve,dbos]'`).
+(`pip install 'rote-cli[serve,dbos]'`).
 
 #### The DBOS operational contract
 

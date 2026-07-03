@@ -1,9 +1,9 @@
 # Contributing to rote
 
-Thanks for your interest in contributing. `rote` is early — v0.1.0 at
-time of writing — so the most valuable contributions right now are
-the kinds that stress-test the design against real skills, not
-polish on the existing code.
+Thanks for your interest in contributing. `rote` is still pre-1.0, so
+the most valuable contributions right now are the kinds that
+stress-test the design against real skills, not polish on the existing
+code.
 
 ## Most useful contributions, in order
 
@@ -15,12 +15,13 @@ polish on the existing code.
    source skill's `SKILL.md`, (b) the produced `pipeline.yaml`, and
    (c) what you expected instead. Snapshots are cheap and the
    fastest way to improve the rubric.
-2. **Add a runtime adapter.** The Temporal adapter in
-   [`src/rote/adapters/temporal.py`](src/rote/adapters/temporal.py) is
-   the only one that exists today. Inngest, Restate, DBOS, and
-   Hatchet are all good second targets. Until two adapters work
-   end-to-end the IR isn't proven runtime-agnostic, so the second
-   adapter is the single most load-bearing missing piece.
+2. **Add a runtime adapter.** Six adapters ship today — `dbos`
+   (default), `temporal`, and `python` emit Python;
+   [`cloudflare`](src/rote/adapters/cloudflare.py), `dbos-ts`, and
+   `inngest` emit TypeScript. Restate and Hatchet are good next
+   targets. Each new runtime that consumes the IR unchanged is more
+   evidence the IR is genuinely runtime-agnostic; one that *can't* be
+   expressed cleanly is a real signal to revisit the IR shape.
 3. **Add a graduator driver.** The Protocol lives in
    [`src/rote/graduator/drivers/__init__.py`](src/rote/graduator/drivers/__init__.py).
    `ClaudeDriver` (subprocess) and `AnthropicApiDriver` (in-process
@@ -45,9 +46,9 @@ pip install -e ".[dev]"
 ```
 
 This installs `rote` in editable mode plus the dev dependencies
-(`pytest`, `pytest-asyncio`, `temporalio`, `anthropic`, `ruff`,
-`mypy`, `types-pyyaml`). You now have a `rote` command on `PATH`
-and can run tests.
+(`pytest`, `pytest-asyncio`, `ruff`, `mypy`, `types-pyyaml`, and the
+runtime extras: `temporalio`, `anthropic`, `dbos`, `fastmcp`,
+`httpx`). You now have a `rote` command on `PATH` and can run tests.
 
 ## Running tests
 
@@ -58,10 +59,12 @@ pytest tests/test_temporal_adapter.py                 # just the adapter
 pytest tests/test_graduator_bdr_regression.py         # BDR regression
 ```
 
-The full suite takes ~1 second (the Temporal end-to-end test runs
-against the in-process time-skipping environment and is cached
-after the first run). The BDR regression tests skip gracefully if
-no snapshot exists under `examples/bdr-outreach/runs/`.
+The fast suite (what `pytest tests/` runs by default) finishes in
+~15 seconds — no real API calls, subprocesses, or LLM invocations.
+The toolchain-dependent integration tests are `slow`-marked and opt-in
+via `pytest tests/ -m slow` (they need Node/npm/tsc, and DBOS-TS needs
+Docker). The BDR regression tests skip gracefully if no snapshot
+exists under `examples/bdr-outreach/runs/`.
 
 ## Running the real graduator
 
@@ -139,8 +142,12 @@ needs:
    `emit` subparsers (the list is derived from `ADAPTERS` so it
    updates automatically once the factory is registered).
 
-The Temporal adapter is ~450 lines and most of that is string
-templates. A second adapter should be similar in scope.
+The Temporal adapter is a few hundred lines, most of it string
+templates; the TypeScript adapters share emit machinery in
+`_ts_common.py` and the Python ones in `_py_common.py`, so a new
+adapter in an existing language is smaller. Route every emitted-file
+write through the `EmitWriter` in `_common.py` rather than bare
+`write_text` — it powers hash-guarded re-emission.
 
 ## Adding a new graduator driver
 
@@ -190,17 +197,23 @@ mechanisms — the filesystem is the contract.
 
 ## What the test suite looks like on main
 
+The suite is organized by layer. A representative slice:
+
 ```
-98 tests passing across 9 files
-├── test_ir.py                              IR Pydantic models
-├── test_temporal_adapter.py                IR → Temporal code
-├── test_temporal_e2e.py                    Full workflow run with mocks
+tests/
+├── test_ir.py                              IR Pydantic models + validators
+├── test_<runtime>_adapter.py               IR → emitted code (unit, per runtime)
+├── test_<runtime>_e2e.py                   emitted code on a real runtime (slow)
 ├── test_graduator_drivers.py               Driver Protocol + registry
 ├── test_anthropic_driver.py                API driver tool dispatch
 ├── test_claude_driver.py                   Claude subprocess driver
 ├── test_graduator.py                       Orchestrator
-├── test_cli.py                             CLI subcommands
-└── test_graduator_bdr_regression.py        Real graduator output
+├── test_graduate_update.py                 Incremental re-graduation
+├── test_cli.py / test_eval_*.py            CLI subcommands + eval harness
+├── test_serve_*.py                         rote serve (MCP trigger)
+└── test_graduator_bdr_regression.py        Real graduator output vs snapshot
 ```
 
-A healthy PR leaves that count higher, not lower.
+Adapters (`temporal`, `cloudflare`, `dbos`, `dbos-ts`, `inngest`,
+`python`) each have a `_adapter.py` unit test and an `_e2e.py`
+integration test. A healthy PR leaves coverage broader, not narrower.

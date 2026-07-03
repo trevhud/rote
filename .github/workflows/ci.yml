@@ -1,0 +1,66 @@
+# Continuous integration — runs on every pull request and every push to
+# main, so contributor changes are gated *before* a maintainer reviews
+# them (the release.yml gate only fires on a version tag).
+#
+# Two jobs: `test` matrixes the fast suite across every supported Python;
+# `quality` runs the single-version lint / type / sanity gates. This
+# mirrors the checks in release.yml so nothing can pass CI yet fail the
+# release pipeline.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch/PR cancels the in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Fast suite (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with the classifiers in pyproject.toml.
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      - name: Pytest (fast suite)
+        run: pytest tests/
+
+  quality:
+    name: Lint, types, sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      - name: Ruff lint + format check
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy (strict)
+        run: mypy src/rote
+
+      - name: Sanity check (no leaked identifiers/secrets)
+        run: ./scripts/sanity-check.sh

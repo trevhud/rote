@@ -27,7 +27,7 @@ implementing the same Protocol:**
 |---|---|---|---|
 | `claude` | subprocess: `claude -p` | Claude Max/Pro OAuth or `CLAUDE_CODE_OAUTH_TOKEN` | user installs Claude Code separately |
 | `codex` | subprocess: `codex exec` | ChatGPT Plus/Pro OAuth | user installs Codex CLI separately |
-| `api` | in-process: `anthropic` SDK | `ANTHROPIC_API_KEY` | `pip install rote[api]` |
+| `api` | in-process: `anthropic` SDK | `ANTHROPIC_API_KEY` | `pip install rote-cli[api]` |
 
 Auto-detection order when `--agent` is not specified:
 **`claude` → `codex` → `api`**. The CLI surface:
@@ -172,7 +172,7 @@ stops calling tools.
 only want the subprocess drivers never pay the import cost. Install:
 
 ```sh
-pip install "rote[api]"
+pip install "rote-cli[api]"
 ```
 
 **Auth:** `ANTHROPIC_API_KEY` environment variable. The driver
