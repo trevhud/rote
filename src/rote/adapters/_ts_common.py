@@ -8,10 +8,14 @@ What lives here:
 
 * the JSON-Schema-to-Zod converter (``json_schema_to_zod`` and its
   internals ``_resolve_refs`` / ``_convert_zod``),
-* the typed LLM signature module emitters
-  (``emit_signature_anthropic`` / ``emit_signature_openai``) plus the
-  runtime prompt-interpolation helper they embed
-  (``_INTERPOLATE_HELPER``).
+* the typed LLM signature module emitters (``emit_ts_signature_module``
+  dispatching to ``emit_signature_anthropic`` / ``emit_signature_openai``)
+  plus the runtime prompt-interpolation helper they embed
+  (``_INTERPOLATE_HELPER``),
+* data-flow rendering (``ref_to_ts_expr`` / ``payload_ts_literal``) and
+  the workflow-file import block (``module_imports``),
+* the Node-process helpers shared by the non-Workers TS runtimes
+  (``judge_env_arg``, ``REQUIRE_ENV_HELPER``, ``emit_node_tsconfig``).
 
 What deliberately does *not* live here: anything encoding a runtime's
 execution semantics (Cloudflare ``step.do`` configs, DBOS step retry
@@ -28,9 +32,11 @@ import only Zod and the vendor SDK, and take API keys via an explicit
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from rote.adapters._common import safe_block_comment_line
+from rote.adapters._common import _to_camel_case, _to_pascal_case, safe_block_comment_line
+from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── JSON Schema → Zod ─────────
 
@@ -372,3 +378,207 @@ def emit_signature_openai(
         ]
     )
     return "\n".join(parts)
+
+
+# ───────── Data-flow references → TypeScript source ─────────
+
+# Conservative ASCII identifier shape for emitted object keys. Anything
+# that doesn't match is JSON-quoted, which is always-valid TS — so being
+# conservative here (no `$`, no Unicode) costs nothing but quoting.
+_TS_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def ref_to_ts_expr(ref: str) -> str:
+    """Render an ``inputs:`` source reference as a TypeScript expression.
+
+    Every TS-emitting adapter binds the pipeline input to
+    ``pipelineInput`` and each node's result to ``<node_id>_result``:
+
+    | Reference                  | Expression                                          |
+    |----------------------------|-----------------------------------------------------|
+    | ``pipeline.input``         | ``pipelineInput``                                   |
+    | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
+    | ``foo.output``             | ``foo_result``                                      |
+    | ``foo.output.f``           | ``(foo_result as Record<string, unknown>)["f"]``    |
+
+    Node-output field access goes through a Record cast: on Cloudflare,
+    ``step.do``'s ``Rpc.Serializable`` constraint widens inferred result
+    types so direct indexing doesn't compile, and on every runtime the
+    cast stays valid for whatever concrete return type the user gives a
+    stub later.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None:
+        if parsed.field is None:
+            return "pipelineInput"
+        return f"pipelineInput[{json.dumps(parsed.field)}]"
+    base = f"{parsed.node_id}_result"
+    if parsed.field is None:
+        return base
+    return f"({base} as Record<string, unknown>)[{json.dumps(parsed.field)}]"
+
+
+def payload_ts_literal(node: Node, indent: str) -> str:
+    """Render the step payload object for a node's data-flow bindings.
+
+    Nodes without ``inputs`` keep the empty payload (back-compat).
+    ``indent`` is the indentation of the line the literal starts on;
+    entries are indented one level deeper.
+    """
+    if not node.inputs:
+        return "{}"
+    inner = indent + "    "
+    lines = ["{"]
+    for param, ref in node.inputs.items():
+        key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
+        lines.append(f"{inner}{key}: {ref_to_ts_expr(ref)},")
+    lines.append(indent + "}")
+    return "\n".join(lines)
+
+
+# ───────── Pipeline queries ─────────
+
+
+def llm_clients(pipeline: Pipeline) -> set[str]:
+    """Vendor clients used by the pipeline's llm_judge signature specs."""
+    return {
+        node.signature_spec.client
+        for node in pipeline.nodes
+        if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None
+    }
+
+
+def module_imports(pipeline: Pipeline, prefix: str = "./") -> str:
+    """Build the static-import block for the emitted workflow file.
+
+    One import per non-HITL node (including loop_body sub-nodes): the
+    function name is camelCase of the node id; the path is
+    ``<prefix>signatures/<id>`` for llm_judge and
+    ``<prefix>extracted/<id>`` otherwise. ``prefix`` accommodates
+    workflow files that don't sit next to those directories (Inngest's
+    ``src/inngest/pipeline.ts`` passes ``"../"``).
+    """
+    lines: list[str] = []
+    for node in pipeline.nodes:
+        if node.kind is NodeKind.HITL_GATE:
+            continue
+        fn = _to_camel_case(node.id)
+        if node.kind is NodeKind.LLM_JUDGE:
+            lines.append(f'import {{ {fn} }} from "{prefix}signatures/{node.id}";')
+        else:
+            lines.append(f'import {{ {fn} }} from "{prefix}extracted/{node.id}";')
+    return "\n".join(lines)
+
+
+# ───────── Typed signature module (client dispatch) ─────────
+
+
+def require_signature_spec(node: Node) -> LLMSignature:
+    """Return the node's ``signature_spec`` or fail with the shared message.
+
+    Every TS adapter has the same requirement: the legacy
+    ``signature: path.py:Class`` form points at a Python module and
+    cannot be emitted to TypeScript.
+    """
+    if node.signature_spec is None:
+        raise ValueError(
+            f"TypeScript emission: llm_judge {node.id!r} requires signature_spec "
+            f"(structured form). The legacy path form signature: {node.signature!r} "
+            f"points at a Python module and cannot be emitted to TypeScript."
+        )
+    return node.signature_spec
+
+
+def emit_ts_signature_module(
+    node: Node,
+    *,
+    anthropic_default_model: str,
+    openai_default_model: str,
+    generated_by: str,
+) -> str:
+    """Emit signatures/<node_id>.ts for an llm_judge node.
+
+    The shared front door for every TS adapter: requires
+    ``signature_spec``, converts the JSON Schemas to Zod, resolves the
+    model default for the spec's client, and dispatches to the
+    per-vendor emitter. ``generated_by`` is the calling adapter's module
+    name for the header JSDoc.
+    """
+    spec = require_signature_spec(node)
+    if spec.client == "anthropic":
+        emitter = emit_signature_anthropic
+        model = spec.model or anthropic_default_model
+    elif spec.client == "openai":
+        emitter = emit_signature_openai
+        model = spec.model or openai_default_model
+    else:  # pragma: no cover — LLMSignature validates the client field
+        raise ValueError(f"Unsupported LLM client: {spec.client!r}")
+    return emitter(
+        node_id=node.id,
+        fn_name=_to_camel_case(node.id),
+        pascal=_to_pascal_case(node.id),
+        description=node.description,
+        input_zod=json_schema_to_zod(spec.input_schema, indent=0),
+        output_zod=json_schema_to_zod(spec.output_schema, indent=0),
+        output_schema_json=json.dumps(spec.output_schema, indent=2),
+        prompt_template=spec.prompt,
+        model=model,
+        base_url=spec.base_url,
+        temperature=spec.temperature,
+        generated_by=generated_by,
+    )
+
+
+# ───────── Node-process runtime helpers ─────────
+#
+# Shared by the TS adapters whose emitted code runs in a plain Node
+# process (DBOS-TS, Inngest). Cloudflare Workers pass `this.env` instead,
+# so these don't apply there.
+
+REQUIRE_ENV_HELPER = """\
+function requireEnv(name: string): string {
+    const value = process.env[name];
+    if (!value) {
+        throw new Error(`missing required environment variable ${name}`);
+    }
+    return value;
+}
+"""
+
+
+def judge_env_arg(node: Node) -> str:
+    """The env object a judge step passes to its signature function.
+
+    Besides the required API key, the per-node operator overrides
+    (``ROTE_MODEL_<ID>`` / ``ROTE_BASE_URL_<ID>``) are threaded through
+    from ``process.env`` so the signature honors them at runtime.
+    """
+    spec = require_signature_spec(node)
+    key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
+    model_var, base_var = override_env_vars(node.id)
+    return (
+        "{\n"
+        f'        {key}: requireEnv("{key}"),\n'
+        f"        {model_var}: process.env.{model_var},\n"
+        f"        {base_var}: process.env.{base_var},\n"
+        "    }"
+    )
+
+
+def emit_node_tsconfig() -> str:
+    """tsconfig.json for the Node-process TS runtimes (DBOS-TS, Inngest)."""
+    obj = {
+        "compilerOptions": {
+            "target": "ES2022",
+            "module": "NodeNext",
+            "moduleResolution": "NodeNext",
+            "strict": True,
+            "esModuleInterop": True,
+            "skipLibCheck": True,
+            "outDir": "dist",
+            "rootDir": "src",
+            "types": ["node"],
+        },
+        "include": ["src/**/*.ts"],
+    }
+    return json.dumps(obj, indent=2) + "\n"

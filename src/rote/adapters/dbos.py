@@ -59,27 +59,31 @@ as the other adapters, enforced by AST tests.
 from __future__ import annotations
 
 import json
-import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
+    _duration_to_seconds,
     _execution_waves,
     _pipeline_hash,
+    _seconds_literal,
     _to_pascal_case,
     check_input_refs_available,
     safe_docstring_line,
 )
-from rote.adapters._py_common import _extracted_layout
-from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
-from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
-from rote.adapters.temporal import (
+from rote.adapters._py_common import (
+    _extracted_layout,
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    serialize_helper,
 )
+from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
+from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
 
 # ───────── Adapter configuration ─────────
@@ -94,8 +98,8 @@ class DbosAdapterConfig:
     for Postgres in production), admin server off.
     """
 
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     # Module path used for *legacy* `signature: path.py:Class` judges,
     # which import a user-maintained Python module instead of a
     # generated one. Mirrors TemporalAdapterConfig.signatures_module.
@@ -103,41 +107,6 @@ class DbosAdapterConfig:
     # Steps enqueued for parallel waves land on this queue. None means
     # derive "<pipeline-name>-queue".
     queue_name: str | None = None
-
-
-# ───────── Duration handling ─────────
-
-_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h|d)$")
-
-_UNIT_TO_SECONDS = {
-    "ms": 0.001,
-    "s": 1.0,
-    "m": 60.0,
-    "h": 3600.0,
-    "d": 86400.0,
-}
-
-
-def _duration_to_seconds(s: str) -> float:
-    """Convert an IR duration string ('5m', '30s', '7d') to seconds.
-
-    DBOS APIs take plain ``timeout_seconds`` floats, so unlike the
-    Temporal adapter (which emits a runtime parser) we convert at
-    emission time and emit a literal.
-    """
-    m = _DURATION_RE.fullmatch(s.strip())
-    if not m:
-        raise ValueError(
-            f"DBOS adapter: cannot parse IR duration {s!r}. Expected forms like '30s', '5m', '7d'."
-        )
-    return float(m.group(1)) * _UNIT_TO_SECONDS[m.group(2)]
-
-
-def _seconds_literal(seconds: float) -> str:
-    """Render a seconds value as a compact Python literal."""
-    if seconds == int(seconds):
-        return str(int(seconds))
-    return repr(seconds)
 
 
 # ───────── Retry mapping ─────────
@@ -476,22 +445,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         # Parallel waves fan out onto this queue; each enqueued step runs as
         # a one-step workflow with its own durable handle.
         queue = Queue("{queue_name}")
-
-
-        def _serialize(obj: Any) -> Any:
-            """Convert pydantic models / tuples to plain JSON-safe values.
-
-            Steps return JSON-serializable payloads so workflow state stays
-            portable across the system database.
-            """
-            if hasattr(obj, "model_dump"):
-                return obj.model_dump()
-            if isinstance(obj, (list, tuple)):
-                return [_serialize(x) for x in obj]
-            if isinstance(obj, dict):
-                return {{k: _serialize(v) for k, v in obj.items()}}
-            return obj
         '''
+    )
+
+    header += "\n\n" + serialize_helper(
+        "Steps return JSON-serializable payloads so workflow state stays\n"
+        "    portable across the system database."
     )
 
     step_parts: list[str] = []

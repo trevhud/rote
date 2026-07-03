@@ -41,8 +41,8 @@ from rote.ir import (
     Pipeline,
     PipelineInput,
     RetryPolicy,
-    load_pipeline,
 )
+from tests._helpers import assert_no_mcp_in_ts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -50,11 +50,6 @@ BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes"
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")
@@ -293,25 +288,11 @@ def test_per_node_retry_deltas_documented_as_comments(pipeline_src: str) -> None
 def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None:
     """Architectural invariant: no MCP runtime in emitted Inngest code.
 
-    Comments and JSDoc may *mention* MCP to explain the graduation
-    history, so we strip ``/* ... */`` blocks, ``// ...`` line comments,
-    and string literals before scanning — same technique as the
-    Cloudflare and DBOS TS adapters' tests.
+    Comments, JSDoc, and string literals may mention MCP to explain the
+    graduation history; executable code may not. Scan logic is shared —
+    see tests/_helpers.py.
     """
-    js_string = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`')
-    block_comment = re.compile(r"/\*[\s\S]*?\*/")
-    line_comment = re.compile(r"//[^\n]*")
-
-    for label, path in emit_result.items():
-        if not str(path).endswith(".ts"):
-            continue
-        src = path.read_text(encoding="utf-8")
-        cleaned = block_comment.sub(" ", src)
-        cleaned = line_comment.sub(" ", cleaned)
-        cleaned = js_string.sub('""', cleaned)
-        assert "mcp" not in cleaned.lower(), (
-            f"{label} ({path.name}) contains forbidden substring 'mcp' in executable code"
-        )
+    assert_no_mcp_in_ts(emit_result, min_files=13)
 
 
 def test_signature_module_imports_zod_and_anthropic(emit_result: dict[str, Path]) -> None:

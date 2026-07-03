@@ -47,7 +47,7 @@ import pytest
 
 from rote.adapters._common import _execution_waves, _to_camel_case
 from rote.adapters.dbos_ts import DbosTsAdapter
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import NodeKind, Pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -86,11 +86,6 @@ def _npm_install(cwd: Path) -> None:
 
 
 # ───────── Tier 1 + 2: compile against the real packages ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")

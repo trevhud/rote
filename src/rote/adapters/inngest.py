@@ -98,21 +98,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    _to_pascal_case,
     check_input_refs_available,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
-    emit_signature_anthropic,
-    emit_signature_openai,
-    json_schema_to_zod,
-    override_env_vars,
+    REQUIRE_ENV_HELPER,
+    emit_node_tsconfig,
+    emit_ts_signature_module,
+    judge_env_arg,
+    llm_clients,
+    module_imports,
+    payload_ts_literal,
 )
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 _GENERATED_BY = "rote.adapters.inngest"
 
@@ -128,8 +132,8 @@ class InngestAdapterConfig:
     event/signing keys via environment variables at deploy time.
     """
 
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     #: Default port for the emitted Node serve entrypoint (overridable
     #: at runtime via the PORT environment variable).
     serve_port: int = 3000
@@ -249,107 +253,22 @@ def _node_policy_comment(node: Node, fn_retries: int, indent: str) -> str:
     return "\n".join(indent + line for line in lines) + "\n"
 
 
-# ───────── Data-flow references ─────────
-
-
-def _ref_to_ts_expr(ref: str) -> str:
-    """Render an ``inputs:`` source reference as a TypeScript expression.
-
-    Same output shape as the other TS adapters:
-
-    | Reference                  | Expression                                          |
-    |----------------------------|-----------------------------------------------------|
-    | ``pipeline.input``         | ``pipelineInput``                                   |
-    | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
-    | ``foo.output``             | ``foo_result``                                      |
-    | ``foo.output.f``           | ``(foo_result as Record<string, unknown>)["f"]``    |
-
-    Node-output field access goes through a Record cast because the
-    stub modules declare ``Promise<never>`` (they always throw until
-    implemented) and typed signature outputs are Zod object types —
-    the cast keeps both indexable today and stays valid for whatever
-    concrete return type the user gives a stub later.
-    """
-    parsed = parse_input_ref(ref)
-    if parsed.node_id is None:
-        if parsed.field is None:
-            return "pipelineInput"
-        return f"pipelineInput[{json.dumps(parsed.field)}]"
-    base = f"{parsed.node_id}_result"
-    if parsed.field is None:
-        return base
-    return f"({base} as Record<string, unknown>)[{json.dumps(parsed.field)}]"
-
-
-def _payload_ts_literal(node: Node, indent: str) -> str:
-    """Render the step payload object for a node's data-flow bindings.
-
-    Nodes without ``inputs`` keep the empty payload (back-compat).
-    ``indent`` is the indentation of the line the literal starts on;
-    entries are indented one level deeper.
-    """
-    if not node.inputs:
-        return "{}"
-    inner = indent + "    "
-    lines = ["{"]
-    for param, ref in node.inputs.items():
-        key = param if param.isidentifier() else json.dumps(param)
-        lines.append(f"{inner}{key}: {_ref_to_ts_expr(ref)},")
-    lines.append(indent + "}")
-    return "\n".join(lines)
-
-
 # ───────── signatures/<id>.ts emission ─────────
-
-
-def _require_signature_spec(node: Node) -> LLMSignature:
-    """The structured spec is mandatory for TS emission — fail with a
-    clear message instead of emitting broken code from the legacy
-    Python-path ``signature`` form."""
-    if node.signature_spec is None:
-        raise ValueError(
-            f"Inngest adapter: llm_judge {node.id!r} requires signature_spec "
-            f"(structured form). Path-only signature: {node.signature!r} is "
-            f"Python-specific and cannot be emitted to TypeScript."
-        )
-    return node.signature_spec
 
 
 def emit_signature_module(node: Node, cfg: InngestAdapterConfig) -> str:
     """Emit src/signatures/<node_id>.ts for an llm_judge node.
 
-    Shares the TS emission machinery (:mod:`rote.adapters._ts_common`):
-    Zod schemas from the IR's JSON Schemas, a typed function calling the
-    vendor SDK with structured output, and prompt interpolation that
-    throws on unresolvable placeholders.
+    Delegates to the shared TS signature emitter
+    (:func:`rote.adapters._ts_common.emit_ts_signature_module`) with this
+    adapter's identity string and model defaults.
     """
-    spec = _require_signature_spec(node)
-    if spec.client == "anthropic":
-        emitter = emit_signature_anthropic
-    elif spec.client == "openai":
-        emitter = emit_signature_openai
-    else:  # pragma: no cover — LLMSignature validates the client field
-        raise ValueError(f"Unsupported LLM client: {spec.client!r}")
-    return emitter(
-        node_id=node.id,
-        fn_name=_to_camel_case(node.id),
-        pascal=_to_pascal_case(node.id),
-        description=node.description,
-        input_zod=json_schema_to_zod(spec.input_schema, indent=0),
-        output_zod=json_schema_to_zod(spec.output_schema, indent=0),
-        output_schema_json=json.dumps(spec.output_schema, indent=2),
-        prompt_template=spec.prompt,
-        model=spec.model or _default_model_for(spec, cfg),
-        base_url=spec.base_url,
-        temperature=spec.temperature,
+    return emit_ts_signature_module(
+        node,
+        anthropic_default_model=cfg.anthropic_default_model,
+        openai_default_model=cfg.openai_default_model,
         generated_by=_GENERATED_BY,
     )
-
-
-def _default_model_for(spec: LLMSignature, cfg: InngestAdapterConfig) -> str:
-    if spec.client == "openai":
-        return cfg.openai_default_model
-    return cfg.anthropic_default_model
 
 
 # ───────── extracted/<id>.ts emission ─────────
@@ -454,49 +373,12 @@ def emit_client(pipeline: Pipeline) -> str:
 # ───────── src/inngest/pipeline.ts emission ─────────
 
 
-def _module_imports(pipeline: Pipeline) -> str:
-    """One import per non-HITL node: signatures/ for judges, extracted/ else."""
-    lines: list[str] = []
-    for node in pipeline.nodes:
-        if node.kind is NodeKind.HITL_GATE:
-            continue
-        fn = _to_camel_case(node.id)
-        if node.kind is NodeKind.LLM_JUDGE:
-            lines.append(f'import {{ {fn} }} from "../signatures/{node.id}";')
-        else:
-            lines.append(f'import {{ {fn} }} from "../extracted/{node.id}";')
-    return "\n".join(lines)
-
-
-def _spec_judges(pipeline: Pipeline) -> list[Node]:
-    return [n for n in pipeline.nodes if n.kind is NodeKind.LLM_JUDGE]
-
-
-def _judge_env_arg(node: Node) -> str:
-    """The env object a judge step passes to its signature function.
-
-    Besides the required API key, the per-node operator overrides
-    (``ROTE_MODEL_<ID>`` / ``ROTE_BASE_URL_<ID>``) are threaded through
-    from ``process.env`` so the signature honors them at runtime.
-    """
-    spec = _require_signature_spec(node)
-    key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
-    model_var, base_var = override_env_vars(node.id)
-    return (
-        "{\n"
-        f'        {key}: requireEnv("{key}"),\n'
-        f"        {model_var}: process.env.{model_var},\n"
-        f"        {base_var}: process.env.{base_var},\n"
-        "    }"
-    )
-
-
 def _step_call_expr(node: Node, payload_indent: str) -> str:
     """The ``step.run("<id>", async () => fn(payload))`` expression, unterminated."""
     fn_name = _to_camel_case(node.id)
-    payload = _payload_ts_literal(node, indent=payload_indent)
+    payload = payload_ts_literal(node, indent=payload_indent)
     if node.kind is NodeKind.LLM_JUDGE:
-        call = f"{fn_name}({payload}, {_judge_env_arg(node)})"
+        call = f"{fn_name}({payload}, {judge_env_arg(node)})"
     else:
         call = f"{fn_name}({payload})"
     return f"step.run({json.dumps(node.id)}, async () => {call})"
@@ -597,17 +479,6 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int) -> str:
     return "\n".join(lines)
 
 
-_REQUIRE_ENV_HELPER = """\
-function requireEnv(name: string): string {
-    const value = process.env[name];
-    if (!value) {
-        throw new Error(`missing required environment variable ${name}`);
-    }
-    return value;
-}
-"""
-
-
 def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None) -> str:
     """Render the src/inngest/pipeline.ts source for a pipeline."""
     cfg = cfg or InngestAdapterConfig()
@@ -648,9 +519,10 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         'import { NonRetriableError } from "inngest";\n' if has_gates else ""
     ) + 'import { inngest } from "./client";\n'
 
-    module_imports = _module_imports(pipeline)
+    imports_block = module_imports(pipeline, prefix="../")
 
-    helper_block = f"\n{_REQUIRE_ENV_HELPER.rstrip(chr(10))}\n" if _spec_judges(pipeline) else ""
+    has_judges = bool(pipeline.nodes_by_kind(NodeKind.LLM_JUDGE))
+    helper_block = f"\n{REQUIRE_ENV_HELPER.rstrip(chr(10))}\n" if has_judges else ""
 
     body = _emit_workflow_body(pipeline, fn_retries)
 
@@ -678,7 +550,7 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         ");\n"
     )
 
-    sections = [header + inngest_imports + module_imports]
+    sections = [header + inngest_imports + imports_block]
     if helper_block:
         sections.append(helper_block.strip("\n"))
     sections.append(function_block)
@@ -725,15 +597,6 @@ def emit_index(pipeline: Pipeline, cfg: InngestAdapterConfig) -> str:
 # ───────── package / tsconfig / README emission ─────────
 
 
-def _llm_clients(pipeline: Pipeline) -> set[str]:
-    """Vendor clients used by the pipeline's llm_judge signature specs."""
-    return {
-        node.signature_spec.client
-        for node in pipeline.nodes
-        if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None
-    }
-
-
 def emit_package_json(pipeline: Pipeline) -> str:
     """Emit package.json with the current SDK majors (verified on npm).
 
@@ -746,7 +609,7 @@ def emit_package_json(pipeline: Pipeline) -> str:
         "inngest": "^4.11.0",
         "zod": "^4.4.3",
     }
-    clients = _llm_clients(pipeline)
+    clients = llm_clients(pipeline)
     if "anthropic" in clients:
         dependencies["@anthropic-ai/sdk"] = "^0.110.0"
     if "openai" in clients:
@@ -765,24 +628,6 @@ def emit_package_json(pipeline: Pipeline) -> str:
             "@types/node": "^26.1.0",
             "typescript": "^6.0.3",
         },
-    }
-    return json.dumps(obj, indent=2) + "\n"
-
-
-def emit_tsconfig() -> str:
-    obj = {
-        "compilerOptions": {
-            "target": "ES2022",
-            "module": "NodeNext",
-            "moduleResolution": "NodeNext",
-            "strict": True,
-            "esModuleInterop": True,
-            "skipLibCheck": True,
-            "outDir": "dist",
-            "rootDir": "src",
-            "types": ["node"],
-        },
-        "include": ["src/**/*.ts"],
     }
     return json.dumps(obj, indent=2) + "\n"
 
@@ -993,7 +838,7 @@ class InngestAdapter:
                 )
 
         written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
-        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
+        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_node_tsconfig())
         written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
         writer.finalize()

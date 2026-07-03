@@ -17,7 +17,6 @@ from rote.ir import (
     NodeKind,
     Pipeline,
     PipelineInput,
-    load_pipeline,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -25,12 +24,6 @@ BDR_PIPELINE = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.
 
 
 # ───────── Loading the BDR pipeline ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    assert BDR_PIPELINE.exists(), f"Missing fixture: {BDR_PIPELINE}"
-    return load_pipeline(BDR_PIPELINE)
 
 
 def test_bdr_pipeline_loads(bdr_pipeline: Pipeline) -> None:

@@ -18,6 +18,15 @@ from pathlib import Path
 
 from rote.ir import Node, Pipeline, parse_input_ref
 
+# ───────── Default LLM models ─────────
+#
+# Single source of truth for the model ids adapters bake into emitted
+# judges when the IR omits ``signature_spec.model``. Bump these when a
+# new default ships — every adapter config inherits them.
+
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_OPENAI_MODEL = "gpt-4.1"
+
 # ───────── Prose → safe code comment/docstring ─────────
 
 
@@ -251,6 +260,40 @@ def ir_duration_to_human(s: str) -> str:
     if not m:
         return s
     return f"{m.group(1)} {_UNIT_TO_HUMAN[m.group(2)]}"
+
+
+_UNIT_TO_SECONDS = {
+    "ms": 0.001,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+    "d": 86400.0,
+}
+
+
+def _duration_to_seconds(s: str) -> float:
+    """Convert an IR duration string ('5m', '30s', '7d') to seconds.
+
+    For runtimes whose APIs take plain second/millisecond numbers
+    (DBOS's ``timeout_seconds``, DBOS-TS's ``timeoutMS``), the adapter
+    converts at emission time and emits a literal — unlike Temporal,
+    which emits a runtime parser.
+    """
+    m = _IR_DURATION_RE.fullmatch(s.strip())
+    if not m:
+        raise ValueError(f"cannot parse IR duration {s!r}. Expected forms like '30s', '5m', '7d'.")
+    return float(m.group(1)) * _UNIT_TO_SECONDS[m.group(2)]
+
+
+def _seconds_literal(seconds: float) -> str:
+    """Render a seconds value as a compact numeric literal.
+
+    Whole values drop the trailing ``.0`` — valid and idiomatic in both
+    Python and TypeScript source, the two languages adapters emit.
+    """
+    if seconds == int(seconds):
+        return str(int(seconds))
+    return repr(seconds)
 
 
 # ───────── Topological waves ─────────

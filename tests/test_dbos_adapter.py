@@ -31,7 +31,8 @@ from rote.adapters.dbos import (
     emit_main,
     emit_signature_module,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline, load_pipeline
+from rote.ir import Edge, Node, NodeKind, Pipeline
+from tests._helpers import mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -39,11 +40,6 @@ BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes"
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")
@@ -291,7 +287,7 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
 def test_node_without_inputs_gets_empty_payload() -> None:
     """Back-compat: nodes with no ``inputs`` still receive {}."""
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    src = emit_main(_mini_pipeline(node), DbosAdapterConfig())
+    src = emit_main(mini_pipeline(node), DbosAdapterConfig())
     assert "only_result = only({})" in src
 
 
@@ -430,17 +426,6 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
 # ───────── Legacy signature path + openai client (synthetic pipelines) ─────────
 
 
-def _mini_pipeline(judge: Node) -> Pipeline:
-    return Pipeline(
-        name="mini",
-        input={"type": "In", "required": [], "optional": []},
-        nodes=[judge],
-        edges=[],
-        entry_nodes=[judge.id],
-        exit_nodes=[judge.id],
-    )
-
-
 def test_legacy_signature_path_fallback() -> None:
     """A judge with only the legacy path form imports the user-maintained
     module and bridges its async forward with asyncio.run."""
@@ -450,7 +435,7 @@ def test_legacy_signature_path_fallback() -> None:
         description="Grade an essay.",
         signature="signatures/grade_essay.py:GradeEssay",
     )
-    src = emit_main(_mini_pipeline(judge), DbosAdapterConfig())
+    src = emit_main(mini_pipeline(judge), DbosAdapterConfig())
     assert "from signatures.grade_essay import (" in src
     assert "asyncio.run(judge.forward(GradeEssayInput(**payload)))" in src
 

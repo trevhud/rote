@@ -37,7 +37,7 @@ from urllib.request import Request, urlopen
 import pytest
 
 from rote.adapters.cloudflare import CloudflareAdapter
-from rote.ir import Pipeline, load_pipeline
+from rote.ir import Pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -48,11 +48,6 @@ pytestmark = pytest.mark.slow
 
 def _node_available() -> bool:
     return shutil.which("node") is not None and shutil.which("npm") is not None
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")

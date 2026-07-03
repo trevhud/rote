@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
@@ -45,16 +47,13 @@ from rote.adapters._common import (
     ir_duration_to_human as _ir_duration_to_cf,
 )
 from rote.adapters._ts_common import (
-    emit_signature_anthropic as _emit_signature_anthropic,
-)
-from rote.adapters._ts_common import (
-    emit_signature_openai as _emit_signature_openai,
-)
-from rote.adapters._ts_common import (
-    json_schema_to_zod,
+    emit_ts_signature_module,
+    llm_clients,
+    module_imports,
     override_env_vars,
+    payload_ts_literal,
 )
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── Adapter configuration ─────────
 
@@ -69,8 +68,8 @@ class CloudflareAdapterConfig:
 
     workflow_binding: str = "PIPELINE"
     compatibility_date: str = "2026-04-25"
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     # Defaults use IR shorthand (5m / 7d) so they round-trip through
     # ``_ir_duration_to_cf`` without re-conversion.
     default_step_timeout: str = "10m"
@@ -136,62 +135,11 @@ def _step_config_literal(node: Node, cfg: CloudflareAdapterConfig) -> str:
 
 # ───────── Workflow.ts emission ─────────
 
-_TS_IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
-
-
-def _ref_to_ts_expr(ref: str) -> str:
-    """Render an ``inputs:`` source reference as a TypeScript expression.
-
-    The workflow binds the instance params to ``pipelineInput`` and each
-    node's result to ``<node_id>_result``:
-
-    | Reference                  | Expression                                          |
-    |----------------------------|-----------------------------------------------------|
-    | ``pipeline.input``         | ``pipelineInput``                                   |
-    | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
-    | ``foo.output``             | ``foo_result``                                      |
-    | ``foo.output.f``           | ``(foo_result as Record<string, unknown>)["f"]``    |
-
-    Node-output field access goes through a Record cast because
-    ``step.do``'s ``Rpc.Serializable`` constraint widens inferred result
-    types to its constraint union (verified against
-    @cloudflare/workers-types via the tsc e2e test) — direct indexing
-    doesn't compile. The cast also stays valid for whatever concrete
-    return type the user gives a stub later.
-    """
-    parsed = parse_input_ref(ref)
-    if parsed.node_id is None:
-        if parsed.field is None:
-            return "pipelineInput"
-        return f"pipelineInput[{json.dumps(parsed.field)}]"
-    base = f"{parsed.node_id}_result"
-    if parsed.field is None:
-        return base
-    return f"({base} as Record<string, unknown>)[{json.dumps(parsed.field)}]"
-
-
-def _payload_ts_literal(node: Node, indent: str) -> str:
-    """Render the step payload object for a node's data-flow bindings.
-
-    Nodes without ``inputs`` keep the empty payload (back-compat).
-    ``indent`` is the indentation of the line the literal starts on;
-    entries are indented one level deeper.
-    """
-    if not node.inputs:
-        return "{}"
-    inner = indent + "    "
-    lines = ["{"]
-    for param, ref in node.inputs.items():
-        key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
-        lines.append(f"{inner}{key}: {_ref_to_ts_expr(ref)},")
-    lines.append(indent + "}")
-    return "\n".join(lines)
-
 
 def _emit_step_call(node: Node, cfg: CloudflareAdapterConfig, *, pass_env: bool) -> str:
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
-    payload = _payload_ts_literal(node, indent=" " * 12)
+    payload = payload_ts_literal(node, indent=" " * 12)
     args = f"{payload}, this.env" if pass_env else payload
     return (
         f"        const {node.id}_result = await step.do(\n"
@@ -232,25 +180,6 @@ def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
     )
 
 
-def _module_imports(pipeline: Pipeline) -> str:
-    """Build the static-import block for the workflow file.
-
-    One import per non-HITL node, including loop_body sub-nodes. The
-    function name is camelCase of the node id; the path is
-    ``./signatures/<id>`` for llm_judge and ``./extracted/<id>`` otherwise.
-    """
-    lines: list[str] = []
-    for node in pipeline.nodes:
-        if node.kind is NodeKind.HITL_GATE:
-            continue
-        fn = _to_camel_case(node.id)
-        if node.kind is NodeKind.LLM_JUDGE:
-            lines.append(f'import {{ {fn} }} from "./signatures/{node.id}";')
-        else:
-            lines.append(f'import {{ {fn} }} from "./extracted/{node.id}";')
-    return "\n".join(lines)
-
-
 def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None) -> str:
     """Render the workflow.ts source for a pipeline."""
     cfg = cfg or CloudflareAdapterConfig()
@@ -285,7 +214,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         """
     )
 
-    imports = _module_imports(pipeline)
+    imports = module_imports(pipeline)
 
     env_block = textwrap.dedent(
         f"""\
@@ -398,68 +327,16 @@ def emit_index(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
 def emit_signature_module(node: Node, cfg: CloudflareAdapterConfig) -> str:
     """Emit src/signatures/<node_id>.ts for an llm_judge node.
 
-    The emitted module:
-    1. Declares Zod schemas for input + output, derived from the IR's
-       ``signature_spec`` JSON Schemas.
-    2. Exports a typed function that calls the Anthropic Messages API with
-       structured-output tool use, validates the response with Zod, and
-       returns the typed output.
-
-    The IR's prompt template is interpolated with the input via a
-    minimal ``{{ key }}`` substitution at runtime — kept simple so the
-    emitted code has no extra dependencies beyond Zod and the vendor SDK.
+    Delegates to the shared TS signature emitter
+    (:func:`rote.adapters._ts_common.emit_ts_signature_module`) with this
+    adapter's identity string and model defaults.
     """
-    if node.signature_spec is None:
-        raise ValueError(
-            f"Cloudflare adapter: llm_judge {node.id!r} requires signature_spec "
-            f"(structured form). Path-only signature: {node.signature!r} is "
-            f"Temporal-specific and cannot be emitted to TypeScript."
-        )
-    spec = node.signature_spec
-    fn_name = _to_camel_case(node.id)
-    pascal = _to_pascal_case(node.id)
-    input_schema_zod = json_schema_to_zod(spec.input_schema, indent=0)
-    output_schema_zod = json_schema_to_zod(spec.output_schema, indent=0)
-    model = spec.model or _default_model_for(spec, cfg)
-    temperature = spec.temperature
-
-    if spec.client == "anthropic":
-        return _emit_signature_anthropic(
-            node_id=node.id,
-            fn_name=fn_name,
-            pascal=pascal,
-            description=node.description,
-            input_zod=input_schema_zod,
-            output_zod=output_schema_zod,
-            output_schema_json=json.dumps(spec.output_schema, indent=2),
-            prompt_template=spec.prompt,
-            model=model,
-            base_url=spec.base_url,
-            temperature=temperature,
-            generated_by="rote.adapters.cloudflare",
-        )
-    if spec.client == "openai":
-        return _emit_signature_openai(
-            node_id=node.id,
-            fn_name=fn_name,
-            pascal=pascal,
-            description=node.description,
-            input_zod=input_schema_zod,
-            output_zod=output_schema_zod,
-            output_schema_json=json.dumps(spec.output_schema, indent=2),
-            prompt_template=spec.prompt,
-            model=model,
-            base_url=spec.base_url,
-            temperature=temperature,
-            generated_by="rote.adapters.cloudflare",
-        )
-    raise ValueError(f"Unsupported LLM client: {spec.client!r}")
-
-
-def _default_model_for(spec: LLMSignature, cfg: CloudflareAdapterConfig) -> str:
-    if spec.client == "openai":
-        return cfg.openai_default_model
-    return cfg.anthropic_default_model
+    return emit_ts_signature_module(
+        node,
+        anthropic_default_model=cfg.anthropic_default_model,
+        openai_default_model=cfg.openai_default_model,
+        generated_by="rote.adapters.cloudflare",
+    )
 
 
 # ───────── extracted/<id>.ts emission ─────────
@@ -527,7 +404,7 @@ def emit_extracted_module(node: Node) -> str:
     # Stubs declare Promise<never> — honest for a function that always
     # throws, and `never` is the one type that both satisfies step.do's
     # `Rpc.Serializable<T>` constraint and stays castable at the
-    # workflow's data-flow reference sites (see `_ref_to_ts_expr`).
+    # workflow's data-flow reference sites (see `ref_to_ts_expr`).
     # Note: `Promise<Record<string, unknown>>` would NOT work here —
     # `unknown` values aren't structurally serializable, which breaks
     # step.do overload resolution (verified via the tsc e2e test).
@@ -645,15 +522,6 @@ _DEPLOY_BUTTON_BASE = "https://deploy.workers.cloudflare.com/?url="
 _REPO_URL_PLACEHOLDER = "REPLACE-WITH-YOUR-REPO-URL"
 
 
-def _llm_clients(pipeline: Pipeline) -> set[str]:
-    """Vendor clients used by the pipeline's llm_judge signature specs."""
-    return {
-        node.signature_spec.client
-        for node in pipeline.nodes
-        if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None
-    }
-
-
 def _secret_names(pipeline: Pipeline) -> list[str]:
     """Secrets the emitted worker reads, in emission order.
 
@@ -662,7 +530,7 @@ def _secret_names(pipeline: Pipeline) -> list[str]:
     targets the OpenAI client.
     """
     secrets = ["ANTHROPIC_API_KEY"]
-    if "openai" in _llm_clients(pipeline):
+    if "openai" in llm_clients(pipeline):
         secrets.append("OPENAI_API_KEY")
     return secrets
 

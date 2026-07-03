@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from rote.adapters import get_adapter
+from rote.adapters._ts_common import json_schema_to_zod
 from rote.adapters.cloudflare import (
     CloudflareAdapter,
     CloudflareAdapterConfig,
@@ -32,9 +33,9 @@ from rote.adapters.cloudflare import (
     _to_camel_case,
     _to_pascal_case,
     _validate_signal_name,
-    json_schema_to_zod,
 )
-from rote.ir import LLMSignature, NodeKind, Pipeline, load_pipeline
+from rote.ir import LLMSignature, NodeKind, Pipeline
+from tests._helpers import assert_no_mcp_in_ts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -42,11 +43,6 @@ BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes"
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")
@@ -265,36 +261,11 @@ def test_workflow_header_includes_pipeline_hash(
 def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None:
     """Architectural invariant: no MCP runtime in emitted Cloudflare code.
 
-    Mirrors the Temporal adapter's
-    ``test_emitted_activities_never_reference_mcp``. We don't have a TS
-    AST in pure Python, so we use a regex over import statements + call
-    expressions — any ``mcp`` substring outside comments/strings fails.
-
-    Comments and JSDoc may *mention* MCP to explain the graduation
-    history (it's part of the architecture story), so we strip
-    ``/* ... */`` blocks, ``// ...`` line comments, and string literals
-    before scanning.
+    Comments, JSDoc, and string literals may mention MCP to explain the
+    graduation history; executable code may not. Scan logic is shared —
+    see tests/_helpers.py.
     """
-    import re
-
-    js_string = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'')
-    block_comment = re.compile(r"/\*[\s\S]*?\*/")
-    line_comment = re.compile(r"//[^\n]*")
-
-    forbidden = ("mcp",)
-    for label, path in emit_result.items():
-        if not str(path).endswith(".ts"):
-            continue
-        src = path.read_text()
-        # Strip strings + comments before scanning — those are allowed
-        # to reference MCP for documentation purposes.
-        cleaned = block_comment.sub(" ", src)
-        cleaned = line_comment.sub(" ", cleaned)
-        cleaned = js_string.sub('""', cleaned)
-        for needle in forbidden:
-            assert needle not in cleaned.lower(), (
-                f"{label} ({path.name}) contains forbidden substring {needle!r} in executable code"
-            )
+    assert_no_mcp_in_ts(emit_result, min_files=13)
 
 
 def test_signature_module_imports_zod_and_anthropic(

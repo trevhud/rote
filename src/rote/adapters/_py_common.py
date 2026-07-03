@@ -26,8 +26,66 @@ import textwrap
 from typing import Any
 
 from rote.adapters._common import _to_pascal_case, safe_docstring_line
-from rote.adapters.temporal import _impl_path_parts
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline
+from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+
+# ───────── impl / signature path references ─────────
+
+
+def _impl_path_parts(impl: str) -> tuple[str, str]:
+    """Parse 'extracted/foo.py:bar' into ('foo', 'bar')."""
+    if ":" not in impl:
+        raise ValueError(f"impl path missing ':function_name': {impl!r}")
+    file_part, func = impl.split(":", 1)
+    # Strip leading directories and .py suffix
+    module_name = file_part.rsplit("/", 1)[-1].removesuffix(".py")
+    return module_name, func
+
+
+def _signature_path_parts(signature: str) -> tuple[str, str]:
+    """Parse 'signatures/foo.py:Foo' into ('foo', 'Foo')."""
+    return _impl_path_parts(signature)
+
+
+# ───────── Data-flow references → Python source ─────────
+
+
+def _ref_to_python_expr(ref: str) -> str:
+    """Render an ``inputs:`` source reference as a Python expression.
+
+    Every Python-emitting adapter binds the pipeline input to
+    ``pipeline_input`` and each node's result to ``<node_id>_result``,
+    so references map directly:
+
+    | Reference                  | Expression                      |
+    |----------------------------|---------------------------------|
+    | ``pipeline.input``         | ``pipeline_input``              |
+    | ``pipeline.input.f``       | ``pipeline_input["f"]``         |
+    | ``foo.output``             | ``foo_result``                  |
+    | ``foo.output.f``           | ``foo_result["f"]``             |
+    """
+    parsed = parse_input_ref(ref)
+    base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+    if parsed.field is None:
+        return base
+    return f'{base}["{parsed.field}"]'
+
+
+def _payload_literal(node: Node, indent: str) -> str:
+    """Render the step/activity payload dict for a node's data-flow bindings.
+
+    Nodes without ``inputs`` keep the empty payload (back-compat).
+    ``indent`` is the indentation of the line the literal starts on;
+    continuation lines are indented one level deeper.
+    """
+    if not node.inputs:
+        return "{}"
+    inner = indent + "    "
+    lines = ["{"]
+    for param, ref in node.inputs.items():
+        lines.append(f'{inner}"{param}": {_ref_to_python_expr(ref)},')
+    lines.append(indent + "}")
+    return "\n".join(lines)
+
 
 # ───────── JSON Schema → Pydantic source ─────────
 
@@ -703,3 +761,32 @@ def emit_extracted_module(
         )
 
     return "".join(parts)
+
+
+# ───────── Emitted runtime helpers ─────────
+
+_SERIALIZE_TEMPLATE = '''\
+def _serialize(obj: Any) -> Any:
+    """Convert pydantic models / tuples to plain JSON-safe values.
+
+    {purpose}
+    """
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, (list, tuple)):
+        return [_serialize(x) for x in obj]
+    if isinstance(obj, dict):
+        return {{k: _serialize(v) for k, v in obj.items()}}
+    return obj
+'''
+
+
+def serialize_helper(purpose: str) -> str:
+    """The ``_serialize`` function emitted into every Python runtime's main.
+
+    Behavioral emitted code: if the runtimes' serializers drift, the
+    same pipeline produces differently-shaped results per target.
+    ``purpose`` is the runtime-specific docstring line explaining why
+    payloads must be JSON-safe (continuation lines indented 4 spaces).
+    """
+    return _SERIALIZE_TEMPLATE.format(purpose=purpose)
