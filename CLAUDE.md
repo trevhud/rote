@@ -339,6 +339,35 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    register it — the e2e sends an explicit `PUT` to the app's serve
    handler to force registration. See `tests/test_inngest_e2e.py`.
 
+### Eval pricing: no hardcoded prices, and two traps found empirically
+
+`rote.eval.pricing` fetches current models + official prices at eval
+time (models.dev primary, OpenRouter cross-check; 24h cache in
+`~/.cache/rote/pricing.json`; loud `PricingError` when offline — never
+a baked-in table). Two things you will get wrong if you touch it:
+
+1. **"Most expensive = flagship" is false.** Previous-generation
+   flagships linger in catalogs at higher prices than the current one
+   (Opus 4.1 at $15/Mtok vs Fable 5 at $10/Mtok). Flagship detection
+   restricts to the provider's *current generation* — models released
+   within `_CURRENT_GENERATION_WINDOW` of the provider's own newest
+   release date. The anchor is the data's newest release, never the
+   wall clock, so tier detection is a pure function of the payload and
+   testable with fixtures. Regression:
+   `tests/test_eval_pricing.py::test_tier_detection_matches_current_lineup`.
+2. **Community catalogs lag launches.** On Sonnet 5's launch week,
+   LiteLLM's price file still carried the 4.6-generation price while
+   models.dev and OpenRouter agreed on the new one — that's why
+   LiteLLM was dropped and why the cross-check annotates the
+   scorecard's `source` string with a WARNING on >2% disagreement
+   instead of trusting either side silently.
+
+Related invariant: the eval sidecar (`eval.yaml`, per-step agent-turn
+estimates written by the graduator) is deliberately NOT part of the IR
+— it describes the *source skill's* behavior as an agent, not the
+pipeline. Don't move it into `pipeline.yaml`; invariant #1 (the IR is
+runtime-agnostic and behavior-only) applies.
+
 ### ClaudeDriver recovers `pipeline.yaml` if subprocess errors after writing
 
 The agent's deliverable is a file on disk, not a clean exit code. A
@@ -533,7 +562,10 @@ Don't waste time debugging stubs. These are intentional.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
-- 327 tests (316 fast + 11 slow). Run with `pytest tests/` (fast
+- `rote eval` + the auto-emitted `graduated/scorecard.md` (static
+  before/after estimate of speed, cost, determinism; live-fetched
+  prices — see the eval gotchas below)
+- 421 tests (409 fast + 12 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

@@ -408,7 +408,12 @@ def _build_scorecard_for(
     from rote.eval.tokens import pick_token_counter
 
     priors = Priors()
-    counter = pick_token_counter(priors)
+    prices = fetch_catalog(provider=provider).sample(provider=provider)
+    # Exact counting needs a live model id (tokenizers are per-model);
+    # the small tier's is as good as any and free either way. Only the
+    # Anthropic endpoint exists, so other providers get the heuristic.
+    count_model = prices[-1].model_id if provider == "anthropic" else None
+    counter = pick_token_counter(priors, model=count_model)
     pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
 
     skill_estimate = None
@@ -417,7 +422,6 @@ def _build_scorecard_for(
         sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
         skill_estimate = estimate_skill(skill_dir, counter, priors, sidecar=sidecar)
 
-    prices = fetch_catalog().sample(provider=provider)
     return build_scorecard(
         pipeline_name=pipeline.name,
         pipeline_estimate=pipeline_estimate,
