@@ -482,6 +482,51 @@ def test_openai_client_signature_module() -> None:
     ast.parse(src)
 
 
+def test_signature_module_model_and_endpoint_are_env_overridable() -> None:
+    """The model and endpoint bake in IR defaults but read per-node env
+    overrides first, so operators can swap either without a re-emit."""
+    judge = Node(
+        id="grade_essay",
+        kind=NodeKind.LLM_JUDGE,
+        description="Grade an essay.",
+        signature_spec={
+            "input_schema": {
+                "type": "object",
+                "properties": {"essay": {"type": "string"}},
+                "required": ["essay"],
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {"grade": {"type": "integer"}},
+                "required": ["grade"],
+            },
+            "prompt": "Grade: {{ essay }}",
+            "client": "openai",
+            "model": "gpt-4.1",
+            "base_url": "http://localhost:11434/v1",
+        },
+    )
+    src = emit_signature_module(judge, DbosAdapterConfig())
+    assert 'MODEL = os.environ.get("ROTE_MODEL_GRADE_ESSAY", "gpt-4.1")' in src
+    assert (
+        'BASE_URL = os.environ.get("ROTE_BASE_URL_GRADE_ESSAY", "http://localhost:11434/v1")'
+    ) in src
+    assert "client = openai.OpenAI(base_url=BASE_URL)" in src
+    assert "model=MODEL," in src
+    ast.parse(src)
+
+
+def test_signature_module_base_url_defaults_to_vendor_endpoint(
+    emit_result: dict[str, Path],
+) -> None:
+    """Without an IR base_url the emitted constant reads only the env
+    override; None falls through to the vendor SDK's default endpoint."""
+    src = emit_result["signatures/vet_contact"].read_text(encoding="utf-8")
+    assert 'BASE_URL = os.environ.get("ROTE_BASE_URL_VET_CONTACT")' in src
+    assert "client = anthropic.Anthropic(base_url=BASE_URL)" in src
+    assert 'MODEL = os.environ.get("ROTE_MODEL_VET_CONTACT", ' in src
+
+
 def test_signature_spec_rejects_conflicting_defs() -> None:
     judge = Node(
         id="j",

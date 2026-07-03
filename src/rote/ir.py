@@ -57,6 +57,12 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # ``..`` (traversal) or path separators inside a segment.
 _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
+# An LLM endpoint override (``LLMSignature.base_url``). Reaches emitted
+# source as a string literal (always via json.dumps), so the shape check
+# here is belt-and-braces: require an http(s) scheme and standard URL
+# characters only — no whitespace, quotes, or backslashes.
+_BASE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$")
+
 
 def _validate_impl_ref(value: str, field_name: str) -> str:
     """Validate a ``'relative/path.py:symbol'`` reference.
@@ -218,6 +224,15 @@ class LLMSignature(BaseModel):
         default=None,
         description="Vendor-specific model id. None = adapter chooses default.",
     )
+    base_url: str | None = Field(
+        default=None,
+        description=(
+            "Custom API endpoint. With client 'openai' this reaches every "
+            "OpenAI-compatible server (Ollama, vLLM, Azure, gateways/proxies). "
+            "None = the vendor SDK's default endpoint. Emitted code also "
+            "honors a ROTE_BASE_URL_<NODE_ID> environment override at runtime."
+        ),
+    )
     temperature: float | None = Field(
         default=None,
         ge=0.0,
@@ -231,6 +246,19 @@ class LLMSignature(BaseModel):
         allowed = {"anthropic", "openai"}
         if v not in allowed:
             raise ValueError(f"client must be one of {sorted(allowed)}, got {v!r}")
+        return v
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str | None) -> str | None:
+        """``base_url`` is spliced into emitted source (via json.dumps, but
+        keep the IR boundary strict per the charset-constraint invariant)."""
+        if v is None:
+            return None
+        if not _BASE_URL_RE.fullmatch(v):
+            raise ValueError(
+                f"base_url {v!r} must be an http(s) URL with no whitespace, quotes, or backslashes"
+            )
         return v
 
 

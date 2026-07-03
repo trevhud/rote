@@ -372,7 +372,15 @@ def test_interpolate_throws_on_unresolvable_placeholder(
 def test_main_calls_judges_with_env(main_src: str) -> None:
     """Judge steps thread API keys explicitly (Node process.env), so the
     signature modules stay runtime-agnostic between Workers and Node."""
-    assert 'vetContact(payload, { ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") })' in main_src
+    assert 'ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),' in main_src
+
+
+def test_main_threads_operator_overrides_to_judges(main_src: str) -> None:
+    """The narrow env literal each judge receives must carry the per-node
+    override vars — otherwise ROTE_MODEL_* / ROTE_BASE_URL_* would be
+    silently ignored on this runtime."""
+    assert "ROTE_MODEL_VET_CONTACT: process.env.ROTE_MODEL_VET_CONTACT," in main_src
+    assert "ROTE_BASE_URL_VET_CONTACT: process.env.ROTE_BASE_URL_VET_CONTACT," in main_src
 
 
 def test_emit_rejects_llm_judge_without_signature_spec(tmp_path: Path) -> None:

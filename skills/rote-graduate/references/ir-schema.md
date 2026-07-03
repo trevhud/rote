@@ -242,6 +242,9 @@ path; the Cloudflare adapter and any future non-Python target *require*
       Return your decision via the structured output tool.
     client: anthropic           # 'anthropic' | 'openai'
     model: claude-sonnet-4-6    # optional; adapter chooses default if omitted
+    base_url: https://...       # optional; custom endpoint. With client 'openai'
+                                # this reaches any OpenAI-compatible server. Only
+                                # set it when the source skill names an endpoint.
     temperature: 0.0            # optional
   input:
     contact: EnrichedContact

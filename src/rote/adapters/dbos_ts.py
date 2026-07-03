@@ -97,6 +97,7 @@ from rote.adapters._ts_common import (
     emit_signature_anthropic,
     emit_signature_openai,
     json_schema_to_zod,
+    override_env_vars,
 )
 from rote.adapters.dbos import _duration_to_seconds
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
@@ -273,6 +274,7 @@ def emit_signature_module(node: Node, cfg: DbosTsAdapterConfig) -> str:
         output_schema_json=json.dumps(spec.output_schema, indent=2),
         prompt_template=spec.prompt,
         model=spec.model or _default_model_for(spec, cfg),
+        base_url=spec.base_url,
         temperature=spec.temperature,
         generated_by=_GENERATED_BY,
     )
@@ -383,11 +385,22 @@ def _spec_judges(pipeline: Pipeline) -> list[Node]:
 
 
 def _judge_env_arg(node: Node) -> str:
-    """The env object a judge step passes to its signature function."""
+    """The env object a judge step passes to its signature function.
+
+    Besides the required API key, the per-node operator overrides
+    (``ROTE_MODEL_<ID>`` / ``ROTE_BASE_URL_<ID>``) are threaded through
+    from ``process.env`` so the signature honors them at runtime.
+    """
     spec = _require_signature_spec(node)
-    if spec.client == "openai":
-        return '{ OPENAI_API_KEY: requireEnv("OPENAI_API_KEY") }'
-    return '{ ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }'
+    key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
+    model_var, base_var = override_env_vars(node.id)
+    return (
+        "{\n"
+        f'        {key}: requireEnv("{key}"),\n'
+        f"        {model_var}: process.env.{model_var},\n"
+        f"        {base_var}: process.env.{base_var},\n"
+        "    }"
+    )
 
 
 def _emit_step_registration(node: Node) -> str:
@@ -803,7 +816,10 @@ node dist/main.js '{{...}}'   # or: npx dbos start
 ```
 
 LLM judge steps call the vendor SDK directly and read the standard
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
+judge also honors per-node `ROTE_MODEL_<NODE_ID>` and
+`ROTE_BASE_URL_<NODE_ID>` overrides, so operators can swap the model
+or point at an OpenAI-compatible endpoint without re-emitting.
 
 ## HITL gates
 

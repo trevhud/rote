@@ -130,6 +130,20 @@ def json_schema_to_zod(schema: dict[str, Any], indent: int = 0) -> str:
 
 # ───────── signatures/<id>.ts emission ─────────
 
+
+def override_env_vars(node_id: str) -> tuple[str, str]:
+    """The per-node operator-override env var names for a judge.
+
+    ``ROTE_MODEL_<ID>`` swaps the model; ``ROTE_BASE_URL_<ID>`` points the
+    vendor SDK at a different endpoint (proxy, gateway, OpenAI-compatible
+    server). Same convention as the Python (DBOS) emitter, so operators
+    learn one knob regardless of target runtime. ``node_id`` is a
+    validated identifier, so uppercasing it yields a safe env var name.
+    """
+    suffix = node_id.upper()
+    return f"ROTE_MODEL_{suffix}", f"ROTE_BASE_URL_{suffix}"
+
+
 _INTERPOLATE_HELPER = """\
 function interpolate(template: string, vars: Record<string, unknown>): string {
     return template.replace(/\\{\\{\\s*([\\w.]+)\\s*\\}\\}/g, (_match, key: string) => {
@@ -166,6 +180,7 @@ def emit_signature_anthropic(
     output_schema_json: str,
     prompt_template: str,
     model: str,
+    base_url: str | None,
     temperature: float | None,
     generated_by: str,
 ) -> str:
@@ -181,6 +196,8 @@ def emit_signature_anthropic(
     quoted_desc = json.dumps(desc_first)
     quoted_model = json.dumps(model)
     quoted_prompt = json.dumps(prompt_template)
+    model_var, base_var = override_env_vars(node_id)
+    base_default = f" ?? {json.dumps(base_url)}" if base_url else ""
     parts = [
         "/**",
         f" * Typed LLM signature: {node_id}",
@@ -209,13 +226,21 @@ def emit_signature_anthropic(
         "",
         f"export async function {fn_name}(",
         "    rawInput: unknown,",
-        "    env: { ANTHROPIC_API_KEY: string },",
+        "    env: {",
+        "        ANTHROPIC_API_KEY: string;",
+        "        // Operator overrides — swap the model or endpoint without re-emitting.",
+        f"        {model_var}?: string;",
+        f"        {base_var}?: string;",
+        "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
-        "    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });",
+        "    const client = new Anthropic({",
+        "        apiKey: env.ANTHROPIC_API_KEY,",
+        f"        baseURL: env.{base_var}{base_default},",
+        "    });",
         "",
         "    const response = await client.messages.create({",
-        f"        model: {quoted_model},",
+        f"        model: env.{model_var} ?? {quoted_model},",
         "        max_tokens: 4096,",
     ]
     if temp_line:
@@ -263,6 +288,7 @@ def emit_signature_openai(
     output_schema_json: str,
     prompt_template: str,
     model: str,
+    base_url: str | None,
     temperature: float | None,
     generated_by: str,
 ) -> str:
@@ -272,6 +298,8 @@ def emit_signature_openai(
     quoted_id = json.dumps(node_id)
     quoted_model = json.dumps(model)
     quoted_prompt = json.dumps(prompt_template)
+    model_var, base_var = override_env_vars(node_id)
+    base_default = f" ?? {json.dumps(base_url)}" if base_url else ""
     parts = [
         "/**",
         f" * Typed LLM signature: {node_id}",
@@ -298,13 +326,21 @@ def emit_signature_openai(
         "",
         f"export async function {fn_name}(",
         "    rawInput: unknown,",
-        "    env: { OPENAI_API_KEY: string },",
+        "    env: {",
+        "        OPENAI_API_KEY: string;",
+        "        // Operator overrides — swap the model or endpoint without re-emitting.",
+        f"        {model_var}?: string;",
+        f"        {base_var}?: string;",
+        "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
-        "    const client = new OpenAI({ apiKey: env.OPENAI_API_KEY });",
+        "    const client = new OpenAI({",
+        "        apiKey: env.OPENAI_API_KEY,",
+        f"        baseURL: env.{base_var}{base_default},",
+        "    });",
         "",
         "    const response = await client.chat.completions.create({",
-        f"        model: {quoted_model},",
+        f"        model: env.{model_var} ?? {quoted_model},",
     ]
     if temp_line:
         parts.append(temp_line.rstrip("\n"))

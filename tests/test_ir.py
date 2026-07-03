@@ -318,6 +318,43 @@ def test_llm_signature_rejects_unknown_client() -> None:
         )
 
 
+def test_llm_signature_base_url_accepts_http_urls() -> None:
+    from rote.ir import LLMSignature
+
+    sig = LLMSignature(
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        prompt="x",
+        client="openai",
+        base_url="http://localhost:11434/v1",
+    )
+    assert sig.base_url == "http://localhost:11434/v1"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "ftp://example.com",  # non-http scheme
+        "localhost:11434/v1",  # no scheme
+        'https://example.com/"); import os; ("',  # quote injection
+        "https://example.com/a b",  # whitespace
+        "https://example.com\\path",  # backslash
+    ],
+)
+def test_llm_signature_base_url_rejects_unsafe_values(bad_url: str) -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import LLMSignature
+
+    with pytest.raises(ValidationError, match="base_url"):
+        LLMSignature(
+            input_schema={"type": "object"},
+            output_schema={"type": "object"},
+            prompt="x",
+            base_url=bad_url,
+        )
+
+
 def test_llm_signature_temperature_bounded() -> None:
     from pydantic import ValidationError
 

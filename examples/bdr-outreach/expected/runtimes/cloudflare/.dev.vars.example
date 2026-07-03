@@ -2,3 +2,11 @@
 # flow reads this file to prompt for secrets during one-click setup.
 # For a manual deploy, set each with `npx wrangler secret put <NAME>`.
 ANTHROPIC_API_KEY=
+#
+# Optional per-judge overrides: swap the model or point at a
+# different endpoint (proxy, gateway, OpenAI-compatible server)
+# without re-emitting.
+# ROTE_MODEL_VET_CONTACT=
+# ROTE_BASE_URL_VET_CONTACT=
+# ROTE_MODEL_PERSONALIZE_EMAIL=
+# ROTE_BASE_URL_PERSONALIZE_EMAIL=

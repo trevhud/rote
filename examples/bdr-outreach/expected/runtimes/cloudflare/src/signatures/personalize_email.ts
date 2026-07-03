@@ -100,13 +100,21 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 
 export async function personalizeEmail(
     rawInput: unknown,
-    env: { ANTHROPIC_API_KEY: string },
+    env: {
+        ANTHROPIC_API_KEY: string;
+        // Operator overrides — swap the model or endpoint without re-emitting.
+        ROTE_MODEL_PERSONALIZE_EMAIL?: string;
+        ROTE_BASE_URL_PERSONALIZE_EMAIL?: string;
+    },
 ): Promise<PersonalizeEmailOutput> {
     const input = PersonalizeEmailInput.parse(rawInput);
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({
+        apiKey: env.ANTHROPIC_API_KEY,
+        baseURL: env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
+    });
 
     const response = await client.messages.create({
-        model: "claude-sonnet-4-6",
+        model: env.ROTE_MODEL_PERSONALIZE_EMAIL ?? "claude-sonnet-4-6",
         max_tokens: 4096,
         tools: [
             {

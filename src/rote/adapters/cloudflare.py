@@ -52,6 +52,7 @@ from rote.adapters._ts_common import (
 )
 from rote.adapters._ts_common import (
     json_schema_to_zod,
+    override_env_vars,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
@@ -433,6 +434,7 @@ def emit_signature_module(node: Node, cfg: CloudflareAdapterConfig) -> str:
             output_schema_json=json.dumps(spec.output_schema, indent=2),
             prompt_template=spec.prompt,
             model=model,
+            base_url=spec.base_url,
             temperature=temperature,
             generated_by="rote.adapters.cloudflare",
         )
@@ -447,6 +449,7 @@ def emit_signature_module(node: Node, cfg: CloudflareAdapterConfig) -> str:
             output_schema_json=json.dumps(spec.output_schema, indent=2),
             prompt_template=spec.prompt,
             model=model,
+            base_url=spec.base_url,
             temperature=temperature,
             generated_by="rote.adapters.cloudflare",
         )
@@ -677,6 +680,16 @@ def emit_dev_vars_example(pipeline: Pipeline) -> str:
         "# For a manual deploy, set each with `npx wrangler secret put <NAME>`.",
     ]
     lines.extend(f"{name}=" for name in _secret_names(pipeline))
+    judges = [n for n in pipeline.nodes if n.kind is NodeKind.LLM_JUDGE]
+    if judges:
+        lines.append("#")
+        lines.append("# Optional per-judge overrides: swap the model or point at a")
+        lines.append("# different endpoint (proxy, gateway, OpenAI-compatible server)")
+        lines.append("# without re-emitting.")
+        for node in judges:
+            model_var, base_var = override_env_vars(node.id)
+            lines.append(f"# {model_var}=")
+            lines.append(f"# {base_var}=")
     return "\n".join(lines) + "\n"
 
 

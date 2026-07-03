@@ -1,7 +1,7 @@
 {
   "version": 1,
   "files": {
-    "README.md": "1073b27ea3b29d0b6b779b89bc4a899925885b7fdfd5ec7aab4a751c0ccfe1d6",
+    "README.md": "e53e78fd5891ea8f26a3002e668ae1a9b54898c93db0ead45a93c5cf313edabc",
     "dbos-config.yaml": "86666ea15b0722fc57e70d4fa09812ede6cffe785090118e968ed555bc060ea6",
     "package.json": "772f36f8d57fc39825dfc6d700483f113d62c685727abb2771be706b9d3b3d73",
     "src/extracted/create_sales_template.ts": "5a7910b7f295b9536e293dbdf24d00d1d13878f9389c4ff8c45bd21a3999e27b",
@@ -15,9 +15,9 @@
     "src/extracted/pre_enrollment_report.ts": "e3be2f9afc97cb0bc9d63de57d92d16821521908fe24d1e279c2bf7498332e84",
     "src/extracted/target_research.ts": "14210f0bff04a1feb3be0651c44215e29dd75c4d3f90589c826f5b4013f3c280",
     "src/extracted/taxonomy_lookup.ts": "cf557ff7bab636ec96cfda6d84b36ff3903fdc3838be6a3a1963d7e63b4f6372",
-    "src/main.ts": "a77fa699acb9f8767c6c7a784c2b49f330e4ece9ce1ad183190d54d0d0faa550",
-    "src/signatures/personalize_email.ts": "ca9e046a4036cb6d0b3a34575201bc127fdeaaa4ae1b3b8b5aa8fc087ef3e841",
-    "src/signatures/vet_contact.ts": "ad335dc405574094e3949d08fa255e253f26a71b6318e65c413694f95de5c209",
+    "src/main.ts": "f04690dcff649aa90914547f71e1e9e7573e311ff972643de48fad18adf4948e",
+    "src/signatures/personalize_email.ts": "cff8a6f39d10141d1318ec0ddf169f52cc2b8a85b140e579064278b414b2d9d1",
+    "src/signatures/vet_contact.ts": "a91199a2ed230c33027b6c212a748ac7b8327ffd4ec68508aa4873e1ef56b28a",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }
 }

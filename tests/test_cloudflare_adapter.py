@@ -310,6 +310,23 @@ def test_signature_module_imports_zod_and_anthropic(
     assert "@boundaryml/baml" not in src
 
 
+def test_signature_module_is_operator_overridable(emit_result: dict[str, Path]) -> None:
+    """Model and endpoint stay swappable at runtime — per-node env vars
+    beat the emitted defaults, so retargeting a judge (different model,
+    OpenAI-compatible server, gateway) never requires a re-emit."""
+    src = emit_result["signatures/vet_contact"].read_text()
+    assert "ROTE_MODEL_VET_CONTACT?: string;" in src
+    assert "ROTE_BASE_URL_VET_CONTACT?: string;" in src
+    assert "model: env.ROTE_MODEL_VET_CONTACT ?? " in src
+    assert "baseURL: env.ROTE_BASE_URL_VET_CONTACT" in src
+
+
+def test_dev_vars_example_documents_judge_overrides(emit_result: dict[str, Path]) -> None:
+    src = emit_result[".dev.vars.example"].read_text()
+    assert "# ROTE_MODEL_VET_CONTACT=" in src
+    assert "# ROTE_BASE_URL_VET_CONTACT=" in src
+
+
 def test_extracted_stub_throws_not_implemented(
     emit_result: dict[str, Path],
 ) -> None:
@@ -511,7 +528,7 @@ def test_custom_config_overrides_workflow_binding(bdr_pipeline: Pipeline, tmp_pa
     assert "MY_PIPE: Workflow<Params>" in workflow_src
 
     sig_src = (out / "src" / "signatures" / "vet_contact.ts").read_text()
-    assert 'model: "claude-opus-4-7"' in sig_src
+    assert 'model: env.ROTE_MODEL_VET_CONTACT ?? "claude-opus-4-7"' in sig_src
 
     import json
     import re
