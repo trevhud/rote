@@ -196,9 +196,43 @@ agent-driven — so the same IR always produces byte-identical output.
 
 ## Quickstart
 
-### Install
+### Use from Claude Code (recommended)
 
-`rote` is not on PyPI yet. Clone and install in editable mode:
+`rote` ships as a Claude Code plugin, so you can graduate a skill
+without leaving Claude or touching Python tooling:
+
+```
+/plugin marketplace add trevhud/rote
+/plugin install rote@rote
+```
+
+Then say "graduate this skill" (or run `/rote:graduate` directly).
+The plugin confirms the source skill directory, asks which runtime you
+want (Temporal, Cloudflare Workflows, or DBOS), runs the CLI via
+[uv](https://docs.astral.sh/uv/) in the background, and reports the
+emitted pipeline. A second skill, `/rote:serve`, wires graduated
+pipelines up as MCP tools so Claude can trigger the deployed workflows.
+
+Prefer a terminal? The same thing is one `uvx` command:
+
+```sh
+uvx --from rote-cli rote graduate ./my-skill --runtime dbos --out ./graduated
+
+# or straight from GitHub for unreleased changes:
+uvx --from git+https://github.com/trevhud/rote rote graduate \
+  ./my-skill --runtime dbos --out ./graduated
+```
+
+> **Naming note:** the `rote` package on PyPI is an unrelated
+> memoization library that also installs `import rote`, so the two
+> can't share an environment. This project's distribution is
+> `rote-cli` while the CLI command and import name stay `rote` —
+> hence `uvx --from rote-cli rote ...`. See
+> [docs/releasing.md](docs/releasing.md).
+
+### Install from source (development)
+
+Clone and install in editable mode:
 
 ```sh
 git clone https://github.com/trevhud/rote.git
