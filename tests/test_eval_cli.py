@@ -155,3 +155,25 @@ def test_eval_run_requires_input(fake_prices: None, capsys: pytest.CaptureFixtur
     rc = main(["eval", str(BDR_RUN), "--skill", str(BDR_SKILL), "--run"])
     assert rc == 1
     assert "--input" in capsys.readouterr().err
+
+
+def test_eval_run_rejects_nonpositive_trials(
+    fake_prices: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    task = tmp_path / "task.json"
+    task.write_text("{}", encoding="utf-8")
+    rc = main(
+        [
+            "eval",
+            str(BDR_RUN),
+            "--skill",
+            str(BDR_SKILL),
+            "--run",
+            "--trials",
+            "0",
+            "--input",
+            str(task),
+        ]
+    )
+    assert rc == 1
+    assert "--trials" in capsys.readouterr().err

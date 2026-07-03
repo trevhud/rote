@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -206,8 +207,17 @@ def run_skill_trial(
 # ───────── Pipeline (after) trials ─────────
 
 
-def _dbos_sqlite_url(app_dir: Path) -> str:
-    """The emitted DBOS app's default system database URL."""
+def _dbos_system_database_url(app_dir: Path) -> str:
+    """The system database URL the spawned DBOS app will actually use.
+
+    Must mirror the emitted main.py's resolution order exactly —
+    ``DBOS_SYSTEM_DATABASE_URL`` env override first, then the default
+    SQLite file in the app dir — or signals get delivered to a
+    database the app isn't watching.
+    """
+    override = os.environ.get("DBOS_SYSTEM_DATABASE_URL")
+    if override:
+        return override
     config = yaml.safe_load((app_dir / "dbos-config.yaml").read_text(encoding="utf-8"))
     name = config["name"] if isinstance(config, dict) and "name" in config else "pipeline"
     return f"sqlite:///{(app_dir / f'{name}.dbos.sqlite').resolve()}"
@@ -277,7 +287,11 @@ def run_pipeline_trial(
     with tempfile.TemporaryDirectory(prefix="rote-eval-pipeline-") as workdir_str:
         workdir = Path(workdir_str)
         usage_log = workdir / "usage.jsonl"
-        env = build_subscription_env()  # harmless for non-LLM runs; judges use their own keys
+        # Unlike the skill side, the pipeline subprocess keeps the full
+        # environment: emitted judges construct anthropic.Anthropic() /
+        # openai.OpenAI() directly and NEED their API keys. Only the
+        # `claude -p` spawn scrubs keys (subscription billing).
+        env = os.environ.copy()
         env["ROTE_USAGE_LOG"] = str(usage_log)
         args = [python, str(main_py), json.dumps(input_payload)]
 
@@ -296,7 +310,7 @@ def run_pipeline_trial(
                     workflow_id = _wait_for_workflow_id(
                         stderr_path, proc, deadline=started + min(60.0, timeout_seconds)
                     )
-                    _send_dbos_signals(_dbos_sqlite_url(app_path), workflow_id, signals)
+                    _send_dbos_signals(_dbos_system_database_url(app_path), workflow_id, signals)
                 proc.wait(timeout=timeout_seconds - (time.monotonic() - started))
             except subprocess.TimeoutExpired:
                 proc.kill()
@@ -306,6 +320,14 @@ def run_pipeline_trial(
                     output=None,
                     error=f"timed out after {timeout_seconds:g}s",
                 )
+            except BaseException:
+                # Signal delivery / id-harvest failures must not orphan
+                # the child — a gated DBOS app parked on recv() with no
+                # signal coming would otherwise live until its IR gate
+                # timeout (hours to days).
+                proc.kill()
+                proc.wait()
+                raise
         wall = time.monotonic() - started
 
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
@@ -313,7 +335,11 @@ def run_pipeline_trial(
         usage_rows: list[dict[str, Any]] = []
         if usage_log.is_file():
             for line in usage_log.read_text(encoding="utf-8").splitlines():
-                if line.strip():
+                if not line.strip():
+                    continue
+                # One torn/malformed line (e.g. two judges racing the
+                # append) costs us that row, not the whole trial.
+                with contextlib.suppress(json.JSONDecodeError):
                     usage_rows.append(json.loads(line))
 
     if proc.returncode != 0:

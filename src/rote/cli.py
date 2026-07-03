@@ -558,8 +558,26 @@ def _run_empirical(
 
     if not args.input:
         raise ValueError("--run requires --input <task.json> (the pipeline input payload)")
+    if args.trials < 1:
+        raise ValueError(f"--trials must be >= 1, got {args.trials}")
     task = json.loads(Path(args.input).read_text(encoding="utf-8"))
-    if isinstance(task, dict) and "input" in task and set(task) <= {"input", "signals"}:
+    # Envelope form: {"input": {...}, "signals": {...}}. Disambiguate
+    # against a pipeline whose *payload* legitimately has a top-level
+    # "input" field: an explicit "signals" key always means envelope;
+    # otherwise "input" only reads as envelope when the pipeline's
+    # declared input contract has no field of that name.
+    declared = set(pipeline.input.required) | set(pipeline.input.optional)
+    if pipeline.input.input_schema is not None:
+        props = pipeline.input.input_schema.get("properties")
+        if isinstance(props, dict):
+            declared |= set(props.keys())
+    is_envelope = (
+        isinstance(task, dict)
+        and "input" in task
+        and set(task) <= {"input", "signals"}
+        and ("signals" in task or "input" not in declared)
+    )
+    if is_envelope:
         input_payload = task["input"]
         signals = task.get("signals") or {}
     else:

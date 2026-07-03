@@ -313,3 +313,56 @@ def test_append_corpus_writes_jsonl(tmp_path: Path) -> None:
     record = json.loads(lines[0])
     assert record["trials"] == 2
     assert record["skill_runs"][0]["turns"] == 10
+
+
+# ───────── Review regressions ─────────
+
+
+def test_pipeline_trial_preserves_api_keys(toy_app: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Emitted judges construct anthropic.Anthropic() directly — the
+    pipeline subprocess must keep ANTHROPIC_API_KEY (unlike the skill
+    side's claude -p spawn, which deliberately scrubs it)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-preserved")
+    (toy_app / "extracted" / "mathx.py").write_text(
+        WORKING_IMPLS.replace(
+            'return {"label": f"sum={payload[\'total\']}"}',
+            'import os\n    return {"label": os.environ.get("ANTHROPIC_API_KEY", "MISSING")}',
+        ),
+        encoding="utf-8",
+    )
+    run = run_pipeline_trial(toy_app, {"numbers": [1]})
+    assert run.succeeded
+    assert "sk-test-preserved" in json.dumps(run.output)
+
+
+def test_pipeline_trial_kills_child_when_signaling_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal-delivery failure must reap the parked child, not orphan
+    it until its IR gate timeout."""
+    import subprocess as sp
+    import time as time_mod
+
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "dbos-config.yaml").write_text("name: fake\n", encoding="utf-8")
+    # Fake DBOS app: reports a workflow id, then parks for minutes —
+    # exactly the state a real gated app is in when signaling fails.
+    (app_dir / "main.py").write_text(
+        "import sys, time\n"
+        'print("workflow started: wf-fake", file=sys.stderr, flush=True)\n'
+        "time.sleep(300)\n",
+        encoding="utf-8",
+    )
+
+    def _boom(url: str, workflow_id: str, signals: dict[str, object]) -> None:
+        raise EmpiricalError("no dbos client available")
+
+    monkeypatch.setattr("rote.eval.empirical._send_dbos_signals", _boom)
+
+    with pytest.raises(EmpiricalError, match="no dbos client"):
+        run_pipeline_trial(app_dir, {}, signals={"gate": {}}, timeout_seconds=30)
+
+    time_mod.sleep(0.2)
+    survivors = sp.run(["pgrep", "-f", str(app_dir / "main.py")], capture_output=True, text=True)
+    assert survivors.stdout.strip() == "", f"orphaned pids: {survivors.stdout}"

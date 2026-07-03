@@ -342,7 +342,11 @@ def build_catalog(
 
     cross: dict[str, tuple[float, float]] = {}
     if openrouter_payload is not None:
-        cross = _parse_openrouter(openrouter_payload)
+        # The cross-check is best-effort by design: a malformed
+        # OpenRouter payload downgrades the source annotation (same as
+        # an unreachable one), it never sinks the catalog.
+        with contextlib.suppress(PricingError):
+            cross = _parse_openrouter(openrouter_payload)
 
     prices: list[ModelPrice] = []
     for m in raw_models:

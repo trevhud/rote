@@ -116,7 +116,18 @@ def test_cross_check_disagreement_warns_in_source() -> None:
 
 
 def test_openrouter_id_normalization() -> None:
-    # OpenRouter's dotted ids must match models.dev's dashed ids.
+    """OpenRouter's dotted ids must match models.dev's dashed ids.
+
+    Uses a lineup where the dotted-id model IS the flagship, so the
+    assertion always runs (a tier-less model never reaches the catalog).
+    """
+    lineup = _models_dev(
+        {
+            "claude-opus-4-8": _model(5, 25, "2026-05-28"),
+            "claude-sonnet-4-6": _model(3, 15, "2026-02-17"),
+            "claude-haiku-4-5": _model(1, 5, "2025-10-15"),
+        }
+    )
     openrouter = {
         "data": [
             {
@@ -125,10 +136,17 @@ def test_openrouter_id_normalization() -> None:
             }
         ]
     }
-    catalog = build_catalog(LINEUP, openrouter, provider="anthropic", fetched_at="t")
-    opus = [p for p in catalog.prices if p.model_id == "claude-opus-4-8"]
-    if opus:  # opus is only in the catalog if it earned a tier
-        assert "cross-checked" in opus[0].source
+    catalog = build_catalog(lineup, openrouter, provider="anthropic", fetched_at="t")
+    flagship = catalog.sample("anthropic")[0]
+    assert flagship.model_id == "claude-opus-4-8"
+    assert "cross-checked" in flagship.source
+
+
+def test_malformed_openrouter_payload_is_nonfatal() -> None:
+    catalog = build_catalog(LINEUP, {"unexpected": "shape"}, provider="anthropic", fetched_at="t")
+    flagship = catalog.sample("anthropic")[0]
+    # Catalog still built; no false cross-check claim.
+    assert "cross-checked" not in flagship.source
 
 
 def test_fetch_catalog_uses_fresh_cache_and_skips_network(
