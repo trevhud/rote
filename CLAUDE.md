@@ -89,6 +89,18 @@ the Anthropic SDK client (see
     — emits TypeScript (`src/workflow.ts` extending
     `WorkflowEntrypoint`, plus `signatures/*.ts`, `extracted/*.ts`,
     and a `wrangler.jsonc` / `package.json` / `tsconfig.json`)
+  - `DbosTsAdapter`
+    ([`src/rote/adapters/dbos_ts.py`](src/rote/adapters/dbos_ts.py),
+    registered as `dbos-ts`) — emits TypeScript for DBOS Transact
+    (`src/main.ts` with `DBOS.registerWorkflow` / `DBOS.registerStep`
+    function wrappers, plus `signatures/*.ts`, `extracted/*.ts`, and
+    `package.json` / `tsconfig.json` / `dbos-config.yaml`). Shares the
+    TS emission machinery in
+    [`src/rote/adapters/_ts_common.py`](src/rote/adapters/_ts_common.py)
+    with the Cloudflare adapter. Note: the DBOS **TS** SDK is
+    Postgres-only (no SQLite parity with DBOS Python), and its
+    `DBOS.recv` defaults to a 60s timeout — the emitter always passes
+    the IR timeout explicitly.
 - **What they do:** consume a validated `Pipeline` IR and write
   runtime-native code into an output directory
 - **Never run an agent loop.** Code emission is pure template
@@ -101,7 +113,9 @@ tests covering emission (AST / textual invariants), plus a real
 runtime smoke test — `tests/test_temporal_e2e.py` for Temporal
 (time-skipping `WorkflowEnvironment`); `tests/test_cloudflare_e2e.py`
 for Cloudflare (runs `npm install` + `tsc --noEmit` on the emitted
-output, gated by `@pytest.mark.slow`).
+output, gated by `@pytest.mark.slow`); `tests/test_dbos_ts_e2e.py`
+for DBOS TypeScript (`npm install` + `tsc --noEmit`, plus a live run
+on the real DBOS TS runtime against a Docker Postgres).
 
 ---
 

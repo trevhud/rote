@@ -104,6 +104,14 @@ the target runtime's native code shape:
   `signatures/*.ts` (Zod schemas + Anthropic SDK calls) and the
   supporting `wrangler.jsonc` / `package.json` / `tsconfig.json`. The
   output is `wrangler deploy`-ready.
+- The **DBOS (TypeScript)** adapter (`--runtime dbos-ts`) emits a
+  Node.js app for DBOS Transact: `src/main.ts` registers one durable
+  workflow (`DBOS.registerWorkflow`) running the DAG waves and one
+  `DBOS.registerStep` per node, with `DBOS.recv(...)` parking each
+  HITL gate durably in Postgres until `DBOS.send(...)` resumes it.
+  Zero-orchestrator like the Python DBOS target — `node dist/main.js`
+  *is* the runtime — but note the TS SDK is Postgres-only (no SQLite
+  mode; `npx dbos postgres start` covers local dev).
 
 None of the emitted code references an MCP runtime, in either
 language — the agent's crystallization step replaces tool calls with
@@ -360,6 +368,7 @@ the toolchain-dependent integration tests.
 | Temporal adapter | working (validated with mocked-activities e2e test) |
 | Cloudflare Workflows adapter | working (validated with `tsc --noEmit` over the real emitted output) |
 | DBOS adapter | working (validated against a real DBOS runtime over SQLite in the e2e test) |
+| DBOS TypeScript adapter (`dbos-ts`) | working (validated with `tsc --noEmit` over the real emitted output and a live run on the DBOS TS runtime against Docker Postgres) |
 | Graduator orchestrator | working |
 | `rote graduate` / `rote emit` CLI commands | working |
 | `claude` driver | working |
@@ -367,7 +376,7 @@ the toolchain-dependent integration tests.
 | `codex` driver | stub (`is_available` works; `run` not implemented) |
 | Inngest / Restate adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
-| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all three adapters (Temporal, Cloudflare, DBOS) thread real payloads through the DAG, validated in the runtime e2e tests |
+| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all four adapters (Temporal, Cloudflare, DBOS, DBOS-TS) thread real payloads through the DAG, validated in the runtime e2e tests |
 | Distribution via PyPI | not yet published — install from source. The release pipeline (tag-driven, Trusted Publishing) is in place; see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
