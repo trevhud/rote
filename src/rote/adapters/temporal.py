@@ -404,9 +404,7 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
         "    @workflow.run",
         "    async def run(self, pipeline_input: dict) -> dict:",
     ]
-    desc = (
-        pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
-    )
+    desc = pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
     body_lines.append(f'        """{desc}"""')
 
     # Node ids whose results are bound by the time each wave starts —

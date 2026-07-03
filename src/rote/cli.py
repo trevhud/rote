@@ -186,7 +186,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
         if workflow_name is None:
             # Must match the versioned @workflow.defn name the Temporal
             # adapter emits (PascalCase + pipeline hash).
-            from rote.adapters.temporal import _pipeline_hash, _to_pascal_case
+            from rote.adapters._common import _pipeline_hash, _to_pascal_case
 
             workflow_name = f"{_to_pascal_case(pipeline.name)}_{_pipeline_hash(pipeline)}"
         trigger = TemporalTrigger(
