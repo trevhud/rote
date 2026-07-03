@@ -9,7 +9,7 @@ building block for that flow:
 
     rote emit    <pipeline.yaml> --runtime temporal  # IR → code only
     rote analyze <skill-path>                        # graduator dry run
-    rote eval    <skill-path>                        # regression against expected/
+    rote eval    <graduated-dir>                     # before/after scorecard
 
 Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
 loop, which reads the source skill, produces a ``pipeline.yaml``, stubs
@@ -28,11 +28,15 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
-from rote.ir import load_pipeline
+from rote.ir import Pipeline, load_pipeline
+
+if TYPE_CHECKING:
+    from rote.eval.scorecard import Scorecard
 
 # ───────── Subcommand: emit ─────────
 
@@ -148,6 +152,28 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
     written = adapter.emit(result.pipeline, runtime_dir)
 
+    # ── Scorecard (auxiliary: a price-fetch outage must not sink a
+    # just-completed, real-money graduation run) ──
+    scorecard_path: Path | None = None
+    if not args.no_eval:
+        from rote.eval.pricing import PricingError
+
+        try:
+            scorecard = _build_scorecard_for(
+                result.pipeline,
+                graduated_dir / "pipeline.yaml",
+                skill_path,
+                provider="anthropic",
+            )
+            scorecard_path = graduated_dir / "scorecard.md"
+            scorecard_path.write_text(scorecard.to_markdown() + "\n", encoding="utf-8")
+        except PricingError as e:
+            print(
+                f"rote graduate: warning: skipped scorecard (live price fetch "
+                f"failed: {e}). Generate it later with: rote eval {out_dir}",
+                file=sys.stderr,
+            )
+
     # ── Summary ──
     print(f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}")
     print(f"  driver: {result.driver_name}")
@@ -155,6 +181,8 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}")
     print(f"  graduated artifacts: {graduated_dir}")
+    if scorecard_path is not None:
+        print(f"  eval scorecard: {scorecard_path}")
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
     _print_written(written, indent="    ")
     return 0
@@ -354,9 +382,283 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     return 70
 
 
+def _resolve_eval_skill_dir(
+    args_skill: str | None, pipeline_yaml: Path, source_skill: str | None
+) -> Path | None:
+    """Locate the source-skill directory for the 'before' baseline.
+
+    Explicit ``--skill`` wins; otherwise try the pipeline's recorded
+    ``source_skill`` relative to the current directory and to the
+    pipeline.yaml's own location. None = no baseline (after-only card).
+    """
+    if args_skill:
+        p = Path(args_skill)
+        return p if (p / "SKILL.md").is_file() else None
+    if source_skill:
+        # source_skill was recorded relative to wherever the graduation
+        # ran (often a temp work dir), so no single base is reliable —
+        # try the cwd, then every ancestor of the pipeline.yaml.
+        pipeline_dir = pipeline_yaml.resolve().parent
+        bases = [Path.cwd(), pipeline_dir, *pipeline_dir.parents]
+        for base in bases[:10]:
+            candidate = (base / source_skill).resolve()
+            if (candidate / "SKILL.md").is_file():
+                return candidate
+    return None
+
+
+def _build_scorecard_for(
+    pipeline: Pipeline,
+    pipeline_yaml: Path,
+    skill_dir: Path | None,
+    provider: str,
+) -> Scorecard:
+    """Shared eval flow: estimate both sides, fetch live prices, assemble.
+
+    Raises ``rote.eval.pricing.PricingError`` when the live price source
+    is unreachable — callers decide whether that's fatal (``rote eval``)
+    or a warning (``rote graduate``'s auxiliary scorecard).
+    """
+    from datetime import UTC, datetime
+
+    from rote.eval import Priors, estimate_pipeline, estimate_skill, load_eval_estimates
+    from rote.eval.pricing import fetch_catalog
+    from rote.eval.scorecard import build_scorecard
+    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
+    from rote.eval.tokens import pick_token_counter
+
+    priors = Priors()
+    prices = fetch_catalog(provider=provider).sample(provider=provider)
+    # Exact counting needs a live model id (tokenizers are per-model);
+    # the small tier's is as good as any and free either way. Only the
+    # Anthropic endpoint exists, so other providers get the heuristic.
+    count_model = prices[-1].model_id if provider == "anthropic" else None
+    counter = pick_token_counter(priors, model=count_model)
+    pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
+
+    skill_estimate = None
+    if skill_dir is not None:
+        sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
+        sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
+        skill_estimate = estimate_skill(skill_dir, counter, priors, sidecar=sidecar)
+
+    return build_scorecard(
+        pipeline_name=pipeline.name,
+        pipeline_estimate=pipeline_estimate,
+        skill_estimate=skill_estimate,
+        prices=prices,
+        priors=priors,
+        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
-    print("rote eval: not yet implemented.", file=sys.stderr)
-    return 70
+    """Static before/after scorecard: speed, cost, determinism.
+
+    'Before' models the source skill running as raw agent instructions;
+    'after' is derived from the pipeline IR. Prices are fetched live —
+    a network failure is a loud error, never a stale builtin table.
+    """
+    import json
+
+    from rote.eval.pricing import PricingError
+
+    target = Path(args.target)
+    pipeline_yaml = _resolve_pipeline_yaml(target)
+    if pipeline_yaml is None:
+        print(
+            f"error: no pipeline.yaml found at or under {target} — "
+            f"pass a graduated dir, a graduate --out dir, or the file itself",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        pipeline = load_pipeline(pipeline_yaml)
+    except Exception as e:
+        print(f"error: failed to load pipeline: {e}", file=sys.stderr)
+        return 1
+
+    skill_dir = _resolve_eval_skill_dir(args.skill, pipeline_yaml, pipeline.source_skill)
+    if skill_dir is None:
+        if args.skill:
+            print(f"error: --skill {args.skill} has no SKILL.md", file=sys.stderr)
+            return 2
+        print(
+            "rote eval: no source skill found (no --skill, and the pipeline's "
+            "source_skill did not resolve) — emitting the after-side only",
+            file=sys.stderr,
+        )
+
+    try:
+        scorecard = _build_scorecard_for(pipeline, pipeline_yaml, skill_dir, args.provider)
+    except PricingError as e:
+        print(f"error: could not fetch live prices: {e}", file=sys.stderr)
+        return 1
+
+    measured_md = ""
+    measured_json: dict[str, object] | None = None
+    if args.run:
+        try:
+            measured_md, measured_json = _run_empirical(args, pipeline, pipeline_yaml, skill_dir)
+        except Exception as e:
+            print(f"error: empirical run failed: {e}", file=sys.stderr)
+            return 1
+
+    if args.json:
+        payload = scorecard.to_dict()
+        if measured_json is not None:
+            payload["measured"] = measured_json
+        rendered = json.dumps(payload, indent=2)
+    else:
+        rendered = scorecard.to_markdown()
+        if measured_md:
+            rendered += "\n" + measured_md
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered + "\n", encoding="utf-8")
+        print(f"rote eval: wrote {out_path}")
+    else:
+        print(rendered)
+    return 0
+
+
+def _resolve_runtime_dir(explicit: str | None, pipeline_yaml: Path) -> Path:
+    """Locate the emitted runtime app for empirical pipeline trials.
+
+    Explicit ``--runtime-dir`` wins; otherwise try the ``rote graduate
+    --out`` layout's siblings (runtime/dbos, runtime/python) and the
+    pipeline's own directory.
+    """
+    if explicit:
+        p = Path(explicit)
+        if (p / "main.py").is_file():
+            return p
+        raise ValueError(f"--runtime-dir {explicit} has no main.py")
+    base = pipeline_yaml.resolve().parent.parent
+    candidates = (
+        base / "runtime" / "dbos",
+        base / "runtime" / "python",
+        pipeline_yaml.resolve().parent,
+    )
+    for candidate in candidates:
+        if (candidate / "main.py").is_file():
+            return candidate
+    raise ValueError(
+        "no emitted runtime app found (looked for main.py in "
+        + ", ".join(str(c) for c in candidates)
+        + ") — emit one with `rote emit` or pass --runtime-dir"
+    )
+
+
+def _run_empirical(
+    args: argparse.Namespace,
+    pipeline: Pipeline,
+    pipeline_yaml: Path,
+    skill_dir: Path | None,
+) -> tuple[str, dict[str, object]]:
+    """Execute the --run trials and return (markdown section, JSON section).
+
+    Pipeline trials run first: they're fast and cheap, so a
+    misconfigured runtime dir fails before any agent money is spent.
+    """
+    import json
+    from datetime import UTC, datetime
+
+    from rote.eval.empirical import (
+        EmpiricalResult,
+        append_corpus,
+        measured_to_dict,
+        render_measured_markdown,
+        run_pipeline_trial,
+        run_skill_trial,
+    )
+    from rote.eval.pricing import fetch_catalog
+
+    if not args.input:
+        raise ValueError("--run requires --input <task.json> (the pipeline input payload)")
+    if args.trials < 1:
+        raise ValueError(f"--trials must be >= 1, got {args.trials}")
+    task = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    # Envelope form: {"input": {...}, "signals": {...}}. Disambiguate
+    # against a pipeline whose *payload* legitimately has a top-level
+    # "input" field: an explicit "signals" key always means envelope;
+    # otherwise "input" only reads as envelope when the pipeline's
+    # declared input contract has no field of that name.
+    declared = set(pipeline.input.required) | set(pipeline.input.optional)
+    if pipeline.input.input_schema is not None:
+        props = pipeline.input.input_schema.get("properties")
+        if isinstance(props, dict):
+            declared |= set(props.keys())
+    is_envelope = (
+        isinstance(task, dict)
+        and "input" in task
+        and set(task) <= {"input", "signals"}
+        and ("signals" in task or "input" not in declared)
+    )
+    if is_envelope:
+        input_payload = task["input"]
+        signals = task.get("signals") or {}
+    else:
+        input_payload = task
+        signals = {}
+
+    runtime_dir = _resolve_runtime_dir(args.runtime_dir, pipeline_yaml)
+    catalog = fetch_catalog(provider=args.provider)
+    sample = catalog.sample(provider=args.provider)
+    # Default the agent to the mid tier — the realistic "run it as a
+    # skill" model — resolved from the live lineup, never hardcoded.
+    skill_model = args.model or (sample[1].model_id if len(sample) > 1 else sample[0].model_id)
+
+    output_fields: set[str] = set()
+    for exit_id in pipeline.exit_nodes:
+        node_output = pipeline.node_by_id(exit_id).output
+        if isinstance(node_output, dict):
+            output_fields.update(node_output.keys())
+
+    pipeline_runs = []
+    for i in range(args.trials):
+        print(f"rote eval: pipeline trial {i + 1}/{args.trials} ({runtime_dir})", file=sys.stderr)
+        pipeline_runs.append(
+            run_pipeline_trial(
+                runtime_dir,
+                input_payload,
+                signals=signals or None,
+                python_executable=args.python,
+            )
+        )
+
+    skill_runs = []
+    if skill_dir is not None:
+        for i in range(args.trials):
+            print(
+                f"rote eval: skill trial {i + 1}/{args.trials} "
+                f"(claude -p, {skill_model}, subscription auth) — this takes minutes",
+                file=sys.stderr,
+            )
+            skill_runs.append(
+                run_skill_trial(
+                    skill_dir,
+                    input_payload,
+                    model=skill_model,
+                    max_turns=args.max_turns,
+                    output_fields=sorted(output_fields) or None,
+                )
+            )
+    else:
+        print("rote eval: no source skill — measuring the pipeline side only", file=sys.stderr)
+
+    result = EmpiricalResult(
+        trials=args.trials,
+        skill_runs=tuple(skill_runs),
+        pipeline_runs=tuple(pipeline_runs),
+        skill_model=skill_model if skill_runs else None,
+    )
+    generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    corpus_path = append_corpus(result, generated_at=generated_at)
+    print(f"rote eval: measurements appended to {corpus_path}", file=sys.stderr)
+    return render_measured_markdown(result, catalog), measured_to_dict(result, catalog)
 
 
 # ───────── Argument parsing ─────────
@@ -461,6 +763,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "(e.g. 'claude-opus-4-6' for higher-quality / higher-cost "
             "runs on complex skills). Defaults to the driver's default, "
             "which is Sonnet 4.6 for the subscription path."
+        ),
+    )
+    graduate.add_argument(
+        "--no-eval",
+        action="store_true",
+        help=(
+            "Skip the before/after eval scorecard (scorecard.md). The "
+            "scorecard needs one network fetch for live model prices; "
+            "everything else about it is static."
         ),
     )
     graduate.add_argument(
@@ -617,12 +928,97 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("skill_path")
     analyze.set_defaults(func=_cmd_analyze)
 
-    # rote eval (stub)
+    # rote eval
     eval_cmd = subparsers.add_parser(
         "eval",
-        help="Compare graduator output against an expected/ baseline",
+        help="Before/after scorecard: speed, cost, determinism (static, no execution)",
+        description=(
+            "Estimate what a skill costs to run as raw agent instructions "
+            "versus as its graduated pipeline — wall clock, dollars across "
+            "a sampling of current models at live official prices, and "
+            "determinism (LLM sampling surface). Static: nothing executes."
+        ),
     )
-    eval_cmd.add_argument("skill_path")
+    eval_cmd.add_argument(
+        "target",
+        help=("A graduated directory, a graduate --out directory, or a pipeline.yaml path"),
+    )
+    eval_cmd.add_argument(
+        "--skill",
+        default=None,
+        help=(
+            "Source skill directory for the 'before' baseline (default: the "
+            "pipeline's recorded source_skill, if it resolves)"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--provider",
+        default="anthropic",
+        help="LLM provider whose current model lineup to price (default: anthropic)",
+    )
+    eval_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the scorecard as JSON instead of Markdown",
+    )
+    eval_cmd.add_argument(
+        "--out",
+        default=None,
+        help="Write the scorecard to a file instead of stdout",
+    )
+    eval_cmd.add_argument(
+        "--run",
+        action="store_true",
+        help=(
+            "Empirical mode: actually execute both sides --trials times and "
+            "append a Measured section. Runs the emitted pipeline (fast, "
+            "cheap) and the raw skill via `claude -p` (minutes per trial, "
+            "billed to your Claude subscription). Requires --input."
+        ),
+    )
+    eval_cmd.add_argument(
+        "--trials",
+        type=int,
+        default=3,
+        help="Trials per side in --run mode (default: 3)",
+    )
+    eval_cmd.add_argument(
+        "--input",
+        default=None,
+        help=(
+            "Task file for --run: the pipeline input payload as JSON, or an "
+            'envelope {"input": {...}, "signals": {"<signal>": <payload>}} '
+            "for pipelines with HITL gates"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--model",
+        default=None,
+        help=("Model for the skill-side agent trials (default: the live lineup's mid tier)"),
+    )
+    eval_cmd.add_argument(
+        "--max-turns",
+        type=int,
+        default=60,
+        help="Turn budget per skill-side trial (default: 60)",
+    )
+    eval_cmd.add_argument(
+        "--runtime-dir",
+        default=None,
+        help=(
+            "Emitted runtime app for the pipeline trials (default: the "
+            "graduate --out layout's runtime/dbos or runtime/python sibling)"
+        ),
+    )
+    eval_cmd.add_argument(
+        "--python",
+        default=None,
+        dest="python",
+        help=(
+            "Python executable for pipeline trials (default: the current "
+            "interpreter; point at your app's venv if it has its own deps)"
+        ),
+    )
     eval_cmd.set_defaults(func=_cmd_eval)
 
     return parser

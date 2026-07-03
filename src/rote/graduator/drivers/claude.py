@@ -76,6 +76,28 @@ TodoWrite. Read + Write + Edit cover file I/O; Glob + Grep cover
 discovery of source skill structure and reference content."""
 
 
+def build_subscription_env() -> dict[str, str]:
+    """Child environment for a subscription-billed ``claude -p`` spawn.
+
+    Critical: scrub ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_AUTH_TOKEN``.
+    In ``claude -p`` mode these env vars always win over an active
+    OAuth session, which defeats the whole point of the subscription
+    path. Callers who want API-key auth should use
+    ``AnthropicApiDriver`` instead — this helper is specifically about
+    reusing the user's Claude Max/Pro subscription.
+    """
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
+    # Silence spinners in non-interactive output so stdout is just
+    # the JSON result and stderr is just the error text (if any).
+    env["CLAUDE_CODE_DISABLE_NONINTERACTIVE_ANIMATIONS"] = "1"
+    # CLAUDE_CODE_OAUTH_TOKEN, if set in the parent env, is
+    # preserved by env.copy() — this is the automation-friendly
+    # path for CI environments.
+    return env
+
+
 class ClaudeDriver(GraduatorDriver):
     name: str = "claude"
 
@@ -207,23 +229,11 @@ class ClaudeDriver(GraduatorDriver):
     def _build_child_env(self) -> dict[str, str]:
         """Build the environment for the subprocess.
 
-        Critical: scrub ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_AUTH_TOKEN``.
-        In ``claude -p`` mode these env vars always win over an active
-        OAuth session, which defeats the whole point of the subscription
-        path. The user who wants API-key auth should use the ``api``
-        driver; ``ClaudeDriver`` is specifically about reusing the
-        user's Claude Max/Pro subscription.
+        Delegates to :func:`build_subscription_env` — shared with the
+        eval harness's skill runner, which spawns ``claude -p`` under
+        the same billing rules.
         """
-        env = os.environ.copy()
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
-        # Silence spinners in non-interactive output so stdout is just
-        # the JSON result and stderr is just the error text (if any).
-        env["CLAUDE_CODE_DISABLE_NONINTERACTIVE_ANIMATIONS"] = "1"
-        # CLAUDE_CODE_OAUTH_TOKEN, if set in the parent env, is
-        # preserved by env.copy() — this is the automation-friendly
-        # path for CI environments.
-        return env
+        return build_subscription_env()
 
     def _build_system_prompt(self, skill_md_text: str) -> str:
         """Build the ``--append-system-prompt`` content.
