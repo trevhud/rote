@@ -63,7 +63,14 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         return 2
 
     out_dir = Path(args.out)
-    written = adapter.emit(pipeline, out_dir)
+    try:
+        written = adapter.emit(pipeline, out_dir)
+    except ValueError as e:
+        # Emit-time rejections are UX, not crashes: e.g. the python
+        # adapter refusing a hitl_gate pipeline (with a pointer at a
+        # durable runtime), or a forward data-flow reference.
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
     for label, path in written.items():

@@ -101,6 +101,28 @@ def test_emit_bdr_pipeline_in_process(tmp_path: Path, capsys: pytest.CaptureFixt
     ast.parse(workflow_path.read_text(encoding="utf-8"))
 
 
+def test_emit_python_refuses_gated_pipeline_cleanly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BDR has HITL gates: `--runtime python` must exit 1 with the
+    adapter's actionable message on stderr — not a traceback."""
+    rc = cli_main(
+        [
+            "emit",
+            str(BDR_PIPELINE_YAML),
+            "--runtime",
+            "python",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "cannot durably park" in err
+    assert "--runtime dbos" in err
+    assert not (tmp_path / "out").exists()
+
+
 def test_emit_rejects_unknown_runtime(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # argparse rejects unknown choices with exit code 2
     with pytest.raises(SystemExit) as excinfo:
