@@ -61,6 +61,20 @@ agent loop; flexibility is the whole point there, and there's nothing
 proven to compile yet. rote is for the skill you've run twenty times
 and want to run a thousand more, unattended.
 
+You don't have to take the paper's numbers on faith for *your* skill:
+every graduation emits a `scorecard.md` (also available standalone via
+`rote eval`) that estimates speed, cost, and determinism for the skill
+run as agent instructions versus as the graduated pipeline — before
+you execute anything. Costs are computed across the provider's current
+flagship / mid / small models at **live official prices** (fetched at
+eval time and cross-checked across two sources — never hardcoded, so
+the card is priced against whatever models exist the day you run it).
+On the bundled BDR example the static card estimates ~59× fewer LLM
+tokens touched and ~5× lower cost per run, with the number of
+LLM-decided steps dropping from 27 of 27 to 3 of 20 (and the surviving
+judge steps schema-constrained). Every modeling assumption is printed
+in the card's "Assumptions (audit me)" section.
+
 ---
 
 ## What just happened on the bundled example
@@ -357,6 +371,41 @@ gateway) without re-emitting:
 export ROTE_MODEL_VET_CONTACT=gpt-4.1
 export ROTE_BASE_URL_VET_CONTACT=http://localhost:11434/v1
 ```
+
+### Score a graduation without running anything
+
+`rote eval` renders the before/after scorecard for any graduated
+pipeline — wall clock, cost per run across the current model lineup at
+live prices, and how much of the run is still decided by a sampled LLM:
+
+```sh
+rote eval /tmp/graduated-bdr                  # markdown to stdout
+rote eval /tmp/graduated-bdr --json           # machine-readable
+rote eval /tmp/graduated-bdr --skill ./skill  # explicit 'before' baseline
+```
+
+`rote graduate` writes the same card to `graduated/scorecard.md`
+automatically (skip with `--no-eval`). The 'before' side is a model —
+turn estimates come from the graduator's per-step `eval.yaml` sidecar
+when available — and every assumption is printed so you can audit or
+override it.
+
+When you'd rather measure than model, add `--run`:
+
+```sh
+rote eval /tmp/graduated-bdr --run --trials 3 --input task.json
+```
+
+Empirical mode executes both sides for real — the emitted pipeline as
+a subprocess (with real per-judge token usage captured via the
+emitted `$ROTE_USAGE_LOG` hook), and the raw skill via `claude -p` on
+your Claude subscription — then appends a Measured section: wall
+clock, cost, agent turns, and output *agreement* across trials (the
+determinism number, measured instead of estimated). Pipelines with
+HITL gates run on the DBOS target; supply resume payloads in the task
+file as `{"input": {...}, "signals": {"<signal>": {...}}}`. Every
+measurement also lands in `~/.local/share/rote/eval-corpus.jsonl`, and
+the card suggests re-fitted priors from your own runs.
 
 ---
 

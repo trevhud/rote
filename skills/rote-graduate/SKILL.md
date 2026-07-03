@@ -154,6 +154,13 @@ Assemble the full DAG as `pipeline.yaml`. Include:
 The `pipeline.yaml` is the runtime-agnostic source of truth. Everything
 Phase 6 emits is derived from it.
 
+Alongside it, write the eval sidecar. Read
+`references/eval-estimates.md`, then produce `eval.yaml` next to
+`pipeline.yaml`: per-step agent-turn estimates for running the source
+skill as raw instructions. You just classified every step in Phase 2 —
+this captures, at near-zero extra cost, the cost model that
+`rote eval`'s before/after scorecard is built on.
+
 ### Phase 6: Adapter Invocation
 
 **You do not emit runtime code yourself.** The rote project ships
