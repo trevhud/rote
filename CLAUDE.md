@@ -22,11 +22,12 @@ needs a fast mental model before it starts editing code.
    source skill and applies a structured rubric.
 2. The agent produces a `pipeline.yaml` (runtime-agnostic IR) plus
    extracted Python modules and typed LLM-judge signatures.
-3. A runtime adapter (Temporal or Cloudflare Workflows; more planned)
-   consumes the IR and emits the runtime's native code shape — a
-   `workflow.py` + `activities.py` pair for Temporal, a single
-   TypeScript `WorkflowEntrypoint` class plus `wrangler.jsonc` /
-   `package.json` for Cloudflare.
+3. A runtime adapter (DBOS by default; Temporal and Cloudflare
+   Workflows too; more planned) consumes the IR and emits the
+   runtime's native code shape — a single `main.py` DBOS app, a
+   `workflow.py` + `activities.py` pair for Temporal, or a TypeScript
+   `WorkflowEntrypoint` class plus `wrangler.jsonc` / `package.json`
+   for Cloudflare.
 
 The result is a deterministic workflow that replaces a fuzzy
 10-20 minute agent loop. That's the whole product in one paragraph.
@@ -80,7 +81,13 @@ the Anthropic SDK client (see
 ### Layer 3 — The runtime adapters (the "code emitter")
 
 - **Lives at:** [`src/rote/adapters/`](src/rote/adapters/)
-- **Two adapters today:**
+- **Three adapters today:**
+  - `DbosAdapter`
+    ([`src/rote/adapters/dbos.py`](src/rote/adapters/dbos.py))
+    — the CLI default; emits a single durable Python app (`main.py`
+    with `@DBOS.workflow`/`@DBOS.step`, plus `signatures/*.py`,
+    `extracted/*.py`, `dbos-config.yaml`, `README.md`) — no
+    orchestrator process, state in SQLite/Postgres
   - `TemporalAdapter`
     ([`src/rote/adapters/temporal.py`](src/rote/adapters/temporal.py))
     — emits Python (`workflow.py` + `activities.py`)
@@ -412,7 +419,7 @@ Don't waste time debugging stubs. These are intentional.
 **Working end-to-end:**
 
 - IR load + validate
-- `rote emit` (IR → Temporal code)
+- `rote emit` (IR → runtime code; DBOS default)
 - `rote graduate` (SKILL.md → IR → Temporal code)
 - `ClaudeDriver`, `AnthropicApiDriver`
 - Data-flow threading: nodes declare `inputs:` (param → source

@@ -321,11 +321,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     emit.add_argument(
         "--runtime",
-        default="temporal",
+        default="dbos",
         choices=available_runtimes,
         help=(
-            f"Target workflow runtime (default: temporal). "
-            f"Available: {', '.join(available_runtimes)}"
+            f"Target workflow runtime (default: dbos — durable execution as a "
+            f"library, no orchestrator to run). Available: {', '.join(available_runtimes)}"
         ),
     )
     emit.add_argument(
@@ -350,8 +350,12 @@ def _build_parser() -> argparse.ArgumentParser:
     graduate.add_argument("skill_path", help="Path to the source skill directory")
     graduate.add_argument(
         "--runtime",
-        default="temporal",
+        default="dbos",
         choices=available_runtimes,
+        help=(
+            f"Target workflow runtime (default: dbos — durable execution as a "
+            f"library, no orchestrator to run). Available: {', '.join(available_runtimes)}"
+        ),
     )
     graduate.add_argument(
         "--out",
