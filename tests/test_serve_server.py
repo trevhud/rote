@@ -30,6 +30,7 @@ from fastmcp.exceptions import ToolError
 from rote.serve import backends
 from rote.serve.registry import (
     CloudflareTrigger,
+    DbosTrigger,
     Registry,
     RegistryEntry,
     TemporalTrigger,
@@ -67,12 +68,30 @@ def _cf_entry(url: str = "https://wf.example.workers.dev") -> RegistryEntry:
     )
 
 
+def _dbos_entry(gate_signals: list[str] | None = None) -> RegistryEntry:
+    return RegistryEntry(
+        name="dbos-pipeline",
+        description="DBOS-deployed pipeline",
+        pipeline_yaml=str(BDR_PIPELINE_YAML),
+        input_schema={"type": "object", "properties": {"x": {"type": "string"}}},
+        trigger=DbosTrigger(
+            system_database_url="sqlite:////tmp/app/bdr.dbos.sqlite",
+            workflow_name="BdrCampaign_abc123",
+            queue_name="bdr-campaign-queue",
+            gate_signals=(
+                gate_signals if gate_signals is not None else ["contact_review_approved"]
+            ),
+        ),
+    )
+
+
 @pytest.fixture()
 def registry_path(tmp_path: Path) -> Path:
     path = tmp_path / "registry.json"
     registry = Registry()
     registry.upsert(_bdr_entry())
     registry.upsert(_cf_entry())
+    registry.upsert(_dbos_entry())
     registry.save(path)
     return path
 
@@ -91,6 +110,10 @@ async def test_list_tools_one_trigger_plus_one_status_per_entry(registry_path: P
         "bdr-campaign_status",
         "cf-pipeline",
         "cf-pipeline_status",
+        "dbos-pipeline",
+        "dbos-pipeline_status",
+        # Only the DBOS entry gets a _signal companion (HITL resume).
+        "dbos-pipeline_signal",
     }
     # The trigger tool's inputSchema is exactly the registry's stored schema.
     assert tools["bdr-campaign"].inputSchema == BDR_INPUT_SCHEMA
@@ -99,6 +122,11 @@ async def test_list_tools_one_trigger_plus_one_status_per_entry(registry_path: P
     assert "workflow_id" in tools["bdr-campaign_status"].inputSchema["properties"]
     # Descriptions guide the LLM toward the polling pattern.
     assert "workflow_id" in (tools["bdr-campaign"].description or "")
+    # The signal tool requires workflow_id + signal, and the register-time
+    # gate list becomes an enum so the LLM can't invent topic names.
+    signal_schema = tools["dbos-pipeline_signal"].inputSchema
+    assert set(signal_schema["required"]) == {"workflow_id", "signal"}
+    assert signal_schema["properties"]["signal"]["enum"] == ["contact_review_approved"]
 
 
 @pytest.mark.asyncio
@@ -378,6 +406,195 @@ async def test_cloudflare_start_without_id_is_backend_error(
 
     with pytest.raises(backends.BackendError, match="did not return a workflow id"):
         await backends.start_workflow(entry, {"x": "y"})
+
+
+# ───────── DBOS tool calls (mocked backend) ─────────
+
+
+@pytest.mark.asyncio
+async def test_call_signal_tool_resumes_gate(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[str, str, str, dict[str, Any]]] = []
+
+    async def fake_signal(
+        entry: RegistryEntry, workflow_id: str, signal: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        calls.append((entry.name, workflow_id, signal, payload))
+        return {
+            "workflow_id": workflow_id,
+            "signal": signal,
+            "status": "signaled",
+            "runtime": "dbos",
+        }
+
+    monkeypatch.setattr(backends, "signal_workflow", fake_signal)
+
+    server = build_server(registry_path)
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "dbos-pipeline_signal",
+            {
+                "workflow_id": "dbos-pipeline-deadbeef",
+                "signal": "contact_review_approved",
+                "payload": {"approved": True},
+            },
+        )
+
+    assert result.data["status"] == "signaled"
+    assert calls == [
+        (
+            "dbos-pipeline",
+            "dbos-pipeline-deadbeef",
+            "contact_review_approved",
+            {"approved": True},
+        )
+    ]
+
+
+# ───────── DBOS backend units (fake DBOSClient) ─────────
+
+
+class _FakeDbosHandle:
+    def __init__(self, status: str) -> None:
+        self._status = status
+
+    async def get_status(self) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(status=self._status)
+
+
+class _FakeDbosClient:
+    """Mimics the DBOSClient surface the backend touches. Class attributes
+    configure behavior per test; instances record calls."""
+
+    construct_error: Exception | None = None
+    retrieve_error: Exception | None = None
+    status: str = "PENDING"
+    enqueued: list[tuple[dict[str, Any], tuple[Any, ...]]] = []
+    sent: list[tuple[str, Any, str | None]] = []
+    constructed_with: list[str] = []
+    destroyed: int = 0
+
+    def __init__(self, *, system_database_url: str) -> None:
+        type(self).constructed_with.append(system_database_url)
+        if type(self).construct_error is not None:
+            raise type(self).construct_error
+
+    async def enqueue_async(self, options: dict[str, Any], *args: Any) -> Any:
+        type(self).enqueued.append((options, args))
+        return _FakeDbosHandle(type(self).status)
+
+    async def retrieve_workflow_async(self, workflow_id: str) -> _FakeDbosHandle:
+        if type(self).retrieve_error is not None:
+            raise type(self).retrieve_error
+        return _FakeDbosHandle(type(self).status)
+
+    async def send_async(self, destination_id: str, message: Any, topic: str | None = None) -> None:
+        type(self).sent.append((destination_id, message, topic))
+
+    def destroy(self) -> None:
+        type(self).destroyed += 1
+
+
+@pytest.fixture()
+def fake_dbos_client(monkeypatch: pytest.MonkeyPatch) -> type[_FakeDbosClient]:
+    dbos_module = pytest.importorskip("dbos")
+    _FakeDbosClient.construct_error = None
+    _FakeDbosClient.retrieve_error = None
+    _FakeDbosClient.status = "PENDING"
+    _FakeDbosClient.enqueued = []
+    _FakeDbosClient.sent = []
+    _FakeDbosClient.constructed_with = []
+    _FakeDbosClient.destroyed = 0
+    monkeypatch.setattr(dbos_module, "DBOSClient", _FakeDbosClient)
+    return _FakeDbosClient
+
+
+@pytest.mark.asyncio
+async def test_dbos_start_enqueues_on_registered_coordinates(
+    fake_dbos_client: type[_FakeDbosClient],
+) -> None:
+    entry = _dbos_entry()
+    result = await backends.start_workflow(entry, {"x": "hello"})
+
+    assert result["status"] == "started"
+    assert result["runtime"] == "dbos"
+    assert result["workflow_id"].startswith("dbos-pipeline-")
+
+    assert fake_dbos_client.constructed_with == ["sqlite:////tmp/app/bdr.dbos.sqlite"]
+    ((options, args),) = fake_dbos_client.enqueued
+    assert options["workflow_name"] == "BdrCampaign_abc123"
+    assert options["queue_name"] == "bdr-campaign-queue"
+    assert options["workflow_id"] == result["workflow_id"]
+    # The tool arguments travel as the workflow's single positional input.
+    assert args == ({"x": "hello"},)
+    # The connection pool is released per call (lazy-per-call contract).
+    assert fake_dbos_client.destroyed == 1
+
+
+@pytest.mark.asyncio
+async def test_dbos_status_is_lowercased(fake_dbos_client: type[_FakeDbosClient]) -> None:
+    fake_dbos_client.status = "ENQUEUED"
+    result = await backends.workflow_status(_dbos_entry(), "wf-1")
+    assert result == {"workflow_id": "wf-1", "status": "enqueued", "runtime": "dbos"}
+
+
+@pytest.mark.asyncio
+async def test_dbos_signal_sends_on_topic(fake_dbos_client: type[_FakeDbosClient]) -> None:
+    entry = _dbos_entry()
+    result = await backends.signal_workflow(
+        entry, "wf-1", "contact_review_approved", {"approved": True}
+    )
+    assert result["status"] == "signaled"
+    assert fake_dbos_client.sent == [("wf-1", {"approved": True}, "contact_review_approved")]
+
+
+@pytest.mark.asyncio
+async def test_dbos_unreachable_database_is_backend_error(
+    fake_dbos_client: type[_FakeDbosClient],
+) -> None:
+    fake_dbos_client.construct_error = ConnectionError("connection refused")
+    entry = _dbos_entry()
+    entry.trigger = DbosTrigger(
+        system_database_url="postgresql://rote:hunter2@db.internal:5432/rote",
+        workflow_name="BdrCampaign_abc123",
+        queue_name="bdr-campaign-queue",
+    )
+    with pytest.raises(backends.BackendError, match="is unreachable") as exc_info:
+        await backends.start_workflow(entry, {})
+    # The error names the database but never leaks the password.
+    assert "db.internal" in str(exc_info.value)
+    assert "hunter2" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_dbos_unknown_workflow_is_backend_error(
+    fake_dbos_client: type[_FakeDbosClient],
+) -> None:
+    fake_dbos_client.retrieve_error = KeyError("no such workflow")
+    with pytest.raises(backends.BackendError, match="could not retrieve workflow 'wf-missing'"):
+        await backends.workflow_status(_dbos_entry(), "wf-missing")
+
+
+@pytest.mark.asyncio
+async def test_dbos_unknown_signal_is_rejected_before_sending(
+    fake_dbos_client: type[_FakeDbosClient],
+) -> None:
+    """A message on a topic no gate recv's on is silently swallowed by
+    DBOS, so the backend rejects signals outside the registered gate list."""
+    with pytest.raises(backends.BackendError, match="Unknown signal 'not_a_gate'"):
+        await backends.signal_workflow(_dbos_entry(), "wf-1", "not_a_gate", {})
+    assert fake_dbos_client.sent == []
+    # Rejected before any database connection was made.
+    assert fake_dbos_client.constructed_with == []
+
+
+@pytest.mark.asyncio
+async def test_signal_on_non_dbos_entry_is_backend_error() -> None:
+    with pytest.raises(backends.BackendError, match="only supported for the dbos runtime"):
+        await backends.signal_workflow(_bdr_entry(), "wf-1", "anything", {})
 
 
 # ───────── Temporal backend against a real (test) server ─────────

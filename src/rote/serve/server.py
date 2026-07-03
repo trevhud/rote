@@ -60,6 +60,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL_S = 1.0
 
 STATUS_TOOL_SUFFIX = "_status"
+SIGNAL_TOOL_SUFFIX = "_signal"
 
 
 # ───────── Tools ─────────
@@ -87,6 +88,24 @@ class PipelineStatusTool(Tool):
         workflow_id = arguments["workflow_id"]
         try:
             result = await backends.workflow_status(self.entry, workflow_id)
+        except backends.BackendError as e:
+            raise ToolError(str(e)) from e
+        return ToolResult(structured_content=result)
+
+
+class PipelineSignalTool(Tool):
+    """Resumes a workflow parked at a HITL gate (DBOS runtime only)."""
+
+    entry: RegistryEntry
+
+    async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        try:
+            result = await backends.signal_workflow(
+                self.entry,
+                arguments["workflow_id"],
+                arguments["signal"],
+                arguments.get("payload", {}),
+            )
         except backends.BackendError as e:
             raise ToolError(str(e)) from e
         return ToolResult(structured_content=result)
@@ -122,6 +141,47 @@ def _status_tool(entry: RegistryEntry) -> PipelineStatusTool:
                 },
             },
             "required": ["workflow_id"],
+            "additionalProperties": False,
+        },
+        entry=entry,
+    )
+
+
+def _signal_tool(entry: RegistryEntry) -> PipelineSignalTool:
+    trigger = entry.trigger
+    gate_signals = getattr(trigger, "gate_signals", [])
+    signal_schema: dict[str, Any] = {
+        "type": "string",
+        "description": "The HITL gate's signal (topic) name from the pipeline IR",
+    }
+    if gate_signals:
+        signal_schema["enum"] = list(gate_signals)
+    return PipelineSignalTool(
+        name=f"{entry.name}{SIGNAL_TOOL_SUFFIX}",
+        description=(
+            f"Resume a '{entry.name}' pipeline run parked at a human-in-the-"
+            f"loop gate. The payload is delivered as the gate's result and "
+            f"flows into downstream nodes. Check {entry.name}"
+            f"{STATUS_TOOL_SUFFIX} first: a run parked at a gate reports "
+            f"status 'pending'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": f"The workflow_id returned by the {entry.name} tool",
+                },
+                "signal": signal_schema,
+                "payload": {
+                    "type": "object",
+                    "description": (
+                        "Resume payload delivered to the gate (e.g. "
+                        '{"approved": true} or the reviewed/edited data)'
+                    ),
+                },
+            },
+            "required": ["workflow_id", "signal"],
             "additionalProperties": False,
         },
         entry=entry,
@@ -188,6 +248,11 @@ class RegistryProvider(Provider):
         for entry in self._registry.entries:
             tools.append(_trigger_tool(entry))
             tools.append(_status_tool(entry))
+            # Only the DBOS backend can deliver HITL resume signals
+            # (DBOSClient.send is one durable call); other runtimes use
+            # their own tooling, so no signal tool is synthesized.
+            if entry.trigger.runtime == "dbos":
+                tools.append(_signal_tool(entry))
         return tools
 
     @asynccontextmanager

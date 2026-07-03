@@ -332,7 +332,9 @@ def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> Non
 def test_dbos_config_yaml_is_valid(emit_result: dict[str, Path]) -> None:
     cfg = yaml.safe_load(emit_result["dbos-config"].read_text(encoding="utf-8"))
     assert cfg["name"] == "bdr-campaign"
-    assert cfg["runtimeConfig"]["start"] == ["python3 main.py"]
+    # `dbos start` (and DBOS Cloud) must run the long-lived worker mode so
+    # externally enqueued runs (rote serve / DBOSClient) get executed.
+    assert cfg["runtimeConfig"]["start"] == ["python3 main.py --serve"]
 
 
 def test_sqlite_default_with_env_override(main_src: str) -> None:
