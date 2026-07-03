@@ -290,7 +290,7 @@ way.
 | --- | --- | --- | --- | --- |
 | `claude` | `claude -p` subprocess | Claude Max/Pro OAuth or `CLAUDE_CODE_OAUTH_TOKEN` | Install Claude Code separately | `claude-sonnet-4-6` |
 | `codex` | `codex exec` subprocess | ChatGPT Plus/Pro OAuth | Install Codex CLI separately | (driver default) |
-| `api` | `anthropic` Python SDK | `ANTHROPIC_API_KEY` env var | `pip install rote[api]` | `claude-sonnet-4-6` |
+| `api` | `anthropic` Python SDK | `ANTHROPIC_API_KEY` env var | `pip install 'rote-cli[api]'` | `claude-sonnet-4-6` |
 
 The `claude` driver is the default for subscription users — it scrubs
 `ANTHROPIC_API_KEY` from the subprocess environment so the user's

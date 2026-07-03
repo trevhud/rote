@@ -9,24 +9,19 @@ Publishing (OIDC). No API tokens are stored anywhere.
 
 ## One-time setup (before the first release)
 
-### 0. Decide the distribution name
+### 0. Distribution name (decided: `rote-cli`)
 
 `rote` is **taken on PyPI** — an unrelated memoization library
 published there in May 2026, actively maintained, so not reclaimable
-under PEP 541. As of July 2026 `rote-cli` was available (verified via
-`https://pypi.org/simple/rote-cli/`, which 404s for unregistered
-names — the `/project/` page always returns the SPA shell, so it's
-not a reliable check).
+under PEP 541. The distribution is therefore named `rote-cli`
+(`pyproject.toml` `name`); the import name (`import rote`) and
+console script (`rote`) stay as they are — distribution and import
+names don't have to match.
 
-If you go with `rote-cli`:
-
-- change `name = "rote"` to `name = "rote-cli"` in `pyproject.toml`
-- the import name (`import rote`) and console script (`rote`) stay
-  as they are — distribution and import names don't have to match
-- one real conflict to know about: the existing `rote` package on
-  PyPI *also* installs an `import rote` module, so the two packages
-  can't be installed into the same environment. Worth a note in the
-  README install section when publishing.
+One real conflict to know about: the existing `rote` package on
+PyPI *also* installs an `import rote` module, so the two packages
+can't be installed into the same environment. Worth a note in the
+README install section.
 
 ### 1. PyPI: add a pending publisher
 
