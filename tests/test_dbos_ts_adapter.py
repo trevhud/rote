@@ -34,7 +34,8 @@ from rote.adapters.dbos_ts import (
     emit_main,
     emit_signature_module,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput, load_pipeline
+from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
+from tests._helpers import assert_no_mcp_in_ts, mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -42,11 +43,6 @@ BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes"
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")
@@ -66,17 +62,6 @@ def emit_result(adapter: DbosTsAdapter, bdr_pipeline: Pipeline) -> dict[str, Pat
 @pytest.fixture(scope="module")
 def main_src(emit_result: dict[str, Path]) -> str:
     return emit_result["main"].read_text(encoding="utf-8")
-
-
-def _mini_pipeline(node: Node) -> Pipeline:
-    return Pipeline(
-        name="mini",
-        input=PipelineInput(type="In"),
-        nodes=[node],
-        edges=[],
-        entry_nodes=[node.id],
-        exit_nodes=[node.id],
-    )
 
 
 # ───────── Helper / internal tests ─────────
@@ -259,7 +244,7 @@ def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
 def test_node_without_inputs_gets_empty_payload() -> None:
     """Back-compat: nodes with no ``inputs`` still receive {}."""
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    src = emit_main(_mini_pipeline(node), DbosTsAdapterConfig())
+    src = emit_main(mini_pipeline(node), DbosTsAdapterConfig())
     assert "const only_result = await onlyStep({});" in src
 
 
@@ -303,28 +288,11 @@ def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> Non
 def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None:
     """Architectural invariant: no MCP runtime in emitted DBOS TS code.
 
-    Comments and JSDoc may *mention* MCP to explain the graduation
-    history, so we strip ``/* ... */`` blocks, ``// ...`` line comments,
-    and string literals before scanning — same technique as the
-    Cloudflare adapter's invariant test.
+    Comments, JSDoc, and string literals may mention MCP to explain the
+    graduation history; executable code may not. Scan logic is shared —
+    see tests/_helpers.py.
     """
-    js_string = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`')
-    block_comment = re.compile(r"/\*[\s\S]*?\*/")
-    line_comment = re.compile(r"//[^\n]*")
-
-    checked = 0
-    for label, path in emit_result.items():
-        if not str(path).endswith(".ts"):
-            continue
-        src = path.read_text(encoding="utf-8")
-        cleaned = block_comment.sub(" ", src)
-        cleaned = line_comment.sub(" ", cleaned)
-        cleaned = js_string.sub('""', cleaned)
-        assert "mcp" not in cleaned.lower(), (
-            f"{label} ({path.name}) contains forbidden substring 'mcp' in executable code"
-        )
-        checked += 1
-    assert checked >= 13  # main + extracted + signatures
+    assert_no_mcp_in_ts(emit_result, min_files=13)
 
 
 # ───────── Extracted stub conventions ─────────
@@ -393,7 +361,7 @@ def test_emit_rejects_llm_judge_without_signature_spec(tmp_path: Path) -> None:
         signature="signatures/x.py:X",
     )
     with pytest.raises(ValueError, match="requires\\s+signature_spec"):
-        DbosTsAdapter().emit(_mini_pipeline(judge), tmp_path / "y")
+        DbosTsAdapter().emit(mini_pipeline(judge), tmp_path / "y")
 
 
 def test_openai_client_signature_module() -> None:
@@ -421,7 +389,7 @@ def test_openai_client_signature_module() -> None:
     assert 'from "openai"' in src
     assert '"json_schema"' in src
     assert "temperature: 0.2" in src
-    src_main = emit_main(_mini_pipeline(judge), DbosTsAdapterConfig())
+    src_main = emit_main(mini_pipeline(judge), DbosTsAdapterConfig())
     assert 'OPENAI_API_KEY: requireEnv("OPENAI_API_KEY")' in src_main
 
 
@@ -439,7 +407,7 @@ def test_openai_judge_adds_openai_dependency() -> None:
     )
     from rote.adapters.dbos_ts import emit_package_json
 
-    pkg = json.loads(emit_package_json(_mini_pipeline(judge)))
+    pkg = json.loads(emit_package_json(mini_pipeline(judge)))
     assert "openai" in pkg["dependencies"]
     assert "@anthropic-ai/sdk" not in pkg["dependencies"]
 

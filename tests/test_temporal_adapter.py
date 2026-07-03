@@ -25,7 +25,7 @@ from rote.adapters.temporal import (
     _pipeline_hash,
     _to_pascal_case,
 )
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import NodeKind, Pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -34,11 +34,6 @@ BDR_EXAMPLE_PKG_ROOT = REPO_ROOT / "examples" / "bdr-outreach"
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")

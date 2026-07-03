@@ -27,7 +27,8 @@ from rote.adapters.python import (
     emit_main,
     emit_requirements,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline, load_pipeline
+from rote.ir import Edge, Node, NodeKind, Pipeline
+from tests._helpers import mini_pipeline
 from tests._python_fixture import build_gateless_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,11 +36,6 @@ BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipe
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")
@@ -64,17 +60,6 @@ def emit_result(
 @pytest.fixture(scope="module")
 def main_src(emit_result: dict[str, Path]) -> str:
     return emit_result["main"].read_text(encoding="utf-8")
-
-
-def _mini_pipeline(node: Node) -> Pipeline:
-    return Pipeline(
-        name="mini",
-        input={"type": "In", "required": [], "optional": []},
-        nodes=[node],
-        edges=[],
-        entry_nodes=[node.id],
-        exit_nodes=[node.id],
-    )
 
 
 # ───────── Registry + derived IR property ─────────
@@ -198,7 +183,7 @@ def test_constant_and_linear_backoff(backoff: str, sleep_expr: str) -> None:
         impl="extracted/x.py:y",
         retry={"max": 1, "backoff": backoff},
     )
-    src = emit_main(_mini_pipeline(node))
+    src = emit_main(mini_pipeline(node))
     assert sleep_expr in src
 
 
@@ -210,7 +195,7 @@ def test_retry_base_delay_is_configurable() -> None:
         impl="extracted/x.py:y",
         retry={"max": 1, "backoff": "exponential"},
     )
-    src = emit_main(_mini_pipeline(node), PythonAdapterConfig(retry_base_delay_seconds=0.01))
+    src = emit_main(mini_pipeline(node), PythonAdapterConfig(retry_base_delay_seconds=0.01))
     assert "RETRY_BASE_DELAY_SECONDS = 0.01" in src
 
 
@@ -241,7 +226,7 @@ def test_conditional_imports_dropped_when_unused() -> None:
     """A single-node pipeline with no retry needs neither time nor the
     thread pool — the emitted imports say so."""
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    src = emit_main(_mini_pipeline(node))
+    src = emit_main(mini_pipeline(node))
     assert "import time" not in src
     assert "ThreadPoolExecutor" not in src
     assert "RETRY_BASE_DELAY_SECONDS" not in src
@@ -343,7 +328,7 @@ def test_payloads_parse_as_dict_literals(main_src: str, pipeline: Pipeline) -> N
 
 def test_node_without_inputs_gets_empty_payload() -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    src = emit_main(_mini_pipeline(node))
+    src = emit_main(mini_pipeline(node))
     assert "only_result = only({})" in src
 
 
@@ -413,14 +398,14 @@ def test_requirements_includes_openai_when_needed() -> None:
             "client": "openai",
         },
     )
-    reqs = emit_requirements(_mini_pipeline(judge))
+    reqs = emit_requirements(mini_pipeline(judge))
     assert "openai>=" in reqs
     assert "anthropic" not in reqs
 
 
 def test_requirements_empty_with_comment_when_no_judges() -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    reqs = emit_requirements(_mini_pipeline(node))
+    reqs = emit_requirements(mini_pipeline(node))
     assert reqs.strip(), "the no-judge requirements file still carries an explanation"
     assert all(line.startswith("#") for line in reqs.splitlines() if line)
 
@@ -481,7 +466,7 @@ def test_legacy_signature_path_fallback() -> None:
         description="Grade an essay.",
         signature="signatures/grade_essay.py:GradeEssay",
     )
-    src = emit_main(_mini_pipeline(judge))
+    src = emit_main(mini_pipeline(judge))
     assert "from signatures.grade_essay import (" in src
     assert "asyncio.run(GradeEssay().forward(GradeEssayInput(**payload)))" in src
 

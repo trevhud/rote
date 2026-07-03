@@ -46,7 +46,7 @@ import pytest
 
 from rote.adapters._common import _pipeline_hash, _to_pascal_case
 from rote.adapters.dbos import DbosAdapter
-from rote.ir import Pipeline, load_pipeline
+from rote.ir import Pipeline
 from rote.serve import backends
 from rote.serve.registry import DbosTrigger, RegistryEntry
 
@@ -67,11 +67,6 @@ pytestmark = pytest.mark.slow
 #: Emitted by main.py's --serve mode once DBOS.launch() has completed —
 #: the readiness signal that migrations ran and queue workers are live.
 _SERVE_READY_MARKER = "serving: waiting for enqueued runs"
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")

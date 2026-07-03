@@ -45,7 +45,7 @@ import pytest
 
 from rote.adapters.dbos import DbosAdapter, _extracted_layout
 from rote.adapters.temporal import _execution_waves, _impl_path_parts, _to_pascal_case
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import NodeKind, Pipeline
 
 dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
 
@@ -159,11 +159,6 @@ def _pre_and_post_gate_nodes(pipeline: Pipeline) -> tuple[set[str], set[str]]:
 
 
 # ───────── Fixtures ─────────
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 @pytest.fixture(scope="module")

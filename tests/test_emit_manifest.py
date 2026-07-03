@@ -20,15 +20,10 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.adapters._common import MANIFEST_NAME, EmitWriter
-from rote.ir import Pipeline, load_pipeline
+from rote.ir import Pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
-
-
-@pytest.fixture(scope="module")
-def bdr_pipeline() -> Pipeline:
-    return load_pipeline(BDR_PIPELINE_YAML)
 
 
 # ───────── EmitWriter unit behavior ─────────
