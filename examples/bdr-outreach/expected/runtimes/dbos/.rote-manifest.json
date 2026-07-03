@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "files": {
+    "README.md": "943d55a940389a66159d0080c33bc65d9d3a102dd48f275ad6bc94a63d6f1cfb",
+    "dbos-config.yaml": "7abe9f42813bc9d95ce012147955d3e94bce482752ce53d58bf94b126220fd31",
+    "extracted/__init__.py": "b45f4d98dce919704be69b3f087ab759257301612eab131e755bd473bb09723b",
+    "extracted/exclusion_checks.py": "5587e746f47976085f93bfa2782f4a8dbec2d82dc42f27780e40fed071574dbb",
+    "extracted/hubspot.py": "2d1d050b3b1d5d4364a8c632bd8ad97e441ae080b4ea2cf7793280299f9f0a12",
+    "extracted/lead_generation_loop.py": "b2003d5bd3cc19c5da9d0ca4f325714445537da93d824a85a85a45ca0d2767c2",
+    "extracted/report.py": "e5d374b40fac4a6be9cd7a1c519848bfda18a094187ebb2297edd247df113707",
+    "extracted/target_research.py": "0d3359d5cca05403ddbbd7714a56c1ca6feb8a27350f1088456e31d28e11cd46",
+    "extracted/taxonomy.py": "44b3bab5a9dde17f170b436157cc349e70a2388a065a4b413a1fe9bf453d437a",
+    "extracted/zoominfo.py": "9509863b14f2626fcd8154752c09e0bd7a5a4c6d5dc16071e33aac72eeb0b194",
+    "main.py": "f9ce5b0f384db65a71b6c452a519c1b3ad9363142714123d416ec1a20677f503",
+    "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
+    "signatures/personalize_email.py": "9ccf24e38f721391057c77e0e5c94a91a17f1610d1706004b98685a63b03bb38",
+    "signatures/vet_contact.py": "dd30a93697dd09748a076b55fe5ae3fa5373858d6c597da20019394d04546428"
+  }
+}

@@ -164,13 +164,21 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 
 export async function vetContact(
     rawInput: unknown,
-    env: { ANTHROPIC_API_KEY: string },
+    env: {
+        ANTHROPIC_API_KEY: string;
+        // Operator overrides — swap the model or endpoint without re-emitting.
+        ROTE_MODEL_VET_CONTACT?: string;
+        ROTE_BASE_URL_VET_CONTACT?: string;
+    },
 ): Promise<VetContactOutput> {
     const input = VetContactInput.parse(rawInput);
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({
+        apiKey: env.ANTHROPIC_API_KEY,
+        baseURL: env.ROTE_BASE_URL_VET_CONTACT,
+    });
 
     const response = await client.messages.create({
-        model: "claude-sonnet-4-6",
+        model: env.ROTE_MODEL_VET_CONTACT ?? "claude-sonnet-4-6",
         max_tokens: 4096,
         tools: [
             {

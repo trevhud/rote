@@ -245,8 +245,17 @@ signature_spec:
     <multi-line prompt template>
   client: anthropic               # 'anthropic' | 'openai'
   model: claude-sonnet-4-6        # optional; adapter chooses default
+  base_url: https://...           # optional; custom endpoint. With client
+                                  # 'openai' this reaches any OpenAI-compatible
+                                  # server (Ollama, vLLM, a gateway). Only set
+                                  # it when the source skill names an endpoint.
   temperature: 0.0                # optional
 ```
+
+Emitted code layers runtime overrides on top of these defaults —
+`ROTE_MODEL_<NODE_ID>` and `ROTE_BASE_URL_<NODE_ID>` environment
+variables — so pick sensible defaults and let operators retarget a
+judge without re-graduating.
 
 ### Deriving the JSON Schemas
 

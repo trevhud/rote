@@ -292,6 +292,7 @@ class AnthropicApiDriver(GraduatorDriver):
         skill_dir: Path,
         graduator_skill_dir: Path,
         work_dir: Path,
+        extra_instructions: str | None = None,
     ) -> DriverResult:
         if not _ANTHROPIC_AVAILABLE:
             raise DriverError("anthropic package is not installed. Run: pip install rote[api]")
@@ -319,17 +320,16 @@ class AnthropicApiDriver(GraduatorDriver):
         client = anthropic.AsyncAnthropic()
         tool_schemas = _build_tool_schemas()
 
-        messages: list[MessageParam] = [
-            {
-                "role": "user",
-                "content": (
-                    f"Graduate the skill at {skill_dir}. "
-                    f"Begin by reading {skill_dir}/SKILL.md and the reference "
-                    f"files in {graduator_skill_dir}/references/, then produce "
-                    f"the pipeline.yaml at {work_dir}/pipeline.yaml."
-                ),
-            }
-        ]
+        task_prompt = (
+            f"Graduate the skill at {skill_dir}. "
+            f"Begin by reading {skill_dir}/SKILL.md and the reference "
+            f"files in {graduator_skill_dir}/references/, then produce "
+            f"the pipeline.yaml at {work_dir}/pipeline.yaml."
+        )
+        if extra_instructions:
+            task_prompt = f"{task_prompt}\n\n{extra_instructions}"
+
+        messages: list[MessageParam] = [{"role": "user", "content": task_prompt}]
 
         total_input_tokens = 0
         total_output_tokens = 0

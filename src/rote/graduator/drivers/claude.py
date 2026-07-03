@@ -134,6 +134,7 @@ class ClaudeDriver(GraduatorDriver):
         skill_dir: Path,
         graduator_skill_dir: Path,
         work_dir: Path,
+        extra_instructions: str | None = None,
     ) -> DriverResult:
         """Spawn ``claude -p`` and wait for it to produce pipeline.yaml."""
         skill_dir = skill_dir.resolve()
@@ -150,6 +151,8 @@ class ClaudeDriver(GraduatorDriver):
 
         system_prompt = self._build_system_prompt(skill_md.read_text(encoding="utf-8"))
         user_prompt = self._build_user_prompt(skill_dir, graduator_skill_dir, work_dir)
+        if extra_instructions:
+            user_prompt = f"{user_prompt}\n\n{extra_instructions}"
 
         env = self._build_child_env()
 

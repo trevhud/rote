@@ -85,18 +85,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
     emit_signature_anthropic,
     emit_signature_openai,
     json_schema_to_zod,
+    override_env_vars,
 )
 from rote.adapters.dbos import _duration_to_seconds
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
@@ -273,6 +274,7 @@ def emit_signature_module(node: Node, cfg: DbosTsAdapterConfig) -> str:
         output_schema_json=json.dumps(spec.output_schema, indent=2),
         prompt_template=spec.prompt,
         model=spec.model or _default_model_for(spec, cfg),
+        base_url=spec.base_url,
         temperature=spec.temperature,
         generated_by=_GENERATED_BY,
     )
@@ -383,11 +385,22 @@ def _spec_judges(pipeline: Pipeline) -> list[Node]:
 
 
 def _judge_env_arg(node: Node) -> str:
-    """The env object a judge step passes to its signature function."""
+    """The env object a judge step passes to its signature function.
+
+    Besides the required API key, the per-node operator overrides
+    (``ROTE_MODEL_<ID>`` / ``ROTE_BASE_URL_<ID>``) are threaded through
+    from ``process.env`` so the signature honors them at runtime.
+    """
     spec = _require_signature_spec(node)
-    if spec.client == "openai":
-        return '{ OPENAI_API_KEY: requireEnv("OPENAI_API_KEY") }'
-    return '{ ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }'
+    key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
+    model_var, base_var = override_env_vars(node.id)
+    return (
+        "{\n"
+        f'        {key}: requireEnv("{key}"),\n'
+        f"        {model_var}: process.env.{model_var},\n"
+        f"        {base_var}: process.env.{base_var},\n"
+        "    }"
+    )
 
 
 def _emit_step_registration(node: Node) -> str:
@@ -803,7 +816,10 @@ node dist/main.js '{{...}}'   # or: npx dbos start
 ```
 
 LLM judge steps call the vendor SDK directly and read the standard
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
+judge also honors per-node `ROTE_MODEL_<NODE_ID>` and
+`ROTE_BASE_URL_<NODE_ID>` overrides, so operators can swap the model
+or point at an OpenAI-compatible endpoint without re-emitting.
 
 ## HITL gates
 
@@ -862,45 +878,36 @@ class DbosTsAdapter:
         return emit_main(pipeline, self.config)
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
-        out = Path(output_dir)
-        src = out / "src"
-        sigs = src / "signatures"
-        extracted = src / "extracted"
-        for d in (out, src, sigs, extracted):
-            d.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        main_path = src / "main.ts"
-        main_path.write_text(self.emit_main(pipeline), encoding="utf-8")
-        written["main"] = main_path
+        written["main"] = writer.write("src", "main.ts", content=self.emit_main(pipeline))
 
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = resolve_within(sigs, f"{node.id}.ts")
-                p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
-                written[f"signatures/{node.id}"] = p
+                written[f"signatures/{node.id}"] = writer.write(
+                    "src",
+                    "signatures",
+                    f"{node.id}.ts",
+                    content=emit_signature_module(node, self.config),
+                )
             else:
-                p = resolve_within(extracted, f"{node.id}.ts")
-                p.write_text(emit_extracted_module(node), encoding="utf-8")
-                written[f"extracted/{node.id}"] = p
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=emit_extracted_module(node),
+                )
 
-        pkg_path = out / "package.json"
-        pkg_path.write_text(emit_package_json(pipeline), encoding="utf-8")
-        written["package.json"] = pkg_path
+        written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
+        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
+        written["dbos-config"] = writer.write(
+            "dbos-config.yaml", content=emit_dbos_config(pipeline)
+        )
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
-        ts_path = out / "tsconfig.json"
-        ts_path.write_text(emit_tsconfig(), encoding="utf-8")
-        written["tsconfig.json"] = ts_path
-
-        config_path = out / "dbos-config.yaml"
-        config_path.write_text(emit_dbos_config(pipeline), encoding="utf-8")
-        written["dbos-config"] = config_path
-
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
-
+        writer.finalize()
         return written

@@ -98,18 +98,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
     emit_signature_anthropic,
     emit_signature_openai,
     json_schema_to_zod,
+    override_env_vars,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
@@ -339,6 +340,7 @@ def emit_signature_module(node: Node, cfg: InngestAdapterConfig) -> str:
         output_schema_json=json.dumps(spec.output_schema, indent=2),
         prompt_template=spec.prompt,
         model=spec.model or _default_model_for(spec, cfg),
+        base_url=spec.base_url,
         temperature=spec.temperature,
         generated_by=_GENERATED_BY,
     )
@@ -471,11 +473,22 @@ def _spec_judges(pipeline: Pipeline) -> list[Node]:
 
 
 def _judge_env_arg(node: Node) -> str:
-    """The env object a judge step passes to its signature function."""
+    """The env object a judge step passes to its signature function.
+
+    Besides the required API key, the per-node operator overrides
+    (``ROTE_MODEL_<ID>`` / ``ROTE_BASE_URL_<ID>``) are threaded through
+    from ``process.env`` so the signature honors them at runtime.
+    """
     spec = _require_signature_spec(node)
-    if spec.client == "openai":
-        return '{ OPENAI_API_KEY: requireEnv("OPENAI_API_KEY") }'
-    return '{ ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }'
+    key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
+    model_var, base_var = override_env_vars(node.id)
+    return (
+        "{\n"
+        f'        {key}: requireEnv("{key}"),\n'
+        f"        {model_var}: process.env.{model_var},\n"
+        f"        {base_var}: process.env.{base_var},\n"
+        "    }"
+    )
 
 
 def _step_call_expr(node: Node, payload_indent: str) -> str:
@@ -947,50 +960,41 @@ class InngestAdapter:
         return emit_pipeline_ts(pipeline, self.config)
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
-        out = Path(output_dir)
-        src = out / "src"
-        inngest_dir = src / "inngest"
-        sigs = src / "signatures"
-        extracted = src / "extracted"
-        for d in (out, src, inngest_dir, sigs, extracted):
-            d.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        client_path = inngest_dir / "client.ts"
-        client_path.write_text(emit_client(pipeline), encoding="utf-8")
-        written["client"] = client_path
-
-        pipeline_path = inngest_dir / "pipeline.ts"
-        pipeline_path.write_text(self.emit_pipeline_ts(pipeline), encoding="utf-8")
-        written["pipeline"] = pipeline_path
-
-        index_path = src / "index.ts"
-        index_path.write_text(emit_index(pipeline, self.config), encoding="utf-8")
-        written["index"] = index_path
+        written["client"] = writer.write(
+            "src", "inngest", "client.ts", content=emit_client(pipeline)
+        )
+        written["pipeline"] = writer.write(
+            "src", "inngest", "pipeline.ts", content=self.emit_pipeline_ts(pipeline)
+        )
+        written["index"] = writer.write(
+            "src", "index.ts", content=emit_index(pipeline, self.config)
+        )
 
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
             if node.kind is NodeKind.LLM_JUDGE:
-                p = resolve_within(sigs, f"{node.id}.ts")
-                p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
-                written[f"signatures/{node.id}"] = p
+                written[f"signatures/{node.id}"] = writer.write(
+                    "src",
+                    "signatures",
+                    f"{node.id}.ts",
+                    content=emit_signature_module(node, self.config),
+                )
             else:
-                p = resolve_within(extracted, f"{node.id}.ts")
-                p.write_text(emit_extracted_module(node), encoding="utf-8")
-                written[f"extracted/{node.id}"] = p
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=emit_extracted_module(node),
+                )
 
-        pkg_path = out / "package.json"
-        pkg_path.write_text(emit_package_json(pipeline), encoding="utf-8")
-        written["package.json"] = pkg_path
+        written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
+        written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
-        ts_path = out / "tsconfig.json"
-        ts_path.write_text(emit_tsconfig(), encoding="utf-8")
-        written["tsconfig.json"] = ts_path
-
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
-
+        writer.finalize()
         return written

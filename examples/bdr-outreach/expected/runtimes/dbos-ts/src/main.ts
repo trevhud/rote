@@ -105,7 +105,11 @@ export const enrichContactBatchStep = DBOS.registerStep(
  * non-determinism lives inside this step, not the workflow.
  */
 export const vetContactStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => vetContact(payload, { ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }),
+    async (payload: Record<string, unknown>) => vetContact(payload, {
+        ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
+        ROTE_MODEL_VET_CONTACT: process.env.ROTE_MODEL_VET_CONTACT,
+        ROTE_BASE_URL_VET_CONTACT: process.env.ROTE_BASE_URL_VET_CONTACT,
+    }),
     { name: "vet_contact" },
 );
 
@@ -180,7 +184,11 @@ export const exclusionCheckSequenceStep = DBOS.registerStep(
  * non-determinism lives inside this step, not the workflow.
  */
 export const personalizeEmailStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => personalizeEmail(payload, { ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }),
+    async (payload: Record<string, unknown>) => personalizeEmail(payload, {
+        ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
+        ROTE_MODEL_PERSONALIZE_EMAIL: process.env.ROTE_MODEL_PERSONALIZE_EMAIL,
+        ROTE_BASE_URL_PERSONALIZE_EMAIL: process.env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
+    }),
     { name: "personalize_email" },
 );
 

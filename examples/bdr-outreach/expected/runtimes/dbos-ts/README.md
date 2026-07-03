@@ -39,7 +39,10 @@ node dist/main.js '{...}'   # or: npx dbos start
 ```
 
 LLM judge steps call the vendor SDK directly and read the standard
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.
+`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
+judge also honors per-node `ROTE_MODEL_<NODE_ID>` and
+`ROTE_BASE_URL_<NODE_ID>` overrides, so operators can swap the model
+or point at an OpenAI-compatible endpoint without re-emitting.
 
 ## HITL gates
 

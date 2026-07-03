@@ -58,11 +58,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
@@ -592,30 +592,24 @@ class PythonAdapter:
         # Refuse before touching the filesystem: no partial output.
         _refuse_if_durable(pipeline)
 
-        out = Path(output_dir)
-        extracted_dir = out / "extracted"
-        signatures_dir = out / "signatures"
-        out.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        main_path = out / "main.py"
-        main_path.write_text(self.emit_main(pipeline), encoding="utf-8")
-        written["main"] = main_path
+        written["main"] = writer.write("main.py", content=self.emit_main(pipeline))
 
         extracted_modules = _extracted_layout(pipeline)
         if extracted_modules:
-            extracted_dir.mkdir(exist_ok=True)
-            init = extracted_dir / "__init__.py"
-            init.write_text(
-                f'"""Extracted deterministic modules for {pipeline.name}."""\n',
-                encoding="utf-8",
+            written["extracted/__init__"] = writer.write(
+                "extracted",
+                "__init__.py",
+                content=f'"""Extracted deterministic modules for {pipeline.name}."""\n',
             )
-            written["extracted/__init__"] = init
             for module_name, nodes in sorted(extracted_modules.items()):
-                p = resolve_within(extracted_dir, f"{module_name}.py")
-                p.write_text(
-                    _shared_emit_extracted_module(
+                written[f"extracted/{module_name}"] = writer.write(
+                    "extracted",
+                    f"{module_name}.py",
+                    content=_shared_emit_extracted_module(
                         module_name,
                         nodes,
                         generated_by="rote.adapters.python",
@@ -624,9 +618,7 @@ class PythonAdapter:
                             "with the step payload as keyword arguments."
                         ),
                     ),
-                    encoding="utf-8",
                 )
-                written[f"extracted/{module_name}"] = p
 
         spec_judges = [
             n
@@ -634,17 +626,16 @@ class PythonAdapter:
             if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
         ]
         if spec_judges:
-            signatures_dir.mkdir(exist_ok=True)
-            init = signatures_dir / "__init__.py"
-            init.write_text(
-                f'"""Generated LLM signatures for {pipeline.name}."""\n',
-                encoding="utf-8",
+            written["signatures/__init__"] = writer.write(
+                "signatures",
+                "__init__.py",
+                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
             )
-            written["signatures/__init__"] = init
             for node in spec_judges:
-                p = resolve_within(signatures_dir, f"{node.id}.py")
-                p.write_text(
-                    _shared_emit_signature_module(
+                written[f"signatures/{node.id}"] = writer.write(
+                    "signatures",
+                    f"{node.id}.py",
+                    content=_shared_emit_signature_module(
                         node,
                         anthropic_default_model=self.config.anthropic_default_model,
                         openai_default_model=self.config.openai_default_model,
@@ -656,16 +647,12 @@ class PythonAdapter:
                             "retryable unit."
                         ),
                     ),
-                    encoding="utf-8",
                 )
-                written[f"signatures/{node.id}"] = p
 
-        requirements_path = out / "requirements.txt"
-        requirements_path.write_text(emit_requirements(pipeline), encoding="utf-8")
-        written["requirements"] = requirements_path
+        written["requirements"] = writer.write(
+            "requirements.txt", content=emit_requirements(pipeline)
+        )
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
-
+        writer.finalize()
         return written

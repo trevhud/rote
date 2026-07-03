@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "files": {
+    "README.md": "e53e78fd5891ea8f26a3002e668ae1a9b54898c93db0ead45a93c5cf313edabc",
+    "dbos-config.yaml": "86666ea15b0722fc57e70d4fa09812ede6cffe785090118e968ed555bc060ea6",
+    "package.json": "772f36f8d57fc39825dfc6d700483f113d62c685727abb2771be706b9d3b3d73",
+    "src/extracted/create_sales_template.ts": "5a7910b7f295b9536e293dbdf24d00d1d13878f9389c4ff8c45bd21a3999e27b",
+    "src/extracted/enrich_contact_batch.ts": "1949f1280cc75b8bc914bad4f8f17147d46c662e8e47844550568b0b6d4b89f5",
+    "src/extracted/exclusion_check_dnc.ts": "2f5ad51db6c25862b7c4a20313b193ab43ad9ed65d3b457e205aacb0c82bff6a",
+    "src/extracted/exclusion_check_recent.ts": "505e0a0a2fd3fd2b192a34b87faf544536850a1c404143d51d1904530c595a0a",
+    "src/extracted/exclusion_check_sequence.ts": "da5a22148a7faab11daf274804a3a44e30d36caf73cbbe9761a722375ec0c1b8",
+    "src/extracted/hubspot_create_list.ts": "be943e98b45d02978a01a9e229f964614422afd20ff81b431a650f4b7cfca93f",
+    "src/extracted/hubspot_upsert.ts": "a441ed2674041802efcce829e38e1c8540b6e83d6dc72e58b81865b4b7c15eb4",
+    "src/extracted/lead_generation_loop.ts": "40864083619d17b3007b4e4ca9cc688ca3c4a0273cddc28c1e21b2107490dc66",
+    "src/extracted/pre_enrollment_report.ts": "e3be2f9afc97cb0bc9d63de57d92d16821521908fe24d1e279c2bf7498332e84",
+    "src/extracted/target_research.ts": "14210f0bff04a1feb3be0651c44215e29dd75c4d3f90589c826f5b4013f3c280",
+    "src/extracted/taxonomy_lookup.ts": "cf557ff7bab636ec96cfda6d84b36ff3903fdc3838be6a3a1963d7e63b4f6372",
+    "src/main.ts": "f04690dcff649aa90914547f71e1e9e7573e311ff972643de48fad18adf4948e",
+    "src/signatures/personalize_email.ts": "cff8a6f39d10141d1318ec0ddf169f52cc2b8a85b140e579064278b414b2d9d1",
+    "src/signatures/vet_contact.ts": "a91199a2ed230c33027b6c212a748ac7b8327ffd4ec68508aa4873e1ef56b28a",
+    "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
+  }
+}

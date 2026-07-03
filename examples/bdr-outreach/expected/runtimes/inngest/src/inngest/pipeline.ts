@@ -139,7 +139,11 @@ export const runPipeline = inngest.createFunction(
                 contact: (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
                 intel: target_research_result,
                 campaign_type: pipelineInput["campaign_type"],
-            }, { ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY") }));
+            }, {
+        ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
+        ROTE_MODEL_PERSONALIZE_EMAIL: process.env.ROTE_MODEL_PERSONALIZE_EMAIL,
+        ROTE_BASE_URL_PERSONALIZE_EMAIL: process.env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
+    }));
 
         // ─── Wave 10 ───
         // IR retry policy: max 3 (exponential). Inngest v4

@@ -65,11 +65,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
-    resolve_within,
     safe_docstring_line,
 )
 from rote.adapters._py_common import _extracted_layout
@@ -626,7 +626,15 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         ```
 
         LLM judge steps call the vendor SDK directly and read the standard
-        `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.
+        `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
+        judge also honors two per-node overrides, so operators can change
+        the model or point at an OpenAI-compatible endpoint (Ollama, vLLM,
+        a gateway) without re-emitting:
+
+        ```sh
+        export ROTE_MODEL_<NODE_ID>=...      # e.g. ROTE_MODEL_VET_CONTACT
+        export ROTE_BASE_URL_<NODE_ID>=...   # custom endpoint for that judge
+        ```
 
         ## HITL gates
 
@@ -688,30 +696,25 @@ class DbosAdapter:
         return emit_main(pipeline, self.config)
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
-        out = Path(output_dir)
-        extracted_dir = out / "extracted"
-        signatures_dir = out / "signatures"
-        out.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
-        main_path = out / "main.py"
-        main_path.write_text(self.emit_main(pipeline), encoding="utf-8")
-        written["main"] = main_path
+        written["main"] = writer.write("main.py", content=self.emit_main(pipeline))
 
         extracted_modules = _extracted_layout(pipeline)
         if extracted_modules:
-            extracted_dir.mkdir(exist_ok=True)
-            init = extracted_dir / "__init__.py"
-            init.write_text(
-                f'"""Extracted deterministic modules for {pipeline.name}."""\n',
-                encoding="utf-8",
+            written["extracted/__init__"] = writer.write(
+                "extracted",
+                "__init__.py",
+                content=f'"""Extracted deterministic modules for {pipeline.name}."""\n',
             )
-            written["extracted/__init__"] = init
             for module_name, nodes in sorted(extracted_modules.items()):
-                p = resolve_within(extracted_dir, f"{module_name}.py")
-                p.write_text(emit_extracted_module(module_name, nodes), encoding="utf-8")
-                written[f"extracted/{module_name}"] = p
+                written[f"extracted/{module_name}"] = writer.write(
+                    "extracted",
+                    f"{module_name}.py",
+                    content=emit_extracted_module(module_name, nodes),
+                )
 
         spec_judges = [
             n
@@ -719,24 +722,23 @@ class DbosAdapter:
             if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
         ]
         if spec_judges:
-            signatures_dir.mkdir(exist_ok=True)
-            init = signatures_dir / "__init__.py"
-            init.write_text(
-                f'"""Generated LLM signatures for {pipeline.name}."""\n',
-                encoding="utf-8",
+            written["signatures/__init__"] = writer.write(
+                "signatures",
+                "__init__.py",
+                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
             )
-            written["signatures/__init__"] = init
             for node in spec_judges:
-                p = resolve_within(signatures_dir, f"{node.id}.py")
-                p.write_text(emit_signature_module(node, self.config), encoding="utf-8")
-                written[f"signatures/{node.id}"] = p
+                written[f"signatures/{node.id}"] = writer.write(
+                    "signatures",
+                    f"{node.id}.py",
+                    content=emit_signature_module(node, self.config),
+                )
 
-        config_path = out / "dbos-config.yaml"
-        config_path.write_text(emit_dbos_config(pipeline), encoding="utf-8")
-        written["dbos-config"] = config_path
+        written["dbos-config"] = writer.write(
+            "dbos-config.yaml", content=emit_dbos_config(pipeline)
+        )
 
-        readme_path = out / "README.md"
-        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
-        written["README"] = readme_path
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
 
+        writer.finalize()
         return written

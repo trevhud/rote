@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
@@ -547,23 +548,16 @@ class TemporalAdapter:
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
         """Write activities.py + workflow.py + __init__.py into output_dir."""
-        out = Path(output_dir)
-        out.mkdir(parents=True, exist_ok=True)
+        writer = EmitWriter(output_dir)
 
-        activities_path = out / "activities.py"
-        workflow_path = out / "workflow.py"
-        init_path = out / "__init__.py"
-
-        activities_path.write_text(self.emit_activities(pipeline), encoding="utf-8")
-        workflow_path.write_text(self.emit_workflow(pipeline), encoding="utf-8")
-        if not init_path.exists():
-            init_path.write_text(
-                f'"""Emitted Temporal artifacts for {pipeline.name}."""\n',
-                encoding="utf-8",
-            )
-
-        return {
-            "activities": activities_path,
-            "workflow": workflow_path,
-            "__init__": init_path,
+        written = {
+            "activities": writer.write("activities.py", content=self.emit_activities(pipeline)),
+            "workflow": writer.write("workflow.py", content=self.emit_workflow(pipeline)),
+            "__init__": writer.write(
+                "__init__.py",
+                content=f'"""Emitted Temporal artifacts for {pipeline.name}."""\n',
+            ),
         }
+
+        writer.finalize()
+        return written

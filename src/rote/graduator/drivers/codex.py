@@ -54,6 +54,7 @@ class CodexDriver(GraduatorDriver):
         skill_dir: Path,
         graduator_skill_dir: Path,
         work_dir: Path,
+        extra_instructions: str | None = None,
     ) -> DriverResult:
         """Spawn ``codex exec`` and wait for it to produce a pipeline.yaml.
 

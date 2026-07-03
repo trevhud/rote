@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "files": {
+    ".dev.vars.example": "68dd53a52244fb35cb167367375ab89c80f39c7551d210c6344e91d13b095482",
+    "README.md": "d1da41bdfc14ea6ee177435985cbd439f60320a436f88c1e6d7404b45ca9f280",
+    "package.json": "76cfc513b9e91e04a90e6483f16d5e23266dcf4ce359a3d4bb5bfe0bc2699b8a",
+    "src/extracted/create_sales_template.ts": "4068e8ebe5e0edda6ef3c900e575e7024d019237f42513626bbac9bc2cf09dd6",
+    "src/extracted/enrich_contact_batch.ts": "179263e6733c5fd1ff756cb6dfd8f98b9e0c6b8d5a45f6fe1186f363bb1f01b6",
+    "src/extracted/exclusion_check_dnc.ts": "0b29c7b6e3d2f8bbb2cc5f9b9a6ea5f18dc5c8b036b41f07e39e492b53aa2281",
+    "src/extracted/exclusion_check_recent.ts": "8793320a0f30619a128cb5f79934d5a29ebb47817ae49bd30e96a38cb30f2abf",
+    "src/extracted/exclusion_check_sequence.ts": "973de2b30ae97ab76a2a26276e1b7a81d266ed7da97d9fb44433abef8edeb801",
+    "src/extracted/hubspot_create_list.ts": "8fa6fef6b4a1a2e0306e221827976b663286f14ed01f3b9d1240f834b52e70b8",
+    "src/extracted/hubspot_upsert.ts": "d50aa6a85a7d499cac119c29edd6ab361889854d59f6ec94dd03d8369364e7c8",
+    "src/extracted/lead_generation_loop.ts": "48b846ca36916ce548f0fb29c08c6daf19b97eb90f04146ce94bff569ada4a28",
+    "src/extracted/pre_enrollment_report.ts": "8053ae3932b2de32616d956af948319b415cfaef788c7fda9ffec4055bb77724",
+    "src/extracted/target_research.ts": "4a1b65e738826327ba9b57016e5e91c324130a33fc796a268bee7e3204112d8a",
+    "src/extracted/taxonomy_lookup.ts": "d5e7a36f7fb14223ddae0262fcfe6eee60ac51db4e4c420fef39263b97dba14c",
+    "src/index.ts": "fa4420751e790cebb53fde0cfc37bfbe7021c098b0cb2e777cf08b3aee982bf3",
+    "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
+    "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
+    "src/workflow.ts": "ab8b3ef1b43b5f40d97d80f7ae1b0d4cc4796fe955d00884b69ee064bec0689c",
+    "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
+    "wrangler.jsonc": "f8b1bfc2997f33a242d4da7526a34943de9fd102c3406f78dca9cebe44523c15"
+  }
+}

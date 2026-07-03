@@ -41,6 +41,28 @@ if TYPE_CHECKING:
 # ───────── Subcommand: emit ─────────
 
 
+def _print_written(written: dict[str, Path], indent: str = "  ") -> None:
+    """Print an adapter's written-files mapping, flagging preserved files.
+
+    When the emit writer finds a file the user edited since the last
+    emit, it leaves the file alone and parks the fresh content in a
+    ``<name>.new`` sibling — surface those so the preservation is a
+    visible event, not a silent one.
+    """
+    for label, path in written.items():
+        print(f"{indent}{label}: {path}")
+    preserved = [path for path in written.values() if path.name.endswith(".new")]
+    if preserved:
+        print()
+        print(
+            f"{indent}note: {len(preserved)} file(s) were edited since the last emit "
+            f"and were left untouched."
+        )
+        print(f"{indent}Fresh output landed alongside as '.new' files — merge or delete them:")
+        for path in preserved:
+            print(f"{indent}  {path}")
+
+
 def _cmd_emit(args: argparse.Namespace) -> int:
     """Render a runtime adapter from a pipeline.yaml.
 
@@ -77,8 +99,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         return 1
 
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
-    for label, path in written.items():
-        print(f"  {label}: {path}")
+    _print_written(written)
     return 0
 
 
@@ -115,7 +136,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     graduator = Graduator(agent=args.agent, model=args.model)
 
     try:
-        result = asyncio.run(graduator.graduate(skill_path, graduated_dir))
+        result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
     except GraduatorError as e:
         print(f"rote graduate: {e}", file=sys.stderr)
         return 1
@@ -163,8 +184,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     if scorecard_path is not None:
         print(f"  eval scorecard: {scorecard_path}")
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
-    for label, path in written.items():
-        print(f"    {label}: {path}")
+    _print_written(written, indent="    ")
     return 0
 
 
@@ -752,6 +772,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Skip the before/after eval scorecard (scorecard.md). The "
             "scorecard needs one network fetch for live model prices; "
             "everything else about it is static."
+        ),
+    )
+    graduate.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "Incremental re-graduation: requires a previous graduation in "
+            "--out. Diffs the skill against the previous run's provenance "
+            "and re-derives only nodes whose source sections changed — "
+            "unchanged nodes are preserved verbatim (ids and all), and a "
+            "skill with no changes skips the agent entirely."
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)
