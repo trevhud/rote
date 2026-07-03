@@ -27,6 +27,37 @@ regression-tested.
 
 ---
 
+## Why compile agents?
+
+There's now third-party data for what compilation buys.
+["Compiled AI: Deterministic Code Generation for LLM-Based Workflow
+Automation"](https://arxiv.org/abs/2604.05150) (Trooskens et al.,
+Apr 2026) measured compiling LLM workflows into deterministic code
+against running them through direct LLM calls: **57× fewer tokens** at
+1,000 transactions, **450× lower** median latency, **100%
+reproducibility** where direct inference at temperature 0 managed 95%,
+and roughly **40× lower TCO** at a million transactions a month. The
+numbers come from a structured function-calling benchmark (BFCL), the
+friendliest case for compilation, and the token and cost multiples
+grow with volume. But the shape of the result holds: once a workflow
+is proven, every run through an agent loop pays LLM prices for work
+code does for free.
+
+One distinction worth being precise about. Durable-execution vendors
+make fuzzy agents *durable*: wrap the loop in retries and state so it
+survives crashes, still fuzzy inside. rote removes the fuzzy loop:
+compile the proven parts to deterministic code and keep the LLM only
+where inputs are genuinely unbounded. The two compose rather than
+compete — Temporal and Cloudflare Workflows are rote's compile
+targets, not its rivals.
+
+**When not to use rote:** exploratory and one-off work should stay an
+agent loop; flexibility is the whole point there, and there's nothing
+proven to compile yet. rote is for the skill you've run twenty times
+and want to run a thousand more, unattended.
+
+---
+
 ## What just happened on the bundled example
 
 The repository includes a real BDR outreach skill (lead generation,
@@ -302,7 +333,7 @@ the toolchain-dependent integration tests.
 | Inngest / Restate / DBOS adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
 | Workflow data flow between activities | empty payloads in v0; explicit input/output threading is a planned enhancement |
-| Distribution via PyPI | not yet — install from source |
+| Distribution via PyPI | not yet published — install from source. The release pipeline (tag-driven, Trusted Publishing) is in place; see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
 Anthropic's terms of service forbid third-party agents built on the
@@ -380,6 +411,8 @@ rote/
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for
   the driver abstraction, including the `claude -p` env-var gotcha and
   the explicit non-use of `claude-agent-sdk`
+- [`docs/releasing.md`](docs/releasing.md) — how releases work
+  (tag-driven, PyPI Trusted Publishing) and the one-time setup
 - [`skills/rote-graduate/SKILL.md`](skills/rote-graduate/SKILL.md) —
   the graduator agent's procedural instructions (the "brain")
 - [`skills/rote-graduate/references/node-kinds.md`](skills/rote-graduate/references/node-kinds.md) —
