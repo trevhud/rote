@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -377,14 +378,29 @@ def run_pipeline(pipeline_input: dict) -> dict:
 
 if __name__ == "__main__":
     # Launch DBOS (connects to the system database, starts queue
-    # workers and recovery), start one pipeline run with the input
-    # from argv[1] (JSON), and block until it completes. HITL gates
-    # are resumed from another process — see README.md.
+    # workers and recovery). Two modes:
+    #
+    #   python main.py --serve
+    #       Run as a long-lived worker: execute runs enqueued
+    #       externally (`rote serve` MCP tools / DBOSClient.enqueue)
+    #       against the same system database. This is what
+    #       `dbos start` and production deployments run.
+    #
+    #   python main.py '{"your": "input"}'
+    #       Start one pipeline run with the input from argv[1]
+    #       (JSON) and block until it completes.
+    #
+    # HITL gates are resumed from another process either way — see
+    # README.md.
     DBOS.launch()
     try:
-        pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-        handle = DBOS.start_workflow(run_pipeline, pipeline_input)
-        print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
-        print(json.dumps(handle.get_result(), indent=2, default=str))
+        if "--serve" in sys.argv[1:]:
+            print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)
+            threading.Event().wait()
+        else:
+            pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+            handle = DBOS.start_workflow(run_pipeline, pipeline_input)
+            print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
+            print(json.dumps(handle.get_result(), indent=2, default=str))
     finally:
         DBOS.destroy()

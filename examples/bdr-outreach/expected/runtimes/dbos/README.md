@@ -20,8 +20,14 @@ resumes from the last completed step after a crash.
 
 ```sh
 pip install dbos
-python main.py '{"your": "input"}'
+python main.py '{"your": "input"}'   # one run, blocks until done
+python main.py --serve                 # long-lived worker (see below)
 ```
+
+`--serve` keeps the process alive executing runs enqueued externally
+— `rote register --runtime dbos` + `rote serve` expose this app as an
+MCP tool whose trigger enqueues onto this app's queue. `dbos start`
+runs the same mode.
 
 By default the system database is a SQLite file next to `main.py` —
 zero infrastructure, ideal for development. For production, point

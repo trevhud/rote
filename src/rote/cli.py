@@ -150,6 +150,27 @@ def _resolve_pipeline_yaml(path: Path) -> Path | None:
     return None
 
 
+def _derive_dbos_sqlite_url(graduated_arg: Path, pipeline_name: str) -> str | None:
+    """Locate the emitted DBOS app dir and derive its default SQLite URL.
+
+    The emitted main.py defaults its system database to
+    ``sqlite:///<app dir>/<pipeline.name>.dbos.sqlite``. Given what the
+    user passed to ``rote register`` (the pipeline.yaml, its directory,
+    or a ``rote graduate --out`` directory), the app dir is wherever a
+    ``main.py`` is found in the known layouts.
+    """
+    base = graduated_arg if graduated_arg.is_dir() else graduated_arg.parent
+    candidates = (
+        base,  # the emitted runtime dir itself
+        base / "runtime" / "dbos",  # a graduate --out dir
+        base.parent / "runtime" / "dbos",  # the graduated/ dir inside one
+    )
+    for app_dir in candidates:
+        if (app_dir / "main.py").is_file():
+            return f"sqlite:///{(app_dir / f'{pipeline_name}.dbos.sqlite').resolve()}"
+    return None
+
+
 def _cmd_register(args: argparse.Namespace) -> int:
     """Add or update a registry entry for a graduated pipeline.
 
@@ -158,8 +179,12 @@ def _cmd_register(args: argparse.Namespace) -> int:
     trigger config from the flags, and upserts ``~/.rote/registry.json``
     (or ``--registry``). ``rote serve`` picks the change up live.
     """
+    import os
+
+    from rote.ir import NodeKind
     from rote.serve.registry import (
         CloudflareTrigger,
+        DbosTrigger,
         Registry,
         TemporalTrigger,
         default_registry_path,
@@ -180,15 +205,43 @@ def _cmd_register(args: argparse.Namespace) -> int:
         print(f"error: failed to load pipeline: {e}", file=sys.stderr)
         return 1
 
-    trigger: TemporalTrigger | CloudflareTrigger
-    if args.runtime == "temporal":
-        workflow_name = args.workflow_name
-        if workflow_name is None:
-            # Must match the versioned @workflow.defn name the Temporal
-            # adapter emits (PascalCase + pipeline hash).
-            from rote.adapters._common import _pipeline_hash, _to_pascal_case
+    # Both the DBOS and Temporal adapters emit the same versioned
+    # workflow name (PascalCase pipeline name + pipeline hash); the
+    # trigger must match it exactly or starting the workflow fails.
+    workflow_name = args.workflow_name
+    if workflow_name is None:
+        from rote.adapters._common import _pipeline_hash, _to_pascal_case
 
-            workflow_name = f"{_to_pascal_case(pipeline.name)}_{_pipeline_hash(pipeline)}"
+        workflow_name = f"{_to_pascal_case(pipeline.name)}_{_pipeline_hash(pipeline)}"
+
+    trigger: TemporalTrigger | CloudflareTrigger | DbosTrigger
+    if args.runtime == "dbos":
+        system_database_url = (
+            args.system_database_url
+            or os.environ.get("DBOS_SYSTEM_DATABASE_URL")
+            or _derive_dbos_sqlite_url(Path(args.graduated_dir), pipeline.name)
+        )
+        if not system_database_url:
+            print(
+                "error: --system-database-url is required for --runtime dbos "
+                "(no DBOS_SYSTEM_DATABASE_URL in the environment, and no "
+                "emitted main.py found near the pipeline to derive the "
+                "default SQLite path from)",
+                file=sys.stderr,
+            )
+            return 2
+        trigger = DbosTrigger(
+            system_database_url=system_database_url,
+            workflow_name=workflow_name,
+            # Must match the Queue the emitted main.py declares.
+            queue_name=args.queue_name or f"{pipeline.name}-queue",
+            gate_signals=[
+                node.signal
+                for node in pipeline.nodes
+                if node.kind is NodeKind.HITL_GATE and node.signal is not None
+            ],
+        )
+    elif args.runtime == "temporal":
         trigger = TemporalTrigger(
             address=args.temporal_address,
             namespace=args.temporal_namespace,
@@ -411,14 +464,37 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     register.add_argument(
         "--runtime",
-        default="temporal",
-        choices=["temporal", "cloudflare"],
-        help="Runtime the graduated pipeline is deployed on (default: temporal)",
+        default="dbos",
+        choices=["dbos", "temporal", "cloudflare"],
+        help=(
+            "Runtime the graduated pipeline is deployed on (default: dbos, "
+            "matching `rote graduate`)"
+        ),
     )
     register.add_argument(
         "--name",
         default=None,
         help="Override the MCP tool name (default: pipeline.name)",
+    )
+    register.add_argument(
+        "--system-database-url",
+        dest="system_database_url",
+        default=None,
+        help=(
+            "DBOS: SQLAlchemy URL of the system database the emitted app "
+            "checkpoints to (default: $DBOS_SYSTEM_DATABASE_URL, else the "
+            "emitted app's SQLite file if a main.py is found near the "
+            "pipeline)"
+        ),
+    )
+    register.add_argument(
+        "--queue-name",
+        dest="queue_name",
+        default=None,
+        help=(
+            "DBOS: queue to enqueue runs on; must match the emitted Queue "
+            "(default: '<pipeline.name>-queue')"
+        ),
     )
     register.add_argument(
         "--temporal-address",
@@ -439,8 +515,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--workflow-name",
         default=None,
         help=(
-            "Temporal workflow type name (default: the versioned name the "
-            "Temporal adapter emits for this pipeline)"
+            "DBOS/Temporal: registered workflow name (default: the versioned "
+            "name the adapter emits for this pipeline — PascalCase name + "
+            "pipeline hash)"
         ),
     )
     register.add_argument(

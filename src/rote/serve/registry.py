@@ -79,7 +79,54 @@ class CloudflareTrigger(BaseModel):
     )
 
 
-Trigger = Annotated[TemporalTrigger | CloudflareTrigger, Field(discriminator="runtime")]
+class DbosTrigger(BaseModel):
+    """How to start a graduated pipeline running as a DBOS application.
+
+    DBOS has no orchestrator process — the coordinates are the *system
+    database* the emitted app checkpoints to. ``DBOSClient.enqueue``
+    inserts an ENQUEUED workflow row; the app process (``python main.py
+    --serve`` or ``dbos start``) dequeues and executes it. If no app
+    process is running against the same system database, runs park in
+    ``enqueued`` status until one starts — enqueueing itself never fails.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    runtime: Literal["dbos"] = "dbos"
+    system_database_url: str = Field(
+        description=(
+            "SQLAlchemy URL of the DBOS system database the emitted app "
+            "checkpoints to (sqlite:///… for local dev, postgresql://… "
+            "for production). Must be the same database the app process "
+            "uses — it is the entire contract between trigger and app."
+        ),
+    )
+    workflow_name: str = Field(
+        description=(
+            "Registered workflow name. The DBOS adapter emits a versioned "
+            "name (PascalCase pipeline name + pipeline hash), so this must "
+            "match the emitted @DBOS.workflow name exactly."
+        ),
+    )
+    queue_name: str = Field(
+        description=(
+            "DBOS queue the run is enqueued on. Must match the Queue the "
+            "emitted main.py declares (default: '<pipeline-name>-queue')."
+        ),
+    )
+    gate_signals: list[str] = Field(
+        default_factory=list,
+        description=(
+            "HITL gate signal (topic) names from the pipeline IR, captured "
+            "at register time. The <tool>_signal MCP tool only accepts "
+            "these; empty means the pipeline has no HITL gates."
+        ),
+    )
+
+
+Trigger = Annotated[
+    TemporalTrigger | CloudflareTrigger | DbosTrigger, Field(discriminator="runtime")
+]
 
 
 class RegistryEntry(BaseModel):
@@ -180,7 +227,7 @@ def input_schema_for(pipeline_input: PipelineInput) -> dict[str, Any]:
 def entry_from_pipeline(
     pipeline: Pipeline,
     pipeline_yaml: Path,
-    trigger: TemporalTrigger | CloudflareTrigger,
+    trigger: TemporalTrigger | CloudflareTrigger | DbosTrigger,
     name: str | None = None,
 ) -> RegistryEntry:
     """Build a registry entry from a loaded pipeline IR.

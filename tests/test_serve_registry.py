@@ -18,6 +18,7 @@ from rote.cli import main as cli_main
 from rote.ir import PipelineInput, load_pipeline
 from rote.serve.registry import (
     CloudflareTrigger,
+    DbosTrigger,
     Registry,
     RegistryEntry,
     TemporalTrigger,
@@ -54,6 +55,20 @@ def test_registry_round_trip(tmp_path: Path) -> None:
             trigger=CloudflareTrigger(url="https://wf.example.workers.dev"),
         )
     )
+    registry.upsert(
+        RegistryEntry(
+            name="dbos-pipeline",
+            description="DBOS-deployed pipeline",
+            pipeline_yaml=str(BDR_PIPELINE_YAML),
+            input_schema={"type": "object"},
+            trigger=DbosTrigger(
+                system_database_url="sqlite:////tmp/app/bdr-campaign.dbos.sqlite",
+                workflow_name="BdrCampaign_abc123",
+                queue_name="bdr-campaign-queue",
+                gate_signals=["contact_review_approved"],
+            ),
+        )
+    )
 
     path = tmp_path / "registry.json"
     registry.save(path)
@@ -63,6 +78,8 @@ def test_registry_round_trip(tmp_path: Path) -> None:
     # Discriminated union survives serialization with the right types.
     assert isinstance(loaded.entries[0].trigger, TemporalTrigger)
     assert isinstance(loaded.entries[1].trigger, CloudflareTrigger)
+    assert isinstance(loaded.entries[2].trigger, DbosTrigger)
+    assert loaded.entries[2].trigger.gate_signals == ["contact_review_approved"]
 
 
 def test_registry_load_missing_file_is_empty(tmp_path: Path) -> None:
@@ -204,7 +221,16 @@ def test_entry_from_pipeline_name_override() -> None:
 
 def test_register_bdr_temporal_defaults(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     registry_path = tmp_path / "registry.json"
-    rc = cli_main(["register", str(BDR_PIPELINE_YAML), "--registry", str(registry_path)])
+    rc = cli_main(
+        [
+            "register",
+            str(BDR_PIPELINE_YAML),
+            "--registry",
+            str(registry_path),
+            "--runtime",
+            "temporal",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "registered tool 'bdr-campaign'" in out
@@ -226,7 +252,6 @@ def test_register_bdr_temporal_defaults(tmp_path: Path, capsys: pytest.CaptureFi
 
 def test_register_twice_updates_single_entry(tmp_path: Path) -> None:
     registry_path = tmp_path / "registry.json"
-    assert cli_main(["register", str(BDR_PIPELINE_YAML), "--registry", str(registry_path)]) == 0
     assert (
         cli_main(
             [
@@ -234,6 +259,21 @@ def test_register_twice_updates_single_entry(tmp_path: Path) -> None:
                 str(BDR_PIPELINE_YAML),
                 "--registry",
                 str(registry_path),
+                "--runtime",
+                "temporal",
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli_main(
+            [
+                "register",
+                str(BDR_PIPELINE_YAML),
+                "--registry",
+                str(registry_path),
+                "--runtime",
+                "temporal",
                 "--task-queue",
                 "custom-queue",
             ]
@@ -288,19 +328,92 @@ def test_register_cloudflare_with_url(tmp_path: Path) -> None:
     assert trigger.status_url == "https://wf.example.workers.dev/status/{workflow_id}"
 
 
+def test_register_dbos_defaults(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """dbos is the default runtime; workflow/queue names derive from the
+    pipeline exactly like the DBOS adapter emits them, and the pipeline's
+    HITL gate signals are captured for the _signal tool."""
+    registry_path = tmp_path / "registry.json"
+    rc = cli_main(
+        [
+            "register",
+            str(BDR_PIPELINE_YAML),
+            "--registry",
+            str(registry_path),
+            "--system-database-url",
+            "sqlite:////tmp/app/bdr-campaign.dbos.sqlite",
+        ]
+    )
+    assert rc == 0
+    assert "registered tool 'bdr-campaign' (dbos)" in capsys.readouterr().out
+
+    entry = Registry.load(registry_path).entries[0]
+    trigger = entry.trigger
+    assert isinstance(trigger, DbosTrigger)
+    assert trigger.system_database_url == "sqlite:////tmp/app/bdr-campaign.dbos.sqlite"
+    assert trigger.queue_name == "bdr-campaign-queue"
+
+    # The default workflow name must match the versioned @DBOS.workflow
+    # name the DBOS adapter emits — otherwise enqueued runs never execute.
+    from rote.adapters._common import _pipeline_hash, _to_pascal_case
+
+    pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    assert trigger.workflow_name == f"{_to_pascal_case(pipeline.name)}_{_pipeline_hash(pipeline)}"
+
+    # Gate signals captured from the IR, in pipeline order.
+    assert trigger.gate_signals == ["contact_review_approved", "bdr_enrollment_complete"]
+
+
+def test_register_dbos_env_var_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://u:p@db:5432/rote")
+    registry_path = tmp_path / "registry.json"
+    rc = cli_main(["register", str(BDR_PIPELINE_YAML), "--registry", str(registry_path)])
+    assert rc == 0
+    trigger = Registry.load(registry_path).entries[0].trigger
+    assert isinstance(trigger, DbosTrigger)
+    assert trigger.system_database_url == "postgresql://u:p@db:5432/rote"
+
+
+def test_register_dbos_requires_system_database_url(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare pipeline.yaml, no env var, no emitted app dir nearby: rather
+    than fabricate a database nobody uses, registration must fail with
+    guidance (mirrors cloudflare's required --url)."""
+    monkeypatch.delenv("DBOS_SYSTEM_DATABASE_URL", raising=False)
+    # Copy the pipeline into an empty dir so no main.py is discoverable
+    # (the repo's expected/ tree has emitted runtimes/ nearby).
+    (tmp_path / "pipeline.yaml").write_text(
+        BDR_PIPELINE_YAML.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    rc = cli_main(
+        ["register", str(tmp_path / "pipeline.yaml"), "--registry", str(tmp_path / "r.json")]
+    )
+    assert rc == 2
+    assert "--system-database-url is required" in capsys.readouterr().err
+
+
 def test_register_resolves_graduate_out_layout(tmp_path: Path) -> None:
-    """A `rote graduate --out` dir nests pipeline.yaml under graduated/."""
+    """A `rote graduate --out` dir nests pipeline.yaml under graduated/;
+    with the default dbos runtime, the system DB URL derives from the
+    emitted app dir at runtime/dbos/."""
     out_dir = tmp_path / "bdr-out"
     (out_dir / "graduated").mkdir(parents=True)
     (out_dir / "graduated" / "pipeline.yaml").write_text(
         BDR_PIPELINE_YAML.read_text(encoding="utf-8"), encoding="utf-8"
     )
+    (out_dir / "runtime" / "dbos").mkdir(parents=True)
+    (out_dir / "runtime" / "dbos" / "main.py").write_text("# emitted app\n", encoding="utf-8")
 
     registry_path = tmp_path / "registry.json"
     rc = cli_main(["register", str(out_dir), "--registry", str(registry_path)])
     assert rc == 0
     entry = Registry.load(registry_path).entries[0]
     assert entry.pipeline_yaml == str((out_dir / "graduated" / "pipeline.yaml").resolve())
+    assert isinstance(entry.trigger, DbosTrigger)
+    expected_sqlite = (out_dir / "runtime" / "dbos" / "bdr-campaign.dbos.sqlite").resolve()
+    assert entry.trigger.system_database_url == f"sqlite:///{expected_sqlite}"
 
 
 def test_register_missing_pipeline_yaml(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
