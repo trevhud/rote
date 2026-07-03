@@ -35,6 +35,7 @@ from rote.graduator.drivers import (
     get_driver,
 )
 from rote.ir import Pipeline, load_pipeline
+from rote.skill_source import PROVENANCE_FILENAME, write_provenance
 
 
 class GraduatorError(RuntimeError):
@@ -220,6 +221,17 @@ class Graduator:
                     f"Driver {driver.name!r} produced an invalid "
                     f"pipeline.yaml at {result.pipeline_yaml_path}: {e}"
                 ) from e
+
+            # Stamp provenance: hash every SKILL.md section so a later
+            # `graduate --update` can tell exactly which nodes' source
+            # material changed. The agent wrote `source.section` per
+            # node; the hashes are ours to compute.
+            skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            write_provenance(
+                Path(result.pipeline_yaml_path).parent / PROVENANCE_FILENAME,
+                pipeline,
+                skill_md_text,
+            )
 
             self._move_work_dir_to_output(result.work_dir, output_dir)
 

@@ -214,7 +214,14 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     # Hash the full validated contents: node wiring, inputs, retries, and
     # edges all participate, so any regeneration that changes behavior gets
     # a new workflow type — name/version/counts alone miss rewires.
-    payload = pipeline.model_dump_json(by_alias=True, exclude_none=True)
+    # Provenance (``Node.source``) is excluded: it's tooling metadata, and
+    # annotating where a node came from must not re-version in-flight
+    # workflows whose behavior didn't change.
+    payload = pipeline.model_dump_json(
+        by_alias=True,
+        exclude_none=True,
+        exclude={"nodes": {"__all__": {"source"}}},
+    )
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 

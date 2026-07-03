@@ -262,6 +262,37 @@ class LLMSignature(BaseModel):
         return v
 
 
+class SourceRef(BaseModel):
+    """Provenance: which SKILL.md section a node was derived from.
+
+    ``section`` is the heading text (any level, without the ``#``
+    markers) of the source skill section — written by the graduator
+    agent, which knows the mapping. ``content_hash`` is the sha256 of
+    that section's text; it's stamped by rote tooling (agents can't
+    compute hashes) and normally lives in the ``provenance.json``
+    sidecar rather than here — see :mod:`rote.skill_source`.
+
+    Pure metadata: adapters ignore it, and it is excluded from the
+    pipeline identity hash so annotating provenance never re-versions
+    an emitted workflow type.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    section: str = Field(description="Heading text of the source SKILL.md section")
+    content_hash: str | None = Field(
+        default=None,
+        description="sha256 hex of the section text at graduation time (tool-stamped)",
+    )
+
+    @field_validator("content_hash")
+    @classmethod
+    def _validate_content_hash(cls, v: str | None) -> str | None:
+        if v is not None and not re.fullmatch(r"[0-9a-f]{64}", v):
+            raise ValueError(f"content_hash {v!r} must be a lowercase sha256 hex digest")
+        return v
+
+
 class Node(BaseModel):
     """A single step in the graduated pipeline.
 
@@ -278,6 +309,15 @@ class Node(BaseModel):
     phase: str | None = Field(
         default=None,
         description="Metadata pointing back to the source skill's phase number",
+    )
+    source: SourceRef | None = Field(
+        default=None,
+        description=(
+            "Provenance: the SKILL.md section this node was derived from. "
+            "Enables incremental re-graduation (only nodes whose source "
+            "section changed get re-derived). Metadata only — adapters "
+            "ignore it and it never affects the pipeline identity hash."
+        ),
     )
 
     @field_validator("id")

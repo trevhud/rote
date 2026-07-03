@@ -210,6 +210,35 @@ async def test_graduate_overwrites_existing_output_files(
     assert (output_dir / "pipeline.yaml").read_text() == VALID_YAML
 
 
+@pytest.mark.asyncio
+async def test_graduate_stamps_provenance_sidecar(
+    fake_skill_dir: Path,
+    fake_graduator_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """A successful graduation writes provenance.json next to the
+    pipeline: section hashes for the whole SKILL.md plus the per-node
+    section mapping the agent recorded."""
+    import json
+
+    yaml_with_source = VALID_YAML.replace(
+        "    impl: extracted/foo.py:only_node\n",
+        "    impl: extracted/foo.py:only_node\n    source:\n      section: Fake skill\n",
+    )
+    fake_driver = _FakeDriver(pipeline_yaml=yaml_with_source)
+    graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
+    graduator.select_driver = lambda: fake_driver  # type: ignore[method-assign]
+
+    output_dir = tmp_path / "output"
+    await graduator.graduate(fake_skill_dir, output_dir)
+
+    prov = json.loads((output_dir / "provenance.json").read_text())
+    assert prov["version"] == 1
+    assert "Fake skill" in prov["sections"]
+    assert prov["nodes"]["only_node"]["section"] == "Fake skill"
+    assert prov["nodes"]["only_node"]["content_hash"] == prov["sections"]["Fake skill"]
+
+
 # ───────── Driver selection ─────────
 
 

@@ -72,6 +72,14 @@ kind. The validator enforces kind-specific requirements.
 - id: taxonomy_lookup            # required, unique, snake_case
   kind: pure_function            # required, one of 5 kinds
   phase: "2"                     # optional, source skill phase (string)
+  source:                        # provenance — set it on every node
+    section: "Phase 2: Taxonomy" # the exact SKILL.md heading text (any
+                                 # level, without the '#' markers) the
+                                 # node was derived from. Tooling hashes
+                                 # the section so `rote graduate --update`
+                                 # can re-derive only nodes whose source
+                                 # material changed. Do NOT set
+                                 # content_hash — that's stamped by rote.
   description: |                 # required, short prose
     Resolve ZoomInfo IDs for management levels...
   input:                         # optional, field→type mapping
