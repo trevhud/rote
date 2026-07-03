@@ -45,9 +45,14 @@ class Priors:
     turn *i* re-reads roughly C₀ + (i−1)·Δ tokens of context.
     """
 
-    system_overhead_tokens: int = 12_000
+    system_overhead_tokens: int = 16_000
     """Context the agent carries beyond the skill itself (system prompt,
     tool definitions, environment preamble) — part of C₀.
+
+    Measured 2026-07-03: a bare 1-turn ``claude -p`` reported ~21k
+    context tokens (5.4k cache-write + 15.3k cache-read) on a
+    plugin-heavy install; leaner installs sit lower. 16k splits the
+    difference until the Phase 2 corpus fits it properly.
     """
 
     turns_per_step_low: float = 1.0
