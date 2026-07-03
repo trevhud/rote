@@ -416,12 +416,18 @@ Don't waste time debugging stubs. These are intentional.
 - `rote graduate` (SKILL.md → IR → Temporal code)
 - `ClaudeDriver`, `AnthropicApiDriver`
 - Data-flow threading: nodes declare `inputs:` (param → source
-  reference, grammar in `rote.ir.parse_input_ref`) and both adapters
-  thread real payloads through the DAG — validated empirically in both
-  runtime e2e tests
-- 170 tests across 11 files (167 fast + 3 slow). Run with
-  `pytest tests/` (fast only — what runs by default). Slow tests
-  require a Node toolchain and run with `pytest tests/ -m slow`.
+  reference, grammar in `rote.ir.parse_input_ref`) and the Temporal
+  and Cloudflare adapters thread real payloads through the DAG —
+  validated empirically in the runtime e2e tests (DBOS adapter
+  threading is in progress)
+- `rote register` + `rote serve` (graduated pipelines as MCP tools,
+  FastMCP 3.x, stdio + Streamable HTTP — see
+  [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
+- 225 tests (220 fast + 5 slow). Run with `pytest tests/` (fast
+  only — what runs by default). Slow tests cover the runtime e2e
+  suites (Temporal, Cloudflare, DBOS, MCP-over-stdio); the
+  Cloudflare one requires a Node toolchain. Run them with
+  `pytest tests/ -m slow`.
 
 If you find something in the "working" column that doesn't work,
 file it as a bug. If you find something in the "stubbed" column

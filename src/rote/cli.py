@@ -34,7 +34,6 @@ from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
 from rote.ir import load_pipeline
 
-
 # ───────── Subcommand: emit ─────────
 
 
@@ -125,14 +124,140 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     print(f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}")
     print(f"  driver: {result.driver_name}")
     if result.driver_metadata:
-        meta_str = ", ".join(
-            f"{k}={v}" for k, v in result.driver_metadata.items()
-        )
+        meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}")
     print(f"  graduated artifacts: {graduated_dir}")
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
     for label, path in written.items():
         print(f"    {label}: {path}")
+    return 0
+
+
+# ───────── Subcommand: register ─────────
+
+
+def _resolve_pipeline_yaml(path: Path) -> Path | None:
+    """Find the pipeline.yaml behind a user-supplied path.
+
+    Accepts the file itself, a directory containing one, or a
+    ``rote graduate --out`` directory (which nests it under graduated/).
+    """
+    if path.is_file():
+        return path
+    for candidate in (path / "pipeline.yaml", path / "graduated" / "pipeline.yaml"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _cmd_register(args: argparse.Namespace) -> int:
+    """Add or update a registry entry for a graduated pipeline.
+
+    Reads the pipeline.yaml from a graduate run, derives the MCP tool
+    name / description / inputSchema from it, attaches the runtime
+    trigger config from the flags, and upserts ``~/.rote/registry.json``
+    (or ``--registry``). ``rote serve`` picks the change up live.
+    """
+    from rote.serve.registry import (
+        CloudflareTrigger,
+        Registry,
+        TemporalTrigger,
+        default_registry_path,
+        entry_from_pipeline,
+    )
+
+    pipeline_yaml = _resolve_pipeline_yaml(Path(args.graduated_dir))
+    if pipeline_yaml is None:
+        print(
+            f"error: no pipeline.yaml found at or under: {args.graduated_dir}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        pipeline = load_pipeline(pipeline_yaml)
+    except Exception as e:
+        print(f"error: failed to load pipeline: {e}", file=sys.stderr)
+        return 1
+
+    trigger: TemporalTrigger | CloudflareTrigger
+    if args.runtime == "temporal":
+        workflow_name = args.workflow_name
+        if workflow_name is None:
+            # Must match the versioned @workflow.defn name the Temporal
+            # adapter emits (PascalCase + pipeline hash).
+            from rote.adapters.temporal import _pipeline_hash, _to_pascal_case
+
+            workflow_name = f"{_to_pascal_case(pipeline.name)}_{_pipeline_hash(pipeline)}"
+        trigger = TemporalTrigger(
+            address=args.temporal_address,
+            namespace=args.temporal_namespace,
+            task_queue=args.task_queue or pipeline.name,
+            workflow_name=workflow_name,
+        )
+    else:  # cloudflare
+        if not args.url:
+            print(
+                "error: --url is required for --runtime cloudflare "
+                "(the deployed worker's trigger endpoint)",
+                file=sys.stderr,
+            )
+            return 2
+        trigger = CloudflareTrigger(url=args.url, status_url=args.status_url)
+
+    try:
+        entry = entry_from_pipeline(pipeline, pipeline_yaml, trigger, name=args.name)
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    registry = Registry.load(registry_path)
+    replaced = registry.upsert(entry)
+    registry.save(registry_path)
+
+    verb = "updated" if replaced else "registered"
+    print(f"rote register: {verb} tool '{entry.name}' ({args.runtime}) → {registry_path}")
+    print(f"  pipeline: {entry.pipeline_yaml}")
+    print(f"  serve it: rote serve --registry {registry_path}")
+    return 0
+
+
+# ───────── Subcommand: serve ─────────
+
+
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """Launch the MCP server exposing every registered pipeline as a tool.
+
+    stdio by default (what ``claude mcp add`` expects); ``--http`` for
+    Streamable HTTP. Nothing may be printed to stdout in stdio mode —
+    stdout is the MCP transport.
+    """
+    from rote.serve.registry import default_registry_path
+
+    try:
+        from rote.serve.server import build_server
+    except ImportError as e:
+        print(
+            f"error: fastmcp is not installed ({e}). "
+            "Install the serve extra: pip install 'rote[serve]'",
+            file=sys.stderr,
+        )
+        return 2
+
+    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    if not registry_path.exists():
+        print(
+            f"rote serve: registry {registry_path} does not exist yet — serving an "
+            f"empty tool list. Register a pipeline with `rote register`.",
+            file=sys.stderr,
+        )
+
+    server = build_server(registry_path)
+    if args.http:
+        server.run(transport="http", host=args.host, port=args.port, show_banner=False)
+    else:
+        server.run(show_banner=False)  # stdio
     return 0
 
 
@@ -190,7 +315,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--runtime",
         default="temporal",
         choices=available_runtimes,
-        help=f"Target workflow runtime (default: temporal). Available: {', '.join(available_runtimes)}",
+        help=(
+            f"Target workflow runtime (default: temporal). "
+            f"Available: {', '.join(available_runtimes)}"
+        ),
     )
     emit.add_argument(
         "--out",
@@ -245,6 +373,115 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     graduate.set_defaults(func=_cmd_graduate)
 
+    # rote register
+    register = subparsers.add_parser(
+        "register",
+        help="Register a graduated pipeline as an MCP tool for `rote serve`",
+        description=(
+            "Append or update an entry in the serve registry "
+            "(~/.rote/registry.json by default) from a graduate run's "
+            "pipeline.yaml. Tool name comes from pipeline.name, description "
+            "from pipeline.description, inputSchema from the pipeline input "
+            "contract. A running `rote serve` picks the change up live."
+        ),
+    )
+    register.add_argument(
+        "graduated_dir",
+        help=(
+            "A graduate --out directory, a directory containing pipeline.yaml, "
+            "or the pipeline.yaml itself"
+        ),
+    )
+    register.add_argument(
+        "--registry",
+        default=None,
+        help="Registry file (default: ~/.rote/registry.json)",
+    )
+    register.add_argument(
+        "--runtime",
+        default="temporal",
+        choices=["temporal", "cloudflare"],
+        help="Runtime the graduated pipeline is deployed on (default: temporal)",
+    )
+    register.add_argument(
+        "--name",
+        default=None,
+        help="Override the MCP tool name (default: pipeline.name)",
+    )
+    register.add_argument(
+        "--temporal-address",
+        default="localhost:7233",
+        help="Temporal frontend address (default: localhost:7233)",
+    )
+    register.add_argument(
+        "--temporal-namespace",
+        default="default",
+        help="Temporal namespace (default: default)",
+    )
+    register.add_argument(
+        "--task-queue",
+        default=None,
+        help="Temporal task queue the graduated worker polls (default: pipeline.name)",
+    )
+    register.add_argument(
+        "--workflow-name",
+        default=None,
+        help=(
+            "Temporal workflow type name (default: the versioned name the "
+            "Temporal adapter emits for this pipeline)"
+        ),
+    )
+    register.add_argument(
+        "--url",
+        default=None,
+        help="Cloudflare: the deployed worker's trigger endpoint (required for cloudflare)",
+    )
+    register.add_argument(
+        "--status-url",
+        dest="status_url",
+        default=None,
+        help=(
+            "Cloudflare: optional status endpoint template containing "
+            "'{workflow_id}' if the worker exposes a status route"
+        ),
+    )
+    register.set_defaults(func=_cmd_register)
+
+    # rote serve
+    serve = subparsers.add_parser(
+        "serve",
+        help="Serve every registered pipeline as an MCP tool (stdio or HTTP)",
+        description=(
+            "Launch a single MCP server exposing one tool per registry entry "
+            "(plus a <tool>_status companion for polling long-running "
+            "workflows). stdio by default — add it to Claude Code with "
+            "`claude mcp add rote -- rote serve`. Use --http for Streamable "
+            "HTTP."
+        ),
+    )
+    serve.add_argument(
+        "--registry",
+        default=None,
+        help="Registry file (default: ~/.rote/registry.json)",
+    )
+    serve.add_argument(
+        "--http",
+        action="store_true",
+        help="Serve Streamable HTTP instead of stdio",
+    )
+    serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind host (default: 127.0.0.1; only with --http)",
+    )
+    serve.add_argument(
+        "--port",
+        type=int,
+        default=8734,
+        help="HTTP port (default: 8734; only with --http)",
+    )
+    serve.set_defaults(func=_cmd_serve)
+
     # rote analyze (stub)
     analyze = subparsers.add_parser(
         "analyze",
@@ -270,9 +507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if not getattr(args, "command", None):
         # No subcommand — print a helpful banner and usage.
-        print(
-            f"rote {__version__} — graduate fuzzy AI skills into deterministic workflows"
-        )
+        print(f"rote {__version__} — graduate fuzzy AI skills into deterministic workflows")
         print()
         parser.print_help()
         return 0

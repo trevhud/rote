@@ -50,6 +50,10 @@ api = [
 dbos = [
     "dbos>=2.26",
 ]
+serve = [
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -59,6 +63,8 @@ dev = [
     "temporalio>=1.7",
     "anthropic>=0.89",
     "dbos>=2.26",
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
 ]
 
 [project.scripts]
