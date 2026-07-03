@@ -18,6 +18,15 @@ from pathlib import Path
 
 from rote.ir import Node, Pipeline, parse_input_ref
 
+# ───────── Default LLM models ─────────
+#
+# Single source of truth for the model ids adapters bake into emitted
+# judges when the IR omits ``signature_spec.model``. Bump these when a
+# new default ships — every adapter config inherits them.
+
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_OPENAI_MODEL = "gpt-4.1"
+
 # ───────── Prose → safe code comment/docstring ─────────
 
 

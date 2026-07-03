@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
@@ -66,8 +68,8 @@ class CloudflareAdapterConfig:
 
     workflow_binding: str = "PIPELINE"
     compatibility_date: str = "2026-04-25"
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     # Defaults use IR shorthand (5m / 7d) so they round-trip through
     # ``_ir_duration_to_cf`` without re-conversion.
     default_step_timeout: str = "10m"

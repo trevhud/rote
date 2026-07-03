@@ -85,6 +85,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _duration_to_seconds,
     _execution_waves,
@@ -120,8 +122,8 @@ class DbosTsAdapterConfig:
     ``DBOS_SYSTEM_DATABASE_URL``), admin server off.
     """
 
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
 
 
 # ───────── Duration / retry / timeout mapping ─────────

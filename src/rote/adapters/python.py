@@ -58,6 +58,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
@@ -86,8 +88,8 @@ from rote.ir import Node, NodeKind, Pipeline
 class PythonAdapterConfig:
     """Per-emission knobs for the raw Python adapter."""
 
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     # Module path used for *legacy* `signature: path.py:Class` judges,
     # which import a user-maintained Python module instead of a
     # generated one. Mirrors DbosAdapterConfig.legacy_signatures_module.

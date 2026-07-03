@@ -98,6 +98,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rote.adapters._common import (
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_OPENAI_MODEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
@@ -130,8 +132,8 @@ class InngestAdapterConfig:
     event/signing keys via environment variables at deploy time.
     """
 
-    anthropic_default_model: str = "claude-sonnet-4-6"
-    openai_default_model: str = "gpt-4.1"
+    anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
+    openai_default_model: str = DEFAULT_OPENAI_MODEL
     #: Default port for the emitted Node serve entrypoint (overridable
     #: at runtime via the PORT environment variable).
     serve_port: int = 3000
