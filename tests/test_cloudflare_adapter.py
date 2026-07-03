@@ -355,6 +355,50 @@ def test_package_json_has_required_deps(emit_result: dict[str, Path]) -> None:
     assert "@cloudflare/workers-types" in pkg["devDependencies"]
 
 
+def test_readme_emitted_with_deploy_button(
+    emit_result: dict[str, Path], bdr_pipeline: Pipeline
+) -> None:
+    """README.md carries the Deploy to Cloudflare button per the spec at
+    https://developers.cloudflare.com/workers/platform/deploy-buttons/:
+    a markdown image link targeting the deploy service with the repo URL
+    in the ``url`` query parameter (placeholder — the repo URL isn't
+    known at emission time).
+    """
+    readme = emit_result["README"]
+    assert readme.name == "README.md"
+    src = readme.read_text()
+    assert src.startswith(f"# {bdr_pipeline.name} — Cloudflare Workflows runtime")
+    assert (
+        "[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)]"
+        "(https://deploy.workers.cloudflare.com/?url=REPLACE-WITH-YOUR-REPO-URL)"
+    ) in src
+    # Quickstart references the real trigger surfaces of the emitted code.
+    assert f"npx wrangler workflows trigger {bdr_pipeline.name}" in src
+    assert f"npx wrangler workflows instances send-event {bdr_pipeline.name}" in src
+    # Every HITL gate is documented with its event type.
+    for node in bdr_pipeline.nodes:
+        if node.kind is NodeKind.HITL_GATE:
+            assert f"`{node.signal}`" in src
+    # MCP triggering pointer. Mentioning MCP here is fine — the MCP-free
+    # invariant test scans only .ts files, and README.md is documentation,
+    # not executable code.
+    assert "rote register" in src
+    assert "rote serve" in src
+
+
+def test_dev_vars_example_declares_secrets(emit_result: dict[str, Path]) -> None:
+    """.dev.vars.example drives the deploy button's secret prompts.
+
+    Per the deploy-buttons docs, secrets belong in ``.dev.vars.example``
+    (dotenv format) so the one-click flow asks the deployer for values.
+    The BDR pipeline's judges are all Anthropic, so only
+    ``ANTHROPIC_API_KEY`` is declared.
+    """
+    src = emit_result[".dev.vars.example"].read_text()
+    assert "ANTHROPIC_API_KEY=" in src
+    assert "OPENAI_API_KEY" not in src
+
+
 # ───────── Data-flow threading ─────────
 
 

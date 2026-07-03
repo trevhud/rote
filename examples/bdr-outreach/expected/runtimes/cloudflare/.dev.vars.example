@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local `wrangler dev`; the Deploy to Cloudflare
+# flow reads this file to prompt for secrets during one-click setup.
+# For a manual deploy, set each with `npx wrangler secret put <NAME>`.
+ANTHROPIC_API_KEY=
