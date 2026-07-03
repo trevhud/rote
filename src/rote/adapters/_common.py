@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from rote.ir import Node, Pipeline
+from rote.ir import Node, Pipeline, parse_input_ref
 
 # ───────── Case conversion ─────────
 
@@ -119,3 +119,31 @@ def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
                     in_degree[edge.to] -= 1
 
     return waves
+
+
+# ───────── Data-flow threading ─────────
+
+
+def check_input_refs_available(node: Node, available: set[str]) -> None:
+    """Emit-time guard: every node-output reference must already be bound.
+
+    Adapters emit nodes wave-by-wave, binding each node's result to a
+    local as they go. A node whose ``inputs`` reference a node in a
+    *later* wave (or a loop-body sub-node, which never binds a top-level
+    result) would produce code that references an undefined variable —
+    fail loudly at emit time instead.
+
+    IR validation already guarantees the referenced node *exists*; this
+    check is about emission ordering, which is an adapter concern.
+    """
+    if not node.inputs:
+        return
+    for param, ref in node.inputs.items():
+        parsed = parse_input_ref(ref)
+        if parsed.node_id is not None and parsed.node_id not in available:
+            raise ValueError(
+                f"Node {node.id!r} input {param!r} references {ref!r}, but node "
+                f"{parsed.node_id!r} has no result available at this point in the "
+                f"workflow (it runs in a later wave, or is a loop-body sub-node "
+                f"with no top-level result)."
+            )

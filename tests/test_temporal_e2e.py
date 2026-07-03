@@ -40,10 +40,21 @@ BDR_EXAMPLE_PKG_ROOT = REPO_ROOT / "examples" / "bdr-outreach"
 # the end-to-end test we register a parallel set of mock activities
 # under the same activity names. Temporal dispatches by name, so the
 # workflow will resolve to the mocks.
+#
+# Each mock records the payload it receives so the test can assert the
+# workflow threads real data between activities (data-flow threading),
+# not just that the orchestration completes.
+
+CAPTURED_PAYLOADS: dict[str, dict] = {}
+
+
+def _capture(name: str, payload: dict) -> None:
+    CAPTURED_PAYLOADS[name] = payload
 
 
 @activity.defn(name="target_research")
 async def mock_target_research(payload: dict) -> dict:
+    _capture("target_research", payload)
     return {
         "pipeline_summary": "Mocked pipeline summary for the test campaign.",
         "rwe_signals": ["signal_a", "signal_b"],
@@ -99,7 +110,8 @@ async def mock_vet_contact(payload: dict) -> dict:
 
 @activity.defn(name="hubspot_upsert")
 async def mock_hubspot_upsert(payload: dict) -> dict:
-    return {"upserted": []}
+    _capture("hubspot_upsert", payload)
+    return {"upserted": [{"vid": "hs-1"}]}
 
 
 @activity.defn(name="hubspot_create_list")
@@ -109,6 +121,7 @@ async def mock_hubspot_create_list(payload: dict) -> dict:
 
 @activity.defn(name="exclusion_check_dnc")
 async def mock_exclusion_check_dnc(payload: dict) -> dict:
+    _capture("exclusion_check_dnc", payload)
     return {"passed": [], "excluded": []}
 
 
@@ -134,6 +147,7 @@ async def mock_create_sales_template(payload: dict) -> dict:
 
 @activity.defn(name="pre_enrollment_report")
 async def mock_pre_enrollment_report(payload: dict) -> dict:
+    _capture("pre_enrollment_report", payload)
     return {"report_markdown": "# Pre-Enrollment Report\n\nMocked."}
 
 
@@ -192,15 +206,34 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
 
     The workflow has two HITL gates. The test:
 
-    1. Starts the workflow with a fake campaign brief.
+    1. Starts the workflow with a complete campaign brief (the emitted
+       workflow now threads real payloads, so every referenced field
+       must exist).
     2. Waits for the first gate by polling the workflow's status until
        it's blocked on the first signal.
     3. Sends ``contact_review_approved`` to unblock phase 3.
     4. Waits for the second gate.
     5. Sends ``bdr_enrollment_complete`` to unblock phase 7.
     6. Awaits the final result and asserts the exit node's payload is
-       what we signaled.
+       what we signaled — and that data-flow threading delivered the
+       right payloads to the mocked activities along the way.
     """
+    CAPTURED_PAYLOADS.clear()
+
+    # A complete brief matching the pipeline's input contract. Values
+    # reuse the fictionalized examples already present in the IR's
+    # comments.
+    brief = {
+        "drug_brand": "Orladeyo",
+        "drug_generic": "berotralstat",
+        "condition_full": "hereditary angioedema",
+        "condition_acronym": "HAE",
+        "therapeutic_area": "rare disease, hematology",
+        "manufacturer": "BioCryst Pharmaceuticals",
+        "campaign_type": "drug-specific",
+        "target_quota": 3,
+    }
+
     async with await WorkflowEnvironment.start_time_skipping() as env:
         task_queue = f"rote-bdr-test-{uuid4()}"
 
@@ -219,7 +252,7 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
             # class name.
             handle = await env.client.start_workflow(
                 bdr_workflow_class.run,
-                {"drug_brand": "Orladeyo"},  # fake brief — mocks ignore it
+                brief,
                 id=f"bdr-campaign-{uuid4()}",
                 task_queue=task_queue,
             )
@@ -251,3 +284,22 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
                 "enrolled": True,
                 "enrolled_count": 1,
             }
+
+    # ─── Data-flow threading assertions ───
+    # The pipeline input reached the entry node intact.
+    assert CAPTURED_PAYLOADS["target_research"] == {"brief": brief}
+
+    # The first HITL gate's signal payload flowed into hubspot_upsert
+    # via `contacts: contact_review_gate.output.approved_contacts`.
+    assert CAPTURED_PAYLOADS["hubspot_upsert"] == {"contacts": [{"id": "c1"}]}
+
+    # hubspot_upsert's mocked result flowed into the DNC check via
+    # `contacts: hubspot_upsert.output.upserted`.
+    assert CAPTURED_PAYLOADS["exclusion_check_dnc"] == {"contacts": [{"vid": "hs-1"}]}
+
+    # The report node received a fan-in of upstream results:
+    # pipeline input field + two different upstream nodes.
+    report_payload = CAPTURED_PAYLOADS["pre_enrollment_report"]
+    assert report_payload["campaign_name"] == brief["drug_brand"]
+    assert report_payload["passed_contacts"] == []
+    assert report_payload["template_ids"] == ["t1", "t2"]
