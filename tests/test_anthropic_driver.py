@@ -35,7 +35,6 @@ from rote.graduator.drivers.anthropic_api import (
     _handle_write_file,
 )
 
-
 # ───────── Fake Anthropic SDK ─────────
 
 
@@ -63,10 +62,7 @@ class _FakeMessages:
             snapshot["messages"] = list(snapshot["messages"])
         self.calls.append(snapshot)
         if not self._responses:
-            raise RuntimeError(
-                "FakeMessages out of canned responses; "
-                "test set up too few turns"
-            )
+            raise RuntimeError("FakeMessages out of canned responses; test set up too few turns")
         return self._responses.pop(0)
 
 
@@ -253,6 +249,7 @@ async def test_happy_path_read_then_write_then_end(
 
     # Metadata
     from rote.graduator.drivers.anthropic_api import DEFAULT_MODEL
+
     assert result.metadata["model"] == DEFAULT_MODEL
     assert result.metadata["iterations"] == 3
     assert result.metadata["input_tokens"] == 600  # 200+300+100

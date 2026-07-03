@@ -263,6 +263,166 @@ def test_llm_signature_temperature_bounded() -> None:
         )
 
 
+# ───────── Pipeline input schema ─────────
+
+
+def test_bdr_pipeline_input_schema(bdr_pipeline: Pipeline) -> None:
+    """The typed input contract is promoted to input.input_schema."""
+    schema = bdr_pipeline.input.input_schema
+    assert schema is not None
+    assert schema["title"] == "CampaignBrief"
+    assert schema["type"] == "object"
+    # Schema properties must cover every declared required/optional field.
+    declared = set(bdr_pipeline.input.required) | set(bdr_pipeline.input.optional)
+    assert declared <= set(schema["properties"].keys())
+    assert set(schema["required"]) == set(bdr_pipeline.input.required)
+
+
+def test_input_schema_is_optional_for_back_compat() -> None:
+    """Pipelines without input_schema (pre-v0.3 yaml) still validate."""
+    pi = PipelineInput(type="X", required=["a"])
+    assert pi.input_schema is None
+
+
+# ───────── Data-flow input references ─────────
+
+
+def test_parse_input_ref_accepts_all_four_forms() -> None:
+    from rote.ir import parse_input_ref
+
+    r = parse_input_ref("pipeline.input")
+    assert r.node_id is None and r.field is None
+
+    r = parse_input_ref("pipeline.input.drug_brand")
+    assert r.node_id is None and r.field == "drug_brand"
+
+    r = parse_input_ref("target_research.output")
+    assert r.node_id == "target_research" and r.field is None
+
+    r = parse_input_ref("hubspot_upsert.output.upserted")
+    assert r.node_id == "hubspot_upsert" and r.field == "upserted"
+
+
+@pytest.mark.parametrize(
+    "bad_ref",
+    [
+        "",
+        "drug_brand",  # bare field name
+        "pipeline.inputs",  # wrong keyword
+        "pipeline.output",  # node-output ref for a node named 'pipeline' — see below
+        "foo.result",  # wrong selector
+        "foo.output.a.b",  # deep paths not allowed
+        "pipeline.input.a.b",  # deep paths not allowed
+        "foo.output[0]",  # no subscripts / expressions
+        "len(foo.output)",  # no expressions
+    ],
+)
+def test_parse_input_ref_rejects_bad_syntax(bad_ref: str) -> None:
+    from rote.ir import parse_input_ref
+
+    if bad_ref == "pipeline.output":
+        # Syntactically a node-output ref for a node named 'pipeline';
+        # rejection happens at pipeline validation (unknown node), not parse.
+        r = parse_input_ref(bad_ref)
+        assert r.node_id == "pipeline"
+        return
+    with pytest.raises(ValueError, match="Invalid input reference"):
+        parse_input_ref(bad_ref)
+
+
+def test_bdr_pipeline_inputs_bindings(bdr_pipeline: Pipeline) -> None:
+    """Spot-check the committed data-flow bindings on the BDR baseline."""
+    assert bdr_pipeline.node_by_id("target_research").inputs == {"brief": "pipeline.input"}
+    assert bdr_pipeline.node_by_id("hubspot_upsert").inputs == {
+        "contacts": "contact_review_gate.output.approved_contacts"
+    }
+    loop = bdr_pipeline.node_by_id("lead_generation_loop")
+    assert loop.inputs is not None
+    assert loop.inputs["target_quota"] == "pipeline.input.target_quota"
+    assert loop.inputs["intel"] == "target_research.output"
+
+
+def _one_node_pipeline(inputs: dict[str, str] | None, **input_kwargs) -> Pipeline:  # noqa: ANN003
+    from rote.ir import Node
+
+    return Pipeline(
+        name="p",
+        input=PipelineInput(type="X", **input_kwargs),
+        nodes=[
+            Node(
+                id="a",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="x.py:y",
+            ),
+            Node(
+                id="b",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="x.py:y",
+                inputs=inputs,
+            ),
+        ],
+        edges=[Edge(**{"from": "a", "to": "b"})],
+        entry_nodes=["a"],
+        exit_nodes=["b"],
+    )
+
+
+def test_pipeline_rejects_inputs_with_bad_syntax() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Invalid input reference"):
+        _one_node_pipeline({"x": "not a ref"})
+
+
+def test_pipeline_rejects_inputs_referencing_unknown_node() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="references unknown node"):
+        _one_node_pipeline({"x": "nonexistent.output"})
+
+
+def test_pipeline_rejects_inputs_self_reference() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="references its own output"):
+        _one_node_pipeline({"x": "b.output"})
+
+
+def test_pipeline_rejects_undeclared_pipeline_input_field() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="not declared in the pipeline's input contract"):
+        _one_node_pipeline({"x": "pipeline.input.typo_field"}, required=["real_field"])
+
+
+def test_pipeline_accepts_declared_pipeline_input_field() -> None:
+    p = _one_node_pipeline({"x": "pipeline.input.real_field"}, required=["real_field"])
+    assert p.node_by_id("b").inputs == {"x": "pipeline.input.real_field"}
+
+
+def test_pipeline_accepts_schema_declared_pipeline_input_field() -> None:
+    """Fields declared only in input_schema.properties also count."""
+    p = _one_node_pipeline(
+        {"x": "pipeline.input.schema_field"},
+        required=["real_field"],
+        input_schema={"type": "object", "properties": {"schema_field": {"type": "string"}}},
+    )
+    assert p.node_by_id("b").inputs is not None
+
+
+def test_pipeline_skips_field_check_when_contract_empty() -> None:
+    """Empty input contract → no field list to check against."""
+    p = _one_node_pipeline({"x": "pipeline.input.anything"})
+    assert p.node_by_id("b").inputs is not None
+
+
+def test_pipeline_accepts_valid_upstream_reference() -> None:
+    p = _one_node_pipeline({"x": "a.output", "y": "a.output.some_field"})
+    assert p.node_by_id("b").inputs == {"x": "a.output", "y": "a.output.some_field"}
+
+
 def test_pipeline_rejects_unknown_edge_target() -> None:
     from pydantic import ValidationError
 

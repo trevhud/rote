@@ -132,9 +132,7 @@ def test_emitted_activities_contain_all_nodes(
     for node in bdr_pipeline.nodes:
         if node.kind is NodeKind.HITL_GATE:
             continue
-        assert f'@activity.defn(name="{node.id}")' in src, (
-            f"Missing activity for node {node.id}"
-        )
+        assert f'@activity.defn(name="{node.id}")' in src, f"Missing activity for node {node.id}"
 
 
 def test_emitted_workflow_has_signal_handlers(
@@ -219,7 +217,10 @@ def imported_modules(emit_result: dict[str, Path]):  # noqa: ANN201
         for mod in list(sys.modules):
             if mod.startswith("expected."):
                 del sys.modules[mod]
-        from expected.runtimes.temporal import activities, workflow  # type: ignore[import-not-found]
+        from expected.runtimes.temporal import (  # type: ignore[import-not-found]
+            activities,
+            workflow,
+        )
 
         yield workflow, activities
     finally:
@@ -246,13 +247,134 @@ def test_emitted_activities_register_with_temporal(
         if callable(obj) and hasattr(obj, "__temporal_activity_definition"):
             registered.add(obj.__temporal_activity_definition.name)
 
-    expected = {
-        n.id for n in bdr_pipeline.nodes if n.kind is not NodeKind.HITL_GATE
-    }
+    expected = {n.id for n in bdr_pipeline.nodes if n.kind is not NodeKind.HITL_GATE}
     missing = expected - registered
     extra = registered - expected
     assert not missing, f"Missing activity registrations: {missing}"
     assert not extra, f"Unexpected activity registrations: {extra}"
+
+
+# ───────── Data-flow threading ─────────
+
+
+def test_workflow_run_binds_pipeline_input(emit_result: dict[str, Path]) -> None:
+    """The workflow entrypoint takes the pipeline input as its argument."""
+    src = emit_result["workflow"].read_text()
+    assert "async def run(self, pipeline_input: dict) -> dict:" in src
+
+
+def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> None:
+    """Entry nodes bound to `pipeline.input` get the run argument, not {}."""
+    src = emit_result["workflow"].read_text()
+    # Both entry nodes run in a gather wave and take the whole brief.
+    assert '"brief": pipeline_input,' in src
+
+
+def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path]) -> None:
+    """The committed BDR bindings appear as real payload expressions."""
+    src = emit_result["workflow"].read_text()
+    # HITL gate output field → downstream activity payload.
+    assert '"contacts": contact_review_gate_result["approved_contacts"],' in src
+    # Node output field chains through the exclusion checks.
+    assert '"contacts": hubspot_upsert_result["upserted"],' in src
+    assert '"contacts": exclusion_check_dnc_result["passed"],' in src
+    # Pipeline input field selection.
+    assert '"target_quota": pipeline_input["target_quota"],' in src
+    # Fan-in: the report node pulls from several sources.
+    assert '"template_ids": create_sales_template_result["template_ids"],' in src
+    # The placeholder TODO is gone for good.
+    assert "TODO: pass real payload" not in src
+
+
+def test_emitted_workflow_payloads_parse_as_dict_literals(
+    emit_result: dict[str, Path], bdr_pipeline: Pipeline
+) -> None:
+    """AST-level check: every execute_activity call passes a dict whose
+    keys match the node's declared ``inputs`` bindings."""
+    src = emit_result["workflow"].read_text()
+    tree = ast.parse(src)
+
+    payload_keys_by_node: dict[str, set[str]] = {}
+    for call in ast.walk(tree):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "execute_activity"):
+            continue
+        assert len(call.args) >= 2, "execute_activity must receive (name, payload)"
+        name_arg, payload_arg = call.args[0], call.args[1]
+        assert isinstance(name_arg, ast.Constant)
+        assert isinstance(payload_arg, ast.Dict), (
+            f"payload for {name_arg.value!r} must be a dict literal"
+        )
+        payload_keys_by_node[name_arg.value] = {
+            k.value for k in payload_arg.keys if isinstance(k, ast.Constant)
+        }
+
+    nested_ids = {sub for n in bdr_pipeline.nodes if n.loop_body for sub in n.loop_body}
+    for node in bdr_pipeline.nodes:
+        if node.kind is NodeKind.HITL_GATE or node.id in nested_ids:
+            continue
+        expected_keys = set(node.inputs.keys()) if node.inputs else set()
+        assert payload_keys_by_node[node.id] == expected_keys, (
+            f"payload keys for {node.id!r} don't match its inputs bindings"
+        )
+
+
+def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
+    """Back-compat: nodes with no ``inputs`` still receive {}."""
+    from rote.ir import Node, Pipeline, PipelineInput
+
+    pipeline = Pipeline(
+        name="no-bindings",
+        input=PipelineInput(type="X"),
+        nodes=[
+            Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[],
+        entry_nodes=["only"],
+        exit_nodes=["only"],
+    )
+    src = TemporalAdapter().emit_workflow(pipeline)
+    assert "            {}," in src
+
+
+def test_emit_rejects_forward_reference() -> None:
+    """A node whose inputs reference a later wave must fail at emit time,
+    not as a NameError inside a running workflow."""
+    from rote.ir import Edge, Node, Pipeline, PipelineInput
+
+    pipeline = Pipeline(
+        name="forward-ref",
+        input=PipelineInput(type="X"),
+        nodes=[
+            Node(
+                id="first",
+                kind=NodeKind.PURE_FUNCTION,
+                description="x",
+                impl="x.py:y",
+                inputs={"data": "second.output"},  # runs before `second`
+            ),
+            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[Edge(**{"from": "first", "to": "second"})],
+        entry_nodes=["first"],
+        exit_nodes=["second"],
+    )
+    with pytest.raises(ValueError, match="no result available"):
+        TemporalAdapter().emit_workflow(pipeline)
+
+
+def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
+    """Loop-body sub-nodes never bind a top-level result — referencing one
+    from a top-level node must fail at emit time."""
+    import copy
+
+    pipeline = copy.deepcopy(bdr_pipeline)
+    node = pipeline.node_by_id("hubspot_upsert")
+    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
+    with pytest.raises(ValueError, match="no result available"):
+        TemporalAdapter().emit_workflow(pipeline)
 
 
 # ───────── Config variations ─────────

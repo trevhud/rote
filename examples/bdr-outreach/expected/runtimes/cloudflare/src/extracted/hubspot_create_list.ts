@@ -12,6 +12,6 @@
  *   add_batch_size = 250
  */
 
-export async function hubspotCreateList(_input: unknown) {
+export async function hubspotCreateList(_input: unknown): Promise<never> {
     throw new Error("external_call hubspot_create_list: stub not implemented");
 }

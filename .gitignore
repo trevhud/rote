@@ -105,3 +105,6 @@ TODO.local.md
 # the OSS artifact. May contain unsanitized internal framing, cost
 # estimates, or personal attribution choices. Do not commit.
 /launch/
+
+# ── Claude Code agent worktrees ──
+.claude/worktrees/

@@ -27,6 +27,37 @@ regression-tested.
 
 ---
 
+## Why compile agents?
+
+There's now third-party data for what compilation buys.
+["Compiled AI: Deterministic Code Generation for LLM-Based Workflow
+Automation"](https://arxiv.org/abs/2604.05150) (Trooskens et al.,
+Apr 2026) measured compiling LLM workflows into deterministic code
+against running them through direct LLM calls: **57× fewer tokens** at
+1,000 transactions, **450× lower** median latency, **100%
+reproducibility** where direct inference at temperature 0 managed 95%,
+and roughly **40× lower TCO** at a million transactions a month. The
+numbers come from a structured function-calling benchmark (BFCL), the
+friendliest case for compilation, and the token and cost multiples
+grow with volume. But the shape of the result holds: once a workflow
+is proven, every run through an agent loop pays LLM prices for work
+code does for free.
+
+One distinction worth being precise about. Durable-execution vendors
+make fuzzy agents *durable*: wrap the loop in retries and state so it
+survives crashes, still fuzzy inside. rote removes the fuzzy loop:
+compile the proven parts to deterministic code and keep the LLM only
+where inputs are genuinely unbounded. The two compose rather than
+compete — Temporal and Cloudflare Workflows are rote's compile
+targets, not its rivals.
+
+**When not to use rote:** exploratory and one-off work should stay an
+agent loop; flexibility is the whole point there, and there's nothing
+proven to compile yet. rote is for the skill you've run twenty times
+and want to run a thousand more, unattended.
+
+---
+
 ## What just happened on the bundled example
 
 The repository includes a real BDR outreach skill (lead generation,
@@ -165,9 +196,43 @@ agent-driven — so the same IR always produces byte-identical output.
 
 ## Quickstart
 
-### Install
+### Use from Claude Code (recommended)
 
-`rote` is not on PyPI yet. Clone and install in editable mode:
+`rote` ships as a Claude Code plugin, so you can graduate a skill
+without leaving Claude or touching Python tooling:
+
+```
+/plugin marketplace add trevhud/rote
+/plugin install rote@rote
+```
+
+Then say "graduate this skill" (or run `/rote:graduate` directly).
+The plugin confirms the source skill directory, asks which runtime you
+want (Temporal, Cloudflare Workflows, or DBOS), runs the CLI via
+[uv](https://docs.astral.sh/uv/) in the background, and reports the
+emitted pipeline. A second skill, `/rote:serve`, wires graduated
+pipelines up as MCP tools so Claude can trigger the deployed workflows.
+
+Prefer a terminal? The same thing is one `uvx` command:
+
+```sh
+uvx --from rote-cli rote graduate ./my-skill --runtime dbos --out ./graduated
+
+# or straight from GitHub for unreleased changes:
+uvx --from git+https://github.com/trevhud/rote rote graduate \
+  ./my-skill --runtime dbos --out ./graduated
+```
+
+> **Naming note:** the `rote` package on PyPI is an unrelated
+> memoization library that also installs `import rote`, so the two
+> can't share an environment. This project's distribution is
+> `rote-cli` while the CLI command and import name stay `rote` —
+> hence `uvx --from rote-cli rote ...`. See
+> [docs/releasing.md](docs/releasing.md).
+
+### Install from source (development)
+
+Clone and install in editable mode:
 
 ```sh
 git clone https://github.com/trevhud/rote.git
@@ -259,7 +324,7 @@ way.
 | --- | --- | --- | --- | --- |
 | `claude` | `claude -p` subprocess | Claude Max/Pro OAuth or `CLAUDE_CODE_OAUTH_TOKEN` | Install Claude Code separately | `claude-sonnet-4-6` |
 | `codex` | `codex exec` subprocess | ChatGPT Plus/Pro OAuth | Install Codex CLI separately | (driver default) |
-| `api` | `anthropic` Python SDK | `ANTHROPIC_API_KEY` env var | `pip install rote[api]` | `claude-sonnet-4-6` |
+| `api` | `anthropic` Python SDK | `ANTHROPIC_API_KEY` env var | `pip install 'rote-cli[api]'` | `claude-sonnet-4-6` |
 
 The `claude` driver is the default for subscription users — it scrubs
 `ANTHROPIC_API_KEY` from the subprocess environment so the user's
@@ -294,15 +359,16 @@ the toolchain-dependent integration tests.
 | IR (Pydantic schema, validation, YAML loader) | working |
 | Temporal adapter | working (validated with mocked-activities e2e test) |
 | Cloudflare Workflows adapter | working (validated with `tsc --noEmit` over the real emitted output) |
+| DBOS adapter | working (validated against a real DBOS runtime over SQLite in the e2e test) |
 | Graduator orchestrator | working |
 | `rote graduate` / `rote emit` CLI commands | working |
 | `claude` driver | working |
 | `api` (Anthropic SDK) driver | working |
 | `codex` driver | stub (`is_available` works; `run` not implemented) |
-| Inngest / Restate / DBOS adapters | planned |
+| Inngest / Restate adapters | planned |
 | Real implementations of the extracted modules | the agent produces stubs that raise `NotImplementedError`; humans fill them in with real API client code |
-| Workflow data flow between activities | empty payloads in v0; explicit input/output threading is a planned enhancement |
-| Distribution via PyPI | not yet — install from source |
+| Workflow data flow between activities | working — nodes declare `inputs:` bindings and all three adapters (Temporal, Cloudflare, DBOS) thread real payloads through the DAG, validated in the runtime e2e tests |
+| Distribution via PyPI | not yet published — install from source. The release pipeline (tag-driven, Trusted Publishing) is in place; see [docs/releasing.md](docs/releasing.md) |
 
 The project explicitly **does not** depend on `claude-agent-sdk`.
 Anthropic's terms of service forbid third-party agents built on the
@@ -380,6 +446,8 @@ rote/
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for
   the driver abstraction, including the `claude -p` env-var gotcha and
   the explicit non-use of `claude-agent-sdk`
+- [`docs/releasing.md`](docs/releasing.md) — how releases work
+  (tag-driven, PyPI Trusted Publishing) and the one-time setup
 - [`skills/rote-graduate/SKILL.md`](skills/rote-graduate/SKILL.md) —
   the graduator agent's procedural instructions (the "brain")
 - [`skills/rote-graduate/references/node-kinds.md`](skills/rote-graduate/references/node-kinds.md) —
@@ -419,9 +487,13 @@ In rough priority order:
    Temporal but not for Cloudflare. Modeling the pre-filter as a
    separate `pure_function` node before the `llm_judge` makes the
    short-circuit work uniformly across runtimes.
-5. **Explicit data-flow threading.** Both adapters currently pass
-   empty payloads between steps. Real production usage needs typed
-   payloads derived from each node's `input:` and `output:` schema.
+5. **Explicit data-flow threading.** *(Done.)* Nodes declare
+   `inputs:` — a parameter → source-reference mapping with a
+   deliberately tiny grammar (`pipeline.input[.field]` /
+   `<node_id>.output[.field]`) — and both adapters thread real
+   payloads through the DAG. Remaining follow-up: per-element
+   dispatch for `fan_out` nodes, which currently receive the whole
+   upstream list in one invocation.
 6. **More example skills.** BDR is rich but it's one shape of skill.
    Additional examples (research-heavy, retrieval-heavy, code-review)
    stress-test the IR and the rubric in different ways.
@@ -443,7 +515,7 @@ The most useful contributions right now are:
   needs to be tested against more.
 - **Add a runtime adapter.** The Temporal adapter in
   `src/rote/adapters/temporal.py` is ~450 lines and follows a clear
-  pattern. Inngest, Restate, DBOS, and Hatchet are all good targets.
+  pattern. Inngest, Restate, and Hatchet are all good targets.
 - **Add a graduator driver.** The Protocol in
   `src/rote/graduator/drivers/__init__.py` is simple. Aider, Gemini
   CLI, and Cursor Agent are reasonable additions.

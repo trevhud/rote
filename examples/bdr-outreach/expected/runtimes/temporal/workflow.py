@@ -2,7 +2,7 @@
 
 Pipeline: bdr-campaign v0.1.0
 Source skill: ../../skill
-Pipeline hash: ac861059
+Pipeline hash: fef3f728
 
 DO NOT EDIT BY HAND. Re-run ``rote emit`` to regenerate.
 
@@ -39,7 +39,7 @@ def _parse_minutes(s: str) -> float:
     return float(s)
 
 
-@workflow.defn(name="BdrCampaign_ac861059")
+@workflow.defn(name="BdrCampaign_fef3f728")
 class BdrCampaignWorkflow:
     """Graduated workflow for bdr-campaign."""
 
@@ -58,7 +58,7 @@ class BdrCampaignWorkflow:
         self._bdr_enrollment_complete_payload = payload
 
     @workflow.run
-    async def run(self, brief: dict) -> dict:
+    async def run(self, pipeline_input: dict) -> dict:
         """End-to-end BDR outreach campaign workflow for pharma/biotech research"""
 
         # ─── Wave 1 ───
@@ -68,12 +68,16 @@ class BdrCampaignWorkflow:
         ) = await asyncio.gather(
             workflow.execute_activity(
                 "target_research",
-                {},
+                {
+                    "brief": pipeline_input,
+                },
                 start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
             ),
             workflow.execute_activity(
                 "taxonomy_lookup",
-                {},
+                {
+                    "brief": pipeline_input,
+                },
                 start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
             ),
         )
@@ -81,7 +85,12 @@ class BdrCampaignWorkflow:
         # ─── Wave 2 ───
         lead_generation_loop_result = await workflow.execute_activity(
             "lead_generation_loop",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "brief": pipeline_input,
+                "intel": target_research_result,
+                "taxonomy": taxonomy_lookup_result,
+                "target_quota": pipeline_input["target_quota"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("15m")),
         )
 
@@ -98,7 +107,9 @@ class BdrCampaignWorkflow:
         # ─── Wave 4 ───
         hubspot_upsert_result = await workflow.execute_activity(
             "hubspot_upsert",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "contacts": contact_review_gate_result["approved_contacts"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("60s")),
             retry_policy=RetryPolicy(maximum_attempts=6, backoff_coefficient=2.0),
         )
@@ -106,7 +117,10 @@ class BdrCampaignWorkflow:
         # ─── Wave 5 ───
         hubspot_create_list_result = await workflow.execute_activity(
             "hubspot_create_list",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "campaign_name": pipeline_input["drug_brand"],
+                "contacts": hubspot_upsert_result["upserted"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
             retry_policy=RetryPolicy(maximum_attempts=6, backoff_coefficient=2.0),
         )
@@ -114,35 +128,48 @@ class BdrCampaignWorkflow:
         # ─── Wave 6 ───
         exclusion_check_dnc_result = await workflow.execute_activity(
             "exclusion_check_dnc",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "contacts": hubspot_upsert_result["upserted"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
         )
 
         # ─── Wave 7 ───
         exclusion_check_recent_result = await workflow.execute_activity(
             "exclusion_check_recent",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "contacts": exclusion_check_dnc_result["passed"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
         )
 
         # ─── Wave 8 ───
         exclusion_check_sequence_result = await workflow.execute_activity(
             "exclusion_check_sequence",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "contacts": exclusion_check_recent_result["passed"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
         )
 
         # ─── Wave 9 ───
         personalize_email_result = await workflow.execute_activity(
             "personalize_email",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "contact": exclusion_check_sequence_result["passed"],
+                "intel": target_research_result,
+                "campaign_type": pipeline_input["campaign_type"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
         )
 
         # ─── Wave 10 ───
         create_sales_template_result = await workflow.execute_activity(
             "create_sales_template",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "campaign_name": pipeline_input["drug_brand"],
+                "personalizations": personalize_email_result,
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
             retry_policy=RetryPolicy(maximum_attempts=4, backoff_coefficient=2.0),
         )
@@ -150,7 +177,12 @@ class BdrCampaignWorkflow:
         # ─── Wave 11 ───
         pre_enrollment_report_result = await workflow.execute_activity(
             "pre_enrollment_report",
-            {},  # TODO: pass real payload from upstream nodes
+            {
+                "campaign_name": pipeline_input["drug_brand"],
+                "passed_contacts": exclusion_check_sequence_result["passed"],
+                "exclusions": exclusion_check_sequence_result["excluded"],
+                "template_ids": create_sales_template_result["template_ids"],
+            },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
         )
 

@@ -22,6 +22,6 @@ import { type Env } from "../workflow";
 export async function leadGenerationLoop(
     _input: unknown,
     _env: Env,
-) {
+): Promise<never> {
     throw new Error("agent_loop lead_generation_loop: requires an agent runtime — implement me");
 }

@@ -134,9 +134,13 @@ Read `references/ir-schema.md` before starting this phase.
 
 Assemble the full DAG as `pipeline.yaml`. Include:
 
+- `input.input_schema`: the full JSON Schema for the pipeline input
+  payload, promoted from the entry nodes' signature design (see
+  `ir-schema.md`).
 - `nodes`: every step from Phase 2, with its kind, input/output types,
-  timeout, retry policy, and (for `pure_function` / `llm_judge`) a
-  reference to the extracted module.
+  `inputs:` data-flow bindings (param → `pipeline.input[.field]` /
+  `<node_id>.output[.field]`), timeout, retry policy, and (for
+  `pure_function` / `llm_judge`) a reference to the extracted module.
 - `edges`: data flow between nodes, including fan-out for batch
   processing.
 - `hitl_gates`: for every `hitl_gate` node, the signal name, timeout,

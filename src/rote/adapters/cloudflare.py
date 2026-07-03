@@ -26,7 +26,6 @@ as the Temporal adapter, enforced by AST tests.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import textwrap
@@ -34,8 +33,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rote.adapters.temporal import _execution_waves
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline
+from rote.adapters._common import (
+    _execution_waves,
+    _pipeline_hash,
+    _to_camel_case,
+    _to_pascal_case,
+    check_input_refs_available,
+)
+from rote.adapters._common import (
+    ir_duration_to_human as _ir_duration_to_cf,
+)
+from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── Adapter configuration ─────────
 
@@ -64,50 +72,6 @@ class CloudflareAdapterConfig:
 
 _SIGNAL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _VALID_BACKOFFS = {"constant", "linear", "exponential"}
-_IR_DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)(ms|s|m|h|d)$")
-
-
-def _to_pascal_case(s: str) -> str:
-    parts = s.replace("-", "_").split("_")
-    return "".join(p.capitalize() for p in parts if p)
-
-
-def _to_camel_case(s: str) -> str:
-    pascal = _to_pascal_case(s)
-    if not pascal:
-        return ""
-    return pascal[0].lower() + pascal[1:]
-
-
-def _pipeline_hash(pipeline: Pipeline) -> str:
-    """Stable 8-char identity hash. Embedded in a comment for traceability."""
-    payload = f"{pipeline.name}|{pipeline.version}|{len(pipeline.nodes)}|{len(pipeline.edges)}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
-
-
-_UNIT_TO_HUMAN = {
-    "ms": "milliseconds",
-    "s": "seconds",
-    "m": "minutes",
-    "h": "hours",
-    "d": "days",
-}
-
-
-def _ir_duration_to_cf(s: str) -> str:
-    """Convert an IR duration string ('5m', '30s', '7d') to Cloudflare's form.
-
-    Cloudflare accepts numeric ms or human-readable strings like
-    '5 minutes', '30 seconds', '7 days'. We always emit the human form
-    for readability. Strings that don't match the IR shorthand pattern
-    are passed through unchanged (they're assumed to already be in a
-    Cloudflare-acceptable form).
-    """
-    s = s.strip()
-    m = _IR_DURATION_RE.fullmatch(s)
-    if not m:
-        return s
-    return f"{m.group(1)} {_UNIT_TO_HUMAN[m.group(2)]}"
 
 
 def _validate_signal_name(name: str, node_id: str) -> None:
@@ -255,41 +219,82 @@ def json_schema_to_zod(schema: dict[str, Any], indent: int = 0) -> str:
 
 # ───────── Workflow.ts emission ─────────
 
+_TS_IDENT_RE = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 
-def _emit_step_call_pure_or_external(node: Node, cfg: CloudflareAdapterConfig) -> str:
+
+def _ref_to_ts_expr(ref: str) -> str:
+    """Render an ``inputs:`` source reference as a TypeScript expression.
+
+    The workflow binds the instance params to ``pipelineInput`` and each
+    node's result to ``<node_id>_result``:
+
+    | Reference                  | Expression                                          |
+    |----------------------------|-----------------------------------------------------|
+    | ``pipeline.input``         | ``pipelineInput``                                   |
+    | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
+    | ``foo.output``             | ``foo_result``                                      |
+    | ``foo.output.f``           | ``(foo_result as Record<string, unknown>)["f"]``    |
+
+    Node-output field access goes through a Record cast because
+    ``step.do``'s ``Rpc.Serializable`` constraint widens inferred result
+    types to its constraint union (verified against
+    @cloudflare/workers-types via the tsc e2e test) — direct indexing
+    doesn't compile. The cast also stays valid for whatever concrete
+    return type the user gives a stub later.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None:
+        if parsed.field is None:
+            return "pipelineInput"
+        return f"pipelineInput[{json.dumps(parsed.field)}]"
+    base = f"{parsed.node_id}_result"
+    if parsed.field is None:
+        return base
+    return f"({base} as Record<string, unknown>)[{json.dumps(parsed.field)}]"
+
+
+def _payload_ts_literal(node: Node, indent: str) -> str:
+    """Render the step payload object for a node's data-flow bindings.
+
+    Nodes without ``inputs`` keep the empty payload (back-compat).
+    ``indent`` is the indentation of the line the literal starts on;
+    entries are indented one level deeper.
+    """
+    if not node.inputs:
+        return "{}"
+    inner = indent + "    "
+    lines = ["{"]
+    for param, ref in node.inputs.items():
+        key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
+        lines.append(f"{inner}{key}: {_ref_to_ts_expr(ref)},")
+    lines.append(indent + "}")
+    return "\n".join(lines)
+
+
+def _emit_step_call(node: Node, cfg: CloudflareAdapterConfig, *, pass_env: bool) -> str:
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
+    payload = _payload_ts_literal(node, indent=" " * 12)
+    args = f"{payload}, this.env" if pass_env else payload
     return (
         f"        const {node.id}_result = await step.do(\n"
         f"            {json.dumps(node.id)},\n"
         f"            {config},\n"
-        f"            async () => {fn_name}({{}}),\n"
+        f"            async () => {fn_name}({args}),\n"
         f"        );\n"
     )
+
+
+def _emit_step_call_pure_or_external(node: Node, cfg: CloudflareAdapterConfig) -> str:
+    return _emit_step_call(node, cfg, pass_env=False)
 
 
 def _emit_step_call_llm_judge(node: Node, cfg: CloudflareAdapterConfig) -> str:
-    fn_name = _to_camel_case(node.id)
-    config = _step_config_literal(node, cfg)
-    return (
-        f"        const {node.id}_result = await step.do(\n"
-        f"            {json.dumps(node.id)},\n"
-        f"            {config},\n"
-        f"            async () => {fn_name}({{}}, this.env),\n"
-        f"        );\n"
-    )
+    return _emit_step_call(node, cfg, pass_env=True)
 
 
 def _emit_step_call_agent_loop(node: Node, cfg: CloudflareAdapterConfig) -> str:
-    fn_name = _to_camel_case(node.id)
-    config = _step_config_literal(node, cfg)
-    return (
-        f"        const {node.id}_result = await step.do(\n"
-        f"            {json.dumps(node.id)},\n"
-        f"            {config},\n"
-        f"            async () => {fn_name}({{}}, this.env),\n"
-        f"        );\n"
-    )
+    return _emit_step_call(node, cfg, pass_env=True)
 
 
 def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
@@ -380,18 +385,39 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     )
 
     body_lines: list[str] = []
+
+    # Bind the instance params once when any top-level node's inputs
+    # reference the pipeline input.
+    wave_nodes = [n for wave in waves for n in wave]
+    needs_pipeline_input = any(
+        parse_input_ref(ref).node_id is None
+        for n in wave_nodes
+        if n.inputs
+        for ref in n.inputs.values()
+    )
+    if needs_pipeline_input:
+        body_lines.append("        const pipelineInput = event.payload;")
+        body_lines.append("")
+
+    # Node ids whose results are bound by the time each wave starts —
+    # used to reject inputs that reference a later wave at emit time.
+    available: set[str] = set()
+
     for wave_idx, wave in enumerate(waves, start=1):
         body_lines.append(f"        // ─── Wave {wave_idx} ───")
         for node in wave:
             if node.kind is NodeKind.HITL_GATE:
                 body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
-            elif node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
-                body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
-            elif node.kind is NodeKind.LLM_JUDGE:
-                body_lines.append(_emit_step_call_llm_judge(node, cfg).rstrip("\n"))
-            elif node.kind is NodeKind.AGENT_LOOP:
-                body_lines.append(_emit_step_call_agent_loop(node, cfg).rstrip("\n"))
+            else:
+                check_input_refs_available(node, available)
+                if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
+                    body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
+                elif node.kind is NodeKind.LLM_JUDGE:
+                    body_lines.append(_emit_step_call_llm_judge(node, cfg).rstrip("\n"))
+                elif node.kind is NodeKind.AGENT_LOOP:
+                    body_lines.append(_emit_step_call_agent_loop(node, cfg).rstrip("\n"))
         body_lines.append("")
+        available.update(n.id for n in wave)
 
     # Build return object. Cast `unknown` step results so the workflow's
     # declared return type stays serializable.
@@ -525,7 +551,15 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
                     : undefined,
             vars,
         );
-        if (value === undefined) return "";
+        if (value === undefined) {
+            // A hole in a judge prompt produces confident garbage that is
+            // far harder to debug than an error naming the missing field.
+            throw new Error(
+                `prompt template references {{ ${key} }} but the input has no ` +
+                    `such field; available top-level keys: ${Object.keys(vars).sort().join(", ")}`,
+            );
+        }
+        if (value === null) return "";
         return typeof value === "string" ? value : JSON.stringify(value);
     });
 }
@@ -768,8 +802,15 @@ def emit_extracted_module(node: Node) -> str:
     doc.append(" */")
 
     body: list[str]
-    # Return type inferred — `unknown` widens through `step.do` and forces
-    # the user to narrow at the call site once they fill in the stub.
+    # Stubs declare Promise<never> — honest for a function that always
+    # throws, and `never` is the one type that both satisfies step.do's
+    # `Rpc.Serializable<T>` constraint and stays castable at the
+    # workflow's data-flow reference sites (see `_ref_to_ts_expr`).
+    # Note: `Promise<Record<string, unknown>>` would NOT work here —
+    # `unknown` values aren't structurally serializable, which breaks
+    # step.do overload resolution (verified via the tsc e2e test).
+    # Replace the annotation with your concrete output type when you
+    # fill in the implementation.
     if node.kind is NodeKind.AGENT_LOOP:
         msg = f'"agent_loop {node.id}: requires an agent runtime — implement me"'
         body = [
@@ -779,7 +820,7 @@ def emit_extracted_module(node: Node) -> str:
             f"export async function {fn_name}(",
             "    _input: unknown,",
             "    _env: Env,",
-            ") {",
+            "): Promise<never> {",
             f"    throw new Error({msg});",
             "}",
             "",
@@ -788,7 +829,7 @@ def emit_extracted_module(node: Node) -> str:
         msg = f'"{node.kind.value} {node.id}: stub not implemented"'
         body = [
             "",
-            f"export async function {fn_name}(_input: unknown) {{",
+            f"export async function {fn_name}(_input: unknown): Promise<never> {{",
             f"    throw new Error({msg});",
             "}",
             "",
@@ -869,6 +910,168 @@ def emit_tsconfig() -> str:
     return json.dumps(obj, indent=2) + "\n"
 
 
+# ───────── README.md + .dev.vars.example emission ─────────
+
+# "Deploy to Cloudflare" button spec, per
+# https://developers.cloudflare.com/workers/platform/deploy-buttons/:
+# a markdown image link whose target is the deploy service with the
+# public GitHub/GitLab repo URL passed via the ``url`` query parameter.
+# The repo URL is unknowable at emission time, so the emitted README
+# carries an explicit placeholder for the user to substitute.
+_DEPLOY_BUTTON_IMAGE = "https://deploy.workers.cloudflare.com/button"
+_DEPLOY_BUTTON_BASE = "https://deploy.workers.cloudflare.com/?url="
+_REPO_URL_PLACEHOLDER = "REPLACE-WITH-YOUR-REPO-URL"
+
+
+def _llm_clients(pipeline: Pipeline) -> set[str]:
+    """Vendor clients used by the pipeline's llm_judge signature specs."""
+    return {
+        node.signature_spec.client
+        for node in pipeline.nodes
+        if node.kind is NodeKind.LLM_JUDGE and node.signature_spec is not None
+    }
+
+
+def _secret_names(pipeline: Pipeline) -> list[str]:
+    """Secrets the emitted worker reads, in emission order.
+
+    ``ANTHROPIC_API_KEY`` is always present (the emitted ``Env``
+    interface requires it); ``OPENAI_API_KEY`` joins when any signature
+    targets the OpenAI client.
+    """
+    secrets = ["ANTHROPIC_API_KEY"]
+    if "openai" in _llm_clients(pipeline):
+        secrets.append("OPENAI_API_KEY")
+    return secrets
+
+
+def emit_dev_vars_example(pipeline: Pipeline) -> str:
+    """Emit ``.dev.vars.example`` — dotenv-format secret declarations.
+
+    The Deploy to Cloudflare flow reads this file to know which secrets
+    to prompt for during one-click setup (per the deploy-buttons docs);
+    ``wrangler dev`` users copy it to ``.dev.vars`` for local runs.
+    """
+    lines = [
+        "# Copy to .dev.vars for local `wrangler dev`; the Deploy to Cloudflare",
+        "# flow reads this file to prompt for secrets during one-click setup.",
+        "# For a manual deploy, set each with `npx wrangler secret put <NAME>`.",
+    ]
+    lines.extend(f"{name}=" for name in _secret_names(pipeline))
+    return "\n".join(lines) + "\n"
+
+
+def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
+    deploy_url = f"{_DEPLOY_BUTTON_BASE}{_REPO_URL_PLACEHOLDER}"
+    button = f"[![Deploy to Cloudflare]({_DEPLOY_BUTTON_IMAGE})]({deploy_url})"
+
+    description = pipeline.description.strip()
+    description_block = f"\n{description}\n" if description else ""
+
+    secrets = _secret_names(pipeline)
+    secret_puts = "\n".join(f"npx wrangler secret put {name}" for name in secrets)
+
+    gates = [n for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE]
+    first_signal = gates[0].signal if gates and gates[0].signal else "example_signal"
+    gate_lines = "\n".join(
+        f"| `{g.id}` | `{g.signal}` | {_ir_duration_to_cf(g.timeout or cfg.default_hitl_timeout)} |"
+        for g in gates
+    )
+
+    # Built flush-left (not textwrap.dedent) because interpolated
+    # multi-line values — the pipeline description, gate table rows —
+    # contain unindented lines that would defeat dedent's common-prefix
+    # detection.
+    return f"""\
+# {pipeline.name} — Cloudflare Workflows runtime
+
+Auto-generated by `rote emit --runtime cloudflare`. Do not edit
+generated files by hand; re-run the emitter to regenerate.
+{description_block}
+## Deploy to Cloudflare
+
+{button}
+
+Push this directory to a **public GitHub or GitLab repository**,
+then replace `{_REPO_URL_PLACEHOLDER}` in the button link above with
+the repo URL (a subdirectory path works too). One click clones the
+repo into the visitor's account, provisions the workflow, and
+prompts for the secrets declared in `.dev.vars.example`.
+
+## Layout
+
+- `src/workflow.ts` — the `WorkflowEntrypoint` class: one `step.do`
+  per node, `step.waitForEvent` per HITL gate
+- `src/index.ts` — fetch handler that creates a workflow instance
+  from the POST body
+- `src/extracted/` — stubs for deterministic nodes; fill these in
+  with direct vendor API calls (they throw until you do)
+- `src/signatures/` — typed LLM judges generated from the pipeline
+  IR (Zod schemas + direct vendor SDK calls)
+- `wrangler.jsonc` / `package.json` / `tsconfig.json` — deploy-ready
+  Workers project config
+
+## Deploy from this machine
+
+```sh
+npm install
+{secret_puts}
+npx wrangler deploy
+```
+
+## Trigger a run
+
+POST the pipeline input to the deployed worker; it responds with
+the new instance's id and status:
+
+```sh
+curl -X POST https://{pipeline.name}.<your-subdomain>.workers.dev \\
+    -H 'content-type: application/json' \\
+    -d '{{"your": "input"}}'
+```
+
+Or trigger directly through wrangler:
+
+```sh
+npx wrangler workflows trigger {pipeline.name} '{{"your": "input"}}'
+```
+
+## HITL gates
+
+The workflow parks durably at each gate until an event of the
+gate's type arrives:
+
+| Gate | Event type | Timeout |
+| --- | --- | --- |
+{gate_lines}
+
+Resume a parked instance by sending the event (`latest` targets the
+most recent instance):
+
+```sh
+npx wrangler workflows instances send-event {pipeline.name} latest \\
+    --type {first_signal} --payload '{{"approved": true}}'
+```
+
+A gate that times out fails the run — silence is not approval.
+
+## Trigger from Claude (MCP)
+
+`rote` can expose this deployed pipeline as an MCP tool so any MCP
+client triggers the deterministic workflow instead of re-running
+the fuzzy skill:
+
+```sh
+rote register <graduated-output-dir> \\
+    --runtime cloudflare \\
+    --url https://{pipeline.name}.<your-subdomain>.workers.dev
+rote serve
+```
+
+See `docs/mcp-trigger.md` in the rote repository for the full flow.
+"""
+
+
 # ───────── Adapter facade ─────────
 
 
@@ -878,6 +1081,8 @@ class CloudflareAdapter:
     Output layout::
 
         out/
+            README.md
+            .dev.vars.example
             wrangler.jsonc
             package.json
             tsconfig.json
@@ -941,5 +1146,13 @@ class CloudflareAdapter:
         ts_path = out / "tsconfig.json"
         ts_path.write_text(emit_tsconfig(), encoding="utf-8")
         written["tsconfig.json"] = ts_path
+
+        readme_path = out / "README.md"
+        readme_path.write_text(emit_readme(pipeline, self.config), encoding="utf-8")
+        written["README"] = readme_path
+
+        dev_vars_path = out / ".dev.vars.example"
+        dev_vars_path.write_text(emit_dev_vars_example(pipeline), encoding="utf-8")
+        written[".dev.vars.example"] = dev_vars_path
 
         return written

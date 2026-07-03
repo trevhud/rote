@@ -36,7 +36,6 @@ from typing import Any
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
 
-
 # ───────── Defaults ─────────
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -127,12 +126,8 @@ class ClaudeDriver(GraduatorDriver):
                 f"Pass an explicit graduator_skill_dir to the orchestrator."
             )
 
-        system_prompt = self._build_system_prompt(
-            skill_md.read_text(encoding="utf-8")
-        )
-        user_prompt = self._build_user_prompt(
-            skill_dir, graduator_skill_dir, work_dir
-        )
+        system_prompt = self._build_system_prompt(skill_md.read_text(encoding="utf-8"))
+        user_prompt = self._build_user_prompt(skill_dir, graduator_skill_dir, work_dir)
 
         env = self._build_child_env()
 
@@ -186,8 +181,7 @@ class ClaudeDriver(GraduatorDriver):
                     details=stderr or stdout or "(no output)",
                 )
             raise DriverError(
-                f"claude CLI finished successfully but did not produce "
-                f"{pipeline_yaml}.",
+                f"claude CLI finished successfully but did not produce {pipeline_yaml}.",
                 details=stdout,
             )
 

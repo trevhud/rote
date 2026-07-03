@@ -12,6 +12,6 @@
  *   batch_size = 100
  */
 
-export async function hubspotUpsert(_input: unknown) {
+export async function hubspotUpsert(_input: unknown): Promise<never> {
     throw new Error("external_call hubspot_upsert: stub not implemented");
 }

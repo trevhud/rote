@@ -13,6 +13,6 @@
  *   output_fields = ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"]
  */
 
-export async function enrichContactBatch(_input: unknown) {
+export async function enrichContactBatch(_input: unknown): Promise<never> {
     throw new Error("external_call enrich_contact_batch: stub not implemented");
 }

@@ -58,30 +58,32 @@ class GraduationResult:
 def _default_graduator_skill_dir() -> Path:
     """Locate the rote-graduate skill bundled with the rote source.
 
-    For development installs (``pip install -e .``), the skill lives at
-    ``<repo>/skills/rote-graduate/``. We resolve it relative to the
-    rote package's ``__file__``:
+    Two layouts exist, checked in order:
 
-    * ``rote.__file__`` → ``<repo>/src/rote/__init__.py``
-    * ``.parent.parent.parent`` → ``<repo>``
-    * ``+ "skills/rote-graduate"`` → the skill bundle
-
-    For wheel installs the package layout differs and we'd need
-    package_data — that's a v0.1 issue. For now we error out with a
-    pointer to the workaround (passing ``graduator_skill_dir`` explicitly).
+    1. **Wheel install.** ``pyproject.toml`` force-includes the
+       repo-root ``skills/rote-graduate/`` into the wheel at
+       ``rote/skills/rote-graduate/``, so the bundle sits next to the
+       package's ``__file__``.
+    2. **Editable install / source checkout.** The skill lives at
+       ``<repo>/skills/rote-graduate/``; ``rote.__file__`` is
+       ``<repo>/src/rote/__init__.py``, so the repo root is three
+       parents up.
     """
     import rote
 
     rote_pkg_dir = Path(rote.__file__).resolve().parent
-    repo_root = rote_pkg_dir.parent.parent
-    candidate = repo_root / "skills" / "rote-graduate"
-    if candidate.is_dir() and (candidate / "SKILL.md").is_file():
-        return candidate
+    candidates = [
+        rote_pkg_dir / "skills" / "rote-graduate",
+        rote_pkg_dir.parent.parent / "skills" / "rote-graduate",
+    ]
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "SKILL.md").is_file():
+            return candidate
+    searched = ", ".join(str(c) for c in candidates)
     raise GraduatorError(
-        f"Could not locate the rote-graduate skill at {candidate}. "
-        "If you installed rote from a wheel rather than editable mode, "
-        "pass an explicit graduator_skill_dir to Graduator() pointing "
-        "at a checkout of the rote source."
+        f"Could not locate the rote-graduate skill (searched: {searched}). "
+        "Pass an explicit graduator_skill_dir to Graduator() pointing "
+        "at a rote-graduate skill bundle."
     )
 
 
@@ -138,9 +140,7 @@ class Graduator:
                 raise GraduatorError(str(e.args[0])) from None
             available, reason = driver.is_available()
             if not available:
-                raise GraduatorError(
-                    f"Driver {self.agent!r} is not available: {reason}"
-                )
+                raise GraduatorError(f"Driver {self.agent!r} is not available: {reason}")
             return driver
 
         probe = auto_detect()
@@ -196,9 +196,7 @@ class Graduator:
         if not skill_dir.is_dir():
             raise GraduatorError(f"Skill directory does not exist: {skill_dir}")
         if not (skill_dir / "SKILL.md").is_file():
-            raise GraduatorError(
-                f"Not a skill bundle (no SKILL.md found): {skill_dir}"
-            )
+            raise GraduatorError(f"Not a skill bundle (no SKILL.md found): {skill_dir}")
 
         driver = self.select_driver()
 
@@ -213,9 +211,7 @@ class Graduator:
                 )
             except DriverError as e:
                 detail = f"\n\n{e.details}" if getattr(e, "details", None) else ""
-                raise GraduatorError(
-                    f"Driver {driver.name!r} failed: {e}{detail}"
-                ) from e
+                raise GraduatorError(f"Driver {driver.name!r} failed: {e}{detail}") from e
 
             try:
                 pipeline = load_pipeline(result.pipeline_yaml_path)

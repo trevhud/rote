@@ -1,13 +1,17 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "rote"
-version = "0.1.0"
+# Distribution name is `rote-cli` because `rote` is taken on PyPI
+# (an unrelated memoization library, active as of 2026-05). The
+# import name and CLI command remain `rote`. See docs/releasing.md.
+name = "rote-cli"
+dynamic = ["version"]
 description = "Graduate fuzzy AI skills into deterministic, reliable workflows"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "Trevor Hudson" }]
 keywords = [
@@ -17,7 +21,7 @@ keywords = [
     "skill",
     "workflow",
     "temporal",
-    "inngest",
+    "cloudflare",
     "claude",
     "anthropic",
     "dspy",
@@ -26,7 +30,6 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -47,6 +50,13 @@ temporal = [
 api = [
     "anthropic>=0.89",
 ]
+dbos = [
+    "dbos>=2.26",
+]
+serve = [
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -55,6 +65,9 @@ dev = [
     "types-pyyaml",
     "temporalio>=1.7",
     "anthropic>=0.89",
+    "dbos>=2.26",
+    "fastmcp>=3.4.2",
+    "httpx>=0.28",
 ]
 
 [project.scripts]
@@ -64,13 +77,38 @@ rote = "rote.cli:main"
 Homepage = "https://github.com/trevhud/rote"
 Repository = "https://github.com/trevhud/rote"
 Issues = "https://github.com/trevhud/rote/issues"
+Documentation = "https://github.com/trevhud/rote#readme"
+
+[tool.hatch.version]
+path = "src/rote/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rote"]
 
+# The graduator agent's skill bundle lives at the repo root (it is the
+# product's Layer 1 and is consumed in-place during development), so it
+# is force-included into the wheel at rote/skills/rote-graduate.
+# `_default_graduator_skill_dir()` in src/rote/graduator/__init__.py
+# checks that packaged location first, then the repo-root layout for
+# editable installs. If you move or rename the bundle, update both.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/rote-graduate" = "rote/skills/rote-graduate"
+
+[tool.hatch.build.targets.sdist]
+# Keep the sdist lean but self-sufficient: building a wheel from the
+# sdist needs src/ and the skill bundle at the same relative paths.
+include = [
+    "src/rote",
+    "skills/rote-graduate",
+]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# examples/ holds machine-emitted snapshots (adapter output, graduator
+# runs) kept verbatim as regression baselines — hand-linting them would
+# diverge them from what the tools actually produce.
+extend-exclude = ["examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

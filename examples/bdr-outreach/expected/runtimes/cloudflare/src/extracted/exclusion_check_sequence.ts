@@ -12,6 +12,6 @@
  * The workflow always calls it; do not make it conditional.
  */
 
-export async function exclusionCheckSequence(_input: unknown) {
+export async function exclusionCheckSequence(_input: unknown): Promise<never> {
     throw new Error("pure_function exclusion_check_sequence: stub not implemented");
 }

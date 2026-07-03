@@ -23,13 +23,17 @@ is plain string templates.
 
 from __future__ import annotations
 
-import hashlib
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
-from rote.ir import Node, NodeKind, Pipeline
-
+from rote.adapters._common import (
+    _execution_waves,
+    _pipeline_hash,
+    _to_pascal_case,
+    check_input_refs_available,
+)
+from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── Adapter configuration ─────────
 
@@ -55,69 +59,6 @@ class TemporalAdapterConfig:
 
 
 # ───────── Helpers ─────────
-
-
-def _to_pascal_case(s: str) -> str:
-    """Convert kebab-case or snake_case to PascalCase."""
-    parts = s.replace("-", "_").split("_")
-    return "".join(p.capitalize() for p in parts if p)
-
-
-def _pipeline_hash(pipeline: Pipeline) -> str:
-    """Stable 8-char hash of the pipeline's identity.
-
-    Used to version the emitted workflow class name. The Temporal docs
-    warn that changing workflow code while workflows are running causes
-    determinism errors. The fix this adapter takes is "make every
-    regeneration a new workflow type" — old in-flight workflows continue
-    on the old code, new workflows use the new code, no migration needed.
-    """
-    payload = f"{pipeline.name}|{pipeline.version}|{len(pipeline.nodes)}|{len(pipeline.edges)}"
-    return hashlib.sha256(payload.encode()).hexdigest()[:8]
-
-
-def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
-    """Topologically sort the pipeline into parallel-execution waves.
-
-    A "wave" is a set of nodes whose dependencies have all been satisfied
-    by the time the wave starts; nodes within a wave can run in parallel.
-
-    Nodes that appear inside another node's ``loop_body`` are excluded
-    from the top-level waves — they're orchestrated from inside the
-    parent loop activity, not by the workflow.
-    """
-    nested_ids: set[str] = set()
-    for n in pipeline.nodes:
-        if n.loop_body:
-            nested_ids.update(n.loop_body)
-
-    eligible = [n for n in pipeline.nodes if n.id not in nested_ids]
-    eligible_ids = {n.id for n in eligible}
-
-    in_degree: dict[str, int] = {n.id: 0 for n in eligible}
-    for edge in pipeline.edges:
-        if edge.from_ in eligible_ids and edge.to in eligible_ids:
-            in_degree[edge.to] += 1
-
-    waves: list[list[Node]] = []
-    remaining: set[str] = set(in_degree.keys())
-
-    while remaining:
-        # Sort by id for stable, deterministic emission order.
-        wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
-        if not wave_ids:
-            raise ValueError(
-                f"Cycle detected in pipeline {pipeline.name!r}; "
-                f"remaining nodes: {sorted(remaining)}"
-            )
-        waves.append([pipeline.node_by_id(nid) for nid in wave_ids])
-        for nid in wave_ids:
-            remaining.remove(nid)
-            for edge in pipeline.edges:
-                if edge.from_ == nid and edge.to in eligible_ids:
-                    in_degree[edge.to] -= 1
-
-    return waves
 
 
 def _impl_path_parts(impl: str) -> tuple[str, str]:
@@ -150,9 +91,9 @@ def _retry_policy_args(node: Node) -> str:
     parts = [f"maximum_attempts={node.retry.max + 1}"]  # Temporal counts initial + retries
     backoff = node.retry.backoff
     if backoff == "exponential":
-        parts.append('backoff_coefficient=2.0')
+        parts.append("backoff_coefficient=2.0")
     elif backoff == "linear":
-        parts.append('backoff_coefficient=1.0')
+        parts.append("backoff_coefficient=1.0")
     return f"RetryPolicy({', '.join(parts)})"
 
 
@@ -240,8 +181,9 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
             + "\n"
         )
 
-    return textwrap.dedent(
-        f'''
+    return (
+        textwrap.dedent(
+            f'''
         @activity.defn(name="{node.id}")
         async def {node.id}(payload: dict) -> dict:
             """{node.description.strip().splitlines()[0]}
@@ -252,8 +194,13 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
             """
             # Tools the agent should be allowed to call inside the loop:
         '''
-    ).lstrip("\n") + (tools_doc + "\n" if tools_doc else "") + sub_nodes_doc + (
-        f'    raise NotImplementedError("agent_loop activity {node.id!r}: requires an agent runtime")\n'
+        ).lstrip("\n")
+        + (tools_doc + "\n" if tools_doc else "")
+        + sub_nodes_doc
+        + (
+            f'    raise NotImplementedError("agent_loop activity {node.id!r}: '
+            'requires an agent runtime")\n'
+        )
     )
 
 
@@ -340,10 +287,7 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
     """
     gates = [n for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE]
     if not gates:
-        return (
-            "    def __init__(self) -> None:\n"
-            "        pass\n\n"
-        )
+        return "    def __init__(self) -> None:\n        pass\n\n"
 
     init_lines = ["    def __init__(self) -> None:"]
     for gate in gates:
@@ -366,6 +310,43 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
     return init_block + "\n".join(handler_blocks)
 
 
+def _ref_to_python_expr(ref: str) -> str:
+    """Render an ``inputs:`` source reference as a Python expression.
+
+    The workflow binds the pipeline input to ``pipeline_input`` and each
+    node's result to ``<node_id>_result``, so references map directly:
+
+    | Reference                  | Expression                      |
+    |----------------------------|---------------------------------|
+    | ``pipeline.input``         | ``pipeline_input``              |
+    | ``pipeline.input.f``       | ``pipeline_input["f"]``         |
+    | ``foo.output``             | ``foo_result``                  |
+    | ``foo.output.f``           | ``foo_result["f"]``             |
+    """
+    parsed = parse_input_ref(ref)
+    base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+    if parsed.field is None:
+        return base
+    return f'{base}["{parsed.field}"]'
+
+
+def _payload_literal(node: Node, indent: str) -> str:
+    """Render the activity payload dict for a node's data-flow bindings.
+
+    Nodes without ``inputs`` keep the empty payload (back-compat).
+    ``indent`` is the indentation of the line the literal starts on;
+    continuation lines are indented one level deeper.
+    """
+    if not node.inputs:
+        return "{}"
+    inner = indent + "    "
+    lines = ["{"]
+    for param, ref in node.inputs.items():
+        lines.append(f'{inner}"{param}": {_ref_to_python_expr(ref)},')
+    lines.append(indent + "}")
+    return "\n".join(lines)
+
+
 def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
     """Emit a multi-line call to ``workflow.execute_activity`` for one node.
 
@@ -373,7 +354,10 @@ def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
 
         foo_result = await workflow.execute_activity(
             "foo",
-            {},
+            {
+                "brief": pipeline_input,
+                "intel": target_research_result,
+            },
             start_to_close_timeout=timedelta(minutes=...),
             retry_policy=RetryPolicy(...),
         )
@@ -384,16 +368,17 @@ def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
 
     timeout = _activity_timeout(node, cfg.default_activity_timeout)
     retry = _retry_policy_args(node)
+    payload = _payload_literal(node, indent=" " * 12)
 
     lines = [
-        f'        {node.id}_result = await workflow.execute_activity(',
+        f"        {node.id}_result = await workflow.execute_activity(",
         f'            "{node.id}",',
-        '            {},  # TODO: pass real payload from upstream nodes',
+        f"            {payload},",
         f'            start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),',
     ]
     if retry:
-        lines.append(f'            retry_policy={retry},')
-    lines.append('        )')
+        lines.append(f"            retry_policy={retry},")
+    lines.append("        )")
     return "\n".join(lines) + "\n"
 
 
@@ -401,28 +386,37 @@ def _emit_hitl_block(node: Node) -> str:
     assert node.kind is NodeKind.HITL_GATE
     assert node.signal is not None
     return (
-        f'        # ─── HITL gate: {node.id} ───\n'
-        f'        # Workflow suspends here until the {node.signal!r} signal\n'
-        f'        # arrives. Survives worker restarts; resumes immediately\n'
-        f'        # when the signal fires.\n'
-        f'        await workflow.wait_condition(\n'
-        f'            lambda: self._{node.signal}_payload is not None\n'
-        f'        )\n'
-        f'        {node.id}_result = self._{node.signal}_payload\n'
+        f"        # ─── HITL gate: {node.id} ───\n"
+        f"        # Workflow suspends here until the {node.signal!r} signal\n"
+        f"        # arrives. Survives worker restarts; resumes immediately\n"
+        f"        # when the signal fires.\n"
+        f"        await workflow.wait_condition(\n"
+        f"            lambda: self._{node.signal}_payload is not None\n"
+        f"        )\n"
+        f"        {node.id}_result = self._{node.signal}_payload\n"
     )
 
 
 def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
     waves = _execution_waves(pipeline)
 
-    body_lines: list[str] = ['    @workflow.run', '    async def run(self, brief: dict) -> dict:']
-    body_lines.append(
-        f'        """{pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name}"""'
-    )
+    body_lines: list[str] = [
+        "    @workflow.run",
+        "    async def run(self, pipeline_input: dict) -> dict:",
+    ]
+    desc = pipeline.description.strip().splitlines()[0] if pipeline.description else pipeline.name
+    body_lines.append(f'        """{desc}"""')
+
+    # Node ids whose results are bound by the time each wave starts —
+    # used to reject inputs that reference a later wave at emit time.
+    available: set[str] = set()
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
+
+        for n in non_hitl:
+            check_input_refs_available(n, available)
 
         body_lines.append("")
         body_lines.append(f"        # ─── Wave {wave_idx} ───")
@@ -437,17 +431,22 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
             body_lines.append("        ) = await asyncio.gather(")
             for n in non_hitl:
                 timeout = _activity_timeout(n, cfg.default_activity_timeout)
+                payload = _payload_literal(n, indent=" " * 16)
+                timeout_line = (
+                    "                start_to_close_timeout="
+                    f'timedelta(minutes=_parse_minutes("{timeout}")),\n'
+                )
                 body_lines.append(
-                    f'            workflow.execute_activity(\n'
+                    f"            workflow.execute_activity(\n"
                     f'                "{n.id}",\n'
-                    f'                {{}},\n'
-                    f'                start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),\n'
-                    f'            ),'
+                    f"                {payload},\n" + timeout_line + "            ),"
                 )
             body_lines.append("        )")
 
         for h in hitl:
             body_lines.append(_emit_hitl_block(h).rstrip("\n"))
+
+        available.update(n.id for n in wave)
 
     body_lines.append("")
     body_lines.append("        return {")

@@ -47,9 +47,7 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     assert __version__ in out
 
 
-def test_emit_missing_pipeline_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_emit_missing_pipeline_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = cli_main(
         [
             "emit",
@@ -65,9 +63,7 @@ def test_emit_missing_pipeline_file(
     assert "not found" in err
 
 
-def test_emit_bdr_pipeline_in_process(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_emit_bdr_pipeline_in_process(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Run `rote emit` against the real BDR pipeline.yaml.
 
     Verifies: the CLI loads the pipeline, dispatches to the temporal
@@ -105,9 +101,7 @@ def test_emit_bdr_pipeline_in_process(
     ast.parse(workflow_path.read_text(encoding="utf-8"))
 
 
-def test_emit_rejects_unknown_runtime(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_emit_rejects_unknown_runtime(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # argparse rejects unknown choices with exit code 2
     with pytest.raises(SystemExit) as excinfo:
         cli_main(

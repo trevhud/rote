@@ -9,6 +9,6 @@
  * ZoomInfo / etc. directly.
  */
 
-export async function taxonomyLookup(_input: unknown) {
+export async function taxonomyLookup(_input: unknown): Promise<never> {
     throw new Error("pure_function taxonomy_lookup: stub not implemented");
 }
