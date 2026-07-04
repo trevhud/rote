@@ -64,3 +64,23 @@ jobs:
 
       - name: Sanity check (no leaked identifiers/secrets)
         run: ./scripts/sanity-check.sh
+
+  e2e:
+    # Pure-Python slow e2e tests (no Node/Docker toolchain): they spawn a
+    # real FastMCP server / DBOS SQLite app and run emitted code end to end,
+    # so the empirical proof is automated on every PR — not just `-m slow`
+    # locally. The TS/Docker e2e suites stay opt-in (they need Node/Docker).
+    name: Python e2e (slow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      - name: MCP backend e2e (live mock MCP server + DBOS SQLite)
+        run: pytest tests/test_mcp_e2e.py -m slow -v
