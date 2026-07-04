@@ -83,7 +83,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        adapter = get_adapter(args.runtime)
+        adapter = get_adapter(args.runtime, external_backend=args.backend)
     except KeyError as e:
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
@@ -145,7 +145,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         return 130
 
     try:
-        adapter = get_adapter(args.runtime)
+        adapter = get_adapter(args.runtime, external_backend=args.backend)
     except KeyError as e:
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
@@ -711,6 +711,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     emit.add_argument(
+        "--backend",
+        default="mcp",
+        choices=["mcp", "api"],
+        help=(
+            "For external_call nodes with an mcp binding (dbos runtime): "
+            "'mcp' (default) emits a working Streamable-HTTP call to the MCP "
+            "tool the skill used; 'api' emits the direct vendor-SDK path "
+            "(fill in the extracted/ stub; one key in .env). No effect on "
+            "nodes without an mcp binding or on runtimes without mcp support."
+        ),
+    )
+    emit.add_argument(
         "--out",
         required=True,
         help="Output directory (created if missing)",
@@ -737,6 +749,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             f"Target workflow runtime (default: dbos — durable execution as a "
             f"library, no orchestrator to run). Available: {', '.join(available_runtimes)}"
+        ),
+    )
+    graduate.add_argument(
+        "--backend",
+        default="mcp",
+        choices=["mcp", "api"],
+        help=(
+            "For external_call nodes with an mcp binding (dbos runtime): "
+            "'mcp' (default) emits a working call to the MCP tool the skill "
+            "used; 'api' emits the direct vendor-SDK path. See `rote emit`."
         ),
     )
     graduate.add_argument(

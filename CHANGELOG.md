@@ -17,6 +17,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   adapter emits a working FastMCP client call by default
   (`external_backend="mcp"`); `api` falls back to the direct-SDK `impl`.
   Verified end-to-end against a live mock MCP server (`tests/test_mcp_e2e.py`).
+- `rote emit`/`rote graduate` gained `--backend mcp|api` to choose that
+  backend at emit time (adapter factories now accept forwarded options).
 - `rote eval` harness: an auto-emitted `scorecard.md` with a static
   before/after estimate of speed, cost, and determinism (live-fetched
   model prices, no hardcoded tables), plus `rote eval --run` for
