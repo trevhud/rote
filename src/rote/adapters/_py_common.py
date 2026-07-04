@@ -650,11 +650,18 @@ def _extracted_layout(pipeline: Pipeline) -> dict[str, list[Node]]:
     a module (BDR's hubspot.py has three functions). ``agent_loop``
     nodes have no impl path — each gets its own ``<node_id>.py`` module
     with a same-named stub function.
+
+    An ``external_call`` with only an ``mcp`` binding (and no ``impl``)
+    has no stub to emit — its step body calls the MCP tool directly — so
+    it is skipped here.
     """
     modules: dict[str, list[Node]] = {}
     for node in pipeline.nodes:
         if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
-            assert node.impl is not None
+            if node.impl is None:
+                # MCP-backed external_call with no direct-API impl: nothing
+                # to scaffold in extracted/.
+                continue
             module_name, _ = _impl_path_parts(node.impl)
             modules.setdefault(module_name, []).append(node)
         elif node.kind is NodeKind.AGENT_LOOP:

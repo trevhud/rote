@@ -62,6 +62,7 @@ import json
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
@@ -107,6 +108,13 @@ class DbosAdapterConfig:
     # Steps enqueued for parallel waves land on this queue. None means
     # derive "<pipeline-name>-queue".
     queue_name: str | None = None
+    # Backend for external_call nodes that carry an ``mcp`` binding:
+    #   "mcp" → emit a working Streamable-HTTP call to the MCP tool (runs
+    #           out of the box against the server the source skill used)
+    #   "api" → emit the direct vendor-SDK path via ``impl`` (leaner; one
+    #           key in .env). Nodes without an ``mcp`` binding always use
+    #           ``impl`` regardless of this setting.
+    external_backend: Literal["mcp", "api"] = "mcp"
 
 
 # ───────── Retry mapping ─────────
@@ -232,6 +240,66 @@ def _emit_step_pure_or_external(node: Node) -> str:
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
         f"    return _serialize({func_name}(**payload))\n"
+    )
+
+
+def _emit_step_mcp(node: Node) -> str:
+    """Emit a step that calls the node's MCP tool over Streamable HTTP.
+
+    Unlike :func:`_emit_step_pure_or_external` (which imports a
+    ``NotImplementedError`` stub), this produces a *working* body: it opens
+    a FastMCP client to the resolved server URL, calls the tool, and returns
+    the structured result. The call runs inside the ``@DBOS.step`` so its
+    result is checkpointed and retried like any other step.
+    """
+    binding = node.mcp
+    assert binding is not None
+    env_var = f"ROTE_MCP_{binding.server.upper()}_URL"
+    if binding.url is not None:
+        # Explicit endpoint in the IR; env var still overrides for portability.
+        url_line = f"    url = os.environ.get({env_var!r}, {json.dumps(binding.url)})\n"
+    else:
+        url_line = f"    url = os.environ[{env_var!r}]  # set via `rote mcp` / your MCP config\n"
+    if binding.args:
+        arg_items = ", ".join(
+            f"{json.dumps(tool_arg)}: payload[{json.dumps(payload_key)}]"
+            for tool_arg, payload_key in binding.args.items()
+        )
+        args_line = f"    arguments = {{{arg_items}}}\n"
+    else:
+        args_line = "    arguments = payload  # tool arg names match the threaded payload keys\n"
+    mandatory_marker = ""
+    if node.mandatory:
+        mandatory_marker = (
+            "    # MANDATORY: this node was marked mandatory in the source\n"
+            "    # skill. The workflow always calls it; do not make it conditional.\n"
+        )
+    return (
+        f"{_step_decorator(node)}\n"
+        f"def {node.id}(payload: dict) -> dict:\n"
+        f'    """{safe_docstring_line(node.description)}\n'
+        f"\n"
+        f"    MCP-backed external_call → invokes tool {binding.tool!r} on MCP\n"
+        f"    server {binding.server!r} over Streamable HTTP. The result is\n"
+        f"    checkpointed like any other durable step. Swap to a direct\n"
+        f"    vendor-SDK call with `rote emit --backend api`.\n"
+        f'    """\n'
+        f"{mandatory_marker}"
+        f"{_retry_on_comment(node)}"
+        f"{_timeout_comment(node)}"
+        f"    import asyncio\n"
+        f"\n"
+        f"    from fastmcp import Client\n"
+        f"\n"
+        f"{url_line}"
+        f"{args_line}"
+        f"\n"
+        f"    async def _call() -> object:\n"
+        f"        async with Client(url) as _client:\n"
+        f"            _result = await _client.call_tool({json.dumps(binding.tool)}, arguments)\n"
+        f"            return _result.data\n"
+        f"\n"
+        f"    return _serialize(asyncio.run(_call()))\n"
     )
 
 
@@ -458,8 +526,13 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         if node.kind is NodeKind.HITL_GATE:
             continue
         step_parts.append("\n\n")
-        if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
+        if node.kind is NodeKind.PURE_FUNCTION:
             step_parts.append(_emit_step_pure_or_external(node))
+        elif node.kind is NodeKind.EXTERNAL_CALL:
+            if node.mcp is not None and cfg.external_backend == "mcp":
+                step_parts.append(_emit_step_mcp(node))
+            else:
+                step_parts.append(_emit_step_pure_or_external(node))
         elif node.kind is NodeKind.LLM_JUDGE:
             step_parts.append(_emit_step_llm_judge(node, cfg))
         elif node.kind is NodeKind.AGENT_LOOP:
@@ -533,6 +606,33 @@ def emit_dbos_config(pipeline: Pipeline) -> str:
 
 
 def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
+    mcp_servers = sorted(
+        {
+            n.mcp.server
+            for n in pipeline.nodes
+            if n.kind is NodeKind.EXTERNAL_CALL
+            and n.mcp is not None
+            and cfg.external_backend == "mcp"
+        }
+    )
+    if mcp_servers:
+        env_lines = "\n".join(
+            f"export ROTE_MCP_{s.upper()}_URL=...   # {s!r} MCP server (Streamable HTTP)"
+            for s in mcp_servers
+        )
+        mcp_note = (
+            "\n## MCP-backed steps\n\n"
+            "Some `external_call` steps call MCP tools over Streamable HTTP\n"
+            "(the `mcp` backend). To run them, install `fastmcp` and set one\n"
+            "endpoint env var per server:\n\n"
+            "```sh\n"
+            "pip install fastmcp\n"
+            f"{env_lines}\n"
+            "```\n"
+        )
+    else:
+        mcp_note = ""
+
     gates = [n for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE]
     gate_lines = "\n".join(
         f"| `{g.id}` | `{g.signal}` | {g.timeout or pipeline.config.hitl.default_timeout} |"
@@ -594,7 +694,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         export ROTE_MODEL_<NODE_ID>=...      # e.g. ROTE_MODEL_VET_CONTACT
         export ROTE_BASE_URL_<NODE_ID>=...   # custom endpoint for that judge
         ```
-
+        {mcp_note}
         ## HITL gates
 
         The workflow parks durably at each gate until a message arrives on
@@ -623,6 +723,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         pipeline_name=pipeline.name,
         gate_lines=gate_lines,
         first_signal=first_signal,
+        mcp_note=mcp_note,
     )
 
 
