@@ -10,6 +10,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- MCP-backed `external_call` nodes: an IR `mcp:` binding (server / tool /
+  args / url / transport) lets a graduated pipeline **call the MCP tool
+  the source skill used, over Streamable HTTP**, instead of emitting a
+  `NotImplementedError` stub — so the output runs out of the box. The DBOS
+  adapter emits a working FastMCP client call by default
+  (`external_backend="mcp"`); `api` falls back to the direct-SDK `impl`.
+  Verified end-to-end against a live mock MCP server (`tests/test_mcp_e2e.py`).
 - `rote eval` harness: an auto-emitted `scorecard.md` with a static
   before/after estimate of speed, cost, and determinism (live-fetched
   model prices, no hardcoded tables), plus `rote eval --run` for
