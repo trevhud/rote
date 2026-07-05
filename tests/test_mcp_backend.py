@@ -10,11 +10,14 @@ is fast — pure IR validation + template-substitution assertions.
 from __future__ import annotations
 
 import ast
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from rote.adapters import get_adapter
 from rote.adapters.dbos import DbosAdapterConfig, emit_main
+from rote.cli import main as cli_main
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput
 
 
@@ -110,3 +113,65 @@ def test_mcp_backend_ignored_when_no_binding() -> None:
     src = emit_main(pipeline, DbosAdapterConfig(external_backend="mcp"))
     assert "from extracted.vendor import enrich_contact" in src
     assert "from fastmcp import Client" not in src
+
+
+# ───────── --backend flag (registry + CLI) ─────────
+
+
+def test_get_adapter_rejects_bad_backend() -> None:
+    with pytest.raises(ValueError, match="'mcp' or 'api'"):
+        get_adapter("dbos", external_backend="grpc")
+
+
+def test_get_adapter_ignores_backend_for_other_runtimes() -> None:
+    """A runtime without mcp support swallows the option instead of erroring."""
+    get_adapter("python", external_backend="api")  # must not raise
+
+
+_CLI_PIPELINE_YAML = """\
+name: cli_backend_demo
+version: "0.1.0"
+description: CLI --backend flag test.
+input:
+  type: Req
+  required: [contact_id]
+nodes:
+  - id: enrich
+    kind: external_call
+    description: Enrich via MCP.
+    input:
+      contact_id: str
+    inputs:
+      contact_id: pipeline.input.contact_id
+    output: dict
+    impl: extracted/vendor.py:enrich_contact
+    mcp:
+      server: vendor
+      tool: enrich_contact
+      args:
+        contact_id: contact_id
+edges: []
+entry_nodes: [enrich]
+exit_nodes: [enrich]
+"""
+
+
+def test_cli_emit_backend_flag(tmp_path: Path) -> None:
+    yaml_path = tmp_path / "pipeline.yaml"
+    yaml_path.write_text(_CLI_PIPELINE_YAML)
+
+    out_api = tmp_path / "api"
+    rc = cli_main(
+        ["emit", str(yaml_path), "--runtime", "dbos", "--backend", "api", "--out", str(out_api)]
+    )
+    assert rc == 0
+    api_main = (out_api / "main.py").read_text()
+    assert "from extracted.vendor import enrich_contact" in api_main
+    assert "from fastmcp import Client" not in api_main
+
+    out_mcp = tmp_path / "mcp"  # default backend is mcp
+    rc = cli_main(["emit", str(yaml_path), "--runtime", "dbos", "--out", str(out_mcp)])
+    assert rc == 0
+    mcp_main = (out_mcp / "main.py").read_text()
+    assert "from fastmcp import Client" in mcp_main
+    assert 'call_tool("enrich_contact"' in mcp_main

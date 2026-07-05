@@ -628,7 +628,10 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
             "```sh\n"
             "pip install fastmcp\n"
             f"{env_lines}\n"
-            "```\n"
+            "```\n\n"
+            "Prefer direct vendor-SDK calls? Re-emit with "
+            "`rote emit --runtime dbos --backend api` and fill in the\n"
+            "`extracted/` stubs (one key in `.env` per vendor).\n"
         )
     else:
         mcp_note = ""
