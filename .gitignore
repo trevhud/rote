@@ -108,6 +108,7 @@ TODO.local.md
 
 # ── Claude Code agent worktrees ──
 .claude/worktrees/
+.worktrees/
 
 # Proprietary hosted platform — now the separate private rote-cloud repo
 cloud/
