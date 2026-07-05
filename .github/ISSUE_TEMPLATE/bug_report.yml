@@ -1,0 +1,56 @@
+name: Bug report
+description: Something in rote behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If this is about the graduator making a
+        weird *classification* call (rather than a crash), the
+        **Graduation report** template captures the right context.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        The exact command(s) you ran. If it involves `rote emit`, attach
+        or paste the `pipeline.yaml`. If it involves `rote graduate`,
+        note the driver (`claude` / `codex` / `api`).
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: rote version
+      description: Output of `rote --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime (if relevant)
+      options:
+        - "not applicable"
+        - dbos
+        - temporal
+        - python
+        - cloudflare
+        - dbos-ts
+        - inngest
+    validations:
+      required: false
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: false

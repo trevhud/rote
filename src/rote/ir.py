@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -62,6 +62,12 @@ _PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 # here is belt-and-braces: require an http(s) scheme and standard URL
 # characters only — no whitespace, quotes, or backslashes.
 _BASE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$")
+
+# An MCP tool name (``MCPBinding.tool``). Reaches emitted source as a string
+# literal (always via json.dumps), so this is belt-and-braces: MCP tool
+# names are letters/digits with ``_ . - /`` (namespacing) and nothing that
+# could break out of a string literal.
+_MCP_TOOL_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 
 
 def _validate_impl_ref(value: str, field_name: str) -> str:
@@ -293,6 +299,80 @@ class SourceRef(BaseModel):
         return v
 
 
+class MCPBinding(BaseModel):
+    """Binding from an ``external_call`` node to an MCP tool.
+
+    When present, the ``mcp`` backend emits a call to ``tool`` on the MCP
+    server ``server`` over Streamable HTTP — a working step body, not a
+    ``NotImplementedError`` stub — while the ``api`` backend falls back to
+    the node's ``impl`` (a direct vendor-SDK call). A node may carry both;
+    the backend chooses which is emitted.
+
+    The shape mirrors the official MCP registry's ``remotes[]`` entries
+    (``url`` + ``transport``) so a resolved registry entry maps straight
+    onto it. ``server`` is a *logical* name; adapters resolve it to an
+    endpoint via the ``ROTE_MCP_<SERVER>_URL`` env var unless ``url`` is
+    set explicitly.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    server: str = Field(
+        description="Logical MCP server name; resolves to ROTE_MCP_<SERVER>_URL unless url is set",
+    )
+    tool: str = Field(
+        description="MCP tool name to invoke, e.g. 'hubspot_get_contact_emails'",
+    )
+    args: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Optional rename map: MCP tool-argument name → key in the node's "
+            "runtime payload. Omit to pass the payload through unchanged."
+        ),
+    )
+    url: str | None = Field(
+        default=None,
+        description="Explicit Streamable-HTTP endpoint; overrides the ROTE_MCP_<server>_URL lookup",
+    )
+    transport: Literal["streamable-http", "sse"] = Field(default="streamable-http")
+
+    @field_validator("server")
+    @classmethod
+    def _validate_server(cls, v: str) -> str:
+        """``server`` becomes part of an env-var name and an auth-park signal."""
+        if not _IDENTIFIER_RE.fullmatch(v):
+            raise ValueError(f"mcp.server {v!r} must be a valid identifier")
+        return v
+
+    @field_validator("tool")
+    @classmethod
+    def _validate_tool(cls, v: str) -> str:
+        """``tool`` is emitted as a string literal; charset-limit it anyway."""
+        if not _MCP_TOOL_RE.fullmatch(v):
+            raise ValueError(f"mcp.tool {v!r} must contain only letters, digits, and _./-")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str | None) -> str | None:
+        if v is not None and not _BASE_URL_RE.fullmatch(v):
+            raise ValueError(f"mcp.url {v!r} must be an http(s) URL")
+        return v
+
+    @field_validator("args")
+    @classmethod
+    def _validate_args(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        """Both halves reach emitted dict literals / payload lookups."""
+        if v is None:
+            return None
+        for arg_name, payload_key in v.items():
+            if not _IDENTIFIER_RE.fullmatch(arg_name):
+                raise ValueError(f"mcp.args key {arg_name!r} must be a valid identifier")
+            if not _IDENTIFIER_RE.fullmatch(payload_key):
+                raise ValueError(f"mcp.args value {payload_key!r} must be a valid identifier")
+        return v
+
+
 class Node(BaseModel):
     """A single step in the graduated pipeline.
 
@@ -408,6 +488,14 @@ class Node(BaseModel):
         default=None,
         description="Path to extracted function, e.g., 'extracted/foo.py:bar'",
     )
+    mcp: MCPBinding | None = Field(
+        default=None,
+        description=(
+            "external_call only: binding to an MCP tool. When set, the mcp "
+            "backend emits a working Streamable-HTTP call; the api backend "
+            "uses ``impl`` instead. A node may carry both."
+        ),
+    )
 
     # llm_judge fields
     signature: str | None = Field(
@@ -455,9 +543,14 @@ class Node(BaseModel):
         kind = self.kind
         missing: list[str] = []
 
-        if kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
+        if kind is NodeKind.PURE_FUNCTION:
             if not self.impl:
                 missing.append("impl")
+        elif kind is NodeKind.EXTERNAL_CALL:
+            # An external_call needs a body: either a direct-API impl or an
+            # MCP binding (or both — the backend picks which is emitted).
+            if not self.impl and self.mcp is None:
+                missing.append("impl or mcp")
         elif kind is NodeKind.LLM_JUDGE:
             # Either the legacy path or the structured spec is acceptable.
             # Both being absent is the failure mode.
@@ -479,6 +572,11 @@ class Node(BaseModel):
         # agent loop "mandatory" — that's a no-op)
         if self.mandatory and kind is NodeKind.AGENT_LOOP:
             raise ValueError(f"Node {self.id!r}: mandatory=true is not allowed on agent_loop nodes")
+
+        # An MCP binding is only meaningful on an external_call (it's how that
+        # node reaches a vendor). Reject it elsewhere so the field can't drift.
+        if self.mcp is not None and kind is not NodeKind.EXTERNAL_CALL:
+            raise ValueError(f"Node {self.id!r}: mcp is only allowed on external_call nodes")
 
         return self
 
