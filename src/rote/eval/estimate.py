@@ -93,6 +93,16 @@ class SamplingSurface:
             return 0.0
         return self.sampled_steps / self.total_steps
 
+    @property
+    def roteness(self) -> float:
+        """Share of steps that run as deterministic routine (code) rather
+        than LLM inference — 0.0 = pure agent, 1.0 = pure code. A purely
+        structural function of the pipeline's node kinds: no model, no
+        estimate, same pipeline → same number."""
+        if self.total_steps == 0:
+            return 0.0
+        return 1.0 - self.sampled_fraction
+
 
 @dataclass(frozen=True)
 class AgentRunEstimate:

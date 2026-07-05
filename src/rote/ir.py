@@ -224,7 +224,7 @@ class LLMSignature(BaseModel):
     )
     client: str = Field(
         default="anthropic",
-        description="LLM vendor identifier. Currently 'anthropic' | 'openai'.",
+        description="LLM vendor identifier. 'anthropic' | 'openai' | 'workers-ai'.",
     )
     model: str | None = Field(
         default=None,
@@ -249,7 +249,7 @@ class LLMSignature(BaseModel):
     @field_validator("client")
     @classmethod
     def _validate_client(cls, v: str) -> str:
-        allowed = {"anthropic", "openai"}
+        allowed = {"anthropic", "openai", "workers-ai"}
         if v not in allowed:
             raise ValueError(f"client must be one of {sorted(allowed)}, got {v!r}")
         return v

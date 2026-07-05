@@ -39,6 +39,25 @@ def counter() -> HeuristicTokenCounter:
 # ───────── Range ─────────
 
 
+def test_sampling_surface_roteness_is_pure_structural_math() -> None:
+    """Roteness = deterministic steps / total steps — a function of node
+    kinds only, never a model's estimate. 0 = pure agent, 1 = pure code."""
+    from rote.eval.estimate import Range, SamplingSurface
+
+    def surface(total: int, sampled: int) -> SamplingSurface:
+        return SamplingSurface(
+            total_steps=total,
+            sampled_steps=sampled,
+            schema_constrained_steps=sampled,
+            sampled_output_tokens=Range(0.0, 0.0),
+        )
+
+    assert surface(4, 2).roteness == 0.5  # 2 code + 2 inference
+    assert surface(3, 0).roteness == 1.0  # all deterministic
+    assert surface(2, 2).roteness == 0.0  # all inference
+    assert surface(0, 0).roteness == 0.0  # no divide-by-zero on empty
+
+
 def test_range_rejects_inverted_bounds() -> None:
     with pytest.raises(ValueError):
         Range(2.0, 1.0)

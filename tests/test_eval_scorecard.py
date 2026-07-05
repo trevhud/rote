@@ -105,10 +105,15 @@ def test_scorecard_markdown_and_dict(estimates) -> None:  # type: ignore[no-unty
     # The turn-estimate method must be auditable from the rendered card.
     assert "graduator sidecar (eval.yaml)" in md
 
+    # Roteness is a first-class, purely-structural scorecard field.
+    assert "| Roteness (deterministic steps) |" in md
+
     payload = card.to_dict()
     json.dumps(payload)  # must be JSON-serializable
     assert payload["pipeline"] == pipeline.name
     assert payload["before"] is not None
+    assert payload["roteness"] == pe.sampling.roteness
+    assert 0.0 <= payload["roteness"] <= 1.0  # type: ignore[operator]
     costs = payload["costs"]
     assert isinstance(costs, list) and len(costs) == 2
     assert costs[0]["before_usd"]["low"] > 0  # type: ignore[index]
