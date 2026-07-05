@@ -98,6 +98,10 @@ class Scorecard:
         return {
             "pipeline": self.pipeline_name,
             "generated_at": self.generated_at,
+            # Roteness: share of pipeline steps that run as deterministic
+            # routine (code) vs. LLM inference. Purely structural — a function
+            # of node kinds, not any model's estimate.
+            "roteness": self.pipeline.sampling.roteness,
             "before": skill_part,
             "after": {
                 "critical_path_seconds": _range(self.pipeline.critical_path_seconds),
@@ -184,6 +188,11 @@ class Scorecard:
                 f"{self.skill.sampling.sampled_steps} of {self.skill.sampling.total_steps} | "
                 f"{self.pipeline.sampling.sampled_steps} of {self.pipeline.sampling.total_steps} "
                 f"({self.pipeline.sampling.schema_constrained_steps} schema-constrained) | — |"
+            )
+            lines.append(
+                "| Roteness (deterministic steps) | "
+                f"{1 - self.skill.sampling.sampled_fraction:.0%} | "
+                f"{self.pipeline.sampling.roteness:.0%} | — |"
             )
         else:
             lines.append(
