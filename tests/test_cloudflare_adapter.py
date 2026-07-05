@@ -350,7 +350,7 @@ def test_workers_ai_signature_uses_ai_binding_not_api_key(tmp_path: Path) -> Non
     assert "json_schema: OUTPUT_JSON_SCHEMA" in sig
     assert 'from "zod"' in sig
     # No SDK, no key — the binding is the auth.
-    assert '@anthropic-ai/sdk' not in sig
+    assert "@anthropic-ai/sdk" not in sig
     assert 'from "openai"' not in sig
     assert "ANTHROPIC_API_KEY" not in sig
     assert "OPENAI_API_KEY" not in sig
