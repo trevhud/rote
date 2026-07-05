@@ -9,7 +9,20 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-05
+
 ### Added
+- **Workers AI signature client** (`signature_spec.client: "workers-ai"`): the
+  Cloudflare adapter emits `env.AI.run(...)` with schema-locked JSON output
+  (`response_format: json_schema`) routed through an AI Gateway — no vendor
+  SDK and no API key (the `AI` binding is the auth). `Env` / `wrangler.jsonc` /
+  secrets are now client-aware: the `AI` binding appears when a judge targets
+  workers-ai, and only the API keys actually used are emitted.
+- **Roteness** in the eval scorecard: `deterministic steps / total steps`, a
+  purely structural code-vs-inference ratio (0% = agent loop, 100% = pure
+  code) that never depends on a model estimate — the honest counterweight to
+  the empirical determinism metric. On `SamplingSurface.roteness`,
+  `Scorecard.to_dict()`, and the markdown scorecard.
 - MCP-backed `external_call` nodes: an IR `mcp:` binding (server / tool /
   args / url / transport) lets a graduated pipeline **call the MCP tool
   the source skill used, over Streamable HTTP**, instead of emitting a
