@@ -298,6 +298,81 @@ def test_dev_vars_example_documents_judge_overrides(emit_result: dict[str, Path]
     assert "# ROTE_BASE_URL_VET_CONTACT=" in src
 
 
+def _workers_ai_pipeline() -> Pipeline:
+    """Minimal pipeline with a single Workers AI llm_judge node."""
+    from rote.ir import Node, PipelineInput
+
+    signature = LLMSignature(
+        input_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"ticket": {"type": "string"}},
+            "required": ["ticket"],
+        },
+        output_schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"category": {"type": "string", "enum": ["billing", "other"]}},
+            "required": ["category"],
+        },
+        prompt="Classify {{ ticket }}.",
+        client="workers-ai",
+        model="@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        temperature=0,
+    )
+    return Pipeline(
+        name="wai-demo",
+        input=PipelineInput(type="TicketInput", required=["ticket"]),
+        nodes=[
+            Node(
+                id="classify",
+                kind=NodeKind.LLM_JUDGE,
+                description="classify a ticket",
+                inputs={"ticket": "pipeline.input.ticket"},
+                signature_spec=signature,
+            )
+        ],
+        edges=[],
+        entry_nodes=["classify"],
+        exit_nodes=["classify"],
+    )
+
+
+def test_workers_ai_signature_uses_ai_binding_not_api_key(tmp_path: Path) -> None:
+    """A ``workers-ai`` judge runs on the ``env.AI`` binding with schema-locked
+    output — no vendor SDK, no API key, and the AI binding wired in wrangler."""
+    result = CloudflareAdapter().emit(_workers_ai_pipeline(), tmp_path)
+
+    sig = result["signatures/classify"].read_text()
+    assert "env.AI.run" in sig
+    assert "response_format" in sig
+    assert '"json_schema"' in sig
+    assert "json_schema: OUTPUT_JSON_SCHEMA" in sig
+    assert 'from "zod"' in sig
+    # No SDK, no key — the binding is the auth.
+    assert '@anthropic-ai/sdk' not in sig
+    assert 'from "openai"' not in sig
+    assert "ANTHROPIC_API_KEY" not in sig
+    assert "OPENAI_API_KEY" not in sig
+
+    # Env carries the AI binding and no API-key secret.
+    workflow = result["workflow"].read_text()
+    assert "AI: Ai;" in workflow
+    assert "ANTHROPIC_API_KEY" not in workflow
+    assert "OPENAI_API_KEY" not in workflow
+
+    # wrangler registers the Workers AI binding.
+    wrangler = result["wrangler"].read_text()
+    assert '"ai"' in wrangler
+    assert '"AI"' in wrangler
+
+    # No key is prompted for at deploy time.
+    assert "ANTHROPIC_API_KEY" not in result[".dev.vars.example"].read_text()
+
+    # The MCP-free invariant holds on the Workers AI path too.
+    assert_no_mcp_in_ts(result, min_files=3)
+
+
 def test_extracted_stub_throws_not_implemented(
     emit_result: dict[str, Path],
 ) -> None:

@@ -35,7 +35,6 @@ import { preEnrollmentReport } from "./extracted/pre_enrollment_report";
 
 export interface Env {
     ANTHROPIC_API_KEY: string;
-    OPENAI_API_KEY?: string;
     PIPELINE: Workflow<Params>;
 }
 
