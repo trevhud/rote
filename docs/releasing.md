@@ -7,7 +7,13 @@ gate a build job (sdist + wheel + `twine check` + a clean-venv wheel
 smoke test), and a separate publish job uploads to PyPI via Trusted
 Publishing (OIDC). No API tokens are stored anywhere.
 
-## One-time setup (before the first release)
+`rote-cli` is **already published** — 0.1.0 through 0.6.0 are live on
+[PyPI](https://pypi.org/project/rote-cli/). The one-time setup below is
+kept for the record (and in case the trusted publisher ever needs to be
+re-established); day-to-day releases only need the "Cutting a release"
+checklist.
+
+## One-time setup (done — kept for reference)
 
 ### 0. Distribution name (decided: `rote-cli`)
 
