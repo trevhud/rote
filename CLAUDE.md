@@ -66,8 +66,8 @@ against the previously committed snapshot in
   `name`, `is_available() -> (bool, str)`, and
   `async run(skill_dir, graduator_skill_dir, work_dir) -> DriverResult`
 - **Three concrete drivers:** `ClaudeDriver` (subprocess to `claude -p`),
-  `CodexDriver` (stub), `AnthropicApiDriver` (in-process via the
-  `anthropic` SDK)
+  `CodexDriver` (subprocess to `codex exec`), `AnthropicApiDriver`
+  (in-process via the `anthropic` SDK)
 - **The contract is the filesystem:** every driver writes
   `work_dir/pipeline.yaml` and returns a `DriverResult` pointing at it.
   Do not invent new return-shape fields or side-channel comms.
@@ -539,8 +539,6 @@ Don't waste time debugging stubs. These are intentional.
 
 **Intentionally stubbed:**
 
-- `CodexDriver.run()` — has a working `is_available()`, `run()`
-  raises `NotImplementedError` with a clear task-number marker
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
   code; the graduator produces scaffolding, not production code
@@ -571,7 +569,15 @@ Don't waste time debugging stubs. These are intentional.
   OpenAI-compatible endpoint. Node.source (provenance) is excluded
   from the pipeline hash on purpose — metadata must not re-version
   in-flight workflows.
-- `ClaudeDriver`, `AnthropicApiDriver`
+- All three graduator drivers: `ClaudeDriver` (`claude -p`),
+  `CodexDriver` (`codex exec` — workspace-write sandbox, no env
+  scrubbing since Codex login is only overridden by `CODEX_API_KEY`,
+  smoke-tested against the real CLI), `AnthropicApiDriver`
+- `rote analyze` — the `plan` to `graduate`'s `apply`: runs the
+  graduator, then prints a structural report (node-kind breakdown,
+  roteness matching `rote eval`, HITL gates, targetable runtimes)
+  instead of emitting runtime code. `--json` for machines; `--out`
+  keeps the IR for a later `rote emit`.
 - Data-flow threading: nodes declare `inputs:` (param → source
   reference, grammar in `rote.ir.parse_input_ref`) and all three
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
@@ -588,7 +594,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 506 tests (493 fast + 13 slow). Run with `pytest tests/` (fast
+- 540 tests (524 fast + 16 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

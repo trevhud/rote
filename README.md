@@ -289,8 +289,7 @@ script as a subprocess, and the MCP server over real stdio). The fast
 suite (`pytest tests/`) makes no real API calls; the integration suite is
 `pytest tests/ -m slow`.
 
-Known gaps: the `codex` driver is a stub (`is_available` works, `run`
-isn't implemented), the extracted modules are `NotImplementedError` stubs
+Known gaps: the extracted modules are `NotImplementedError` stubs
 you fill in with real API-client code, a Restate adapter is planned, and
 `fan_out` nodes currently receive the whole upstream list in one
 invocation (per-element dispatch is a planned enhancement). Published on
@@ -338,19 +337,17 @@ rote/
 
 In rough priority order:
 
-1. **`CodexDriver` implementation** — same shape as `ClaudeDriver` but
-   spawning `codex exec`; unlocks ChatGPT subscribers.
-2. **Re-graduate BDR end-to-end with `signature_spec`** — the bundled IR
+1. **Re-graduate BDR end-to-end with `signature_spec`** — the bundled IR
    was hand-extended with structured schemas; the rubric now teaches the
    field, but no real run has produced one yet.
-3. **Pre-filter as a `pure_function` node** — today hard thresholds are
+2. **Pre-filter as a `pure_function` node** — today hard thresholds are
    lifted into a judge's `forward()`, which works for Temporal but not
    Cloudflare; a separate node makes the short-circuit uniform.
-4. **More example skills** — BDR is one shape; research-heavy,
+3. **More example skills** — BDR is one shape; research-heavy,
    retrieval-heavy, and code-review skills stress the IR differently.
-5. **`fan_out` per-element dispatch** — currently the whole upstream list
+4. **`fan_out` per-element dispatch** — currently the whole upstream list
    arrives in one invocation.
-6. **The graduator graduating itself** — `rote-graduate` is a SKILL.md;
+5. **The graduator graduating itself** — `rote-graduate` is a SKILL.md;
    pointing `rote graduate` at it should crystallize its rubric-grade
    pieces and leave only the genuinely fuzzy judgments in the loop.
 

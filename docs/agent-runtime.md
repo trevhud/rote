@@ -128,36 +128,55 @@ comes from the filesystem, not stdout.
 ```sh
 codex exec \
     --cd "<work_dir>" \
-    --add-dir "<skill_dir>" \
-    --add-dir "<graduator_skill_dir>" \
     --sandbox workspace-write \
-    --ask-for-approval never \
     --skip-git-repo-check \
-    --json \
+    --ephemeral \
+    --color never \
+    --output-last-message "<tempfile outside work_dir>" \
+    [--model "<id>"] \
     "<prompt with inlined SKILL.md>"
 ```
 
-**Auth:** `codex exec` reuses the cached login from
-`~/.codex/auth.json`. User runs `codex login` once with their
-ChatGPT account; tokens auto-refresh. No env scrubbing needed.
+This is the **verified** invocation (codex-cli 0.142.4, confirmed by
+both `codex exec --help` and a live smoke test through `CodexDriver`).
+Three flags from the original design were wrong and were removed:
 
-**Gotcha — git repo requirement:** by default, Codex insists that
-the workspace directory be a git repo. For rote's scratch `work_dir/`
-this is not the case, so `--skip-git-repo-check` is required.
+- **`--add-dir` dropped.** It appends to the sandbox's *writable* roots
+  — it does not grant read access, and the source skill must stay
+  read-only. Under `--sandbox workspace-write`, reads are already
+  full-access across the filesystem, so the agent reads the skill and
+  rubric in place with no grant.
+- **`--ask-for-approval never` dropped.** It is not a valid flag on
+  `codex exec` (it hard-errors). `exec` is headless: its approval
+  policy already defaults to `Never`, so nothing is needed.
+- **`--json` dropped** in favor of `--output-last-message`. The
+  deliverable is a file on disk; the last-message file captures a clean
+  final message for metadata without parsing an NDJSON event stream.
+  It's written *outside* `work_dir` so the orchestrator's move of
+  `work_dir` → user output doesn't sweep it up.
 
-**Gotcha — auth conflict:** an active ChatGPT login *blocks*
-`OPENAI_API_KEY` from being used. rote doesn't try to support both
-auth modes through the codex driver — if the user wants API-key
-auth, they should use the `api` driver (which is Anthropic, not
-OpenAI, and a different choice entirely).
+**Sandbox default gotcha:** `codex exec` defaults to a **read-only**
+sandbox, which cannot write the pipeline.yaml — passing
+`--sandbox workspace-write` is mandatory, not optional.
 
-**Skill injection:** Codex has no `--system-prompt` flag, so the
-rote-graduate SKILL.md is inlined directly into the prompt argument.
-Codex does read `~/.codex/skills/` but rote does not rely on that.
+**Auth:** `codex exec` reuses the cached login from `~/.codex/auth.json`
+(`codex login` once with a ChatGPT account; tokens auto-refresh). The
+driver passes the environment through **untouched** — no scrubbing.
+Unlike Claude (where `ANTHROPIC_API_KEY` overrides the OAuth session),
+a stored Codex login is only overridden by `CODEX_API_KEY` /
+`CODEX_ACCESS_TOKEN` — *not* by `OPENAI_API_KEY`. And because rote has
+no OpenAI-API driver, a user whose only credential is `OPENAI_API_KEY`
+must still be able to graduate through Codex, so forcing subscription
+auth would be wrong here.
 
-**Output capture:** `--json` emits NDJSON events on stdout. Progress
-goes to stderr. As with Claude, the `pipeline.yaml` comes from the
-filesystem.
+**Git repo requirement:** by default Codex insists the workspace be a
+git repo; rote's scratch `work_dir/` isn't, so `--skip-git-repo-check`
+is required.
+
+**Skill injection:** Codex has no `--append-system-prompt` flag, so the
+rote-graduate SKILL.md is inlined directly into the prompt argument
+(its reference files are read from disk under the sandbox's global read
+access). As with Claude, the `pipeline.yaml` comes from the filesystem.
 
 ### `api` (for users who prefer API key auth)
 
