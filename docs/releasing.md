@@ -54,7 +54,11 @@ That's it. No secrets to create, rotate, or leak.
 ## Cutting a release
 
 1. Bump the version in `src/rote/__init__.py` — the single source;
-   `pyproject.toml` reads it via `[tool.hatch.version]`.
+   `pyproject.toml` reads it via `[tool.hatch.version]`. Bump the two
+   Claude Code plugin manifests to match: `plugin/.claude-plugin/plugin.json`
+   and `.claude-plugin/marketplace.json` (they carry their own `version`
+   and back the "install from Claude Code" path). `tests/test_plugin_manifest.py`
+   fails if either drifts from `rote.__version__`.
 2. Run the pre-PR checklist from [CLAUDE.md](../CLAUDE.md): `pytest
    tests/`, `ruff check . && ruff format .`, `mypy src/rote`,
    `./scripts/sanity-check.sh`.
