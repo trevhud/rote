@@ -9,6 +9,29 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`CodexDriver` is now implemented** — `rote graduate --agent codex`
+  spawns `codex exec` (OpenAI Codex CLI) as a graduator backend,
+  completing the three-driver lineup. Runs headless under a
+  `workspace-write` sandbox (global reads so it can read the skill +
+  rubric in place, writes confined to the work dir, no network). The
+  environment is passed through untouched — a stored `codex login`
+  session is only overridden by `CODEX_API_KEY`/`CODEX_ACCESS_TOKEN`,
+  not `OPENAI_API_KEY`, and there is no separate OpenAI-API driver, so
+  no auth is forced. Verified against the real CLI (codex-cli 0.142.4).
+- **`rote analyze` is now implemented** — the `plan` to `graduate`'s
+  `apply`. Runs the graduator against a skill and prints a structural
+  report (node-kind breakdown, roteness — matching `rote eval` — plus
+  mandatory checks, HITL gates, agent loops, and which runtimes can
+  target it) *without* emitting runtime code. `--json` for a
+  machine-readable report; `--out` keeps the graduated IR for a later
+  `rote emit`. Previously a stub that printed "not yet implemented".
+
+### Fixed
+- The `codex` driver no longer raises `NotImplementedError` when
+  selected via `--agent codex` or chosen by auto-detect (a first-run
+  crash for users who had the Codex CLI but not Claude Code installed).
+
 ## [0.6.0] - 2026-07-05
 
 ### Added

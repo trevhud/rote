@@ -28,7 +28,7 @@ import asyncio
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
@@ -377,9 +377,201 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_analysis(
+    pipeline: Pipeline,
+    driver_name: str,
+    driver_metadata: dict[str, object],
+    skill_path: Path,
+) -> dict[str, object]:
+    """Derive a structural report from a graduated pipeline's IR.
+
+    Pure function of the IR — no model, no network. Step counting mirrors
+    the eval scorecard exactly (top-level execution-wave nodes; loop_body
+    sub-nodes are costed inside their parent loop, so they're excluded
+    from the top-level count) so ``analyze``'s roteness equals ``eval``'s.
+    """
+    from rote.adapters import ADAPTERS
+    from rote.adapters._common import _execution_waves
+    from rote.ir import NodeKind
+
+    top_level = [n for wave in _execution_waves(pipeline) for n in wave]
+    total = len(top_level)
+
+    by_kind = {k.value: 0 for k in NodeKind}
+    for n in top_level:
+        by_kind[n.kind.value] += 1
+
+    sampled = by_kind[NodeKind.LLM_JUDGE.value] + by_kind[NodeKind.AGENT_LOOP.value]
+    deterministic = total - sampled
+    roteness = (deterministic / total) if total else 0.0
+
+    loop_body_ids = sorted({b for n in pipeline.nodes if n.loop_body for b in n.loop_body})
+
+    untargetable: dict[str, str] = {}
+    if pipeline.requires_durable_execution:
+        untargetable["python"] = (
+            "pipeline parks on a human gate (hitl_gate); needs durable execution"
+        )
+    targetable = [name for name in sorted(ADAPTERS) if name not in untargetable]
+
+    return {
+        "pipeline": pipeline.name,
+        "version": pipeline.version,
+        "description": pipeline.description,
+        "driver": driver_name,
+        "driver_metadata": driver_metadata,
+        "source_skill": str(skill_path),
+        "nodes": {
+            "total": total,
+            "by_kind": by_kind,
+            "loop_body_subnodes": loop_body_ids,
+        },
+        "roteness": roteness,
+        "deterministic_steps": deterministic,
+        "sampled_steps": sampled,
+        "mandatory": [n.id for n in top_level if n.mandatory],
+        "hitl_gates": [
+            {"id": n.id, "signal": n.signal} for n in top_level if n.kind is NodeKind.HITL_GATE
+        ],
+        "agent_loops": [
+            {
+                "id": n.id,
+                "max_iterations": (n.termination.max_iterations if n.termination else None),
+            }
+            for n in top_level
+            if n.kind is NodeKind.AGENT_LOOP
+        ],
+        "targetable_runtimes": targetable,
+        "untargetable_runtimes": untargetable,
+    }
+
+
+def _render_analysis_text(report: dict[str, object]) -> str:
+    """Render an :func:`_build_analysis` report as a scannable text block."""
+    nodes = report["nodes"]
+    assert isinstance(nodes, dict)
+    by_kind: dict[str, int] = nodes["by_kind"]
+    total = nodes["total"]
+
+    lines = [
+        f"rote analyze: {report['pipeline']} v{report['version']}",
+        f"  driver: {report['driver']}",
+        f"  source: {report['source_skill']}",
+    ]
+    description = report["description"]
+    if isinstance(description, str) and description.strip():
+        # Collapse internal whitespace/newlines to one line, then clip.
+        flat = " ".join(description.split())
+        lines.append(f"  {flat[:200] + '…' if len(flat) > 200 else flat}")
+
+    lines.append("")
+    lines.append(f"Nodes ({total} executed step{'s' if total != 1 else ''})")
+    # Stable, readable kind order; only show kinds that occur.
+    for kind in ("pure_function", "external_call", "llm_judge", "agent_loop", "hitl_gate"):
+        count = by_kind.get(kind, 0)
+        if count:
+            lines.append(f"  {kind:<15} {count:>2}  {'█' * count}")
+    subnodes = nodes["loop_body_subnodes"]
+    assert isinstance(subnodes, list)
+    if subnodes:
+        lines.append(f"  (+{len(subnodes)} loop-body sub-node(s), costed inside their loop)")
+
+    roteness = report["roteness"]
+    assert isinstance(roteness, float)
+    lines.append("")
+    lines.append(
+        f"Roteness: {roteness:.0%} deterministic "
+        f"({report['deterministic_steps']} of {total} steps run as code, not inference)"
+    )
+
+    mandatory = report["mandatory"]
+    assert isinstance(mandatory, list)
+    if mandatory:
+        lines.append(f"Mandatory checks (cannot be skipped): {', '.join(mandatory)}")
+
+    hitl = report["hitl_gates"]
+    assert isinstance(hitl, list)
+    if hitl:
+        gates = ", ".join(f"{g['id']} (signal: {g['signal']})" for g in hitl)
+        lines.append(f"HITL gates: {gates}")
+
+    loops = report["agent_loops"]
+    assert isinstance(loops, list)
+    if loops:
+        rendered = ", ".join(
+            f"{loop['id']} (max {loop['max_iterations']} iterations)"
+            if loop["max_iterations"] is not None
+            else str(loop["id"])
+            for loop in loops
+        )
+        lines.append(f"Agent loops: {rendered}")
+
+    targetable = report["targetable_runtimes"]
+    assert isinstance(targetable, list)
+    lines.append("")
+    lines.append(f"Targetable runtimes: {', '.join(targetable)}")
+    untargetable = report["untargetable_runtimes"]
+    assert isinstance(untargetable, dict)
+    for name, reason in untargetable.items():
+        lines.append(f"  {name}: unavailable — {reason}")
+
+    return "\n".join(lines)
+
+
 def _cmd_analyze(args: argparse.Namespace) -> int:
-    print("rote analyze: not yet implemented.", file=sys.stderr)
-    return 70
+    """Dry-run the graduator: report a skill's graduated shape, emit nothing.
+
+    The ``plan`` to ``graduate``'s ``apply`` — runs the same graduator
+    agent to produce a validated IR, then prints a structural report
+    instead of emitting runtime code. With ``--out`` the graduated IR +
+    stubs are kept (ready for a later ``rote emit``); without it, they're
+    produced in a temp dir and discarded after reporting.
+    """
+    import json
+    import tempfile
+    from contextlib import nullcontext
+
+    skill_path = Path(args.skill_path)
+    if not skill_path.is_dir():
+        print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
+        return 2
+
+    graduator = Graduator(agent=args.agent, model=args.model)
+
+    out_ctx: Any = (
+        nullcontext(str(args.out))
+        if args.out
+        else tempfile.TemporaryDirectory(prefix="rote-analyze-")
+    )
+    with out_ctx as out_raw:
+        graduated_dir = Path(out_raw)
+        try:
+            result = asyncio.run(graduator.graduate(skill_path, graduated_dir))
+        except GraduatorError as e:
+            print(f"rote analyze: {e}", file=sys.stderr)
+            return 1
+        except KeyboardInterrupt:
+            print("rote analyze: interrupted", file=sys.stderr)
+            return 130
+
+        report = _build_analysis(
+            result.pipeline, result.driver_name, result.driver_metadata, skill_path
+        )
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(_render_analysis_text(report))
+            if args.out:
+                print()
+                print(f"  graduated IR kept at: {graduated_dir / 'pipeline.yaml'}")
+                print(
+                    f"  emit a runtime with:  rote emit {graduated_dir / 'pipeline.yaml'} "
+                    f"--runtime dbos --out ./runtime"
+                )
+            else:
+                print()
+                print("  (report only — pass --out DIR to keep the pipeline.yaml for `rote emit`)")
+    return 0
 
 
 def _resolve_eval_skill_dir(
@@ -942,12 +1134,48 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve.set_defaults(func=_cmd_serve)
 
-    # rote analyze (stub)
+    # rote analyze
     analyze = subparsers.add_parser(
         "analyze",
-        help="Run the graduator against a skill and print a report only",
+        help="Dry-run the graduator: report a skill's graduated shape, emit no runtime code",
+        description=(
+            "Run the rote-graduate agent against a skill and print what "
+            "graduation would produce — node-kind breakdown, roteness "
+            "(deterministic vs. LLM-sampled steps), mandatory checks, HITL "
+            "gates, agent loops, and which runtimes can target it — without "
+            "emitting any runtime code. This is the `plan` to `graduate`'s "
+            "`apply`. Pass --out to keep the pipeline.yaml for a later `rote emit`."
+        ),
     )
-    analyze.add_argument("skill_path")
+    analyze.add_argument("skill_path", help="Path to the source skill directory")
+    analyze.add_argument(
+        "--agent",
+        choices=["claude", "codex", "api"],
+        default=None,
+        help=(
+            "Agent runtime for the graduator (default: auto-detect — claude "
+            "CLI first, then codex, then the anthropic API)."
+        ),
+    )
+    analyze.add_argument(
+        "--model",
+        default=None,
+        help="Override the LLM model the graduator uses (default: the driver's default).",
+    )
+    analyze.add_argument(
+        "--out",
+        default=None,
+        help=(
+            "Keep the graduated IR + stubs in this directory (ready for "
+            "`rote emit`). Default: produce them in a temp dir and discard "
+            "after reporting."
+        ),
+    )
+    analyze.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the analysis report as JSON instead of text.",
+    )
     analyze.set_defaults(func=_cmd_analyze)
 
     # rote eval

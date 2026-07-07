@@ -159,6 +159,147 @@ def test_graduate_rejects_nonexistent_skill_dir(
     assert "not a directory" in err
 
 
+def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch ``rote.cli.Graduator`` with a fake that writes the BDR IR.
+
+    Shared by the graduate and analyze tests — the real agent loop never
+    runs; the fake writes a copy of the BDR pipeline.yaml (known-valid,
+    proven by the IR tests) into the output dir and returns a
+    GraduationResult wrapping the loaded IR.
+    """
+    from rote.graduator import GraduationResult
+    from rote.ir import load_pipeline
+
+    real_pipeline = load_pipeline(BDR_PIPELINE_YAML)
+
+    class _MockGraduator:
+        def __init__(self, agent: str | None = None, **kwargs: object) -> None:
+            self.agent = agent
+
+        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "pipeline.yaml").write_text(
+                BDR_PIPELINE_YAML.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            return GraduationResult(
+                pipeline=real_pipeline,
+                output_dir=output_dir,
+                driver_name="mock",
+                driver_metadata={"num_turns": 7},
+            )
+
+    monkeypatch.setattr("rote.cli.Graduator", _MockGraduator)
+
+
+def test_analyze_rejects_nonexistent_skill_dir(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = cli_main(["analyze", str(tmp_path / "nonexistent")])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "not a directory" in err
+
+
+def test_analyze_reports_pipeline_shape_without_emitting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`analyze` runs the graduator, prints a structural report, and emits
+    no runtime code. Without --out the graduated artifacts are discarded."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+
+    rc = cli_main(["analyze", str(skill_dir)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "bdr-campaign" in out
+    assert "Roteness: 77%" in out  # 10 of 13 top-level steps deterministic
+    assert "HITL gates:" in out
+    # python must be flagged unavailable (BDR has hitl gates)
+    assert "python: unavailable" in out
+    # report-only: no runtime code written anywhere under tmp_path
+    assert not list(tmp_path.rglob("main.py"))
+    assert not list(tmp_path.rglob("workflow.py"))
+    # and the hint to keep artifacts is shown
+    assert "--out" in out
+
+
+def test_analyze_json_mode_is_machine_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+
+    rc = cli_main(["analyze", str(skill_dir), "--json"])
+    assert rc == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["pipeline"] == "bdr-campaign"
+    assert report["nodes"]["total"] == 13
+    assert report["untargetable_runtimes"]["python"]
+    assert "temporal" in report["targetable_runtimes"]
+
+
+def test_analyze_out_keeps_pipeline_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With --out, the graduated IR survives for a later `rote emit`."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    out_dir = tmp_path / "analysis"
+
+    _install_mock_graduator(monkeypatch)
+
+    rc = cli_main(["analyze", str(skill_dir), "--out", str(out_dir)])
+    assert rc == 0
+    assert (out_dir / "pipeline.yaml").is_file()
+    out = capsys.readouterr().out
+    assert "graduated IR kept at" in out
+    assert "rote emit" in out
+
+
+def test_analyze_surfaces_graduator_error_with_exit_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    from rote.cli import GraduatorError
+
+    class _ExplodingGraduator:
+        def __init__(self, agent: str | None = None, **kwargs: object) -> None:
+            pass
+
+        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+            raise GraduatorError("simulated failure: no agent driver available")
+
+    monkeypatch.setattr("rote.cli.Graduator", _ExplodingGraduator)
+
+    rc = cli_main(["analyze", str(skill_dir)])
+    assert rc == 1
+    assert "simulated failure" in capsys.readouterr().err
+
+
 def test_graduate_happy_path_with_mocked_graduator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

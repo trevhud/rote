@@ -212,28 +212,17 @@ def test_available_drivers_returns_triples_for_all(
         assert reason, f"{name} has no reason when unavailable"
 
 
-# ───────── run() stubs ─────────
+# ───────── run() implementations ─────────
 
 
-# Note: ClaudeDriver.run() is implemented as of task #17. Its behavior
-# is covered comprehensively in test_claude_driver.py. The CodexDriver
-# is still a stub pending a similar implementation task.
-
-
-@pytest.mark.asyncio
-async def test_codex_driver_run_raises_not_implemented(tmp_path: Path) -> None:
-    with pytest.raises(NotImplementedError, match="task #13"):
-        await CodexDriver().run(
-            skill_dir=tmp_path,
-            graduator_skill_dir=tmp_path,
-            work_dir=tmp_path,
-        )
-
-
-# Note: AnthropicApiDriver.run() is implemented as of task #13. Its
-# behavior is covered comprehensively in test_anthropic_driver.py
-# (tool dispatch, path security, max-iterations, missing pipeline.yaml,
-# token accounting). No stub assertion here.
+# All three drivers' run() methods are implemented and covered by their
+# own dedicated test modules:
+#   * ClaudeDriver    → test_claude_driver.py
+#   * CodexDriver     → test_codex_driver.py
+#   * AnthropicApiDriver → test_anthropic_driver.py
+# (tool dispatch, path security, subprocess arg/env shape, missing
+# pipeline.yaml, nonzero-exit recovery, metadata). No stub assertions
+# remain here.
 
 
 # ───────── Shared types ─────────
