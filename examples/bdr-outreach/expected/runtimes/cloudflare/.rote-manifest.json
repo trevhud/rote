@@ -18,7 +18,7 @@
     "src/index.ts": "fa4420751e790cebb53fde0cfc37bfbe7021c098b0cb2e777cf08b3aee982bf3",
     "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
     "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
-    "src/workflow.ts": "0c662ea4be5090fbe028605be1de4a2f61b21977d76e4f98cf59091bc427fb13",
+    "src/workflow.ts": "369e5fc00e8276c0fa2285c85b1afecaf2867e48f5222322ac5a148a64c1961b",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "f8b1bfc2997f33a242d4da7526a34943de9fd102c3406f78dca9cebe44523c15"
   }
