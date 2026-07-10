@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -411,6 +412,174 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         server.run(transport="http", host=args.host, port=args.port, show_banner=False)
     else:
         server.run(show_banner=False)  # stdio
+    return 0
+
+
+# ───────── Subcommand group: mcp ─────────
+
+_MCP_SERVER_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+"""Same constraint as the IR's ``mcp.server`` field — the registry key
+IS the binding's logical server name, so they must share a charset."""
+
+
+def _cmd_mcp_add(args: argparse.Namespace) -> int:
+    from rote.mcp import McpServerConfig, load_registry, save_registry
+
+    if not _MCP_SERVER_NAME_RE.fullmatch(args.name):
+        print(
+            f"error: server name {args.name!r} must be a valid identifier "
+            f"(letters, digits, underscores; the same rule as the IR's mcp.server)",
+            file=sys.stderr,
+        )
+        return 2
+    headers: dict[str, str] = {}
+    for item in args.header or []:
+        key, sep, value = item.partition(":")
+        if not sep or not key.strip():
+            print(f"error: --header expects 'Name: value', got {item!r}", file=sys.stderr)
+            return 2
+        headers[key.strip()] = value.strip()
+
+    registry = load_registry()
+    replacing = args.name in registry.servers
+    registry.servers[args.name] = McpServerConfig(
+        url=args.url,
+        transport=args.transport,
+        client_id=args.client_id,
+        client_secret=args.client_secret,
+        scopes=args.scope or None,
+        headers=headers or None,
+    )
+    path = save_registry(registry)
+    verb = "updated" if replacing else "added"
+    print(f"rote mcp: {verb} {args.name!r} → {args.url} ({path})")
+    if not headers:
+        print(f"  authenticate with: rote mcp login {args.name}")
+    return 0
+
+
+def _cmd_mcp_list(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from rote.mcp import access_token_state, load_registry, read_token_file
+
+    registry = load_registry()
+    entries: list[dict[str, object]] = []
+    for name, config in sorted(registry.servers.items()):
+        doc = read_token_file(name)
+        if config.headers:
+            status = "static headers"
+        elif doc is None:
+            status = "not authenticated"
+        else:
+            token, fresh = access_token_state(doc)
+            if token and fresh:
+                status = "authenticated"
+            elif token and (doc.get("tokens") or {}).get("refresh_token"):
+                status = "expired (refreshable)"
+            elif token:
+                status = "expired"
+            else:
+                status = "not authenticated"
+        entries.append(
+            {"name": name, "url": config.url, "transport": config.transport, "auth": status}
+        )
+
+    if args.json:
+        print(_json.dumps({"servers": entries}, indent=2))
+        return 0
+    if not entries:
+        print("rote mcp: no servers registered — add one with: rote mcp add <name> <url>")
+        return 0
+    width = max(len(str(e["name"])) for e in entries)
+    for e in entries:
+        print(f"  {str(e['name']).ljust(width)}  {e['auth']:<22}  {e['url']}")
+    return 0
+
+
+def _cmd_mcp_remove(args: argparse.Namespace) -> int:
+    from rote.mcp import clear_token_file, load_registry, save_registry
+
+    registry = load_registry()
+    if args.name not in registry.servers:
+        print(f"error: no MCP server named {args.name!r}", file=sys.stderr)
+        return 2
+    del registry.servers[args.name]
+    save_registry(registry)
+    cleared = clear_token_file(args.name)
+    print(f"rote mcp: removed {args.name!r}" + (" (tokens cleared)" if cleared else ""))
+    return 0
+
+
+def _cmd_mcp_login(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from rote.mcp import McpAuthError, load_registry
+    from rote.mcp.auth import login
+
+    registry = load_registry()
+    config = registry.servers.get(args.name)
+    if config is None:
+        print(
+            f"error: no MCP server named {args.name!r} — register it first: "
+            f"rote mcp add {args.name} <url>",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        doc = asyncio.run(
+            login(args.name, config, no_browser=args.no_browser, callback_port=args.callback_port)
+        )
+    except McpAuthError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    expires_at = doc.get("expires_at")
+    refresh = " (refresh token stored)" if (doc.get("tokens") or {}).get("refresh_token") else ""
+    print(f"rote mcp: authenticated {args.name!r}{refresh}")
+    if expires_at:
+        print(f"  access token expires at epoch {expires_at:.0f}; refresh is automatic")
+    return 0
+
+
+def _cmd_mcp_logout(args: argparse.Namespace) -> int:
+    from rote.mcp import clear_token_file
+
+    if clear_token_file(args.name):
+        print(f"rote mcp: cleared stored credentials for {args.name!r}")
+        return 0
+    print(f"rote mcp: no stored credentials for {args.name!r}")
+    return 0
+
+
+def _cmd_mcp_headers(args: argparse.Namespace) -> int:
+    """Print fresh auth headers as JSON — the machine-facing token API.
+
+    This is what Claude Code's ``headersHelper`` invokes (per
+    connection, and again on a 401 retry), so it must always emit
+    currently-valid credentials: static headers verbatim, or the
+    stored access token refreshed through the OAuth provider when
+    stale. stdout is the contract; everything else goes to stderr.
+    """
+    import asyncio
+    import json as _json
+
+    from rote.mcp import McpAuthError, load_registry
+    from rote.mcp.auth import fresh_access_token
+
+    registry = load_registry()
+    config = registry.servers.get(args.name)
+    if config is None:
+        print(f"error: no MCP server named {args.name!r}", file=sys.stderr)
+        return 2
+    if config.headers:
+        print(_json.dumps(config.headers))
+        return 0
+    try:
+        token = asyncio.run(fresh_access_token(args.name, config))
+    except McpAuthError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(_json.dumps({"Authorization": f"Bearer {token}"}))
     return 0
 
 
@@ -1160,6 +1329,89 @@ def _build_parser() -> argparse.ArgumentParser:
         help="HTTP port (default: 8734; only with --http)",
     )
     serve.set_defaults(func=_cmd_serve)
+
+    # rote mcp
+    mcp = subparsers.add_parser(
+        "mcp",
+        help="Manage MCP servers: register endpoints, authenticate (OAuth), mint headers",
+        description=(
+            "The MCP client layer. Registered server names match the logical "
+            "`mcp.server` names in graduated pipelines; `login` runs the full "
+            "OAuth 2.1 dance (discovery, PKCE, dynamic registration) and "
+            "stores tokens durably so emitted workflows and eval trials "
+            "authenticate without re-prompting."
+        ),
+    )
+    mcp_sub = mcp.add_subparsers(dest="mcp_command", required=True)
+
+    mcp_add = mcp_sub.add_parser("add", help="Register (or update) an MCP server")
+    mcp_add.add_argument("name", help="Logical server name (matches the IR's mcp.server)")
+    mcp_add.add_argument("url", help="Streamable HTTP endpoint URL")
+    mcp_add.add_argument(
+        "--transport",
+        choices=["streamable-http", "sse"],
+        default="streamable-http",
+    )
+    mcp_add.add_argument(
+        "--client-id",
+        default=None,
+        help="Pre-registered OAuth client id (for servers without dynamic registration)",
+    )
+    mcp_add.add_argument(
+        "--client-secret",
+        default=None,
+        help="Pre-registered client secret (stored 0600 in the registry)",
+    )
+    mcp_add.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="OAuth scope to request (repeatable)",
+    )
+    mcp_add.add_argument(
+        "--header",
+        action="append",
+        default=None,
+        metavar="'Name: value'",
+        help="Static auth header (API-key schemes) instead of OAuth (repeatable)",
+    )
+    mcp_add.set_defaults(func=_cmd_mcp_add)
+
+    mcp_list = mcp_sub.add_parser("list", help="List registered servers and auth status")
+    mcp_list.add_argument("--json", action="store_true")
+    mcp_list.set_defaults(func=_cmd_mcp_list)
+
+    mcp_remove = mcp_sub.add_parser("remove", help="Remove a server (and its tokens)")
+    mcp_remove.add_argument("name")
+    mcp_remove.set_defaults(func=_cmd_mcp_remove)
+
+    mcp_login = mcp_sub.add_parser(
+        "login", help="Authenticate a server via OAuth (opens a browser)"
+    )
+    mcp_login.add_argument("name")
+    mcp_login.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Print the authorization URL instead of opening a browser (SSH boxes)",
+    )
+    mcp_login.add_argument(
+        "--callback-port",
+        type=int,
+        default=None,
+        help="Fixed localhost callback port (for servers with pinned redirect URIs)",
+    )
+    mcp_login.set_defaults(func=_cmd_mcp_login)
+
+    mcp_logout = mcp_sub.add_parser("logout", help="Clear a server's stored credentials")
+    mcp_logout.add_argument("name")
+    mcp_logout.set_defaults(func=_cmd_mcp_logout)
+
+    mcp_headers = mcp_sub.add_parser(
+        "headers",
+        help="Print fresh auth headers as JSON (for headersHelper and scripts)",
+    )
+    mcp_headers.add_argument("name")
+    mcp_headers.set_defaults(func=_cmd_mcp_headers)
 
     # rote analyze
     analyze = subparsers.add_parser(

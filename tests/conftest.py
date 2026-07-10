@@ -12,6 +12,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
 
 
+@pytest.fixture(autouse=True)
+def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may read (or write!) the developer's real MCP registry or
+    token store — several code paths (eval MCP wiring, emitted-helper
+    resolution, the `rote mcp` commands) consult them by default."""
+    monkeypatch.setenv("ROTE_MCP_CONFIG", str(tmp_path / "mcp-config" / "mcp.json"))
+    monkeypatch.setenv("ROTE_MCP_TOKEN_DIR", str(tmp_path / "mcp-tokens"))
+
+
 @pytest.fixture(scope="session")
 def bdr_pipeline() -> Pipeline:
     """The canonical BDR pipeline — the IR that exercises all five node kinds.
