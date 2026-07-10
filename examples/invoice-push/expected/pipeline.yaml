@@ -1,0 +1,374 @@
+name: invoice-push
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  Automates bulk "Push to Procurement" from a fulfillment platform's Cloud Imports screen.
+  Calculates a 7-day rolling date window ending yesterday, navigates to
+  ops.example.com/app/audit/import, clears stale filters, applies Date
+  Imported range and Sent To Procurement = No filters, sets page size to 90,
+  processes each qualifying invoice via the ⋮ menu (with status + 24-hour
+  eligibility checks), captures Sent Dates on success, handles all
+  six named toast error codes, paginates through all pages, and generates
+  a three-tab Google Sheet report (Invoice Detail, Run Summary, Failure
+  Code Reference) saved to the Invoice Push Reports Archive in Drive.
+
+config:
+  on_failure: notify_owner
+  observability:
+    traces: true
+
+input:
+  type: InvoicePushInput
+  required: []
+  optional:
+    - run_date
+    - notify_email
+  input_schema:
+    type: object
+    title: InvoicePushInput
+    additionalProperties: false
+    properties:
+      run_date:
+        type: string
+        format: date
+        description: >-
+          Override today's date for testing (YYYY-MM-DD).
+          Defaults to today when omitted.
+      notify_email:
+        type: string
+        format: email
+        description: >-
+          Email address to alert when a run-stopping error (ERR-AUTH or
+          ERR-CONN) is encountered. Optional; errors are always logged.
+
+nodes:
+  # ── Entry wave (parallel) ──────────────────────────────────────────────
+
+  - id: check_prerequisites
+    kind: external_call
+    phase: "Prerequisites"
+    source:
+      section: "Prerequisites Check"
+    description: |
+      Navigate to the fulfillment platform's imports screen and confirm the Claude in
+      Chrome plugin is active and the user is authenticated. Fails fast with
+      the SKILL.md-specified error message if either precondition is unmet.
+    output: void
+    impl: extracted/browser.py:check_prerequisites
+    timeout: 30s
+    retry:
+      max: 2
+      backoff: constant
+    mandatory: true
+
+  - id: calculate_date_window
+    kind: pure_function
+    phase: "Date Window"
+    source:
+      section: "Date Window Calculation"
+    description: |
+      Compute the 7-day rolling window: end = run_date − 1 day (yesterday),
+      start = end − 7 days. Format each date as M/D/YYYY for the filter UI.
+      Invoices imported today are never eligible (24-hour rule enforced
+      downstream in classify_invoice_row).
+    input:
+      run_date: "str | null"
+    inputs:
+      run_date: pipeline.input.run_date
+    output:
+      start: date
+      end: date
+      start_str: str
+      end_str: str
+    impl: extracted/date_utils.py:calculate_date_window
+    constants:
+      window_days: 7
+
+  # ── Setup wave ─────────────────────────────────────────────────────────
+
+  - id: clear_and_apply_filters
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 2 — Clear All Existing Filter Pills"
+    description: |
+      Clear all stale filter pills (MANDATORY — stale filters silently exclude
+      qualifying invoices), then apply qualifying filters (Date Imported range +
+      Sent To Procurement = No) and set the page size to 90.
+    input:
+      start_date_str: str
+      end_date_str: str
+    inputs:
+      start_date_str: calculate_date_window.output.start_str
+      end_date_str: calculate_date_window.output.end_str
+    output: void
+    impl: extracted/browser.py:clear_and_apply_filters
+    timeout: 60s
+    retry:
+      max: 2
+      backoff: constant
+    mandatory: true
+    constants:
+      page_size: 90
+
+  - id: read_initial_metadata
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 5 — Record Run Start Time"
+    description: |
+      Read the total qualifying record count from the pagination label
+      (e.g. '1-22 of 22 imports') and capture the run start timestamp.
+      Both are used in the Run Summary tab of the final report.
+    output:
+      total_count: int
+      run_start_time: str
+    impl: extracted/browser.py:read_page_metadata
+    timeout: 15s
+    retry:
+      max: 3
+      backoff: constant
+
+  # ── Main processing loop ───────────────────────────────────────────────
+
+  - id: process_invoices_loop
+    kind: agent_loop
+    phase: "Processing"
+    source:
+      section: "Step 7 — Process Each Invoice Row"
+    description: |
+      Iterate over all qualifying invoice rows across all pages. Per row:
+      read all 15 columns, check status eligibility and 24-hour rule, push
+      to the procurement portal via the ⋮ menu, interpret the toast result, and (on success)
+      refresh and capture the Sent Date. On ERR-AUTH or ERR-CONN, stop
+      the run and emit run_aborted=true so the workflow can alert the user.
+      Paginates until all pages are processed.
+    input:
+      date_window: DateWindow
+      total_count: int
+      run_start_time: str
+    inputs:
+      date_window: calculate_date_window.output
+      total_count: read_initial_metadata.output.total_count
+      run_start_time: read_initial_metadata.output.run_start_time
+    output:
+      invoice_results: "list[InvoiceResult]"
+      run_aborted: bool
+      abort_reason: "str | null"
+    tools:
+      - chrome_cdp_click
+      - chrome_cdp_goto
+      - chrome_cdp_snapshot
+      - playwright_cli_snapshot
+    loop_body:
+      - read_page_rows
+      - classify_invoice_row
+      - execute_push
+      - interpret_toast_result
+      - capture_sent_date
+    termination:
+      condition: no_more_pages
+      max_iterations: 200
+    timeout: 90m
+
+  # ── Loop sub-nodes (called per iteration by process_invoices_loop) ─────
+
+  - id: read_page_rows
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "Step 7a — Read All Column Values"
+    description: |
+      Scrape all visible rows from the current imports page via a
+      playwright-cli DOM snapshot. Returns structured TableRow objects
+      with all 15 screen columns exactly as displayed.
+    output:
+      rows: "list[TableRow]"
+    impl: extracted/browser.py:read_page_rows
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+
+  - id: classify_invoice_row
+    kind: pure_function
+    phase: "Processing"
+    source:
+      section: "Step 7b — Check Status Eligibility"
+    description: |
+      Determine eligibility for a single invoice row using two mandatory rules:
+      (1) only IMPORTED status is eligible; (2) rows imported within 24 hours
+      of run_start_time are ineligible regardless of status.
+      Returns a RowDecision and optional failure detail string.
+    input:
+      status: str
+      date_imported: str
+      run_time: str
+    output:
+      decision: RowDecision
+      failure_detail: "str | null"
+    impl: extracted/row_classifier.py:classify_invoice_row
+    mandatory: true
+    fan_out: true
+    constants:
+      eligible_statuses:
+        - IMPORTED
+
+  - id: execute_push
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "Step 7d — Open the ⋮ Menu"
+    description: |
+      Click the ⋮ menu for the given batch_id, select Push to Procurement, and
+      wait up to TOAST_TIMEOUT_SECONDS for a toast notification.
+      Returns the toast text, or null if no toast appeared within the timeout.
+      MANDATORY: only call for rows with decision == ELIGIBLE.
+    input:
+      batch_id: str
+    output:
+      toast_text: "str | null"
+    impl: extracted/browser.py:execute_push
+    timeout: 15s
+    retry:
+      max: 1
+      backoff: constant
+    mandatory: true
+    constants:
+      toast_timeout_seconds: 5
+
+  - id: interpret_toast_result
+    kind: pure_function
+    phase: "Processing"
+    source:
+      section: "Step 7f — Wait for Toast Notification (up to 5 seconds)"
+    description: |
+      Map the toast text to a typed PushResult: success flag, ErrorCode
+      enum, and requires_stop flag. Covers all six named error codes from
+      the SKILL.md §7f table (ERR-INVOICE-TYPE, ERR-DUPLICATE, ERR-TIMEOUT,
+      ERR-AUTH, ERR-CONN, ERR-NO-CONFIRM). Null toast_text → ERR-NO-CONFIRM.
+    input:
+      toast_text: "str | null"
+    output:
+      success: bool
+      error_code: "str | null"
+      requires_stop: bool
+    impl: extracted/toast_handler.py:interpret_toast_result
+
+  - id: capture_sent_date
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "Step 7g — Refresh and Capture Sent Date (Success Only)"
+    description: |
+      Refresh the imports table (↻ icon) and re-locate the row by batch_id.
+      MANDATORY: always identify by batch_id, never by row position — order
+      may shift after a push. Returns the populated Sent Date string.
+    input:
+      batch_id: str
+    output:
+      sent_date: str
+    impl: extracted/browser.py:capture_sent_date
+    timeout: 20s
+    retry:
+      max: 3
+      backoff: exponential
+    mandatory: true
+
+  # ── Report wave (parallel) ─────────────────────────────────────────────
+
+  - id: build_report_data
+    kind: pure_function
+    phase: "Report"
+    source:
+      section: "Step 9 — Generate and Save the Google Sheet Report"
+    description: |
+      Compile all InvoiceResult records into structured ReportData: the
+      Invoice Detail tab rows (18 columns per row), Run Summary stats
+      (counts by status and error code), and the static Failure Code
+      Reference table. No API calls — pure data transformation.
+    input:
+      invoice_results: "list[InvoiceResult]"
+      run_start_time: str
+      date_window: DateWindow
+      total_qualifying: int
+    inputs:
+      invoice_results: process_invoices_loop.output.invoice_results
+      run_start_time: read_initial_metadata.output.run_start_time
+      date_window: calculate_date_window.output
+      total_qualifying: read_initial_metadata.output.total_count
+    output:
+      report_data: ReportData
+    impl: extracted/report_builder.py:build_report_data
+
+  - id: ensure_archive_folder
+    kind: external_call
+    phase: "Report"
+    source:
+      section: "Step 9 — Generate and Save the Google Sheet Report"
+    description: |
+      Verify that the YYYY/MM subfolder path exists under the Invoice Push
+      Reports Archive in Drive; create any missing year or month subfolders.
+      Returns the Drive folder ID of the MM subfolder.
+    input:
+      run_date: date
+    inputs:
+      run_date: calculate_date_window.output.end
+    output:
+      folder_id: str
+    impl: extracted/drive.py:ensure_archive_folder
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+    constants:
+      archive_folder_id: "1ExampleInvoicePushArchiveFolderId0000000000"
+
+  - id: write_google_sheet
+    kind: external_call
+    phase: "Report"
+    source:
+      section: "Step 9 — Generate and Save the Google Sheet Report"
+    description: |
+      Create a new Google Sheet in the target Drive folder with three tabs:
+      'Invoice Detail', 'Run Summary', and 'Failure Code Reference'.
+      File name: Invoice_Push_Report_YYYY-MM-DD (using the window end date).
+      Returns the URL of the created spreadsheet.
+    input:
+      folder_id: str
+      run_date: date
+      report_data: ReportData
+    inputs:
+      folder_id: ensure_archive_folder.output.folder_id
+      run_date: calculate_date_window.output.end
+      report_data: build_report_data.output.report_data
+    output:
+      sheet_url: str
+    impl: extracted/drive.py:write_google_sheet
+    timeout: 60s
+    retry:
+      max: 3
+      backoff: exponential
+    constants:
+      filename_template: "Invoice_Push_Report_{date}"
+
+edges:
+  # Prerequisites and date calc run in parallel at start
+  - { from: check_prerequisites,       to: clear_and_apply_filters }
+  - { from: calculate_date_window,     to: clear_and_apply_filters }
+  # Linear setup chain
+  - { from: clear_and_apply_filters,   to: read_initial_metadata }
+  - { from: read_initial_metadata,     to: process_invoices_loop }
+  # Report phase: build_report_data and ensure_archive_folder run in parallel
+  - { from: process_invoices_loop,     to: build_report_data }
+  - { from: process_invoices_loop,     to: ensure_archive_folder }
+  # write_google_sheet waits for both report data and folder
+  - { from: build_report_data,         to: write_google_sheet }
+  - { from: ensure_archive_folder,     to: write_google_sheet }
+
+entry_nodes:
+  - check_prerequisites
+  - calculate_date_window
+
+exit_nodes:
+  - write_google_sheet
