@@ -59,6 +59,7 @@ from shutil import which
 from typing import Any
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+from rote.graduator.events import EventCallback, ProgressFileWatcher
 
 # ───────── Defaults ─────────
 
@@ -133,8 +134,17 @@ class CodexDriver(GraduatorDriver):
         graduator_skill_dir: Path,
         work_dir: Path,
         extra_instructions: str | None = None,
+        on_event: EventCallback | None = None,
     ) -> DriverResult:
-        """Spawn ``codex exec`` and wait for it to produce pipeline.yaml."""
+        """Spawn ``codex exec`` and wait for it to produce pipeline.yaml.
+
+        Codex's stdout is not stream-parsed for turn/tool events — the
+        ``codex exec`` output format isn't a stable machine contract we
+        want to depend on. Phase events still flow: a
+        :class:`~rote.graduator.events.ProgressFileWatcher` polls the
+        ``progress.ndjson`` the agent writes, exactly as it does for the
+        claude driver.
+        """
         skill_dir = skill_dir.resolve()
         graduator_skill_dir = graduator_skill_dir.resolve()
         work_dir = work_dir.resolve()
@@ -188,7 +198,8 @@ class CodexDriver(GraduatorDriver):
                 stderr=asyncio.subprocess.PIPE,
                 env=os.environ.copy(),
             )
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            async with ProgressFileWatcher(work_dir, on_event):
+                stdout_bytes, stderr_bytes = await proc.communicate()
 
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
