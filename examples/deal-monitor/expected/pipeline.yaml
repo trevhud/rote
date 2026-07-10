@@ -1,0 +1,771 @@
+name: deal-monitor
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  Scheduled morning dashboard that pulls #deal-intake Slack messages and Gmail
+  quoting threads, classifies each warehouse thread into a 6-step pipeline,
+  scores new (unquoted) opportunities using the deal-scoring rubric, and renders
+  a self-contained three-tab HTML dashboard (New Opportunities | Quoting | Closed).
+
+config:
+  schedule: "0 8 * * 1-5"
+  on_failure: notify_owner
+  observability:
+    traces: true
+
+input:
+  type: DealMonitorInput
+  required:
+    - user_email
+  optional:
+    - output_path
+    - scoring_rubric
+    - warehouse_domains
+  input_schema:
+    type: object
+    title: DealMonitorInput
+    properties:
+      user_email:
+        type: string
+        description: "Email address whose Gmail and Slack workspace to pull from (e.g. operator@example.com)"
+      output_path:
+        type: string
+        description: "Destination path for the HTML file. Defaults to ./outputs/deal-monitor.html"
+      scoring_rubric:
+        type: string
+        description: "Deal-scoring scoring rubric text. If omitted, the deal-scoring SKILL.md is loaded from its default skill path."
+      warehouse_domains:
+        type: array
+        items:
+          type: string
+        description: "Known warehouse contact domains for Gmail search query 4 (e.g. [\"example-3pl.com\", \"partner-warehouse.com\"]). Optional."
+    required:
+      - user_email
+    additionalProperties: false
+
+nodes:
+
+  # ── Entry node 1: Slack ────────────────────────────────────────────────────
+  - id: fetch_intake_messages
+    kind: external_call
+    description: Fetch the 50 most recent messages from the #deal-intake Slack channel (C0EXAMPLE000).
+    impl: extracted/slack.py:fetch_intake_messages
+    mcp:
+      server: slack
+      tool: slack_read_channel
+    source:
+      section: "Step 1: Pull #deal-intake Slack messages"
+    inputs:
+      user_email: pipeline.input.user_email
+    input:
+      user_email: str
+    output:
+      messages: list[SlackMessage]
+    constants:
+      channel_id: C0EXAMPLE000
+      message_limit: 50
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+
+  - id: parse_intake_messages
+    kind: llm_judge
+    description: Extract structured opportunity fields from freeform #deal-intake Slack messages.
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          messages:
+            type: array
+            items:
+              type: object
+              properties:
+                text:
+                  type: string
+                user:
+                  type: string
+                ts:
+                  type: string
+              required:
+                - text
+        required:
+          - messages
+        additionalProperties: false
+      output_schema:
+        type: object
+        properties:
+          opportunities:
+            type: array
+            items:
+              "$ref": "#/$defs/RawOpportunity"
+        required:
+          - opportunities
+        additionalProperties: false
+        "$defs":
+          RawOpportunity:
+            type: object
+            properties:
+              account_name:
+                type: string
+              submitter:
+                type: string
+              arr:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              monthly_dtc_orders:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sku_count:
+                anyOf:
+                  - type: integer
+                  - type: "null"
+              sku_count_unknown:
+                type: boolean
+              requested_location:
+                type: string
+              sales_channels:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              current_situation:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              pallets:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sq_ft:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              international_shipping:
+                anyOf:
+                  - type: boolean
+                  - type: "null"
+              go_live_date:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              product_item_context:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              raw_message:
+                type: string
+            required:
+              - account_name
+              - submitter
+              - requested_location
+              - raw_message
+            additionalProperties: false
+      prompt: |
+        You are extracting structured opportunity data from Slack messages posted in the #deal-intake channel.
+
+        Each message may describe one or more warehouse fulfillment opportunities. Extract every opportunity found in the messages batch.
+
+        For each opportunity, extract these fields (use null if not mentioned):
+        - account_name: Company or account name
+        - submitter: Person who posted / submitted the opp
+        - arr: Annual Recurring Revenue (numeric, USD)
+        - monthly_dtc_orders: Monthly DTC order volume (numeric)
+        - sku_count: Number of SKUs (integer). Set sku_count_unknown=true if not mentioned or unclear.
+        - requested_location: Requested warehouse location/region (e.g. "UK", "EU", "Nashville", "North America")
+        - sales_channels: Sales channels (e.g. "DTC", "B2B", "Amazon")
+        - current_situation: Current 3PL or fulfillment situation
+        - pallets: Pallet count/requirement (numeric)
+        - sq_ft: Square footage requirement (numeric)
+        - international_shipping: Whether international shipping is required (boolean)
+        - go_live_date: Target go-live date
+        - product_item_context: Product or item type context
+        - raw_message: The original message text verbatim
+
+        Messages to process:
+        {{ messages }}
+
+        Return all extracted opportunities via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.0
+    source:
+      section: "Step 1: Pull #deal-intake Slack messages"
+    inputs:
+      messages: fetch_intake_messages.output.messages
+    input:
+      messages: list[SlackMessage]
+    output:
+      opportunities: list[RawOpportunity]
+    timeout: 60s
+
+  - id: filter_opportunities
+    kind: pure_function
+    description: >
+      Apply EU/UK inclusion rules and NA SKU-threshold filter.
+      Always-UK submitters: Alex Rivers, Sam Patel.
+      NA opps with unknown SKU are included but flagged (sku_flagged_as_risk=True).
+      NA opps with SKU >= 2000 are excluded.
+    impl: extracted/filtering.py:filter_opportunities
+    source:
+      section: "Step 1: Pull #deal-intake Slack messages"
+    inputs:
+      opportunities: parse_intake_messages.output.opportunities
+    input:
+      opportunities: list[RawOpportunity]
+    output:
+      filtered_opps: list[FilteredOpportunity]
+      excluded_opps: list[FilteredOpportunity]
+    constants:
+      na_sku_threshold: 2000
+      always_uk_submitters:
+        - Alex Rivers
+        - Sam Patel
+    mandatory: true
+
+  # ── Entry node 2: Gmail fixed searches ────────────────────────────────────
+  - id: search_gmail_standard
+    kind: external_call
+    description: >
+      Run 4 fixed Gmail searches for quoting emails within the last 60 days:
+      (1) subject "Quote Request", (2) subject "New Business",
+      (3) subject "RFP", (4) known warehouse contact domains (optional).
+    impl: extracted/gmail.py:search_gmail_standard
+    mcp:
+      server: gmail
+      tool: search_threads
+    source:
+      section: "Step 2: Search Gmail for outbound quoting emails"
+    inputs:
+      user_email: pipeline.input.user_email
+      warehouse_domains: pipeline.input.warehouse_domains
+    input:
+      user_email: str
+      warehouse_domains: list[str]
+    output:
+      threads: list[GmailThreadSummary]
+    constants:
+      email_window_days: 60
+      fixed_queries:
+        - "subject:\"Quote Request\""
+        - "subject:\"New Business\""
+        - "subject:\"RFP\""
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 60s
+
+  # ── After Slack parse: account-name Gmail search ───────────────────────────
+  - id: search_gmail_by_accounts
+    kind: external_call
+    description: >
+      Search Gmail using each account name from #deal-intake as a query term
+      (the skill's search 5). One search per account, same 60-day window.
+    impl: extracted/gmail.py:search_gmail_by_accounts
+    mcp:
+      server: gmail
+      tool: search_threads
+    source:
+      section: "Step 2: Search Gmail for outbound quoting emails"
+    inputs:
+      user_email: pipeline.input.user_email
+      opportunities: filter_opportunities.output.filtered_opps
+    input:
+      user_email: str
+      opportunities: list[FilteredOpportunity]
+    output:
+      threads: list[GmailThreadSummary]
+    constants:
+      email_window_days: 60
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 60s
+
+  # ── Merge search results ───────────────────────────────────────────────────
+  - id: dedup_email_threads
+    kind: pure_function
+    description: >
+      Merge thread lists from fixed and account-based Gmail searches,
+      deduplicating by thread_id. Standard-search threads listed first.
+    impl: extracted/filtering.py:dedup_email_threads
+    source:
+      section: "Step 2: Search Gmail for outbound quoting emails"
+    inputs:
+      standard_threads: search_gmail_standard.output.threads
+      account_threads: search_gmail_by_accounts.output.threads
+    input:
+      standard_threads: list[GmailThreadSummary]
+      account_threads: list[GmailThreadSummary]
+    output:
+      threads: list[GmailThreadSummary]
+
+  - id: fetch_email_thread_content
+    kind: external_call
+    description: Fetch full message content for each deduplicated thread ID.
+    impl: extracted/gmail.py:fetch_email_thread_content
+    mcp:
+      server: gmail
+      tool: get_thread
+    source:
+      section: "Step 2: Search Gmail for outbound quoting emails"
+    inputs:
+      threads: dedup_email_threads.output.threads
+      user_email: pipeline.input.user_email
+    input:
+      threads: list[GmailThreadSummary]
+      user_email: str
+    output:
+      email_threads: list[EmailThread]
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 120s
+
+  # ── Match threads to opps ──────────────────────────────────────────────────
+  - id: match_threads_to_opps
+    kind: pure_function
+    description: >
+      Fuzzy-match email threads to #deal-intake opps by account name.
+      Opps with ≥1 matched thread → Quoting tab (matched_threads).
+      Opps with no matched thread → New Opps tab (unmatched_opps).
+    impl: extracted/matching.py:match_threads_to_opps
+    source:
+      section: "Step 2: Search Gmail for outbound quoting emails"
+    inputs:
+      opps: filter_opportunities.output.filtered_opps
+      email_threads: fetch_email_thread_content.output.email_threads
+    input:
+      opps: list[FilteredOpportunity]
+      email_threads: list[EmailThread]
+    output:
+      matched_threads: list[MatchedThread]
+      unmatched_opps: list[FilteredOpportunity]
+
+  # ── Classify threads (fan-out per thread) ─────────────────────────────────
+  - id: classify_thread_step
+    kind: llm_judge
+    description: >
+      Read each matched email thread in full and classify it into one of
+      6 pipeline steps: 1=RFP Sent, 2=Response Needed, 3=Follow-Up Needed,
+      4=Pricing Returned, 5=Pricing Sent, 6=Declined.
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          thread:
+            "$ref": "#/$defs/EmailThread"
+          account_name:
+            type: string
+        required:
+          - thread
+          - account_name
+        additionalProperties: false
+        "$defs":
+          EmailThread:
+            type: object
+            properties:
+              thread_id:
+                type: string
+              subject:
+                type: string
+              thread_url:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              messages:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    from:
+                      type: string
+                    to:
+                      anyOf:
+                        - type: string
+                        - type: "null"
+                    date:
+                      type: string
+                    body:
+                      type: string
+                  required:
+                    - from
+                    - date
+                    - body
+            required:
+              - thread_id
+              - subject
+              - messages
+      output_schema:
+        type: object
+        properties:
+          step:
+            enum:
+              - 1
+              - 2
+              - 3
+              - 4
+              - 5
+              - 6
+          step_label:
+            enum:
+              - "RFP Sent"
+              - "Response Needed"
+              - "Follow-Up Needed"
+              - "Pricing Returned"
+              - "Pricing Sent"
+              - "Declined"
+          warehouses_emailed:
+            type: array
+            items:
+              type: object
+              properties:
+                warehouse_domain:
+                  type: string
+                sent_date:
+                  type: string
+                replied:
+                  type: boolean
+                state_notes:
+                  anyOf:
+                    - type: string
+                    - type: "null"
+              required:
+                - warehouse_domain
+                - sent_date
+                - replied
+          needs_attention:
+            type: boolean
+          classification_rationale:
+            type: string
+          account_name:
+            type: string
+          thread_url:
+            anyOf:
+              - type: string
+              - type: "null"
+        required:
+          - step
+          - step_label
+          - warehouses_emailed
+          - needs_attention
+          - classification_rationale
+          - account_name
+        additionalProperties: false
+      prompt: |
+        You are classifying an email thread for the warehouse quoting pipeline.
+
+        Read the ENTIRE email thread below before classifying.
+
+        Pipeline steps:
+        1 = RFP Sent       — The team sent an RFP to one or more warehouses, no reply yet
+        2 = Response Needed — A warehouse replied with questions that the team must answer
+        3 = Follow-Up Needed — No warehouse reply; the team needs to follow up proactively
+        4 = Pricing Returned — Warehouses sent pricing back to the team
+        5 = Pricing Sent    — The team sent consolidated pricing to the prospect
+        6 = Declined        — Warehouse or prospect declined / withdrew
+
+        For each warehouse contact domain in the thread, extract:
+        - warehouse_domain: the warehouse's email domain
+        - sent_date: when the first email was sent to that warehouse
+        - replied: whether they have replied
+        - state_notes: relevant context about their response (optional)
+
+        Set needs_attention=true when ANY of: no warehouse has replied within 3 business
+        days, a warehouse asked questions the team hasn't answered, or there is an explicit
+        deadline requiring action.
+
+        Pass through account_name and thread_url unchanged from the input.
+
+        Account name: {{ account_name }}
+        Thread: {{ thread }}
+
+        Return your classification via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.0
+    source:
+      section: "Step 3: Classify each warehouse thread into a pipeline step"
+    inputs:
+      thread: match_threads_to_opps.output.matched_threads
+    input:
+      thread: MatchedThread
+    output:
+      step: int
+      step_label: str
+      warehouses_emailed: list[WarehouseState]
+      needs_attention: bool
+      classification_rationale: str
+      account_name: str
+      thread_url: str
+    fan_out: true
+    timeout: 60s
+
+  # ── Score new opportunities (fan-out per opp) ─────────────────────────────
+  - id: score_new_opportunities
+    kind: llm_judge
+    description: >
+      Score each unmatched opportunity using the deal-scoring rubric.
+      Only runs on opps with NO matched email threads (unmatched_opps).
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          opportunity:
+            "$ref": "#/$defs/FilteredOpportunity"
+          scoring_rubric:
+            type: string
+        required:
+          - opportunity
+          - scoring_rubric
+        additionalProperties: false
+        "$defs":
+          FilteredOpportunity:
+            type: object
+            properties:
+              account_name:
+                type: string
+              submitter:
+                type: string
+              arr:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              monthly_dtc_orders:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sku_count:
+                anyOf:
+                  - type: integer
+                  - type: "null"
+              sku_count_unknown:
+                type: boolean
+              requested_location:
+                type: string
+              sales_channels:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              current_situation:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              pallets:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sq_ft:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              international_shipping:
+                anyOf:
+                  - type: boolean
+                  - type: "null"
+              go_live_date:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              product_item_context:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              is_eu_uk:
+                type: boolean
+              sku_flagged_as_risk:
+                type: boolean
+            required:
+              - account_name
+              - submitter
+              - requested_location
+              - is_eu_uk
+              - sku_flagged_as_risk
+            additionalProperties: false
+      output_schema:
+        type: object
+        properties:
+          opportunity:
+            "$ref": "#/$defs/FilteredOpportunity"
+          score_tier:
+            enum:
+              - high
+              - medium
+              - low
+          score_value:
+            anyOf:
+              - type: number
+              - type: "null"
+          risk_flags:
+            type: array
+            items:
+              type: string
+          opportunity_summary:
+            type: string
+          scoring_rationale:
+            type: string
+        required:
+          - opportunity
+          - score_tier
+          - risk_flags
+          - opportunity_summary
+          - scoring_rationale
+        additionalProperties: false
+        "$defs":
+          FilteredOpportunity:
+            type: object
+            properties:
+              account_name:
+                type: string
+              submitter:
+                type: string
+              arr:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              monthly_dtc_orders:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sku_count:
+                anyOf:
+                  - type: integer
+                  - type: "null"
+              sku_count_unknown:
+                type: boolean
+              requested_location:
+                type: string
+              is_eu_uk:
+                type: boolean
+              sku_flagged_as_risk:
+                type: boolean
+            additionalProperties: false
+      prompt: |
+        You are scoring a new warehouse fulfillment opportunity using the deal-scoring rubric.
+
+        Apply the rubric to decide whether this is a high, medium, or low priority opportunity.
+        Identify ALL risk flags present (e.g. unknown SKU count, very aggressive go-live, small ARR,
+        international complexity, unusual product type, no current 3PL experience).
+
+        Write a concise opportunity_summary (1-2 sentences) for the dashboard.
+
+        Deal-scoring scoring rubric:
+        {{ scoring_rubric }}
+
+        Opportunity details:
+        - Account: {{ opportunity.account_name }}
+        - Submitted by: {{ opportunity.submitter }}
+        - ARR: {{ opportunity.arr }}
+        - Monthly DTC Orders: {{ opportunity.monthly_dtc_orders }}
+        - SKU Count: {{ opportunity.sku_count }} (unknown: {{ opportunity.sku_count_unknown }})
+        - Requested Location: {{ opportunity.requested_location }}
+        - EU/UK: {{ opportunity.is_eu_uk }}
+        - Sales Channels: {{ opportunity.sales_channels }}
+        - Current Situation: {{ opportunity.current_situation }}
+        - Pallets: {{ opportunity.pallets }}
+        - Sq Ft: {{ opportunity.sq_ft }}
+        - International Shipping: {{ opportunity.international_shipping }}
+        - Go-Live Date: {{ opportunity.go_live_date }}
+        - Product Context: {{ opportunity.product_item_context }}
+
+        Pass the full opportunity object through unchanged in your output.
+
+        Return your scoring via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.0
+    source:
+      section: "Step 4: Score New Opportunities"
+    inputs:
+      opportunity: match_threads_to_opps.output.unmatched_opps
+      scoring_rubric: pipeline.input.scoring_rubric
+    input:
+      opportunity: FilteredOpportunity
+      scoring_rubric: str
+    output:
+      opportunity: FilteredOpportunity
+      score_tier: str
+      score_value: float
+      risk_flags: list[str]
+      opportunity_summary: str
+      scoring_rationale: str
+    fan_out: true
+    timeout: 60s
+
+  # ── Render dashboard ───────────────────────────────────────────────────────
+  - id: render_dashboard
+    kind: pure_function
+    description: >
+      Assemble a self-contained 3-tab HTML dashboard from all upstream results.
+      New Opportunities tab: unmatched scored opps.
+      Quoting tab: classified threads grouped by opp (excluding Declined).
+      Closed tab: threads classified as step 6 (Declined).
+    impl: extracted/dashboard.py:render_dashboard
+    source:
+      section: "Step 5: Generate the HTML Dashboard"
+    inputs:
+      scored_opps: score_new_opportunities.output
+      classified_threads: classify_thread_step.output
+      all_filtered_opps: filter_opportunities.output.filtered_opps
+      unmatched_opps: match_threads_to_opps.output.unmatched_opps
+    input:
+      scored_opps: list[ScoredOpportunity]
+      classified_threads: list[ClassifiedThread]
+      all_filtered_opps: list[FilteredOpportunity]
+      unmatched_opps: list[FilteredOpportunity]
+    output:
+      html: str
+      summary: DashboardSummary
+
+  # ── Save + present ─────────────────────────────────────────────────────────
+  - id: save_dashboard
+    kind: external_call
+    description: >
+      Write the HTML dashboard to the output path and return the saved path
+      plus a brief text summary (new opps count, active quoting with attention
+      flag, closed count).
+    impl: extracted/output.py:save_dashboard
+    source:
+      section: "Step 6: Output"
+    inputs:
+      html: render_dashboard.output.html
+      summary: render_dashboard.output.summary
+      output_path: pipeline.input.output_path
+    input:
+      html: str
+      summary: DashboardSummary
+      output_path: str
+    output:
+      saved_path: str
+      summary_text: str
+    retry:
+      max: 3
+      backoff: constant
+    timeout: 30s
+
+edges:
+  - {from: fetch_intake_messages,    to: parse_intake_messages}
+  - {from: parse_intake_messages,     to: filter_opportunities}
+  - {from: filter_opportunities,       to: search_gmail_by_accounts}
+  - {from: filter_opportunities,       to: match_threads_to_opps}
+  - {from: search_gmail_standard,      to: dedup_email_threads}
+  - {from: search_gmail_by_accounts,   to: dedup_email_threads}
+  - {from: dedup_email_threads,        to: fetch_email_thread_content}
+  - {from: fetch_email_thread_content, to: match_threads_to_opps}
+  - {from: match_threads_to_opps,      to: classify_thread_step,      fan_out: true}
+  - {from: match_threads_to_opps,      to: score_new_opportunities,   fan_out: true}
+  - {from: classify_thread_step,       to: render_dashboard}
+  - {from: score_new_opportunities,    to: render_dashboard}
+  - {from: render_dashboard,           to: save_dashboard}
+
+entry_nodes:
+  - fetch_intake_messages
+  - search_gmail_standard
+
+exit_nodes:
+  - save_dashboard

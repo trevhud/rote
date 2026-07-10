@@ -68,6 +68,17 @@ def test_pipeline_hash_is_stable(bdr_pipeline: Pipeline) -> None:
     assert len(h1) == 8
 
 
+def test_pipeline_hash_ignores_source_skill(bdr_pipeline: Pipeline) -> None:
+    """``source_skill`` is provenance, not behavior. The graduator
+    re-points it per output location, so hashing it would mint a new
+    workflow type (re-versioning in-flight workflows) on every
+    re-graduation to a different directory — same rule as ``Node.source``."""
+    moved = bdr_pipeline.model_copy(update={"source_skill": "/somewhere/else/entirely"})
+    assert _pipeline_hash(moved) == _pipeline_hash(bdr_pipeline)
+    unset = bdr_pipeline.model_copy(update={"source_skill": None})
+    assert _pipeline_hash(unset) == _pipeline_hash(bdr_pipeline)
+
+
 def test_execution_waves_exclude_loop_body_nodes(bdr_pipeline: Pipeline) -> None:
     """Nodes inside another node's loop_body should not appear in the
     top-level execution waves — they're orchestrated inside the loop."""

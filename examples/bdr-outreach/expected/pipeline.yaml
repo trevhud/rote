@@ -10,7 +10,7 @@
 
 name: bdr-campaign
 version: "0.1.0"
-source_skill: ../../skill
+source_skill: ../skill
 description: |
   End-to-end BDR outreach campaign workflow for pharma/biotech research
   targets. Inputs: a campaign brief (drug, condition, manufacturer, type).

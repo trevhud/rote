@@ -10,6 +10,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Two production-shaped examples** alongside BDR, each adapted from a
+  real production skill with all identifiers fictionalized:
+  `examples/ops-report/` (the 100%-roteness archetype — every step
+  deterministic, one durable HITL gate, zero LLM nodes; the fixture for
+  the `python` adapter's durable-execution refusal) and
+  `examples/deal-monitor/` (the data-heavy archetype — parallel entry
+  waves, fan-out judges, template render replacing LLM-generated HTML;
+  the calibration fixture for the payload-aware estimator).
+  `tests/test_examples.py` guards every example's expected IR, including
+  that its `source_skill` pointer resolves.
 - **Payload-aware "before" cost estimator** — the static scorecard now
   models the data a skill pulls into context, not just its turn count.
   The graduated pipeline's `external_call` footprint sizes the agent-side
@@ -42,10 +52,27 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   machine-readable report; `--out` keeps the graduated IR for a later
   `rote emit`. Previously a stub that printed "not yet implemented".
 
+### Changed
+- **`source_skill` no longer participates in the pipeline hash** — it's
+  provenance (a filesystem path the graduator re-points per output
+  location), and hashing it minted a new workflow type on every
+  re-graduation to a different directory, re-versioning in-flight
+  workflows whose behavior didn't change. Same rule as `Node.source`,
+  which was already excluded. **One-time consequence:** every pipeline's
+  hash (and therefore emitted workflow type name) changes once with this
+  release; in-flight workflows on the old type names continue on old
+  code as designed.
+
 ### Fixed
 - The `codex` driver no longer raises `NotImplementedError` when
   selected via `--agent codex` or chosen by auto-detect (a first-run
   crash for users who had the Codex CLI but not Claude Code installed).
+- The BDR example's committed IR baseline carried the same dead
+  `source_skill` pointer the orchestrator fix addresses
+  (`../../skill` resolved to a nonexistent `examples/skill`), so
+  `rote eval` on the canonical example silently dropped its before-side
+  baseline. Corrected to `../skill`; now regression-guarded for every
+  example.
 - `rote graduate`/`rote analyze --out` now re-point the pipeline's
   `source_skill` to resolve from the emitted `pipeline.yaml`'s location
   (relative when possible, absolute otherwise). The agent records the

@@ -310,7 +310,10 @@ rote/
 │   ├── graduator/         orchestrator + drivers/ (claude · codex · anthropic_api)
 │   └── adapters/          dbos · temporal · python · cloudflare · dbos_ts · inngest
 │                          (+ _common / _py_common / _ts_common emit helpers)
-├── examples/bdr-outreach/ source skill · hand-drafted IR baseline · run snapshots
+├── examples/
+│   ├── bdr-outreach/      canonical: all 5 node kinds · IR baseline · run snapshots
+│   ├── ops-report/        100% roteness: zero LLM nodes + a HITL gate
+│   └── deal-monitor/      data-heavy: parallel waves · fan-out judges · template render
 └── tests/                 fast + slow suites (pytest -m slow)
 ```
 
@@ -330,6 +333,12 @@ rote/
   heuristics, IR schema, LLM-judge extraction)
 - [`examples/bdr-outreach/`](examples/bdr-outreach/) — the canonical
   skill, its ground-truth IR, and snapshotted real graduator runs
+- [`examples/ops-report/`](examples/ops-report/) — the 100%-roteness
+  archetype: every step deterministic, one durable HITL gate, zero LLM
+  nodes after graduation
+- [`examples/deal-monitor/`](examples/deal-monitor/) — the data-heavy
+  archetype: parallel entry waves, fan-out judges, and a template render
+  replacing per-run LLM-generated HTML
 
 ---
 

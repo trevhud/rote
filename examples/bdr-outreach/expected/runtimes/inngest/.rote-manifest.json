@@ -16,7 +16,7 @@
     "src/extracted/taxonomy_lookup.ts": "cf557ff7bab636ec96cfda6d84b36ff3903fdc3838be6a3a1963d7e63b4f6372",
     "src/index.ts": "e362bc56c1ea4d3d48f0efd9befb08b713d969cce7061b43b224f9f91d035dc1",
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
-    "src/inngest/pipeline.ts": "1b74b390a42b133c44cdfa900d539137a9bffb38ec8692ca605328cccfb9a32b",
+    "src/inngest/pipeline.ts": "a242ad6a9431acc7b1b310ee307ec1385e24a2c0de274d73188781d391960f9f",
     "src/signatures/personalize_email.ts": "259ed4f1c775666e7668fe7600edead3f346f0348f1e54eb5a85e0aaea5c8a57",
     "src/signatures/vet_contact.ts": "23bbeba6416117887c2afbc8e70c584f57150dbad8c612b8f6c35a9fa32429b2",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"

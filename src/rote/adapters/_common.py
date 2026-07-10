@@ -223,13 +223,17 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     # Hash the full validated contents: node wiring, inputs, retries, and
     # edges all participate, so any regeneration that changes behavior gets
     # a new workflow type — name/version/counts alone miss rewires.
-    # Provenance (``Node.source``) is excluded: it's tooling metadata, and
-    # annotating where a node came from must not re-version in-flight
-    # workflows whose behavior didn't change.
+    # Provenance is excluded — it's tooling metadata, and annotating where
+    # a pipeline came from must not re-version in-flight workflows whose
+    # behavior didn't change. That covers ``Node.source`` (which SKILL.md
+    # section produced a node) and ``source_skill`` (where the skill bundle
+    # lived): the latter is a filesystem path the graduator re-points per
+    # output location, so hashing it would mint a new workflow type on
+    # every re-graduation to a different directory.
     payload = pipeline.model_dump_json(
         by_alias=True,
         exclude_none=True,
-        exclude={"nodes": {"__all__": {"source"}}},
+        exclude={"source_skill": True, "nodes": {"__all__": {"source"}}},
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
