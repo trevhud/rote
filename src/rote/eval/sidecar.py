@@ -53,6 +53,27 @@ class StepEstimate(BaseModel):
     phase: str | None = None
     estimated_turns: TurnRange
     estimated_tool_calls: TurnRange | None = None
+    iterations: TurnRange | None = Field(
+        default=None,
+        description=(
+            "How many times this step repeats per run (per row, per page, "
+            "per item). When present, estimated_turns/estimated_tool_calls "
+            "are PER-ITERATION and the whole-run contribution is their "
+            "product. Absent means the step runs once. This is where loop "
+            "cost lives: a 3-turn step over 200 rows is 600 turns, and a "
+            "sidecar that cannot say so underestimates loop-dominated "
+            "skills by an order of magnitude."
+        ),
+    )
+
+    def turn_contribution(self) -> TurnRange:
+        """This step's whole-run turns: per-iteration turns × iterations."""
+        if self.iterations is None:
+            return self.estimated_turns
+        return TurnRange(
+            low=self.estimated_turns.low * self.iterations.low,
+            high=self.estimated_turns.high * self.iterations.high,
+        )
 
     @model_validator(mode="before")
     @classmethod
@@ -81,11 +102,17 @@ class EvalEstimates(BaseModel):
     notes: str | None = None
 
     def turn_range(self) -> TurnRange:
-        """The whole-run turn estimate: explicit totals, else the step sum."""
+        """The whole-run turn estimate: explicit totals, else the step sum.
+
+        The step sum multiplies per-iteration estimates by their
+        ``iterations`` range, so a per-row loop step contributes its
+        whole-run cost. An explicit ``totals`` must therefore also be a
+        whole-run (post-multiplication) figure.
+        """
         if self.totals is not None:
             return self.totals
-        low = sum(s.estimated_turns.low for s in self.steps)
-        high = sum(s.estimated_turns.high for s in self.steps)
+        low = sum(s.turn_contribution().low for s in self.steps)
+        high = sum(s.turn_contribution().high for s in self.steps)
         return TurnRange(low=low, high=high)
 
 

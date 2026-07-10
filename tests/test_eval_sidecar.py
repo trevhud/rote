@@ -34,6 +34,61 @@ def test_totals_override_step_sum() -> None:
     assert est.turn_range().low == 10
 
 
+def test_iterations_multiply_into_the_step_sum() -> None:
+    # The push-to-coupa shape: a flat setup step plus a per-row loop
+    # step. The loop's whole-run contribution is turns × iterations —
+    # the schema gap that made the coupa estimate miss 10× low.
+    est = EvalEstimates(
+        steps=[
+            StepEstimate(description="setup", estimated_turns=TurnRange(low=4, high=8)),
+            StepEstimate(
+                description="push each invoice row",
+                estimated_turns=TurnRange(low=3, high=6),
+                iterations=TurnRange(low=20, high=90),
+            ),
+        ]
+    )
+    tr = est.turn_range()
+    assert (tr.low, tr.high) == (4 + 3 * 20, 8 + 6 * 90)
+
+
+def test_iterations_absent_means_step_runs_once() -> None:
+    step = StepEstimate(description="a", estimated_turns=TurnRange(low=2, high=5))
+    contribution = step.turn_contribution()
+    assert (contribution.low, contribution.high) == (2, 5)
+
+
+def test_totals_still_override_an_iterated_step_sum() -> None:
+    est = EvalEstimates(
+        steps=[
+            StepEstimate(
+                description="loop",
+                estimated_turns=TurnRange(low=3, high=6),
+                iterations=TurnRange(low=20, high=90),
+            )
+        ],
+        totals=TurnRange(low=100, high=400),
+    )
+    assert (est.turn_range().low, est.turn_range().high) == (100, 400)
+
+
+def test_iterations_load_from_yaml(tmp_path: Path) -> None:
+    p = tmp_path / "eval.yaml"
+    p.write_text(
+        """
+version: 1
+steps:
+  - description: Process each invoice row
+    estimated_turns: {low: 3, high: 6}
+    iterations: {low: 20, high: 90}
+""",
+        encoding="utf-8",
+    )
+    est = load_eval_estimates(p)
+    assert est.steps[0].iterations is not None
+    assert est.turn_range().high == 540
+
+
 def test_phase_coerced_to_string() -> None:
     step = StepEstimate.model_validate(
         {"description": "x", "phase": 1.5, "estimated_turns": {"low": 1, "high": 2}}
