@@ -10,6 +10,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Node TypeScript runtimes call MCP tools, authenticated** — the
+  DBOS-TS and Inngest adapters now emit *working* bodies for
+  `mcp:`-bound nodes (previously always throwing stubs): the module
+  calls the tool via the official `@modelcontextprotocol/sdk` (^1.29)
+  through an emitted `src/extracted/_roteMcp.ts` helper that reads the
+  same rote registry/token store the CLI writes, refreshes stale access
+  tokens with a refresh-token grant against the stored
+  `token_endpoint`, writes rotated refresh tokens back atomically, and
+  retries once on 401. `--backend api` keeps the direct-vendor-SDK
+  stubs. Proven end-to-end across languages: Python `rote mcp login`
+  seeds the store, compiled TS authenticates, refreshes a forced-stale
+  token, and rotates credentials Python reads back
+  (`tests/test_mcp_ts_e2e.py`).
 - **A full MCP client with OAuth 2.1** (`rote mcp`, design in
   [docs/mcp-client.md](docs/mcp-client.md)) — real streamable-HTTP MCP
   servers authenticate with OAuth; without a client that can run the

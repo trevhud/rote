@@ -83,6 +83,7 @@ import json
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
@@ -98,11 +99,15 @@ from rote.adapters._common import (
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
+    MCP_SDK_NPM_VERSION,
     REQUIRE_ENV_HELPER,
+    ROTE_MCP_HELPER_TS,
+    emit_mcp_call_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
     judge_env_arg,
     llm_clients,
+    mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
 )
@@ -124,6 +129,10 @@ class DbosTsAdapterConfig:
 
     anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
     openai_default_model: str = DEFAULT_OPENAI_MODEL
+    external_backend: Literal["mcp", "api"] = "mcp"
+    """"mcp" (default): external_call nodes with an ``mcp:`` binding emit a
+    working, authenticated MCP call through the emitted ``_roteMcp``
+    helper. "api": every external_call emits the direct-vendor-SDK stub."""
 
 
 # ───────── Duration / retry / timeout mapping ─────────
@@ -548,7 +557,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
 # ───────── package / tsconfig / dbos-config / README emission ─────────
 
 
-def emit_package_json(pipeline: Pipeline) -> str:
+def emit_package_json(pipeline: Pipeline, *, with_mcp: bool = False) -> str:
     """Emit package.json with the current SDK majors (verified on npm).
 
     CommonJS (no ``"type": "module"``): the DBOS SDK ships CJS and the
@@ -564,6 +573,8 @@ def emit_package_json(pipeline: Pipeline) -> str:
         dependencies["@anthropic-ai/sdk"] = "^0.110.0"
     if "openai" in clients:
         dependencies["openai"] = "^6.45.0"
+    if with_mcp:
+        dependencies["@modelcontextprotocol/sdk"] = MCP_SDK_NPM_VERSION
     obj = {
         "name": pipeline.name,
         "version": pipeline.version,
@@ -721,6 +732,7 @@ class DbosTsAdapter:
 
         written["main"] = writer.write("src", "main.ts", content=self.emit_main(pipeline))
 
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
@@ -731,6 +743,13 @@ class DbosTsAdapter:
                     f"{node.id}.ts",
                     content=emit_signature_module(node, self.config),
                 )
+            elif node.id in mcp_ids:
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=emit_mcp_call_module(node, generated_by=_GENERATED_BY),
+                )
             else:
                 written[f"extracted/{node.id}"] = writer.write(
                     "src",
@@ -738,8 +757,14 @@ class DbosTsAdapter:
                     f"{node.id}.ts",
                     content=emit_extracted_module(node),
                 )
+        if mcp_ids:
+            written["extracted/_roteMcp"] = writer.write(
+                "src", "extracted", "_roteMcp.ts", content=ROTE_MCP_HELPER_TS
+            )
 
-        written["package.json"] = writer.write("package.json", content=emit_package_json(pipeline))
+        written["package.json"] = writer.write(
+            "package.json", content=emit_package_json(pipeline, with_mcp=bool(mcp_ids))
+        )
         written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_node_tsconfig())
         written["dbos-config"] = writer.write(
             "dbos-config.yaml", content=emit_dbos_config(pipeline)
