@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -68,29 +69,54 @@ def mcp_servers_for_pipeline(pipeline: Pipeline) -> tuple[dict[str, dict[str, An
     The graduated pipeline's ``mcp:`` bindings name exactly the servers the
     source skill uses, so wiring them into the skill trial makes the
     "before" measurement representative: the agent pulls real data over the
-    same tools instead of erroring out or improvising. URL resolution
-    follows the adapters' rule — an explicit ``mcp.url`` wins, else the
-    ``ROTE_MCP_<SERVER>_URL`` env var.
+    same tools instead of erroring out or improvising. URL resolution is
+    the one rote-wide rule — an explicit ``mcp.url`` wins, else the rote
+    registry entry (``rote mcp add``), else ``ROTE_MCP_<SERVER>_URL``.
+
+    Auth rides along: a registry entry with static headers contributes a
+    ``headers`` block verbatim; a server the user has logged into
+    (``rote mcp login``) contributes a ``headersHelper`` invoking
+    ``rote mcp headers`` through the current interpreter — Claude Code
+    re-runs the helper per connection and once more on a 401, so tokens
+    refresh mid-run on long trials instead of expiring under the agent.
 
     Returns ``(mcp_servers, missing)``: the ``mcpServers`` mapping for the
     config file, and the servers the pipeline binds that could not be
     resolved to an endpoint (a trial run without them is flagged
     unrepresentative rather than silently measured).
     """
+    from rote.mcp import access_token_state, load_registry, read_token_file
+
+    registry = load_registry()
     servers: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     for node in pipeline.nodes:
         if node.mcp is None or node.mcp.server in servers or node.mcp.server in missing:
             continue
         binding = node.mcp
-        url = binding.url or os.environ.get(f"ROTE_MCP_{binding.server.upper()}_URL")
+        entry = registry.servers.get(binding.server)
+        url = (
+            binding.url
+            or (entry.url if entry is not None else None)
+            or os.environ.get(f"ROTE_MCP_{binding.server.upper()}_URL")
+        )
         if not url:
             missing.append(binding.server)
             continue
-        servers[binding.server] = {
+        config: dict[str, Any] = {
             "type": _TRANSPORT_TO_MCP_TYPE[binding.transport],
             "url": url,
         }
+        if entry is not None and entry.headers:
+            config["headers"] = dict(entry.headers)
+        else:
+            doc = read_token_file(binding.server)
+            if doc is not None and access_token_state(doc)[0] is not None:
+                config["headersHelper"] = (
+                    f"{shlex.quote(sys.executable)} -m rote mcp headers "
+                    f"{shlex.quote(binding.server)}"
+                )
+        servers[binding.server] = config
     return servers, missing
 
 
