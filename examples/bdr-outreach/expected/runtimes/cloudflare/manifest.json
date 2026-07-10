@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "adapter": "cloudflare",
+  "name": "bdr-campaign",
+  "version": "0.1.0",
+  "pipeline_hash": "68ef477f",
+  "class_name": "BdrCampaignWorkflow",
+  "node_ids": [
+    "vet_contact",
+    "personalize_email",
+    "target_research",
+    "taxonomy_lookup",
+    "lead_generation_loop",
+    "enrich_contact_batch",
+    "hubspot_upsert",
+    "hubspot_create_list",
+    "exclusion_check_dnc",
+    "exclusion_check_recent",
+    "exclusion_check_sequence",
+    "create_sales_template",
+    "pre_enrollment_report"
+  ],
+  "input_schema": {
+    "$defs": {
+      "CampaignType": {
+        "enum": [
+          "drug-specific",
+          "condition-specific",
+          "general-capabilities"
+        ],
+        "title": "CampaignType",
+        "type": "string"
+      },
+      "JobFocus": {
+        "enum": [
+          "medical",
+          "rwe",
+          "heor",
+          "clinical-development"
+        ],
+        "title": "JobFocus",
+        "type": "string"
+      }
+    },
+    "additionalProperties": false,
+    "description": "Top-level pipeline input \u2014 one campaign, one drug, one indication.",
+    "properties": {
+      "drug_brand": {
+        "title": "Drug Brand",
+        "type": "string"
+      },
+      "drug_generic": {
+        "title": "Drug Generic",
+        "type": "string"
+      },
+      "condition_full": {
+        "title": "Condition Full",
+        "type": "string"
+      },
+      "condition_acronym": {
+        "title": "Condition Acronym",
+        "type": "string"
+      },
+      "therapeutic_area": {
+        "title": "Therapeutic Area",
+        "type": "string"
+      },
+      "manufacturer": {
+        "title": "Manufacturer",
+        "type": "string"
+      },
+      "campaign_type": {
+        "$ref": "#/$defs/CampaignType"
+      },
+      "target_quota": {
+        "description": "Number of vetted contacts to deliver",
+        "minimum": 1,
+        "title": "Target Quota",
+        "type": "integer"
+      },
+      "job_focus": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/JobFocus"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      }
+    },
+    "required": [
+      "drug_brand",
+      "drug_generic",
+      "condition_full",
+      "condition_acronym",
+      "therapeutic_area",
+      "manufacturer",
+      "campaign_type",
+      "target_quota"
+    ],
+    "title": "CampaignBrief",
+    "type": "object"
+  },
+  "entry": "src/workflow.ts"
+}

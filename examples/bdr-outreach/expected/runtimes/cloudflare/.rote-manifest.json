@@ -3,6 +3,7 @@
   "files": {
     ".dev.vars.example": "68dd53a52244fb35cb167367375ab89c80f39c7551d210c6344e91d13b095482",
     "README.md": "d1da41bdfc14ea6ee177435985cbd439f60320a436f88c1e6d7404b45ca9f280",
+    "manifest.json": "4f76886dd91b7793136d95d6b58e3bf77359fdeb27fe00faa30f9b7463851ffd",
     "package.json": "76cfc513b9e91e04a90e6483f16d5e23266dcf4ce359a3d4bb5bfe0bc2699b8a",
     "src/extracted/create_sales_template.ts": "4068e8ebe5e0edda6ef3c900e575e7024d019237f42513626bbac9bc2cf09dd6",
     "src/extracted/enrich_contact_batch.ts": "179263e6733c5fd1ff756cb6dfd8f98b9e0c6b8d5a45f6fe1186f363bb1f01b6",

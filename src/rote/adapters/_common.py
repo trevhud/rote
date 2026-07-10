@@ -194,6 +194,27 @@ class EmitWriter:
         )
 
 
+class EmitResult(dict[str, Path]):
+    """An adapter emit mapping that also carries preserved-conflict paths.
+
+    It *is* the ``label -> written path`` dict every ``emit()`` has always
+    returned (the path is the ``.new`` sibling when a user-edited file was
+    preserved), so existing consumers that iterate it keep working
+    unchanged. The extra :attr:`preserved` attribute exposes the
+    :class:`EmitWriter`'s ``rel -> .new path`` map directly, for callers
+    (the cloud runner) that want the conflict set without sniffing ``.new``
+    suffixes off the values.
+    """
+
+    def __init__(
+        self,
+        written: dict[str, Path] | None = None,
+        preserved: dict[str, Path] | None = None,
+    ) -> None:
+        super().__init__(written or {})
+        self.preserved: dict[str, Path] = dict(preserved or {})
+
+
 # ───────── Case conversion ─────────
 
 
@@ -236,6 +257,32 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
         exclude={"source_skill": True, "nodes": {"__all__": {"source"}}},
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
+
+
+def workflow_class_name(pipeline: Pipeline) -> str:
+    """The generated workflow class name: ``<PascalName>Workflow``.
+
+    The Cloudflare and Temporal adapters both name their emitted
+    workflow class this way; centralizing it here keeps the manifest the
+    cloud consumes and the emitted TypeScript from drifting apart.
+    """
+    return f"{_to_pascal_case(pipeline.name)}Workflow"
+
+
+def pipeline_identity(pipeline: Pipeline) -> dict[str, str]:
+    """Stable identity fields for a pipeline, shared by emitters and manifests.
+
+    Returns ``{name, version, pipeline_hash, class_name}`` — the same four
+    values the Cloudflare adapter bakes into the workflow.ts header and
+    writes into ``manifest.json`` for the cloud runner. Single source of
+    truth so the two can't disagree.
+    """
+    return {
+        "name": pipeline.name,
+        "version": pipeline.version,
+        "pipeline_hash": _pipeline_hash(pipeline),
+        "class_name": workflow_class_name(pipeline),
+    }
 
 
 # ───────── Duration strings ─────────
