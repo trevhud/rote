@@ -21,6 +21,8 @@ graduator's only output is the validated IR + the stub files;
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -289,6 +291,15 @@ class Graduator:
             else:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
+            # The agent records source_skill relative to its own temp
+            # work dir, which is deleted the moment this context manager
+            # exits — a dead pointer that silently costs `rote eval` its
+            # entire before-side baseline. We know both real paths, so
+            # re-point it to resolve from the pipeline.yaml's final home.
+            pipeline = self._repoint_source_skill(
+                output_dir / "pipeline.yaml", pipeline, skill_dir, output_dir
+            )
+
             # Re-point the result's path to the moved location for the
             # caller's benefit.
             return GraduationResult(
@@ -348,6 +359,41 @@ class Graduator:
             f"Start from the previous pipeline at {ctx_dir}/pipeline.yaml and "
             f"make the minimal changes the brief describes."
         )
+
+    @staticmethod
+    def _repoint_source_skill(
+        pipeline_yaml: Path, pipeline: Pipeline, skill_dir: Path, output_dir: Path
+    ) -> Pipeline:
+        """Rewrite ``source_skill`` to resolve from the pipeline.yaml's home.
+
+        Relative when possible (keeps checked-in examples portable),
+        absolute when the two paths share no usable root. The rewrite is
+        a surgical single-line substitution so the agent's YAML
+        formatting survives; the result is re-validated and the original
+        text restored if the substitution somehow broke the file (e.g. a
+        multiline ``source_skill`` scalar), so this can never turn a
+        good graduation into a broken one.
+        """
+        try:
+            source_ref = os.path.relpath(skill_dir, output_dir)
+        except ValueError:  # e.g. different drives on Windows
+            source_ref = str(skill_dir)
+
+        original = pipeline_yaml.read_text(encoding="utf-8")
+        replacement = f"source_skill: {source_ref}"
+        text, n = re.subn(r"(?m)^source_skill:[^\n]*$", replacement, original, count=1)
+        if n == 0:
+            # The agent omitted the field; add it after the top-level
+            # name: line (guaranteed present — the IR requires name).
+            text, n = re.subn(r"(?m)^(name:[^\n]*)$", rf"\1\n{replacement}", original, count=1)
+        if n == 0:
+            return pipeline  # nowhere safe to write; keep the agent's value
+        pipeline_yaml.write_text(text, encoding="utf-8")
+        try:
+            return load_pipeline(pipeline_yaml)
+        except Exception:
+            pipeline_yaml.write_text(original, encoding="utf-8")
+            return pipeline
 
     @staticmethod
     def _merge_work_dir_to_output(work_dir: Path, output_dir: Path) -> None:

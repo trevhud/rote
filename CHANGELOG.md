@@ -46,6 +46,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 - The `codex` driver no longer raises `NotImplementedError` when
   selected via `--agent codex` or chosen by auto-detect (a first-run
   crash for users who had the Codex CLI but not Claude Code installed).
+- `rote graduate`/`rote analyze --out` now re-point the pipeline's
+  `source_skill` to resolve from the emitted `pipeline.yaml`'s location
+  (relative when possible, absolute otherwise). The agent records the
+  path relative to its temp work dir — deleted when the run ends — so
+  every kept graduation carried a dead pointer and a later `rote eval`
+  silently dropped the entire before-side baseline ("source_skill did
+  not resolve — emitting the after-side only"). Found by graduating a
+  real production skill.
 
 ## [0.6.0] - 2026-07-05
 

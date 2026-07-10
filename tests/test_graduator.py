@@ -28,6 +28,7 @@ import pytest
 
 from rote.graduator import Graduator, GraduatorError
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+from rote.ir import load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUNDLED_GRADUATOR_SKILL = REPO_ROOT / "skills" / "rote-graduate"
@@ -191,6 +192,60 @@ async def test_graduate_happy_path(
 
 
 @pytest.mark.asyncio
+async def test_graduate_repoints_dead_source_skill_pointer(
+    fake_skill_dir: Path,
+    fake_graduator_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """The agent records source_skill relative to its temp work dir, which
+    is deleted after the run — a dead pointer that costs `rote eval` its
+    before-side baseline. The orchestrator must re-point it to resolve
+    from the pipeline.yaml's final location."""
+    output_dir = tmp_path / "output"
+    dead_pointer_yaml = VALID_YAML.replace(
+        'version: "0.1.0"\n',
+        'version: "0.1.0"\nsource_skill: ../../rote-graduate-gone/skill\n',
+    )
+    graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
+    graduator.select_driver = lambda: _FakeDriver(pipeline_yaml=dead_pointer_yaml)  # type: ignore[method-assign]
+
+    result = await graduator.graduate(fake_skill_dir, output_dir)
+
+    reloaded = load_pipeline(output_dir / "pipeline.yaml")
+    assert reloaded.source_skill is not None
+    assert result.pipeline.source_skill == reloaded.source_skill
+    resolved = (output_dir / reloaded.source_skill).resolve()
+    assert resolved == fake_skill_dir.resolve()
+    assert (resolved / "SKILL.md").is_file()
+    # And the eval-side resolver actually finds it (the symptom that
+    # motivated this: "source_skill did not resolve — after-side only").
+    from rote.cli import _resolve_eval_skill_dir
+
+    assert (
+        _resolve_eval_skill_dir(None, output_dir / "pipeline.yaml", reloaded.source_skill)
+        == resolved
+    )
+
+
+@pytest.mark.asyncio
+async def test_graduate_adds_source_skill_when_agent_omits_it(
+    fake_skill_dir: Path,
+    fake_graduator_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """VALID_YAML has no source_skill at all — the orchestrator inserts a
+    resolvable one rather than leaving the baseline undiscoverable."""
+    output_dir = tmp_path / "output"
+    graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
+    graduator.select_driver = lambda: _FakeDriver(pipeline_yaml=VALID_YAML)  # type: ignore[method-assign]
+
+    result = await graduator.graduate(fake_skill_dir, output_dir)
+
+    assert result.pipeline.source_skill is not None
+    assert (output_dir / result.pipeline.source_skill).resolve() == fake_skill_dir.resolve()
+
+
+@pytest.mark.asyncio
 async def test_graduate_overwrites_existing_output_files(
     fake_skill_dir: Path,
     fake_graduator_skill_dir: Path,
@@ -207,7 +262,12 @@ async def test_graduate_overwrites_existing_output_files(
 
     await graduator.graduate(fake_skill_dir, output_dir)
 
-    assert (output_dir / "pipeline.yaml").read_text() == VALID_YAML
+    written = (output_dir / "pipeline.yaml").read_text()
+    assert "OLD CONTENT" not in written
+    # Byte-identical to the driver's output except for the repointed
+    # source_skill line the orchestrator inserts (see
+    # test_graduate_adds_source_skill_when_agent_omits_it).
+    assert written.replace("source_skill: ../fake-skill\n", "") == VALID_YAML
 
 
 @pytest.mark.asyncio
