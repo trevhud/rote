@@ -135,10 +135,21 @@ v1 line; v2 splits the packages) with a retry-once-on-401. Proven by
 refreshes a forced-stale token, and rotates credentials Python reads
 back.
 
-**Cloudflare Workers (planned, PR3)** — no filesystem, no subprocess:
-provision refresh credentials as Worker secrets (`rote mcp export`),
-refresh at runtime, persist rotated refresh tokens to a KV binding
-added to the emitted `wrangler.jsonc`.
+**Cloudflare Workers — shipped.** No filesystem, no subprocess, so
+credentials are *provisioned*: `rote mcp export <server>` turns a
+completed login into Worker secrets (`ROTE_MCP_<S>_REFRESH_TOKEN` /
+`_CLIENT_ID` / `_CLIENT_SECRET?` / `_TOKEN_ENDPOINT` / `_URL`;
+`--json` pipes to `npx wrangler secret bulk`, the default dotenv form
+pastes into `.dev.vars`). The emitted Workers helper
+(`ROTE_MCP_WORKERS_HELPER_TS`) mints access tokens at runtime via the
+refresh grant and caches them — with rotated refresh tokens — in the
+`ROTE_MCP_TOKENS` KV namespace the emitted `wrangler.jsonc` declares
+(per-isolate memory fallback when KV is absent). MCP results are
+declared `Promise<never>` in emitted modules for the same
+`Rpc.Serializable` reason stubs are. Static verification: the emitted
+output typechecks against `@cloudflare/workers-types` v5 + the MCP SDK
+(`test_cloudflare_mcp_output_typechecks`); a live workerd run of the
+SDK's streamable-HTTP client remains a known follow-up.
 
 ## Security posture
 

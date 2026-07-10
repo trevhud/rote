@@ -53,9 +53,12 @@ def _temporal_adapter_factory(**options: Any) -> Adapter:
 
 
 def _cloudflare_adapter_factory(**options: Any) -> Adapter:
-    from rote.adapters.cloudflare import CloudflareAdapter
+    from rote.adapters.cloudflare import CloudflareAdapter, CloudflareAdapterConfig
 
-    return CloudflareAdapter()
+    backend = _validated_backend(options)
+    if backend is None:
+        return CloudflareAdapter()
+    return CloudflareAdapter(CloudflareAdapterConfig(external_backend=backend))
 
 
 def _dbos_adapter_factory(**options: Any) -> Adapter:

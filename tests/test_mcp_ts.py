@@ -97,11 +97,41 @@ def test_helper_not_emitted_without_bindings(runtime: str, tmp_path: Path) -> No
     assert "@modelcontextprotocol/sdk" not in package["dependencies"]
 
 
-def test_cloudflare_never_emits_the_node_helper(tmp_path: Path) -> None:
-    """Workers have no filesystem — the Node token-store helper must not
-    leak into the Cloudflare output (its auth story is PR3's secret
-    provisioning)."""
+def test_cloudflare_emits_the_workers_helper_not_the_node_one(tmp_path: Path) -> None:
+    """Workers have no filesystem — Cloudflare gets the provisioned-secrets
+    + KV helper, never the Node token-store reader."""
     get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path)
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "node:fs" not in helper  # the load-bearing difference
+    assert "KVNamespace" in helper
+    assert "ROTE_MCP_TOKENS" in helper
+    assert "grant_type" in helper
+    bound = (tmp_path / "src" / "extracted" / "pull_data.ts").read_text(encoding="utf-8")
+    assert "callMcpTool(env" in bound
+    assert "RoteMcpEnv" in bound
+
+
+def test_cloudflare_provisioning_surfaces(tmp_path: Path) -> None:
+    """The wrangler config, Env interface, and .dev.vars carry the
+    provisioning surface for each bound server."""
+    import json as _json
+
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path)
+    wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert '"binding": "ROTE_MCP_TOKENS"' in wrangler
+    workflow = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert "ROTE_MCP_VENDOR_REFRESH_TOKEN: string;" in workflow
+    assert "ROTE_MCP_TOKENS?: KVNamespace;" in workflow
+    dev_vars = (tmp_path / ".dev.vars.example").read_text(encoding="utf-8")
+    assert "ROTE_MCP_VENDOR_TOKEN_ENDPOINT=" in dev_vars
+    package = _json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+    assert "@modelcontextprotocol/sdk" in package["dependencies"]
+
+
+def test_cloudflare_api_backend_keeps_stubs(tmp_path: Path) -> None:
+    get_adapter("cloudflare", external_backend="api").emit(_bound_pipeline(), tmp_path)
     assert not (tmp_path / "src" / "extracted" / "_roteMcp.ts").exists()
     bound = (tmp_path / "src" / "extracted" / "pull_data.ts").read_text(encoding="utf-8")
-    assert "callMcpTool" not in bound
+    assert "throw new Error" in bound
+    wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert "ROTE_MCP_TOKENS" not in wrangler

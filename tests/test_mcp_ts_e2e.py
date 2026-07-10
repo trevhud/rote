@@ -189,3 +189,37 @@ def test_ts_runtime_reads_refreshes_and_rotates_python_tokens(
     assert after["tokens"]["refresh_token"]
     assert after["expires_at"] and after["expires_at"] > time.time()
     assert after["version"] == 1
+
+
+@pytest.mark.skipif(not _node_available(), reason="requires node + npm")
+def test_cloudflare_mcp_output_typechecks(tmp_path: Path) -> None:
+    """The Workers MCP helper must compile against @cloudflare/workers-types
+    (KVNamespace, workerd fetch) and the MCP SDK's types — the strongest
+    static signal short of a live workerd run. (Runtime workerd compat of
+    the SDK's streamable-HTTP client is exercised separately by the live
+    wrangler-dev suite in tests/test_cloudflare_e2e.py once an mcp-bound
+    baseline lands there.)"""
+    from tests.test_mcp_ts_e2e import _pipeline as _p  # self-import for clarity
+
+    app_dir = tmp_path / "cf-app"
+    get_adapter("cloudflare").emit(_p("https://mcp.example.com/mcp"), app_dir)
+    install = subprocess.run(
+        ["npm", "install", "--no-audit", "--no-fund"],
+        cwd=app_dir,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        env={**os.environ, "npm_config_progress": "false"},
+    )
+    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    proc = subprocess.run(
+        ["npx", "--no-install", "tsc", "--noEmit"],
+        cwd=app_dir,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert proc.returncode == 0, (
+        f"tsc --noEmit reported errors in emitted Cloudflare MCP code:\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
