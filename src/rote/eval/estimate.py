@@ -308,6 +308,32 @@ def estimate_pipeline(
 
 # ───────── Before: raw-skill estimator ─────────
 
+
+def external_call_payload_tokens(pipeline: Pipeline, priors: Priors | None = None) -> float:
+    """Estimate the data the agent pulls into context, from the pipeline's
+    ``external_call`` footprint.
+
+    The graduated pipeline's ``external_call`` nodes name the sources the
+    skill fetches (Slack, Gmail, a Drive file …); the *before*-side agent
+    pulls the same data, so its transcript carries the same payload. Each
+    external_call contributes ``payload_tokens_per_tool[tool]`` when its MCP
+    tool is known and pinned, otherwise ``tokens_per_external_call_result``.
+
+    Uses the same wave decomposition as :func:`estimate_pipeline`, so
+    loop-body sub-nodes are not double-counted.
+    """
+    priors = priors or Priors()
+    total = 0.0
+    for wave in _execution_waves(pipeline):
+        for node in wave:
+            if node.kind is not NodeKind.EXTERNAL_CALL:
+                continue
+            tool = node.mcp.tool if node.mcp is not None else None
+            per_tool = priors.payload_tokens_per_tool.get(tool) if tool else None
+            total += per_tool if per_tool is not None else priors.tokens_per_external_call_result
+    return total
+
+
 _STEP_LINE_RE = re.compile(r"^\s{0,3}(?:\d+[.)]\s|#{2,3}\s|[-*]\s+\*\*)", re.MULTILINE)
 
 
@@ -339,6 +365,7 @@ def estimate_skill(
     counter: TokenCounter,
     priors: Priors | None = None,
     sidecar: EvalEstimates | None = None,
+    data_payload_tokens: float = 0.0,
 ) -> AgentRunEstimate:
     """Predict running the skill as raw agent instructions.
 
@@ -348,11 +375,18 @@ def estimate_skill(
 
     * fresh  ≈ C₀ + (N−1)·Δ
     * cached ≈ (N−1)·C₀ + Δ·(N−2)(N−1)/2
+
+    ``data_payload_tokens`` (the sources the skill pulls, from
+    :func:`external_call_payload_tokens`) folds into C₀: fetched-once data
+    is billed as one cache-write and re-read on every later turn — exactly
+    C₀'s billing shape, and the dominant cost on data-heavy skills.
     """
     priors = priors or Priors()
     skill_path = Path(skill_dir)
     corpus = _skill_corpus(skill_path)
-    context_tokens = counter.count(corpus) + priors.system_overhead_tokens
+    context_tokens = (
+        counter.count(corpus) + priors.system_overhead_tokens + round(data_payload_tokens)
+    )
 
     if sidecar is not None and (sidecar.steps or sidecar.totals is not None):
         tr = sidecar.turn_range()

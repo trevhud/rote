@@ -613,7 +613,13 @@ def _build_scorecard_for(
     """
     from datetime import UTC, datetime
 
-    from rote.eval import Priors, estimate_pipeline, estimate_skill, load_eval_estimates
+    from rote.eval import (
+        Priors,
+        estimate_pipeline,
+        estimate_skill,
+        external_call_payload_tokens,
+        load_eval_estimates,
+    )
     from rote.eval.pricing import fetch_catalog
     from rote.eval.scorecard import build_scorecard
     from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
@@ -632,7 +638,12 @@ def _build_scorecard_for(
     if skill_dir is not None:
         sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
         sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
-        skill_estimate = estimate_skill(skill_dir, counter, priors, sidecar=sidecar)
+        # The agent pulls the same sources the pipeline's external_call nodes
+        # bind to; use that footprint to size the before-side context payload.
+        data_payload = external_call_payload_tokens(pipeline, priors)
+        skill_estimate = estimate_skill(
+            skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
+        )
 
     return build_scorecard(
         pipeline_name=pipeline.name,

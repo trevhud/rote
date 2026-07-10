@@ -16,7 +16,7 @@ should be re-fitted from that corpus rather than hand-tuned.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,29 @@ class Priors:
     context tokens (5.4k cache-write + 15.3k cache-read) on a
     plugin-heavy install; leaner installs sit lower. 16k splits the
     difference until the Phase 2 corpus fits it properly.
+    """
+
+    tokens_per_external_call_result: float = 6_000.0
+    """Tokens a single data-pull injects into the agent's transcript — the
+    payload of one tool/MCP result (a page of Slack messages, a Gmail
+    thread, a spreadsheet dump). Inferred for the *before* side from the
+    graduated pipeline's ``external_call`` footprint: the agent pulls the
+    same sources the pipeline binds to, and that payload then re-reads on
+    every subsequent turn (the dominant cache-read cost on data-heavy
+    skills).
+
+    First-shot constant, deliberately moderate. ``transcript_growth_per_turn``
+    alone (calibrated on the text-light BDR runs) undercounts a skill that
+    fetches large documents by 5–15×; this term restores the missing
+    payload. Re-fit per source from the Phase-2 corpus — the measured
+    effective transcript growth from a real ``eval --run`` is the anchor.
+    """
+
+    payload_tokens_per_tool: dict[str, float] = field(default_factory=dict)
+    """Per-MCP-tool overrides for ``tokens_per_external_call_result``, keyed
+    by ``Node.mcp.tool`` (e.g. ``{"slack_get_messages": 12000,
+    "gmail_get_thread": 8000}``). Empty by default — every external_call
+    uses the single constant until a source is measured and pinned here.
     """
 
     turns_per_step_low: float = 1.0

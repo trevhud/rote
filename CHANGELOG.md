@@ -10,6 +10,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Payload-aware "before" cost estimator** — the static scorecard now
+  models the data a skill pulls into context, not just its turn count.
+  The graduated pipeline's `external_call` footprint sizes the agent-side
+  context payload (`tokens_per_external_call_result`, default 6k/call,
+  with a per-MCP-tool override table `payload_tokens_per_tool`), folded
+  into C₀ of the cache-aware transcript model. Calibrated against a real
+  data-heavy production skill (Slack + Gmail dashboard, ~22 turns,
+  ~1.6M cache-read tokens/run): the old flat prior underestimated the
+  before-cost 5–15×; the payload-aware default lands within ~3×, and one
+  `eval --run` calibration brings it within ~10%.
+- `rote eval --run`'s suggested prior re-fits now include
+  `transcript_growth_per_turn`, inverted from measured cache-read tokens
+  under the quadratic transcript model — so every empirical run reports
+  the effective payload-inclusive growth rate alongside
+  `seconds_per_turn` and `output_tokens_per_turn`.
 - **`CodexDriver` is now implemented** — `rote graduate --agent codex`
   spawns `codex exec` (OpenAI Codex CLI) as a graduator backend,
   completing the three-driver lineup. Runs headless under a
