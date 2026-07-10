@@ -265,6 +265,33 @@ def test_suggested_priors_from_measured_runs() -> None:
     assert fitted["output_tokens_per_turn"] == pytest.approx(250.0)
 
 
+def test_suggested_priors_fits_transcript_growth_from_cache_read() -> None:
+    """A data-heavy run's huge cache-read inverts to an effective Δ far above
+    the text-only default — the signal to raise the payload prior. Uses the
+    real opportunity-monitor shape (~22 turns, ~9.5M cache-read)."""
+    from rote.eval.priors import Priors
+
+    c0 = Priors().system_overhead_tokens  # 16_000
+    runs = (
+        MeasuredRun(
+            wall_seconds=300.0, output={}, turns=22, cache_read_tokens=9_530_000, output_tokens=6000
+        ),
+    )
+    fitted = suggested_priors(runs)
+    expected = 2.0 * (9_530_000 - 21 * c0) / (20 * 21)  # ≈ 43_781
+    assert fitted["transcript_growth_per_turn"] == pytest.approx(round(expected, 1))
+    assert fitted["transcript_growth_per_turn"] > 40 * Priors().transcript_growth_per_turn
+
+
+def test_suggested_priors_skips_growth_fit_when_uncomputable() -> None:
+    """No cache-read, or fewer than 3 turns, ⇒ no Δ fit (undefined)."""
+    runs = (
+        MeasuredRun(wall_seconds=10.0, output={}, turns=2, cache_read_tokens=5000),
+        MeasuredRun(wall_seconds=10.0, output={}, turns=10, cache_read_tokens=None),
+    )
+    assert "transcript_growth_per_turn" not in suggested_priors(runs)
+
+
 # ───────── Rendering + corpus ─────────
 
 

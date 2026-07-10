@@ -1,0 +1,99 @@
+/**
+ * The empirical determinism metric.
+ *
+ * "Determinism" here is agreement across K repeated runs of the same
+ * compiled pipeline on the same input: does it return the same answer
+ * every time? Three complementary views:
+ *
+ *   - `exact_agreement` — whole-output modal agreement (the strictest).
+ *   - `field_agreement` — fraction of leaf fields that are identical
+ *     across ALL runs (rote-cloud semantics: one flipped leaf drops this
+ *     by 1/#leaves instead of collapsing exact agreement to 0).
+ *   - `per_field` — per leaf path, the modal fraction of runs that agree
+ *     on that leaf (rote OSS `compute_agreement` semantics, generalized
+ *     from top-level fields to flattened leaves).
+ *
+ * Leaf flattening (see {@link flattenLeaves}) is the canonical algorithm
+ * both hosted and OSS dashboards run, so the numbers match.
+ */
+import { canonicalize, flattenLeaves } from "./canonical.js";
+
+export interface DeterminismReport {
+  /** Number of runs considered. */
+  n: number;
+  /** Distinct canonical whole-output values across the runs. */
+  distinct_outputs: number;
+  /** Fraction of runs whose whole output equals the modal output. */
+  exact_agreement: number;
+  /** Fraction of leaf fields identical across ALL runs (cloud semantics). */
+  field_agreement: number;
+  /** Per leaf path: fraction of runs agreeing on that leaf's modal value
+   *  (a missing leaf counts as its own value). Empty when n === 0. */
+  per_field: Record<string, number>;
+}
+
+/** Sentinel for a leaf absent from a given run, so "missing" is a distinct
+ *  value in modal counting rather than silently matching another run. */
+const MISSING = "\u0000__rote_missing__";
+
+/**
+ * Determinism over a set of completed run outputs.
+ *
+ * Accepts raw output VALUES (objects, primitives, arrays); each is
+ * canonicalized internally. Callers holding already-canonicalized JSON
+ * strings (e.g. rote-cloud's stored run outputs) must JSON.parse them
+ * first — passing the strings directly would canonicalize the string as
+ * a scalar and collapse field agreement to whole-output identity.
+ */
+export function computeDeterminism(outputs: unknown[]): DeterminismReport {
+  const n = outputs.length;
+  if (n === 0) {
+    return { n: 0, distinct_outputs: 0, exact_agreement: 0, field_agreement: 0, per_field: {} };
+  }
+
+  const canon = outputs.map(canonicalize);
+  const counts = new Map<string, number>();
+  for (const o of canon) counts.set(o, (counts.get(o) ?? 0) + 1);
+  const modal = Math.max(...counts.values());
+
+  // Per-field agreement across all runs, over flattened LEAF fields (so
+  // one nested object doesn't collapse to all-or-nothing, and a single
+  // flipped leaf reads as e.g. 5/6 rather than 0). We parse the canonical
+  // string back — identical to what rote-cloud does — so the field
+  // numbers are byte-for-byte reproducible on either side.
+  let fieldAgreement = 1;
+  const perField: Record<string, number> = {};
+  try {
+    const parsed = canon.map((o) => flattenLeaves(JSON.parse(o)));
+    const keys = new Set<string>();
+    for (const p of parsed) for (const k of Object.keys(p)) keys.add(k);
+    if (keys.size > 0) {
+      let agree = 0;
+      for (const k of keys) {
+        const values = parsed.map((p) => (k in p ? p[k]! : MISSING));
+        if (new Set(values).size === 1) agree++;
+        const modalField = new Map<string, number>();
+        let best = 0;
+        for (const v of values) {
+          const c = (modalField.get(v) ?? 0) + 1;
+          modalField.set(v, c);
+          if (c > best) best = c;
+        }
+        perField[k] = best / n;
+      }
+      fieldAgreement = agree / keys.size;
+    }
+  } catch {
+    // A non-JSON output (e.g. a bare `undefined`) can't be flattened;
+    // fall back to whole-output identity, matching rote-cloud.
+    fieldAgreement = counts.size === 1 ? 1 : 0;
+  }
+
+  return {
+    n,
+    distinct_outputs: counts.size,
+    exact_agreement: modal / n,
+    field_agreement: fieldAgreement,
+    per_field: perField,
+  };
+}

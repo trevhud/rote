@@ -280,14 +280,14 @@ subscription path.
 
 ## Status
 
-`rote` is **pre-1.0**. The end-to-end flow works on the BDR example, and
-all six adapters are validated by a `slow`-marked e2e suite that runs the
-emitted code against real runtimes (DBOS over SQLite, Temporal's
-time-skipping server, the TypeScript targets compiled with `tsc --noEmit`
-and driven through both HITL gates on live dev servers, the plain-Python
-script as a subprocess, and the MCP server over real stdio). The fast
-suite (`pytest tests/`) makes no real API calls; the integration suite is
-`pytest tests/ -m slow`.
+`rote` is **pre-1.0**. The end-to-end flow works on the BDR example. The
+fast suite (`pytest tests/`) makes no real API calls and is what CI runs
+on every push, alongside a Python e2e (DBOS over SQLite + the MCP server
+over real stdio). Each adapter also has a `slow`-marked e2e that runs its
+emitted code against the real runtime (Temporal's time-skipping server,
+the TypeScript targets via `tsc --noEmit` and live dev servers, the
+plain-Python subprocess); those need a Node toolchain / Docker, so they
+run locally with `pytest tests/ -m slow`, not in CI.
 
 Known gaps: the extracted modules are `NotImplementedError` stubs
 you fill in with real API-client code, a Restate adapter is planned, and

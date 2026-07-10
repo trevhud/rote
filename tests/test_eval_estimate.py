@@ -221,3 +221,90 @@ def test_more_turns_cost_more(counter: HeuristicTokenCounter) -> None:
     assert est_long.fresh_input_tokens.low > est_short.fresh_input_tokens.low
     assert est_long.cached_read_tokens.low > est_short.cached_read_tokens.low
     assert est_long.wall_seconds.low > est_short.wall_seconds.low
+
+
+# ───────── Payload-aware before side ─────────
+
+
+def test_external_call_payload_sums_footprint(bdr_pipeline: Pipeline) -> None:
+    """Payload = one per-tool prior per external_call node, counted over the
+    same wave decomposition as estimate_pipeline (loop-body sub-nodes are not
+    double-counted), each at the default constant unless pinned."""
+    from rote.adapters._common import _execution_waves
+    from rote.eval.estimate import external_call_payload_tokens
+
+    priors = Priors()
+    n_external = sum(
+        1
+        for wave in _execution_waves(bdr_pipeline)
+        for n in wave
+        if n.kind is NodeKind.EXTERNAL_CALL
+    )
+    # sanity: the BDR fixture has external_call nodes to sum over
+    assert n_external >= 1
+    payload = external_call_payload_tokens(bdr_pipeline, priors)
+    assert payload == n_external * priors.tokens_per_external_call_result
+
+
+def test_per_tool_override_changes_payload(bdr_pipeline: Pipeline) -> None:
+    """A pinned per-tool payload beats the default constant for that tool."""
+    from rote.eval.estimate import external_call_payload_tokens
+
+    external = [n for n in bdr_pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL and n.mcp]
+    if not external:
+        pytest.skip("BDR fixture has no MCP-bound external_call to override")
+    tool = external[0].mcp.tool
+    base = external_call_payload_tokens(bdr_pipeline, Priors())
+    bumped = external_call_payload_tokens(
+        bdr_pipeline, Priors(payload_tokens_per_tool={tool: 99_000.0})
+    )
+    assert bumped > base
+
+
+def test_priors_from_overrides_scalars_and_per_tool() -> None:
+    """--prior KEY=VALUE closes the flywheel: --run's re-fits feed back in
+    without editing source. Ints stay ints; the per-tool table uses dot
+    syntax; untouched fields keep their defaults."""
+    from rote.eval.priors import priors_from_overrides
+
+    p = priors_from_overrides(
+        [
+            "transcript_growth_per_turn=5962",
+            "system_overhead_tokens=21000",
+            "payload_tokens_per_tool.slack_get_messages=12000",
+        ]
+    )
+    assert p.transcript_growth_per_turn == 5962.0
+    assert p.system_overhead_tokens == 21000
+    assert isinstance(p.system_overhead_tokens, int)
+    assert p.payload_tokens_per_tool == {"slack_get_messages": 12000.0}
+    assert p.seconds_per_turn == Priors().seconds_per_turn  # untouched default
+
+
+def test_priors_from_overrides_rejects_bad_input() -> None:
+    from rote.eval.priors import priors_from_overrides
+
+    with pytest.raises(ValueError, match="valid names"):
+        priors_from_overrides(["not_a_prior=1"])
+    with pytest.raises(ValueError, match="valid names"):
+        priors_from_overrides(["payload_tokens_per_tool=1"])  # dict needs dot syntax
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        priors_from_overrides(["transcript_growth_per_turn"])
+    with pytest.raises(ValueError, match="non-numeric"):
+        priors_from_overrides(["seconds_per_turn=fast"])
+    with pytest.raises(ValueError, match="names no tool"):
+        priors_from_overrides(["payload_tokens_per_tool.=5"])
+
+
+def test_data_payload_raises_cached_read(counter: HeuristicTokenCounter) -> None:
+    """Folding a data payload into C₀ inflates the dominant cache-read term —
+    the fix for the data-heavy-skill underestimate."""
+    sidecar = EvalEstimates(totals=TurnRange(low=20, high=20))
+    baseline = estimate_skill(BDR_SKILL, counter, sidecar=sidecar, data_payload_tokens=0.0)
+    heavy = estimate_skill(BDR_SKILL, counter, sidecar=sidecar, data_payload_tokens=400_000.0)
+    assert heavy.context_tokens == baseline.context_tokens + 400_000.0
+    assert heavy.cached_read_tokens.high > baseline.cached_read_tokens.high
+    # Default is backward-compatible: no payload ⇒ identical to before.
+    assert estimate_skill(BDR_SKILL, counter, sidecar=sidecar).cached_read_tokens.high == (
+        baseline.cached_read_tokens.high
+    )

@@ -36,6 +36,7 @@ from rote.graduator import Graduator, GraduatorError
 from rote.ir import Pipeline, load_pipeline
 
 if TYPE_CHECKING:
+    from rote.eval.priors import Priors
     from rote.eval.scorecard import Scorecard
 
 # ───────── Subcommand: emit ─────────
@@ -604,6 +605,7 @@ def _build_scorecard_for(
     pipeline_yaml: Path,
     skill_dir: Path | None,
     provider: str,
+    priors: Priors | None = None,
 ) -> Scorecard:
     """Shared eval flow: estimate both sides, fetch live prices, assemble.
 
@@ -613,13 +615,19 @@ def _build_scorecard_for(
     """
     from datetime import UTC, datetime
 
-    from rote.eval import Priors, estimate_pipeline, estimate_skill, load_eval_estimates
+    from rote.eval import (
+        Priors,
+        estimate_pipeline,
+        estimate_skill,
+        external_call_payload_tokens,
+        load_eval_estimates,
+    )
     from rote.eval.pricing import fetch_catalog
     from rote.eval.scorecard import build_scorecard
     from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
     from rote.eval.tokens import pick_token_counter
 
-    priors = Priors()
+    priors = priors or Priors()
     prices = fetch_catalog(provider=provider).sample(provider=provider)
     # Exact counting needs a live model id (tokenizers are per-model);
     # the small tier's is as good as any and free either way. Only the
@@ -632,7 +640,12 @@ def _build_scorecard_for(
     if skill_dir is not None:
         sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
         sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
-        skill_estimate = estimate_skill(skill_dir, counter, priors, sidecar=sidecar)
+        # The agent pulls the same sources the pipeline's external_call nodes
+        # bind to; use that footprint to size the before-side context payload.
+        data_payload = external_call_payload_tokens(pipeline, priors)
+        skill_estimate = estimate_skill(
+            skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
+        )
 
     return build_scorecard(
         pipeline_name=pipeline.name,
@@ -682,8 +695,18 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    from rote.eval.priors import priors_from_overrides
+
     try:
-        scorecard = _build_scorecard_for(pipeline, pipeline_yaml, skill_dir, args.provider)
+        priors = priors_from_overrides(args.prior or [])
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        scorecard = _build_scorecard_for(
+            pipeline, pipeline_yaml, skill_dir, args.provider, priors=priors
+        )
     except PricingError as e:
         print(f"error: could not fetch live prices: {e}", file=sys.stderr)
         return 1
@@ -1205,6 +1228,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         default="anthropic",
         help="LLM provider whose current model lineup to price (default: anthropic)",
+    )
+    eval_cmd.add_argument(
+        "--prior",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Override an estimator prior (repeatable), e.g. "
+            "--prior transcript_growth_per_turn=5962 — feed back the "
+            "re-fits a previous --run reported. Per-MCP-tool payload: "
+            "--prior payload_tokens_per_tool.<tool>=12000"
+        ),
     )
     eval_cmd.add_argument(
         "--json",

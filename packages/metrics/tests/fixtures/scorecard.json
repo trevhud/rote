@@ -1,0 +1,174 @@
+{
+  "pipeline": "ticket-triage",
+  "generated_at": "2026-07-04T03:53:01Z",
+  "roteness": 0.5,
+  "before": {
+    "turns": {
+      "low": 6.0,
+      "high": 15.0
+    },
+    "context_tokens": 16393,
+    "fresh_input_tokens": {
+      "low": 20893.0,
+      "high": 28993.0
+    },
+    "cached_read_tokens": {
+      "low": 90965.0,
+      "high": 311402.0
+    },
+    "output_tokens": {
+      "low": 1500.0,
+      "high": 3750.0
+    },
+    "wall_seconds": {
+      "low": 78.0,
+      "high": 195.0
+    },
+    "sampled_steps": 6,
+    "total_steps": 6,
+    "sampled_output_tokens": {
+      "low": 1500.0,
+      "high": 3750.0
+    },
+    "turn_method": "structural heuristic (6 steps in SKILL.md)",
+    "token_count_method": "chars/3.8 approximation"
+  },
+  "after": {
+    "critical_path_seconds": {
+      "low": 6.41,
+      "high": 6.41
+    },
+    "hitl_gates": [],
+    "llm_input_tokens": {
+      "low": 397.0,
+      "high": 397.0
+    },
+    "llm_output_tokens": {
+      "low": 240.0,
+      "high": 240.0
+    },
+    "sampled_steps": 2,
+    "total_steps": 4,
+    "schema_constrained_steps": 2,
+    "sampled_output_tokens": {
+      "low": 240.0,
+      "high": 240.0
+    },
+    "nodes": [
+      {
+        "id": "classify",
+        "kind": "llm_judge",
+        "calls": {
+          "low": 1,
+          "high": 1
+        },
+        "llm_input_tokens_per_call": 129,
+        "llm_output_tokens_per_call": 120,
+        "wall_seconds_per_call": 3.2
+      },
+      {
+        "id": "extract_order",
+        "kind": "pure_function",
+        "calls": {
+          "low": 1,
+          "high": 1
+        },
+        "llm_input_tokens_per_call": 0,
+        "llm_output_tokens_per_call": 0,
+        "wall_seconds_per_call": 0.01
+      },
+      {
+        "id": "route",
+        "kind": "llm_judge",
+        "calls": {
+          "low": 1,
+          "high": 1
+        },
+        "llm_input_tokens_per_call": 268,
+        "llm_output_tokens_per_call": 120,
+        "wall_seconds_per_call": 3.2
+      },
+      {
+        "id": "build_ticket",
+        "kind": "pure_function",
+        "calls": {
+          "low": 1,
+          "high": 1
+        },
+        "llm_input_tokens_per_call": 0,
+        "llm_output_tokens_per_call": 0,
+        "wall_seconds_per_call": 0.01
+      }
+    ]
+  },
+  "costs": [
+    {
+      "model": "claude-fable-5",
+      "provider": "anthropic",
+      "tier": "flagship",
+      "price_source": "https://models.dev/api.json (cross-checked against https://openrouter.ai/api/v1/models)",
+      "fetched_at": "2026-07-03T17:44:05Z",
+      "input_per_mtok": 10.0,
+      "output_per_mtok": 50.0,
+      "before_usd": {
+        "low": 0.4271275,
+        "high": 0.8613145
+      },
+      "after_usd": {
+        "low": 0.015969999999999998,
+        "high": 0.015969999999999998
+      }
+    },
+    {
+      "model": "claude-sonnet-5",
+      "provider": "anthropic",
+      "tier": "mid",
+      "price_source": "https://models.dev/api.json (cross-checked against https://openrouter.ai/api/v1/models)",
+      "fetched_at": "2026-07-03T17:44:05Z",
+      "input_per_mtok": 2.0,
+      "output_per_mtok": 10.0,
+      "before_usd": {
+        "low": 0.0854255,
+        "high": 0.1722629
+      },
+      "after_usd": {
+        "low": 0.003194,
+        "high": 0.003194
+      }
+    },
+    {
+      "model": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "tier": "small",
+      "price_source": "https://models.dev/api.json (cross-checked against https://openrouter.ai/api/v1/models)",
+      "fetched_at": "2026-07-03T17:44:05Z",
+      "input_per_mtok": 1.0,
+      "output_per_mtok": 5.0,
+      "before_usd": {
+        "low": 0.04271275,
+        "high": 0.08613145
+      },
+      "after_usd": {
+        "low": 0.001597,
+        "high": 0.001597
+      }
+    }
+  ],
+  "priors": {
+    "seconds_per_turn": 13.0,
+    "output_tokens_per_turn": 250.0,
+    "transcript_growth_per_turn": 900.0,
+    "system_overhead_tokens": 16000,
+    "turns_per_step_low": 1.0,
+    "turns_per_step_high": 2.5,
+    "llm_ttft_seconds": 1.2,
+    "llm_output_tokens_per_second": 60.0,
+    "tokens_per_input_field": 60.0,
+    "tokens_per_output_field": 40.0,
+    "external_call_seconds": 1.5,
+    "pure_function_seconds": 0.01,
+    "agent_loop_turns_per_iteration": 3.0,
+    "agent_loop_default_max_iterations": 10,
+    "chars_per_token": 3.8
+  }
+}

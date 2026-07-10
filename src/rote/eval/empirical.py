@@ -38,6 +38,7 @@ from typing import Any
 import yaml
 
 from rote.eval.pricing import PricingCatalog
+from rote.eval.priors import Priors
 from rote.graduator.drivers.claude import (
     DEFAULT_ALLOWED_TOOLS,
     build_subscription_env,
@@ -447,9 +448,12 @@ def measured_pipeline_cost_usd(
     return (mean(per_run) if per_run else 0.0, sorted(unpriced))
 
 
-def suggested_priors(skill_runs: tuple[MeasuredRun, ...]) -> dict[str, float]:
+def suggested_priors(
+    skill_runs: tuple[MeasuredRun, ...], priors: Priors | None = None
+) -> dict[str, float]:
     """Prior values re-fitted from measured agent runs (reported, never
     silently applied — the static model's constants stay explicit)."""
+    priors = priors or Priors()
     fitted: dict[str, float] = {}
     timed = [r for r in skill_runs if r.turns and r.wall_seconds]
     if timed:
@@ -462,6 +466,19 @@ def suggested_priors(skill_runs: tuple[MeasuredRun, ...]) -> dict[str, float]:
             mean(r.output_tokens / r.turns for r in with_output if r.turns and r.output_tokens),
             1,
         )
+    # Effective transcript growth Δ, inverted from the measured cache-read
+    # under the quadratic model: cached ≈ (N−1)·C₀ + Δ·(N−2)(N−1)/2, with
+    # C₀ = system_overhead prior. This is *payload-inclusive* — a value far
+    # above the text-only default flags a data-heavy skill whose
+    # tokens_per_external_call_result should be raised. Needs N ≥ 3.
+    c0 = float(priors.system_overhead_tokens)
+    deltas = [
+        max(0.0, 2.0 * (r.cache_read_tokens - (r.turns - 1) * c0) / ((r.turns - 2) * (r.turns - 1)))
+        for r in skill_runs
+        if r.turns and r.turns >= 3 and r.cache_read_tokens
+    ]
+    if deltas:
+        fitted["transcript_growth_per_turn"] = round(mean(deltas), 1)
     return fitted
 
 

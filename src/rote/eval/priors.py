@@ -16,7 +16,8 @@ should be re-fitted from that corpus rather than hand-tuned.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field, fields, replace
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,29 @@ class Priors:
     context tokens (5.4k cache-write + 15.3k cache-read) on a
     plugin-heavy install; leaner installs sit lower. 16k splits the
     difference until the Phase 2 corpus fits it properly.
+    """
+
+    tokens_per_external_call_result: float = 6_000.0
+    """Tokens a single data-pull injects into the agent's transcript — the
+    payload of one tool/MCP result (a page of Slack messages, a Gmail
+    thread, a spreadsheet dump). Inferred for the *before* side from the
+    graduated pipeline's ``external_call`` footprint: the agent pulls the
+    same sources the pipeline binds to, and that payload then re-reads on
+    every subsequent turn (the dominant cache-read cost on data-heavy
+    skills).
+
+    First-shot constant, deliberately moderate. ``transcript_growth_per_turn``
+    alone (calibrated on the text-light BDR runs) undercounts a skill that
+    fetches large documents by 5–15×; this term restores the missing
+    payload. Re-fit per source from the Phase-2 corpus — the measured
+    effective transcript growth from a real ``eval --run`` is the anchor.
+    """
+
+    payload_tokens_per_tool: dict[str, float] = field(default_factory=dict)
+    """Per-MCP-tool overrides for ``tokens_per_external_call_result``, keyed
+    by ``Node.mcp.tool`` (e.g. ``{"slack_get_messages": 12000,
+    "gmail_get_thread": 8000}``). Empty by default — every external_call
+    uses the single constant until a source is measured and pinned here.
     """
 
     turns_per_step_low: float = 1.0
@@ -104,3 +128,51 @@ class Priors:
     available for the exact ``count_tokens`` endpoint; the scorecard
     labels which method produced its numbers.
     """
+
+
+_PER_TOOL_PREFIX = "payload_tokens_per_tool."
+
+
+def priors_from_overrides(overrides: Iterable[str], base: Priors | None = None) -> Priors:
+    """Build :class:`Priors` from ``KEY=VALUE`` override strings.
+
+    This is how ``rote eval --prior`` closes the calibration loop: the
+    re-fits that ``--run`` reports (``transcript_growth_per_turn`` etc.)
+    can be fed straight back on the next estimate instead of editing
+    source. Scalar fields take ``name=value``; the per-tool payload
+    table takes ``payload_tokens_per_tool.<mcp_tool>=value``.
+
+    Raises ``ValueError`` with the list of valid names on an unknown key
+    or an unparseable value — the CLI surfaces it verbatim.
+    """
+    base = base or Priors()
+    by_name = {f.name: f for f in fields(Priors)}
+    scalars: dict[str, float | int] = {}
+    per_tool = dict(base.payload_tokens_per_tool)
+    for item in overrides:
+        key, sep, raw = item.partition("=")
+        key, raw = key.strip(), raw.strip()
+        if not sep or not key or not raw:
+            raise ValueError(f"--prior expects KEY=VALUE, got {item!r}")
+        if key.startswith(_PER_TOOL_PREFIX):
+            tool = key[len(_PER_TOOL_PREFIX) :]
+            if not tool:
+                raise ValueError(f"--prior {item!r} names no tool after the dot")
+            per_tool[tool] = _parse_number(item, raw)
+            continue
+        prior_field = by_name.get(key)
+        if prior_field is None or key == "payload_tokens_per_tool":
+            valid = ", ".join(sorted(n for n in by_name if n != "payload_tokens_per_tool"))
+            raise ValueError(
+                f"unknown prior {key!r} — valid names: {valid}, or {_PER_TOOL_PREFIX}<mcp_tool>"
+            )
+        value = _parse_number(item, raw)
+        scalars[key] = int(value) if prior_field.type == "int" else value
+    return replace(base, payload_tokens_per_tool=per_tool, **scalars)  # type: ignore[arg-type]
+
+
+def _parse_number(item: str, raw: str) -> float:
+    try:
+        return float(raw)
+    except ValueError:
+        raise ValueError(f"--prior {item!r} has a non-numeric value") from None
