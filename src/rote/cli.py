@@ -26,18 +26,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
+from rote.graduator.events import GraduationEvent
 from rote.ir import Pipeline, load_pipeline
-
-if TYPE_CHECKING:
-    from rote.eval.priors import Priors
-    from rote.eval.scorecard import Scorecard
 
 # ───────── Subcommand: emit ─────────
 
@@ -107,6 +104,44 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 # ───────── Subcommand stubs (graduate / analyze / eval) ─────────
 
 
+#: The rote-graduate skill runs seven numbered phases; used to render
+#: ``[phase N/7]`` progress lines. Kept in sync with skills/rote-graduate.
+_GRADUATE_TOTAL_PHASES = 7
+
+
+def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
+    """One-line live progress to stderr for ``rote graduate``.
+
+    Plain ``print(file=sys.stderr)`` — no rich, no spinner, so it composes
+    with piping and CI logs. Renders the event types a human watching a run
+    cares about: phase transitions, the agent's tool calls (keyed by turn),
+    warnings/errors, and the orchestrator's log + completion lines. Bare
+    ``turn`` events (assistant reasoning with no action) are skipped to keep
+    the stream readable — the tool lines already carry the turn number.
+    """
+
+    def printer(event: GraduationEvent) -> None:
+        line: str | None
+        if event.type == "phase":
+            name = event.phase_name or ""
+            line = f"[phase {event.phase}/{_GRADUATE_TOTAL_PHASES}] {name}".rstrip()
+        elif event.type == "tool":
+            loc = f" {event.path}" if event.path else ""
+            line = f"[turn {event.turn}] {event.tool_name}{loc}"
+        elif event.type == "warning":
+            line = f"warning: {event.message}"
+        elif event.type == "error":
+            line = f"error: {event.message}"
+        elif event.type == "turn":
+            line = None  # too noisy; tool lines already show the turn
+        else:  # log, artifact, complete
+            line = event.message or None
+        if line:
+            print(line, file=sys.stderr)
+
+    return printer
+
+
 def _cmd_graduate(args: argparse.Namespace) -> int:
     """Run the full one-shot graduation flow.
 
@@ -134,7 +169,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     graduated_dir = out_dir / "graduated"
     runtime_dir = out_dir / "runtime" / args.runtime
 
-    graduator = Graduator(agent=args.agent, model=args.model)
+    graduator = Graduator(agent=args.agent, model=args.model, on_event=_graduate_progress_printer())
 
     try:
         result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
@@ -157,10 +192,11 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # just-completed, real-money graduation run) ──
     scorecard_path: Path | None = None
     if not args.no_eval:
+        from rote.eval import build_scorecard_for
         from rote.eval.pricing import PricingError
 
         try:
-            scorecard = _build_scorecard_for(
+            scorecard = build_scorecard_for(
                 result.pipeline,
                 graduated_dir / "pipeline.yaml",
                 skill_path,
@@ -600,63 +636,6 @@ def _resolve_eval_skill_dir(
     return None
 
 
-def _build_scorecard_for(
-    pipeline: Pipeline,
-    pipeline_yaml: Path,
-    skill_dir: Path | None,
-    provider: str,
-    priors: Priors | None = None,
-) -> Scorecard:
-    """Shared eval flow: estimate both sides, fetch live prices, assemble.
-
-    Raises ``rote.eval.pricing.PricingError`` when the live price source
-    is unreachable — callers decide whether that's fatal (``rote eval``)
-    or a warning (``rote graduate``'s auxiliary scorecard).
-    """
-    from datetime import UTC, datetime
-
-    from rote.eval import (
-        Priors,
-        estimate_pipeline,
-        estimate_skill,
-        external_call_payload_tokens,
-        load_eval_estimates,
-    )
-    from rote.eval.pricing import fetch_catalog
-    from rote.eval.scorecard import build_scorecard
-    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
-    from rote.eval.tokens import pick_token_counter
-
-    priors = priors or Priors()
-    prices = fetch_catalog(provider=provider).sample(provider=provider)
-    # Exact counting needs a live model id (tokenizers are per-model);
-    # the small tier's is as good as any and free either way. Only the
-    # Anthropic endpoint exists, so other providers get the heuristic.
-    count_model = prices[-1].model_id if provider == "anthropic" else None
-    counter = pick_token_counter(priors, model=count_model)
-    pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
-
-    skill_estimate = None
-    if skill_dir is not None:
-        sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
-        sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
-        # The agent pulls the same sources the pipeline's external_call nodes
-        # bind to; use that footprint to size the before-side context payload.
-        data_payload = external_call_payload_tokens(pipeline, priors)
-        skill_estimate = estimate_skill(
-            skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
-        )
-
-    return build_scorecard(
-        pipeline_name=pipeline.name,
-        pipeline_estimate=pipeline_estimate,
-        skill_estimate=skill_estimate,
-        prices=prices,
-        priors=priors,
-        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    )
-
-
 def _cmd_eval(args: argparse.Namespace) -> int:
     """Static before/after scorecard: speed, cost, determinism.
 
@@ -695,6 +674,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
+    from rote.eval import build_scorecard_for
     from rote.eval.priors import priors_from_overrides
 
     try:
@@ -704,7 +684,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
         return 2
 
     try:
-        scorecard = _build_scorecard_for(
+        scorecard = build_scorecard_for(
             pipeline, pipeline_yaml, skill_dir, args.provider, priors=priors
         )
     except PricingError as e:

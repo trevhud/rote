@@ -28,6 +28,7 @@ from rote.eval.estimate import (
     external_call_payload_tokens,
 )
 from rote.eval.priors import Priors, priors_from_overrides
+from rote.eval.scorecard import Scorecard, build_scorecard, build_scorecard_for
 from rote.eval.sidecar import EvalEstimates, load_eval_estimates
 
 __all__ = [
@@ -38,6 +39,9 @@ __all__ = [
     "Priors",
     "Range",
     "SamplingSurface",
+    "Scorecard",
+    "build_scorecard",
+    "build_scorecard_for",
     "estimate_pipeline",
     "estimate_skill",
     "external_call_payload_tokens",

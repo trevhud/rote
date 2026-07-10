@@ -459,3 +459,40 @@ def test_subprocess_emit_bdr(python_executable: str, tmp_path: Path) -> None:
     )
     assert (out_dir / "workflow.py").exists()
     assert (out_dir / "activities.py").exists()
+
+
+# ───────── graduate live-progress printer ─────────
+
+
+def test_graduate_progress_printer_renders_expected_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from rote.cli import _graduate_progress_printer
+    from rote.graduator.events import GraduationEvent
+
+    printer = _graduate_progress_printer()
+    for event in [
+        GraduationEvent(type="log", ts=0.0, message="driver selected: api"),
+        GraduationEvent(type="phase", ts=0.0, phase=4, phase_name="LLM-Judge Extraction"),
+        GraduationEvent(type="turn", ts=0.0, turn=12, message="turn 12: thinking…"),
+        GraduationEvent(
+            type="tool",
+            ts=0.0,
+            turn=12,
+            tool_name="write_file",
+            path="signatures/qualify.ts",
+        ),
+        GraduationEvent(type="warning", ts=0.0, message="a warning"),
+        GraduationEvent(type="complete", ts=0.0, message="graduated via api; tokens in=1 out=2"),
+    ]:
+        printer(event)
+
+    err = capsys.readouterr().err
+    assert "[phase 4/7] LLM-Judge Extraction" in err
+    assert "[turn 12] write_file signatures/qualify.ts" in err
+    assert "warning: a warning" in err
+    assert "graduated via api; tokens in=1 out=2" in err
+    # Bare turn events are suppressed to keep the stream readable.
+    assert "thinking" not in err
+    # log lines print verbatim.
+    assert "driver selected: api" in err

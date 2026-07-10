@@ -11,10 +11,16 @@ reader can't audit is marketing, not measurement.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
+from typing import TYPE_CHECKING
 
 from rote.eval.estimate import AgentRunEstimate, PipelineEstimate, Range
 from rote.eval.pricing import ModelPrice
 from rote.eval.priors import Priors
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from rote.ir import Pipeline
 
 # ───────── Price arithmetic ─────────
 
@@ -295,6 +301,66 @@ def build_scorecard(
         costs=costs,
         priors=priors,
         generated_at=generated_at,
+    )
+
+
+def build_scorecard_for(
+    pipeline: Pipeline,
+    pipeline_yaml: Path,
+    skill_dir: Path | None,
+    provider: str,
+    priors: Priors | None = None,
+) -> Scorecard:
+    """End-to-end eval flow: estimate both sides, fetch live prices, assemble.
+
+    The public entry point behind ``rote eval`` / ``rote graduate``'s
+    scorecard and the cloud runner: given a validated pipeline (and,
+    optionally, its source skill for the before-side baseline), it sizes
+    both sides, samples live model prices for ``provider``, and returns
+    an assembled :class:`Scorecard`.
+
+    Raises :class:`~rote.eval.pricing.PricingError` when the live price
+    source is unreachable — callers decide whether that's fatal
+    (``rote eval``) or a warning (``rote graduate``'s auxiliary scorecard).
+    """
+    from datetime import UTC, datetime
+
+    from rote.eval.estimate import (
+        estimate_pipeline,
+        estimate_skill,
+        external_call_payload_tokens,
+    )
+    from rote.eval.pricing import fetch_catalog
+    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
+    from rote.eval.tokens import pick_token_counter
+
+    priors = priors or Priors()
+    prices = fetch_catalog(provider=provider).sample(provider=provider)
+    # Exact counting needs a live model id (tokenizers are per-model);
+    # the small tier's is as good as any and free either way. Only the
+    # Anthropic endpoint exists, so other providers get the heuristic.
+    count_model = prices[-1].model_id if provider == "anthropic" else None
+    counter = pick_token_counter(priors, model=count_model)
+    pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
+
+    skill_estimate = None
+    if skill_dir is not None:
+        sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
+        sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
+        # The agent pulls the same sources the pipeline's external_call nodes
+        # bind to; use that footprint to size the before-side context payload.
+        data_payload = external_call_payload_tokens(pipeline, priors)
+        skill_estimate = estimate_skill(
+            skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
+        )
+
+    return build_scorecard(
+        pipeline_name=pipeline.name,
+        pipeline_estimate=pipeline_estimate,
+        skill_estimate=skill_estimate,
+        prices=prices,
+        priors=priors,
+        generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
 
