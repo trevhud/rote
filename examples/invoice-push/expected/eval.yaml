@@ -1,0 +1,94 @@
+version: 1
+source_skill: ../skill
+
+steps:
+  - description: "Verify prerequisites (Chrome plugin active + user logged in)"
+    node_id: check_prerequisites
+    phase: "Prerequisites"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 3}
+
+  - description: "Calculate 7-day rolling date window ending yesterday"
+    node_id: calculate_date_window
+    phase: "Date Window"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Clear all stale filter pills"
+    node_id: clear_and_apply_filters
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 2, high: 5}
+
+  - description: "Apply Date Imported range + Sent To Procurement = No filters"
+    phase: "Setup"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 4, high: 8}
+
+  - description: "Set page size to 90 and verify table reload"
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 2, high: 3}
+
+  - description: "Record run start time and read total qualifying count"
+    node_id: read_initial_metadata
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Read and classify all rows on current page (bulk snapshot + status/24h checks)"
+    node_id: read_page_rows
+    phase: "Processing"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 3}
+    iterations: {low: 1, high: 3}
+
+  - description: "Push each eligible invoice: click ⋮, click Push, wait for toast"
+    node_id: execute_push
+    phase: "Processing"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 3, high: 5}
+    iterations: {low: 20, high: 90}
+
+  - description: "On success: refresh table, re-locate by Batch ID, capture Sent Date"
+    node_id: capture_sent_date
+    phase: "Processing"
+    estimated_turns: {low: 2, high: 3}
+    estimated_tool_calls: {low: 2, high: 4}
+    iterations: {low: 15, high: 80}
+
+  - description: "Paginate to next page (per additional page beyond first)"
+    phase: "Processing"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 2, high: 3}
+
+  - description: "Organise all push results and format report data"
+    node_id: build_report_data
+    phase: "Report"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 1}
+
+  - description: "Check/create YYYY/MM archive subfolders in Google Drive"
+    node_id: ensure_archive_folder
+    phase: "Report"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 2, high: 6}
+
+  - description: "Create Google Sheet with 3 tabs and populate all data"
+    node_id: write_google_sheet
+    phase: "Report"
+    estimated_turns: {low: 3, high: 6}
+    estimated_tool_calls: {low: 4, high: 8}
+
+
+notes: >-
+  The per-row push cycle (Steps 7d–7g) dominates cost. Each eligible row
+  requires roughly 4–7 tool calls: DOM snapshot to locate the row, click ⋮,
+  click Push to Procurement, DOM snapshot to read the toast, click refresh icon,
+  DOM snapshot to re-locate by Batch ID and read the Sent Date.
+  The agent accumulates full conversation history across turns, so token
+  cost grows as O(n) in the number of rows (DOM snapshots are 5–20 KB each,
+  meaning later turns see 50K+ input tokens). The two observed $20 runs are
+  consistent with ~80–100 turns on a batch of 20–40 qualifying invoices.
+  Lower estimates apply to small batches (under 10 rows, single page);
+  upper estimates apply to 80+ rows across two pages with several error retries.
