@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.graduator.drivers import (
     DriverError,
     GraduatorDriver,
@@ -299,6 +300,9 @@ class Graduator:
             pipeline = self._repoint_source_skill(
                 output_dir / "pipeline.yaml", pipeline, skill_dir, output_dir
             )
+            self._repoint_sidecar_source_skill(
+                output_dir / EVAL_SIDECAR_FILENAME, skill_dir, output_dir
+            )
 
             # Re-point the result's path to the moved location for the
             # caller's benefit.
@@ -394,6 +398,40 @@ class Graduator:
         except Exception:
             pipeline_yaml.write_text(original, encoding="utf-8")
             return pipeline
+
+    @staticmethod
+    def _repoint_sidecar_source_skill(
+        sidecar_path: Path, skill_dir: Path, output_dir: Path
+    ) -> None:
+        """Rewrite the eval sidecar's ``source_skill`` the same way.
+
+        The sidecar suffers the identical dead-pointer failure as
+        pipeline.yaml (the agent records the path relative to its temp
+        work dir), just with a quieter blast radius: its field is
+        documentary today, but a stale path checked into an example is a
+        bug report waiting to happen. Same surgical substitution, same
+        restore-on-breakage guarantee, validated with the sidecar's own
+        loader.
+        """
+        if not sidecar_path.is_file():
+            return
+        try:
+            source_ref = os.path.relpath(skill_dir, output_dir)
+        except ValueError:
+            source_ref = str(skill_dir)
+
+        original = sidecar_path.read_text(encoding="utf-8")
+        replacement = f"source_skill: {source_ref}"
+        text, n = re.subn(r"(?m)^source_skill:[^\n]*$", replacement, original, count=1)
+        if n == 0:
+            text, n = re.subn(r"(?m)^(version:[^\n]*)$", rf"\1\n{replacement}", original, count=1)
+        if n == 0:
+            return
+        sidecar_path.write_text(text, encoding="utf-8")
+        try:
+            load_eval_estimates(sidecar_path)
+        except Exception:
+            sidecar_path.write_text(original, encoding="utf-8")
 
     @staticmethod
     def _merge_work_dir_to_output(work_dir: Path, output_dir: Path) -> None:

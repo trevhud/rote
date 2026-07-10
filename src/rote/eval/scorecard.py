@@ -253,8 +253,9 @@ class Scorecard:
             lines.append(f"- Token counting: {self.skill.token_count_method}.")
             lines.append(
                 "- Agent cost model: cache-aware transcript growth — turn *i* "
-                "re-reads C₀ + (i−1)·Δ context; fresh tokens bill at cache-write "
-                "price, re-reads at cache-read price."
+                "re-reads min(C₀ + (i−1)·Δ, cap) context, where the cap models "
+                "harness compaction near the context window; fresh tokens bill "
+                "at cache-write price, re-reads at cache-read price."
             )
         lines.append("- HITL gate waits are human time and excluded from wall-clock on both sides.")
         lines.append(

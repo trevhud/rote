@@ -228,6 +228,43 @@ async def test_graduate_repoints_dead_source_skill_pointer(
 
 
 @pytest.mark.asyncio
+async def test_graduate_repoints_eval_sidecar_source_skill(
+    fake_skill_dir: Path,
+    fake_graduator_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """eval.yaml suffers the same dead-pointer failure as pipeline.yaml
+    (the agent records source_skill relative to its deleted temp work
+    dir) — found on the push-to-coupa graduation, whose sidecar kept
+    `../../skill` while pipeline.yaml was corrected."""
+    output_dir = tmp_path / "output"
+    dead_sidecar = (
+        "version: 1\n"
+        "source_skill: ../../skill\n"
+        "steps:\n"
+        "  - description: push each row\n"
+        "    estimated_turns: {low: 3, high: 6}\n"
+        "    iterations: {low: 20, high: 90}\n"
+    )
+    graduator = Graduator(graduator_skill_dir=fake_graduator_skill_dir)
+    graduator.select_driver = lambda: _FakeDriver(  # type: ignore[method-assign]
+        pipeline_yaml=VALID_YAML, extras={"eval.yaml": dead_sidecar}
+    )
+
+    await graduator.graduate(fake_skill_dir, output_dir)
+
+    from rote.eval.sidecar import load_eval_estimates
+
+    sidecar = load_eval_estimates(output_dir / "eval.yaml")
+    assert sidecar.source_skill is not None
+    resolved = (output_dir / sidecar.source_skill).resolve()
+    assert resolved == fake_skill_dir.resolve()
+    # The rest of the agent's sidecar survives the surgical rewrite.
+    assert sidecar.steps[0].iterations is not None
+    assert sidecar.turn_range().high == 540
+
+
+@pytest.mark.asyncio
 async def test_graduate_adds_source_skill_when_agent_omits_it(
     fake_skill_dir: Path,
     fake_graduator_skill_dir: Path,

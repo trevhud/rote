@@ -369,9 +369,13 @@ def estimate_skill(
 ) -> AgentRunEstimate:
     """Predict running the skill as raw agent instructions.
 
-    Cache-aware transcript model: turn *i* re-reads C₀ + (i−1)·Δ tokens
-    of context, of which only ~Δ is first-sight (billed at cache-write
-    price); the rest is a cache read. Totals over N turns:
+    Cache-aware transcript model: turn *i* re-reads
+    min(C₀ + (i−1)·Δ, cap) tokens of context, of which only ~Δ is
+    first-sight (billed at cache-write price); the rest is a cache read.
+    The cap (``priors.transcript_cap_tokens``) models harness compaction:
+    real transcripts saturate near the context window instead of growing
+    without bound, so on long runs the cached-read total transitions from
+    quadratic to linear. Uncapped totals over N turns:
 
     * fresh  ≈ C₀ + (N−1)·Δ
     * cached ≈ (N−1)·C₀ + Δ·(N−2)(N−1)/2
@@ -404,14 +408,24 @@ def estimate_skill(
         turn_method = f"structural heuristic ({step_count} steps in SKILL.md)"
 
     def _fresh(n: float) -> float:
+        # Fresh (first-sight) content is unaffected by the cap: each
+        # turn's new tool results are written to cache once even when
+        # compaction evicts older content to make room.
         return context_tokens + max(0.0, n - 1) * priors.transcript_growth_per_turn
 
     def _cached(n: float) -> float:
+        # Turn i (i >= 2) re-reads min(C₀ + (i−2)·Δ, cap): quadratic
+        # growth until the transcript saturates at the compaction cap,
+        # linear after. m counts the pre-saturation re-reads.
         if n <= 1:
             return 0.0
-        return (n - 1) * context_tokens + priors.transcript_growth_per_turn * (
-            (n - 2) * (n - 1) / 2
-        )
+        delta = priors.transcript_growth_per_turn
+        cap = priors.transcript_cap_tokens
+        reads = n - 1
+        if context_tokens >= cap or delta <= 0:
+            return reads * min(float(context_tokens), cap)
+        m = min(reads, (cap - context_tokens) / delta + 1)
+        return m * context_tokens + delta * (m - 1) * m / 2 + (reads - m) * cap
 
     output_tokens = turns.scale(priors.output_tokens_per_turn)
 

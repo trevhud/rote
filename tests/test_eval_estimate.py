@@ -223,6 +223,72 @@ def test_more_turns_cost_more(counter: HeuristicTokenCounter) -> None:
     assert est_long.wall_seconds.low > est_short.wall_seconds.low
 
 
+# ───────── Transcript cap (long-run saturation) ─────────
+
+
+def test_short_runs_are_unaffected_by_the_transcript_cap(
+    counter: HeuristicTokenCounter,
+) -> None:
+    """Below the cap the model is the original uncapped quadratic:
+    cached ≈ (N−1)·C₀ + Δ·(N−2)(N−1)/2."""
+    sidecar = EvalEstimates(totals=TurnRange(low=30, high=30))
+    est = estimate_skill(BDR_SKILL, counter, sidecar=sidecar)
+    p = Priors()
+    c0 = est.context_tokens
+    assert c0 + 29 * p.transcript_growth_per_turn < p.transcript_cap_tokens
+    expected = 29 * c0 + p.transcript_growth_per_turn * (28 * 29 / 2)
+    assert est.cached_read_tokens.low == pytest.approx(expected)
+
+
+def test_long_runs_saturate_at_the_transcript_cap(counter: HeuristicTokenCounter) -> None:
+    """The push-to-coupa regime: ~700 turns. Uncapped, Δ·N²/2 alone
+    predicts ~220M cached tokens; both measured production runs
+    plateaued at ~165k/turn, bounding the total near N·cap."""
+    n = 700.0
+    sidecar = EvalEstimates(totals=TurnRange(low=n, high=n))
+    est = estimate_skill(BDR_SKILL, counter, sidecar=sidecar)
+    p = Priors()
+    uncapped = (n - 1) * est.context_tokens + p.transcript_growth_per_turn * ((n - 2) * (n - 1) / 2)
+    hard_ceiling = (n - 1) * p.transcript_cap_tokens
+    assert est.cached_read_tokens.low < uncapped
+    assert est.cached_read_tokens.low <= hard_ceiling
+    # Saturation must not undercut the pre-cap ramp: the total still
+    # exceeds what a run half as long reads.
+    half = estimate_skill(
+        BDR_SKILL, counter, sidecar=EvalEstimates(totals=TurnRange(low=n / 2, high=n / 2))
+    )
+    assert est.cached_read_tokens.low > half.cached_read_tokens.low
+
+
+def test_payload_pushing_c0_past_the_cap_clamps_per_turn_reads(
+    counter: HeuristicTokenCounter,
+) -> None:
+    """When fetched-once data alone exceeds the compaction ceiling, every
+    re-read bills the cap, not the raw C₀."""
+    sidecar = EvalEstimates(totals=TurnRange(low=10, high=10))
+    p = Priors()
+    est = estimate_skill(
+        BDR_SKILL,
+        counter,
+        sidecar=sidecar,
+        data_payload_tokens=p.transcript_cap_tokens * 2,
+    )
+    assert est.context_tokens > p.transcript_cap_tokens
+    assert est.cached_read_tokens.low == pytest.approx(9 * p.transcript_cap_tokens)
+
+
+def test_fresh_tokens_ignore_the_cap(counter: HeuristicTokenCounter) -> None:
+    """First-sight content is written to cache once regardless of
+    compaction; only re-reads saturate."""
+    n = 700.0
+    sidecar = EvalEstimates(totals=TurnRange(low=n, high=n))
+    est = estimate_skill(BDR_SKILL, counter, sidecar=sidecar)
+    p = Priors()
+    assert est.fresh_input_tokens.low == pytest.approx(
+        est.context_tokens + (n - 1) * p.transcript_growth_per_turn
+    )
+
+
 # ───────── Payload-aware before side ─────────
 
 

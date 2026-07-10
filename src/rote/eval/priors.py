@@ -46,6 +46,19 @@ class Priors:
     turn *i* re-reads roughly C₀ + (i−1)·Δ tokens of context.
     """
 
+    transcript_cap_tokens: float = 165_000.0
+    """Ceiling on the transcript the agent re-reads per turn. Real agent
+    harnesses compact or truncate the conversation as it approaches the
+    model's context window, so per-turn input saturates instead of
+    growing without bound. Without the cap, the quadratic model
+    overshoots long runs severely (a measured 730-turn browser-automation
+    run read 78M cache tokens; uncapped Δ·N²/2 alone predicts 240M+).
+
+    Measured 2026-07-09 on two production browser-automation runs
+    (184 and 730 turns, Sonnet 4.6, 200k window): per-turn cache-read
+    plateaued at ~165k in both.
+    """
+
     system_overhead_tokens: int = 16_000
     """Context the agent carries beyond the skill itself (system prompt,
     tool definitions, environment preamble) — part of C₀.

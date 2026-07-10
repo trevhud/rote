@@ -9,6 +9,39 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Loop-aware before-cost model**, calibrated against a production
+  browser-automation skill whose two real runs measured 184 and 730
+  agent turns (~$8.6 and ~$32 on Sonnet) against a prior estimate of
+  $0.82–$2.75:
+  - The eval sidecar's `StepEstimate` gains `iterations: {low, high}` —
+    a step that repeats per row/page/item declares its per-iteration
+    turns and realistic repeat count, and the whole-run turn estimate
+    multiplies them. Loop-dominated skills were previously understated
+    5–20× because the schema could not express iteration at all (the
+    graduator's own notes described the loop economics correctly; the
+    form had nowhere to put the number).
+  - New `transcript_cap_tokens` prior (default 165k, the per-turn
+    cache-read plateau measured on both production runs): the transcript
+    an agent re-reads saturates at the harness's compaction ceiling
+    instead of growing without bound, so cached-read totals transition
+    from quadratic to linear on long runs. Without the cap, correcting
+    the turn count would have swung the error the other way (~2.5×
+    over).
+  - The graduator rubric's calibration anchors are now regime-aware:
+    sequential tool-heavy skills anchor at 30–57 turns, per-item loop
+    skills at hundreds (the old universal 30–57 anchor actively pulled
+    loop-skill estimates down an order of magnitude).
+
+  Re-estimated with both fixes, the calibration skill's scorecard
+  brackets reality: $1.96–$22.68 estimated vs $8.59–$32.00 measured
+  (Sonnet), 98M estimated token ceiling vs 96M measured.
+
+### Fixed
+- `rote graduate` now re-points `eval.yaml`'s `source_skill` alongside
+  `pipeline.yaml`'s — the sidecar previously kept the agent's
+  temp-work-dir-relative path, a dead pointer in every kept graduation.
+
 ## [0.7.0] - 2026-07-09
 
 ### Added
