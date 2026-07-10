@@ -10,6 +10,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Cloudflare Workers call MCP tools, authenticated by provisioning**
+  — Workers have no filesystem for the token store, so
+  `rote mcp export <server>` turns a completed `rote mcp login` into
+  Worker secrets (dotenv form for `.dev.vars`, `--json` for
+  `npx wrangler secret bulk`). MCP-bound nodes emit working calls
+  through a Workers helper that mints access tokens at runtime via the
+  OAuth refresh grant and caches them — with rotated refresh tokens —
+  in a `ROTE_MCP_TOKENS` KV namespace declared in the emitted
+  `wrangler.jsonc`. The Env interface, `.dev.vars.example`, and
+  README document the per-server provisioning surface. Emitted output
+  typechecks against `@cloudflare/workers-types` v5 + the MCP SDK.
+
 - **Node TypeScript runtimes call MCP tools, authenticated** — the
   DBOS-TS and Inngest adapters now emit *working* bodies for
   `mcp:`-bound nodes (previously always throwing stubs): the module
@@ -60,6 +72,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     tool call through the emitted helper, and a forced-stale refresh.
   - New optional extra: `pip install 'rote-cli[mcp]'`; `python -m rote`
     now works (used by the headersHelper wiring).
+
+### Fixed
+- Emitted Cloudflare `package.json` pinned `@cloudflare/workers-types`
+  ^4, which current wrangler (4.110+) rejects with a peer-dependency
+  conflict on a fresh install — bumped to ^5.
 
 ## [0.8.0] - 2026-07-10
 

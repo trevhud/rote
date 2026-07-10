@@ -342,3 +342,55 @@ def test_eval_wiring_static_headers_win_over_helper() -> None:
     servers, _ = mcp_servers_for_pipeline(_bound_pipeline())
     assert servers["slack"]["headers"] == {"X-K": "v"}
     assert "headersHelper" not in servers["slack"]
+
+
+# ───────── rote mcp export (Cloudflare provisioning) ─────────
+
+
+def test_cli_mcp_export_turns_a_login_into_secrets(capsys: pytest.CaptureFixture[str]) -> None:
+    save_registry(
+        McpRegistry(servers={"vendor": McpServerConfig(url="https://mcp.example.com/vendor")})
+    )
+    write_token_file(
+        "vendor",
+        {
+            "server_url": "https://mcp.example.com/vendor",
+            "tokens": {"access_token": "at", "refresh_token": "rt-1"},
+            "expires_at": None,
+            "client_info": {"client_id": "cid-1", "client_secret": "shh"},
+            "token_endpoint": "https://auth.example.com/token",
+        },
+    )
+    assert cli_main(["mcp", "export", "vendor", "--json"]) == 0
+    secrets = json.loads(capsys.readouterr().out)
+    assert secrets == {
+        "ROTE_MCP_VENDOR_REFRESH_TOKEN": "rt-1",
+        "ROTE_MCP_VENDOR_CLIENT_ID": "cid-1",
+        "ROTE_MCP_VENDOR_CLIENT_SECRET": "shh",
+        "ROTE_MCP_VENDOR_TOKEN_ENDPOINT": "https://auth.example.com/token",
+        "ROTE_MCP_VENDOR_URL": "https://mcp.example.com/vendor",
+    }
+    # dotenv form for .dev.vars
+    assert cli_main(["mcp", "export", "vendor"]) == 0
+    out = capsys.readouterr().out
+    assert "ROTE_MCP_VENDOR_REFRESH_TOKEN=rt-1" in out
+
+
+def test_cli_mcp_export_requires_a_refreshable_login(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    save_registry(
+        McpRegistry(servers={"vendor": McpServerConfig(url="https://mcp.example.com/vendor")})
+    )
+    write_token_file(
+        "vendor",
+        {
+            "server_url": "https://mcp.example.com/vendor",
+            "tokens": {"access_token": "at"},  # no refresh token
+            "expires_at": None,
+            "client_info": {"client_id": "cid-1"},
+            "token_endpoint": "https://auth.example.com/token",
+        },
+    )
+    assert cli_main(["mcp", "export", "vendor"]) == 1
+    assert "refresh token" in capsys.readouterr().err

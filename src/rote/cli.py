@@ -551,6 +551,75 @@ def _cmd_mcp_logout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp_export(args: argparse.Namespace) -> int:
+    """Turn a completed login into deployable Worker secrets.
+
+    Cloudflare Workers can't read the rote token store (no filesystem),
+    so their emitted code refreshes access tokens at runtime from
+    provisioned credentials. This prints them — refresh token, client
+    id/secret, token endpoint, URL — as ``KEY=value`` lines (paste into
+    ``.dev.vars`` for wrangler dev) or ``--json`` for
+    ``npx wrangler secret bulk``. stdout carries secrets by design;
+    pipe it, don't screenshot it.
+    """
+    import json as _json
+
+    from rote.mcp import load_registry, read_token_file
+
+    registry = load_registry()
+    config = registry.servers.get(args.name)
+    if config is None:
+        print(f"error: no MCP server named {args.name!r}", file=sys.stderr)
+        return 2
+    doc = read_token_file(args.name) or {}
+    tokens = doc.get("tokens") or {}
+    client_info = doc.get("client_info") or {}
+    refresh_token = tokens.get("refresh_token")
+    token_endpoint = doc.get("token_endpoint")
+    client_id = client_info.get("client_id") or config.client_id
+    if not refresh_token or not token_endpoint or not client_id:
+        missing = [
+            name
+            for name, ok in [
+                ("refresh token", refresh_token),
+                ("token endpoint", token_endpoint),
+                ("client id", client_id),
+            ]
+            if not ok
+        ]
+        print(
+            f"error: cannot export {args.name!r} — missing {', '.join(missing)}. "
+            f"Run: rote mcp login {args.name}",
+            file=sys.stderr,
+        )
+        return 1
+    upper = args.name.upper()
+    secrets: dict[str, str] = {
+        f"ROTE_MCP_{upper}_REFRESH_TOKEN": str(refresh_token),
+        f"ROTE_MCP_{upper}_CLIENT_ID": str(client_id),
+        f"ROTE_MCP_{upper}_TOKEN_ENDPOINT": str(token_endpoint),
+        f"ROTE_MCP_{upper}_URL": str(doc.get("server_url") or config.url),
+    }
+    client_secret = client_info.get("client_secret") or config.client_secret
+    if client_secret:
+        secrets[f"ROTE_MCP_{upper}_CLIENT_SECRET"] = str(client_secret)
+
+    if args.json:
+        print(_json.dumps(secrets, indent=2))
+    else:
+        for key, value in secrets.items():
+            print(f"{key}={value}")
+    print(
+        f"rote mcp: exported {len(secrets)} secrets for {args.name!r} — deploy with "
+        f"`rote mcp export {args.name} --json | npx wrangler secret bulk` "
+        f"or paste into .dev.vars for wrangler dev. NOTE: the exported refresh "
+        f"token is shared with this machine's store; if the server rotates "
+        f"refresh tokens on use, dedicate a login to the Worker.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _cmd_mcp_headers(args: argparse.Namespace) -> int:
     """Print fresh auth headers as JSON — the machine-facing token API.
 
@@ -1412,6 +1481,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mcp_headers.add_argument("name")
     mcp_headers.set_defaults(func=_cmd_mcp_headers)
+
+    mcp_export = mcp_sub.add_parser(
+        "export",
+        help="Export a login as Worker secrets (Cloudflare provisioning)",
+    )
+    mcp_export.add_argument("name")
+    mcp_export.add_argument(
+        "--json",
+        action="store_true",
+        help="JSON object form, pipeable to `npx wrangler secret bulk`",
+    )
+    mcp_export.set_defaults(func=_cmd_mcp_export)
 
     # rote analyze
     analyze = subparsers.add_parser(
