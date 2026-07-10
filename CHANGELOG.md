@@ -9,6 +9,45 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **A full MCP client with OAuth 2.1** (`rote mcp`, design in
+  [docs/mcp-client.md](docs/mcp-client.md)) — real streamable-HTTP MCP
+  servers authenticate with OAuth; without a client that can run the
+  flow, store tokens durably, and refresh them, MCP-backed workflows
+  only worked against unauthenticated servers:
+  - `rote mcp add / list / remove` — a user-level server registry
+    (`~/.config/rote/mcp.json`, 0600) mapping the logical server names
+    pipelines carry in their `mcp:` bindings to endpoints, with
+    pre-registered `client_id`/`client_secret` support for servers
+    without dynamic client registration (Slack/GitHub-class) and static
+    headers for API-key schemes.
+  - `rote mcp login` — the full spec dance (protected-resource
+    discovery, PKCE, dynamic client registration, refresh) via
+    fastmcp's OAuth provider, persisting into a rote-owned token store
+    (one 0600 JSON file per server, `~/.local/share/rote/mcp-tokens/`)
+    whose layout is a documented cross-language contract.
+    `--no-browser` prints the authorization URL for SSH boxes.
+  - `rote mcp headers` — mints a currently-valid Authorization header
+    (auto-refreshing through the stored refresh token), the
+    machine-facing token API.
+  - **Emitted DBOS apps authenticate**: MCP-backed steps now open the
+    client through an emitted `extracted/_rote_mcp.py` helper (the
+    verbatim source of `rote.mcp._runtime_helper` — one tested
+    implementation) that resolves endpoints (env > registry > IR) and
+    credentials (OAuth store > static headers > none) at runtime, with
+    in-place token refresh. Emitted apps still never import rote.
+  - **`eval --run` trials authenticate**: the generated `--mcp-config`
+    injects registry headers verbatim, or — for logged-in servers — a
+    `headersHelper` invoking `rote mcp headers`, which Claude Code
+    re-runs per connection and on 401, so tokens refresh mid-run on
+    long trials.
+  - Verified end-to-end against a real OAuth-protected server
+    (`tests/test_mcp_oauth_e2e.py`): live authorization dance with
+    dynamic registration, cross-process token reuse, an authenticated
+    tool call through the emitted helper, and a forced-stale refresh.
+  - New optional extra: `pip install 'rote-cli[mcp]'`; `python -m rote`
+    now works (used by the headersHelper wiring).
+
 ## [0.8.0] - 2026-07-10
 
 ### Added

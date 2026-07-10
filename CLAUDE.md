@@ -232,27 +232,26 @@ a particular kwarg should swallow it via `**kwargs` in their
 `__init__`, not hard-fail. **Do not change the factory signature
 to typed keyword args** — that breaks the registry's polymorphism.
 
-### The emitted code must never reference MCP
+### Emitted code touches MCP only through an explicit `mcp:` binding
 
-The Temporal adapter emits activities that lazy-import from
-`extracted/*.py` and `signatures/*.py`. The Cloudflare adapter emits
-TS modules that import the same logical layout in `src/extracted/*.ts`
-and `src/signatures/*.ts`. **No `mcp` module imports, no
-`@mcp.tool()` decorators, no MCP SDK dependencies anywhere in the
-emitted code, regardless of target runtime or language.** The
-graduator's job is specifically to replace MCP tool calls with
-direct vendor API calls.
+Two regimes, don't mix them up:
 
-This is enforced for each adapter:
-- Temporal: `tests/test_temporal_adapter.py::test_emitted_activities_never_reference_mcp`
-  walks the Python AST.
-- Cloudflare: `tests/test_cloudflare_adapter.py::test_emitted_files_never_reference_mcp`
-  scans every emitted `.ts` file with comments + string literals
-  stripped (so MCP can be *mentioned* in JSDoc to explain the
-  graduation history, but never appears in executable code).
-
-If you add a third adapter, copy whichever invariant test matches
-the emitted language.
+- **Nodes without an `mcp:` binding must never reference MCP** in any
+  adapter or language — no `mcp` imports, no `@mcp.tool()` decorators,
+  no MCP SDK dependencies. Enforced per adapter:
+  Temporal — `tests/test_temporal_adapter.py::test_emitted_activities_never_reference_mcp`
+  (Python AST walk); Cloudflare —
+  `tests/test_cloudflare_adapter.py::test_emitted_files_never_reference_mcp`
+  (every `.ts` file, comments + string literals stripped). Copy the
+  matching test when adding an adapter.
+- **Nodes WITH an `mcp:` binding** (DBOS adapter, `--backend mcp`, the
+  default) emit a *working* FastMCP call: the step goes through the
+  emitted `extracted/_rote_mcp.py` helper — the verbatim source of
+  `rote.mcp._runtime_helper` (never hand-edit the emitted copy; fix
+  the module) — which resolves the endpoint (env > rote registry > IR)
+  and credentials (`rote mcp login` token store > registry static
+  headers > unauthenticated) at runtime. See
+  [`docs/mcp-client.md`](docs/mcp-client.md).
 
 ### Sonnet is the default, not Opus
 

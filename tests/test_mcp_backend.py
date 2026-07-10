@@ -92,11 +92,13 @@ def test_binding_charset_constraints(kwargs: dict, match: str) -> None:
 
 def test_dbos_emits_mcp_call_by_default() -> None:
     src = emit_main(_pipeline(mcp=_BINDING), DbosAdapterConfig())
-    assert "from fastmcp import Client" in src
+    # The step body opens an authenticated client via the emitted helper
+    # (endpoint + credentials resolve at runtime: env > registry > IR).
+    assert "from extracted._rote_mcp import mcp_client" in src
+    assert "mcp_client('vendor', None)" in src
     assert 'call_tool("enrich_contact"' in src
-    assert "os.environ['ROTE_MCP_VENDOR_URL']" in src
     # No stub import / NotImplementedError for an MCP-backed node.
-    assert "from extracted." not in src
+    assert "NotImplementedError" not in src
     ast.parse(src)  # emitted module is valid Python
 
 
@@ -173,5 +175,10 @@ def test_cli_emit_backend_flag(tmp_path: Path) -> None:
     rc = cli_main(["emit", str(yaml_path), "--runtime", "dbos", "--out", str(out_mcp)])
     assert rc == 0
     mcp_main = (out_mcp / "main.py").read_text()
-    assert "from fastmcp import Client" in mcp_main
+    assert "from extracted._rote_mcp import mcp_client" in mcp_main
     assert 'call_tool("enrich_contact"' in mcp_main
+    # The connection helper ships with the app, verbatim from
+    # rote.mcp._runtime_helper (one tested implementation).
+    helper = (out_mcp / "extracted" / "_rote_mcp.py").read_text()
+    assert "def mcp_client(" in helper
+    assert "from fastmcp import Client" in helper

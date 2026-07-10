@@ -248,18 +248,16 @@ def _emit_step_mcp(node: Node) -> str:
 
     Unlike :func:`_emit_step_pure_or_external` (which imports a
     ``NotImplementedError`` stub), this produces a *working* body: it opens
-    a FastMCP client to the resolved server URL, calls the tool, and returns
-    the structured result. The call runs inside the ``@DBOS.step`` so its
-    result is checkpointed and retried like any other step.
+    an authenticated FastMCP client to the resolved server endpoint (via
+    the emitted ``extracted/_rote_mcp.py`` helper — env var > rote registry
+    > the endpoint recorded here, with OAuth credentials from
+    ``rote mcp login`` refreshing durably in place), calls the tool, and
+    returns the structured result. The call runs inside the ``@DBOS.step``
+    so its result is checkpointed and retried like any other step.
     """
     binding = node.mcp
     assert binding is not None
-    env_var = f"ROTE_MCP_{binding.server.upper()}_URL"
-    if binding.url is not None:
-        # Explicit endpoint in the IR; env var still overrides for portability.
-        url_line = f"    url = os.environ.get({env_var!r}, {json.dumps(binding.url)})\n"
-    else:
-        url_line = f"    url = os.environ[{env_var!r}]  # set via `rote mcp` / your MCP config\n"
+    url_literal = json.dumps(binding.url) if binding.url is not None else "None"
     if binding.args:
         arg_items = ", ".join(
             f"{json.dumps(tool_arg)}: payload[{json.dumps(payload_key)}]"
@@ -280,22 +278,22 @@ def _emit_step_mcp(node: Node) -> str:
         f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
         f"    MCP-backed external_call → invokes tool {binding.tool!r} on MCP\n"
-        f"    server {binding.server!r} over Streamable HTTP. The result is\n"
-        f"    checkpointed like any other durable step. Swap to a direct\n"
-        f"    vendor-SDK call with `rote emit --backend api`.\n"
+        f"    server {binding.server!r} over Streamable HTTP, authenticated\n"
+        f"    from the rote credential store (`rote mcp login {binding.server}`).\n"
+        f"    The result is checkpointed like any other durable step. Swap to\n"
+        f"    a direct vendor-SDK call with `rote emit --backend api`.\n"
         f'    """\n'
         f"{mandatory_marker}"
         f"{_retry_on_comment(node)}"
         f"{_timeout_comment(node)}"
         f"    import asyncio\n"
         f"\n"
-        f"    from fastmcp import Client\n"
+        f"    from extracted._rote_mcp import mcp_client\n"
         f"\n"
-        f"{url_line}"
         f"{args_line}"
         f"\n"
         f"    async def _call() -> object:\n"
-        f"        async with Client(url) as _client:\n"
+        f"        async with mcp_client({binding.server!r}, {url_literal}) as _client:\n"
         f"            _result = await _client.call_tool({json.dumps(binding.tool)}, arguments)\n"
         f"            return _result.data\n"
         f"\n"
@@ -766,7 +764,10 @@ class DbosAdapter:
         written["main"] = writer.write("main.py", content=self.emit_main(pipeline))
 
         extracted_modules = _extracted_layout(pipeline)
-        if extracted_modules:
+        mcp_backed = self.config.external_backend == "mcp" and any(
+            n.mcp is not None for n in pipeline.nodes
+        )
+        if extracted_modules or mcp_backed:
             written["extracted/__init__"] = writer.write(
                 "extracted",
                 "__init__.py",
@@ -778,6 +779,18 @@ class DbosAdapter:
                     f"{module_name}.py",
                     content=emit_extracted_module(module_name, nodes),
                 )
+        if mcp_backed:
+            # The connection helper is the *source text* of
+            # rote.mcp._runtime_helper — one tested implementation,
+            # emitted verbatim so the app stays standalone (no rote
+            # import at runtime; auth comes from `rote mcp login`).
+            from rote.mcp import _runtime_helper
+
+            written["extracted/_rote_mcp"] = writer.write(
+                "extracted",
+                "_rote_mcp.py",
+                content=Path(_runtime_helper.__file__).read_text(encoding="utf-8"),
+            )
 
         spec_judges = [
             n
