@@ -22,7 +22,9 @@ from rote.eval.empirical import (
     MeasuredRun,
     append_corpus,
     compute_agreement,
+    mcp_servers_for_pipeline,
     measured_pipeline_cost_usd,
+    min_expected_turns_for,
     render_measured_markdown,
     run_pipeline_trial,
     run_skill_trial,
@@ -198,6 +200,235 @@ def test_skill_trial_missing_result_is_an_error(tmp_path: Path) -> None:
     run = run_skill_trial(skill_dir, {}, model="m", executable=str(fake))
     assert not run.succeeded
     assert run.error is not None and "result.json" in run.error
+
+
+# ───────── MCP auto-wiring ─────────
+
+
+def _mcp_pipeline(**binding_overrides: object) -> Pipeline:
+    """A minimal pipeline with MCP-bound external_calls: one explicit-url
+    server, one env-resolved server, plus a pure function (never wired)."""
+    return Pipeline.model_validate(
+        {
+            "name": "mcp-toy",
+            "input": {"type": "In"},
+            "nodes": [
+                {
+                    "id": "pull_slack",
+                    "kind": "external_call",
+                    "description": "read the intake channel",
+                    "mcp": {
+                        "server": "slack",
+                        "tool": "slack_get_messages",
+                        "url": "https://mcp.example.com/slack",
+                        **binding_overrides,
+                    },
+                },
+                {
+                    "id": "pull_gmail",
+                    "kind": "external_call",
+                    "description": "read labeled threads",
+                    "mcp": {"server": "gmail", "tool": "gmail_search_threads"},
+                },
+                {
+                    "id": "summarize",
+                    "kind": "pure_function",
+                    "description": "fold results",
+                    "impl": "extracted/fold.py:fold",
+                },
+            ],
+            "edges": [
+                {"from": "pull_slack", "to": "summarize"},
+                {"from": "pull_gmail", "to": "summarize"},
+            ],
+        }
+    )
+
+
+def test_mcp_servers_resolve_explicit_url_and_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROTE_MCP_GMAIL_URL", "https://mcp.example.com/gmail")
+    servers, missing = mcp_servers_for_pipeline(_mcp_pipeline())
+    assert missing == []
+    assert servers == {
+        "slack": {"type": "http", "url": "https://mcp.example.com/slack"},
+        "gmail": {"type": "http", "url": "https://mcp.example.com/gmail"},
+    }
+
+
+def test_mcp_servers_report_unresolvable_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROTE_MCP_GMAIL_URL", raising=False)
+    servers, missing = mcp_servers_for_pipeline(_mcp_pipeline())
+    assert list(servers) == ["slack"]
+    assert missing == ["gmail"]
+
+
+def test_mcp_sse_transport_maps_to_sse_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROTE_MCP_GMAIL_URL", "https://mcp.example.com/gmail")
+    servers, _ = mcp_servers_for_pipeline(_mcp_pipeline(transport="sse"))
+    assert servers["slack"]["type"] == "sse"
+
+
+def test_min_expected_turns_counts_data_pulls() -> None:
+    # 2 external_calls → floor stays at the minimum of 3; the toy
+    # summation pipeline has none → still 3.
+    assert min_expected_turns_for(_mcp_pipeline()) == 3
+    assert min_expected_turns_for(TOY_PIPELINE) == 3
+
+
+FAKE_CLAUDE_ARGS_DUMP = """\
+#!/bin/sh
+# Records its argv and the mcp-config content (the temp workdir is
+# deleted after the trial, so the config must be copied out now).
+printf '%s\\n' "$@" > "$ROTE_TEST_DUMP/args.txt"
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--mcp-config" ]; then cp "$a" "$ROTE_TEST_DUMP/mcp-config.json"; fi
+  prev="$a"
+done
+printf '%s' '{"ok": true}' > result.json
+echo '{"type": "result", "subtype": "success", "num_turns": 9, "usage": {}}'
+"""
+
+
+def test_skill_trial_wires_mcp_config_into_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# s\n", encoding="utf-8")
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    monkeypatch.setenv("ROTE_TEST_DUMP", str(dump))
+    fake = tmp_path / "claude"
+    fake.write_text(FAKE_CLAUDE_ARGS_DUMP, encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    servers = {"slack": {"type": "http", "url": "https://mcp.example.com/slack"}}
+    run = run_skill_trial(skill_dir, {}, model="m", executable=str(fake), mcp_servers=servers)
+
+    assert run.succeeded and run.representative
+    args = (dump / "args.txt").read_text(encoding="utf-8").splitlines()
+    assert "--strict-mcp-config" in args
+    assert "--mcp-config" in args
+    written = json.loads((dump / "mcp-config.json").read_text(encoding="utf-8"))
+    assert written == {"mcpServers": servers}
+    allowed = args[args.index("--allowedTools") + 1]
+    assert "mcp__slack__*" in allowed.split(",")
+
+
+def test_skill_trial_without_mcp_passes_no_mcp_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# s\n", encoding="utf-8")
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    monkeypatch.setenv("ROTE_TEST_DUMP", str(dump))
+    fake = tmp_path / "claude"
+    fake.write_text(FAKE_CLAUDE_ARGS_DUMP, encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+
+    run_skill_trial(skill_dir, {}, model="m", executable=str(fake))
+    args = (dump / "args.txt").read_text(encoding="utf-8").splitlines()
+    assert "--mcp-config" not in args
+    assert "--strict-mcp-config" not in args
+
+
+# ───────── Reliability flags ─────────
+
+
+def _fake_claude_emitting(tmp_path: Path, envelope: str, *, write_result: bool = True) -> str:
+    fake = tmp_path / "claude"
+    result_line = "printf '%s' '{\"ok\": true}' > result.json\n" if write_result else ""
+    fake.write_text(f"#!/bin/sh\n{result_line}cat <<'EOF'\n{envelope}\nEOF\n", encoding="utf-8")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    return str(fake)
+
+
+@pytest.fixture()
+def flag_skill(tmp_path: Path) -> Path:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# s\n", encoding="utf-8")
+    return skill_dir
+
+
+def test_hit_max_turns_is_flagged(flag_skill: Path, tmp_path: Path) -> None:
+    exe = _fake_claude_emitting(
+        tmp_path, '{"type": "result", "subtype": "error_max_turns", "num_turns": 60, "usage": {}}'
+    )
+    run = run_skill_trial(flag_skill, {}, model="m", executable=exe, min_expected_turns=5)
+    assert run.succeeded  # it wrote a result...
+    assert "hit_max_turns" in run.flags  # ...but the cost is a floor
+    assert not run.representative
+
+
+def test_too_few_turns_is_flagged(flag_skill: Path, tmp_path: Path) -> None:
+    exe = _fake_claude_emitting(
+        tmp_path, '{"type": "result", "subtype": "success", "num_turns": 2, "usage": {}}'
+    )
+    run = run_skill_trial(flag_skill, {}, model="m", executable=exe, min_expected_turns=6)
+    assert run.flags == ("suspiciously_few_turns",)
+    assert not run.representative
+
+
+def test_enough_turns_is_unflagged(flag_skill: Path, tmp_path: Path) -> None:
+    exe = _fake_claude_emitting(
+        tmp_path, '{"type": "result", "subtype": "success", "num_turns": 6, "usage": {}}'
+    )
+    run = run_skill_trial(flag_skill, {}, model="m", executable=exe, min_expected_turns=6)
+    assert run.flags == ()
+    assert run.representative
+
+
+def test_missing_mcp_servers_flagged(flag_skill: Path, tmp_path: Path) -> None:
+    exe = _fake_claude_emitting(
+        tmp_path, '{"type": "result", "subtype": "success", "num_turns": 9, "usage": {}}'
+    )
+    run = run_skill_trial(flag_skill, {}, model="m", executable=exe, missing_mcp_servers=["gmail"])
+    assert run.flags == ("missing_mcp_servers",)
+
+
+def test_errored_run_is_flagged(flag_skill: Path, tmp_path: Path) -> None:
+    exe = _fake_claude_emitting(
+        tmp_path,
+        '{"type": "result", "subtype": "success", "num_turns": 9, "usage": {}}',
+        write_result=False,
+    )
+    run = run_skill_trial(flag_skill, {}, model="m", executable=exe)
+    assert not run.succeeded
+    assert "errored" in run.flags
+
+
+def test_suggested_priors_exclude_flagged_runs() -> None:
+    good = MeasuredRun(wall_seconds=130.0, output={}, turns=10, output_tokens=2500)
+    poisoned = MeasuredRun(
+        wall_seconds=5.0, output={}, turns=1, output_tokens=50, flags=("suspiciously_few_turns",)
+    )
+    fitted = suggested_priors((good, poisoned))
+    assert fitted["seconds_per_turn"] == 13.0  # the flagged run's 5.0 never averaged in
+    assert fitted["output_tokens_per_turn"] == 250.0
+
+
+def test_corpus_and_json_carry_flags(tmp_path: Path) -> None:
+    result = EmpiricalResult(
+        trials=1,
+        skill_runs=(MeasuredRun(wall_seconds=5.0, output=None, error="boom", flags=("errored",)),),
+        pipeline_runs=(),
+        skill_model="m",
+    )
+    corpus = tmp_path / "corpus.jsonl"
+    append_corpus(result, generated_at="2026-07-09T00:00:00Z", path=corpus)
+    row = json.loads(corpus.read_text(encoding="utf-8"))
+    assert row["skill_runs"][0]["flags"] == ["errored"]
+    md = render_measured_markdown(result, CATALOG)
+    assert "Unrepresentative agent runs" in md
+    assert "errored" in md
 
 
 # ───────── Agreement ─────────

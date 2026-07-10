@@ -784,7 +784,9 @@ def _run_empirical(
     from rote.eval.empirical import (
         EmpiricalResult,
         append_corpus,
+        mcp_servers_for_pipeline,
         measured_to_dict,
+        min_expected_turns_for,
         render_measured_markdown,
         run_pipeline_trial,
         run_skill_trial,
@@ -846,6 +848,25 @@ def _run_empirical(
 
     skill_runs = []
     if skill_dir is not None:
+        # Wire the pipeline's MCP bindings into the skill trial so the
+        # agent runs over the same live tools the pipeline binds to —
+        # the measurement is only representative when the skill can
+        # actually pull its data.
+        mcp_servers, missing_servers = mcp_servers_for_pipeline(pipeline)
+        if mcp_servers:
+            print(
+                "rote eval: wiring MCP servers into the skill trial: "
+                + ", ".join(sorted(mcp_servers)),
+                file=sys.stderr,
+            )
+        if missing_servers:
+            print(
+                "rote eval: WARNING — pipeline binds MCP servers with no "
+                "resolvable endpoint (set ROTE_MCP_<SERVER>_URL): "
+                + ", ".join(missing_servers)
+                + " — skill trials will be flagged unrepresentative",
+                file=sys.stderr,
+            )
         for i in range(args.trials):
             print(
                 f"rote eval: skill trial {i + 1}/{args.trials} "
@@ -859,6 +880,9 @@ def _run_empirical(
                     model=skill_model,
                     max_turns=args.max_turns,
                     output_fields=sorted(output_fields) or None,
+                    mcp_servers=mcp_servers or None,
+                    missing_mcp_servers=missing_servers or None,
+                    min_expected_turns=min_expected_turns_for(pipeline),
                 )
             )
     else:

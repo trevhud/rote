@@ -10,6 +10,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **`eval --run` auto-wires the pipeline's MCP servers into the skill
+  trial.** The graduated pipeline's `mcp:` bindings name exactly the
+  servers the source skill uses, so the "before" measurement now runs
+  the agent over the same live tools (`--mcp-config` +
+  `--strict-mcp-config`, per-server `mcp__<server>__*` allowlists;
+  URLs resolve from the binding's explicit `url`, else
+  `ROTE_MCP_<SERVER>_URL` — the adapters' rule). Verified live against
+  a real `claude -p` run over a Streamable-HTTP MCP server.
+- **Reliability flags on measured skill runs.** Each trial is checked
+  structurally (never by an LLM) before it may calibrate priors:
+  `errored`, `hit_max_turns` (truncated — its cost is a floor, not a
+  measurement), `suspiciously_few_turns` (fewer turns than the pipeline
+  has data pulls — the agent never did the work), and
+  `missing_mcp_servers` (the skill ran without its tools). Flagged runs
+  are excluded from `suggested_priors` re-fits, listed in the measured
+  scorecard section, and recorded in the calibration corpus with their
+  flags.
 - **Loop-aware before-cost model**, calibrated against a production
   browser-automation skill whose two real runs measured 184 and 730
   agent turns (~$8.6 and ~$32 on Sonnet) against a prior estimate of
