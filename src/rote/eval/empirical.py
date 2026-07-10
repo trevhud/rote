@@ -43,13 +43,67 @@ from rote.graduator.drivers.claude import (
     DEFAULT_ALLOWED_TOOLS,
     build_subscription_env,
 )
+from rote.ir import NodeKind, Pipeline
 
 RESULT_FILENAME = "result.json"
+MCP_CONFIG_FILENAME = "mcp-config.json"
 DEFAULT_CORPUS_PATH = Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
+
+# IR transport values → Claude Code mcp-config `type` values. The CLI
+# spells Streamable HTTP as plain "http" (verified against the current
+# docs at code.claude.com/docs/en/mcp — July 2026, CLI v2.1.205).
+_TRANSPORT_TO_MCP_TYPE = {"streamable-http": "http", "sse": "sse"}
 
 
 class EmpiricalError(RuntimeError):
     """A trial could not be started (misconfiguration, missing deps)."""
+
+
+# ───────── MCP auto-wiring ─────────
+
+
+def mcp_servers_for_pipeline(pipeline: Pipeline) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Build the ``claude -p`` MCP server config from the pipeline's bindings.
+
+    The graduated pipeline's ``mcp:`` bindings name exactly the servers the
+    source skill uses, so wiring them into the skill trial makes the
+    "before" measurement representative: the agent pulls real data over the
+    same tools instead of erroring out or improvising. URL resolution
+    follows the adapters' rule — an explicit ``mcp.url`` wins, else the
+    ``ROTE_MCP_<SERVER>_URL`` env var.
+
+    Returns ``(mcp_servers, missing)``: the ``mcpServers`` mapping for the
+    config file, and the servers the pipeline binds that could not be
+    resolved to an endpoint (a trial run without them is flagged
+    unrepresentative rather than silently measured).
+    """
+    servers: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for node in pipeline.nodes:
+        if node.mcp is None or node.mcp.server in servers or node.mcp.server in missing:
+            continue
+        binding = node.mcp
+        url = binding.url or os.environ.get(f"ROTE_MCP_{binding.server.upper()}_URL")
+        if not url:
+            missing.append(binding.server)
+            continue
+        servers[binding.server] = {
+            "type": _TRANSPORT_TO_MCP_TYPE[binding.transport],
+            "url": url,
+        }
+    return servers, missing
+
+
+def min_expected_turns_for(pipeline: Pipeline) -> int:
+    """The floor below which a skill run cannot have done the work.
+
+    Each ``external_call`` node is a data pull the source skill also
+    performs; an agent run with fewer turns than data pulls necessarily
+    skipped sources (auth failure, refusal, early error) and would poison
+    the calibration corpus if fitted as a real measurement.
+    """
+    pulls = sum(1 for n in pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL)
+    return max(3, pulls)
 
 
 @dataclass(frozen=True)
@@ -69,10 +123,21 @@ class MeasuredRun:
     model: str | None = None
     # Pipeline side (from the emitted $ROTE_USAGE_LOG hook):
     judge_usage: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    flags: tuple[str, ...] = ()
+    """Reliability flags: why this run should not calibrate priors.
+    ``errored`` / ``hit_max_turns`` (truncated — its cost is a floor, not
+    a measurement) / ``suspiciously_few_turns`` (fewer turns than the
+    pipeline has data pulls — the agent never did the work) /
+    ``missing_mcp_servers`` (the skill's tools weren't all available)."""
 
     @property
     def succeeded(self) -> bool:
         return self.error is None
+
+    @property
+    def representative(self) -> bool:
+        """Safe to fit priors from: succeeded and nothing flagged."""
+        return self.succeeded and not self.flags
 
 
 # ───────── Skill (before) trials ─────────
@@ -116,12 +181,24 @@ def run_skill_trial(
     executable: str = "claude",
     timeout_seconds: float = 1800.0,
     output_fields: list[str] | None = None,
+    mcp_servers: dict[str, dict[str, Any]] | None = None,
+    missing_mcp_servers: list[str] | None = None,
+    min_expected_turns: int | None = None,
 ) -> MeasuredRun:
     """Run the raw skill once under ``claude -p`` and measure it.
 
     Billing follows the ClaudeDriver rules: API-key env vars are
     scrubbed so the run uses the subscription OAuth session, and the
     reported ``total_cost_usd`` is Claude Code's list-price notional.
+
+    ``mcp_servers`` (from :func:`mcp_servers_for_pipeline`) is written to
+    a config file and passed via ``--mcp-config --strict-mcp-config`` —
+    strict, so the trial exercises exactly the pipeline-declared servers,
+    never whatever happens to be configured on the host. Each wired
+    server's tools are allowlisted wholesale (``mcp__<server>__*``): the
+    skill may legitimately use more of a server's tools than the pipeline
+    binds. ``missing_mcp_servers`` and ``min_expected_turns`` feed the
+    reliability flags on the returned run.
     """
     skill_path = Path(skill_dir).resolve()
     if not (skill_path / "SKILL.md").is_file():
@@ -134,6 +211,10 @@ def run_skill_trial(
     prompt = _skill_prompt(skill_path, input_payload, output_fields)
     with tempfile.TemporaryDirectory(prefix="rote-eval-skill-") as workdir_str:
         workdir = Path(workdir_str)
+        if mcp_servers:
+            allowed_tools = ",".join(
+                [allowed_tools, *(f"mcp__{name}__*" for name in sorted(mcp_servers))]
+            )
         args = [
             executable,
             "-p",
@@ -149,6 +230,12 @@ def run_skill_trial(
             "--max-turns",
             str(max_turns),
         ]
+        if mcp_servers:
+            mcp_config_path = workdir / MCP_CONFIG_FILENAME
+            mcp_config_path.write_text(
+                json.dumps({"mcpServers": mcp_servers}, indent=2), encoding="utf-8"
+            )
+            args += ["--mcp-config", str(mcp_config_path), "--strict-mcp-config"]
         started = time.monotonic()
         try:
             proc = subprocess.run(
@@ -165,6 +252,13 @@ def run_skill_trial(
                 output=None,
                 error=f"timed out after {timeout_seconds:g}s",
                 model=model,
+                flags=_reliability_flags(
+                    error="timeout",
+                    subtype=None,
+                    turns=None,
+                    min_expected_turns=min_expected_turns,
+                    missing_mcp_servers=missing_mcp_servers,
+                ),
             )
         wall = time.monotonic() - started
 
@@ -191,18 +285,58 @@ def run_skill_trial(
         error = f"claude exited {proc.returncode}: {(proc.stderr or proc.stdout)[:500]}"
     elif output is None:
         error = parse_error
+    turns = meta.get("num_turns")
     return MeasuredRun(
         wall_seconds=wall,
         output=output,
         error=error,
-        turns=meta.get("num_turns"),
+        turns=turns,
         cost_usd=meta.get("total_cost_usd"),
         input_tokens=usage.get("input_tokens"),
         cache_read_tokens=usage.get("cache_read_input_tokens"),
         cache_creation_tokens=usage.get("cache_creation_input_tokens"),
         output_tokens=usage.get("output_tokens"),
         model=model,
+        flags=_reliability_flags(
+            error=error,
+            subtype=meta.get("subtype"),
+            turns=turns,
+            min_expected_turns=min_expected_turns,
+            missing_mcp_servers=missing_mcp_servers,
+        ),
     )
+
+
+def _reliability_flags(
+    *,
+    error: str | None,
+    subtype: str | None,
+    turns: int | None,
+    min_expected_turns: int | None,
+    missing_mcp_servers: list[str] | None,
+) -> tuple[str, ...]:
+    """Why a run must not calibrate priors (empty = representative).
+
+    Flags are additive and deliberately structural — no LLM judges the
+    run. A truncated run's cost is a floor, not a measurement; a run
+    with fewer turns than the pipeline has data pulls never did the
+    work; a run whose skill lacked its tools measured a different task.
+    """
+    flags: list[str] = []
+    if error is not None:
+        flags.append("errored")
+    if subtype == "error_max_turns":
+        flags.append("hit_max_turns")
+    if (
+        min_expected_turns is not None
+        and turns is not None
+        and turns < min_expected_turns
+        and subtype != "error_max_turns"
+    ):
+        flags.append("suspiciously_few_turns")
+    if missing_mcp_servers:
+        flags.append("missing_mcp_servers")
+    return tuple(flags)
 
 
 # ───────── Pipeline (after) trials ─────────
@@ -452,8 +586,15 @@ def suggested_priors(
     skill_runs: tuple[MeasuredRun, ...], priors: Priors | None = None
 ) -> dict[str, float]:
     """Prior values re-fitted from measured agent runs (reported, never
-    silently applied — the static model's constants stay explicit)."""
+    silently applied — the static model's constants stay explicit).
+
+    Only representative runs participate: a flagged run (errored,
+    truncated at max-turns, too few turns to have done the work, or
+    missing its MCP servers) measured something other than the skill
+    executing normally, and fitting it would poison the calibration.
+    """
     priors = priors or Priors()
+    skill_runs = tuple(r for r in skill_runs if r.representative)
     fitted: dict[str, float] = {}
     timed = [r for r in skill_runs if r.turns and r.wall_seconds]
     if timed:
@@ -500,6 +641,7 @@ def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | No
                 "cache_creation_tokens": r.cache_creation_tokens,
                 "output_tokens": r.output_tokens,
                 "succeeded": r.succeeded,
+                "flags": list(r.flags),
             }
             for r in result.skill_runs
         ],
@@ -577,6 +719,17 @@ def render_measured_markdown(result: EmpiricalResult, catalog: PricingCatalog) -
         )
         lines.append("")
 
+    flagged = [r for r in result.skill_runs if r.flags]
+    if flagged:
+        lines.append(
+            "Unrepresentative agent runs (excluded from prior fits and "
+            "not safe to read as the skill's real cost):"
+        )
+        for i, r in enumerate(result.skill_runs, 1):
+            if r.flags:
+                lines.append(f"- trial {i}: {', '.join(r.flags)}")
+        lines.append("")
+
     fitted = suggested_priors(result.skill_runs)
     if fitted:
         lines.append("Suggested prior re-fits from these runs (not auto-applied):")
@@ -610,6 +763,7 @@ def measured_to_dict(result: EmpiricalResult, catalog: PricingCatalog) -> dict[s
                     "cost_usd": r.cost_usd,
                     "output_tokens": r.output_tokens,
                     "error": r.error,
+                    "flags": list(r.flags),
                 }
                 for r in result.skill_runs
             ],
