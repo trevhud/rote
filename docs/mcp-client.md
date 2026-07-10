@@ -119,16 +119,26 @@ the MCP spec today (device grant is an open proposal); machine
 identities (client-credentials) can be added later via the SDK's
 `extensions` providers if a server supports them.
 
-## TypeScript runtimes (planned, PR2/PR3)
+## TypeScript runtimes
 
-- **Node targets (DBOS-TS, Inngest)**: an emitted refresh-grant client
-  — read the contract file, POST `grant_type=refresh_token` to the
-  stored `token_endpoint` when stale, write rotated tokens back
-  atomically. No SDK dependency; ~60 lines of fetch.
-- **Cloudflare Workers** (no filesystem, no subprocess): provision
-  refresh credentials as Worker secrets (`rote mcp export`), refresh at
-  runtime, persist rotated refresh tokens to a KV binding added to the
-  emitted `wrangler.jsonc`.
+**Node targets (DBOS-TS, Inngest) — shipped.** MCP-bound nodes emit a
+working module calling `src/extracted/_roteMcp.ts` (source of truth:
+`rote.adapters._ts_common.ROTE_MCP_HELPER_TS`): it reads the same
+registry and token files the CLI writes, refreshes stale access tokens
+with a plain `grant_type=refresh_token` POST to the stored
+`token_endpoint` (deliberately *not* the SDK's `authProvider`, which
+insists on running discovery and can silently fall through to a new
+authorization flow), writes rotated refresh tokens back atomically, and
+calls the tool via `@modelcontextprotocol/sdk` (^1.29 — the supported
+v1 line; v2 splits the packages) with a retry-once-on-401. Proven by
+`tests/test_mcp_ts_e2e.py`: Python logs in, compiled TS authenticates,
+refreshes a forced-stale token, and rotates credentials Python reads
+back.
+
+**Cloudflare Workers (planned, PR3)** — no filesystem, no subprocess:
+provision refresh credentials as Worker secrets (`rote mcp export`),
+refresh at runtime, persist rotated refresh tokens to a KV binding
+added to the emitted `wrangler.jsonc`.
 
 ## Security posture
 

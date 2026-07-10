@@ -31,7 +31,17 @@ class Adapter(Protocol):
 #: Options a factory may receive (forwarded from ``get_adapter``). Factories
 #: swallow unknown keys via ``**options`` — mirrors the driver-registry
 #: convention — so a runtime that doesn't support an option just ignores it.
-#: ``external_backend`` ("mcp" | "api") is understood by the DBOS adapter.
+#: ``external_backend`` ("mcp" | "api") is understood by the DBOS, DBOS-TS,
+#: and Inngest adapters.
+
+
+def _validated_backend(options: dict[str, Any]) -> Literal["mcp", "api"] | None:
+    backend = options.get("external_backend")
+    if backend is None:
+        return None
+    if backend not in ("mcp", "api"):
+        raise ValueError(f"external_backend must be 'mcp' or 'api', got {backend!r}")
+    return cast(Literal["mcp", "api"], backend)
 
 
 def _temporal_adapter_factory(**options: Any) -> Adapter:
@@ -51,24 +61,28 @@ def _cloudflare_adapter_factory(**options: Any) -> Adapter:
 def _dbos_adapter_factory(**options: Any) -> Adapter:
     from rote.adapters.dbos import DbosAdapter, DbosAdapterConfig
 
-    backend = options.get("external_backend")
+    backend = _validated_backend(options)
     if backend is None:
         return DbosAdapter()
-    if backend not in ("mcp", "api"):
-        raise ValueError(f"external_backend must be 'mcp' or 'api', got {backend!r}")
-    return DbosAdapter(DbosAdapterConfig(external_backend=cast(Literal["mcp", "api"], backend)))
+    return DbosAdapter(DbosAdapterConfig(external_backend=backend))
 
 
 def _dbos_ts_adapter_factory(**options: Any) -> Adapter:
-    from rote.adapters.dbos_ts import DbosTsAdapter
+    from rote.adapters.dbos_ts import DbosTsAdapter, DbosTsAdapterConfig
 
-    return DbosTsAdapter()
+    backend = _validated_backend(options)
+    if backend is None:
+        return DbosTsAdapter()
+    return DbosTsAdapter(DbosTsAdapterConfig(external_backend=backend))
 
 
 def _inngest_adapter_factory(**options: Any) -> Adapter:
-    from rote.adapters.inngest import InngestAdapter
+    from rote.adapters.inngest import InngestAdapter, InngestAdapterConfig
 
-    return InngestAdapter()
+    backend = _validated_backend(options)
+    if backend is None:
+        return InngestAdapter()
+    return InngestAdapter(InngestAdapterConfig(external_backend=backend))
 
 
 def _python_adapter_factory(**options: Any) -> Adapter:
