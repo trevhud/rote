@@ -261,6 +261,41 @@ def test_per_tool_override_changes_payload(bdr_pipeline: Pipeline) -> None:
     assert bumped > base
 
 
+def test_priors_from_overrides_scalars_and_per_tool() -> None:
+    """--prior KEY=VALUE closes the flywheel: --run's re-fits feed back in
+    without editing source. Ints stay ints; the per-tool table uses dot
+    syntax; untouched fields keep their defaults."""
+    from rote.eval.priors import priors_from_overrides
+
+    p = priors_from_overrides(
+        [
+            "transcript_growth_per_turn=5962",
+            "system_overhead_tokens=21000",
+            "payload_tokens_per_tool.slack_get_messages=12000",
+        ]
+    )
+    assert p.transcript_growth_per_turn == 5962.0
+    assert p.system_overhead_tokens == 21000
+    assert isinstance(p.system_overhead_tokens, int)
+    assert p.payload_tokens_per_tool == {"slack_get_messages": 12000.0}
+    assert p.seconds_per_turn == Priors().seconds_per_turn  # untouched default
+
+
+def test_priors_from_overrides_rejects_bad_input() -> None:
+    from rote.eval.priors import priors_from_overrides
+
+    with pytest.raises(ValueError, match="valid names"):
+        priors_from_overrides(["not_a_prior=1"])
+    with pytest.raises(ValueError, match="valid names"):
+        priors_from_overrides(["payload_tokens_per_tool=1"])  # dict needs dot syntax
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        priors_from_overrides(["transcript_growth_per_turn"])
+    with pytest.raises(ValueError, match="non-numeric"):
+        priors_from_overrides(["seconds_per_turn=fast"])
+    with pytest.raises(ValueError, match="names no tool"):
+        priors_from_overrides(["payload_tokens_per_tool.=5"])
+
+
 def test_data_payload_raises_cached_read(counter: HeuristicTokenCounter) -> None:
     """Folding a data payload into C₀ inflates the dominant cache-read term —
     the fix for the data-heavy-skill underestimate."""

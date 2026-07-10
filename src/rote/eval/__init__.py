@@ -27,7 +27,7 @@ from rote.eval.estimate import (
     estimate_skill,
     external_call_payload_tokens,
 )
-from rote.eval.priors import Priors
+from rote.eval.priors import Priors, priors_from_overrides
 from rote.eval.sidecar import EvalEstimates, load_eval_estimates
 
 __all__ = [
@@ -42,4 +42,5 @@ __all__ = [
     "estimate_skill",
     "external_call_payload_tokens",
     "load_eval_estimates",
+    "priors_from_overrides",
 ]
