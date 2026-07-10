@@ -42,10 +42,19 @@ roots via ``Path.relative_to``.
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+from rote.graduator.events import (
+    PROGRESS_FILENAME,
+    EventCallback,
+    GraduationEvent,
+    emit_safely,
+    parse_progress_lines,
+    relative_display_path,
+)
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
@@ -80,6 +89,34 @@ DEFAULT_MAX_TOKENS_PER_TURN = 8192
 #: surprisingly large reference files; we don't want a single tool call
 #: to blow the context window.
 MAX_FILE_READ_BYTES = 200_000
+
+#: Cloudflare AI Gateway's authenticated-gateway header. When BYOK
+#: (bring-your-own-key) is enabled on the gateway, this header carries
+#: the gateway token and Anthropic provider auth is replaced by the
+#: gateway's stored key — so the SDK needs no real ANTHROPIC_API_KEY.
+_GATEWAY_AUTH_HEADER = "cf-aig-authorization"
+
+#: Placeholder passed as ``api_key`` in gateway-BYOK mode. The SDK
+#: requires *some* api_key value even though provider auth is handled by
+#: the gateway; this makes the requirement explicit rather than smuggling
+#: in a fake-looking key.
+_GATEWAY_BYOK_PLACEHOLDER = "rote-gateway-byok"
+
+
+def _has_gateway_auth(default_headers: dict[str, str] | None) -> bool:
+    """True when ``default_headers`` carries the AI Gateway auth header.
+
+    Matched case-insensitively — HTTP header names are case-insensitive
+    and a caller might spell it ``Cf-Aig-Authorization``.
+    """
+    if not default_headers:
+        return False
+    return any(k.lower() == _GATEWAY_AUTH_HEADER for k in default_headers)
+
+
+#: Turn-event message cap. The assistant's text can be long; the live
+#: progress line only needs a glimpse of what it's thinking.
+_TURN_SNIPPET_CHARS = 120
 
 
 # ───────── Tool schemas ─────────
@@ -211,6 +248,51 @@ def _handle_write_file(path_str: str, content: str, write_root: Path) -> str:
     return f"Wrote {len(content)} bytes to {path_str}"
 
 
+# ───────── Event helpers ─────────
+
+
+def _assistant_snippet(content: list[Any]) -> str:
+    """First ~120 chars of any assistant text block, or ``"thinking…"``.
+
+    A turn whose content is all tool_use blocks (no prose) has nothing
+    to quote, so it reports as thinking — which is exactly what the
+    agent is doing when it acts without narrating.
+    """
+    for block in content:
+        if getattr(block, "type", None) == "text":
+            text = (getattr(block, "text", "") or "").strip()
+            if text:
+                return text[:_TURN_SNIPPET_CHARS]
+    return "thinking…"
+
+
+def _emit_progress_phases(
+    path_str: str,
+    content: str,
+    work_dir: Path,
+    on_event: EventCallback | None,
+    already_emitted: int,
+) -> int:
+    """Fire phase events for new lines in an agent's progress.ndjson write.
+
+    Returns the running count of phase lines seen, so the caller only
+    fires events for lines beyond what a previous rewrite already
+    reported (the agent rewrites the whole file each phase). A write to
+    any other file, or one that escaped the work dir, is a no-op.
+    """
+    try:
+        target = Path(path_str).resolve()
+        target.relative_to(work_dir)
+    except ValueError:
+        return already_emitted
+    if target.name != PROGRESS_FILENAME:
+        return already_emitted
+    events = parse_progress_lines(content)
+    for event in events[already_emitted:]:
+        emit_safely(on_event, event)
+    return len(events)
+
+
 # ───────── System prompt assembly ─────────
 
 
@@ -266,10 +348,49 @@ class AnthropicApiDriver(GraduatorDriver):
         model: str = DEFAULT_MODEL,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         max_tokens_per_turn: int = DEFAULT_MAX_TOKENS_PER_TURN,
+        base_url: str | None = None,
+        default_headers: dict[str, str] | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        model, max_iterations, max_tokens_per_turn
+            Loop knobs (see the module constants for defaults).
+        base_url
+            Override the Anthropic API base URL — point the SDK at a
+            proxy or a Cloudflare AI Gateway endpoint. ``None`` lets the
+            SDK use its own default (``ANTHROPIC_BASE_URL`` or the public
+            API).
+        default_headers
+            Extra headers sent on every request. The cloud runner uses
+            this to pass the gateway's ``cf-aig-authorization`` token.
+            When that header is present, the driver runs in AI Gateway
+            BYOK mode and needs no ``ANTHROPIC_API_KEY`` (see
+            :meth:`is_available` and :meth:`run`).
+        """
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
+        self.base_url = base_url
+        self.default_headers = default_headers
+
+    def _client_kwargs(self) -> dict[str, Any]:
+        """Assemble ``AsyncAnthropic(...)`` kwargs.
+
+        Omits ``base_url`` / ``default_headers`` when unset so the SDK's
+        own env-based defaults (``ANTHROPIC_BASE_URL``, etc.) still
+        apply. In AI Gateway BYOK mode — the gateway auth header present
+        but no ``ANTHROPIC_API_KEY`` — passes the placeholder key the SDK
+        requires; the gateway supplies the real provider credential.
+        """
+        kwargs: dict[str, Any] = {}
+        if self.base_url is not None:
+            kwargs["base_url"] = self.base_url
+        if self.default_headers is not None:
+            kwargs["default_headers"] = self.default_headers
+        if not os.environ.get("ANTHROPIC_API_KEY") and _has_gateway_auth(self.default_headers):
+            kwargs["api_key"] = _GATEWAY_BYOK_PLACEHOLDER
+        return kwargs
 
     def is_available(self) -> tuple[bool, str]:
         if not _ANTHROPIC_AVAILABLE:
@@ -278,14 +399,18 @@ class AnthropicApiDriver(GraduatorDriver):
                 "The `anthropic` package is not installed. "
                 "Install the optional extra with: `pip install rote[api]`.",
             )
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            return (
-                False,
-                "The ANTHROPIC_API_KEY environment variable is not set. "
-                "Export it or use the `claude` / `codex` driver to authenticate "
-                "via your existing Claude Max/Pro or ChatGPT subscription.",
-            )
-        return (True, "")
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return (True, "")
+        # AI Gateway BYOK: the gateway holds the provider key, so the
+        # gateway auth header standing in for ANTHROPIC_API_KEY is enough.
+        if _has_gateway_auth(self.default_headers):
+            return (True, "")
+        return (
+            False,
+            "The ANTHROPIC_API_KEY environment variable is not set. "
+            "Export it or use the `claude` / `codex` driver to authenticate "
+            "via your existing Claude Max/Pro or ChatGPT subscription.",
+        )
 
     async def run(
         self,
@@ -293,6 +418,7 @@ class AnthropicApiDriver(GraduatorDriver):
         graduator_skill_dir: Path,
         work_dir: Path,
         extra_instructions: str | None = None,
+        on_event: EventCallback | None = None,
     ) -> DriverResult:
         if not _ANTHROPIC_AVAILABLE:
             raise DriverError("anthropic package is not installed. Run: pip install rote[api]")
@@ -317,7 +443,7 @@ class AnthropicApiDriver(GraduatorDriver):
             skill_dir, graduator_skill_dir, work_dir, skill_md_text
         )
 
-        client = anthropic.AsyncAnthropic()
+        client = anthropic.AsyncAnthropic(**self._client_kwargs())
         tool_schemas = _build_tool_schemas()
 
         task_prompt = (
@@ -335,6 +461,9 @@ class AnthropicApiDriver(GraduatorDriver):
         total_output_tokens = 0
         last_text = ""
         completed_iterations = 0
+        #: Phase events already emitted from the agent's progress.ndjson
+        #: writes — the loop only fires events for lines beyond this.
+        emitted_phases = 0
 
         for iteration in range(1, self.max_iterations + 1):
             completed_iterations = iteration
@@ -351,6 +480,18 @@ class AnthropicApiDriver(GraduatorDriver):
             if usage is not None:
                 total_input_tokens += getattr(usage, "input_tokens", 0) or 0
                 total_output_tokens += getattr(usage, "output_tokens", 0) or 0
+
+            snippet = _assistant_snippet(response.content)
+            emit_safely(
+                on_event,
+                GraduationEvent(
+                    type="turn",
+                    ts=time.time(),
+                    turn=iteration,
+                    tokens={"input": total_input_tokens, "output": total_output_tokens},
+                    message=f"turn {iteration}: {snippet}",
+                ),
+            )
 
             messages.append({"role": "assistant", "content": response.content})
 
@@ -369,6 +510,20 @@ class AnthropicApiDriver(GraduatorDriver):
 
                 tool_name = block.name
                 tool_input = cast(dict[str, Any], block.input or {})
+
+                rel_path = relative_display_path(tool_input.get("path"), work_dir)
+                emit_safely(
+                    on_event,
+                    GraduationEvent(
+                        type="tool",
+                        ts=time.time(),
+                        turn=iteration,
+                        tool_name=tool_name,
+                        path=rel_path,
+                        message=f"{tool_name} {rel_path}".rstrip() if rel_path else tool_name,
+                    ),
+                )
+
                 try:
                     if tool_name == "read_file":
                         result_text = _handle_read_file(tool_input["path"], read_roots)
@@ -379,6 +534,17 @@ class AnthropicApiDriver(GraduatorDriver):
                             tool_input["path"],
                             tool_input["content"],
                             write_root,
+                        )
+                        # The agent announces phase transitions by writing
+                        # progress.ndjson. Intercept that write and turn
+                        # the new lines into phase events — the in-process
+                        # analog of the subprocess drivers' file watcher.
+                        emitted_phases = _emit_progress_phases(
+                            tool_input["path"],
+                            tool_input["content"],
+                            work_dir,
+                            on_event,
+                            emitted_phases,
                         )
                     else:
                         raise ValueError(f"Unknown tool: {tool_name}")

@@ -18,12 +18,14 @@ Three levels of validation, mirroring ``test_temporal_adapter.py``:
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
 
 from rote.adapters import get_adapter
+from rote.adapters._common import _to_pascal_case
 from rote.adapters._ts_common import json_schema_to_zod
 from rote.adapters.cloudflare import (
     CloudflareAdapter,
@@ -31,7 +33,6 @@ from rote.adapters.cloudflare import (
     _ir_duration_to_cf,
     _pipeline_hash,
     _to_camel_case,
-    _to_pascal_case,
     _validate_signal_name,
 )
 from rote.ir import LLMSignature, NodeKind, Pipeline
@@ -688,3 +689,86 @@ def test_emit_accepts_llm_judge_with_signature_spec(tmp_path: Path) -> None:
     assert "Answer: " in sig_src
     assert "{{ q }}" in sig_src
     assert "z.object(" in sig_src
+
+
+# ───────── manifest.json ─────────
+
+
+def test_manifest_matches_pipeline_identity(bdr_pipeline: Pipeline, tmp_path: Path) -> None:
+    from rote.adapters._common import pipeline_identity
+    from rote.adapters.cloudflare import emit_manifest
+
+    manifest = json.loads(emit_manifest(bdr_pipeline))
+    identity = pipeline_identity(bdr_pipeline)
+
+    assert manifest["schema"] == 1
+    assert manifest["adapter"] == "cloudflare"
+    assert manifest["name"] == identity["name"]
+    assert manifest["version"] == identity["version"]
+    assert manifest["pipeline_hash"] == identity["pipeline_hash"]
+    assert manifest["class_name"] == identity["class_name"]
+    assert manifest["entry"] == "src/workflow.ts"
+
+
+def test_manifest_node_ids_match_emitted_modules(
+    adapter: CloudflareAdapter, bdr_pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """node_ids equal the signatures + extracted basenames actually written,
+    exactly as rote-cloud/upload.mjs derives them from the src/ tree."""
+    out = tmp_path / "emit"
+    adapter.emit(bdr_pipeline, out)
+
+    on_disk = set()
+    for sub in ("signatures", "extracted"):
+        d = out / "src" / sub
+        if d.exists():
+            on_disk.update(p.stem for p in d.glob("*.ts"))
+
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert set(manifest["node_ids"]) == on_disk
+    # HITL gates emit no module and contribute no id.
+    gate_ids = {n.id for n in bdr_pipeline.nodes if n.kind is NodeKind.HITL_GATE}
+    assert gate_ids.isdisjoint(manifest["node_ids"])
+
+
+def test_manifest_input_schema_is_pipeline_input_schema(
+    bdr_pipeline: Pipeline,
+) -> None:
+    from rote.adapters.cloudflare import emit_manifest
+
+    manifest = json.loads(emit_manifest(bdr_pipeline))
+    assert manifest["input_schema"] == (bdr_pipeline.input.input_schema or {})
+    # BDR declares a real JSON Schema, so it's non-empty.
+    assert manifest["input_schema"].get("properties")
+
+
+def test_manifest_written_at_output_root(
+    adapter: CloudflareAdapter, bdr_pipeline: Pipeline, tmp_path: Path
+) -> None:
+    out = tmp_path / "emit"
+    written = adapter.emit(bdr_pipeline, out)
+    assert written["manifest.json"] == (out / "manifest.json").resolve()
+    assert (out / "manifest.json").is_file()
+
+
+# ───────── emit preserved-paths exposure ─────────
+
+
+def test_emit_result_exposes_preserved_paths(
+    adapter: CloudflareAdapter, bdr_pipeline: Pipeline, tmp_path: Path
+) -> None:
+    out = tmp_path / "emit"
+    first = adapter.emit(bdr_pipeline, out)
+    assert first.preserved == {}
+
+    # A user edits an emitted stub, then re-emits: the edit is preserved
+    # and the conflict surfaces on the result's .preserved map.
+    label, target = next((lbl, p) for lbl, p in first.items() if p.suffix == ".ts")
+    target.write_text(target.read_text() + "\n// user impl\n", encoding="utf-8")
+
+    second = adapter.emit(bdr_pipeline, out)
+    rel = target.relative_to(out).as_posix()
+    assert rel in second.preserved
+    assert second.preserved[rel] == target.with_name(target.name + ".new")
+    # Backward-compat: it still behaves as the written mapping.
+    assert second[label].name.endswith(".new")

@@ -46,6 +46,19 @@ re-deriving a known-fixed procedure at runtime is waste.
 
 ## Pipeline
 
+**Progress markers.** At the START of each Phase N, rewrite
+`progress.ndjson` in the work directory so it holds one JSON line per
+phase entered so far, in order:
+
+```
+{"phase": 1, "name": "Intake"}
+{"phase": 2, "name": "Node Classification"}
+```
+
+Rewrite the whole file each time (append the new phase's line to the
+ones already there). This file is machine-read for live progress
+display; it is not a deliverable and never affects the IR.
+
 ### Phase 1: Intake
 
 Read the target directory exhaustively:

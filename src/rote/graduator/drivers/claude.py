@@ -30,13 +30,32 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from shutil import which
 from typing import Any
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+from rote.graduator.events import (
+    EventCallback,
+    GraduationEvent,
+    ProgressFileWatcher,
+    emit_safely,
+    relative_display_path,
+)
 
 # ───────── Defaults ─────────
+
+#: StreamReader line-buffer cap for the subprocess stdout. Claude Code's
+#: stream-json emits one JSON object per line, and an ``assistant`` line
+#: carrying a Write tool_use block inlines the *entire* file content —
+#: easily past asyncio's 64 KiB default, which would raise
+#: ``LimitOverrunError`` mid-run. 16 MiB comfortably covers a graduated
+#: module or a large pipeline.yaml.
+_STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
+#: Turn-event message cap, matching the api driver's snippet width.
+_TURN_SNIPPET_CHARS = 120
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
 """Default model for the graduator agent.
@@ -98,6 +117,106 @@ def build_subscription_env() -> dict[str, str]:
     return env
 
 
+# ───────── stream-json parsing (pure, testable) ─────────
+
+
+def _stream_text_snippet(content: list[Any]) -> str:
+    """First ~120 chars of an assistant message's text, or ``"thinking…"``.
+
+    ``content`` is the raw block list from a stream-json ``assistant``
+    message (plain dicts, not SDK objects). A turn made entirely of
+    tool_use blocks has no prose to quote and reports as thinking.
+    """
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = str(block.get("text") or "").strip()
+            if text:
+                return text[:_TURN_SNIPPET_CHARS]
+    return "thinking…"
+
+
+def _map_stream_line(
+    raw: str, turn: int, work_dir: Path | None = None
+) -> tuple[list[GraduationEvent], int, dict[str, Any] | None]:
+    """Map one stream-json NDJSON line to progress events.
+
+    Pure and side-effect-free so it can be unit-tested against canned
+    lines. Returns ``(events, new_turn, parsed_obj)``:
+
+    * ``events`` — a ``turn`` event for an ``assistant`` message (with a
+      text snippet), plus one ``tool`` event per ``tool_use`` block in it.
+    * ``new_turn`` — ``turn`` + 1 for an assistant message (each is one
+      run turn), otherwise unchanged.
+    * ``parsed_obj`` — the decoded dict (or ``None`` for a non-JSON line),
+      so the caller can pick out the final ``result`` object for metadata
+      without parsing the line a second time.
+
+    Phase events are deliberately NOT produced here — a
+    :class:`~rote.graduator.events.ProgressFileWatcher` owns those for
+    subprocess drivers, off the ``progress.ndjson`` file. ``work_dir``,
+    when given, relativizes ``tool`` event paths for display.
+    """
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return [], turn, None
+    if not isinstance(obj, dict):
+        return [], turn, None
+    if obj.get("type") != "assistant":
+        return [], turn, obj
+
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        content = []
+
+    turn += 1
+    events: list[GraduationEvent] = [
+        GraduationEvent(
+            type="turn",
+            ts=time.time(),
+            turn=turn,
+            message=f"turn {turn}: {_stream_text_snippet(content)}",
+        )
+    ]
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        tool_name = str(block.get("name") or "tool")
+        tool_input = block.get("input")
+        raw_path = None
+        if isinstance(tool_input, dict):
+            # Claude Code's file tools key the path as ``file_path``.
+            raw_path = tool_input.get("file_path") or tool_input.get("path")
+        rel = relative_display_path(raw_path, work_dir) if work_dir else raw_path
+        events.append(
+            GraduationEvent(
+                type="tool",
+                ts=time.time(),
+                turn=turn,
+                tool_name=tool_name,
+                path=rel,
+                message=f"{tool_name} {rel}".rstrip() if rel else tool_name,
+            )
+        )
+    return events, turn, obj
+
+
+def _result_detail(result_obj: dict[str, Any] | None) -> str:
+    """Render the final result object as an error-detail string.
+
+    Prefers the human-readable ``result`` text the CLI attaches to a
+    failed run; falls back to a compact JSON dump, clipped so a giant
+    payload can't flood the error.
+    """
+    if not isinstance(result_obj, dict):
+        return ""
+    text = result_obj.get("result")
+    if isinstance(text, str) and text.strip():
+        return text[:2000]
+    return json.dumps(result_obj)[:2000]
+
+
 class ClaudeDriver(GraduatorDriver):
     name: str = "claude"
 
@@ -135,8 +254,22 @@ class ClaudeDriver(GraduatorDriver):
         graduator_skill_dir: Path,
         work_dir: Path,
         extra_instructions: str | None = None,
+        on_event: EventCallback | None = None,
     ) -> DriverResult:
-        """Spawn ``claude -p`` and wait for it to produce pipeline.yaml."""
+        """Spawn ``claude -p`` and wait for it to produce pipeline.yaml.
+
+        Runs the CLI in ``stream-json`` mode and consumes its NDJSON
+        stdout incrementally: each ``assistant`` message becomes a
+        ``turn`` event (with the tool_use blocks inside it fanned out to
+        ``tool`` events), and the final ``result`` object supplies the
+        run metadata. A :class:`~rote.graduator.events.ProgressFileWatcher`
+        runs concurrently for phase events off ``progress.ndjson``.
+
+        The stream is parsed the same way whether or not ``on_event`` is
+        wired — a single code path is simpler than a stream/no-stream
+        fork, and the metadata still comes from the same ``result``
+        object either way.
+        """
         skill_dir = skill_dir.resolve()
         graduator_skill_dir = graduator_skill_dir.resolve()
         work_dir = work_dir.resolve()
@@ -173,7 +306,8 @@ class ClaudeDriver(GraduatorDriver):
             "--allowedTools",
             self.allowed_tools,
             "--output-format",
-            "json",
+            "stream-json",
+            "--verbose",
             "--max-turns",
             str(self.max_turns),
         ]
@@ -183,11 +317,12 @@ class ClaudeDriver(GraduatorDriver):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            limit=_STREAM_LINE_LIMIT,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        async with ProgressFileWatcher(work_dir, on_event):
+            result_obj, stderr = await self._consume_stream(proc, on_event, work_dir)
+        await proc.wait()
 
         pipeline_yaml = work_dir / "pipeline.yaml"
 
@@ -200,17 +335,18 @@ class ClaudeDriver(GraduatorDriver):
         # blip, so we check for the file FIRST and only fail if it's
         # missing.
         if not pipeline_yaml.is_file():
+            detail = stderr or _result_detail(result_obj) or "(no output)"
             if proc.returncode != 0:
                 raise DriverError(
                     f"claude CLI exited with code {proc.returncode}",
-                    details=stderr or stdout or "(no output)",
+                    details=detail,
                 )
             raise DriverError(
                 f"claude CLI finished successfully but did not produce {pipeline_yaml}.",
-                details=stdout,
+                details=detail,
             )
 
-        metadata = self._parse_metadata(stdout)
+        metadata = self._parse_metadata(result_obj)
         if proc.returncode != 0:
             metadata["subprocess_warning"] = (
                 f"claude CLI exited with code {proc.returncode} but "
@@ -282,44 +418,64 @@ class ClaudeDriver(GraduatorDriver):
             f"rubric instructs."
         )
 
-    def _parse_metadata(self, stdout: str) -> dict[str, Any]:
-        """Parse ``claude -p``'s ``--output-format json`` stdout.
+    async def _consume_stream(
+        self,
+        proc: asyncio.subprocess.Process,
+        on_event: EventCallback | None,
+        work_dir: Path,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Drain the subprocess's stream-json stdout and its stderr.
 
-        Per the Claude Code headless docs, the output is one JSON
-        object with fields ``result``, ``cost_usd``, ``duration_ms``,
-        ``num_turns``, ``session_id``. We strip ``result`` from the
-        metadata (it can be large) and keep the numeric/id fields.
-
-        If the stdout isn't parseable JSON — e.g. because there's a
-        banner before it, or animations slipped through — we fall back
-        to parsing the last non-empty line, then finally to returning
-        a truncated raw output for debugging.
+        Reads stdout line-by-line, mapping each to progress events via
+        :func:`_map_stream_line` and firing them through ``on_event``.
+        stderr is drained concurrently (a full pipe would otherwise
+        deadlock the child). Returns the final ``result`` object (for
+        metadata) and the decoded stderr text (for error details).
         """
-        if not stdout.strip():
-            return {"driver": self.name}
+        assert proc.stdout is not None
+        assert proc.stderr is not None
 
-        data: Any = None
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            # Try the last non-empty line — sometimes there's preamble
-            for line in reversed([line for line in stdout.split("\n") if line.strip()]):
-                try:
-                    data = json.loads(line)
-                    break
-                except json.JSONDecodeError:
+        result_obj: dict[str, Any] | None = None
+        turn = 0
+
+        async def read_stdout() -> None:
+            nonlocal result_obj, turn
+            async for raw in proc.stdout:  # type: ignore[union-attr]
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
                     continue
+                events, turn, obj = _map_stream_line(line, turn, work_dir)
+                for event in events:
+                    emit_safely(on_event, event)
+                if isinstance(obj, dict) and obj.get("type") == "result":
+                    result_obj = obj
 
-        if not isinstance(data, dict):
-            return {
-                "driver": self.name,
-                "raw_output": stdout[:500],
-            }
+        async def read_stderr() -> bytes:
+            return await proc.stderr.read()  # type: ignore[union-attr]
 
+        _, stderr_bytes = await asyncio.gather(read_stdout(), read_stderr())
+        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        return result_obj, stderr
+
+    def _parse_metadata(self, result: dict[str, Any] | None) -> dict[str, Any]:
+        """Turn the stream-json ``result`` object into driver metadata.
+
+        The final ``{"type": "result", ...}`` line of the stream carries
+        the same run summary the old ``--output-format json`` mode
+        returned as its whole payload: ``cost_usd``, ``duration_ms``,
+        ``num_turns``, ``session_id``. We keep those numeric/id fields and
+        drop the (potentially large) ``result`` text.
+
+        A missing result object — the stream ended without a summary line
+        — degrades to just the driver name, same as an unparseable
+        payload did before.
+        """
+        if not isinstance(result, dict):
+            return {"driver": self.name}
         return {
             "driver": self.name,
-            "cost_usd": data.get("cost_usd"),
-            "duration_ms": data.get("duration_ms"),
-            "num_turns": data.get("num_turns"),
-            "session_id": data.get("session_id"),
+            "cost_usd": result.get("cost_usd"),
+            "duration_ms": result.get("duration_ms"),
+            "num_turns": result.get("num_turns"),
+            "session_id": result.get("session_id"),
         }

@@ -34,6 +34,7 @@ from rote.graduator.drivers.anthropic_api import (
     _handle_read_file,
     _handle_write_file,
 )
+from rote.graduator.events import GraduationEvent
 
 # ───────── Fake Anthropic SDK ─────────
 
@@ -493,3 +494,236 @@ async def test_missing_graduator_skill_md_raises_driver_error(
     driver = AnthropicApiDriver()
     with pytest.raises(DriverError, match="rote-graduate SKILL.md not found"):
         await driver.run(skill_dir, bad_graduator, work_dir)
+
+
+# ───────── Live events ─────────
+
+
+@pytest.mark.asyncio
+async def test_run_emits_turn_tool_and_phase_events(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """turn events (with cumulative tokens), tool events (with work-dir
+    relative path), and phase events intercepted from a progress.ndjson
+    write — all in order."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    work_dir.mkdir()
+
+    skill_md_abs = (skill_dir / "SKILL.md").resolve()
+    progress_abs = (work_dir / "progress.ndjson").resolve()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        _msg(
+            [_text("Reading."), _tool_use("t1", "read_file", {"path": str(skill_md_abs)})],
+            stop_reason="tool_use",
+            input_tokens=200,
+            output_tokens=40,
+        ),
+        _msg(
+            [
+                _tool_use(
+                    "t2",
+                    "write_file",
+                    {
+                        "path": str(progress_abs),
+                        "content": '{"phase": 1, "name": "Intake"}\n'
+                        '{"phase": 2, "name": "Classify"}\n',
+                    },
+                )
+            ],
+            stop_reason="tool_use",
+            input_tokens=100,
+            output_tokens=30,
+        ),
+        _msg(
+            [
+                _tool_use(
+                    "t3",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+            input_tokens=100,
+            output_tokens=200,
+        ),
+        _msg([_text("Done.")], stop_reason="end_turn", input_tokens=50, output_tokens=10),
+    ]
+    fake_anthropic(responses)
+
+    events: list[GraduationEvent] = []
+    driver = AnthropicApiDriver()
+    await driver.run(
+        skill_dir=skill_dir,
+        graduator_skill_dir=graduator_dir,
+        work_dir=work_dir,
+        on_event=events.append,
+    )
+
+    turns = [e for e in events if e.type == "turn"]
+    tools = [e for e in events if e.type == "tool"]
+    phases = [e for e in events if e.type == "phase"]
+
+    # One turn event per messages.create (4 responses)
+    assert [e.turn for e in turns] == [1, 2, 3, 4]
+    # Cumulative token accounting on the turn events
+    assert turns[0].tokens == {"input": 200, "output": 40}
+    assert turns[-1].tokens == {"input": 450, "output": 280}
+    assert turns[0].message.startswith("turn 1: Reading.")
+
+    # Tool events: read_file, then the two write_files
+    assert [e.tool_name for e in tools] == ["read_file", "write_file", "write_file"]
+    # progress.ndjson write is relativized to work_dir
+    assert any(e.path == "progress.ndjson" for e in tools)
+    assert any(e.path == "pipeline.yaml" for e in tools)
+
+    # Phase events intercepted from the progress.ndjson write
+    assert [e.phase for e in phases] == [1, 2]
+    assert phases[0].phase_name == "Intake"
+
+
+@pytest.mark.asyncio
+async def test_progress_rewrite_only_emits_new_phases(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """The agent rewrites the whole progress file each phase; only lines
+    beyond the last emitted count fire new events."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    progress_abs = (work_dir / "progress.ndjson").resolve()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    def _progress_write(uid: str, content: str) -> Any:
+        return _msg(
+            [_tool_use(uid, "write_file", {"path": str(progress_abs), "content": content})],
+            stop_reason="tool_use",
+        )
+
+    responses = [
+        _progress_write("p1", '{"phase": 1, "name": "Intake"}\n'),
+        _progress_write("p2", '{"phase": 1, "name": "Intake"}\n{"phase": 2, "name": "Classify"}\n'),
+        _msg(
+            [
+                _tool_use(
+                    "w",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("Done.")], stop_reason="end_turn"),
+    ]
+    fake_anthropic(responses)
+
+    events: list[GraduationEvent] = []
+    driver = AnthropicApiDriver()
+    await driver.run(
+        skill_dir=skill_dir,
+        graduator_skill_dir=graduator_dir,
+        work_dir=work_dir,
+        on_event=events.append,
+    )
+
+    phases = [e for e in events if e.type == "phase"]
+    # phase 1 fired once (not re-fired on the second rewrite), phase 2 once
+    assert [e.phase for e in phases] == [1, 2]
+
+
+# ───────── AI Gateway BYOK + client plumbing ─────────
+
+
+def test_is_available_byok_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    driver = AnthropicApiDriver(default_headers={"cf-aig-authorization": "Bearer gateway-token"})
+    available, reason = driver.is_available()
+    assert available is True
+    assert reason == ""
+
+
+def test_is_available_byok_header_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    driver = AnthropicApiDriver(default_headers={"Cf-Aig-Authorization": "Bearer x"})
+    assert driver.is_available()[0] is True
+
+
+def test_is_available_no_key_no_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    driver = AnthropicApiDriver()
+    available, reason = driver.is_available()
+    assert available is False
+    assert "ANTHROPIC_API_KEY" in reason
+
+
+def test_client_kwargs_omitted_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    driver = AnthropicApiDriver()
+    # Nothing forced: SDK env defaults apply, no placeholder key.
+    assert driver._client_kwargs() == {}
+
+
+def test_client_kwargs_plumbs_base_url_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
+    headers = {"cf-aig-authorization": "Bearer g"}
+    driver = AnthropicApiDriver(
+        base_url="https://gateway.example/anthropic", default_headers=headers
+    )
+    kwargs = driver._client_kwargs()
+    assert kwargs["base_url"] == "https://gateway.example/anthropic"
+    assert kwargs["default_headers"] == headers
+    # A real key is present, so no placeholder is injected.
+    assert "api_key" not in kwargs
+
+
+def test_client_kwargs_byok_injects_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    driver = AnthropicApiDriver(default_headers={"cf-aig-authorization": "Bearer g"})
+    kwargs = driver._client_kwargs()
+    assert kwargs["api_key"] == "rote-gateway-byok"
+
+
+@pytest.mark.asyncio
+async def test_run_constructs_client_with_plumbed_kwargs(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """base_url / default_headers reach the AsyncAnthropic constructor."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    captured: dict[str, Any] = {}
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+    responses = [
+        _msg(
+            [
+                _tool_use(
+                    "w",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("done")], stop_reason="end_turn"),
+    ]
+    client = _FakeAsyncAnthropic(responses)
+
+    def _ctor(*args: Any, **kwargs: Any) -> _FakeAsyncAnthropic:
+        captured.update(kwargs)
+        return client
+
+    monkeypatch.setattr("rote.graduator.drivers.anthropic_api.anthropic.AsyncAnthropic", _ctor)
+
+    driver = AnthropicApiDriver(
+        base_url="https://gw.example/anthropic",
+        default_headers={"cf-aig-authorization": "Bearer g"},
+    )
+    await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+
+    assert captured["base_url"] == "https://gw.example/anthropic"
+    assert captured["default_headers"] == {"cf-aig-authorization": "Bearer g"}
+    assert captured["api_key"] == "rote-gateway-byok"

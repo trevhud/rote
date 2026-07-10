@@ -35,13 +35,15 @@ from pathlib import Path
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
+    EmitResult,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    _to_pascal_case,
     check_input_refs_available,
+    pipeline_identity,
     safe_block_comment_line,
+    workflow_class_name,
 )
 from rote.adapters._common import (
     ir_duration_to_human as _ir_duration_to_cf,
@@ -183,8 +185,7 @@ def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
 def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None) -> str:
     """Render the workflow.ts source for a pipeline."""
     cfg = cfg or CloudflareAdapterConfig()
-    pascal = _to_pascal_case(pipeline.name)
-    class_name = f"{pascal}Workflow"
+    class_name = workflow_class_name(pipeline)
     pipeline_h = _pipeline_hash(pipeline)
     waves = _execution_waves(pipeline)
 
@@ -297,8 +298,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
 
 
 def emit_index(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
-    pascal = _to_pascal_case(pipeline.name)
-    class_name = f"{pascal}Workflow"
+    class_name = workflow_class_name(pipeline)
     return textwrap.dedent(
         f"""\
         /**
@@ -447,8 +447,7 @@ def emit_extracted_module(node: Node) -> str:
 
 
 def emit_wrangler(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
-    pascal = _to_pascal_case(pipeline.name)
-    class_name = f"{pascal}Workflow"
+    class_name = workflow_class_name(pipeline)
     obj = {
         "$schema": "node_modules/wrangler/config-schema.json",
         "name": pipeline.name,
@@ -686,6 +685,61 @@ See `docs/mcp-trigger.md` in the rote repository for the full flow.
 """
 
 
+# ───────── manifest.json emission ─────────
+
+MANIFEST_SCHEMA_VERSION = 1
+
+
+def _manifest_node_ids(pipeline: Pipeline) -> list[str]:
+    """Node ids the cloud runner maps to emitted modules.
+
+    Mirrors ``rote-cloud/upload.mjs``'s derivation exactly: the basenames
+    under ``src/signatures/`` (llm_judge nodes) followed by those under
+    ``src/extracted/`` (every other emitted node). HITL gates emit no
+    module, so they contribute no id — matching what the adapter's
+    ``emit`` actually writes.
+    """
+    signatures = [n.id for n in pipeline.nodes if n.kind is NodeKind.LLM_JUDGE]
+    extracted = [
+        n.id for n in pipeline.nodes if n.kind not in (NodeKind.LLM_JUDGE, NodeKind.HITL_GATE)
+    ]
+    return signatures + extracted
+
+
+def emit_manifest(pipeline: Pipeline) -> str:
+    """Emit ``manifest.json`` — the machine-readable deploy descriptor.
+
+    The cloud runner (``rote-cloud``) reads this instead of re-deriving
+    the pipeline's identity, node set, and input schema from the emitted
+    TypeScript. Everything here is the single source of truth those
+    consumers agree on:
+
+    * ``schema`` — manifest format version, for forward-compat.
+    * ``name`` / ``version`` / ``pipeline_hash`` / ``class_name`` — from
+      :func:`~rote.adapters._common.pipeline_identity`, identical to the
+      values baked into ``workflow.ts``.
+    * ``node_ids`` — the signature + extracted module basenames, matching
+      what ``upload.mjs`` derives from the ``src/`` tree today.
+    * ``input_schema`` — the pipeline input's JSON Schema (empty object
+      when the pipeline declares only field names), the shape the cloud's
+      ``/v1/pipelines`` endpoint expects.
+    * ``entry`` — the bundler entry point, always ``src/workflow.ts``.
+    """
+    identity = pipeline_identity(pipeline)
+    obj = {
+        "schema": MANIFEST_SCHEMA_VERSION,
+        "adapter": "cloudflare",
+        "name": identity["name"],
+        "version": identity["version"],
+        "pipeline_hash": identity["pipeline_hash"],
+        "class_name": identity["class_name"],
+        "node_ids": _manifest_node_ids(pipeline),
+        "input_schema": pipeline.input.input_schema or {},
+        "entry": "src/workflow.ts",
+    }
+    return json.dumps(obj, indent=2) + "\n"
+
+
 # ───────── Adapter facade ─────────
 
 
@@ -719,7 +773,7 @@ class CloudflareAdapter:
     def emit_index(self, pipeline: Pipeline) -> str:
         return emit_index(pipeline, self.config)
 
-    def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
+    def emit(self, pipeline: Pipeline, output_dir: str | Path) -> EmitResult:
         writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
@@ -756,6 +810,9 @@ class CloudflareAdapter:
         written[".dev.vars.example"] = writer.write(
             ".dev.vars.example", content=emit_dev_vars_example(pipeline)
         )
+        # Machine-readable deploy descriptor at the output root — the cloud
+        # runner reads this instead of scraping identity out of the TS.
+        written["manifest.json"] = writer.write("manifest.json", content=emit_manifest(pipeline))
 
         writer.finalize()
-        return written
+        return EmitResult(written, writer.preserved)

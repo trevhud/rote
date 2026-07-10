@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from rote.graduator.events import EventCallback
+
 # ───────── Shared types ─────────
 
 
@@ -92,6 +94,7 @@ class GraduatorDriver(Protocol):
         graduator_skill_dir: Path,
         work_dir: Path,
         extra_instructions: str | None = None,
+        on_event: EventCallback | None = None,
     ) -> DriverResult:
         """Run the graduator agent against ``skill_dir``.
 
@@ -113,6 +116,15 @@ class GraduatorDriver(Protocol):
             orchestrator only passes this when it has something to say,
             so drivers that predate the parameter keep working on full
             runs.
+        on_event
+            Optional live-progress sink. Drivers fire
+            :class:`~rote.graduator.events.GraduationEvent`\\ s through it
+            as the run proceeds (``turn``, ``tool``, ``phase``). Same
+            backward-compat precedent as ``extra_instructions``: the
+            orchestrator only passes it when a consumer wants progress,
+            so drivers that predate the parameter keep working. Fire
+            events via :func:`~rote.graduator.events.emit_safely` so a
+            raising sink can't kill the run.
 
         Returns
         -------
