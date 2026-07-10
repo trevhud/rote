@@ -9,7 +9,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-10
+
 ### Added
+- **`examples/invoice-push/`** — the fourth committed example and the
+  `agent_loop` archetype, completing node-kind coverage across the
+  examples (adapted from a real production browser-automation skill,
+  fully fictionalized): a bounded per-row browser cycle (5-node
+  `loop_body`, termination cap) that cannot crystallize into code,
+  surrounded by 12 deterministic nodes. First example to commit its
+  `eval.yaml` sidecar — with per-row `iterations`, the calibration
+  fixture for the loop-aware cost model below.
 - **`eval --run` auto-wires the pipeline's MCP servers into the skill
   trial.** The graduated pipeline's `mcp:` bindings name exactly the
   servers the source skill uses, so the "before" measurement now runs
@@ -222,7 +232,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote graduate` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/trevhud/rote/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/trevhud/rote/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/trevhud/rote/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/trevhud/rote/compare/v0.4.0...v0.5.0
