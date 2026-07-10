@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,11 +33,13 @@ from typing import Any
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.graduator.drivers import (
     DriverError,
+    DriverResult,
     GraduatorDriver,
     auto_detect,
     available_drivers,
     get_driver,
 )
+from rote.graduator.events import EventCallback, GraduationEvent, emit_safely
 from rote.graduator.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
@@ -105,6 +108,8 @@ class Graduator:
         agent: str | None = None,
         graduator_skill_dir: Path | None = None,
         model: str | None = None,
+        on_event: EventCallback | None = None,
+        driver_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """
         Parameters
@@ -119,10 +124,24 @@ class Graduator:
             Override the LLM model the driver uses for the graduator
             (e.g. ``"claude-opus-4-6"`` to use Opus instead of the
             default Sonnet). ``None`` uses the driver's default.
+        on_event
+            Optional live-progress sink threaded to the driver and fired
+            with orchestrator-level events (``log``, ``artifact``,
+            ``complete`` / ``error``). Always invoked through
+            :func:`~rote.graduator.events.emit_safely`, so a raising sink
+            can't sink a paid run.
+        driver_kwargs
+            Extra keyword arguments merged into the driver constructor
+            call (on top of ``model``). The cloud runner uses this to
+            pass the api driver's ``base_url`` / ``default_headers`` for
+            AI Gateway routing. Keys collide-last: an explicit
+            ``driver_kwargs["model"]`` overrides the ``model`` argument.
         """
         self.agent = agent
         self._explicit_graduator_skill_dir = graduator_skill_dir
         self.model = model
+        self.on_event = on_event
+        self.driver_kwargs = driver_kwargs
 
     @property
     def graduator_skill_dir(self) -> Path:
@@ -142,6 +161,11 @@ class Graduator:
         driver_kwargs: dict[str, object] = {}
         if self.model is not None:
             driver_kwargs["model"] = self.model
+        # Caller-supplied kwargs win over the model shorthand, so an
+        # explicit driver_kwargs["model"] (or base_url / default_headers)
+        # takes precedence.
+        if self.driver_kwargs:
+            driver_kwargs.update(self.driver_kwargs)
 
         if self.agent:
             try:
@@ -171,6 +195,13 @@ class Graduator:
         # (e.g. model override) instead of returning the probe instance
         # directly.
         return get_driver(probe.name, **driver_kwargs)
+
+    def _emit(self, type_: str, message: str, **fields: Any) -> None:
+        """Fire an orchestrator-level progress event (no-op without a sink)."""
+        emit_safely(
+            self.on_event,
+            GraduationEvent(type=type_, ts=time.time(), message=message, **fields),  # type: ignore[arg-type]
+        )
 
     async def graduate(
         self,
@@ -212,6 +243,19 @@ class Graduator:
         skill_dir = Path(skill_dir).resolve()
         output_dir = Path(output_dir).resolve()
 
+        try:
+            return await self._graduate_inner(skill_dir, output_dir, update)
+        except GraduatorError as e:
+            self._emit("error", f"graduation failed: {e}")
+            raise
+
+    async def _graduate_inner(
+        self,
+        skill_dir: Path,
+        output_dir: Path,
+        update: bool,
+    ) -> GraduationResult:
+        """The graduation body, bracketed by ``graduate``'s error event."""
         if not skill_dir.is_dir():
             raise GraduatorError(f"Skill directory does not exist: {skill_dir}")
         if not (skill_dir / "SKILL.md").is_file():
@@ -222,7 +266,15 @@ class Graduator:
         plan: UpdatePlan | None = None
         if update:
             prev_pipeline, plan = self._plan_update(output_dir, skill_md_text)
+            self._emit(
+                "log",
+                f"update plan: {len(plan.changed_sections)} changed section(s), "
+                f"{len(plan.stale_node_ids)} stale node(s), "
+                f"{len(plan.preserved_node_ids)} preserved",
+            )
             if plan.is_noop:
+                self._emit("log", "no changes — skipping agent")
+                self._emit("complete", "up to date: no source sections changed")
                 return GraduationResult(
                     pipeline=prev_pipeline,
                     output_dir=output_dir,
@@ -233,6 +285,7 @@ class Graduator:
                 )
 
         driver = self.select_driver()
+        self._emit("log", f"driver selected: {driver.name}")
 
         with tempfile.TemporaryDirectory(prefix="rote-graduate-") as work_dir_str:
             work_dir = Path(work_dir_str)
@@ -248,6 +301,7 @@ class Graduator:
                     skill_dir=skill_dir,
                     graduator_skill_dir=self.graduator_skill_dir,
                     work_dir=work_dir,
+                    on_event=self.on_event,
                     **run_kwargs,
                 )
             except DriverError as e:
@@ -304,6 +358,21 @@ class Graduator:
                 output_dir / EVAL_SIDECAR_FILENAME, skill_dir, output_dir
             )
 
+            # The two durable deliverables now live in output_dir; announce
+            # them so a consumer knows the artifacts are on disk before the
+            # completion summary lands.
+            self._emit(
+                "artifact",
+                "wrote pipeline.yaml",
+                path=str((output_dir / "pipeline.yaml").relative_to(output_dir)),
+            )
+            self._emit(
+                "artifact",
+                "wrote provenance.json",
+                path=str(PROVENANCE_FILENAME),
+            )
+            self._emit("complete", self._completion_message(result))
+
             # Re-point the result's path to the moved location for the
             # caller's benefit.
             return GraduationResult(
@@ -312,6 +381,26 @@ class Graduator:
                 driver_name=result.driver_name,
                 driver_metadata=result.metadata,
             )
+
+    @staticmethod
+    def _completion_message(result: DriverResult) -> str:
+        """One-line completion summary carrying token / cost figures.
+
+        Reads whatever the driver reported: the api driver stamps
+        ``input_tokens`` / ``output_tokens``; the subprocess drivers stamp
+        ``cost_usd`` / ``num_turns``. Absent fields are simply omitted.
+        """
+        meta = result.metadata
+        parts = [f"graduated via {result.driver_name}"]
+        in_tok = meta.get("input_tokens")
+        out_tok = meta.get("output_tokens")
+        if in_tok is not None or out_tok is not None:
+            parts.append(f"tokens in={in_tok or 0} out={out_tok or 0}")
+        if meta.get("num_turns") is not None:
+            parts.append(f"turns={meta['num_turns']}")
+        if meta.get("cost_usd") is not None:
+            parts.append(f"cost=${meta['cost_usd']}")
+        return "; ".join(parts)
 
     def _plan_update(self, output_dir: Path, skill_md_text: str) -> tuple[Pipeline, UpdatePlan]:
         """Load the previous run and diff the skill against its provenance."""

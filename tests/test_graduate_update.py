@@ -110,6 +110,7 @@ class _RecordingDriver(GraduatorDriver):
         graduator_skill_dir: Path,
         work_dir: Path,
         extra_instructions: str | None = None,
+        on_event: object = None,
     ) -> DriverResult:
         self.invocations += 1
         self.extra_instructions = extra_instructions

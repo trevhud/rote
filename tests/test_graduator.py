@@ -67,6 +67,8 @@ class _FakeDriver(GraduatorDriver):
         skill_dir: Path,
         graduator_skill_dir: Path,
         work_dir: Path,
+        extra_instructions: str | None = None,
+        on_event: object = None,
     ) -> DriverResult:
         self.run_called_with = {
             "skill_dir": skill_dir,
@@ -93,7 +95,14 @@ class _FailingDriver(GraduatorDriver):
     def is_available(self) -> tuple[bool, str]:
         return (True, "")
 
-    async def run(self, skill_dir: Path, graduator_skill_dir: Path, work_dir: Path) -> DriverResult:
+    async def run(
+        self,
+        skill_dir: Path,
+        graduator_skill_dir: Path,
+        work_dir: Path,
+        extra_instructions: str | None = None,
+        on_event: object = None,
+    ) -> DriverResult:
         raise DriverError("simulated failure", details="extra context here")
 
 
@@ -471,7 +480,9 @@ async def test_model_override_flows_through_to_driver(
             super().__init__(**kwargs)  # type: ignore[arg-type]
             constructed_models.append(self.model)
 
-        async def run(self, skill_dir, graduator_skill_dir, work_dir):  # noqa: ANN001
+        async def run(  # noqa: ANN001
+            self, skill_dir, graduator_skill_dir, work_dir, extra_instructions=None, on_event=None
+        ):
             (work_dir / "pipeline.yaml").write_text(VALID_YAML, encoding="utf-8")
             from rote.graduator.drivers import DriverResult
 
