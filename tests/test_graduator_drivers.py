@@ -40,12 +40,16 @@ from rote.graduator.drivers.codex import CodexDriver
 # ───────── Registry + Protocol shape ─────────
 
 
-def test_all_three_drivers_registered() -> None:
-    assert set(DRIVERS) == {"claude", "codex", "api"}
+def test_drivers_registered() -> None:
+    assert set(DRIVERS) == {"claude", "codex", "api", "openai-api"}
 
 
-def test_auto_detect_order_matches_registry() -> None:
-    assert set(AUTO_DETECT_ORDER) == set(DRIVERS)
+def test_auto_detect_order_is_the_zero_arg_probeable_subset() -> None:
+    # openai-api is registered but excluded from auto-detect: it has no
+    # default model, so it can't be probed with a zero-arg construction.
+    assert set(AUTO_DETECT_ORDER) == {"claude", "codex", "api"}
+    assert "openai-api" not in AUTO_DETECT_ORDER
+    assert set(AUTO_DETECT_ORDER) <= set(DRIVERS)
     # Specifically verify the priority: claude first for the most common
     # subscription path, api last because it requires explicit opt-in.
     assert AUTO_DETECT_ORDER[0] == "claude"
@@ -81,7 +85,8 @@ def test_drivers_satisfy_protocol_at_runtime() -> None:
     assert the methods exist and are callable.
     """
     for name in DRIVERS:
-        driver = get_driver(name)
+        # openai-api has no default model, so it must be constructed with one.
+        driver = get_driver(name, model="x") if name == "openai-api" else get_driver(name)
         assert hasattr(driver, "name")
         assert callable(driver.is_available)
         assert callable(driver.run)

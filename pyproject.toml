@@ -50,6 +50,9 @@ temporal = [
 api = [
     "anthropic>=0.89",
 ]
+openai-api = [
+    "openai>=2.45",
+]
 dbos = [
     "dbos>=2.26",
 ]
@@ -69,6 +72,7 @@ dev = [
     "types-pyyaml",
     "temporalio>=1.7",
     "anthropic>=0.89",
+    "openai>=2.45",
     "dbos>=2.26",
     "fastmcp>=3.4.2",
     "httpx>=0.28",

@@ -301,9 +301,7 @@ class Graduator:
             if extra_instructions:
                 instructions.append(extra_instructions)
             if plan is not None:
-                instructions.append(
-                    self._materialize_update_context(work_dir, output_dir, plan)
-                )
+                instructions.append(self._materialize_update_context(work_dir, output_dir, plan))
             run_kwargs: dict[str, Any] = {}
             if instructions:
                 run_kwargs["extra_instructions"] = "\n\n".join(instructions)

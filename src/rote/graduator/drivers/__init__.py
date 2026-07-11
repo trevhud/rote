@@ -160,6 +160,12 @@ def _anthropic_driver_factory(**kwargs: Any) -> GraduatorDriver:
     return AnthropicApiDriver(**kwargs)
 
 
+def _openai_driver_factory(**kwargs: Any) -> GraduatorDriver:
+    from rote.graduator.drivers.openai_api import OpenAIApiDriver
+
+    return OpenAIApiDriver(**kwargs)
+
+
 #: Name → factory. Keep the values lazy so we don't pay the import cost
 #: of the anthropic SDK on every CLI invocation. Factories accept
 #: ``**kwargs`` which are forwarded to the driver constructor (e.g.
@@ -168,10 +174,14 @@ DRIVERS: dict[str, Callable[..., GraduatorDriver]] = {
     "claude": _claude_driver_factory,
     "codex": _codex_driver_factory,
     "api": _anthropic_driver_factory,
+    "openai-api": _openai_driver_factory,
 }
 
 #: Order used by :func:`auto_detect`. Claude first because Claude Max/Pro
 #: is the most likely subscription rote's audience already has.
+#: ``openai-api`` is deliberately excluded — it has no default model, so
+#: it can't be probed with a zero-arg construction; it is explicit-only
+#: (``--agent openai-api --model <id>``).
 AUTO_DETECT_ORDER: tuple[str, ...] = ("claude", "codex", "api")
 
 
