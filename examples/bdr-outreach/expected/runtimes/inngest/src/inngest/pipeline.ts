@@ -62,6 +62,8 @@ export const runPipeline = inngest.createFunction(
         // Parallel fan-out: Promise.all over step.run calls is
         // Inngest's documented in-function parallelism pattern —
         // the executor schedules the steps concurrently.
+        // MCP-backed branches park independently; one broadcast
+        // of the release event wakes all of them.
         // IR retry policy: max 2 (exponential). Inngest v4
         // retries are function-level only — this step gets the function's
         // budget of 5 with managed exponential backoff + jitter.

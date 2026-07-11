@@ -210,3 +210,29 @@ def test_dbos_ts_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
     assert "runWithAuthPark" not in main
     assert "rote_auth_status" not in main
     assert "shouldRetry" not in main
+
+
+# ───────── Park-on-auth (Inngest) ─────────
+
+
+def test_inngest_parks_on_auth(tmp_path: Path) -> None:
+    """MCP-backed steps route through runParkable: auth failures wrap in
+    NonRetriableError (skipping the retry budget), the run parks on the
+    pipeline's rote.auth.<server> event, and one broadcast wakes every
+    parked run — Inngest events fan out, so no discovery is needed."""
+    get_adapter("inngest").emit(_bound_pipeline(), tmp_path)
+    src = (tmp_path / "src" / "inngest" / "pipeline.ts").read_text(encoding="utf-8")
+    assert 'import { isRoteMcpAuthNeeded } from "../extracted/_roteMcp";' in src
+    assert 'runParkable(step, "pull_data", "ts_mcp_demo/rote.auth.vendor", "vendor"' in src
+    assert "new NonRetriableError(" in src
+    assert "-auth-wait-" in src  # fresh waitForEvent id per park
+    assert 'timeout: "30d"' in src
+    # Binding-less nodes keep the plain step.run.
+    assert 'step.run("plain_call"' in src
+
+
+def test_inngest_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
+    get_adapter("inngest", external_backend="api").emit(_bound_pipeline(), tmp_path)
+    src = (tmp_path / "src" / "inngest" / "pipeline.ts").read_text(encoding="utf-8")
+    assert "runParkable" not in src
+    assert "rote.auth." not in src

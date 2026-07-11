@@ -571,6 +571,8 @@ def _release_parked_after_login(server: str) -> None:
         return
     for wf in report.released:
         print(f"  released parked workflow {wf.workflow_id} ({wf.app})")
+    for bc in report.broadcasts:
+        print(f"  broadcast release event {bc.event!r} → {bc.endpoint}")
     for app in report.skipped:
         print(f"  note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
 
@@ -592,9 +594,11 @@ def _cmd_mcp_release(args: argparse.Namespace) -> int:
         return 1
     for wf in report.released:
         print(f"released parked workflow {wf.workflow_id} ({wf.app})")
+    for bc in report.broadcasts:
+        print(f"broadcast release event {bc.event!r} → {bc.endpoint}")
     for app in report.skipped:
         print(f"note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
-    if not report.released:
+    if not report.released and not report.broadcasts:
         print(f"rote mcp: no workflows parked waiting for {args.name!r}")
     return 0
 

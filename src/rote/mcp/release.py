@@ -15,6 +15,7 @@ quite reached its ``recv`` yet is safe — the message waits for it.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,21 @@ class ReleasedWorkflow:
 
 
 @dataclass(frozen=True)
+class BroadcastRelease:
+    """A fan-out release: one event sent, every parked run wakes.
+
+    Inngest has no parked-run discovery API and doesn't need one —
+    events fan out to all matching ``waitForEvent`` waiters, so the
+    release is a single send per (endpoint, event) rather than one
+    message per workflow.
+    """
+
+    app: Path
+    event: str
+    endpoint: str
+
+
+@dataclass(frozen=True)
 class SkippedApp:
     app: Path
     reason: str
@@ -42,6 +58,7 @@ class SkippedApp:
 class ReleaseReport:
     released: tuple[ReleasedWorkflow, ...]
     skipped: tuple[SkippedApp, ...]
+    broadcasts: tuple[BroadcastRelease, ...] = ()
 
 
 #: Runtimes whose parked workflows this module can release. Both DBOS
@@ -65,9 +82,18 @@ def release_parked_workflows(server: str) -> ReleaseReport:
     reported in ``skipped`` with its reason rather than failing the
     whole scan; the login that triggered this already succeeded.
     """
-    dbos_apps = [a for a in registered_apps() if a.runtime in _DBOS_RUNTIMES]
+    apps = registered_apps()
+    dbos_apps = [a for a in apps if a.runtime in _DBOS_RUNTIMES]
+    inngest_apps = [a for a in apps if a.runtime == "inngest"]
+
+    released: list[ReleasedWorkflow] = []
+    skipped: list[SkippedApp] = []
+    broadcasts: list[BroadcastRelease] = []
+
+    if inngest_apps:
+        _release_inngest_apps(server, inngest_apps, broadcasts, skipped)
     if not dbos_apps:
-        return ReleaseReport(released=(), skipped=())
+        return ReleaseReport(released=(), skipped=tuple(skipped), broadcasts=tuple(broadcasts))
 
     try:
         from dbos import DBOSClient
@@ -77,8 +103,6 @@ def release_parked_workflows(server: str) -> ReleaseReport:
             "requires the dbos extra: pip install 'rote-cli[dbos]'"
         ) from e
 
-    released: list[ReleasedWorkflow] = []
-    skipped: list[SkippedApp] = []
     seen_urls: set[str] = set()
 
     for app in dbos_apps:
@@ -104,7 +128,73 @@ def release_parked_workflows(server: str) -> ReleaseReport:
             released.extend(_release_in_app(DBOSClient, app, url, server))
         except Exception as e:  # noqa: BLE001 — a stale entry must not sink the scan
             skipped.append(SkippedApp(app.path, f"could not reach its system database: {e}"))
-    return ReleaseReport(released=tuple(released), skipped=tuple(skipped))
+    return ReleaseReport(
+        released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
+    )
+
+
+def _inngest_event_endpoint() -> str:
+    """Where to POST release events.
+
+    ``ROTE_INNGEST_EVENT_URL`` (a full ``…/e/<key>`` URL) wins;
+    ``INNGEST_EVENT_KEY`` selects Inngest Cloud; otherwise the local dev
+    server, which accepts any key ("the Dev Server does not validate
+    keys locally").
+    """
+    override = os.environ.get("ROTE_INNGEST_EVENT_URL")
+    if override:
+        return override
+    event_key = os.environ.get("INNGEST_EVENT_KEY")
+    if event_key:
+        return f"https://inn.gs/e/{event_key}"
+    return "http://127.0.0.1:8288/e/dev"
+
+
+def _release_inngest_apps(
+    server: str,
+    apps: list[RegisteredApp],
+    broadcasts: list[BroadcastRelease],
+    skipped: list[SkippedApp],
+) -> None:
+    """Broadcast the release event for every registered Inngest pipeline.
+
+    Event name mirrors :func:`rote.adapters.inngest.auth_event_name`:
+    ``<pipeline>/rote.auth.<server>``. One send wakes every run parked
+    on it (Inngest events fan out to all matching waiters); a send to a
+    pipeline with nothing parked is harmless — Inngest does not buffer
+    events for waits that haven't started, and the emitted park loop's
+    retry-once covers a release that lands in that gap.
+    """
+    try:
+        import httpx
+    except ImportError:
+        skipped.extend(
+            SkippedApp(a.path, "releasing Inngest runs requires httpx (rote-cli[mcp])")
+            for a in apps
+        )
+        return
+
+    endpoint = _inngest_event_endpoint()
+    seen_events: set[str] = set()
+    for app in apps:
+        if not app.pipeline:
+            skipped.append(SkippedApp(app.path, "registry entry has no pipeline name"))
+            continue
+        event = f"{app.pipeline}/rote.auth.{server}"
+        if event in seen_events:
+            continue
+        seen_events.add(event)
+        try:
+            response = httpx.post(
+                endpoint,
+                json={"name": event, "data": {"server": server, "released_by": "rote mcp"}},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+        except Exception as e:  # noqa: BLE001 — a dead endpoint must not sink the scan
+            skipped.append(SkippedApp(app.path, f"could not send {event!r} to {endpoint}: {e}"))
+            continue
+        broadcasts.append(BroadcastRelease(app.path, event, endpoint))
 
 
 def _release_in_app(

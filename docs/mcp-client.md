@@ -95,7 +95,7 @@ shared store when the user has run `rote mcp login`, static registry
 headers when configured, plain client otherwise. Emitted apps never
 import rote.
 
-## Park-on-auth (DBOS Python + DBOS TypeScript)
+## Park-on-auth (DBOS Python, DBOS TypeScript, Inngest)
 
 OAuth is interactive; durable workflows run unattended. The resolution:
 auth is a *preflight* owned by the CLI (where a human is present), and
@@ -166,10 +166,43 @@ a login, for credentials fixed out-of-band (re-provisioned Worker
 secrets, a synced token file, a registry entry switched to static
 headers).
 
-The remaining runtimes (Inngest, Cloudflare) still fail loud on dead
-credentials; their parks are the known follow-up — Inngest via
-`waitForEvent` + broadcast event release, Cloudflare via
-`waitForEvent` + instance-addressed `sendEvent`.
+### The Inngest park releases by broadcast, not discovery
+
+Inngest has no parked-run discovery API and needs none: **events fan
+out to every matching `waitForEvent` waiter**, so the release is one
+POST per pipeline (`<pipeline>/rote.auth.<server>` — dots, not the
+DBOS runtimes' `:` prefix, which has no documented status in Inngest
+event names; gate signals can't contain dots, so collision is
+impossible). `release_parked_workflows` sends it through the dev
+server by default, Inngest Cloud when `INNGEST_EVENT_KEY` is set, or
+wherever `ROTE_INNGEST_EVENT_URL` points.
+
+The emitted park is a `runParkable` loop with three Inngest-specific
+moves, all verified live (`tests/test_mcp_park_inngest_e2e.py`):
+
+1. **Fresh step ids per attempt** (`<id>`, `<id>-retry-1`,
+   `<id>-auth-wait-1`, …) — the executor memoizes by id, so a retry
+   loop must never reuse one.
+2. **`NonRetriableError` wrapping inside `step.run`** — Inngest's
+   `retries` budget applies per step with managed exponential backoff;
+   an auth failure would otherwise burn attempts for minutes before
+   the catchable `StepError` surfaces. Detection at the body walks the
+   error tree by `name` with a message-text fallback (serialization
+   can prune deep cause chains).
+3. **Retry-once-before-parking carries the race**: unlike DBOS and
+   Cloudflare, Inngest does *not* buffer events for waits that haven't
+   started — a release broadcast landing before the run reaches its
+   `waitForEvent` is lost. The immediate retry re-reads the credential
+   store the release just fixed, so nothing strands.
+
+One deployment note: the Node helper reads the credential store on the
+host *serving the app* — for a deployed Inngest service, the login (or
+a token-file sync) must happen there; the broadcast then wakes the run
+from anywhere.
+
+The remaining runtime (Cloudflare) still fails loud on dead
+credentials; its park is the known follow-up — `waitForEvent` +
+instance-addressed `sendEvent` (no broadcast on Workflows).
 
 ## eval --run
 
