@@ -16,6 +16,12 @@ What it does, mirroring the rote CLI's behavior exactly:
   ``rote mcp login``) through a durable OAuth provider that refreshes
   in place; else static headers from the registry entry; else an
   unauthenticated client.
+- **Never interactive**: emitted workflows run unattended, so this
+  module must never open a browser. Anything that would require a human
+  (expired token with no refresh path, a 401 from the server, an OAuth
+  flow wanting authorization) raises :class:`RoteMcpAuthNeeded` instead —
+  the emitted workflow catches it and parks durably until
+  ``rote mcp login <server>`` releases it.
 """
 
 from __future__ import annotations
@@ -51,6 +57,31 @@ def _token_dir() -> Path:
         return Path(override)
     xdg = os.environ.get("XDG_DATA_HOME")
     return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "mcp-tokens"
+
+
+class RoteMcpAuthNeeded(RuntimeError):
+    """The MCP server needs a human to (re)authenticate.
+
+    Raised instead of ever starting an interactive OAuth flow from
+    workflow code. The emitted workflow treats this as "park durably and
+    wait for ``rote mcp login <server>``" — never as a retryable error,
+    because no number of retries produces a credential.
+    """
+
+    def __init__(self, server: str, reason: str) -> None:
+        super().__init__(
+            f"MCP server {server!r} needs (re)authentication — {reason}. "
+            f"Run: rote mcp login {server}"
+        )
+        self.server = server
+        self.reason = reason
+
+    def __reduce__(self) -> tuple[type, tuple[str, str]]:
+        # Default exception pickling calls type(exc)(*args) with the one
+        # formatted message — a TypeError for this two-arg __init__. DBOS
+        # serializes step errors across queue workers, so this must
+        # round-trip.
+        return (type(self), (self.server, self.reason))
 
 
 def resolve_url(server: str, pipeline_url: str | None) -> str:
@@ -229,9 +260,22 @@ def mcp_client(server: str, pipeline_url: str | None) -> Any:
     if has_stored_login(server):
         from fastmcp.client.auth import OAuth
 
+        class _NonInteractiveOAuth(OAuth):
+            """OAuth that refreshes silently but never opens a browser.
+
+            Workflow code runs unattended; if the provider falls out of
+            the refresh path into a full authorization flow (revoked
+            grant, rotated client), surface RoteMcpAuthNeeded so the
+            workflow parks instead of hanging on a browser that will
+            never open.
+            """
+
+            async def redirect_handler(self, authorization_url: str) -> None:
+                raise RoteMcpAuthNeeded(server, "the server requires an interactive OAuth flow")
+
         return Client(
             url,
-            auth=OAuth(
+            auth=_NonInteractiveOAuth(
                 mcp_url=url,
                 client_name="rote",
                 token_storage=_TokenKV(server, url),
@@ -245,3 +289,58 @@ def mcp_client(server: str, pipeline_url: str | None) -> Any:
 
         return Client(StreamableHttpTransport(url, headers=headers))
     return Client(url)
+
+
+def _find_http_401(exc: BaseException) -> bool:
+    """True if an HTTP 401 hides anywhere in the exception tree.
+
+    fastmcp surfaces a bare 401 as an unwrapped httpx.HTTPStatusError
+    (verified empirically), but anyio task groups can wrap transport
+    errors in ExceptionGroups and cause-chains on other paths — walk all
+    three edges rather than trusting the top-level type.
+    """
+    import httpx
+
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        e = stack.pop()
+        if id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
+            return True
+        if isinstance(e, BaseExceptionGroup):
+            stack.extend(e.exceptions)
+        if e.__cause__ is not None:
+            stack.append(e.__cause__)
+        if e.__context__ is not None and not e.__suppress_context__:
+            stack.append(e.__context__)
+    return False
+
+
+async def call_mcp_tool(
+    server: str, pipeline_url: str | None, tool: str, arguments: dict[str, Any]
+) -> Any:
+    """Call one MCP tool and return its structured result data.
+
+    The entry point emitted workflow steps use. Auth problems become
+    :class:`RoteMcpAuthNeeded` — raised *before* touching the network
+    when the stored token is known-dead (expired with no refresh token),
+    and mapped from an HTTP 401 when the server rejects whatever
+    credentials we did present.
+    """
+    if has_stored_login(server) and not token_is_usable(server):
+        raise RoteMcpAuthNeeded(
+            server, "the stored access token has expired and there is no refresh token"
+        )
+    try:
+        async with mcp_client(server, pipeline_url) as client:
+            result = await client.call_tool(tool, arguments)
+            return result.data
+    except RoteMcpAuthNeeded:
+        raise
+    except BaseException as exc:
+        if _find_http_401(exc):
+            raise RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized") from exc
+        raise

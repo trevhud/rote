@@ -97,6 +97,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    # Record the app so later commands (e.g. `rote mcp login` releasing
+    # parked workflows) can find it without being told where it lives.
+    from rote.app_registry import record_app
+
+    record_app(out_dir, args.runtime, pipeline.name)
+
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
     _print_written(written)
     return 0
@@ -188,6 +194,10 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         return 2
 
     written = adapter.emit(result.pipeline, runtime_dir)
+
+    from rote.app_registry import record_app
+
+    record_app(runtime_dir, args.runtime, result.pipeline.name)
 
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
     # just-completed, real-money graduation run) ──
@@ -538,7 +548,29 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
     print(f"rote mcp: authenticated {args.name!r}{refresh}")
     if expires_at:
         print(f"  access token expires at epoch {expires_at:.0f}; refresh is automatic")
+    _release_parked_after_login(args.name)
     return 0
+
+
+def _release_parked_after_login(server: str) -> None:
+    """Wake emitted DBOS workflows parked waiting for this server's auth.
+
+    Emitted apps park durably on missing/dead MCP credentials (see
+    rote.mcp.release); a successful login is the event they're waiting
+    for, so discovery + release happens here rather than as a separate
+    command the user has to know about.
+    """
+    from rote.mcp.release import ReleaseUnavailable, release_parked_workflows
+
+    try:
+        report = release_parked_workflows(server)
+    except ReleaseUnavailable as e:
+        print(f"  note: {e}", file=sys.stderr)
+        return
+    for wf in report.released:
+        print(f"  released parked workflow {wf.workflow_id} ({wf.app})")
+    for app in report.skipped:
+        print(f"  note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
 
 
 def _cmd_mcp_logout(args: argparse.Namespace) -> int:

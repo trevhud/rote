@@ -250,7 +250,15 @@ Two regimes, don't mix them up:
   `rote.mcp._runtime_helper` (never hand-edit the emitted copy; fix
   the module) — which resolves the endpoint (env > rote registry > IR)
   and credentials (`rote mcp login` token store > registry static
-  headers > unauthenticated) at runtime. See
+  headers > unauthenticated) at runtime. On DBOS Python, auth failures
+  **park the workflow durably** instead of failing it (`RoteMcpAuthNeeded`
+  → `DBOS.recv` on `rote:auth:<server>`; `rote mcp login` discovers
+  parked workflows via the app registry + the `rote_auth_status` event
+  and releases them). Two traps if you touch this: a parked DBOS
+  workflow is just PENDING (no WAITING status — discovery *requires*
+  the advertised event), and parallel-wave siblings can surface stale
+  auth failures after the release signal was already consumed — hence
+  the retry-once-before-parking shape in the emitted wrappers. See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
 ### Sonnet is the default, not Opus
@@ -416,7 +424,11 @@ If a change of yours would violate any of them, stop and reconsider.
    the IR.
 2. **Drivers contract on the filesystem only.** `work_dir/pipeline.yaml`
    is the deliverable. No stdout parsing, no side channels.
-3. **Emitted code never imports MCP.** Enforced by test.
+3. **Emitted code touches MCP only through an explicit `mcp:`
+   binding.** Nodes without a binding never reference MCP in any
+   adapter or language (enforced by AST/text tests); nodes with one
+   emit a working, *never-interactive* client call — auth problems
+   raise/park, they never open a browser from workflow code.
 4. **Mandatory nodes cannot become conditional.** The IR validator
    rejects `mandatory: true` on `agent_loop` nodes, and the
    Temporal adapter emits mandatory nodes as unconditional
@@ -582,6 +594,11 @@ Don't waste time debugging stubs. These are intentional.
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
   through the DAG, with HITL gate resume payloads participating as
   the gate's result — validated empirically in the runtime e2e tests
+- Park-on-auth (DBOS Python): MCP-backed steps with a missing/dead
+  credential suspend the workflow durably; `rote mcp login <server>`
+  releases every parked workflow across the apps recorded in
+  `~/.local/share/rote/apps.json` (written at emit/graduate time).
+  Full cross-process loop proven in `tests/test_mcp_park_e2e.py`.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
