@@ -553,12 +553,14 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
 
 
 def _release_parked_after_login(server: str) -> None:
-    """Wake emitted DBOS workflows parked waiting for this server's auth.
+    """Wake emitted workflows parked waiting for this server's auth.
 
     Emitted apps park durably on missing/dead MCP credentials (see
     rote.mcp.release); a successful login is the event they're waiting
     for, so discovery + release happens here rather than as a separate
-    command the user has to know about.
+    command the user has to know about. (`rote mcp release <server>`
+    exists for when the credential was fixed some other way — e.g.
+    re-provisioned Worker secrets.)
     """
     from rote.mcp.release import ReleaseUnavailable, release_parked_workflows
 
@@ -571,6 +573,30 @@ def _release_parked_after_login(server: str) -> None:
         print(f"  released parked workflow {wf.workflow_id} ({wf.app})")
     for app in report.skipped:
         print(f"  note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
+
+
+def _cmd_mcp_release(args: argparse.Namespace) -> int:
+    """Release parked workflows without a login.
+
+    For the paths where the credential is fixed out-of-band: Worker
+    secrets re-provisioned via `rote mcp export` + `wrangler secret
+    bulk`, a token file synced from another machine, or a server whose
+    registry entry switched to static headers.
+    """
+    from rote.mcp.release import ReleaseUnavailable, release_parked_workflows
+
+    try:
+        report = release_parked_workflows(args.name)
+    except ReleaseUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    for wf in report.released:
+        print(f"released parked workflow {wf.workflow_id} ({wf.app})")
+    for app in report.skipped:
+        print(f"note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
+    if not report.released:
+        print(f"rote mcp: no workflows parked waiting for {args.name!r}")
+    return 0
 
 
 def _cmd_mcp_logout(args: argparse.Namespace) -> int:
@@ -1506,6 +1532,15 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_logout = mcp_sub.add_parser("logout", help="Clear a server's stored credentials")
     mcp_logout.add_argument("name")
     mcp_logout.set_defaults(func=_cmd_mcp_logout)
+
+    mcp_release = mcp_sub.add_parser(
+        "release",
+        help="Wake workflows parked waiting for a server's auth "
+        "(login does this automatically; use this when the credential "
+        "was fixed another way, e.g. re-provisioned Worker secrets)",
+    )
+    mcp_release.add_argument("name")
+    mcp_release.set_defaults(func=_cmd_mcp_release)
 
     mcp_headers = mcp_sub.add_parser(
         "headers",

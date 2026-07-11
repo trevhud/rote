@@ -95,7 +95,7 @@ shared store when the user has run `rote mcp login`, static registry
 headers when configured, plain client otherwise. Emitted apps never
 import rote.
 
-## Park-on-auth (DBOS Python)
+## Park-on-auth (DBOS Python + DBOS TypeScript)
 
 OAuth is interactive; durable workflows run unattended. The resolution:
 auth is a *preflight* owned by the CLI (where a human is present), and
@@ -131,9 +131,45 @@ immediately — it re-reads the token store — and only park if the fresh
 attempt still needs auth. Proven end-to-end (real DBOS runtime, real
 FastMCP server, cross-process release) in `tests/test_mcp_park_e2e.py`.
 
-The TS runtimes (DBOS-TS, Inngest, Cloudflare) still fail loud on dead
-credentials; extending the park to them is the known follow-up — their
-wait primitives exist, but each needs its own release channel.
+### The DBOS-TS park is cross-language, and serialization is the crux
+
+The TypeScript emission mirrors the Python one (`RoteMcpAuthNeeded`
+from the emitted `_roteMcp.ts` helper, a `shouldRetry` opt-out,
+`DBOS.recv` on the same `rote:auth:<server>` topic, the same
+`rote_auth_status` event) — and the *same Python release path* serves
+both runtimes, because the two DBOS SDKs share one system-DB schema.
+Two rules make the interop work; break either and the park silently
+stops being discoverable or releasable:
+
+1. **The emitted TS `setEvent` passes
+   `{ serializationType: "portable" }`.** The TS default (superjson)
+   raises `TypeError: Serialization js_superjson is not available` in
+   the Python client; portable JSON is DBOS's documented cross-language
+   format, dispatched per-row so the reader needs no config.
+2. **The Python release `send` passes
+   `serialization_type=WorkflowSerializationFormat.PORTABLE`.** The
+   Python default (pickle) is opaque to a TS `DBOS.recv`. Portable is
+   readable by both SDKs, so one code path releases Python and TS apps
+   alike.
+
+Two adjacent traps: detect the auth error in TS by **`name` string,
+never `instanceof`** (DBOS reconstructs serialized errors as plain
+`Error`s — class identity is lost; `name` and own enumerable fields
+survive), and pass `load_input=False, load_output=False` when a Python
+client lists a TS app's workflows (their inputs/outputs are superjson).
+The full cross-language loop — TS parks, Python reads the event,
+Python releases, TS resumes against a live MCP server — is proven on a
+real Docker Postgres in `tests/test_mcp_park_ts_e2e.py`.
+
+`rote mcp release <server>` triggers the same scan-and-release without
+a login, for credentials fixed out-of-band (re-provisioned Worker
+secrets, a synced token file, a registry entry switched to static
+headers).
+
+The remaining runtimes (Inngest, Cloudflare) still fail loud on dead
+credentials; their parks are the known follow-up — Inngest via
+`waitForEvent` + broadcast event release, Cloudflare via
+`waitForEvent` + instance-addressed `sendEvent`.
 
 ## eval --run
 

@@ -147,7 +147,7 @@ def _duration_to_ms(s: str) -> int:
     return int(_duration_to_seconds(s) * 1000)
 
 
-def _step_config_literal(node: Node) -> str:
+def _step_config_literal(node: Node, *, mcp: bool = False) -> str:
     """Render the config object for a ``DBOS.registerStep`` call.
 
     Maps the IR's ``RetryPolicy`` onto DBOS TS step options:
@@ -165,6 +165,11 @@ def _step_config_literal(node: Node) -> str:
     | ``retry_on``  | not mapped (the TS knob is a ``shouldRetry``   |
     |               | predicate, not categories — surfaced as a      |
     |               | comment)                                       |
+
+    MCP-backed steps with retries additionally opt auth failures out of
+    the retry budget (``shouldRetry: mcpShouldRetry``): a missing or
+    dead credential is not transient, and burning attempts on it only
+    delays the park that actually fixes it.
     """
     parts = [f"name: {json.dumps(node.id)}"]
     if node.retry and node.retry.max > 0:
@@ -172,6 +177,8 @@ def _step_config_literal(node: Node) -> str:
         parts.append("retriesAllowed: true")
         parts.append(f"maxAttempts: {node.retry.max + 1}")
         parts.append(f"backoffRate: {backoff_rate}")
+        if mcp:
+            parts.append("shouldRetry: mcpShouldRetry")
     if node.timeout:
         parts.append(f"timeoutMS: {_duration_to_ms(node.timeout)}")
     return "{ " + ", ".join(parts) + " }"
@@ -286,11 +293,20 @@ def emit_extracted_module(node: Node) -> str:
 # ───────── src/main.ts emission ─────────
 
 
-def _emit_step_registration(node: Node) -> str:
+def _is_mcp_backed(node: Node, cfg: DbosTsAdapterConfig) -> bool:
+    """True when this node's step calls an MCP tool at run time."""
+    return (
+        node.kind is NodeKind.EXTERNAL_CALL
+        and node.mcp is not None
+        and cfg.external_backend == "mcp"
+    )
+
+
+def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
     """Emit the ``export const <camel>Step = DBOS.registerStep(...)`` block."""
     fn_name = _to_camel_case(node.id)
     desc_first = safe_block_comment_line(node.description, fallback=node.id)
-    config = _step_config_literal(node)
+    config = _step_config_literal(node, mcp=_is_mcp_backed(node, cfg))
 
     doc: list[str] = ["/**", f" * {desc_first}", " *"]
     if node.kind is NodeKind.LLM_JUDGE:
@@ -353,7 +369,7 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     )
 
 
-def _emit_workflow_body(pipeline: Pipeline) -> tuple[str, bool]:
+def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[str, bool]:
     """Render the workflow function body; returns (body, uses_unwrap)."""
     waves = _execution_waves(pipeline)
     lines: list[str] = []
@@ -378,23 +394,45 @@ def _emit_workflow_body(pipeline: Pipeline) -> tuple[str, bool]:
         if len(non_hitl) == 1:
             node = non_hitl[0]
             fn_name = _to_camel_case(node.id)
-            payload = payload_ts_literal(node, indent=" " * 8)
-            if payload == "{}":
-                lines.append(f"        const {node.id}_result = await {fn_name}Step({{}});")
-            else:
-                lines.append(f"        const {node.id}_result = await {fn_name}Step(")
-                lines.append(f"            {payload_ts_literal(node, indent=' ' * 12)},")
+            if _is_mcp_backed(node, cfg):
+                # MCP-backed: run through the auth-park wrapper so a dead
+                # credential suspends the workflow instead of failing it.
+                assert node.mcp is not None
+                payload = payload_ts_literal(node, indent=" " * 12)
+                lines.append(f"        const {node.id}_result = await runWithAuthPark(")
+                if payload == "{}":
+                    lines.append(f"            () => {fn_name}Step({{}}),")
+                else:
+                    lines.append(f"            () => {fn_name}Step({payload}),")
+                lines.append(f"            {json.dumps(node.mcp.server)},")
                 lines.append("        );")
+            else:
+                payload = payload_ts_literal(node, indent=" " * 8)
+                if payload == "{}":
+                    lines.append(f"        const {node.id}_result = await {fn_name}Step({{}});")
+                else:
+                    lines.append(f"        const {node.id}_result = await {fn_name}Step(")
+                    lines.append(f"            {payload_ts_literal(node, indent=' ' * 12)},")
+                    lines.append("        );")
         elif len(non_hitl) > 1:
             uses_unwrap = True
             lines.append("        // Parallel fan-out: run every step in the wave concurrently")
             lines.append("        // and settle them all — Promise.allSettled per the DBOS docs")
             lines.append("        // (a bare Promise.all can crash the Node process on unhandled")
             lines.append("        // rejections).")
+            for node in non_hitl:
+                if _is_mcp_backed(node, cfg):
+                    # Bind the payload so the auth-park re-run below can
+                    # repeat the same call after the release signal.
+                    payload = payload_ts_literal(node, indent=" " * 8)
+                    lines.append(f"        const {node.id}_payload = {payload};")
             settled_names = ", ".join(f"{n.id}_settled" for n in non_hitl)
             lines.append(f"        const [{settled_names}] = await Promise.allSettled([")
             for node in non_hitl:
                 fn_name = _to_camel_case(node.id)
+                if _is_mcp_backed(node, cfg):
+                    lines.append(f"            {fn_name}Step({node.id}_payload),")
+                    continue
                 payload = payload_ts_literal(node, indent=" " * 12)
                 if payload == "{}":
                     lines.append(f"            {fn_name}Step({{}}),")
@@ -402,7 +440,25 @@ def _emit_workflow_body(pipeline: Pipeline) -> tuple[str, bool]:
                     lines.append(f"            {fn_name}Step({payload}),")
             lines.append("        ]);")
             for node in non_hitl:
-                lines.append(f"        const {node.id}_result = unwrap({node.id}_settled);")
+                if _is_mcp_backed(node, cfg):
+                    # A sibling park may already have consumed the release
+                    # signal by the time this settled rejection surfaces —
+                    # runWithAuthPark retries once (fresh credentials)
+                    # before parking again.
+                    assert node.mcp is not None
+                    fn_name = _to_camel_case(node.id)
+                    lines.append(f"        let {node.id}_result: Record<string, unknown>;")
+                    lines.append("        try {")
+                    lines.append(f"            {node.id}_result = unwrap({node.id}_settled);")
+                    lines.append("        } catch (err) {")
+                    lines.append("            if (!isRoteMcpAuthNeeded(err)) throw err;")
+                    lines.append(f"            {node.id}_result = await runWithAuthPark(")
+                    lines.append(f"                () => {fn_name}Step({node.id}_payload),")
+                    lines.append(f"                {json.dumps(node.mcp.server)},")
+                    lines.append("            );")
+                    lines.append("        }")
+                else:
+                    lines.append(f"        const {node.id}_result = unwrap({node.id}_settled);")
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -430,6 +486,75 @@ function unwrap<T>(settled: PromiseSettledResult<T>): T {
 }
 """
 
+_AUTH_PARK_HELPER = """\
+// ───────── MCP auth parking ─────────
+//
+// MCP-backed steps can fail because a credential is missing or dead.
+// That is not transient — no retry produces a credential — so the
+// workflow parks durably instead of failing: it advertises what it is
+// waiting for via a workflow event (written PORTABLY so the rote CLI's
+// Python DBOSClient can read it — the TS-native superjson format is
+// unreadable from Python), then blocks on a DBOS message that
+// `rote mcp login <server>` sends after a successful (re)authentication.
+// The `rote:auth:` topic prefix cannot collide with IR HITL signals
+// (their charset excludes ':').
+
+const AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600; // 30 days
+
+/** Auth failures skip the retry budget and park instead. */
+function mcpShouldRetry(error: unknown): boolean {
+    return !isRoteMcpAuthNeeded(error);
+}
+
+/** Suspend the workflow until `rote mcp login <server>` succeeds. */
+async function parkForAuth(server: string): Promise<void> {
+    await DBOS.setEvent(
+        "rote_auth_status",
+        { awaiting: server },
+        { serializationType: "portable" },
+    );
+    const released = await DBOS.recv<Record<string, unknown>>(
+        `rote:auth:${server}`,
+        AUTH_PARK_TIMEOUT_SECONDS,
+    );
+    await DBOS.setEvent("rote_auth_status", null, { serializationType: "portable" });
+    if (released === null) {
+        throw new Error(
+            `workflow parked ${AUTH_PARK_TIMEOUT_SECONDS / 86400} days waiting for ` +
+                `\\`rote mcp login ${server}\\` and no authentication arrived`,
+        );
+    }
+}
+
+/**
+ * Run an MCP-backed step, parking durably on auth failures.
+ *
+ * On RoteMcpAuthNeeded the step is retried once immediately (the token
+ * store may have been fixed since the failing attempt — e.g. a login
+ * that released an earlier park in this same run); if the fresh attempt
+ * still needs auth, the workflow parks until the release signal, then
+ * tries again.
+ */
+async function runWithAuthPark(
+    stepCall: () => Promise<Record<string, unknown>>,
+    server: string,
+): Promise<Record<string, unknown>> {
+    let attemptsSincePark = 0;
+    for (;;) {
+        try {
+            return await stepCall();
+        } catch (err) {
+            if (!isRoteMcpAuthNeeded(err)) throw err;
+            attemptsSincePark += 1;
+            if (attemptsSincePark >= 2) {
+                await parkForAuth(server);
+                attemptsSincePark = 0;
+            }
+        }
+    }
+}
+"""
+
 
 def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str:
     """Render the src/main.ts source for a pipeline."""
@@ -439,6 +564,29 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     pipeline_h = _pipeline_hash(pipeline)
     workflow_name = f"{pascal}_{pipeline_h}"
     desc_first = safe_block_comment_line(pipeline.description, fallback=pipeline.name)
+    mcp_backed = any(_is_mcp_backed(n, cfg) for n in pipeline.nodes)
+
+    if mcp_backed:
+        arch_note = (
+            " * Architecture note: deterministic steps wrap functions from\n"
+            " * `extracted/`; typed LLM judges live in `signatures/`; and\n"
+            " * MCP-backed steps call the tool the source skill used, over\n"
+            " * Streamable HTTP, as checkpointed durable steps. When an MCP\n"
+            " * credential is missing or dead the workflow parks durably and\n"
+            " * `rote mcp login <server>` releases it (see parkForAuth)."
+        )
+    else:
+        arch_note = (
+            " * Architecture note: every step in this file wraps a deterministic\n"
+            " * function from `extracted/` or a typed LLM signature from\n"
+            " * `signatures/`. None of them call MCP tools at runtime — the MCP\n"
+            " * tool calls from the source skill were graduated into direct API\n"
+            " * calls during the rote emission step."
+        )
+    # The header f-string below is dedent()ed AFTER interpolation; a
+    # column-0 multi-line value would make dedent a no-op. Match the
+    # template's 8-space indentation.
+    arch_note = textwrap.indent(arch_note, " " * 8)
 
     header = textwrap.dedent(
         f"""\
@@ -456,11 +604,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
          * In-flight workflows recover onto the code they started with; new
          * starts use the new code.
          *
-         * Architecture note: every step in this file wraps a deterministic
-         * function from `extracted/` or a typed LLM signature from
-         * `signatures/`. None of them call MCP tools at runtime — the MCP
-         * tool calls from the source skill were graduated into direct API
-         * calls during the rote emission step.
+{arch_note}
          */
 
         import {{ DBOS }} from "@dbos-inc/dbos-sdk";
@@ -469,10 +613,14 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     )
 
     imports = module_imports(pipeline)
+    if mcp_backed:
+        imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
 
     helper_blocks: list[str] = []
     if pipeline.nodes_by_kind(NodeKind.LLM_JUDGE):
         helper_blocks.append(REQUIRE_ENV_HELPER.rstrip("\n"))
+    if mcp_backed:
+        helper_blocks.append(_AUTH_PARK_HELPER.rstrip("\n"))
 
     steps_header = (
         "// ───────── Steps ─────────\n"
@@ -483,12 +631,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         "// completed step."
     )
     step_blocks = [
-        _emit_step_registration(node)
+        _emit_step_registration(node, cfg)
         for node in pipeline.nodes
         if node.kind is not NodeKind.HITL_GATE
     ]
 
-    body, uses_unwrap = _emit_workflow_body(pipeline)
+    body, uses_unwrap = _emit_workflow_body(pipeline, cfg)
     unwrap_block = f"\n{_UNWRAP_HELPER.rstrip(chr(10))}\n" if uses_unwrap else ""
 
     workflow_block = (
@@ -618,6 +766,46 @@ def emit_readme(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> str:
     )
     first_signal = gates[0].signal if gates and gates[0].signal else "example_signal"
 
+    mcp_servers = sorted(
+        {
+            n.mcp.server
+            for n in mcp_backed_nodes(pipeline, cfg.external_backend)
+            if n.mcp is not None
+        }
+    )
+    if mcp_servers:
+        login_lines = "\n".join(f"rote mcp login {s}" for s in mcp_servers)
+        mcp_note = f"""
+## MCP-backed steps
+
+Some `external_call` steps call MCP tools over Streamable HTTP (the
+`mcp` backend), authenticated from the rote credential store
+(`rote mcp login <server>`), refreshing tokens in place.
+
+### Authentication and parking
+
+If a server's stored credential is missing or dead at run time, the
+workflow does **not** fail — it parks durably (a `DBOS.recv` on the
+`rote:auth:<server>` topic, with the wait advertised via the
+`rote_auth_status` workflow event) and resumes automatically when you
+authenticate:
+
+```sh
+{login_lines}
+```
+
+A successful login discovers parked workflows across your emitted apps
+and releases them (`rote mcp release <server>` does the same without a
+login, for credentials fixed another way). A workflow parked longer
+than 30 days times out and fails the run.
+
+Prefer direct vendor-SDK calls? Re-emit with
+`rote emit --runtime dbos-ts --backend api` and fill in the
+`src/extracted/` stubs.
+"""
+    else:
+        mcp_note = ""
+
     # Built flush-left (not textwrap.dedent) because interpolated
     # multi-line values — the gate table rows — contain unindented lines
     # that would defeat dedent's common-prefix detection. Same fix the
@@ -668,7 +856,7 @@ LLM judge steps call the vendor SDK directly and read the standard
 judge also honors per-node `ROTE_MODEL_<NODE_ID>` and
 `ROTE_BASE_URL_<NODE_ID>` overrides, so operators can swap the model
 or point at an OpenAI-compatible endpoint without re-emitting.
-
+{mcp_note}
 ## HITL gates
 
 The workflow parks durably at each gate until a message arrives on

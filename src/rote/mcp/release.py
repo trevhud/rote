@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from rote._dbos import dbos_system_database_url
+from rote._dbos import dbos_system_database_url, dbos_ts_system_database_url
 from rote.app_registry import RegisteredApp, registered_apps
 
 
@@ -44,15 +44,28 @@ class ReleaseReport:
     skipped: tuple[SkippedApp, ...]
 
 
+#: Runtimes whose parked workflows this module can release. Both DBOS
+#: SDKs share the same system-DB schema, status strings, and event/
+#: message tables — one DBOSClient protocol serves Python and TS apps.
+_DBOS_RUNTIMES = ("dbos", "dbos-ts")
+
+
 def release_parked_workflows(server: str) -> ReleaseReport:
     """Wake every registered DBOS workflow parked waiting for ``server``.
+
+    Covers both the Python (``dbos``) and TypeScript (``dbos-ts``)
+    runtimes — the park contract (``rote_auth_status`` event +
+    ``rote:auth:<server>`` topic) is language-neutral, and messages are
+    sent in DBOS's *portable* serialization format, which both SDKs
+    deserialize (the Python default, pickle, would be unreadable from
+    TS).
 
     Registry entries are allowed to be stale (moved/deleted app dirs,
     apps that never ran, an unreachable Postgres) — each such app is
     reported in ``skipped`` with its reason rather than failing the
     whole scan; the login that triggered this already succeeded.
     """
-    dbos_apps = [a for a in registered_apps() if a.runtime == "dbos"]
+    dbos_apps = [a for a in registered_apps() if a.runtime in _DBOS_RUNTIMES]
     if not dbos_apps:
         return ReleaseReport(released=(), skipped=())
 
@@ -75,7 +88,11 @@ def release_parked_workflows(server: str) -> ReleaseReport:
         if not (app.path / "dbos-config.yaml").is_file():
             skipped.append(SkippedApp(app.path, "no dbos-config.yaml"))
             continue
-        url = dbos_system_database_url(app.path)
+        url = (
+            dbos_ts_system_database_url(app.path)
+            if app.runtime == "dbos-ts"
+            else dbos_system_database_url(app.path)
+        )
         if url in seen_urls:
             continue
         seen_urls.add(url)
@@ -93,16 +110,23 @@ def release_parked_workflows(server: str) -> ReleaseReport:
 def _release_in_app(
     client_cls: type, app: RegisteredApp, url: str, server: str
 ) -> list[ReleasedWorkflow]:
+    from dbos import WorkflowSerializationFormat
+
     client = client_cls(system_database_url=url)
     try:
         released: list[ReleasedWorkflow] = []
-        for wf in client.list_workflows(status="PENDING"):
+        # load_input/output off: a TS app's superjson-serialized values
+        # are unreadable from Python, and we only need ids + the event.
+        for wf in client.list_workflows(status="PENDING", load_input=False, load_output=False):
             status = client.get_event(wf.workflow_id, "rote_auth_status", timeout_seconds=0)
             if isinstance(status, dict) and status.get("awaiting") == server:
                 client.send(
                     wf.workflow_id,
                     {"released_by": f"rote mcp login {server}"},
                     topic=f"rote:auth:{server}",
+                    # Portable JSON: readable by BOTH SDKs' recv (the
+                    # Python default, pickle, is TS-opaque).
+                    serialization_type=WorkflowSerializationFormat.PORTABLE,
                 )
                 released.append(ReleasedWorkflow(app.path, wf.workflow_id))
         return released

@@ -250,15 +250,23 @@ Two regimes, don't mix them up:
   `rote.mcp._runtime_helper` (never hand-edit the emitted copy; fix
   the module) — which resolves the endpoint (env > rote registry > IR)
   and credentials (`rote mcp login` token store > registry static
-  headers > unauthenticated) at runtime. On DBOS Python, auth failures
-  **park the workflow durably** instead of failing it (`RoteMcpAuthNeeded`
-  → `DBOS.recv` on `rote:auth:<server>`; `rote mcp login` discovers
+  headers > unauthenticated) at runtime. On DBOS Python AND DBOS-TS,
+  auth failures **park the workflow durably** instead of failing it
+  (`RoteMcpAuthNeeded` → `DBOS.recv` on `rote:auth:<server>`;
+  `rote mcp login` — or `rote mcp release` without a login — discovers
   parked workflows via the app registry + the `rote_auth_status` event
-  and releases them). Two traps if you touch this: a parked DBOS
-  workflow is just PENDING (no WAITING status — discovery *requires*
-  the advertised event), and parallel-wave siblings can surface stale
-  auth failures after the release signal was already consumed — hence
-  the retry-once-before-parking shape in the emitted wrappers. See
+  and releases them, one Python code path for both runtimes). Traps if
+  you touch this: a parked DBOS workflow is just PENDING (no WAITING
+  status — discovery *requires* the advertised event); parallel-wave
+  siblings can surface stale auth failures after the release signal was
+  already consumed — hence the retry-once-before-parking shape in the
+  emitted wrappers; and the cross-language leg only works in DBOS's
+  *portable* serialization — the emitted TS `setEvent` passes
+  `{ serializationType: "portable" }` and the Python release `send`
+  passes `WorkflowSerializationFormat.PORTABLE` (the defaults,
+  superjson and pickle, are mutually unreadable). In TS, detect the
+  auth error by `name` string, never `instanceof` (serialized errors
+  reconstruct as plain `Error`s). See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
 ### Sonnet is the default, not Opus
@@ -594,11 +602,15 @@ Don't waste time debugging stubs. These are intentional.
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
   through the DAG, with HITL gate resume payloads participating as
   the gate's result — validated empirically in the runtime e2e tests
-- Park-on-auth (DBOS Python): MCP-backed steps with a missing/dead
-  credential suspend the workflow durably; `rote mcp login <server>`
-  releases every parked workflow across the apps recorded in
-  `~/.local/share/rote/apps.json` (written at emit/graduate time).
-  Full cross-process loop proven in `tests/test_mcp_park_e2e.py`.
+- Park-on-auth (DBOS Python + DBOS-TS): MCP-backed steps with a
+  missing/dead credential suspend the workflow durably;
+  `rote mcp login <server>` (or `rote mcp release <server>`) releases
+  every parked workflow across the apps recorded in
+  `~/.local/share/rote/apps.json` (written at emit/graduate time) —
+  one Python release path for both runtimes via DBOS portable
+  serialization. Cross-process loop proven in
+  `tests/test_mcp_park_e2e.py`; cross-language loop (TS parks, Python
+  releases, Docker Postgres) in `tests/test_mcp_park_ts_e2e.py`.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
