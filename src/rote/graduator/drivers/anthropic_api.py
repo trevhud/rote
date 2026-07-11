@@ -47,17 +47,42 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.graduator.drivers import DriverError, DriverResult, GraduatorDriver
+from rote.graduator.drivers._fs_tools import (
+    TURN_SNIPPET_CHARS,
+    anthropic_tool_schemas,
+    build_system_prompt,
+    dispatch_tool,
+    emit_progress_phases,
+)
+from rote.graduator.drivers._fs_tools import (
+    handle_list_directory as _handle_list_directory,
+)
+from rote.graduator.drivers._fs_tools import (
+    handle_read_file as _handle_read_file,
+)
+from rote.graduator.drivers._fs_tools import (
+    handle_write_file as _handle_write_file,
+)
 from rote.graduator.events import (
-    PROGRESS_FILENAME,
     EventCallback,
     GraduationEvent,
     emit_safely,
-    parse_progress_lines,
     relative_display_path,
 )
 
 if TYPE_CHECKING:
-    from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
+    from anthropic.types import MessageParam, ToolResultBlockParam
+
+# Re-exported filesystem-tool handlers (shared with the OpenAI driver via
+# rote.graduator.drivers._fs_tools). Kept importable from this module for
+# the path-jailing unit tests that predate the extraction.
+__all__ = [
+    "AnthropicApiDriver",
+    "DEFAULT_MODEL",
+    "_handle_list_directory",
+    "_handle_read_file",
+    "_handle_write_file",
+]
 
 # Detect the optional dep at import time so is_available() can report
 # a specific "pip install rote[api]" message instead of a cryptic
@@ -85,11 +110,6 @@ Users with complex skills can override via
 DEFAULT_MAX_ITERATIONS = 60
 DEFAULT_MAX_TOKENS_PER_TURN = 8192
 
-#: Hard cap on a single ``read_file`` response. Source skills can have
-#: surprisingly large reference files; we don't want a single tool call
-#: to blow the context window.
-MAX_FILE_READ_BYTES = 200_000
-
 #: Cloudflare AI Gateway's authenticated-gateway header. When BYOK
 #: (bring-your-own-key) is enabled on the gateway, this header carries
 #: the gateway token and Anthropic provider auth is replaced by the
@@ -114,143 +134,6 @@ def _has_gateway_auth(default_headers: dict[str, str] | None) -> bool:
     return any(k.lower() == _GATEWAY_AUTH_HEADER for k in default_headers)
 
 
-#: Turn-event message cap. The assistant's text can be long; the live
-#: progress line only needs a glimpse of what it's thinking.
-_TURN_SNIPPET_CHARS = 120
-
-
-# ───────── Tool schemas ─────────
-
-
-def _build_tool_schemas() -> list[ToolParam]:
-    return [
-        {
-            "name": "read_file",
-            "description": (
-                "Read a file from the source skill or the rote-graduate skill. "
-                "Returns the file contents as text. Use this to read SKILL.md, "
-                "references/*.md, and any other source skill files. The path "
-                "must be absolute and inside one of the allowed read roots "
-                "(communicated in the system prompt)."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute path to a file inside an allowed read root.",
-                    }
-                },
-                "required": ["path"],
-            },
-        },
-        {
-            "name": "list_directory",
-            "description": (
-                "List entries in a directory (one per line, with a trailing "
-                "slash on directories). Use this to discover the structure of "
-                "the source skill (e.g., what's in references/)."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute path to a directory inside an allowed read root.",
-                    }
-                },
-                "required": ["path"],
-            },
-        },
-        {
-            "name": "write_file",
-            "description": (
-                "Write a file into the work directory. Use this to produce "
-                "the final pipeline.yaml deliverable, plus any extracted "
-                "Python modules or signature stubs. The path must be absolute "
-                "and inside the work directory."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Absolute path inside the work directory.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Full file contents to write (overwrites existing).",
-                    },
-                },
-                "required": ["path", "content"],
-            },
-        },
-    ]
-
-
-# ───────── Tool implementations (security-sensitive) ─────────
-
-
-def _path_within(candidate: Path, root: Path) -> bool:
-    """Return True if ``candidate`` resolves inside ``root`` (or equals it).
-
-    Both paths are resolved before comparison so symlinks and ``..``
-    segments are followed. Used as the gate for every file tool call.
-    """
-    try:
-        candidate.resolve().relative_to(root.resolve())
-        return True
-    except ValueError:
-        return False
-
-
-def _check_read_path(path_str: str, read_roots: list[Path]) -> Path:
-    p = Path(path_str)
-    for root in read_roots:
-        if _path_within(p, root):
-            return p
-    roots_str = ", ".join(str(r) for r in read_roots)
-    raise PermissionError(f"Path {path_str!r} is not within allowed read roots: {roots_str}")
-
-
-def _check_write_path(path_str: str, write_root: Path) -> Path:
-    p = Path(path_str)
-    if not _path_within(p, write_root):
-        raise PermissionError(f"Path {path_str!r} is not within allowed write root: {write_root}")
-    return p
-
-
-def _handle_read_file(path_str: str, read_roots: list[Path]) -> str:
-    p = _check_read_path(path_str, read_roots)
-    if not p.is_file():
-        raise FileNotFoundError(f"Not a file: {path_str}")
-    data = p.read_bytes()
-    if len(data) > MAX_FILE_READ_BYTES:
-        raise ValueError(
-            f"File too large ({len(data)} bytes > limit {MAX_FILE_READ_BYTES}). "
-            f"Consider using a different approach (e.g., grep + targeted reads)."
-        )
-    return data.decode("utf-8", errors="replace")
-
-
-def _handle_list_directory(path_str: str, read_roots: list[Path]) -> str:
-    p = _check_read_path(path_str, read_roots)
-    if not p.is_dir():
-        raise NotADirectoryError(f"Not a directory: {path_str}")
-    entries = sorted(f"{entry.name}{'/' if entry.is_dir() else ''}" for entry in p.iterdir())
-    return "\n".join(entries) if entries else "(empty)"
-
-
-def _handle_write_file(path_str: str, content: str, write_root: Path) -> str:
-    p = _check_write_path(path_str, write_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return f"Wrote {len(content)} bytes to {path_str}"
-
-
-# ───────── Event helpers ─────────
-
-
 def _assistant_snippet(content: list[Any]) -> str:
     """First ~120 chars of any assistant text block, or ``"thinking…"``.
 
@@ -262,79 +145,8 @@ def _assistant_snippet(content: list[Any]) -> str:
         if getattr(block, "type", None) == "text":
             text = (getattr(block, "text", "") or "").strip()
             if text:
-                return text[:_TURN_SNIPPET_CHARS]
+                return text[:TURN_SNIPPET_CHARS]
     return "thinking…"
-
-
-def _emit_progress_phases(
-    path_str: str,
-    content: str,
-    work_dir: Path,
-    on_event: EventCallback | None,
-    already_emitted: int,
-) -> int:
-    """Fire phase events for new lines in an agent's progress.ndjson write.
-
-    Returns the running count of phase lines seen, so the caller only
-    fires events for lines beyond what a previous rewrite already
-    reported (the agent rewrites the whole file each phase). A write to
-    any other file, or one that escaped the work dir, is a no-op.
-    """
-    try:
-        target = Path(path_str).resolve()
-        target.relative_to(work_dir)
-    except ValueError:
-        return already_emitted
-    if target.name != PROGRESS_FILENAME:
-        return already_emitted
-    events = parse_progress_lines(content)
-    for event in events[already_emitted:]:
-        emit_safely(on_event, event)
-    return len(events)
-
-
-# ───────── System prompt assembly ─────────
-
-
-def _build_system_prompt(
-    skill_dir: Path,
-    graduator_skill_dir: Path,
-    work_dir: Path,
-    skill_md_text: str,
-) -> str:
-    return f"""You are the rote graduator. Your job is to read a source AI skill
-bundle and produce a runnable, deterministic pipeline IR (`pipeline.yaml`)
-plus any extracted Python modules and typed signature stubs the IR refers to.
-
-Available paths for this run:
-
-- Source skill (read-only):  {skill_dir}
-- Rote-graduate rubric (read-only):  {graduator_skill_dir}
-- Work directory (write):  {work_dir}
-
-You have three tools:
-
-- `read_file(path)` — read any file in the source skill or rubric directory
-- `list_directory(path)` — list entries in an allowed directory
-- `write_file(path, content)` — write a file into the work directory only
-
-The rote-graduate skill below tells you the procedure to follow. Reference
-files for each phase live at:
-
-- {graduator_skill_dir}/references/node-kinds.md
-- {graduator_skill_dir}/references/crystallization-heuristics.md
-- {graduator_skill_dir}/references/ir-schema.md
-- {graduator_skill_dir}/references/llm-judge-extraction.md
-
-Read each one when the SKILL.md instructs you to.
-
-Your final deliverable is `{work_dir}/pipeline.yaml`. Once you have written
-it (and any extracted modules / signatures it references), end your turn.
-Do not call any further tools after writing the final pipeline.yaml.
-
-==================== ROTE GRADUATE SKILL ====================
-{skill_md_text}
-"""
 
 
 # ───────── The driver ─────────
@@ -439,12 +251,10 @@ class AnthropicApiDriver(GraduatorDriver):
         read_roots = [skill_dir, graduator_skill_dir]
         write_root = work_dir
 
-        system_prompt = _build_system_prompt(
-            skill_dir, graduator_skill_dir, work_dir, skill_md_text
-        )
+        system_prompt = build_system_prompt(skill_dir, graduator_skill_dir, work_dir, skill_md_text)
 
         client = anthropic.AsyncAnthropic(**self._client_kwargs())
-        tool_schemas = _build_tool_schemas()
+        tool_schemas = anthropic_tool_schemas()
 
         task_prompt = (
             f"Graduate the skill at {skill_dir}. "
@@ -472,7 +282,10 @@ class AnthropicApiDriver(GraduatorDriver):
                 model=self.model,
                 max_tokens=self.max_tokens_per_turn,
                 system=system_prompt,
-                tools=tool_schemas,
+                # The shared builder returns plain dicts (wire-shape-neutral,
+                # shared with the OpenAI driver); the SDK validates them at
+                # runtime. Cast past the SDK's TypedDict union.
+                tools=cast("Any", tool_schemas),
                 messages=messages,
             )
 
@@ -525,29 +338,19 @@ class AnthropicApiDriver(GraduatorDriver):
                 )
 
                 try:
-                    if tool_name == "read_file":
-                        result_text = _handle_read_file(tool_input["path"], read_roots)
-                    elif tool_name == "list_directory":
-                        result_text = _handle_list_directory(tool_input["path"], read_roots)
-                    elif tool_name == "write_file":
-                        result_text = _handle_write_file(
-                            tool_input["path"],
-                            tool_input["content"],
-                            write_root,
-                        )
+                    result_text = dispatch_tool(tool_name, tool_input, read_roots, write_root)
+                    if tool_name == "write_file":
                         # The agent announces phase transitions by writing
                         # progress.ndjson. Intercept that write and turn
                         # the new lines into phase events — the in-process
                         # analog of the subprocess drivers' file watcher.
-                        emitted_phases = _emit_progress_phases(
+                        emitted_phases = emit_progress_phases(
                             tool_input["path"],
                             tool_input["content"],
                             work_dir,
                             on_event,
                             emitted_phases,
                         )
-                    else:
-                        raise ValueError(f"Unknown tool: {tool_name}")
                     is_error = False
                 except Exception as e:
                     result_text = f"Error: {type(e).__name__}: {e}"
