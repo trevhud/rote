@@ -730,6 +730,10 @@ ROTE_MCP_HELPER_TS = """/**
  *   written by `rote mcp login`), refreshing stale access tokens via the
  *   OAuth refresh grant and writing rotated tokens back atomically; else
  *   static headers from the registry entry; else unauthenticated.
+ * - Never interactive: anything that needs a human (no refresh path, a
+ *   401 the refresh cannot fix) throws RoteMcpAuthNeeded — the emitted
+ *   workflow parks durably on it until `rote mcp login <server>` (or a
+ *   re-provisioned credential) releases it.
  */
 
 import * as fs from "node:fs";
@@ -740,6 +744,45 @@ import {
     StreamableHTTPClientTransport,
     StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+/**
+ * The MCP server needs a human to (re)authenticate.
+ *
+ * Detect with isRoteMcpAuthNeeded(), never `instanceof`: durable runtimes
+ * (DBOS, Inngest) serialize step errors across replay/process boundaries
+ * and reconstruct plain Errors — class identity is lost, but `name` and
+ * own enumerable properties survive.
+ */
+export class RoteMcpAuthNeeded extends Error {
+    readonly server: string;
+    readonly reason: string;
+
+    constructor(server: string, reason: string) {
+        super(
+            `MCP server '${server}' needs (re)authentication — ${reason}. ` +
+                `Run: rote mcp login ${server}`,
+        );
+        this.name = "RoteMcpAuthNeeded";
+        this.server = server;
+        this.reason = reason;
+    }
+}
+
+/** True if a RoteMcpAuthNeeded hides anywhere in the error tree
+ * (cause chains from step wrappers, `errors` arrays from retry
+ * exhaustion / AggregateError). */
+export function isRoteMcpAuthNeeded(err: unknown): boolean {
+    let node: unknown = err;
+    for (let depth = 0; node != null && depth < 16; depth++) {
+        const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
+        if (e.name === "RoteMcpAuthNeeded") return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpAuthNeeded(sub))) {
+            return true;
+        }
+        node = e.cause;
+    }
+    return false;
+}
 
 interface TokenDoc {
     version?: number;
@@ -813,24 +856,22 @@ function writeTokenDoc(server: string, doc: TokenDoc): void {
 async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string> {
     const refreshToken = doc.tokens?.refresh_token;
     if (!refreshToken) {
-        throw new Error(
-            `access token for MCP server '${server}' is expired and no refresh ` +
-                `token is stored — re-authenticate with: rote mcp login ${server}`,
+        throw new RoteMcpAuthNeeded(
+            server,
+            "the access token is expired and no refresh token is stored",
         );
     }
     if (!doc.token_endpoint) {
-        throw new Error(
-            `token store for '${server}' has no token_endpoint (written by ` +
-                `rote mcp login) — re-authenticate with: rote mcp login ${server}`,
+        throw new RoteMcpAuthNeeded(
+            server,
+            "the token store has no token_endpoint (written by rote mcp login)",
         );
     }
     const entry = registryServers()[server];
     const clientId = doc.client_info?.client_id ?? entry?.client_id;
     const clientSecret = doc.client_info?.client_secret ?? entry?.client_secret;
     if (!clientId) {
-        throw new Error(
-            `no client_id stored for '${server}' — re-authenticate with: rote mcp login ${server}`,
-        );
+        throw new RoteMcpAuthNeeded(server, "no client_id is stored for the refresh grant");
     }
     const body = new URLSearchParams({
         grant_type: "refresh_token",
@@ -844,10 +885,7 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
         body: body.toString(),
     });
     if (!response.ok) {
-        throw new Error(
-            `refresh grant for '${server}' failed (${response.status}) — ` +
-                `re-authenticate with: rote mcp login ${server}`,
-        );
+        throw new RoteMcpAuthNeeded(server, `the refresh grant failed (${response.status})`);
     }
     const granted = (await response.json()) as {
         access_token: string;
@@ -933,15 +971,28 @@ export async function callMcpTool(
     try {
         return await attempt(headers);
     } catch (err) {
-        const unauthorized =
-            err instanceof StreamableHTTPError
-                ? err.code === 401
-                : /\\b401\\b|[Uu]nauthorized/.test(String(err));
-        if (unauthorized && readTokenDoc(server)?.tokens?.refresh_token) {
-            return attempt(await freshHeaders(server, true));
+        if (!isUnauthorized(err)) throw err;
+        if (!readTokenDoc(server)?.tokens?.refresh_token) {
+            throw new RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized");
         }
-        throw err;
+        try {
+            return await attempt(await freshHeaders(server, true));
+        } catch (retryErr) {
+            if (isUnauthorized(retryErr)) {
+                throw new RoteMcpAuthNeeded(
+                    server,
+                    "the server returned 401 even after a token refresh",
+                );
+            }
+            throw retryErr;
+        }
     }
+}
+
+function isUnauthorized(err: unknown): boolean {
+    return err instanceof StreamableHTTPError
+        ? err.code === 401
+        : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
 """
 
@@ -1043,6 +1094,42 @@ export interface RoteMcpEnv {
     [key: string]: unknown;
 }
 
+/**
+ * The MCP server needs re-provisioned credentials (Workers cannot run an
+ * interactive login — the fix is `rote mcp login` + `rote mcp export` +
+ * re-uploading the secrets). Detect with isRoteMcpAuthNeeded(), never
+ * `instanceof`: Workflows serialize errors across hibernation and replay
+ * boundaries — class identity is lost, `name` survives.
+ */
+export class RoteMcpAuthNeeded extends Error {
+    readonly server: string;
+    readonly reason: string;
+
+    constructor(server: string, reason: string) {
+        super(
+            `MCP server '${server}' needs (re)authentication — ${reason}. ` +
+                `Re-provision with: rote mcp login ${server} && rote mcp export ${server}`,
+        );
+        this.name = "RoteMcpAuthNeeded";
+        this.server = server;
+        this.reason = reason;
+    }
+}
+
+/** True if a RoteMcpAuthNeeded hides anywhere in the error tree. */
+export function isRoteMcpAuthNeeded(err: unknown): boolean {
+    let node: unknown = err;
+    for (let depth = 0; node != null && depth < 16; depth++) {
+        const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
+        if (e.name === "RoteMcpAuthNeeded") return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpAuthNeeded(sub))) {
+            return true;
+        }
+        node = e.cause;
+    }
+    return false;
+}
+
 // Concrete JSON types: Cloudflare's step.do constrains callback returns to
 // Rpc.Serializable, which `unknown` members do not satisfy — a recursive
 // concrete JSON shape does (same reason emitted stubs are Promise<never>).
@@ -1101,10 +1188,9 @@ async function refreshAccessToken(env: RoteMcpEnv, server: string): Promise<stri
     const clientId = secret(env, server, "CLIENT_ID");
     const upper = server.toUpperCase();
     if (!refreshToken || !tokenEndpoint || !clientId) {
-        throw new Error(
-            `MCP server '${server}' is not provisioned — run ` +
-                `\\`rote mcp export ${server}\\` and set the ROTE_MCP_${upper}_* secrets ` +
-                `(wrangler secret bulk)`,
+        throw new RoteMcpAuthNeeded(
+            server,
+            `the ROTE_MCP_${upper}_* secrets are not provisioned (wrangler secret bulk)`,
         );
     }
     const body = new URLSearchParams({
@@ -1120,9 +1206,10 @@ async function refreshAccessToken(env: RoteMcpEnv, server: string): Promise<stri
         body: body.toString(),
     });
     if (!response.ok) {
-        throw new Error(
-            `refresh grant for '${server}' failed (${response.status}) — the ` +
-                `provisioned refresh token may be revoked; re-run rote mcp login + export`,
+        throw new RoteMcpAuthNeeded(
+            server,
+            `the refresh grant failed (${response.status}) — the provisioned ` +
+                `refresh token may be revoked`,
         );
     }
     const granted = (await response.json()) as {
@@ -1199,15 +1286,25 @@ export async function callMcpTool(
     try {
         return await attempt(await accessToken(env, server, false));
     } catch (err) {
-        const unauthorized =
-            err instanceof StreamableHTTPError
-                ? err.code === 401
-                : /\\b401\\b|[Uu]nauthorized/.test(String(err));
-        if (unauthorized) {
-            return attempt(await accessToken(env, server, true));
+        if (!isUnauthorizedWorkers(err)) throw err;
+        try {
+            return await attempt(await accessToken(env, server, true));
+        } catch (retryErr) {
+            if (isUnauthorizedWorkers(retryErr)) {
+                throw new RoteMcpAuthNeeded(
+                    server,
+                    "the server returned 401 even after a token refresh",
+                );
+            }
+            throw retryErr;
         }
-        throw err;
     }
+}
+
+function isUnauthorizedWorkers(err: unknown): boolean {
+    return err instanceof StreamableHTTPError
+        ? err.code === 401
+        : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
 """
 

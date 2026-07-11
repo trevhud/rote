@@ -10,6 +10,25 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Park-on-auth for DBOS TypeScript, released from Python.** The
+  dbos-ts adapter now emits the same park the Python adapter got:
+  MCP-backed steps throw `RoteMcpAuthNeeded` (typed error in the
+  emitted `_roteMcp.ts` — thrown on dead tokens, failed refresh grants,
+  and 401s the refresh can't fix), a `shouldRetry` predicate keeps auth
+  failures out of the retry budget, and the workflow parks on
+  `DBOS.recv("rote:auth:<server>")` with the wait advertised via a
+  *portably-serialized* `rote_auth_status` event — the one format both
+  DBOS SDKs read, which is what lets the existing Python release path
+  serve TS apps unchanged (it now scans `dbos-ts` registry entries,
+  derives the TS Postgres system-DB URL, and sends the release message
+  in `WorkflowSerializationFormat.PORTABLE`). New `rote mcp release
+  <server>` releases parked workflows without a login, for credentials
+  fixed out-of-band. The full cross-language loop — TS parks, Python
+  reads the event, Python releases, TS resumes against a live MCP
+  server — is proven on a real Docker Postgres in
+  `tests/test_mcp_park_ts_e2e.py`. Inngest and Cloudflare parks are
+  next.
+
 - **Park-on-auth: workflows suspend on missing MCP credentials instead
   of failing** (DBOS Python). OAuth is interactive; durable workflows
   run unattended — so when an MCP-backed step finds its credential

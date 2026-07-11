@@ -104,8 +104,13 @@ class _FakeDBOSClient:
     def __post_init__(self) -> None:
         _FakeDBOSClient.created.append(self)
 
-    def list_workflows(self, *, status: str) -> list[_FakeWorkflowStatus]:
+    def list_workflows(
+        self, *, status: str, load_input: bool = True, load_output: bool = True
+    ) -> list[_FakeWorkflowStatus]:
         assert status == "PENDING"
+        # The release path must not deserialize inputs/outputs — a TS
+        # app's superjson values are unreadable from Python.
+        assert load_input is False and load_output is False
         return [_FakeWorkflowStatus("wf-parked"), _FakeWorkflowStatus("wf-busy")]
 
     def get_event(self, workflow_id: str, key: str, timeout_seconds: float) -> Any:
@@ -113,19 +118,34 @@ class _FakeDBOSClient:
         assert timeout_seconds == 0
         return {"awaiting": "vendor"} if workflow_id == "wf-parked" else None
 
-    def send(self, workflow_id: str, message: Any, topic: str) -> None:
+    def send(
+        self, workflow_id: str, message: Any, topic: str, *, serialization_type: Any = None
+    ) -> None:
+        # Portable serialization is load-bearing: the Python default
+        # (pickle) is opaque to a TS app's DBOS.recv.
+        assert serialization_type == _FAKE_PORTABLE
         self.sent.append((workflow_id, message, topic))
 
     def destroy(self) -> None:
         self.destroyed = True
 
 
+_FAKE_PORTABLE = "portable"
+
+
+def _fake_dbos_module(client_cls: type) -> types.ModuleType:
+    module = types.ModuleType("dbos")
+    module.DBOSClient = client_cls  # type: ignore[attr-defined]
+    module.WorkflowSerializationFormat = types.SimpleNamespace(  # type: ignore[attr-defined]
+        PORTABLE=_FAKE_PORTABLE
+    )
+    return module
+
+
 @pytest.fixture
 def fake_dbos(monkeypatch: pytest.MonkeyPatch) -> type[_FakeDBOSClient]:
     _FakeDBOSClient.created = []
-    module = types.ModuleType("dbos")
-    module.DBOSClient = _FakeDBOSClient  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "dbos", module)
+    monkeypatch.setitem(sys.modules, "dbos", _fake_dbos_module(_FakeDBOSClient))
     return _FakeDBOSClient
 
 
@@ -196,12 +216,52 @@ def test_release_reports_unreachable_databases(
         def __init__(self, *, system_database_url: str) -> None:
             raise ConnectionError("connection refused")
 
-    module = types.ModuleType("dbos")
-    module.DBOSClient = _ExplodingClient  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "dbos", module)
+    monkeypatch.setitem(sys.modules, "dbos", _fake_dbos_module(_ExplodingClient))
 
     record_app(_make_app(tmp_path, "demo"), "dbos", "demo")
     report = release_parked_workflows("vendor")
     assert report.released == ()
     assert len(report.skipped) == 1
     assert "connection refused" in report.skipped[0].reason
+
+
+def test_release_scans_dbos_ts_apps_with_postgres_urls(
+    tmp_path: Path, fake_dbos: type[_FakeDBOSClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dbos-ts apps release through the same DBOSClient protocol, with the
+    TS SDK's URL resolution (Postgres default — no SQLite branch)."""
+    for var in ("DBOS_SYSTEM_DATABASE_URL", "PGHOST", "PGPORT", "PGUSER", "PGPASSWORD"):
+        monkeypatch.delenv(var, raising=False)
+    app = tmp_path / "tsapp"
+    app.mkdir()
+    (app / "dbos-config.yaml").write_text("name: ts_demo\nlanguage: node\n", encoding="utf-8")
+    record_app(app, "dbos-ts", "ts_demo")
+
+    report = release_parked_workflows("vendor")
+
+    client = fake_dbos.created[0]
+    assert (
+        client.system_database_url == "postgresql://postgres:dbos@localhost:5432/ts_demo_dbos_sys"
+    )
+    assert [r.workflow_id for r in report.released] == ["wf-parked"]
+
+
+def test_dbos_ts_url_prefers_config_key_with_env_expansion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote._dbos import dbos_ts_system_database_url
+
+    monkeypatch.delenv("DBOS_SYSTEM_DATABASE_URL", raising=False)
+    app = tmp_path / "tsapp"
+    app.mkdir()
+    (app / "dbos-config.yaml").write_text(
+        "name: ts_demo\nsystem_database_url: ${MY_PG_URL}\n", encoding="utf-8"
+    )
+    # Unset var expands to empty — the SDK behavior — so the default wins.
+    monkeypatch.delenv("MY_PG_URL", raising=False)
+    assert dbos_ts_system_database_url(app).endswith("/ts_demo_dbos_sys")
+    monkeypatch.setenv("MY_PG_URL", "postgresql://u:p@db.example:5432/custom")
+    assert dbos_ts_system_database_url(app) == "postgresql://u:p@db.example:5432/custom"
+    # The env override outranks everything, matching emitted main.ts.
+    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://o:o@override:5432/sys")
+    assert dbos_ts_system_database_url(app) == "postgresql://o:o@override:5432/sys"

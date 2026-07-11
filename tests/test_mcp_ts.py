@@ -135,3 +135,78 @@ def test_cloudflare_api_backend_keeps_stubs(tmp_path: Path) -> None:
     assert "throw new Error" in bound
     wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
     assert "ROTE_MCP_TOKENS" not in wrangler
+
+
+# ───────── Park-on-auth (DBOS-TS) ─────────
+
+
+def _bound_pipeline_with_retry_and_parallel() -> Pipeline:
+    """One retried MCP node in wave 1, a parallel wave of MCP + stub."""
+    return Pipeline.model_validate(
+        {
+            "name": "ts_park_demo",
+            "input": {"type": "In", "required": ["q"]},
+            "nodes": [
+                {
+                    "id": "first_pull",
+                    "kind": "external_call",
+                    "description": "pull data over MCP",
+                    "inputs": {"q": "pipeline.input.q"},
+                    "mcp": {"server": "vendor", "tool": "get_data", "args": {"q": "q"}},
+                    "retry": {"max": 3, "backoff": "exponential"},
+                },
+                {
+                    "id": "par_mcp",
+                    "kind": "external_call",
+                    "description": "parallel MCP pull",
+                    "inputs": {"q": "first_pull.output.q"},
+                    "mcp": {"server": "crm", "tool": "push"},
+                },
+                {
+                    "id": "par_stub",
+                    "kind": "external_call",
+                    "description": "parallel stub",
+                    "inputs": {"q": "first_pull.output.q"},
+                    "impl": "extracted/par_stub.py:par_stub",
+                },
+            ],
+            "edges": [
+                {"from": "first_pull", "to": "par_mcp"},
+                {"from": "first_pull", "to": "par_stub"},
+            ],
+        }
+    )
+
+
+def test_dbos_ts_parks_on_auth(tmp_path: Path) -> None:
+    """MCP-backed dispatch routes through the auth-park wrapper: dead
+    credentials suspend the workflow (DBOS.recv on rote:auth:<server>)
+    instead of failing it, with the wait advertised PORTABLY so the
+    Python CLI can read it."""
+    get_adapter("dbos-ts").emit(_bound_pipeline_with_retry_and_parallel(), tmp_path)
+    main = (tmp_path / "src" / "main.ts").read_text(encoding="utf-8")
+    assert 'import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";' in main
+    assert "runWithAuthPark(" in main
+    assert "`rote:auth:${server}`" in main
+    assert '{ serializationType: "portable" }' in main
+    # Retried MCP steps exempt auth failures from the retry budget.
+    assert "shouldRetry: mcpShouldRetry" in main
+    # Parallel wave: payload bound once, settled rejection re-run through
+    # the park wrapper.
+    assert "const par_mcp_payload =" in main
+    assert "par_mcp_result = unwrap(par_mcp_settled);" in main
+    assert "if (!isRoteMcpAuthNeeded(err)) throw err;" in main
+    # The helper carries the typed error both sides detect by NAME.
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "class RoteMcpAuthNeeded extends Error" in helper
+    assert 'e.name === "RoteMcpAuthNeeded"' in helper
+
+
+def test_dbos_ts_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
+    get_adapter("dbos-ts", external_backend="api").emit(
+        _bound_pipeline_with_retry_and_parallel(), tmp_path
+    )
+    main = (tmp_path / "src" / "main.ts").read_text(encoding="utf-8")
+    assert "runWithAuthPark" not in main
+    assert "rote_auth_status" not in main
+    assert "shouldRetry" not in main
