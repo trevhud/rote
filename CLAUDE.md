@@ -602,20 +602,26 @@ Don't waste time debugging stubs. These are intentional.
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
   through the DAG, with HITL gate resume payloads participating as
   the gate's result — validated empirically in the runtime e2e tests
-- Park-on-auth (DBOS Python, DBOS-TS, Inngest): MCP-backed steps with
-  a missing/dead credential suspend the run durably;
-  `rote mcp login <server>` (or `rote mcp release <server>`) releases
-  every parked run across the apps recorded in
-  `~/.local/share/rote/apps.json` (written at emit/graduate time).
-  DBOS runtimes release by discovery + per-workflow send (portable
-  serialization); Inngest releases by one broadcast event per pipeline
-  (`<pipeline>/rote.auth.<server>` — events fan out to all waiters; no
-  discovery API exists or is needed). Inngest traps if you touch it:
-  fresh step ids per attempt (memoization), NonRetriableError wrapping
-  (per-step retry budgets + managed backoff), and NO event buffering
-  for unstarted waits — the retry-once covers that race. Proven live:
-  `tests/test_mcp_park_e2e.py`, `test_mcp_park_ts_e2e.py`,
-  `test_mcp_park_inngest_e2e.py`.
+- Park-on-auth (ALL MCP-capable runtimes — DBOS Python, DBOS-TS,
+  Inngest, Cloudflare): MCP-backed steps with a missing/dead
+  credential suspend the run durably; `rote mcp login <server>` (or
+  `rote mcp release <server>`) releases every parked run across the
+  apps recorded in `~/.local/share/rote/apps.json` (written at
+  emit/graduate time). Release channels differ per runtime: DBOS =
+  discovery + per-workflow send (portable serialization); Inngest =
+  one broadcast event per pipeline (events fan out; no discovery
+  needed, but NO buffering for unstarted waits — retry-once covers the
+  race); Cloudflare = REST blast to every non-terminal instance
+  (no broadcast, but events buffer per-instance, so blasting is
+  race-free; needs CLOUDFLARE_API_TOKEN/ACCOUNT_ID, local dev uses
+  `wrangler … send-event --local`). Retry opt-outs also differ:
+  should_retry (DBOS-py) / shouldRetry (DBOS-TS) / NonRetriableError
+  (Inngest) / NonRetryableError (Cloudflare — and its waitForEvent
+  THROWS on a 24h-default timeout, hence the explicit "30 days").
+  Proven live per runtime: `tests/test_mcp_park_e2e.py`,
+  `test_mcp_park_ts_e2e.py`, `test_mcp_park_inngest_e2e.py`,
+  `test_mcp_park_cf_e2e.py` (the last also runs the TS MCP SDK live
+  inside workerd).
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

@@ -95,7 +95,7 @@ shared store when the user has run `rote mcp login`, static registry
 headers when configured, plain client otherwise. Emitted apps never
 import rote.
 
-## Park-on-auth (DBOS Python, DBOS TypeScript, Inngest)
+## Park-on-auth (all four MCP-capable runtimes)
 
 OAuth is interactive; durable workflows run unattended. The resolution:
 auth is a *preflight* owned by the CLI (where a human is present), and
@@ -200,9 +200,38 @@ host *serving the app* — for a deployed Inngest service, the login (or
 a token-file sync) must happen there; the broadcast then wakes the run
 from anywhere.
 
-The remaining runtime (Cloudflare) still fails loud on dead
-credentials; its park is the known follow-up — `waitForEvent` +
-instance-addressed `sendEvent` (no broadcast on Workflows).
+### The Cloudflare park releases by blast, and KV supersedence enables it
+
+Workflows has no broadcast — every send targets one instance — but
+**events sent before an instance reaches its `waitForEvent` are
+buffered per-instance** (documented), so `rote mcp release` doesn't
+need to know which instances are parked: it sends `rote_auth_<server>`
+to every non-terminal instance via the Cloudflare REST API
+(`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`). Parked instances
+consume it; the rest buffer it harmlessly. Local dev has no REST
+surface — `npx wrangler workflows instances send-event … --local` is
+the manual channel there.
+
+The emitted park loop's Cloudflare specifics, all verified live on
+workerd (`tests/test_mcp_park_cf_e2e.py`):
+
+1. **`NonRetryableError`** (from `cloudflare:workflows`) is the retry
+   opt-out — Workflows has no should-retry predicate, and a dead
+   credential would otherwise burn `retries.limit` attempts of delay.
+2. **`waitForEvent` THROWS on timeout** (default 24h!) — the park sets
+   an explicit `"30 days"`, and expiry failing the instance is the
+   intended terminal behavior.
+3. **The credential fix is provisioning, not login**: Workers read
+   secrets, not the laptop token store — `rote mcp export` +
+   `wrangler secret bulk`, then release. The `ROTE_MCP_TOKENS` KV
+   cache deliberately supersedes provisioned secrets (rotation), which
+   is also what makes an in-session fix testable: writing a fresh
+   token into KV is the same read path the helper takes on retry.
+
+The park e2e also closed a long-standing gap: the post-release retry
+drives `callMcpTool` through the real `@modelcontextprotocol/sdk`
+streamable-HTTP client **inside workerd** against a live server — the
+Workers MCP output was previously only ever typechecked.
 
 ## eval --run
 

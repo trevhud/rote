@@ -336,3 +336,65 @@ def test_release_reports_unreachable_inngest_endpoint(
     assert report.broadcasts == ()
     assert len(report.skipped) == 1
     assert "connection refused" in report.skipped[0].reason
+
+
+def test_release_blasts_cloudflare_instances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cloudflare release = the rote_auth_<server> event sent to every
+    NON-TERMINAL instance (no broadcast exists; buffering makes blasting
+    safe — parked instances consume it, others buffer it harmlessly)."""
+    import httpx
+
+    calls: list[tuple[str, str]] = []
+
+    def _fake_get(url: str, *, headers: dict, params: dict, timeout: float) -> httpx.Response:
+        calls.append(("GET", url))
+        assert headers["Authorization"] == "Bearer cf-token"
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    {"id": "inst-waiting", "status": "waiting"},
+                    {"id": "inst-running", "status": "running"},
+                    {"id": "inst-done", "status": "complete"},
+                ]
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    def _fake_post(url: str, *, headers: dict, json: dict, timeout: float) -> httpx.Response:
+        calls.append(("POST", url))
+        return httpx.Response(200, json={}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "get", _fake_get)
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "cf-token")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct-1")
+
+    app = tmp_path / "cf-app"
+    app.mkdir()
+    record_app(app, "cloudflare", "invoice_push")
+
+    report = release_parked_workflows("vendor")
+
+    assert [r.workflow_id for r in report.released] == ["inst-waiting", "inst-running"]
+    post_urls = [u for m, u in calls if m == "POST"]
+    assert all(u.endswith("/events/rote_auth_vendor") for u in post_urls)
+    assert "inst-done" not in str(post_urls)  # terminal instances skipped
+
+
+def test_release_cloudflare_without_credentials_points_at_wrangler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    app = tmp_path / "cf-app"
+    app.mkdir()
+    record_app(app, "cloudflare", "invoice_push")
+
+    report = release_parked_workflows("vendor")
+    assert report.released == ()
+    assert len(report.skipped) == 1
+    assert "CLOUDFLARE_API_TOKEN" in report.skipped[0].reason
+    assert "send-event" in report.skipped[0].reason  # the wrangler dev path
