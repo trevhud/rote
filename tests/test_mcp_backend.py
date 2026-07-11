@@ -92,14 +92,102 @@ def test_binding_charset_constraints(kwargs: dict, match: str) -> None:
 
 def test_dbos_emits_mcp_call_by_default() -> None:
     src = emit_main(_pipeline(mcp=_BINDING), DbosAdapterConfig())
-    # The step body opens an authenticated client via the emitted helper
-    # (endpoint + credentials resolve at runtime: env > registry > IR).
-    assert "from extracted._rote_mcp import mcp_client" in src
-    assert "mcp_client('vendor', None)" in src
-    assert 'call_tool("enrich_contact"' in src
+    # The step body calls the tool via the emitted helper's single entry
+    # point (endpoint + credentials resolve at runtime: env > registry >
+    # IR; auth problems raise RoteMcpAuthNeeded).
+    assert "from extracted._rote_mcp import call_mcp_tool" in src
+    assert "call_mcp_tool(" in src
+    assert "'vendor',\n" in src
+    assert '"enrich_contact",\n' in src
     # No stub import / NotImplementedError for an MCP-backed node.
     assert "NotImplementedError" not in src
     ast.parse(src)  # emitted module is valid Python
+
+
+# ───────── Park-on-auth emission ─────────
+
+
+def test_mcp_step_dispatch_parks_on_auth() -> None:
+    """The workflow wraps MCP-backed step calls in the auth-park loop:
+    a dead credential suspends the run durably instead of failing it,
+    and `rote mcp login <server>` releases it."""
+    src = emit_main(_pipeline(mcp=_BINDING), DbosAdapterConfig())
+    assert "from extracted._rote_mcp import RoteMcpAuthNeeded" in src
+    assert "_run_with_auth_park(" in src
+    # The park advertises what it waits for (CLI discovery) and blocks on
+    # the rote:auth topic — the ':' makes IR-signal collisions impossible.
+    assert 'DBOS.set_event("rote_auth_status", {"awaiting": server})' in src
+    assert 'topic=f"rote:auth:{server}"' in src
+    ast.parse(src)
+
+
+def test_mcp_retry_budget_excludes_auth_failures() -> None:
+    """A step with retries must not burn attempts on RoteMcpAuthNeeded —
+    no retry produces a credential; the park does."""
+    from rote.ir import RetryPolicy
+
+    pipeline = _pipeline(mcp=_BINDING)
+    node = pipeline.nodes[0].model_copy(update={"retry": RetryPolicy(max=3)})
+    pipeline = pipeline.model_copy(update={"nodes": [node]})
+    src = emit_main(pipeline, DbosAdapterConfig())
+    assert "should_retry=_mcp_should_retry" in src
+    ast.parse(src)
+
+
+def test_parallel_mcp_wave_joins_through_auth_park() -> None:
+    """Queue fan-out joins MCP handles via _join_with_auth_park with a
+    re-enqueue closure over the bound payload."""
+    nodes = [
+        Node(
+            id="seed",
+            kind=NodeKind.PURE_FUNCTION,
+            description="seed",
+            input={"contact_id": "str"},
+            inputs={"contact_id": "pipeline.input.contact_id"},
+            output="dict",
+            impl="extracted/seed.py:seed",
+        ),
+        Node(
+            id="enrich_a",
+            kind=NodeKind.EXTERNAL_CALL,
+            description="a",
+            input={"contact_id": "str"},
+            inputs={"contact_id": "seed.output.contact_id"},
+            output="dict",
+            mcp=MCPBinding(server="vendor", tool="enrich_a"),
+        ),
+        Node(
+            id="enrich_b",
+            kind=NodeKind.EXTERNAL_CALL,
+            description="b",
+            input={"contact_id": "str"},
+            inputs={"contact_id": "seed.output.contact_id"},
+            output="dict",
+            mcp=MCPBinding(server="vendor", tool="enrich_b"),
+        ),
+    ]
+    pipeline = Pipeline(
+        name="mcp_par",
+        description="Parallel MCP wave.",
+        input=PipelineInput(type="Req", required=["contact_id"]),
+        nodes=nodes,
+        edges=[{"from": "seed", "to": "enrich_a"}, {"from": "seed", "to": "enrich_b"}],
+        entry_nodes=["seed"],
+        exit_nodes=["enrich_a", "enrich_b"],
+    )
+    src = emit_main(pipeline, DbosAdapterConfig())
+    assert "enrich_a_payload = {" in src
+    assert "lambda: queue.enqueue(enrich_a, enrich_a_payload)" in src
+    assert "_join_with_auth_park(" in src
+    ast.parse(src)
+
+
+def test_api_backend_emits_no_park_machinery() -> None:
+    pipeline = _pipeline(impl="extracted/vendor.py:enrich_contact", mcp=_BINDING)
+    src = emit_main(pipeline, DbosAdapterConfig(external_backend="api"))
+    assert "_run_with_auth_park" not in src
+    assert "RoteMcpAuthNeeded" not in src
+    assert "rote_auth_status" not in src
 
 
 def test_dbos_api_backend_uses_impl_not_mcp() -> None:
@@ -175,8 +263,8 @@ def test_cli_emit_backend_flag(tmp_path: Path) -> None:
     rc = cli_main(["emit", str(yaml_path), "--runtime", "dbos", "--out", str(out_mcp)])
     assert rc == 0
     mcp_main = (out_mcp / "main.py").read_text()
-    assert "from extracted._rote_mcp import mcp_client" in mcp_main
-    assert 'call_tool("enrich_contact"' in mcp_main
+    assert "from extracted._rote_mcp import call_mcp_tool" in mcp_main
+    assert '"enrich_contact",\n' in mcp_main
     # The connection helper ships with the app, verbatim from
     # rote.mcp._runtime_helper (one tested implementation).
     helper = (out_mcp / "extracted" / "_rote_mcp.py").read_text()

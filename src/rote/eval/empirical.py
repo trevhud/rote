@@ -36,8 +36,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-import yaml
-
+from rote._dbos import dbos_system_database_url as _dbos_system_database_url
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
 from rote.graduator.drivers.claude import (
@@ -368,20 +367,9 @@ def _reliability_flags(
 # ───────── Pipeline (after) trials ─────────
 
 
-def _dbos_system_database_url(app_dir: Path) -> str:
-    """The system database URL the spawned DBOS app will actually use.
-
-    Must mirror the emitted main.py's resolution order exactly —
-    ``DBOS_SYSTEM_DATABASE_URL`` env override first, then the default
-    SQLite file in the app dir — or signals get delivered to a
-    database the app isn't watching.
-    """
-    override = os.environ.get("DBOS_SYSTEM_DATABASE_URL")
-    if override:
-        return override
-    config = yaml.safe_load((app_dir / "dbos-config.yaml").read_text(encoding="utf-8"))
-    name = config["name"] if isinstance(config, dict) and "name" in config else "pipeline"
-    return f"sqlite:///{(app_dir / f'{name}.dbos.sqlite').resolve()}"
+# _dbos_system_database_url (imported at top from rote._dbos) resolves the
+# system database URL a spawned DBOS app will actually use — shared with
+# the MCP auth-release path, which needs the identical resolution.
 
 
 def _wait_for_workflow_id(stderr_path: Path, proc: subprocess.Popen[Any], deadline: float) -> str:

@@ -394,3 +394,94 @@ def test_cli_mcp_export_requires_a_refreshable_login(
     )
     assert cli_main(["mcp", "export", "vendor"]) == 1
     assert "refresh token" in capsys.readouterr().err
+
+
+# ───────── call_mcp_tool: auth preflight + 401 mapping ─────────
+
+
+def test_call_mcp_tool_preflights_dead_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An expired token with no refresh path raises RoteMcpAuthNeeded
+    *before* any network I/O — the workflow parks on it."""
+    import time
+
+    from rote.mcp import _runtime_helper as helper
+
+    write_token_file("slack", _doc(expires_at=time.time() - 10, refresh=False))
+
+    def _boom(*a: Any, **kw: Any) -> Any:  # network must not be touched
+        raise AssertionError("preflight should raise before opening a client")
+
+    monkeypatch.setattr(helper, "mcp_client", _boom)
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="rote mcp login slack") as exc_info:
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+    assert exc_info.value.server == "slack"
+
+
+def test_call_mcp_tool_maps_401_to_auth_needed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server 401 — even wrapped in an ExceptionGroup by anyio — becomes
+    RoteMcpAuthNeeded; other errors pass through untouched."""
+    import httpx
+
+    from rote.mcp import _runtime_helper as helper
+
+    def _client_raising(exc: BaseException) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                raise exc
+
+            async def __aexit__(self, *a: Any) -> None:
+                return None
+
+        return _Ctx()
+
+    def _http_401() -> httpx.HTTPStatusError:
+        return httpx.HTTPStatusError(
+            "Client error '401 Unauthorized'",
+            request=httpx.Request("POST", "https://mcp.example.com/slack"),
+            response=httpx.Response(401),
+        )
+
+    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(_http_401()))
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+    wrapped = ExceptionGroup("transport", [RuntimeError("x"), _http_401()])
+    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(wrapped))
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(RuntimeError("boom")))
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+
+def test_auth_needed_survives_pickling() -> None:
+    """DBOS serializes step errors across queue workers — the two-arg
+    __init__ needs the explicit __reduce__ to round-trip."""
+    import pickle
+
+    from rote.mcp._runtime_helper import RoteMcpAuthNeeded
+
+    exc = pickle.loads(pickle.dumps(RoteMcpAuthNeeded("vendor", "expired")))
+    assert exc.server == "vendor"
+    assert "rote mcp login vendor" in str(exc)
+
+
+def test_oauth_client_never_opens_a_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The helper's OAuth subclass raises RoteMcpAuthNeeded instead of
+    invoking the redirect handler — emitted workflows run unattended."""
+    import time
+    import webbrowser
+
+    from rote.mcp import _runtime_helper as helper
+
+    write_token_file("slack", _doc(expires_at=time.time() + 3600))
+
+    def _no_browser(*a: Any, **kw: Any) -> bool:
+        raise AssertionError("workflow code must never open a browser")
+
+    monkeypatch.setattr(webbrowser, "open", _no_browser)
+    client = helper.mcp_client("slack", "https://mcp.example.com/slack")
+    redirect = client.transport.auth.redirect_handler
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="interactive"):
+        asyncio.run(redirect("https://auth.example.com/authorize?x=1"))

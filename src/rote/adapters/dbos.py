@@ -52,8 +52,13 @@ Key design choices vs. the other adapters:
   the Cloudflare adapter's Zod emission. The legacy ``signature`` path
   form falls back to importing the user's module, matching Temporal.
 
-The emitted code never imports MCP runtime — same architectural invariant
-as the other adapters, enforced by AST tests.
+Nodes without an ``mcp:`` binding never reference MCP (enforced by AST
+tests). Nodes *with* a binding — the default ``--backend mcp`` regime —
+emit a working Streamable-HTTP tool call through the bundled
+``extracted/_rote_mcp.py`` helper, plus **park-on-auth**: when a
+credential is missing or dead at run time, the workflow suspends
+durably (``DBOS.recv`` on a ``rote:auth:<server>`` topic) instead of
+failing, and ``rote mcp login <server>`` releases it.
 """
 
 from __future__ import annotations
@@ -120,7 +125,7 @@ class DbosAdapterConfig:
 # ───────── Retry mapping ─────────
 
 
-def _step_decorator(node: Node) -> str:
+def _step_decorator(node: Node, *, mcp: bool = False) -> str:
     """Render the ``@DBOS.step(...)`` decorator line for a node.
 
     Maps the IR's ``RetryPolicy`` onto DBOS step retry parameters:
@@ -136,6 +141,11 @@ def _step_decorator(node: Node) -> str:
     | ``retry_on``  | not mapped (DBOS retries any exception; its   |
     |               | ``should_retry`` predicate takes a callable,  |
     |               | not categories — surfaced as a comment)       |
+
+    MCP-backed steps with retries additionally opt auth failures out of
+    the retry budget (``should_retry=_mcp_should_retry``): a missing or
+    dead credential is not transient, and burning attempts on it only
+    delays the park that actually fixes it.
     """
     args = [f'name="{node.id}"']
     if node.retry and node.retry.max > 0:
@@ -143,6 +153,8 @@ def _step_decorator(node: Node) -> str:
         args.append(f"max_attempts={node.retry.max + 1}")
         backoff_rate = 2.0 if node.retry.backoff == "exponential" else 1.0
         args.append(f"backoff_rate={backoff_rate}")
+        if mcp:
+            args.append("should_retry=_mcp_should_retry")
     return f"@DBOS.step({', '.join(args)})"
 
 
@@ -273,31 +285,37 @@ def _emit_step_mcp(node: Node) -> str:
             "    # skill. The workflow always calls it; do not make it conditional.\n"
         )
     return (
-        f"{_step_decorator(node)}\n"
+        f"{_step_decorator(node, mcp=True)}\n"
         f"def {node.id}(payload: dict) -> dict:\n"
         f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
         f"    MCP-backed external_call → invokes tool {binding.tool!r} on MCP\n"
         f"    server {binding.server!r} over Streamable HTTP, authenticated\n"
         f"    from the rote credential store (`rote mcp login {binding.server}`).\n"
-        f"    The result is checkpointed like any other durable step. Swap to\n"
-        f"    a direct vendor-SDK call with `rote emit --backend api`.\n"
+        f"    The result is checkpointed like any other durable step. Auth\n"
+        f"    failures raise RoteMcpAuthNeeded — the workflow parks on them\n"
+        f"    (see _park_for_auth) rather than failing the run. Swap to a\n"
+        f"    direct vendor-SDK call with `rote emit --backend api`.\n"
         f'    """\n'
         f"{mandatory_marker}"
         f"{_retry_on_comment(node)}"
         f"{_timeout_comment(node)}"
         f"    import asyncio\n"
         f"\n"
-        f"    from extracted._rote_mcp import mcp_client\n"
+        f"    from extracted._rote_mcp import call_mcp_tool\n"
         f"\n"
         f"{args_line}"
         f"\n"
-        f"    async def _call() -> object:\n"
-        f"        async with mcp_client({binding.server!r}, {url_literal}) as _client:\n"
-        f"            _result = await _client.call_tool({json.dumps(binding.tool)}, arguments)\n"
-        f"            return _result.data\n"
-        f"\n"
-        f"    return _serialize(asyncio.run(_call()))\n"
+        f"    return _serialize(\n"
+        f"        asyncio.run(\n"
+        f"            call_mcp_tool(\n"
+        f"                {binding.server!r},\n"
+        f"                {url_literal},\n"
+        f"                {json.dumps(binding.tool)},\n"
+        f"                arguments,\n"
+        f"            )\n"
+        f"        )\n"
+        f"    )\n"
     )
 
 
@@ -386,7 +404,16 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     )
 
 
-def _emit_workflow_body(pipeline: Pipeline) -> str:
+def _is_mcp_backed(node: Node, cfg: DbosAdapterConfig) -> bool:
+    """True when this node's step calls an MCP tool at run time."""
+    return (
+        node.kind is NodeKind.EXTERNAL_CALL
+        and node.mcp is not None
+        and cfg.external_backend == "mcp"
+    )
+
+
+def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
 
@@ -408,28 +435,63 @@ def _emit_workflow_body(pipeline: Pipeline) -> str:
 
         if len(non_hitl) == 1:
             node = non_hitl[0]
-            payload = _payload_literal(node, indent=" " * 8)
-            if payload == "{}":
-                lines.append(f"    {node.id}_result = {node.id}({{}})")
+            if _is_mcp_backed(node, cfg):
+                # MCP-backed: run through the auth-park wrapper so a dead
+                # credential suspends the workflow instead of failing it.
+                assert node.mcp is not None
+                payload = _payload_literal(node, indent=" " * 12)
+                if payload == "{}":
+                    lines.append(
+                        f"    {node.id}_result = _run_with_auth_park("
+                        f"lambda: {node.id}({{}}), {node.mcp.server!r})"
+                    )
+                else:
+                    lines.append(f"    {node.id}_result = _run_with_auth_park(")
+                    lines.append(f"        lambda: {node.id}(")
+                    lines.append(f"            {payload}")
+                    lines.append("        ),")
+                    lines.append(f"        {node.mcp.server!r},")
+                    lines.append("    )")
             else:
-                lines.append(f"    {node.id}_result = {node.id}(")
-                lines.append(f"        {payload}")
-                lines.append("    )")
+                payload = _payload_literal(node, indent=" " * 8)
+                if payload == "{}":
+                    lines.append(f"    {node.id}_result = {node.id}({{}})")
+                else:
+                    lines.append(f"    {node.id}_result = {node.id}(")
+                    lines.append(f"        {payload}")
+                    lines.append("    )")
         elif len(non_hitl) > 1:
             lines.append("    # Parallel fan-out: enqueue every node in the wave, then")
             lines.append("    # join. Each enqueued step runs as its own one-step")
             lines.append("    # workflow; get_result() blocks durably.")
             for node in non_hitl:
-                payload = _payload_literal(node, indent=" " * 8)
-                if payload == "{}":
-                    lines.append(f"    {node.id}_handle = queue.enqueue({node.id}, {{}})")
+                if _is_mcp_backed(node, cfg):
+                    # Bind the payload so the auth-park join can re-enqueue
+                    # the same call after `rote mcp login` releases us.
+                    payload = _payload_literal(node, indent=" " * 4)
+                    lines.append(f"    {node.id}_payload = {payload}")
+                    lines.append(
+                        f"    {node.id}_handle = queue.enqueue({node.id}, {node.id}_payload)"
+                    )
                 else:
-                    lines.append(f"    {node.id}_handle = queue.enqueue(")
-                    lines.append(f"        {node.id},")
-                    lines.append(f"        {payload},")
-                    lines.append("    )")
+                    payload = _payload_literal(node, indent=" " * 8)
+                    if payload == "{}":
+                        lines.append(f"    {node.id}_handle = queue.enqueue({node.id}, {{}})")
+                    else:
+                        lines.append(f"    {node.id}_handle = queue.enqueue(")
+                        lines.append(f"        {node.id},")
+                        lines.append(f"        {payload},")
+                        lines.append("    )")
             for node in non_hitl:
-                lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
+                if _is_mcp_backed(node, cfg):
+                    assert node.mcp is not None
+                    lines.append(f"    {node.id}_result = _join_with_auth_park(")
+                    lines.append(f"        {node.id}_handle,")
+                    lines.append(f"        lambda: queue.enqueue({node.id}, {node.id}_payload),")
+                    lines.append(f"        {node.mcp.server!r},")
+                    lines.append("    )")
+                else:
+                    lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -454,6 +516,29 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
     queue_name = cfg.queue_name or f"{pipeline.name}-queue"
     sqlite_file = f"{pipeline.name}.dbos.sqlite"
     desc_first = safe_docstring_line(pipeline.description, fallback=pipeline.name)
+    mcp_backed = any(_is_mcp_backed(n, cfg) for n in pipeline.nodes)
+
+    if mcp_backed:
+        arch_note = (
+            "Architecture note: deterministic steps wrap functions from\n"
+            "``extracted/``; typed LLM judges live in ``signatures/``; and\n"
+            "MCP-backed steps call the tool the source skill used, over\n"
+            "Streamable HTTP, as checkpointed durable steps. When an MCP\n"
+            "credential is missing or dead the workflow parks durably and\n"
+            "``rote mcp login <server>`` releases it (see _park_for_auth)."
+        )
+    else:
+        arch_note = (
+            "Architecture note: every step in this file wraps a deterministic\n"
+            "function from ``extracted/`` or a typed LLM signature from\n"
+            "``signatures/``. None of them call MCP tools at runtime — the MCP\n"
+            "tool calls from the source skill were graduated into direct API\n"
+            "calls during the rote emission step."
+        )
+    # The header f-string below is dedent()ed AFTER interpolation; a
+    # column-0 multi-line value would make dedent a no-op (the emit_readme
+    # trap). Match the template's 8-space indentation.
+    arch_note = arch_note.replace("\n", "\n        ")
 
     header = textwrap.dedent(
         f'''\
@@ -471,11 +556,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         recovers by workflow name + application_version); new starts use the
         new code.
 
-        Architecture note: every step in this file wraps a deterministic
-        function from ``extracted/`` or a typed LLM signature from
-        ``signatures/``. None of them call MCP tools at runtime — the MCP
-        tool calls from the source skill were graduated into direct API
-        calls during the rote emission step.
+        {arch_note}
         """
 
         from __future__ import annotations
@@ -519,6 +600,94 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         "    portable across the system database."
     )
 
+    if mcp_backed:
+        header += "\n\n" + textwrap.dedent(
+            '''\
+            # ───────── MCP auth parking ─────────
+            #
+            # MCP-backed steps can fail because a credential is missing or dead.
+            # That is not transient — no retry produces a credential — so the
+            # workflow parks durably instead of failing: it advertises what it
+            # is waiting for via a workflow event (so `rote mcp login` can find
+            # it), then blocks on a DBOS message that a successful login sends.
+            # The `rote:auth:` topic prefix cannot collide with IR HITL signals
+            # (their charset excludes ':').
+
+            from collections.abc import Callable
+
+            from dbos import WorkflowHandle
+
+            from extracted._rote_mcp import RoteMcpAuthNeeded
+
+            _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
+
+
+            def _mcp_should_retry(exc: BaseException) -> bool:
+                """Auth failures skip the retry budget and park instead."""
+                return not isinstance(exc, RoteMcpAuthNeeded)
+
+
+            def _park_for_auth(server: str) -> None:
+                """Suspend the workflow until `rote mcp login <server>` succeeds."""
+                DBOS.set_event("rote_auth_status", {"awaiting": server})
+                released = DBOS.recv(
+                    topic=f"rote:auth:{server}",
+                    timeout_seconds=_AUTH_PARK_TIMEOUT_SECONDS,
+                )
+                DBOS.set_event("rote_auth_status", None)
+                if released is None:
+                    raise TimeoutError(
+                        f"workflow parked {_AUTH_PARK_TIMEOUT_SECONDS // 86400} days "
+                        f"waiting for `rote mcp login {server}` and no authentication "
+                        f"arrived"
+                    )
+
+
+            def _run_with_auth_park(step_call: Callable[[], dict], server: str) -> dict:
+                """Run an MCP-backed step, parking durably on auth failures.
+
+                On RoteMcpAuthNeeded the step is retried once immediately (the
+                token store may have been fixed since the failing attempt —
+                e.g. a login that released an earlier park in this same run);
+                if the fresh attempt still needs auth, the workflow parks
+                until the release signal, then tries again.
+                """
+                attempts_since_park = 0
+                while True:
+                    try:
+                        return step_call()
+                    except RoteMcpAuthNeeded:
+                        attempts_since_park += 1
+                        if attempts_since_park >= 2:
+                            _park_for_auth(server)
+                            attempts_since_park = 0
+
+
+            def _join_with_auth_park(
+                handle: WorkflowHandle,
+                enqueue: Callable[[], WorkflowHandle],
+                server: str,
+            ) -> dict:
+                """get_result() with auth parking, for queue fan-out waves.
+
+                A parked-and-released sibling may already have consumed the
+                login's release signal by the time this handle's stale auth
+                failure surfaces — hence the same retry-once-before-parking
+                shape as _run_with_auth_park, with a fresh enqueue per retry.
+                """
+                attempts_since_park = 0
+                while True:
+                    try:
+                        return handle.get_result()
+                    except RoteMcpAuthNeeded:
+                        attempts_since_park += 1
+                        if attempts_since_park >= 2:
+                            _park_for_auth(server)
+                            attempts_since_park = 0
+                        handle = enqueue()
+            '''
+        )
+
     step_parts: list[str] = []
     for node in pipeline.nodes:
         if node.kind is NodeKind.HITL_GATE:
@@ -540,7 +709,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         f"\n\n@DBOS.workflow(name={json.dumps(workflow_name)})\n"
         f"def run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
-        f"{_emit_workflow_body(pipeline)}\n"
+        f"{_emit_workflow_body(pipeline, cfg)}\n"
     )
 
     main_block = textwrap.dedent(
@@ -618,6 +787,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
             f"export ROTE_MCP_{s.upper()}_URL=...   # {s!r} MCP server (Streamable HTTP)"
             for s in mcp_servers
         )
+        login_lines = "\n".join(f"rote mcp login {s}" for s in mcp_servers)
         mcp_note = (
             "\n## MCP-backed steps\n\n"
             "Some `external_call` steps call MCP tools over Streamable HTTP\n"
@@ -627,6 +797,18 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
             "pip install fastmcp\n"
             f"{env_lines}\n"
             "```\n\n"
+            "### Authentication and parking\n\n"
+            "If a server needs OAuth and its stored credential is missing or\n"
+            "dead at run time, the workflow does **not** fail — it parks\n"
+            "durably (a `DBOS.recv` on the `rote:auth:<server>` topic, with\n"
+            "the wait advertised via the `rote_auth_status` workflow event)\n"
+            "and resumes automatically when you authenticate:\n\n"
+            "```sh\n"
+            f"{login_lines}\n"
+            "```\n\n"
+            "A successful login discovers parked workflows across your\n"
+            "emitted apps and releases them. A workflow parked longer than\n"
+            "30 days times out and fails the run.\n\n"
             "Prefer direct vendor-SDK calls? Re-emit with "
             "`rote emit --runtime dbos --backend api` and fill in the\n"
             "`extracted/` stubs (one key in `.env` per vendor).\n"

@@ -10,6 +10,26 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Park-on-auth: workflows suspend on missing MCP credentials instead
+  of failing** (DBOS Python). OAuth is interactive; durable workflows
+  run unattended — so when an MCP-backed step finds its credential
+  missing or dead (expired with no refresh token, a 401 from the
+  server, or an OAuth flow demanding authorization — emitted code never
+  opens a browser), it raises `RoteMcpAuthNeeded` and the workflow
+  parks durably on a `rote:auth:<server>` topic, exempt from the retry
+  budget and advertised via the `rote_auth_status` workflow event.
+  `rote mcp login <server>` now finishes the loop: after a successful
+  dance it scans the new app registry (`~/.local/share/rote/apps.json`,
+  recorded by `rote emit`/`rote graduate`; `ROTE_APPS_PATH` overrides),
+  discovers workflows parked on that server, and releases them — the
+  run picks up exactly where it stopped, with the fresh credential.
+  Parallel-wave siblings retry once before parking so a stale auth
+  failure can't strand a workflow after its release signal was already
+  consumed. A workflow parked longer than 30 days times out loudly.
+  Proven cross-process on the real DBOS runtime against a live MCP
+  server (`tests/test_mcp_park_e2e.py`). The TS runtimes still fail
+  loud on dead credentials — extending the park is a known follow-up.
+
 - **Cloudflare Workers call MCP tools, authenticated by provisioning**
   — Workers have no filesystem for the token store, so
   `rote mcp export <server>` turns a completed `rote mcp login` into
