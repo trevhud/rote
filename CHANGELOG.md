@@ -9,7 +9,34 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-11
+
 ### Added
+- **Live graduation progress** — the graduator now emits structured
+  `GraduationEvent`s (`rote.graduator.events`): phase transitions
+  (driven by `progress.ndjson` markers the graduator skill writes at
+  the start of each phase), per-turn token counts, tool calls, and
+  artifacts. `rote graduate` renders them live on stderr; hosts embed
+  the stream via `Graduator(on_event=...)`. Works across the Claude
+  subprocess driver (stream-json) and both in-process API drivers.
+- **OpenAI-compatible API driver** (`--agent openai-api`) — the same
+  in-process graduation loop against any OpenAI-shaped endpoint
+  (GPT, GLM, Kimi, …), sharing one filesystem-tool surface with the
+  Anthropic driver.
+- **Gateway-friendly driver auth** — both API drivers accept
+  `base_url` and `default_headers` (through the new
+  `Graduator(driver_kwargs=...)`), so graduations can route through
+  proxies like Cloudflare AI Gateway with no provider key in the
+  environment.
+- `Graduator.graduate()` accepts `extra_instructions`, appended to the
+  graduator skill prompt (e.g. pinning emitted judge calls to a
+  specific runtime client).
+- The Cloudflare adapter emits `manifest.json` at the runtime-dir
+  root — machine-readable pipeline identity (name, version, pipeline
+  hash, class name, node ids, entry) for deploy tooling; regex
+  fallback retained for older emits.
+- `rote.eval.build_scorecard_for` is now public API (was a CLI
+  private).
 - **Cloudflare Workers call MCP tools, authenticated by provisioning**
   — Workers have no filesystem for the token store, so
   `rote mcp export <server>` turns a completed `rote mcp login` into
@@ -74,6 +101,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     now works (used by the headersHelper wiring).
 
 ### Fixed
+- The API drivers no longer misread per-turn output truncation
+  (`stop_reason: max_tokens` / `finish_reason: length`) as completion —
+  the per-turn cap is raised to 32k tokens and the loop continues
+  automatically with a `warning` event. Surfaced by Claude 5 models,
+  which spend far more of the turn budget on thinking.
+- The Anthropic driver sets an explicit client timeout sized from the
+  per-turn token cap (the SDK otherwise refuses non-streaming requests
+  that may exceed 10 minutes at the new cap).
+- The Anthropic driver survives `content: null` assistant turns some
+  gateway endpoints return for all-thinking responses: content is
+  normalized, empty assistant turns are never replayed into history,
+  and an empty natural stop nudge-continues with a warning.
 - Emitted Cloudflare `package.json` pinned `@cloudflare/workers-types`
   ^4, which current wrangler (4.110+) rejects with a peer-dependency
   conflict on a fresh install — bumped to ^5.
@@ -301,7 +340,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote graduate` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/trevhud/rote/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/trevhud/rote/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/trevhud/rote/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/trevhud/rote/compare/v0.5.0...v0.6.0
