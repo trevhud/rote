@@ -103,9 +103,10 @@ def _response(
     *,
     prompt_tokens: int = 100,
     completion_tokens: int = 50,
+    finish_reason: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=message)],
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
         usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
     )
 
@@ -534,3 +535,58 @@ async def test_run_constructs_client_with_plumbed_kwargs(
     assert captured["base_url"] == "https://gw.example/v1"
     assert captured["default_headers"] == {"cf-aig-authorization": "Bearer g"}
     assert captured["api_key"] == "rote-gateway"
+
+
+# ───────── Turn truncation (finish_reason "length") ─────────
+
+
+@pytest.mark.asyncio
+async def test_length_truncation_continues_and_warns(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """A turn cut off at the output-token limit (finish_reason "length",
+    no tool_calls) must continue rather than complete: warn, nudge, and
+    finish normally on a later turn."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    work_dir.mkdir()
+
+    responses = [
+        # Turn 1: reasoning model spent the whole budget thinking; cut off.
+        _response(_message(content=None), finish_reason="length"),
+        # Turn 2: writes the pipeline.
+        _response(_message(tool_calls=[_write_pipeline_call("c2", work_dir)])),
+        # Turn 3: done.
+        _response(_message(content="Done."), finish_reason="stop"),
+    ]
+    client = fake_openai(responses)
+
+    events: list[Any] = []
+    driver = OpenAIApiDriver(model="openai/gpt-5.5")
+    result = await driver.run(
+        skill_dir=skill_dir,
+        graduator_skill_dir=graduator_dir,
+        work_dir=work_dir,
+        on_event=events.append,
+    )
+
+    assert result.pipeline_yaml_path.is_file()
+    warnings = [e for e in events if e.type == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0].turn == 1
+    assert "truncated" in warnings[0].message
+
+    # The truncated assistant turn was replayed with a non-null content
+    # (some endpoints reject null content + no tool_calls), followed by a
+    # user "continue" nudge.
+    turn2_messages = client.chat.completions.calls[1]["messages"]
+    assistant = [m for m in turn2_messages if m["role"] == "assistant"][-1]
+    assert assistant["content"] == ""
+    assert turn2_messages[-1]["role"] == "user"
+    assert "output-token limit" in turn2_messages[-1]["content"]
+
+
+def test_default_max_tokens_per_turn_is_generous() -> None:
+    from rote.graduator.drivers.openai_api import DEFAULT_MAX_TOKENS_PER_TURN
+
+    assert DEFAULT_MAX_TOKENS_PER_TURN == 32768

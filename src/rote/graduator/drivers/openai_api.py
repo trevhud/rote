@@ -69,7 +69,13 @@ except ImportError:
 # ───────── Defaults ─────────
 
 DEFAULT_MAX_ITERATIONS = 60
-DEFAULT_MAX_TOKENS_PER_TURN = 8192
+
+#: Per-turn output-token cap, sent as ``max_completion_tokens``. A ceiling,
+#: not a spend — only a runaway turn pays it — so it's generous: reasoning
+#: models think at length, and a low cap truncates a turn mid-thought
+#: (``finish_reason == "length"``, which the loop treats as "continue", not
+#: completion — see :meth:`OpenAIApiDriver.run`).
+DEFAULT_MAX_TOKENS_PER_TURN = 32768
 
 #: Header names that authenticate a Cloudflare AI Gateway call. Either one
 #: standing in for ``OPENAI_API_KEY`` means the driver is running against
@@ -268,9 +274,11 @@ class OpenAIApiDriver(GraduatorDriver):
                     "OpenAI-compatible endpoint returned no choices.",
                     details=f"turn {iteration}",
                 )
-            message = response.choices[0].message
+            choice = response.choices[0]
+            message = choice.message
             content = getattr(message, "content", None)
             tool_calls = getattr(message, "tool_calls", None) or []
+            finish_reason = getattr(choice, "finish_reason", None)
 
             emit_safely(
                 on_event,
@@ -286,8 +294,13 @@ class OpenAIApiDriver(GraduatorDriver):
             # Rebuild the assistant turn as a plain dict from just content +
             # tool_calls. This drops any reasoning/thinking fields some
             # models (kimi, glm) attach — we don't echo them back, and the
-            # API rejects unknown fields on replay.
-            assistant_msg: dict[str, Any] = {"role": "assistant", "content": content}
+            # API rejects unknown fields on replay. Coerce a null content to
+            # "" on non-tool turns: some endpoints reject an assistant
+            # message with both content null and no tool_calls on replay.
+            assistant_msg: dict[str, Any] = {
+                "role": "assistant",
+                "content": content if tool_calls else (content or ""),
+            }
             if tool_calls:
                 assistant_msg["tool_calls"] = [
                     {
@@ -302,8 +315,36 @@ class OpenAIApiDriver(GraduatorDriver):
                 ]
             messages.append(cast("ChatCompletionMessageParam", assistant_msg))
 
+            if finish_reason == "length" and not tool_calls:
+                # The turn was cut off at the output-token limit before the
+                # agent produced any action (reasoning models can spend a
+                # whole turn thinking). NOT completion: nudge it to keep
+                # going and spend another iteration (the max-iterations cap
+                # still bounds the loop).
+                emit_safely(
+                    on_event,
+                    GraduationEvent(
+                        type="warning",
+                        ts=time.time(),
+                        turn=iteration,
+                        message=(
+                            f"turn {iteration} truncated at the output-token limit — continuing"
+                        ),
+                    ),
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your last turn hit the output-token limit. "
+                            "Continue exactly where you left off."
+                        ),
+                    }
+                )
+                continue
+
             if not tool_calls:
-                # finish_reason "stop" (no tool calls) → the agent is done.
+                # A natural stop (finish_reason "stop", no tool calls) → done.
                 last_text = content or last_text
                 break
 

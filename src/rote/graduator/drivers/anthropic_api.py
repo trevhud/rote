@@ -108,7 +108,13 @@ Users with complex skills can override via
 """
 
 DEFAULT_MAX_ITERATIONS = 60
-DEFAULT_MAX_TOKENS_PER_TURN = 8192
+
+#: Per-turn output-token cap. This is a ceiling, not a spend — only a
+#: runaway turn pays it — so it's set generously: Claude 5-family models
+#: think at length, and an 8192 cap starved them into hitting
+#: ``stop_reason == "max_tokens"`` mid-thought (which the loop now treats
+#: as "continue", not completion — see :meth:`AnthropicApiDriver.run`).
+DEFAULT_MAX_TOKENS_PER_TURN = 32768
 
 #: Cloudflare AI Gateway's authenticated-gateway header. When BYOK
 #: (bring-your-own-key) is enabled on the gateway, this header carries
@@ -308,8 +314,38 @@ class AnthropicApiDriver(GraduatorDriver):
 
             messages.append({"role": "assistant", "content": response.content})
 
-            if response.stop_reason != "tool_use":
-                # Capture the final text for diagnostics
+            has_tool_use = any(block.type == "tool_use" for block in response.content)
+
+            if response.stop_reason == "max_tokens" and not has_tool_use:
+                # The turn was cut off at the output-token limit before the
+                # agent produced any action — Claude 5-family models can
+                # spend a whole turn thinking. This is NOT completion: nudge
+                # it to keep going and spend another iteration (the
+                # max-iterations cap still bounds the loop).
+                emit_safely(
+                    on_event,
+                    GraduationEvent(
+                        type="warning",
+                        ts=time.time(),
+                        turn=iteration,
+                        message=(
+                            f"turn {iteration} truncated at the output-token limit — continuing"
+                        ),
+                    ),
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your last turn hit the output-token limit. "
+                            "Continue exactly where you left off."
+                        ),
+                    }
+                )
+                continue
+
+            if not has_tool_use:
+                # A natural stop (end_turn, etc.) with nothing left to do.
                 for block in response.content:
                     if block.type == "text":
                         last_text = block.text or last_text
