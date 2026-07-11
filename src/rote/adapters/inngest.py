@@ -204,6 +204,20 @@ def gate_event_name(pipeline: Pipeline, node: Node) -> str:
     return f"{_event_prefix(pipeline)}/{node.signal}"
 
 
+def auth_event_name(pipeline: Pipeline, server: str) -> str:
+    """The event that releases workflows parked on ``server``'s auth.
+
+    ``<pipeline>/rote.auth.<server>`` — dots and slashes are Inngest's
+    first-class separators; the DBOS runtimes' ``rote:auth:`` prefix is
+    unusable here (``:`` has no documented status in event names). The
+    ``rote.auth.`` segment cannot collide with HITL gate events: gate
+    signals are IR-validated to ``[A-Za-z0-9_-]+``, so a signal can
+    never contain a dot. One send of this event wakes EVERY run parked
+    on it — Inngest events fan out to all matching waiters.
+    """
+    return f"{_event_prefix(pipeline)}/rote.auth.{server}"
+
+
 # ───────── Retry mapping ─────────
 #
 # | IR field       | Inngest mapping                                       |
@@ -382,6 +396,15 @@ def emit_client(pipeline: Pipeline) -> str:
 # ───────── src/inngest/pipeline.ts emission ─────────
 
 
+def _is_mcp_backed(node: Node, cfg: InngestAdapterConfig) -> bool:
+    """True when this node's step calls an MCP tool at run time."""
+    return (
+        node.kind is NodeKind.EXTERNAL_CALL
+        and node.mcp is not None
+        and cfg.external_backend == "mcp"
+    )
+
+
 def _step_call_expr(node: Node, payload_indent: str) -> str:
     """The ``step.run("<id>", async () => fn(payload))`` expression, unterminated."""
     fn_name = _to_camel_case(node.id)
@@ -391,6 +414,108 @@ def _step_call_expr(node: Node, payload_indent: str) -> str:
     else:
         call = f"{fn_name}({payload})"
     return f"step.run({json.dumps(node.id)}, async () => {call})"
+
+
+def _parkable_call_expr(node: Node, pipeline: Pipeline, payload_indent: str) -> str:
+    """The ``runParkable(step, ...)`` expression for an MCP-backed node.
+
+    Auth failures suspend the run on the pipeline's ``rote.auth.<server>``
+    event instead of failing it — see :data:`_RUN_PARKABLE_HELPER`.
+    """
+    assert node.mcp is not None
+    fn_name = _to_camel_case(node.id)
+    payload = payload_ts_literal(node, indent=payload_indent)
+    release_event = auth_event_name(pipeline, node.mcp.server)
+    return (
+        f"runParkable(step, {json.dumps(node.id)}, {json.dumps(release_event)}, "
+        f"{json.dumps(node.mcp.server)}, async () => {fn_name}({payload}))"
+    )
+
+
+_RUN_PARKABLE_HELPER = """\
+// ───────── MCP auth parking ─────────
+//
+// MCP-backed steps can fail because a credential is missing or dead.
+// That is not transient — no retry produces a credential — so the run
+// parks durably on this pipeline's `<pipeline>/rote.auth.<server>`
+// event instead of failing. `rote mcp login <server>` (or `rote mcp
+// release <server>`) broadcasts that event; one send wakes every run
+// parked on it. Inngest does NOT buffer events for waits that haven't
+// started yet — the retry-once-before-parking below covers a release
+// that fires in that gap (the fresh attempt re-reads the credential
+// store, which the login already fixed).
+
+/** The step tools runParkable needs — structural, so the handler's
+ * `step` object satisfies it without importing Inngest's own types. */
+interface ParkableStep {
+    run(id: string, fn: () => Promise<unknown>): Promise<unknown>;
+    waitForEvent(id: string, opts: { event: string; timeout: string }): Promise<unknown>;
+}
+
+/** A failed step's error tree carries the auth signal. StepError.cause
+ * holds the deserialized original error; serialization can prune deep
+ * cause chains, so the message text is the fallback signal. */
+function stepNeedsAuth(err: unknown): boolean {
+    if (isRoteMcpAuthNeeded(err)) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.includes("needs (re)authentication");
+}
+
+/**
+ * Run an MCP-backed step, parking durably on auth failures.
+ *
+ * Each attempt uses a fresh step id (`<id>`, `<id>-retry-1`, ...) so the
+ * executor memoizes every attempt separately; auth failures are wrapped
+ * in NonRetriableError inside the step so they skip the retry budget
+ * (retrying cannot conjure a credential — the park can).
+ */
+async function runParkable(
+    step: ParkableStep,
+    stepId: string,
+    releaseEvent: string,
+    server: string,
+    fn: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            return (await step.run(
+                attempt === 0 ? stepId : `${stepId}-retry-${attempt}`,
+                async () => {
+                    try {
+                        return await fn();
+                    } catch (err) {
+                        if (isRoteMcpAuthNeeded(err)) {
+                            throw new NonRetriableError(
+                                err instanceof Error ? err.message : String(err),
+                                { cause: err instanceof Error ? err : undefined },
+                            );
+                        }
+                        throw err;
+                    }
+                },
+            )) as Record<string, unknown>;
+        } catch (err) {
+            if (!stepNeedsAuth(err)) throw err;
+            // Retry once immediately; park on the second consecutive
+            // failure. (Attempts 0,2,4,... follow a park or start the
+            // loop; attempts 1,3,5,... are the immediate retries.)
+            if (attempt % 2 === 1) {
+                const released = await step.waitForEvent(
+                    `${stepId}-auth-wait-${attempt}`,
+                    // 30 days; note the free plan caps pauses at 7 days.
+                    { event: releaseEvent, timeout: "30d" },
+                );
+                if (released === null) {
+                    throw new NonRetriableError(
+                        `parked 30 days waiting for auth for MCP server '${server}' ` +
+                            `(release event '${releaseEvent}') and none arrived`,
+                    );
+                }
+            }
+        }
+    }
+}
+"""
 
 
 def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
@@ -419,7 +544,7 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     )
 
 
-def _emit_workflow_body(pipeline: Pipeline, fn_retries: int) -> str:
+def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapterConfig) -> str:
     """Render the createFunction handler body (waves + return)."""
     waves = _execution_waves(pipeline)
     lines: list[str] = []
@@ -456,12 +581,19 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int) -> str:
             comment = _node_policy_comment(node, fn_retries, indent=" " * 8)
             if comment:
                 lines.append(comment.rstrip("\n"))
-            expr = _step_call_expr(node, payload_indent=" " * 12)
+            if _is_mcp_backed(node, cfg):
+                # MCP-backed: auth failures park the run on the release
+                # event instead of failing it.
+                expr = _parkable_call_expr(node, pipeline, payload_indent=" " * 12)
+            else:
+                expr = _step_call_expr(node, payload_indent=" " * 12)
             lines.append(f"        const {node.id}_result = await {expr};")
         elif len(non_hitl) > 1:
             lines.append("        // Parallel fan-out: Promise.all over step.run calls is")
             lines.append("        // Inngest's documented in-function parallelism pattern —")
             lines.append("        // the executor schedules the steps concurrently.")
+            lines.append("        // MCP-backed branches park independently; one broadcast")
+            lines.append("        // of the release event wakes all of them.")
             for node in non_hitl:
                 comment = _node_policy_comment(node, fn_retries, indent=" " * 8)
                 if comment:
@@ -469,7 +601,10 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int) -> str:
             result_names = ", ".join(f"{n.id}_result" for n in non_hitl)
             lines.append(f"        const [{result_names}] = await Promise.all([")
             for node in non_hitl:
-                expr = _step_call_expr(node, payload_indent=" " * 16)
+                if _is_mcp_backed(node, cfg):
+                    expr = _parkable_call_expr(node, pipeline, payload_indent=" " * 16)
+                else:
+                    expr = _step_call_expr(node, payload_indent=" " * 16)
                 lines.append(f"            {expr},")
             lines.append("        ]);")
 
@@ -498,6 +633,29 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
     trigger = trigger_event_name(pipeline)
     desc_first = safe_block_comment_line(pipeline.description, fallback=pipeline.name)
     has_gates = any(n.kind is NodeKind.HITL_GATE for n in pipeline.nodes)
+    mcp_backed = any(_is_mcp_backed(n, cfg) for n in pipeline.nodes)
+
+    if mcp_backed:
+        arch_note = (
+            " * Architecture note: deterministic steps wrap functions from\n"
+            " * `extracted/`; typed LLM judges live in `signatures/`; and\n"
+            " * MCP-backed steps call the tool the source skill used, over\n"
+            " * Streamable HTTP, as memoized durable steps. When an MCP\n"
+            " * credential is missing or dead the run parks durably on the\n"
+            " * pipeline's `rote.auth.<server>` event — `rote mcp login` (or\n"
+            " * `rote mcp release`) broadcasts it (see runParkable)."
+        )
+    else:
+        arch_note = (
+            " * Architecture note: every step in this function wraps a deterministic\n"
+            " * function from `extracted/` or a typed LLM signature from\n"
+            " * `signatures/`. None of them call MCP tools at runtime — the MCP\n"
+            " * tool calls from the source skill were graduated into direct API\n"
+            " * calls during the rote emission step."
+        )
+    # The header f-string below is dedent()ed AFTER interpolation; match
+    # the template's 8-space indentation or dedent becomes a no-op.
+    arch_note = textwrap.indent(arch_note, " " * 8)
 
     header = textwrap.dedent(
         f"""\
@@ -514,26 +672,24 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
          * so a regenerated pipeline becomes a new Inngest function. The trigger
          * event name stays stable across versions — senders never change.
          *
-         * Architecture note: every step in this function wraps a deterministic
-         * function from `extracted/` or a typed LLM signature from
-         * `signatures/`. None of them call MCP tools at runtime — the MCP
-         * tool calls from the source skill were graduated into direct API
-         * calls during the rote emission step.
+{arch_note}
          */
 
         """
     )
 
     inngest_imports = (
-        'import { NonRetriableError } from "inngest";\n' if has_gates else ""
+        'import { NonRetriableError } from "inngest";\n' if (has_gates or mcp_backed) else ""
     ) + 'import { inngest } from "./client";\n'
+    if mcp_backed:
+        inngest_imports += 'import { isRoteMcpAuthNeeded } from "../extracted/_roteMcp";\n'
 
     imports_block = module_imports(pipeline, prefix="../")
 
     has_judges = bool(pipeline.nodes_by_kind(NodeKind.LLM_JUDGE))
     helper_block = f"\n{REQUIRE_ENV_HELPER.rstrip(chr(10))}\n" if has_judges else ""
 
-    body = _emit_workflow_body(pipeline, fn_retries)
+    body = _emit_workflow_body(pipeline, fn_retries, cfg)
 
     retries_comment = (
         "        // Inngest v4 retries are function-level: every step gets this\n"
@@ -562,6 +718,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
     sections = [header + inngest_imports + imports_block]
     if helper_block:
         sections.append(helper_block.strip("\n"))
+    if mcp_backed:
+        sections.append(_RUN_PARKABLE_HELPER.rstrip("\n"))
     sections.append(function_block)
     return "\n\n".join(sections)
 
@@ -653,6 +811,56 @@ def emit_readme(pipeline: Pipeline, cfg: InngestAdapterConfig) -> str:
     )
     first_gate_event = gate_event_name(pipeline, gates[0]) if gates else "app/example.approved"
 
+    mcp_servers = sorted(
+        {
+            n.mcp.server
+            for n in mcp_backed_nodes(pipeline, cfg.external_backend)
+            if n.mcp is not None
+        }
+    )
+    if mcp_servers:
+        example_server = mcp_servers[0]
+        example_event = auth_event_name(pipeline, example_server)
+        login_lines = "\n".join(f"rote mcp login {s}" for s in mcp_servers)
+        mcp_note = f"""
+## MCP-backed steps
+
+Some `external_call` steps call MCP tools over Streamable HTTP (the
+`mcp` backend), authenticated from the rote credential store
+(`rote mcp login <server>`), refreshing tokens in place. Note: the
+credential store is read by the process *serving this app* — for a
+deployed service, log in (or sync the token files) on that host.
+
+### Authentication and parking
+
+If a server's stored credential is missing or dead at run time, the
+run does **not** fail — it parks durably on a `step.waitForEvent` for
+`{example_event}` and resumes when the credential is fixed:
+
+```sh
+{login_lines}
+```
+
+A successful login broadcasts the release event through the Inngest
+event API (dev server by default; set `INNGEST_EVENT_KEY` — or
+`ROTE_INNGEST_EVENT_URL` for a non-default dev server — to reach
+Inngest Cloud). One event wakes **every** parked run. `rote mcp
+release <server>` sends the same broadcast without a login, or do it
+by hand:
+
+```sh
+curl -X POST http://localhost:8288/e/dev \\
+    -H 'content-type: application/json' \\
+    -d '{{"name": "{example_event}", "data": {{"server": "{example_server}"}}}}'
+```
+
+A run parked longer than 30 days times out and fails (Inngest's free
+plan caps pauses at 7 days). Prefer direct vendor-SDK calls? Re-emit
+with `rote emit --runtime inngest --backend api`.
+"""
+    else:
+        mcp_note = ""
+
     # Built flush-left (not textwrap.dedent) because interpolated
     # multi-line values — the gate table rows — contain unindented lines
     # that would defeat dedent's common-prefix detection. Same fix the
@@ -726,7 +934,7 @@ curl -X POST http://localhost:8288/e/dev \\
 
 In production, send to Inngest Cloud (`https://inn.gs/e/<EVENT_KEY>`)
 or call `inngest.send()` with `INNGEST_EVENT_KEY` set.
-
+{mcp_note}
 ## Mount in an existing Next.js app
 
 This is the point of the Inngest target: the same functions live in

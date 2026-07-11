@@ -602,15 +602,20 @@ Don't waste time debugging stubs. These are intentional.
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
   through the DAG, with HITL gate resume payloads participating as
   the gate's result — validated empirically in the runtime e2e tests
-- Park-on-auth (DBOS Python + DBOS-TS): MCP-backed steps with a
-  missing/dead credential suspend the workflow durably;
+- Park-on-auth (DBOS Python, DBOS-TS, Inngest): MCP-backed steps with
+  a missing/dead credential suspend the run durably;
   `rote mcp login <server>` (or `rote mcp release <server>`) releases
-  every parked workflow across the apps recorded in
-  `~/.local/share/rote/apps.json` (written at emit/graduate time) —
-  one Python release path for both runtimes via DBOS portable
-  serialization. Cross-process loop proven in
-  `tests/test_mcp_park_e2e.py`; cross-language loop (TS parks, Python
-  releases, Docker Postgres) in `tests/test_mcp_park_ts_e2e.py`.
+  every parked run across the apps recorded in
+  `~/.local/share/rote/apps.json` (written at emit/graduate time).
+  DBOS runtimes release by discovery + per-workflow send (portable
+  serialization); Inngest releases by one broadcast event per pipeline
+  (`<pipeline>/rote.auth.<server>` — events fan out to all waiters; no
+  discovery API exists or is needed). Inngest traps if you touch it:
+  fresh step ids per attempt (memoization), NonRetriableError wrapping
+  (per-step retry budgets + managed backoff), and NO event buffering
+  for unstarted waits — the retry-once covers that race. Proven live:
+  `tests/test_mcp_park_e2e.py`, `test_mcp_park_ts_e2e.py`,
+  `test_mcp_park_inngest_e2e.py`.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

@@ -265,3 +265,74 @@ def test_dbos_ts_url_prefers_config_key_with_env_expansion(
     # The env override outranks everything, matching emitted main.ts.
     monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://o:o@override:5432/sys")
     assert dbos_ts_system_database_url(app) == "postgresql://o:o@override:5432/sys"
+
+
+def test_release_broadcasts_to_inngest_apps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inngest release = one fan-out event per registered pipeline; no
+    per-run discovery (events wake every matching waiter). Endpoint
+    resolution: ROTE_INNGEST_EVENT_URL > INNGEST_EVENT_KEY (cloud) >
+    the local dev server with its unvalidated key."""
+    import httpx
+
+    from rote.mcp.release import _inngest_event_endpoint
+
+    posts: list[tuple[str, dict]] = []
+
+    def _fake_post(url: str, *, json: dict, timeout: float) -> httpx.Response:
+        posts.append((url, json))
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "post", _fake_post)
+    monkeypatch.delenv("ROTE_INNGEST_EVENT_URL", raising=False)
+    monkeypatch.delenv("INNGEST_EVENT_KEY", raising=False)
+
+    app = tmp_path / "inngest-app"
+    app.mkdir()
+    record_app(app, "inngest", "invoice_push")
+    record_app(tmp_path / "inngest-dup", "inngest", "invoice_push")  # same pipeline → deduped
+
+    report = release_parked_workflows("vendor")
+
+    assert [(b.event, b.endpoint) for b in report.broadcasts] == [
+        ("invoice_push/rote.auth.vendor", "http://127.0.0.1:8288/e/dev")
+    ]
+    assert posts == [
+        (
+            "http://127.0.0.1:8288/e/dev",
+            {
+                "name": "invoice_push/rote.auth.vendor",
+                "data": {"server": "vendor", "released_by": "rote mcp"},
+            },
+        )
+    ]
+    assert report.released == ()
+
+    # Endpoint resolution.
+    monkeypatch.setenv("INNGEST_EVENT_KEY", "prod-key")
+    assert _inngest_event_endpoint() == "https://inn.gs/e/prod-key"
+    monkeypatch.setenv("ROTE_INNGEST_EVENT_URL", "http://10.0.0.5:8288/e/custom")
+    assert _inngest_event_endpoint() == "http://10.0.0.5:8288/e/custom"
+
+
+def test_release_reports_unreachable_inngest_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    def _refuse(url: str, *, json: dict, timeout: float) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "post", _refuse)
+    monkeypatch.delenv("ROTE_INNGEST_EVENT_URL", raising=False)
+    monkeypatch.delenv("INNGEST_EVENT_KEY", raising=False)
+
+    app = tmp_path / "inngest-app"
+    app.mkdir()
+    record_app(app, "inngest", "invoice_push")
+
+    report = release_parked_workflows("vendor")
+    assert report.broadcasts == ()
+    assert len(report.skipped) == 1
+    assert "connection refused" in report.skipped[0].reason

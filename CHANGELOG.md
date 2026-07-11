@@ -10,6 +10,24 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Park-on-auth for Inngest, released by broadcast.** The Inngest
+  adapter emits a `runParkable` loop around MCP-backed steps: auth
+  failures are wrapped in `NonRetriableError` inside the step (so
+  Inngest's per-step retry budget and managed backoff never burn on a
+  missing credential), each attempt gets a fresh memoization-safe step
+  id, and the run parks on `step.waitForEvent` for
+  `<pipeline>/rote.auth.<server>`. Release needs no discovery: Inngest
+  events fan out to every matching waiter, so `rote mcp login` /
+  `rote mcp release` send **one** broadcast per registered pipeline
+  (dev server by default, Inngest Cloud with `INNGEST_EVENT_KEY`,
+  or `ROTE_INNGEST_EVENT_URL`). Because Inngest does not buffer events
+  for waits that haven't started, the park loop retries once before
+  waiting — a release landing in that gap fixes the credential store
+  the retry then reads. Proven live against `inngest-cli dev`
+  (`tests/test_mcp_park_inngest_e2e.py`): run parks, a wrong-server
+  broadcast leaves it parked, the real broadcast wakes it, and it
+  completes with live MCP data.
+
 - **Park-on-auth for DBOS TypeScript, released from Python.** The
   dbos-ts adapter now emits the same park the Python adapter got:
   MCP-backed steps throw `RoteMcpAuthNeeded` (typed error in the
