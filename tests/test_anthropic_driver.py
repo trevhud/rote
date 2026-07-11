@@ -661,8 +661,12 @@ def test_is_available_no_key_no_gateway(monkeypatch: pytest.MonkeyPatch) -> None
 def test_client_kwargs_omitted_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "real-key")
     driver = AnthropicApiDriver()
-    # Nothing forced: SDK env defaults apply, no placeholder key.
-    assert driver._client_kwargs() == {}
+    kwargs = driver._client_kwargs()
+    # Nothing forced: SDK env defaults apply, no placeholder key. The only
+    # always-present kwarg is the explicit timeout (the SDK refuses long
+    # non-streaming requests on its default timeout).
+    assert kwargs.pop("timeout") >= 600.0
+    assert kwargs == {}
 
 
 def test_client_kwargs_plumbs_base_url_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -483,7 +483,10 @@ def test_is_available_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_client_kwargs_omitted_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "real")
-    assert OpenAIApiDriver(model="x")._client_kwargs() == {}
+    kwargs = OpenAIApiDriver(model="x")._client_kwargs()
+    # Only the explicit long-turn timeout is always present.
+    assert kwargs.pop("timeout") >= 600.0
+    assert kwargs == {}
 
 
 def test_client_kwargs_plumbs_base_url_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:

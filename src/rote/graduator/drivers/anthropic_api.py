@@ -208,6 +208,12 @@ class AnthropicApiDriver(GraduatorDriver):
             kwargs["default_headers"] = self.default_headers
         if not os.environ.get("ANTHROPIC_API_KEY") and _has_gateway_auth(self.default_headers):
             kwargs["api_key"] = _GATEWAY_BYOK_PLACEHOLDER
+        # The SDK refuses non-streaming requests whose worst-case duration
+        # (scaled from max_tokens) exceeds 10 minutes UNLESS the client has
+        # an explicit timeout — and a 32k thinking-friendly turn cap crosses
+        # that line. Size the timeout from the cap (the SDK's own 128k-tokens
+        # -per-hour model) with headroom, floored at the 10-minute default.
+        kwargs["timeout"] = max(600.0, 60 * 60 * self.max_tokens_per_turn / 128_000 * 1.5)
         return kwargs
 
     def is_available(self) -> tuple[bool, str]:

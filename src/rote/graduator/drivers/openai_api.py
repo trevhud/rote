@@ -173,6 +173,10 @@ class OpenAIApiDriver(GraduatorDriver):
             kwargs["default_headers"] = self.default_headers
         if not os.environ.get("OPENAI_API_KEY") and _has_gateway_auth(self.default_headers):
             kwargs["api_key"] = _GATEWAY_PLACEHOLDER
+        # Long reasoning turns at the 32k cap can outlast the SDK's default
+        # 10-minute timeout; scale it with the cap (same heuristic as the
+        # anthropic driver), floored at that default.
+        kwargs["timeout"] = max(600.0, 60 * 60 * self.max_tokens_per_turn / 128_000 * 1.5)
         return kwargs
 
     def is_available(self) -> tuple[bool, str]:
