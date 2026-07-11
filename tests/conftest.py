@@ -14,11 +14,13 @@ BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipe
 
 @pytest.fixture(autouse=True)
 def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No test may read (or write!) the developer's real MCP registry or
-    token store — several code paths (eval MCP wiring, emitted-helper
-    resolution, the `rote mcp` commands) consult them by default."""
+    """No test may read (or write!) the developer's real MCP registry,
+    token store, or app registry — several code paths (eval MCP wiring,
+    emitted-helper resolution, the `rote mcp` commands, and `rote emit`
+    recording the output dir) consult them by default."""
     monkeypatch.setenv("ROTE_MCP_CONFIG", str(tmp_path / "mcp-config" / "mcp.json"))
     monkeypatch.setenv("ROTE_MCP_TOKEN_DIR", str(tmp_path / "mcp-tokens"))
+    monkeypatch.setenv("ROTE_APPS_PATH", str(tmp_path / "rote-apps" / "apps.json"))
 
 
 @pytest.fixture(scope="session")

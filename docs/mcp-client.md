@@ -89,10 +89,51 @@ the CLI store and the emitted helper is enforced by
 
 The DBOS adapter ships `extracted/_rote_mcp.py` with every MCP-backed
 app — the *verbatim source* of `rote.mcp._runtime_helper` (one tested
-implementation, no drift; enforced by test). The emitted step opens
-`mcp_client(<server>, <ir-url>)`: OAuth with the shared store when the
-user has run `rote mcp login`, static registry headers when configured,
-plain client otherwise. Emitted apps never import rote.
+implementation, no drift; enforced by test). The emitted step calls
+`call_mcp_tool(<server>, <ir-url>, <tool>, arguments)`: OAuth with the
+shared store when the user has run `rote mcp login`, static registry
+headers when configured, plain client otherwise. Emitted apps never
+import rote.
+
+## Park-on-auth (DBOS Python)
+
+OAuth is interactive; durable workflows run unattended. The resolution:
+auth is a *preflight* owned by the CLI (where a human is present), and
+the emitted workflow only ever consumes cached tokens. When that fails
+— expired token with no refresh path, a 401 from the server, or an
+OAuth flow demanding authorization (the helper's OAuth subclass never
+opens a browser) — the step raises `RoteMcpAuthNeeded` and the workflow
+**parks durably instead of failing**:
+
+1. The step's `should_retry` predicate exempts `RoteMcpAuthNeeded` from
+   the retry budget — no number of retries produces a credential.
+2. The workflow advertises what it's blocked on via the
+   `rote_auth_status` workflow event (`{"awaiting": "<server>"}`).
+   DBOS has no distinct WAITING status — a parked workflow is just
+   PENDING, so it must say what it's waiting for.
+3. It blocks on `DBOS.recv(topic="rote:auth:<server>")` (30-day
+   timeout; the `:` in the prefix makes IR-signal collisions
+   impossible — IR signal charsets exclude it).
+4. `rote mcp login <server>`, after a successful dance, scans the app
+   registry (`~/.local/share/rote/apps.json`, written by
+   `rote emit`/`rote graduate`; `ROTE_APPS_PATH` overrides), finds
+   PENDING workflows awaiting that server via `DBOSClient.get_event`,
+   and sends each the release message. DBOS notifications persist
+   per-topic, so releasing a workflow that hasn't quite reached its
+   `recv` is race-free.
+5. The workflow retries the step with the fresh credential and
+   continues.
+
+One subtlety: in a parallel wave, a sibling step's *stale* auth failure
+can surface after the login already released (and was consumed by) an
+earlier park. The emitted wrappers therefore retry the step once
+immediately — it re-reads the token store — and only park if the fresh
+attempt still needs auth. Proven end-to-end (real DBOS runtime, real
+FastMCP server, cross-process release) in `tests/test_mcp_park_e2e.py`.
+
+The TS runtimes (DBOS-TS, Inngest, Cloudflare) still fail loud on dead
+credentials; extending the park to them is the known follow-up — their
+wait primitives exist, but each needs its own release channel.
 
 ## eval --run
 
