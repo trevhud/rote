@@ -208,6 +208,7 @@ class Graduator:
         skill_dir: Path | str,
         output_dir: Path | str,
         update: bool = False,
+        extra_instructions: str | None = None,
     ) -> GraduationResult:
         """Run the full graduation flow.
 
@@ -225,6 +226,11 @@ class Graduator:
             the agent to re-derive only nodes whose source material
             changed. A skill with no section changes returns without
             invoking the agent at all.
+        extra_instructions
+            Additional instructions appended to the agent's prompt —
+            typically a hosting runtime's contract (e.g. which
+            ``signature_spec.client`` values its isolates can execute).
+            Composed with (not replaced by) the update-mode brief.
 
         Returns
         -------
@@ -244,7 +250,7 @@ class Graduator:
         output_dir = Path(output_dir).resolve()
 
         try:
-            return await self._graduate_inner(skill_dir, output_dir, update)
+            return await self._graduate_inner(skill_dir, output_dir, update, extra_instructions)
         except GraduatorError as e:
             self._emit("error", f"graduation failed: {e}")
             raise
@@ -254,6 +260,7 @@ class Graduator:
         skill_dir: Path,
         output_dir: Path,
         update: bool,
+        extra_instructions: str | None = None,
     ) -> GraduationResult:
         """The graduation body, bracketed by ``graduate``'s error event."""
         if not skill_dir.is_dir():
@@ -290,11 +297,16 @@ class Graduator:
         with tempfile.TemporaryDirectory(prefix="rote-graduate-") as work_dir_str:
             work_dir = Path(work_dir_str)
 
-            run_kwargs: dict[str, Any] = {}
+            instructions: list[str] = []
+            if extra_instructions:
+                instructions.append(extra_instructions)
             if plan is not None:
-                run_kwargs["extra_instructions"] = self._materialize_update_context(
-                    work_dir, output_dir, plan
+                instructions.append(
+                    self._materialize_update_context(work_dir, output_dir, plan)
                 )
+            run_kwargs: dict[str, Any] = {}
+            if instructions:
+                run_kwargs["extra_instructions"] = "\n\n".join(instructions)
 
             try:
                 result = await driver.run(
