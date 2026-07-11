@@ -85,6 +85,7 @@ def release_parked_workflows(server: str) -> ReleaseReport:
     apps = registered_apps()
     dbos_apps = [a for a in apps if a.runtime in _DBOS_RUNTIMES]
     inngest_apps = [a for a in apps if a.runtime == "inngest"]
+    cloudflare_apps = [a for a in apps if a.runtime == "cloudflare"]
 
     released: list[ReleasedWorkflow] = []
     skipped: list[SkippedApp] = []
@@ -92,8 +93,12 @@ def release_parked_workflows(server: str) -> ReleaseReport:
 
     if inngest_apps:
         _release_inngest_apps(server, inngest_apps, broadcasts, skipped)
+    if cloudflare_apps:
+        _release_cloudflare_apps(server, cloudflare_apps, released, skipped)
     if not dbos_apps:
-        return ReleaseReport(released=(), skipped=tuple(skipped), broadcasts=tuple(broadcasts))
+        return ReleaseReport(
+            released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
+        )
 
     try:
         from dbos import DBOSClient
@@ -195,6 +200,94 @@ def _release_inngest_apps(
             skipped.append(SkippedApp(app.path, f"could not send {event!r} to {endpoint}: {e}"))
             continue
         broadcasts.append(BroadcastRelease(app.path, event, endpoint))
+
+
+_CF_API_BASE = "https://api.cloudflare.com/client/v4"
+
+#: Instance statuses that can still consume (or buffer) an event.
+_CF_NON_TERMINAL = ("queued", "running", "waiting", "waitingForPause", "paused")
+
+
+def _release_cloudflare_apps(
+    server: str,
+    apps: list[RegisteredApp],
+    released: list[ReleasedWorkflow],
+    skipped: list[SkippedApp],
+) -> None:
+    """Instance-addressed release for deployed Cloudflare Workflows.
+
+    Workflows has no broadcast: every send targets one instance. But
+    events sent before an instance reaches its ``waitForEvent`` are
+    **buffered per-instance** (documented), so the release can blast the
+    ``rote_auth_<server>`` event at every non-terminal instance without
+    knowing which are parked — consumed by the parked ones, buffered
+    harmlessly for the rest. Production instances do report a
+    ``waiting`` status, but it doesn't distinguish waitForEvent from
+    sleep, so blasting is both simpler and more precise.
+
+    Requires ``CLOUDFLARE_API_TOKEN`` + ``CLOUDFLARE_ACCOUNT_ID``. For
+    ``wrangler dev`` there is no REST surface — release locally with
+    ``npx wrangler workflows instances send-event <name> <id> --type
+    rote_auth_<server> --local``.
+    """
+    try:
+        import httpx
+    except ImportError:
+        skipped.extend(
+            SkippedApp(a.path, "releasing Cloudflare instances requires httpx (rote-cli[mcp])")
+            for a in apps
+        )
+        return
+
+    token = os.environ.get("CLOUDFLARE_API_TOKEN")
+    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+    if not token or not account:
+        skipped.extend(
+            SkippedApp(
+                a.path,
+                "set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID to release deployed "
+                "instances (for `wrangler dev`, use: npx wrangler workflows instances "
+                f"send-event <name> <id> --type rote_auth_{server} --local)",
+            )
+            for a in apps
+        )
+        return
+
+    headers = {"Authorization": f"Bearer {token}"}
+    event_type = f"rote_auth_{server}"
+    seen_workflows: set[str] = set()
+
+    for app in apps:
+        workflow = app.pipeline
+        if not workflow:
+            skipped.append(SkippedApp(app.path, "registry entry has no pipeline name"))
+            continue
+        if workflow in seen_workflows:
+            continue
+        seen_workflows.add(workflow)
+        try:
+            listing = httpx.get(
+                f"{_CF_API_BASE}/accounts/{account}/workflows/{workflow}/instances",
+                headers=headers,
+                params={"per_page": 50},
+                timeout=15.0,
+            )
+            listing.raise_for_status()
+            for inst in listing.json().get("result") or []:
+                if inst.get("status") not in _CF_NON_TERMINAL:
+                    continue
+                instance_id = str(inst.get("id"))
+                send = httpx.post(
+                    f"{_CF_API_BASE}/accounts/{account}/workflows/{workflow}"
+                    f"/instances/{instance_id}/events/{event_type}",
+                    headers=headers,
+                    json={"server": server, "released_by": "rote mcp"},
+                    timeout=15.0,
+                )
+                send.raise_for_status()
+                released.append(ReleasedWorkflow(app.path, instance_id))
+        except Exception as e:  # noqa: BLE001 — a dead account/token must not sink the scan
+            skipped.append(SkippedApp(app.path, f"could not release via the Cloudflare API: {e}"))
 
 
 def _release_in_app(

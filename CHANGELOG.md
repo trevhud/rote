@@ -10,6 +10,29 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Park-on-auth for Cloudflare Workflows — every MCP-capable runtime
+  now parks.** MCP-backed `step.do` calls wrap auth failures in
+  `NonRetryableError` (Workflows has no should-retry predicate; a dead
+  credential must not burn `retries.limit` worth of delay) and park
+  the instance on a `rote_auth_<server>` `waitForEvent` with an
+  explicit 30-day timeout — the default is 24 hours and expiry
+  *throws*, failing the instance, which after 30 unreleased days is
+  the intended outcome. Release has no broadcast on Workflows, but
+  events sent before an instance reaches its wait are **buffered
+  per-instance**, so `rote mcp release <server>` simply sends the
+  event to every non-terminal instance via the Cloudflare REST API
+  (`CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`; in `wrangler
+  dev`, use `npx wrangler workflows instances send-event … --local`).
+  The credential fix on Workers is re-provisioning (`rote mcp export`
+  + `wrangler secret bulk`), not a local login — the `ROTE_MCP_TOKENS`
+  KV cache supersedes secrets, so rotated tokens keep working. Proven
+  live on workerd (`tests/test_mcp_park_cf_e2e.py`): instance parks
+  with nothing provisioned, ignores a wrong-server event, wakes on the
+  real one, and completes — with the retried step driving the real
+  `@modelcontextprotocol/sdk` streamable-HTTP client inside workerd
+  against a live MCP server, closing the long-standing "typecheck
+  only" gap for the Workers MCP output.
+
 - **Park-on-auth for Inngest, released by broadcast.** The Inngest
   adapter emits a `runParkable` loop around MCP-backed steps: auth
   failures are wrapped in `NonRetriableError` inside the step (so

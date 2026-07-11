@@ -236,3 +236,30 @@ def test_inngest_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
     src = (tmp_path / "src" / "inngest" / "pipeline.ts").read_text(encoding="utf-8")
     assert "runParkable" not in src
     assert "rote.auth." not in src
+
+
+# ───────── Park-on-auth (Cloudflare) ─────────
+
+
+def test_cloudflare_parks_on_auth(tmp_path: Path) -> None:
+    """MCP-backed step.do wraps auth failures in NonRetryableError (no
+    should-retry predicate exists) and parks the instance on a
+    rote_auth_<server> waitForEvent with an explicit long timeout —
+    the default is 24h and expiry THROWS, failing the instance."""
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path)
+    src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
+    assert 'import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";' in src
+    assert 'type: "rote_auth_vendor", timeout: "30 days"' in src
+    assert "auth retry" in src  # fresh step names per attempt
+    assert "function stepNeedsAuth" in src
+    # Binding-less nodes keep the plain step.do.
+    assert 'step.do(\n            "plain_call"' in src
+
+
+def test_cloudflare_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
+    get_adapter("cloudflare", external_backend="api").emit(_bound_pipeline(), tmp_path)
+    src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert "NonRetryableError" not in src
+    assert "rote_auth_" not in src
+    assert "stepNeedsAuth" not in src

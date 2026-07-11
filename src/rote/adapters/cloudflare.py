@@ -161,6 +161,92 @@ def _emit_step_call(node: Node, cfg: CloudflareAdapterConfig, *, pass_env: bool)
     )
 
 
+def auth_event_type(server: str) -> str:
+    """The waitForEvent type that releases instances parked on ``server``.
+
+    ``rote_auth_<server>`` — Cloudflare event types must match
+    ``^[A-Za-z0-9_][A-Za-z0-9-_]*$`` (no dots, no colons), so neither
+    the DBOS runtimes' ``rote:auth:`` topic nor Inngest's dotted event
+    fits. Collision-safe by prefix: a gate signal named
+    ``rote_auth_...`` would be pathological but harmless — the release
+    payload simply resumes it like any approval.
+    """
+    return f"rote_auth_{server}"
+
+
+def _emit_step_call_mcp_parkable(node: Node, cfg: CloudflareAdapterConfig) -> str:
+    """MCP-backed dispatch: auth failures park the instance durably.
+
+    Three Cloudflare specifics shape this loop: ``NonRetryableError``
+    (from ``cloudflare:workflows``) is the retry opt-out — there is no
+    should-retry predicate, and a dead credential would otherwise burn
+    ``retries.limit`` attempts of delay; ``waitForEvent`` THROWS on
+    timeout (default 24h — hence the explicit long timeout), failing
+    the run after 30 unreleased days, which is the intended terminal
+    behavior; and events sent before the wait starts are buffered
+    per-instance, so `rote mcp release` can blast every non-terminal
+    instance without a race.
+    """
+    assert node.mcp is not None
+    fn_name = _to_camel_case(node.id)
+    config = _step_config_literal(node, cfg)
+    payload = payload_ts_literal(node, indent=" " * 24)
+    event_type = auth_event_type(node.mcp.server)
+    nid = node.id
+    return (
+        f"        // ─── {nid} (MCP-backed): park on dead credentials ───\n"
+        f"        // `rote mcp release {node.mcp.server}` (after re-provisioning secrets)\n"
+        f"        // sends the {event_type!r} event to every non-terminal instance.\n"
+        f"        let {nid}_result!: Record<string, unknown>;\n"
+        f"        for (let {nid}_attempt = 0; ; {nid}_attempt++) {{\n"
+        f"            try {{\n"
+        f"                {nid}_result = (await step.do(\n"
+        f"                    {nid}_attempt === 0\n"
+        f"                        ? {json.dumps(nid)}\n"
+        f"                        : `{nid} (auth retry ${{{nid}_attempt}})`,\n"
+        f"                    {config},\n"
+        f"                    async () => {{\n"
+        f"                        try {{\n"
+        f"                            return await {fn_name}({payload}, this.env);\n"
+        f"                        }} catch (err) {{\n"
+        f"                            // No retry mints a credential — skip the budget.\n"
+        f"                            throw isRoteMcpAuthNeeded(err)\n"
+        f"                                ? new NonRetryableError(\n"
+        f"                                      err instanceof Error ? err.message : String(err),\n"
+        f"                                  )\n"
+        f"                                : err;\n"
+        f"                        }}\n"
+        f"                    }},\n"
+        f"                )) as Record<string, unknown>;\n"
+        f"                break;\n"
+        f"            }} catch (err) {{\n"
+        f"                if (!stepNeedsAuth(err)) throw err;\n"
+        f"                // Retry once immediately (another isolate may have\n"
+        f"                // refreshed the KV token cache); park on the second\n"
+        f"                // consecutive failure. Fresh step names per attempt.\n"
+        f"                if ({nid}_attempt % 2 === 1) {{\n"
+        f"                    await step.waitForEvent<any>(\n"
+        f"                        `{nid} auth wait ${{{nid}_attempt}}`,\n"
+        f'                        {{ type: {json.dumps(event_type)}, timeout: "30 days" }},\n'
+        f"                    );\n"
+        f"                }}\n"
+        f"            }}\n"
+        f"        }}\n"
+    )
+
+
+_STEP_NEEDS_AUTH_HELPER = """\
+/** A failed step's error carries the auth signal. Cloudflare serializes
+ * step errors across hibernation/replay — class identity is lost, so
+ * detection is by `name` with the message text as fallback. */
+function stepNeedsAuth(err: unknown): boolean {
+    if (isRoteMcpAuthNeeded(err)) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return msg.includes("needs (re)authentication");
+}
+"""
+
+
 def _emit_step_call_pure_or_external(node: Node, cfg: CloudflareAdapterConfig) -> str:
     return _emit_step_call(node, cfg, pass_env=False)
 
@@ -197,6 +283,31 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     class_name = workflow_class_name(pipeline)
     pipeline_h = _pipeline_hash(pipeline)
     waves = _execution_waves(pipeline)
+    mcp_backed = bool(mcp_backed_nodes(pipeline, cfg.external_backend))
+
+    if mcp_backed:
+        arch_note = (
+            " * Architecture note: deterministic steps wrap functions from the\n"
+            " * `extracted/` modules; MCP-backed steps call the tool the source\n"
+            " * skill used, over Streamable HTTP, authenticated from provisioned\n"
+            " * Worker secrets. When a credential is missing or dead the instance\n"
+            " * parks durably on a `rote_auth_<server>` event — re-provision with\n"
+            " * `rote mcp export`, then `rote mcp release <server>` wakes it."
+        )
+    else:
+        arch_note = (
+            " * Architecture note: every external_call step in this workflow wraps a\n"
+            " * deterministic API call from the `extracted/` modules. None of them call\n"
+            " * MCP tools at runtime — those calls were graduated into direct API calls\n"
+            " * during the rote emission step."
+        )
+    # The header f-string below is dedent()ed AFTER interpolation; match
+    # the template's 8-space indentation or dedent becomes a no-op.
+    arch_note = textwrap.indent(arch_note, " " * 8)
+
+    park_import = (
+        '\nimport { NonRetryableError } from "cloudflare:workflows";' if mcp_backed else ""
+    )
 
     header = textwrap.dedent(
         f"""\
@@ -209,22 +320,21 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
          *
          * DO NOT EDIT BY HAND. Re-run `rote emit --runtime cloudflare` to regenerate.
          *
-         * Architecture note: every external_call step in this workflow wraps a
-         * deterministic API call from the `extracted/` modules. None of them call
-         * MCP tools at runtime — those calls were graduated into direct API calls
-         * during the rote emission step.
+{arch_note}
          */
 
         import {{
             WorkflowEntrypoint,
             WorkflowEvent,
             WorkflowStep,
-        }} from "cloudflare:workers";
+        }} from "cloudflare:workers";{park_import}
 
         """
     )
 
     imports = module_imports(pipeline)
+    if mcp_backed:
+        imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
 
     # The Env interface carries only the credentials the pipeline's judges
     # actually use: an API key per SDK client, and the Workers AI binding
@@ -292,9 +402,10 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
                 check_input_refs_available(node, available)
                 if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
                     # MCP-backed calls read credentials from env (Worker
-                    # secrets + the KV token cache), so they receive it.
+                    # secrets + the KV token cache) and park the instance
+                    # durably when the credential is missing or dead.
                     if node.mcp is not None and cfg.external_backend == "mcp":
-                        body_lines.append(_emit_step_call(node, cfg, pass_env=True).rstrip("\n"))
+                        body_lines.append(_emit_step_call_mcp_parkable(node, cfg).rstrip("\n"))
                     else:
                         body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
                 elif node.kind is NodeKind.LLM_JUDGE:
@@ -322,7 +433,9 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         f"}}\n"
     )
 
-    return header + imports + "\n" + env_block + class_block
+    helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if mcp_backed else ""
+
+    return header + imports + "\n" + env_block + helper_block + class_block
 
 
 # ───────── index.ts emission ─────────
@@ -649,6 +762,50 @@ def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
         for g in gates
     )
 
+    mcp_servers = sorted(
+        {
+            n.mcp.server
+            for n in mcp_backed_nodes(pipeline, cfg.external_backend)
+            if n.mcp is not None
+        }
+    )
+    if mcp_servers:
+        example_server = mcp_servers[0]
+        example_event = auth_event_type(example_server)
+        export_lines = "\n".join(
+            f"rote mcp login {s} && rote mcp export {s} --json | npx wrangler secret bulk"
+            for s in mcp_servers
+        )
+        mcp_note = f"""
+## MCP-backed steps: authentication and parking
+
+Some `external_call` steps call MCP tools over Streamable HTTP,
+authenticated from Worker secrets provisioned by `rote mcp export`
+(see `.dev.vars.example`). If a credential is missing or dead at run
+time, the instance does **not** fail — it parks durably on a
+`{example_event}` waitForEvent (events sent early are buffered, so a
+release can never race the park). To fix and release:
+
+```sh
+{export_lines}
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... rote mcp release {example_server}
+```
+
+`rote mcp release` sends the event to every non-terminal instance via
+the Cloudflare API. In local dev (`wrangler dev`), send it by hand:
+
+```sh
+npx wrangler workflows instances send-event {pipeline.name} <id> \\
+    --type {example_event} --local
+```
+
+An instance parked longer than 30 days fails the run. Prefer direct
+vendor-SDK calls? Re-emit with `rote emit --runtime cloudflare
+--backend api`.
+"""
+    else:
+        mcp_note = ""
+
     # Built flush-left (not textwrap.dedent) because interpolated
     # multi-line values — the pipeline description, gate table rows —
     # contain unindented lines that would defeat dedent's common-prefix
@@ -725,7 +882,7 @@ npx wrangler workflows instances send-event {pipeline.name} latest \\
 ```
 
 A gate that times out fails the run — silence is not approval.
-
+{mcp_note}
 ## Trigger from Claude (MCP)
 
 `rote` can expose this deployed pipeline as an MCP tool so any MCP
