@@ -1632,6 +1632,10 @@ dev = [
     { name = "temporalio" },
     { name = "types-pyyaml" },
 ]
+mcp = [
+    { name = "fastmcp" },
+    { name = "httpx" },
+]
 serve = [
     { name = "fastmcp" },
     { name = "httpx" },
@@ -1647,8 +1651,10 @@ requires-dist = [
     { name = "dbos", marker = "extra == 'dbos'", specifier = ">=2.26" },
     { name = "dbos", marker = "extra == 'dev'", specifier = ">=2.26" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=3.4.2" },
+    { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4.2" },
     { name = "fastmcp", marker = "extra == 'serve'", specifier = ">=3.4.2" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
+    { name = "httpx", marker = "extra == 'mcp'", specifier = ">=0.28" },
     { name = "httpx", marker = "extra == 'serve'", specifier = ">=0.28" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pydantic", specifier = ">=2.7" },
@@ -1660,7 +1666,7 @@ requires-dist = [
     { name = "temporalio", marker = "extra == 'temporal'", specifier = ">=1.7" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
 ]
-provides-extras = ["api", "dbos", "dev", "serve", "temporal"]
+provides-extras = ["api", "dbos", "dev", "mcp", "serve", "temporal"]
 
 [[package]]
 name = "rpds-py"
