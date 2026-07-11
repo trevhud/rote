@@ -306,7 +306,12 @@ class AnthropicApiDriver(GraduatorDriver):
                 total_input_tokens += getattr(usage, "input_tokens", 0) or 0
                 total_output_tokens += getattr(usage, "output_tokens", 0) or 0
 
-            snippet = _assistant_snippet(response.content)
+            # The AI Gateway unified endpoint can return `content: null` for
+            # a turn that was entirely (stripped) thinking blocks — normalize
+            # so nothing downstream trips over None.
+            content = list(response.content or [])
+
+            snippet = _assistant_snippet(content)
             emit_safely(
                 on_event,
                 GraduationEvent(
@@ -318,9 +323,36 @@ class AnthropicApiDriver(GraduatorDriver):
                 ),
             )
 
-            messages.append({"role": "assistant", "content": response.content})
+            # An empty assistant content list is a wire-contract violation on
+            # replay, so only append turns that actually said/did something.
+            if content:
+                messages.append({"role": "assistant", "content": content})
 
-            has_tool_use = any(block.type == "tool_use" for block in response.content)
+            has_tool_use = any(block.type == "tool_use" for block in content)
+
+            if not content and response.stop_reason != "max_tokens":
+                # A turn with no visible output at a natural stop: through
+                # the AI Gateway this is an all-thinking turn whose blocks
+                # were stripped, not completion. Nudge and keep going.
+                emit_safely(
+                    on_event,
+                    GraduationEvent(
+                        type="warning",
+                        ts=time.time(),
+                        turn=iteration,
+                        message=f"turn {iteration} returned no visible content — continuing",
+                    ),
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your last turn produced no visible output. "
+                            "Continue with the task — use the tools to make progress."
+                        ),
+                    }
+                )
+                continue
 
             if response.stop_reason == "max_tokens" and not has_tool_use:
                 # The turn was cut off at the output-token limit before the
@@ -352,14 +384,14 @@ class AnthropicApiDriver(GraduatorDriver):
 
             if not has_tool_use:
                 # A natural stop (end_turn, etc.) with nothing left to do.
-                for block in response.content:
+                for block in content:
                     if block.type == "text":
                         last_text = block.text or last_text
                 break
 
             # Dispatch tool calls
             tool_results: list[ToolResultBlockParam] = []
-            for block in response.content:
+            for block in content:
                 if block.type != "tool_use":
                     continue
 

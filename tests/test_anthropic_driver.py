@@ -794,3 +794,58 @@ def test_default_max_tokens_per_turn_is_generous() -> None:
     from rote.graduator.drivers.anthropic_api import DEFAULT_MAX_TOKENS_PER_TURN
 
     assert DEFAULT_MAX_TOKENS_PER_TURN == 32768
+
+
+@pytest.mark.asyncio
+async def test_null_content_turn_continues_and_warns(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """The AI Gateway unified endpoint returns ``content: null`` for a turn
+    that was entirely (stripped) thinking blocks — even at a natural stop.
+    That is not completion: the loop must not crash iterating None, must
+    nudge the agent, and must finish normally."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        # Turn 1: all-thinking turn; the gateway stripped the blocks.
+        _msg(None, stop_reason="end_turn", output_tokens=700),  # type: ignore[arg-type]
+        # Turn 2: now it writes the pipeline.
+        _msg(
+            [
+                _tool_use(
+                    "w",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        # Turn 3: done.
+        _msg([_text("Done.")], stop_reason="end_turn"),
+    ]
+    client = fake_anthropic(responses)
+
+    events: list[GraduationEvent] = []
+    driver = AnthropicApiDriver()
+    result = await driver.run(
+        skill_dir=skill_dir,
+        graduator_skill_dir=graduator_dir,
+        work_dir=work_dir,
+        on_event=events.append,
+    )
+
+    assert result.pipeline_yaml_path.is_file()
+    warnings = [e for e in events if e.type == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0].turn == 1
+    assert "no visible content" in warnings[0].message
+
+    # The empty assistant turn was NOT replayed (wire-contract violation);
+    # the nudge user message went out instead.
+    turn2_messages = client.messages.calls[1]["messages"]
+    assert turn2_messages[-1]["role"] == "user"
+    assert "no visible output" in turn2_messages[-1]["content"]
+    assert all(m.get("content") for m in turn2_messages)
