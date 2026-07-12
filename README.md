@@ -175,8 +175,8 @@ emitted code + a README on how to run, signal gates, and deploy).
 
 ### Other commands
 
-- **`rote emit <pipeline.yaml>`** — run just the adapter step on an
-  existing IR (no LLM, no cost). The cheap inner loop while iterating on
+- **`rote emit <pipeline.yaml> --out <dir>`** — run just the adapter step
+  on an existing IR (no LLM, no cost). The cheap inner loop while iterating on
   adapters or IR shapes. Re-emitting is safe: a `.rote-manifest.json`
   tracks what `rote` wrote, and files you've edited are left untouched
   (the fresh version lands as `<name>.new`).
@@ -220,9 +220,12 @@ way, prefer the more deterministic kind.
 
 ## Runtimes
 
-Pick with `--runtime`; the same IR drives all of them. None of the
-emitted code references MCP — the crystallization step replaces tool
-calls with direct vendor API calls.
+Pick with `--runtime`; the same IR drives all of them. Under
+`--backend api`, none of the emitted code references MCP — the
+crystallization step replaces tool calls with direct vendor API calls.
+Under the default `--backend mcp`, tool-using nodes emit a working MCP
+client call (with durable park-on-auth on every MCP-capable runtime);
+see [`docs/mcp-client.md`](docs/mcp-client.md).
 
 | Runtime | `--runtime` | Language | Shape | Notes |
 | --- | --- | --- | --- | --- |
@@ -302,7 +305,7 @@ Trusted Publishing ([docs/releasing.md](docs/releasing.md)).
 
 ```
 rote/
-├── docs/                  agent-runtime · mcp-trigger · releasing
+├── docs/                  agent-runtime · mcp-client · mcp-trigger · releasing
 ├── skills/rote-graduate/  the graduator agent (SKILL.md + 4 reference files)
 ├── src/rote/
 │   ├── cli.py             rote graduate / emit / eval / serve
@@ -324,6 +327,9 @@ rote/
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for the
   driver abstraction (the `claude -p` env gotcha; the non-use of
   `claude-agent-sdk`)
+- [`docs/mcp-client.md`](docs/mcp-client.md) — the OAuth MCP client
+  emitted code uses under `--backend mcp`: endpoint/credential
+  resolution and durable park-on-auth across every MCP-capable runtime
 - [`docs/mcp-trigger.md`](docs/mcp-trigger.md) — `rote register` +
   `rote serve`: graduated pipelines as MCP tools (FastMCP 3.x)
 - [`docs/releasing.md`](docs/releasing.md) — tag-driven PyPI Trusted
