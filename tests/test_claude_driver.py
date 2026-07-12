@@ -46,14 +46,22 @@ from rote.graduator.events import GraduationEvent
 def _assistant_line(
     text: str | None = None,
     tools: list[tuple[str, dict[str, Any]]] | None = None,
+    usage: dict[str, int] | None = None,
 ) -> str:
-    """A ``{"type":"assistant"}`` NDJSON line with text + tool_use blocks."""
+    """A ``{"type":"assistant"}`` NDJSON line with text + tool_use blocks.
+
+    ``usage`` mirrors Claude Code's per-message ``message.usage`` block
+    (``input_tokens`` / ``output_tokens`` for the single model response).
+    """
     content: list[dict[str, Any]] = []
     if text is not None:
         content.append({"type": "text", "text": text})
     for name, inp in tools or []:
         content.append({"type": "tool_use", "name": name, "input": inp})
-    return json.dumps({"type": "assistant", "message": {"content": content}})
+    message: dict[str, Any] = {"content": content}
+    if usage is not None:
+        message["usage"] = usage
+    return json.dumps({"type": "assistant", "message": message})
 
 
 def _result_line(**fields: Any) -> str:
@@ -413,6 +421,38 @@ def test_map_stream_line_tool_only_turn_reports_thinking() -> None:
     assert turn_events[0].message == "turn 1: thinking…"
 
 
+def test_map_stream_line_accumulates_cumulative_tokens() -> None:
+    """Per-message ``usage`` is summed into a running total, and each turn
+    event carries the cumulative ``{"input", "output"}`` figures."""
+    totals: dict[str, int] = {"input": 0, "output": 0}
+
+    events1, turn1, _ = _map_stream_line(
+        _assistant_line(text="one", usage={"input_tokens": 100, "output_tokens": 20}),
+        0,
+        None,
+        totals,
+    )
+    assert events1[0].tokens == {"input": 100, "output": 20}
+
+    events2, _turn2, _ = _map_stream_line(
+        _assistant_line(text="two", usage={"input_tokens": 250, "output_tokens": 30}),
+        turn1,
+        None,
+        totals,
+    )
+    # Cumulative across turns — not just this message's usage.
+    assert events2[0].tokens == {"input": 350, "output": 50}
+    assert totals == {"input": 350, "output": 50}
+
+
+def test_map_stream_line_missing_usage_keeps_prior_total() -> None:
+    """A message without ``usage`` leaves the running total unchanged; the
+    turn event still reports the cumulative figure carried so far."""
+    totals = {"input": 40, "output": 5}
+    events, _turn, _ = _map_stream_line(_assistant_line(text="no usage"), 3, None, totals)
+    assert events[0].tokens == {"input": 40, "output": 5}
+
+
 def test_map_stream_line_result_line_yields_no_events_but_returns_obj() -> None:
     events, new_turn, obj = _map_stream_line(_result_line(result="ok", num_turns=3), 7)
     assert events == []
@@ -493,7 +533,7 @@ async def test_missing_result_object_returns_minimal_metadata(
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
     """A stream that ends without a result line still yields a result;
-    metadata degrades to just the driver name."""
+    metadata degrades to the driver name plus the (here zero) token totals."""
     skill_dir, graduator_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(_assistant_line(text="done but no summary line")),
@@ -503,7 +543,31 @@ async def test_missing_result_object_returns_minimal_metadata(
 
     driver = ClaudeDriver()
     result = await driver.run(skill_dir, graduator_dir, work_dir)
-    assert result.metadata == {"driver": "claude"}
+    assert result.metadata == {"driver": "claude", "input_tokens": 0, "output_tokens": 0}
+
+
+@pytest.mark.asyncio
+async def test_metadata_carries_cumulative_stream_tokens(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """The final metadata sums the per-message usage across the stream,
+    mirroring the api driver's input_tokens / output_tokens final fields."""
+    skill_dir, graduator_dir, work_dir = fake_skills
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(text="one", usage={"input_tokens": 100, "output_tokens": 20}),
+            _assistant_line(text="two", usage={"input_tokens": 250, "output_tokens": 30}),
+            _result_line(result="done", num_turns=2),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+
+    driver = ClaudeDriver()
+    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    assert result.metadata["input_tokens"] == 350
+    assert result.metadata["output_tokens"] == 50
+    assert result.metadata["num_turns"] == 2
 
 
 @pytest.mark.asyncio

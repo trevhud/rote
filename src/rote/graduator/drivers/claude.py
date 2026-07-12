@@ -135,8 +135,32 @@ def _stream_text_snippet(content: list[Any]) -> str:
     return "thinking…"
 
 
+def _usage_delta(message: object) -> tuple[int, int]:
+    """``(input_tokens, output_tokens)`` from a stream-json ``message.usage``.
+
+    Claude Code stamps each ``assistant`` message with the token usage of
+    that single model response. Missing / non-integer fields count as 0 so
+    a malformed line never poisons the running total. Cache-token fields
+    are intentionally ignored to match the api driver, which sums only the
+    ``input_tokens`` / ``output_tokens`` totals.
+    """
+    if not isinstance(message, dict):
+        return 0, 0
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return 0, 0
+
+    def _int(value: object) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    return _int(usage.get("input_tokens")), _int(usage.get("output_tokens"))
+
+
 def _map_stream_line(
-    raw: str, turn: int, work_dir: Path | None = None
+    raw: str,
+    turn: int,
+    work_dir: Path | None = None,
+    totals: dict[str, int] | None = None,
 ) -> tuple[list[GraduationEvent], int, dict[str, Any] | None]:
     """Map one stream-json NDJSON line to progress events.
 
@@ -144,12 +168,20 @@ def _map_stream_line(
     lines. Returns ``(events, new_turn, parsed_obj)``:
 
     * ``events`` — a ``turn`` event for an ``assistant`` message (with a
-      text snippet), plus one ``tool`` event per ``tool_use`` block in it.
+      text snippet and cumulative ``tokens``), plus one ``tool`` event per
+      ``tool_use`` block in it.
     * ``new_turn`` — ``turn`` + 1 for an assistant message (each is one
       run turn), otherwise unchanged.
     * ``parsed_obj`` — the decoded dict (or ``None`` for a non-JSON line),
       so the caller can pick out the final ``result`` object for metadata
       without parsing the line a second time.
+
+    ``totals`` is the caller's running ``{"input", "output"}`` token
+    tally, mutated in place across lines so every ``turn`` event carries
+    *cumulative* usage — the stream-json ``usage`` is per-message, so the
+    driver accumulates it exactly the way the api driver does. When
+    omitted (pure-function callers) a fresh tally is used, so a single
+    line still reports its own usage.
 
     Phase events are deliberately NOT produced here — a
     :class:`~rote.graduator.events.ProgressFileWatcher` owns those for
@@ -170,12 +202,19 @@ def _map_stream_line(
     if not isinstance(content, list):
         content = []
 
+    if totals is None:
+        totals = {"input": 0, "output": 0}
+    delta_in, delta_out = _usage_delta(message)
+    totals["input"] += delta_in
+    totals["output"] += delta_out
+
     turn += 1
     events: list[GraduationEvent] = [
         GraduationEvent(
             type="turn",
             ts=time.time(),
             turn=turn,
+            tokens=dict(totals),
             message=f"turn {turn}: {_stream_text_snippet(content)}",
         )
     ]
@@ -321,7 +360,7 @@ class ClaudeDriver(GraduatorDriver):
         )
 
         async with ProgressFileWatcher(work_dir, on_event):
-            result_obj, stderr = await self._consume_stream(proc, on_event, work_dir)
+            result_obj, stderr, totals = await self._consume_stream(proc, on_event, work_dir)
         await proc.wait()
 
         pipeline_yaml = work_dir / "pipeline.yaml"
@@ -346,7 +385,7 @@ class ClaudeDriver(GraduatorDriver):
                 details=detail,
             )
 
-        metadata = self._parse_metadata(result_obj)
+        metadata = self._parse_metadata(result_obj, totals)
         if proc.returncode != 0:
             metadata["subprocess_warning"] = (
                 f"claude CLI exited with code {proc.returncode} but "
@@ -423,20 +462,24 @@ class ClaudeDriver(GraduatorDriver):
         proc: asyncio.subprocess.Process,
         on_event: EventCallback | None,
         work_dir: Path,
-    ) -> tuple[dict[str, Any] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
         """Drain the subprocess's stream-json stdout and its stderr.
 
         Reads stdout line-by-line, mapping each to progress events via
         :func:`_map_stream_line` and firing them through ``on_event``.
         stderr is drained concurrently (a full pipe would otherwise
         deadlock the child). Returns the final ``result`` object (for
-        metadata) and the decoded stderr text (for error details).
+        metadata), the decoded stderr text (for error details), and the
+        cumulative ``{"input", "output"}`` token tally accumulated across
+        the assistant messages (per-message usage summed the way the api
+        driver sums it).
         """
         assert proc.stdout is not None
         assert proc.stderr is not None
 
         result_obj: dict[str, Any] | None = None
         turn = 0
+        totals: dict[str, int] = {"input": 0, "output": 0}
 
         async def read_stdout() -> None:
             nonlocal result_obj, turn
@@ -444,7 +487,7 @@ class ClaudeDriver(GraduatorDriver):
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
-                events, turn, obj = _map_stream_line(line, turn, work_dir)
+                events, turn, obj = _map_stream_line(line, turn, work_dir, totals)
                 for event in events:
                     emit_safely(on_event, event)
                 if isinstance(obj, dict) and obj.get("type") == "result":
@@ -455,27 +498,37 @@ class ClaudeDriver(GraduatorDriver):
 
         _, stderr_bytes = await asyncio.gather(read_stdout(), read_stderr())
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-        return result_obj, stderr
+        return result_obj, stderr, totals
 
-    def _parse_metadata(self, result: dict[str, Any] | None) -> dict[str, Any]:
+    def _parse_metadata(
+        self, result: dict[str, Any] | None, totals: dict[str, int]
+    ) -> dict[str, Any]:
         """Turn the stream-json ``result`` object into driver metadata.
 
         The final ``{"type": "result", ...}`` line of the stream carries
         the same run summary the old ``--output-format json`` mode
         returned as its whole payload: ``cost_usd``, ``duration_ms``,
         ``num_turns``, ``session_id``. We keep those numeric/id fields and
-        drop the (potentially large) ``result`` text.
+        drop the (potentially large) ``result`` text. ``input_tokens`` /
+        ``output_tokens`` come from the streamed-usage ``totals`` and
+        mirror the api driver's final metadata, so a consumer can price a
+        subscription run the same way it prices an api one.
 
         A missing result object — the stream ended without a summary line
-        — degrades to just the driver name, same as an unparseable
-        payload did before.
+        — degrades to the driver name plus the token totals, same shape
+        an unparseable payload produces.
         """
-        if not isinstance(result, dict):
-            return {"driver": self.name}
-        return {
+        metadata = {
             "driver": self.name,
-            "cost_usd": result.get("cost_usd"),
-            "duration_ms": result.get("duration_ms"),
-            "num_turns": result.get("num_turns"),
-            "session_id": result.get("session_id"),
+            "input_tokens": totals["input"],
+            "output_tokens": totals["output"],
         }
+        if not isinstance(result, dict):
+            return metadata
+        metadata.update(
+            cost_usd=result.get("cost_usd"),
+            duration_ms=result.get("duration_ms"),
+            num_turns=result.get("num_turns"),
+            session_id=result.get("session_id"),
+        )
+        return metadata

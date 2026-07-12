@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import dataclasses
+import json
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -173,6 +176,22 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 _GRADUATE_TOTAL_PHASES = 7
 
 
+def _format_token_note(tokens: dict[str, int] | None) -> str:
+    """Compact ``(in 40.2k / out 8.1k tok)`` annotation, or ``""``.
+
+    Counts ≥1000 are abbreviated to one decimal of ``k``; smaller ones
+    print raw. Empty string when there's nothing to show, so callers can
+    append it unconditionally.
+    """
+    if not tokens:
+        return ""
+
+    def _h(n: int) -> str:
+        return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
+
+    return f" (in {_h(tokens.get('input', 0))} / out {_h(tokens.get('output', 0))} tok)"
+
+
 def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
     """One-line live progress to stderr for ``rote graduate``.
 
@@ -181,22 +200,29 @@ def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
     cares about: phase transitions, the agent's tool calls (keyed by turn),
     warnings/errors, and the orchestrator's log + completion lines. Bare
     ``turn`` events (assistant reasoning with no action) are skipped to keep
-    the stream readable — the tool lines already carry the turn number.
+    the stream readable — the tool lines already carry the turn number, and
+    now also carry the run's cumulative token spend (the printer remembers
+    the latest tally a ``turn`` event reported and annotates the tool lines
+    that follow it, since the token figures ride on the turn events).
     """
+    last_tokens: dict[str, int] | None = None
 
     def printer(event: GraduationEvent) -> None:
+        nonlocal last_tokens
         line: str | None
         if event.type == "phase":
             name = event.phase_name or ""
             line = f"[phase {event.phase}/{_GRADUATE_TOTAL_PHASES}] {name}".rstrip()
         elif event.type == "tool":
             loc = f" {event.path}" if event.path else ""
-            line = f"[turn {event.turn}] {event.tool_name}{loc}"
+            line = f"[turn {event.turn}] {event.tool_name}{loc}{_format_token_note(last_tokens)}"
         elif event.type == "warning":
             line = f"warning: {event.message}"
         elif event.type == "error":
             line = f"error: {event.message}"
         elif event.type == "turn":
+            if event.tokens:
+                last_tokens = event.tokens
             line = None  # too noisy; tool lines already show the turn
         else:  # log, artifact, complete
             line = event.message or None
@@ -204,6 +230,114 @@ def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
             print(line, file=sys.stderr)
 
     return printer
+
+
+class _JsonlProgressSink:
+    """Append-per-event JSONL progress sink for ``rote graduate``.
+
+    A graduation is a long, real-money agent loop; an agent (or a cloud
+    runner) that launched it wants to tail its progress live. This sink
+    writes one JSON object per :class:`GraduationEvent` to a file —
+    ``json.dumps`` of the event's fields with the ``None``-valued ones
+    dropped for compactness — flushed per event so a tailer sees each
+    line the instant it lands. It runs *alongside* the stderr printer, not
+    instead of it.
+
+    Two enrichments live only in the serialized line, never on the wire
+    :class:`GraduationEvent` (whose schema is locked across a network
+    boundary): a per-event ``cost_usd`` priced from the model's current
+    published rates for any event carrying cumulative ``tokens``, and a
+    final ``type: "summary"`` digest written last (see
+    :meth:`write_summary`).
+
+    Deliberately defensive: a broken progress file must never kill a paid
+    run, so every method swallows its own exceptions on top of the
+    ``emit_safely`` guard the driver already applies. Pricing is
+    best-effort — an offline price fetch or an unknown model simply omits
+    ``cost_usd`` and the run continues.
+    """
+
+    def __init__(self, path: Path, model_id: str) -> None:
+        self._path = path
+        self._model_id = model_id
+        self._prices = self._resolve_prices(model_id)
+        self._file: Any = None
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            # Truncate at start: one run owns the file for its lifetime.
+            self._file = self._path.open("w", encoding="utf-8")
+        except OSError:
+            self._file = None
+
+    @staticmethod
+    def _resolve_prices(model_id: str) -> tuple[float, float] | None:
+        """``(input, output)`` USD/Mtok for ``model_id``, or ``None``.
+
+        One live catalog fetch at construction. Offline (``PricingError``)
+        or an unpriced model yields ``None`` — cost enrichment is then
+        silently skipped rather than failing the run.
+        """
+        from rote.eval.pricing import PricingError, fetch_catalog
+
+        try:
+            catalog = fetch_catalog(provider="anthropic")
+        except PricingError:
+            return None
+        return catalog.price_for(model_id)
+
+    def _cost_usd(self, tokens: dict[str, int]) -> float | None:
+        if self._prices is None:
+            return None
+        input_per_mtok, output_per_mtok = self._prices
+        cost = (
+            tokens.get("input", 0) / 1e6 * input_per_mtok
+            + tokens.get("output", 0) / 1e6 * output_per_mtok
+        )
+        return round(cost, 6)
+
+    def _write(self, obj: dict[str, Any]) -> None:
+        if self._file is None:
+            return
+        try:
+            self._file.write(json.dumps(obj) + "\n")
+            self._file.flush()
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def emit(self, event: GraduationEvent) -> None:
+        """Serialize one event as an NDJSON line (never raises)."""
+        try:
+            obj = {k: v for k, v in dataclasses.asdict(event).items() if v is not None}
+            if event.tokens:
+                cost = self._cost_usd(event.tokens)
+                if cost is not None:
+                    obj["cost_usd"] = cost
+            self._write(obj)
+        except Exception:
+            # A progress-file bug must never sink a paid run.
+            pass
+
+    def write_summary(self, summary: dict[str, Any]) -> None:
+        """Write the final ``type: "summary"`` digest as the last line.
+
+        Prices the run's ``total_tokens`` into a ``cost_usd`` field the
+        same way per-event lines are priced. Never raises.
+        """
+        try:
+            total = summary.get("total_tokens")
+            if isinstance(total, dict):
+                cost = self._cost_usd(total)
+                if cost is not None:
+                    summary = {**summary, "cost_usd": cost}
+            self._write(summary)
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        if self._file is not None:
+            with contextlib.suppress(OSError):
+                self._file.close()
+            self._file = None
 
 
 def _cmd_graduate(args: argparse.Namespace) -> int:
@@ -233,20 +367,49 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     graduated_dir = out_dir / "graduated"
     runtime_dir = out_dir / "runtime" / args.runtime
 
-    graduator = Graduator(agent=args.agent, model=args.model, on_event=_graduate_progress_printer())
+    # A JSONL progress sink (opt-in via --progress-file) runs alongside the
+    # stderr printer: both fire for every event. The sink writes one machine-
+    # readable line per event for an agent tailing the run; the printer keeps
+    # the human view. A sink failure must never take down a paid run, so its
+    # body is self-guarded (and emit_safely wraps the whole callback anyway).
+    printer = _graduate_progress_printer()
+    progress_sink: _JsonlProgressSink | None = None
+    if args.progress_file:
+        # Price against the model the run actually uses: the --model override
+        # when given, else the graduator's default (the subscription path's
+        # Sonnet). Both subprocess and api drivers share this default.
+        from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
+
+        progress_sink = _JsonlProgressSink(
+            Path(args.progress_file),
+            model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
+        )
+
+    def _on_event(event: GraduationEvent) -> None:
+        printer(event)
+        if progress_sink is not None:
+            progress_sink.emit(event)
+
+    graduator = Graduator(agent=args.agent, model=args.model, on_event=_on_event)
 
     try:
         result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
     except GraduatorError as e:
+        if progress_sink is not None:
+            progress_sink.close()
         print(f"rote graduate: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        if progress_sink is not None:
+            progress_sink.close()
         print("rote graduate: interrupted", file=sys.stderr)
         return 130
 
     try:
         adapter = get_adapter(args.runtime, external_backend=args.backend)
     except KeyError as e:
+        if progress_sink is not None:
+            progress_sink.close()
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
 
@@ -313,6 +476,37 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             "unimplemented_stubs": _unimplemented_stubs(written),
         }
         print(json.dumps(payload, indent=2))
+
+    # ── Machine end-of-run digest ── The per-event `complete` line is for
+    # a human tailer; this is the structured summary an agent reads: the
+    # graduated pipeline's shape (roteness / node-kind counts, reusing the
+    # same pure analysis `rote analyze` prints), where the artifacts landed,
+    # the remaining stub TODOs, and the run's total token spend + cost. It's
+    # the LAST NDJSON line, written after everything else is on disk.
+    if progress_sink is not None:
+        analysis = _build_analysis(
+            result.pipeline, result.driver_name, result.driver_metadata, skill_path
+        )
+        analysis_nodes = analysis["nodes"]
+        assert isinstance(analysis_nodes, dict)
+        meta = result.driver_metadata
+        total_tokens = {
+            "input": int(meta.get("input_tokens") or 0),
+            "output": int(meta.get("output_tokens") or 0),
+        }
+        progress_sink.write_summary(
+            {
+                "type": "summary",
+                "roteness": analysis["roteness"],
+                "node_kinds": analysis_nodes["by_kind"],
+                "nodes": analysis_nodes["total"],
+                "graduated_dir": str(graduated_dir.resolve()),
+                "runtime_dir": str(runtime_dir.resolve()),
+                "unimplemented_stubs": _unimplemented_stubs(written),
+                "total_tokens": total_tokens,
+            }
+        )
+        progress_sink.close()
     return 0
 
 
@@ -1423,6 +1617,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "files, scorecard path, unimplemented stubs) to stdout; keep the "
             "progress log and summary on stderr. For piping into another tool "
             "or agent."
+        ),
+    )
+    graduate.add_argument(
+        "--progress-file",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Stream structured progress to PATH as JSON Lines (one event per "
+            "line, flushed live) for an agent tailing the run: phase / turn / "
+            "tool / warning / complete events, each token-carrying line priced "
+            "with a live cost_usd, and a final type:summary digest (roteness, "
+            "node-kind counts, stub TODOs, total tokens + cost). Runs "
+            "alongside the stderr progress log; composes with --json."
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)
