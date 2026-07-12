@@ -202,8 +202,15 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
     runs; the fake writes a copy of the BDR pipeline.yaml (known-valid,
     proven by the IR tests) into the output dir and returns a
     GraduationResult wrapping the loaded IR.
+
+    When a live-progress sink was wired (``on_event``, as ``rote graduate``
+    always does), the fake fires a representative phase event and a
+    token-carrying turn event through it before returning — enough to
+    exercise the JSONL progress sink without a real agent. The returned
+    metadata carries the same cumulative token totals a real driver stamps.
     """
     from rote.graduator import GraduationResult
+    from rote.graduator.events import GraduationEvent
     from rote.ir import load_pipeline
 
     real_pipeline = load_pipeline(BDR_PIPELINE_YAML)
@@ -211,6 +218,7 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
     class _MockGraduator:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             self.agent = agent
+            self.on_event = kwargs.get("on_event")
 
         async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
             output_dir = Path(output_dir)
@@ -219,11 +227,27 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
                 BDR_PIPELINE_YAML.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
+            on_event = self.on_event
+            if callable(on_event):
+                on_event(
+                    GraduationEvent(
+                        type="phase", ts=0.0, phase=1, phase_name="Intake", message="phase 1"
+                    )
+                )
+                on_event(
+                    GraduationEvent(
+                        type="turn",
+                        ts=0.0,
+                        turn=1,
+                        tokens={"input": 1000, "output": 500},
+                        message="turn 1: working",
+                    )
+                )
             return GraduationResult(
                 pipeline=real_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
-                driver_metadata={"num_turns": 7},
+                driver_metadata={"num_turns": 7, "input_tokens": 1000, "output_tokens": 500},
             )
 
     monkeypatch.setattr("rote.cli.Graduator", _MockGraduator)
@@ -455,6 +479,187 @@ def test_graduate_json_mode_is_machine_readable(
     assert any("extracted/" in s for s in payload["unimplemented_stubs"])
 
 
+# ───────── graduate --progress-file (JSONL sink) ─────────
+
+
+def _patch_pricing(monkeypatch: pytest.MonkeyPatch, prices: tuple[float, float] | None) -> None:
+    """Patch ``fetch_catalog`` so the sink prices offline and hermetically.
+
+    ``prices`` = ``(input_per_mtok, output_per_mtok)`` makes ``price_for``
+    return that pair; ``None`` makes ``fetch_catalog`` raise ``PricingError``
+    (the offline path — the sink must then omit ``cost_usd`` and keep going).
+    """
+    from rote.eval.pricing import PricingError
+
+    if prices is None:
+
+        def _raise(*_a: object, **_k: object) -> object:
+            raise PricingError("offline (test)")
+
+        monkeypatch.setattr("rote.eval.pricing.fetch_catalog", _raise)
+        return
+
+    class _FakeCatalog:
+        def price_for(self, _model_id: str) -> tuple[float, float]:
+            return prices
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda *a, **k: _FakeCatalog())
+
+
+def _read_ndjson(path: Path) -> list[dict[str, object]]:
+    """Parse a JSONL file, asserting exactly one JSON object per line."""
+    import json
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    objs: list[dict[str, object]] = []
+    for line in lines:
+        assert line.strip(), "progress file must not contain blank lines"
+        obj = json.loads(line)  # raises if any line is not valid JSON
+        assert isinstance(obj, dict)
+        objs.append(obj)
+    return objs
+
+
+def test_graduate_progress_file_writes_ndjson_with_cost_and_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--progress-file streams one JSON object per event, prices the
+    token-carrying lines, and ends with a type:summary digest."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+    _patch_pricing(monkeypatch, prices=(3.0, 15.0))  # $3 / $15 per Mtok
+
+    out_dir = tmp_path / "out"
+    progress = tmp_path / "progress.ndjson"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill_dir),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(out_dir),
+            "--no-eval",
+            "--progress-file",
+            str(progress),
+        ]
+    )
+    assert rc == 0
+
+    objs = _read_ndjson(progress)
+    types = [o["type"] for o in objs]
+    assert "phase" in types
+    assert "turn" in types
+    # The summary is the LAST line, exactly once.
+    assert types[-1] == "summary"
+    assert types.count("summary") == 1
+
+    # The token-carrying turn line was priced: 1000/1e6*3 + 500/1e6*15.
+    turn = next(o for o in objs if o["type"] == "turn")
+    assert turn["tokens"] == {"input": 1000, "output": 500}
+    assert turn["cost_usd"] == pytest.approx(0.0105)
+    # None-valued fields are dropped for compactness.
+    assert "tool_name" not in turn
+
+    summary = objs[-1]
+    assert summary["roteness"] == pytest.approx(10 / 13)
+    assert summary["nodes"] == 13
+    assert isinstance(summary["node_kinds"], dict)
+    assert summary["node_kinds"]["hitl_gate"] >= 1
+    assert summary["total_tokens"] == {"input": 1000, "output": 500}
+    assert summary["cost_usd"] == pytest.approx(0.0105)
+    assert any("extracted/" in s for s in summary["unimplemented_stubs"])  # type: ignore[union-attr]
+    assert summary["graduated_dir"] == str((out_dir / "graduated").resolve())
+    assert summary["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
+
+
+def test_graduate_progress_file_survives_offline_pricing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An offline price fetch omits cost_usd but never fails the run."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+    _patch_pricing(monkeypatch, prices=None)  # fetch_catalog raises PricingError
+
+    out_dir = tmp_path / "out"
+    progress = tmp_path / "progress.ndjson"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill_dir),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(out_dir),
+            "--no-eval",
+            "--progress-file",
+            str(progress),
+        ]
+    )
+    assert rc == 0
+
+    objs = _read_ndjson(progress)
+    assert objs[-1]["type"] == "summary"
+    # Not a single line carries a price when the catalog is unreachable.
+    assert all("cost_usd" not in o for o in objs)
+    # …yet the token figures are still present (pricing is the only casualty).
+    turn = next(o for o in objs if o["type"] == "turn")
+    assert turn["tokens"] == {"input": 1000, "output": 500}
+
+
+def test_graduate_progress_file_composes_with_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--progress-file and --json coexist: stdout stays the single JSON
+    result object; the NDJSON stream goes only to the file."""
+    import json
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+    _patch_pricing(monkeypatch, prices=(3.0, 15.0))
+
+    out_dir = tmp_path / "out"
+    progress = tmp_path / "progress.ndjson"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill_dir),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(out_dir),
+            "--no-eval",
+            "--json",
+            "--progress-file",
+            str(progress),
+        ]
+    )
+    assert rc == 0
+
+    captured = capsys.readouterr()
+    # stdout is still exactly the one --json result object (no NDJSON leaked).
+    payload = json.loads(captured.out)
+    assert payload["pipeline"]["name"] == "bdr-campaign"
+    assert payload["runtime"] == "dbos"
+
+    # The NDJSON stream landed in the file, terminated by the summary.
+    objs = _read_ndjson(progress)
+    assert objs[-1]["type"] == "summary"
+
+
 def test_graduate_surfaces_graduator_error_with_exit_1(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -579,3 +784,23 @@ def test_graduate_progress_printer_renders_expected_lines(
     assert "thinking" not in err
     # log lines print verbatim.
     assert "driver selected: api" in err
+
+
+def test_graduate_progress_printer_annotates_tool_lines_with_tokens(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A turn event's cumulative tokens ride onto the tool lines that follow
+    it — the token figures live on turn events, but the tool lines are what
+    the printer actually shows."""
+    from rote.cli import _graduate_progress_printer
+    from rote.graduator.events import GraduationEvent
+
+    printer = _graduate_progress_printer()
+    for event in [
+        GraduationEvent(type="turn", ts=0.0, turn=7, tokens={"input": 40234, "output": 8100}),
+        GraduationEvent(type="tool", ts=0.0, turn=7, tool_name="Write", path="signatures/foo.py"),
+    ]:
+        printer(event)
+
+    err = capsys.readouterr().err
+    assert "[turn 7] Write signatures/foo.py (in 40.2k / out 8.1k tok)" in err

@@ -146,6 +146,38 @@ an empty list.
 
 Exit codes above let you distinguish success from failure without parsing.
 
+### Watching a `graduate` run live: `--progress-file`
+
+`graduate` runs for ~13 minutes; `--json` only prints once, at the end. To
+see what it's doing *as it happens*, pass `--progress-file PATH` — rote streams
+one JSON object per line (NDJSON), flushed live, that you tail while the run
+proceeds. It runs alongside the human stderr log and composes with `--json`.
+
+```sh
+uvx --from rote-cli rote graduate <skill> --out <dir> --progress-file run.ndjson &
+tail -f run.ndjson        # each line is a complete JSON object
+```
+
+Event lines (`None` fields omitted):
+
+```jsonc
+{"type":"phase","ts":..,"phase":2,"phase_name":"Node Classification"}
+{"type":"turn","ts":..,"turn":12,"tokens":{"input":40234,"output":8100},"cost_usd":0.24}
+{"type":"tool","ts":..,"turn":12,"tool_name":"Write","path":"signatures/qualify.py"}
+{"type":"complete","ts":..,"message":"..."}
+```
+
+- `tokens` is **cumulative** run spend; `cost_usd` is priced live from the
+  model's current published rates (omitted if pricing is offline — never fails
+  the run). This works on the default `claude` driver and `--agent api`; the
+  `codex` driver emits phase lines only.
+- The **last line** is a `type:"summary"` digest — the machine end-of-run
+  report: `roteness`, `node_kinds` (counts by kind), `nodes`, `graduated_dir`,
+  `runtime_dir`, `unimplemented_stubs`, `total_tokens`, `cost_usd`. Read this
+  instead of running `rote analyze` again. `roteness`/`node_kinds` are
+  terminal (they need the finished pipeline), so they appear only here, not in
+  the per-turn stream.
+
 ## MCP-authenticated steps: the park-on-auth loop
 
 If a graduated node calls an MCP server that needs credentials, the emitted
