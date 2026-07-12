@@ -101,6 +101,42 @@ def test_emit_bdr_pipeline_in_process(tmp_path: Path, capsys: pytest.CaptureFixt
     ast.parse(workflow_path.read_text(encoding="utf-8"))
 
 
+def test_emit_json_mode_is_machine_readable(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`rote emit --json` writes ONE JSON object to stdout (no human prose)
+    so a piping agent can locate the output dir and the stubs to fill in."""
+    import json
+
+    out_dir = tmp_path / "emitted"
+    rc = cli_main(
+        [
+            "emit",
+            str(BDR_PIPELINE_YAML),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(out_dir),
+            "--json",
+        ]
+    )
+    assert rc == 0
+
+    captured = capsys.readouterr()
+    # stdout is ONLY the JSON object — the human "rote: emitted …" line is gone.
+    assert "rote: emitted" not in captured.out
+    payload = json.loads(captured.out)
+    assert payload["pipeline"] == {"name": "bdr-campaign", "version": "0.1.0"}
+    assert payload["runtime"] == "dbos"
+    assert payload["out_dir"] == str(out_dir.resolve())
+    assert "main" in payload["written"]
+    assert payload["preserved_new_files"] == []
+    # The extracted stubs are enumerated as the agent's fill-in TODO list.
+    stubs = payload["unimplemented_stubs"]
+    assert stubs and all(s.endswith(".py") for s in stubs)
+    assert any("extracted/hubspot.py" in s for s in stubs)
+
+
 def test_emit_python_refuses_gated_pipeline_cleanly(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -370,6 +406,53 @@ def test_graduate_happy_path_with_mocked_graduator(
     # Emitted Temporal runtime code
     assert (out_dir / "runtime" / "temporal" / "workflow.py").exists()
     assert (out_dir / "runtime" / "temporal" / "activities.py").exists()
+
+
+def test_graduate_json_mode_is_machine_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`rote graduate --json` writes ONE JSON superset object to stdout; the
+    progress log and summary go to stderr so stdout stays parseable."""
+    import json
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+
+    out_dir = tmp_path / "out"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill_dir),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(out_dir),
+            "--no-eval",  # keep the test hermetic (no live price fetch)
+            "--json",
+        ]
+    )
+    assert rc == 0
+
+    captured = capsys.readouterr()
+    # The human summary went to stderr; stdout is the JSON object only.
+    assert "rote graduate: ✓" not in captured.out
+    assert "rote graduate: ✓" in captured.err
+    payload = json.loads(captured.out)
+    assert payload["pipeline"]["name"] == "bdr-campaign"
+    assert payload["runtime"] == "dbos"
+    assert payload["out_dir"] == str(out_dir.resolve())
+    assert payload["graduated_dir"] == str((out_dir / "graduated").resolve())
+    assert payload["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
+    assert payload["scorecard"] is None  # --no-eval
+    assert payload["driver"] == "mock"
+    assert "main" in payload["written"]
+    # dbos emits extracted/* stubs, so the TODO list is populated.
+    assert any("extracted/" in s for s in payload["unimplemented_stubs"])
 
 
 def test_graduate_surfaces_graduator_error_with_exit_1(

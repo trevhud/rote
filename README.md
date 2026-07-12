@@ -324,6 +324,9 @@ rote/
 
 ## Documentation
 
+- [`AGENTS.md`](AGENTS.md) — operating manual for a coding agent *driving*
+  `rote` as an installed tool (invocation contract, the slow/costs-money
+  `graduate` flow, auth, failure recovery, the stub-filling job, `--json`)
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for the
   driver abstraction (the `claude -p` env gotcha; the non-use of
   `claude-agent-sdk`)
