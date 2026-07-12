@@ -40,26 +40,69 @@ from rote.ir import Pipeline, load_pipeline
 # ───────── Subcommand: emit ─────────
 
 
-def _print_written(written: dict[str, Path], indent: str = "  ") -> None:
+def _print_written(written: dict[str, Path], indent: str = "  ", stream: Any = None) -> None:
     """Print an adapter's written-files mapping, flagging preserved files.
 
     When the emit writer finds a file the user edited since the last
     emit, it leaves the file alone and parks the fresh content in a
     ``<name>.new`` sibling — surface those so the preservation is a
     visible event, not a silent one.
+
+    ``stream`` defaults to stdout; ``--json`` callers pass ``sys.stderr``
+    so stdout carries only the JSON object.
     """
+    out = stream if stream is not None else sys.stdout
     for label, path in written.items():
-        print(f"{indent}{label}: {path}")
+        print(f"{indent}{label}: {path}", file=out)
     preserved = [path for path in written.values() if path.name.endswith(".new")]
     if preserved:
-        print()
+        print(file=out)
         print(
             f"{indent}note: {len(preserved)} file(s) were edited since the last emit "
-            f"and were left untouched."
+            f"and were left untouched.",
+            file=out,
         )
-        print(f"{indent}Fresh output landed alongside as '.new' files — merge or delete them:")
+        print(
+            f"{indent}Fresh output landed alongside as '.new' files — merge or delete them:",
+            file=out,
+        )
         for path in preserved:
-            print(f"{indent}  {path}")
+            print(f"{indent}  {path}", file=out)
+
+
+def _preserved_new_files(written: dict[str, Path]) -> list[str]:
+    """The ``.new`` siblings the emit writer parked (user-edited files it
+    refused to clobber). Detected the same way :func:`_print_written` reports
+    them, so the JSON and the human output never disagree."""
+    return sorted(str(path) for path in written.values() if path.name.endswith(".new"))
+
+
+def _unimplemented_stubs(written: dict[str, Path]) -> list[str]:
+    """The emitted ``extracted/*`` modules still carrying a stub marker — the
+    agent's fill-in TODO list.
+
+    "Still a stub" is read straight off disk: a Python stub raises
+    ``NotImplementedError``; a TypeScript stub throws ``"… stub not
+    implemented"`` (or, for agent loops, ``"… requires an agent runtime"``).
+    A node the user has filled in, or an ``mcp``-backed external_call that
+    emits a working call, no longer matches, so it drops off the list. On
+    re-emit a preserved (user-edited) file's fresh content lands in a
+    ``.new`` sibling; we read the authoritative on-disk target, not the
+    ``.new``, so a filled-in stub isn't re-reported as a TODO.
+    """
+    markers = ("NotImplementedError", "stub not implemented", "requires an agent runtime")
+    stubs: list[str] = []
+    for label, path in written.items():
+        if not label.startswith("extracted/") or label.rsplit("/", 1)[-1] == "__init__":
+            continue
+        target = path.with_name(path.name[:-4]) if path.name.endswith(".new") else path
+        try:
+            text = target.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if any(marker in text for marker in markers):
+            stubs.append(str(target))
+    return sorted(stubs)
 
 
 def _cmd_emit(args: argparse.Namespace) -> int:
@@ -102,6 +145,20 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     from rote.app_registry import record_app
 
     record_app(out_dir, args.runtime, pipeline.name)
+
+    if args.json:
+        import json
+
+        payload = {
+            "pipeline": {"name": pipeline.name, "version": pipeline.version},
+            "runtime": args.runtime,
+            "out_dir": str(out_dir.resolve()),
+            "written": {label: str(path) for label, path in written.items()},
+            "preserved_new_files": _preserved_new_files(written),
+            "unimplemented_stubs": _unimplemented_stubs(written),
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
 
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
     _print_written(written)
@@ -222,17 +279,40 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    # ── Summary ──
-    print(f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}")
-    print(f"  driver: {result.driver_name}")
+    # ── Summary ── (human text to stderr under --json, so stdout is the
+    # JSON object only — the same stdout-contract split as `rote mcp headers`)
+    summary_stream = sys.stderr if args.json else sys.stdout
+    print(
+        f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}",
+        file=summary_stream,
+    )
+    print(f"  driver: {result.driver_name}", file=summary_stream)
     if result.driver_metadata:
         meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
-        print(f"  metadata: {meta_str}")
-    print(f"  graduated artifacts: {graduated_dir}")
+        print(f"  metadata: {meta_str}", file=summary_stream)
+    print(f"  graduated artifacts: {graduated_dir}", file=summary_stream)
     if scorecard_path is not None:
-        print(f"  eval scorecard: {scorecard_path}")
-    print(f"  emitted runtime ({args.runtime}): {runtime_dir}")
-    _print_written(written, indent="    ")
+        print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
+    print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
+    _print_written(written, indent="    ", stream=summary_stream)
+
+    if args.json:
+        import json
+
+        payload = {
+            "pipeline": {"name": result.pipeline.name, "version": result.pipeline.version},
+            "runtime": args.runtime,
+            "out_dir": str(out_dir.resolve()),
+            "graduated_dir": str(graduated_dir.resolve()),
+            "runtime_dir": str(runtime_dir.resolve()),
+            "scorecard": str(scorecard_path.resolve()) if scorecard_path is not None else None,
+            "driver": result.driver_name,
+            "driver_metadata": result.driver_metadata,
+            "written": {label: str(path) for label, path in written.items()},
+            "preserved_new_files": _preserved_new_files(written),
+            "unimplemented_stubs": _unimplemented_stubs(written),
+        }
+        print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -1246,6 +1326,15 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Output directory (created if missing)",
     )
+    emit.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit a single JSON object (out_dir, written files, preserved "
+            ".new files, unimplemented stubs) to stdout; keep human logs on "
+            "stderr. For piping into another tool or agent."
+        ),
+    )
     emit.set_defaults(func=_cmd_emit)
 
     # rote graduate (stub)
@@ -1324,6 +1413,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "and re-derives only nodes whose source sections changed — "
             "unchanged nodes are preserved verbatim (ids and all), and a "
             "skill with no changes skips the agent entirely."
+        ),
+    )
+    graduate.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Emit a single JSON object (graduated_dir, runtime_dir, written "
+            "files, scorecard path, unimplemented stubs) to stdout; keep the "
+            "progress log and summary on stderr. For piping into another tool "
+            "or agent."
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)

@@ -69,6 +69,21 @@ _BASE_URL_RE = re.compile(r"^https?://[A-Za-z0-9._~:/?#\[\]@!$&()*+,;=%-]+$")
 # could break out of a string literal.
 _MCP_TOOL_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
 
+# A pipeline name (``Pipeline.name``). Reaches emitted code two ways: verbatim
+# in docstrings / block comments / string literals, AND through
+# ``_to_pascal_case`` to form workflow / class / queue names. The pascal-case
+# split only understands ``-`` and ``_`` as word separators, so the name must
+# be an identifier-safe kebab/snake string starting with a letter — anything
+# else either breaks out of the emitted syntax or produces an invalid class
+# name. See ``Pipeline._validate_name``.
+_PIPELINE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+# A pipeline version (``Pipeline.version``). Reaches emitted docstrings / JSDoc
+# verbatim, so restrict it to the characters a semver-ish version needs and
+# nothing that could close a docstring (``\"\"\"``), a block comment (``*/``),
+# or inject a newline. See ``Pipeline._validate_version``.
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
 
 def _validate_impl_ref(value: str, field_name: str) -> str:
     """Validate a ``'relative/path.py:symbol'`` reference.
@@ -433,6 +448,34 @@ class Node(BaseModel):
             return None
         return _validate_impl_ref(v, "impl/signature reference")
 
+    @field_validator("tools")
+    @classmethod
+    def _validate_tools(cls, v: list[str] | None) -> list[str] | None:
+        """Each tool name is spliced verbatim into emitted docstrings / block
+        comments (Python ``#``/``\"\"\"`` and TS ``/* */``). Pin them to the
+        MCP tool-name charset so a crafted name can't close a comment and
+        inject code."""
+        if v is None:
+            return None
+        for tool in v:
+            if not _MCP_TOOL_RE.fullmatch(tool):
+                raise ValueError(f"tool name {tool!r} must contain only letters, digits, and _./-")
+        return v
+
+    @field_validator("constants")
+    @classmethod
+    def _validate_constants(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Constant *keys* are emitted verbatim into docstrings / comments, so
+        pin them to identifiers. Values stay arbitrary — they're escaped at
+        emission (repr into Python docstrings, ``safe_block_comment_line`` into
+        TS JSDoc)."""
+        if v is None:
+            return None
+        for key in v:
+            if not _IDENTIFIER_RE.fullmatch(key):
+                raise ValueError(f"constant key {key!r} must be a valid identifier")
+        return v
+
     @field_validator("phase", mode="before")
     @classmethod
     def _coerce_phase_to_string(cls, v: Any) -> str | None:
@@ -658,6 +701,32 @@ class Pipeline(BaseModel):
     edges: list[Edge]
     entry_nodes: list[str] = Field(default_factory=list)
     exit_nodes: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        """``name`` reaches emitted code verbatim (docstrings, string literals)
+        and via ``_to_pascal_case`` (workflow / class / queue names), so it
+        must be an identifier-safe kebab/snake name starting with a letter."""
+        if not _PIPELINE_NAME_RE.fullmatch(v):
+            raise ValueError(
+                f"Pipeline name {v!r} must start with a letter and contain only "
+                f"letters, digits, hyphens, and underscores"
+            )
+        return v
+
+    @field_validator("version")
+    @classmethod
+    def _validate_version(cls, v: str) -> str:
+        """``version`` reaches emitted docstrings / JSDoc verbatim; constrain it
+        so it cannot close a docstring, close a block comment, or inject a
+        newline."""
+        if not _VERSION_RE.fullmatch(v):
+            raise ValueError(
+                f"Pipeline version {v!r} must start with a letter or digit and "
+                f"contain only letters, digits, and .+-_"
+            )
+        return v
 
     @model_validator(mode="after")
     def _validate_dag_integrity(self) -> Self:

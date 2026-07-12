@@ -28,7 +28,7 @@ One durable credential layer, four consumers:
                   │           │                    │                 │
             rote CLI    emitted Python       eval --run        emitted TS
           (login/headers)  runtimes        (headersHelper →   (refresh-grant
-                          (OAuth w/ store)  rote mcp headers)  client; planned)
+                          (OAuth w/ store)  rote mcp headers)  client, shipped)
 ```
 
 - **Registry** (`rote mcp add <name> <url>`): logical server names —
@@ -62,7 +62,7 @@ URL (deployment context beats graduation-time capture) — see
 ## The token-file contract (version 1)
 
 The store layout is a **cross-language contract**: Python writes it,
-Python and (planned) TypeScript runtimes read and refresh through it.
+Python and TypeScript runtimes read and refresh through it.
 
 ```json
 {
@@ -287,8 +287,10 @@ refresh grant and caches them — with rotated refresh tokens — in the
 declared `Promise<never>` in emitted modules for the same
 `Rpc.Serializable` reason stubs are. Static verification: the emitted
 output typechecks against `@cloudflare/workers-types` v5 + the MCP SDK
-(`test_cloudflare_mcp_output_typechecks`); a live workerd run of the
-SDK's streamable-HTTP client remains a known follow-up.
+(`test_cloudflare_mcp_output_typechecks`); the park-on-auth e2e
+(`tests/test_mcp_park_cf_e2e.py`) additionally drives the SDK's
+streamable-HTTP client through a live workerd run against a real
+server.
 
 ## Security posture
 

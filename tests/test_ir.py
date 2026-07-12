@@ -211,6 +211,130 @@ def test_node_id_accepts_normal_snake_case() -> None:
     assert node.id == "enrich_contact_batch"
 
 
+def _pipeline_with(**overrides: object) -> Pipeline:
+    """A minimal valid pipeline, with named fields overridden per test."""
+    from rote.ir import Node
+
+    node_kwargs: dict[str, object] = dict(
+        id="n1", kind=NodeKind.PURE_FUNCTION, description="x", impl="extracted/a.py:go"
+    )
+    node_kwargs.update({k: v for k, v in overrides.items() if k in {"constants", "tools", "kind"}})
+    base: dict[str, object] = dict(
+        name="demo",
+        version="0.1.0",
+        input=PipelineInput(type="In"),
+        nodes=[Node(**node_kwargs)],  # type: ignore[arg-type]
+        edges=[],
+        entry_nodes=["n1"],
+        exit_nodes=["n1"],
+    )
+    base.update({k: v for k, v in overrides.items() if k in {"name", "version"}})
+    return Pipeline(**base)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        'evil"""\nimport os\nos.system("id")\n"""',  # closes a Python docstring
+        "has space",  # space → breaks identifier / class name
+        "1leading_digit",  # digit start → invalid emitted class name
+        "has.dot",  # '.' survives pascal-case → invalid class name
+        "has/slash",  # path separator
+        "",  # empty
+    ],
+)
+def test_pipeline_name_must_be_a_safe_identifier(bad_name: str) -> None:
+    """``name`` reaches emitted docstrings/literals AND ``_to_pascal_case``
+    (class/workflow/queue names), so non-identifier names must be rejected at
+    the IR boundary — the confirmed docstring-breakout PoC among them."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Pipeline name"):
+        _pipeline_with(name=bad_name)
+
+
+def test_pipeline_name_accepts_kebab_case() -> None:
+    assert _pipeline_with(name="bdr-outreach").name == "bdr-outreach"
+
+
+@pytest.mark.parametrize(
+    "bad_version",
+    [
+        '0.1.0"""\nimport os\n"""',  # closes a Python docstring
+        "1.0 */ evil() /*",  # closes a TS block comment
+        "1.0\nimport os",  # newline injection
+        "",  # empty
+    ],
+)
+def test_pipeline_version_charset_is_constrained(bad_version: str) -> None:
+    """``version`` reaches emitted docstrings/JSDoc verbatim; a value that can
+    close a docstring or block comment must be rejected at the IR boundary."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Pipeline version"):
+        _pipeline_with(version=bad_version)
+
+
+def test_pipeline_version_accepts_semver() -> None:
+    assert _pipeline_with(version="1.2.3-rc.1+build.5").version == "1.2.3-rc.1+build.5"
+
+
+def test_agent_loop_tool_names_are_charset_constrained() -> None:
+    """Tool names splice verbatim into emitted docstrings/JSDoc; the exact
+    confirmed TS-injection payload must be rejected at the IR boundary."""
+    from pydantic import ValidationError
+
+    from rote.ir import Node, TerminationConfig
+
+    payload = "good_tool */ ; globalThis.__ROTE_INJECTED = true; /*"
+    with pytest.raises(ValidationError, match="tool name"):
+        Node(
+            id="loop1",
+            kind=NodeKind.AGENT_LOOP,
+            description="x",
+            tools=[payload],
+            termination=TerminationConfig(condition="done", max_iterations=3),
+        )
+
+
+def test_agent_loop_accepts_normal_tool_names() -> None:
+    from rote.ir import Node, TerminationConfig
+
+    node = Node(
+        id="loop1",
+        kind=NodeKind.AGENT_LOOP,
+        description="x",
+        tools=["bright_data_search", "salesforce_query", "chrome_cdp_click"],
+        termination=TerminationConfig(condition="done", max_iterations=3),
+    )
+    assert node.tools == ["bright_data_search", "salesforce_query", "chrome_cdp_click"]
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "x */ evil() /*",  # closes a TS block comment
+        'x"""\nimport os\n"""',  # closes a Python docstring
+        "has space",
+        "1leading",
+    ],
+)
+def test_constant_keys_must_be_identifiers(bad_key: str) -> None:
+    """Constant *keys* are emitted verbatim into docstrings/comments; only
+    identifier keys are allowed. (Values stay arbitrary — escaped at emit.)"""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="constant key"):
+        _pipeline_with(constants={bad_key: 1})
+
+
+def test_constant_values_stay_arbitrary() -> None:
+    """Values are not charset-constrained (they're escaped at emission), so a
+    value carrying comment-breakout characters still validates."""
+    p = _pipeline_with(constants={"evil": 'a */ x """ b', "batch_size": 10})
+    assert p.nodes[0].constants == {"evil": 'a */ x """ b', "batch_size": 10}
+
+
 def test_llm_judge_node_requires_signature() -> None:
     from pydantic import ValidationError
 

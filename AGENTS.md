@@ -1,0 +1,159 @@
+# AGENTS.md — driving `rote` as an installed tool
+
+This file is for a **coding agent** (Codex, Cursor, a plain API agent, or
+Claude Code without the plugin) that has been asked to **use** `rote` to
+graduate a skill. It covers the operational facts `rote --help` can't tell
+you. If you are editing `rote` itself, read `CLAUDE.md` instead — that's the
+contributor manual and does not apply here.
+
+`rote` compiles an Anthropic-style skill (`SKILL.md` + optional
+`references/`) into a deterministic, durable workflow: a `pipeline.yaml` IR
+plus runnable runtime code. The north-star command is `rote graduate`.
+
+## Invocation contract
+
+Run it with `uvx` — nothing to install but `uv`:
+
+```sh
+uvx --from rote-cli rote <args>
+```
+
+- The PyPI **package** is `rote-cli`; the **command** (and import name) is
+  `rote`. The published wheel ships no `rote-cli` executable, so
+  `uvx rote-cli ...` fails. Always `--from rote-cli rote`.
+- Unreleased features: swap the origin, same command —
+  `uvx --from git+https://github.com/trevhud/rote rote <args>`.
+- Do not clone or build a venv; `uvx` handles isolation.
+
+## `rote graduate` is slow and costs money — plan for it
+
+```sh
+uvx --from rote-cli rote graduate <skill-dir> --runtime <runtime> --out <out-dir>
+```
+
+- A realistic skill takes **~13 minutes** and 30–40 agent turns (~$0.70 on a
+  Claude subscription). **Run it backgrounded** and poll — do not block.
+- **Confirm the resolved skill directory as an absolute path** with the human
+  before launching. Graduation spends real time and tokens; never guess-and-go.
+  If the directory has no `SKILL.md`, stop and ask.
+- Progress streams to **stderr**, one line each (stdout is reserved for the
+  final summary). Tail it to know where the run is:
+  - `[phase N/7] <name>` — phase transitions.
+  - `[turn N] <tool> <path>` — the agent's tool calls.
+- `--runtime` defaults to `dbos` (durable execution as a library, no
+  orchestrator, SQLite for dev). Others: `temporal`, `python`, `cloudflare`,
+  `dbos-ts`, `inngest`. `--out` is required.
+
+## Auth: do not export an API key to "fix" it
+
+The default `claude` driver spawns `claude -p` and **deliberately scrubs
+`ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`** from the child environment so
+the run bills against the user's Claude Max/Pro subscription, not per-token
+API charges. If a run seems to want auth, that is expected — do **not** set an
+API key to work around it.
+
+- Want API-key billing on purpose? Pass `--agent api` (the in-process
+  Anthropic-SDK driver, which reads `ANTHROPIC_API_KEY`).
+- `--agent` choices: `claude` (default), `codex` (ChatGPT subscription),
+  `api`. Auto-detect order when omitted: `claude` → `codex` → `api`.
+
+## Failure recovery: check for the file before trusting the exit code
+
+The graduator's deliverable is a file on disk. If a `rote graduate` run exits
+nonzero, **check whether `<out-dir>/graduated/pipeline.yaml` exists anyway** —
+a subprocess blip *after* the agent wrote a complete IR still produces valid
+output, and the run has materially succeeded. Treat the file's presence as the
+real success signal; surface the stderr warning either way. Do not re-run a
+graduation (and re-spend ~$0.70) on an exit code alone.
+
+## Output layout
+
+`rote graduate --out <dir>` writes two trees:
+
+- `<dir>/graduated/` — the agent's artifacts:
+  - `pipeline.yaml` — the validated IR (source of truth).
+  - `extracted/*.py` — **stubs you implement** (see below).
+  - `signatures/*.py` — complete, typed LLM judges. **Leave these alone.**
+  - `scorecard.md`, `graduation-report.md` — before/after estimate + report.
+- `<dir>/runtime/<runtime>/` — the deployable code: `main.py` (DBOS/Python),
+  `workflow.py` + `activities.py` (Temporal), or `src/workflow.ts` +
+  `wrangler.jsonc` (Cloudflare/TS), plus its own `README.md` on how to run,
+  signal HITL gates, and deploy. Read that README before deploying.
+
+`rote emit <pipeline.yaml> --out <dir>` (the pure IR→code step, no LLM, no
+cost) writes the runtime tree directly into `<dir>`.
+
+## The job you finish: implement `extracted/*`, not `signatures/*`
+
+After graduation the pipeline is not yet runnable. The deterministic nodes are
+scaffolds that `raise NotImplementedError`:
+
+- **`extracted/*.py`** — implement each function body with the real vendor API
+  call (the source skill's MCP tool calls were graduated away). The step in
+  `main.py` calls these with the node's payload as keyword arguments; to learn
+  a stub's exact input/output contract, read its call site in `main.py` and
+  the node's `inputs:`/`output:` in `pipeline.yaml`.
+- **`signatures/*.py`** — already complete typed LLM judges (Pydantic
+  input/output, embedded schema, prompt). Do not rewrite them.
+
+To run a graduated DBOS app locally once stubs are filled:
+`python main.py '{"your": "input"}'` (one run) or `python main.py --serve`
+(long-lived worker). See the runtime `README.md`.
+
+## Re-running is safe — retry freely
+
+`rote` never silently clobbers your edits.
+
+- Every emit records what it wrote in `.rote-manifest.json`. On re-emit, any
+  file you edited since is **left untouched**; the fresh version lands beside
+  it as `<name>.new` and the CLI reports it. Merge or delete `.new` files.
+- `rote graduate --update` is **incremental**: it diffs the skill against the
+  previous run's `provenance.json`, re-derives only nodes whose source
+  sections changed, keeps unchanged nodes' ids (so in-flight durable workflows
+  aren't orphaned), and preserves stubs you've filled. No section changes → no
+  agent run at all (no cost).
+
+A naive retry of `emit` or `graduate --update` is therefore non-destructive.
+
+## Exit codes
+
+- `0` — success.
+- `1` — runtime error (bad pipeline, graduator failure, price fetch, etc.).
+- `2` — usage error (bad flag, missing path, unknown runtime).
+- `130` — interrupted (Ctrl-C).
+
+## Machine-readable output
+
+Pass `--json` to get structured output instead of prose:
+
+- `rote analyze <skill> --json` — node-kind breakdown, roteness, HITL gates,
+  targetable runtimes (dry-run; no runtime code emitted).
+- `rote eval <graduated> --json` — the before/after scorecard as JSON.
+- `rote mcp list --json` — registered MCP servers + auth status.
+- `rote emit --json` — the final result object: pipeline name/version,
+  `runtime`, `out_dir`, `written` (label → absolute path), `preserved_new_files`
+  (`.new` siblings), and `unimplemented_stubs` (the `extracted/*` files still
+  needing an implementation — your TODO list). Parse this instead of scraping
+  the human summary.
+- `rote graduate --json` — a superset of the emit object that also carries
+  `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
+  a price-fetch failure), and the `driver` used.
+
+Note: `unimplemented_stubs` is read off the emitted `extracted/*` files, so it
+is populated for the `dbos` (default), `python`, `cloudflare`, `dbos-ts`, and
+`inngest` runtimes; `temporal` inlines its stubs in `activities.py` and reports
+an empty list.
+
+Exit codes above let you distinguish success from failure without parsing.
+
+## MCP-authenticated steps: the park-on-auth loop
+
+If a graduated node calls an MCP server that needs credentials, the emitted
+workflow **parks durably** on a missing/dead token rather than failing.
+Authenticate the server (`rote mcp login <server>`) and every parked run is
+released automatically. Full details, including releasing runs when the
+credential was fixed another way (`rote mcp release <server>`), are in
+[`docs/mcp-client.md`](docs/mcp-client.md).
+
+To expose a deployed pipeline back to an agent as an MCP tool, see
+`rote register` + `rote serve` and [`docs/mcp-trigger.md`](docs/mcp-trigger.md).

@@ -177,7 +177,13 @@ def _validate_signal_name(name: str, node_id: str) -> None:
 
 
 def _event_prefix(pipeline: Pipeline) -> str:
-    """The pipeline-name namespace all emitted event names live under."""
+    """The pipeline-name namespace all emitted event names live under.
+
+    The IR pins ``Pipeline.name`` to a strict subset of this pattern, so a
+    validated pipeline never trips this check. Retained as defense-in-depth
+    tied to this adapter's event-name contract, exactly like
+    ``_validate_signal_name`` above.
+    """
     if not _EVENT_SEGMENT_RE.fullmatch(pipeline.name):
         raise ValueError(
             f"Inngest adapter: pipeline name {pipeline.name!r} contains "
@@ -348,7 +354,12 @@ def emit_extracted_module(node: Node) -> str:
         )
     if node.constants:
         doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        doc.extend(f" *   {k} = {json.dumps(v)}" for k, v in node.constants.items())
+        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
+        # run the value through safe_block_comment_line to neutralize it.
+        doc.extend(
+            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
+            for k, v in node.constants.items()
+        )
 
     doc.append(" */")
 
