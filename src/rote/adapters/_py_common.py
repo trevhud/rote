@@ -749,9 +749,11 @@ def emit_extracted_module(
             doc_lines.append("")
             doc_lines.append("    Constants from the IR (lifted from the source skill):")
             for k, v in node.constants.items():
+                # k is an identifier (IR-validated); v is arbitrary, so escape
+                # its repr so a value containing \"\"\" can't close this docstring.
                 doc_lines.extend(
                     textwrap.wrap(
-                        f"{k} = {v!r}",
+                        f"{k} = {safe_docstring_line(repr(v))}",
                         width=88,
                         initial_indent="      ",
                         subsequent_indent="          ",

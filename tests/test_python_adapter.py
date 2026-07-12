@@ -62,6 +62,28 @@ def main_src(emit_result: dict[str, Path]) -> str:
     return emit_result["main"].read_text(encoding="utf-8")
 
 
+def test_constants_value_cannot_break_out_of_python_docstring(tmp_path: Path) -> None:
+    """A constant *value* carrying ``\"\"\"`` is spliced into an extracted
+    stub's docstring. Before the fix, ``{v!r}`` left the triple-quote intact,
+    closing the docstring and injecting module-level code. The escaped repr
+    must keep every emitted ``.py`` file parseable."""
+    node = Node(
+        id="n1",
+        kind=NodeKind.PURE_FUNCTION,
+        description="x",
+        impl="extracted/a.py:go",
+        constants={"evil": 'a """\nimport os\nos.system("id")\n""" b'},
+    )
+    result = PythonAdapter().emit(mini_pipeline(node), tmp_path)
+    for path in result.values():
+        if path.suffix == ".py":
+            # ast.parse raises SyntaxError if the docstring was broken out of.
+            ast.parse(path.read_text(encoding="utf-8"))
+    stub = result["extracted/a"].read_text(encoding="utf-8")
+    # The raw triple-quote is gone from the value; the escaped form survives.
+    assert 'os.system("id")\n"""' not in stub
+
+
 # ───────── Registry + derived IR property ─────────
 
 

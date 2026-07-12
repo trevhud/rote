@@ -116,10 +116,22 @@ def test_validate_signal_name_rejects_dots_spaces_slashes() -> None:
         _validate_signal_name("has/slash", "node-id")
 
 
-def test_event_prefix_rejects_unsafe_pipeline_name() -> None:
-    pipeline = _minimal_pipeline(name="bad name!")
+def test_unsafe_pipeline_name_rejected_at_ir_boundary() -> None:
+    """The IR now charset-pins ``Pipeline.name``, so an unsafe name can't be
+    constructed in the first place — enforcement moved up from the adapter."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Pipeline name"):
+        _minimal_pipeline(name="bad name!")
+
+
+def test_event_prefix_guard_is_defense_in_depth() -> None:
+    """The adapter's event-prefix guard is belt-and-braces behind the IR
+    validator. ``model_copy`` skips validation, so it's the way to smuggle an
+    unsafe name past the IR and prove the guard still fails loudly at emit."""
+    smuggled = _minimal_pipeline().model_copy(update={"name": "bad name!"})
     with pytest.raises(ValueError, match="unsafe for an Inngest event-name prefix"):
-        trigger_event_name(pipeline)
+        trigger_event_name(smuggled)
 
 
 # ───────── Retry mapping ─────────

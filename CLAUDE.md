@@ -633,7 +633,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 540 tests (524 fast + 16 slow). Run with `pytest tests/` (fast
+- 722 tests (698 fast + 24 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

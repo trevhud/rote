@@ -374,6 +374,39 @@ def test_workers_ai_signature_uses_ai_binding_not_api_key(tmp_path: Path) -> Non
     assert_no_mcp_in_ts(result, min_files=3)
 
 
+def test_constants_value_cannot_break_out_of_ts_block_comment(tmp_path: Path) -> None:
+    """A constant *value* (arbitrary — not charset-constrained at the IR
+    boundary) that carries a ``*/`` block-comment breakout must be neutralized
+    at emission. Before the fix, ``json.dumps(value)`` left ``*/`` intact,
+    closing the JSDoc and turning the rest of the value into live TypeScript
+    (confirmed: ``node`` executed the injected statement)."""
+    from rote.ir import Node, PipelineInput
+
+    breakout = "a */ globalThis.__ROTE_INJECTED = true; /* b"
+    pipeline = Pipeline(
+        name="demo",
+        input=PipelineInput(type="In"),
+        nodes=[
+            Node(
+                id="n1",
+                kind=NodeKind.EXTERNAL_CALL,
+                description="x",
+                impl="extracted/a.py:go",
+                constants={"evil": breakout},
+            )
+        ],
+        edges=[],
+        entry_nodes=["n1"],
+        exit_nodes=["n1"],
+    )
+    result = CloudflareAdapter().emit(pipeline, tmp_path)
+    stub = result["extracted/n1"].read_text()
+    # The live breakout sequence is gone; only the neutralized "* /" remains,
+    # so the injected statement stays inside the JSDoc comment.
+    assert "*/ globalThis.__ROTE_INJECTED" not in stub
+    assert "* / globalThis.__ROTE_INJECTED" in stub
+
+
 def test_extracted_stub_throws_not_implemented(
     emit_result: dict[str, Path],
 ) -> None:

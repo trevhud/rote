@@ -547,7 +547,12 @@ def emit_extracted_module(node: Node) -> str:
         )
     if node.constants:
         doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        doc.extend(f" *   {k} = {json.dumps(v)}" for k, v in node.constants.items())
+        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
+        # run the value through safe_block_comment_line to neutralize it.
+        doc.extend(
+            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
+            for k, v in node.constants.items()
+        )
 
     doc.append(" */")
 
