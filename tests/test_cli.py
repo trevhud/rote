@@ -808,6 +808,11 @@ def test_doctor_reports_mcp_servers_and_apps(
     record_app(live_app, "dbos", "live_pipeline")
     record_app(tmp_path / "gone-app", "temporal", "stale_pipeline")
 
+    # Pin driver availability so rc is deterministic regardless of whether a
+    # claude/codex CLI happens to be on PATH — this test exercises the
+    # mcp_servers/apps sections, not driver detection.
+    monkeypatch.setattr("rote.cli.available_drivers", lambda: [("claude", True, "")])
+
     rc = cli_main(["doctor", "--json"])
     assert rc == 0
 
