@@ -25,6 +25,23 @@ uvx --from rote-cli rote <args>
   `uvx --from git+https://github.com/trevhud/rote rote <args>`.
 - Do not clone or build a venv; `uvx` handles isolation.
 
+## Preflight first: `rote doctor`
+
+Before spending money on a graduation, run the read-only preflight — it costs
+nothing and tells you whether a run can even succeed:
+
+```sh
+uvx --from rote-cli rote doctor --json
+```
+
+`--json` gives `{version, python, drivers:[{name,available,reason}], runtimes,
+mcp_servers:[{name,url,auth}], apps, ok}`. Gate on `ok` (true iff at least one
+graduator driver is available — `rote doctor` also exits non-zero when none is).
+Each unavailable driver's `reason` is an actionable fix. It also surfaces MCP
+servers whose auth is `expired`/`not authenticated` (those would park a run) and
+registered apps whose directory has gone missing. It does NOT probe CLI
+subscription auth for claude/codex — that's only verified at run time.
+
 ## `rote graduate` is slow and costs money — plan for it
 
 ```sh

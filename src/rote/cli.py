@@ -37,6 +37,7 @@ from typing import Any
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
+from rote.graduator.drivers import available_drivers
 from rote.graduator.events import GraduationEvent
 from rote.ir import Pipeline, load_pipeline
 
@@ -745,26 +746,13 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
 def _cmd_mcp_list(args: argparse.Namespace) -> int:
     import json as _json
 
-    from rote.mcp import access_token_state, load_registry, read_token_file
+    from rote.mcp import auth_status, load_registry, read_token_file
 
     registry = load_registry()
     entries: list[dict[str, object]] = []
     for name, config in sorted(registry.servers.items()):
         doc = read_token_file(name)
-        if config.headers:
-            status = "static headers"
-        elif doc is None:
-            status = "not authenticated"
-        else:
-            token, fresh = access_token_state(doc)
-            if token and fresh:
-                status = "authenticated"
-            elif token and (doc.get("tokens") or {}).get("refresh_token"):
-                status = "expired (refreshable)"
-            elif token:
-                status = "expired"
-            else:
-                status = "not authenticated"
+        status = auth_status(config, doc)
         entries.append(
             {"name": name, "url": config.url, "transport": config.transport, "auth": status}
         )
@@ -1183,6 +1171,161 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
                 print()
                 print("  (report only — pass --out DIR to keep the pipeline.yaml for `rote emit`)")
     return 0
+
+
+#: Optional package extras → the module whose importability proves the
+#: extra is installed. ``find_spec`` is a pure lookup (no import side
+#: effects), so this stays cheap and safe to run on every ``doctor``.
+_DOCTOR_EXTRAS: dict[str, str] = {
+    "temporal": "temporalio",
+    "api": "anthropic",
+    "openai-api": "openai",
+    "dbos": "dbos",
+    "serve": "fastmcp",
+    "mcp": "fastmcp",
+}
+
+
+def _doctor_mcp_servers() -> list[dict[str, object]]:
+    """Registered MCP servers with their five-state auth status.
+
+    Degrades to an empty list on any read failure — the registry and
+    token store are documented as optionally-absent, so a missing or
+    malformed store is informational, never a doctor traceback.
+    """
+    from rote.mcp import auth_status, load_registry, read_token_file
+
+    try:
+        registry = load_registry()
+    except Exception:
+        return []
+    servers: list[dict[str, object]] = []
+    for name, config in sorted(registry.servers.items()):
+        try:
+            doc = read_token_file(name)
+        except Exception:
+            doc = None
+        servers.append({"name": name, "url": config.url, "auth": auth_status(config, doc)})
+    return servers
+
+
+def _doctor_apps() -> list[dict[str, object]]:
+    """Emitted apps rote has recorded, flagging any whose directory is gone.
+
+    Degrades to an empty list on any read failure (missing/corrupt
+    registry). Staleness is expected — a moved or deleted app dir shows
+    ``exists: false`` rather than being dropped.
+    """
+    from rote.app_registry import registered_apps
+
+    try:
+        apps = registered_apps()
+    except Exception:
+        return []
+    return [
+        {
+            "path": str(app.path),
+            "runtime": app.runtime,
+            "pipeline": app.pipeline,
+            "exists": app.path.is_dir(),
+        }
+        for app in apps
+    ]
+
+
+def _build_doctor_report() -> dict[str, Any]:
+    """Gather the full read-only preflight report (the ``--json`` payload)."""
+    import importlib.util
+    import platform
+
+    drivers = [
+        {"name": name, "available": available, "reason": reason}
+        for name, available, reason in available_drivers()
+    ]
+    runtimes = [
+        {"name": extra, "installed": importlib.util.find_spec(module) is not None}
+        for extra, module in _DOCTOR_EXTRAS.items()
+    ]
+    return {
+        "version": __version__,
+        "python": platform.python_version(),
+        "drivers": drivers,
+        "runtimes": runtimes,
+        "mcp_servers": _doctor_mcp_servers(),
+        "apps": _doctor_apps(),
+        "ok": any(bool(d["available"]) for d in drivers),
+    }
+
+
+def _render_doctor_text(report: dict[str, Any]) -> str:
+    """Render the doctor report as a scannable ✓/✗ checklist."""
+    lines: list[str] = []
+    lines.append("rote doctor — preflight (read-only; costs nothing)")
+    lines.append("")
+    lines.append(f"  rote {report['version']}  ·  Python {report['python']}")
+    lines.append("")
+
+    lines.append("Graduator drivers (at least one required):")
+    for driver in report["drivers"]:
+        mark = "✓" if driver["available"] else "✗"
+        suffix = "" if driver["available"] else f" — {driver['reason']}"
+        lines.append(f"  {mark} {driver['name']}{suffix}")
+    lines.append("  note: CLI subscription auth (claude/codex) is only verified at run time.")
+    lines.append("")
+
+    lines.append("Runtime dependencies:")
+    for runtime in report["runtimes"]:
+        if runtime["installed"]:
+            lines.append(f"  ✓ {runtime['name']}")
+        else:
+            lines.append(f"  ✗ {runtime['name']} — pip install 'rote-cli[{runtime['name']}]'")
+    lines.append("")
+
+    lines.append("MCP servers:")
+    servers = report["mcp_servers"]
+    if not servers:
+        lines.append("  (none registered)")
+    else:
+        width = max(len(str(s["name"])) for s in servers)
+        for server in servers:
+            healthy = server["auth"] in ("authenticated", "static headers")
+            mark = "✓" if healthy else "✗"
+            name = str(server["name"]).ljust(width)
+            lines.append(f"  {mark} {name}  {str(server['auth']):<22}  {server['url']}")
+    lines.append("")
+
+    lines.append("Registered apps:")
+    apps = report["apps"]
+    if not apps:
+        lines.append("  (none registered)")
+    else:
+        for app in apps:
+            mark = "✓" if app["exists"] else "✗"
+            suffix = "" if app["exists"] else "  (directory missing)"
+            lines.append(f"  {mark} {app['path']}  [{app['runtime']}] {app['pipeline']}{suffix}")
+    lines.append("  (MCP and app issues are informational — they do not fail this check.)")
+    lines.append("")
+
+    lines.append("✓ ready to graduate" if report["ok"] else "✗ no graduator driver available")
+    return "\n".join(lines)
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Read-only preflight: is a graduation set up to succeed before spending money?
+
+    Reports the rote/Python versions, which graduator drivers are usable
+    (the load-bearing gate), which optional runtime deps are installed,
+    the auth state of every registered MCP server, and every emitted app
+    rote knows about. Exits non-zero only when NO graduator driver is
+    available, so it doubles as a scriptable gate; MCP and app findings
+    are informational.
+    """
+    report = _build_doctor_report()
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(_render_doctor_text(report))
+    return 0 if report["ok"] else 1
 
 
 def _resolve_eval_skill_dir(
@@ -1914,6 +2057,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the analysis report as JSON instead of text.",
     )
     analyze.set_defaults(func=_cmd_analyze)
+
+    # rote doctor
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Preflight check: graduator drivers, runtime deps, MCP auth, and registered apps",
+        description=(
+            "Read-only preflight that tells you (or your agent) whether a "
+            "graduation will succeed before spending a cent: which graduator "
+            "drivers are usable, which optional runtime dependencies are "
+            "installed, the auth state of every registered MCP server, and "
+            "every emitted app rote knows about. Nothing is executed and "
+            "nothing is spent. Exits non-zero only when no graduator driver "
+            "is available, so it works as a scriptable gate."
+        ),
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the report as a single JSON object to stdout instead of the checklist.",
+    )
+    doctor.set_defaults(func=_cmd_doctor)
 
     # rote eval
     eval_cmd = subparsers.add_parser(

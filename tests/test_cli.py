@@ -697,6 +697,173 @@ def test_graduate_surfaces_graduator_error_with_exit_1(
     assert "simulated failure" in err
 
 
+# ───────── doctor ─────────
+
+
+def test_doctor_json_mode_is_machine_readable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    monkeypatch.setattr(
+        "rote.cli.available_drivers",
+        lambda: [("claude", True, ""), ("codex", False, "codex not installed: brew install codex")],
+    )
+
+    rc = cli_main(["doctor", "--json"])
+    assert rc == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert set(report) == {
+        "version",
+        "python",
+        "drivers",
+        "runtimes",
+        "mcp_servers",
+        "apps",
+        "ok",
+    }
+    assert report["ok"] is True
+    assert report["drivers"] == [
+        {"name": "claude", "available": True, "reason": ""},
+        {"name": "codex", "available": False, "reason": "codex not installed: brew install codex"},
+    ]
+    # runtimes report install status for each optional extra
+    assert {r["name"] for r in report["runtimes"]} == {
+        "temporal",
+        "api",
+        "openai-api",
+        "dbos",
+        "serve",
+        "mcp",
+    }
+    assert all(isinstance(r["installed"], bool) for r in report["runtimes"])
+
+
+def test_doctor_exits_1_when_no_driver_available(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "rote.cli.available_drivers",
+        lambda: [
+            ("claude", False, "claude CLI not found"),
+            ("codex", False, "codex not installed"),
+            ("api", False, "ANTHROPIC_API_KEY not set"),
+        ],
+    )
+
+    rc = cli_main(["doctor", "--json"])
+    assert rc == 1
+
+    import json
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+
+
+def test_doctor_reports_mcp_servers_and_apps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The mcp_servers section covers every auth state and apps flags stale dirs.
+
+    The autouse conftest fixture already points ROTE_MCP_CONFIG /
+    ROTE_MCP_TOKEN_DIR / ROTE_APPS_PATH at per-test tmp dirs, so populating
+    them via the real stores is hermetic.
+    """
+    import json
+    import time
+
+    from rote.app_registry import record_app
+    from rote.mcp import save_registry
+    from rote.mcp.registry import McpRegistry, McpServerConfig
+    from rote.mcp.tokens import write_token_file
+
+    def _token(*, expires_at: float | None, refresh: bool) -> dict[str, object]:
+        tokens: dict[str, object] = {"access_token": "tok", "token_type": "Bearer"}
+        if refresh:
+            tokens["refresh_token"] = "ref"
+        return {"server_url": "https://x.example/mcp", "tokens": tokens, "expires_at": expires_at}
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "keyd": McpServerConfig(url="https://k.example/mcp", headers={"X-K": "v"}),
+                "fresh": McpServerConfig(url="https://f.example/mcp"),
+                "noauth": McpServerConfig(url="https://n.example/mcp"),
+                "refreshable": McpServerConfig(url="https://r.example/mcp"),
+                "dead": McpServerConfig(url="https://d.example/mcp"),
+            }
+        )
+    )
+    write_token_file("fresh", _token(expires_at=None, refresh=False))
+    write_token_file("refreshable", _token(expires_at=time.time() - 10, refresh=True))
+    write_token_file("dead", _token(expires_at=time.time() - 10, refresh=False))
+
+    live_app = tmp_path / "live-app"
+    live_app.mkdir()
+    record_app(live_app, "dbos", "live_pipeline")
+    record_app(tmp_path / "gone-app", "temporal", "stale_pipeline")
+
+    # Pin driver availability so rc is deterministic regardless of whether a
+    # claude/codex CLI happens to be on PATH — this test exercises the
+    # mcp_servers/apps sections, not driver detection.
+    monkeypatch.setattr("rote.cli.available_drivers", lambda: [("claude", True, "")])
+
+    rc = cli_main(["doctor", "--json"])
+    assert rc == 0
+
+    report = json.loads(capsys.readouterr().out)
+    by_name = {s["name"]: s["auth"] for s in report["mcp_servers"]}
+    assert by_name == {
+        "keyd": "static headers",
+        "fresh": "authenticated",
+        "noauth": "not authenticated",
+        "refreshable": "expired (refreshable)",
+        "dead": "expired",
+    }
+
+    apps = {a["pipeline"]: a["exists"] for a in report["apps"]}
+    assert apps == {"live_pipeline": True, "stale_pipeline": False}
+
+
+def test_doctor_human_mode_renders_checklist_with_driver_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "rote.cli.available_drivers",
+        lambda: [("claude", True, ""), ("codex", False, "codex not installed: brew install codex")],
+    )
+
+    rc = cli_main(["doctor"])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "✓ claude" in out
+    assert "✗ codex" in out
+    assert "codex not installed: brew install codex" in out  # reason shown inline
+    assert "ready to graduate" in out
+    assert "only verified at run time" in out  # the CLI-subscription caveat
+
+
+def test_doctor_degrades_gracefully_with_no_registry_or_apps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No registry, no token dir, no apps file (the conftest tmp paths don't
+    exist yet) — the sections are empty lists, never a traceback."""
+    import json
+
+    rc = cli_main(["doctor", "--json"])
+    assert rc in (0, 1)  # depends on the real drivers; either way no crash
+    report = json.loads(capsys.readouterr().out)
+    assert report["mcp_servers"] == []
+    assert report["apps"] == []
+
+
 # ───────── Subprocess tests ─────────
 
 
