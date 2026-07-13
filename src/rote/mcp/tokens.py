@@ -48,7 +48,10 @@ import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, SupportsFloat
+from typing import TYPE_CHECKING, Any, Literal, SupportsFloat
+
+if TYPE_CHECKING:
+    from rote.mcp.registry import McpServerConfig
 
 TOKEN_DIR_ENV_VAR = "ROTE_MCP_TOKEN_DIR"
 
@@ -136,6 +139,49 @@ def access_token_state(doc: dict[str, Any]) -> tuple[str | None, bool]:
     if expires_at is None:
         return access, True  # no expiry recorded — assume long-lived
     return access, time.time() < float(expires_at) - 60.0
+
+
+AuthStatus = Literal[
+    "static headers",
+    "not authenticated",
+    "authenticated",
+    "expired (refreshable)",
+    "expired",
+]
+"""The five states a registered server's credentials can be in.
+
+- ``static headers`` — the server carries API-key-style ``headers`` and
+  never runs the OAuth dance.
+- ``not authenticated`` — no token file, or a file with no usable token.
+- ``authenticated`` — a fresh (unexpired) access token.
+- ``expired (refreshable)`` — the access token is stale but a
+  ``refresh_token`` is on hand, so a refresh grant can recover it.
+- ``expired`` — a stale access token with no way to refresh; a fresh
+  ``rote mcp login`` is required.
+"""
+
+
+def auth_status(server_config: McpServerConfig, token_doc: dict[str, Any] | None) -> AuthStatus:
+    """Classify a server's credentials into one of the five :data:`AuthStatus` states.
+
+    The single source of truth for auth-state classification, shared by
+    ``rote mcp list`` and ``rote doctor``. Combines the server's static
+    ``headers`` (API-key schemes never touch OAuth), the presence of a
+    token file, :func:`access_token_state`'s freshness verdict, and
+    whether a ``refresh_token`` is available to recover a stale token.
+    """
+    if server_config.headers:
+        return "static headers"
+    if token_doc is None:
+        return "not authenticated"
+    token, fresh = access_token_state(token_doc)
+    if token and fresh:
+        return "authenticated"
+    if token and (token_doc.get("tokens") or {}).get("refresh_token"):
+        return "expired (refreshable)"
+    if token:
+        return "expired"
+    return "not authenticated"
 
 
 class ServerTokenKV:

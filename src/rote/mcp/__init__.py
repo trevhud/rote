@@ -21,7 +21,9 @@ from rote.mcp.registry import (
     save_registry,
 )
 from rote.mcp.tokens import (
+    AuthStatus,
     access_token_state,
+    auth_status,
     clear_token_file,
     read_token_file,
     token_dir,
@@ -30,10 +32,12 @@ from rote.mcp.tokens import (
 )
 
 __all__ = [
+    "AuthStatus",
     "McpAuthError",
     "McpRegistry",
     "McpServerConfig",
     "access_token_state",
+    "auth_status",
     "clear_token_file",
     "fresh_access_token",
     "load_registry",
