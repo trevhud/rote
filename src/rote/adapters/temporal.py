@@ -151,7 +151,7 @@ def _emit_activity_for_llm_judge(node: Node, cfg: TemporalAdapterConfig) -> str:
         f"    )\n"
         f"    judge = {class_name}()\n"
         f"    result = await judge.forward({input_class}(**payload))\n"
-        f"    return result.model_dump()\n"
+        f"    return result.model_dump(by_alias=True)\n"
     )
 
 
@@ -239,7 +239,7 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
                 doesn't carry typed objects through Temporal's history.
                 """
                 if hasattr(obj, "model_dump"):
-                    return obj.model_dump()
+                    return obj.model_dump(by_alias=True)
                 if isinstance(obj, list):
                     return [_serialize(x) for x in obj]
                 if isinstance(obj, tuple):

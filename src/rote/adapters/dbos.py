@@ -328,7 +328,7 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
         import_line = f"    from signatures.{module_name} import {class_name}, {class_name}Input\n"
         call_lines = (
             f"    judge = {class_name}()\n"
-            f"    return judge.forward({class_name}Input(**payload)).model_dump()\n"
+            f"    return judge.forward({class_name}Input(**payload)).model_dump(by_alias=True)\n"
         )
     else:
         # Legacy Temporal-style path: user-maintained module with an
@@ -347,7 +347,7 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
         call_lines = (
             f"    judge = {class_name}()\n"
             f"    result = asyncio.run(judge.forward({class_name}Input(**payload)))\n"
-            f"    return result.model_dump()\n"
+            f"    return result.model_dump(by_alias=True)\n"
         )
     return (
         f"{_step_decorator(node)}\n"

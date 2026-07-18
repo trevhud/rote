@@ -616,6 +616,10 @@ nodes:
           - opportunity_summary
           - scoring_rationale
         additionalProperties: false
+        # Identical to the input's FilteredOpportunity — the judge passes the
+        # scored opportunity through unchanged (see the prompt), and signature
+        # emission requires a $defs name shared across both schemas to mean
+        # one definition.
         "$defs":
           FilteredOpportunity:
             type: object
@@ -640,10 +644,44 @@ nodes:
                 type: boolean
               requested_location:
                 type: string
+              sales_channels:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              current_situation:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              pallets:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              sq_ft:
+                anyOf:
+                  - type: number
+                  - type: "null"
+              international_shipping:
+                anyOf:
+                  - type: boolean
+                  - type: "null"
+              go_live_date:
+                anyOf:
+                  - type: string
+                  - type: "null"
+              product_item_context:
+                anyOf:
+                  - type: string
+                  - type: "null"
               is_eu_uk:
                 type: boolean
               sku_flagged_as_risk:
                 type: boolean
+            required:
+              - account_name
+              - submitter
+              - requested_location
+              - is_eu_uk
+              - sku_flagged_as_risk
             additionalProperties: false
       prompt: |
         You are scoring a new warehouse fulfillment opportunity using the deal-scoring rubric.

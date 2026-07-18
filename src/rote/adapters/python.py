@@ -225,7 +225,9 @@ def _emit_node_llm_judge(node: Node, cfg: PythonAdapterConfig) -> str:
         # Preferred: generated signature module (signatures/<node_id>.py).
         class_name = _to_pascal_case(node.id)
         import_block = f"    from signatures.{node.id} import {class_name}, {class_name}Input\n"
-        call_expr = f"{class_name}().forward({class_name}Input(**payload)).model_dump()"
+        call_expr = (
+            f"{class_name}().forward({class_name}Input(**payload)).model_dump(by_alias=True)"
+        )
     else:
         # Legacy Temporal-style path: user-maintained module with an
         # async ``forward`` (the Temporal adapter's convention).
@@ -240,7 +242,8 @@ def _emit_node_llm_judge(node: Node, cfg: PythonAdapterConfig) -> str:
             f"    )\n"
         )
         call_expr = (
-            f"asyncio.run({class_name}().forward({class_name}Input(**payload))).model_dump()"
+            f"asyncio.run({class_name}().forward({class_name}Input(**payload)))"
+            f".model_dump(by_alias=True)"
         )
     return (
         f"def {node.id}(payload: dict) -> dict:\n"

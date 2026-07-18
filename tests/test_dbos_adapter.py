@@ -535,3 +535,43 @@ def test_signature_spec_rejects_conflicting_defs() -> None:
     )
     with pytest.raises(ValueError, match="different definitions"):
         emit_signature_module(judge, DbosAdapterConfig())
+
+
+def test_signature_spec_aliases_non_identifier_properties() -> None:
+    """Real-world schema keys Python can't spell ("from", "message-id")
+    become sanitized attributes with a Field(alias=...) back to the JSON
+    key — never an emission error. Regression: deal-monitor's Gmail
+    schemas carry "from" and could not be emitted at all."""
+    judge = Node(
+        id="j",
+        kind=NodeKind.LLM_JUDGE,
+        description="x",
+        signature_spec={
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "from": {"type": "string"},
+                    "message-id": {"type": "string"},
+                    "subject": {"type": "string"},
+                },
+                "required": ["from"],
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "required": ["ok"],
+            },
+            "prompt": "p",
+        },
+    )
+    src = emit_signature_module(judge, DbosAdapterConfig())
+
+    assert 'from_: str = Field(alias="from")' in src
+    assert 'message_id: str | None = Field(default=None, alias="message-id")' in src
+    # Aliased models must also construct by python attribute name.
+    assert "populate_by_name=True" in src
+    assert "Field" in src.split("\n\n")[0] or "from pydantic import" in src
+    # The module still parses as Python.
+    ast.parse(src)
+    # Prompt interpolation must see the JSON spelling, not the python one.
+    assert "model_dump(by_alias=True)" in src

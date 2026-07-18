@@ -105,7 +105,9 @@ class GradeInput:
 
 
 class _Result:
-    def model_dump(self):
+    # Mirrors pydantic's model_dump signature: the emitted call sites pass
+    # by_alias=True so aliased schema keys survive into the data flow.
+    def model_dump(self, *, by_alias=False):
         return {"grade": 9, "rationale": "solid"}
 
 

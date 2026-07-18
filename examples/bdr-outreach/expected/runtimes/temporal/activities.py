@@ -26,7 +26,7 @@ def _serialize(obj: Any) -> Any:
     doesn't carry typed objects through Temporal's history.
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return obj.model_dump(by_alias=True)
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
     if isinstance(obj, tuple):
@@ -105,7 +105,7 @@ async def vet_contact(payload: dict) -> dict:
     )
     judge = VetContact()
     result = await judge.forward(VetContactInput(**payload))
-    return result.model_dump()
+    return result.model_dump(by_alias=True)
 
 @activity.defn(name="hubspot_upsert")
 async def hubspot_upsert(payload: dict) -> dict:
@@ -188,7 +188,7 @@ async def personalize_email(payload: dict) -> dict:
     )
     judge = PersonalizeEmail()
     result = await judge.forward(PersonalizeEmailInput(**payload))
-    return result.model_dump()
+    return result.model_dump(by_alias=True)
 
 @activity.defn(name="create_sales_template")
 async def create_sales_template(payload: dict) -> dict:

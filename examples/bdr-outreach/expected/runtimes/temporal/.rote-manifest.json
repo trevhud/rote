@@ -2,7 +2,7 @@
   "version": 1,
   "files": {
     "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
-    "activities.py": "c61ccdfbc3d4a428939a1a4123a40318ee63b576f2e493ce7ce55a4f4d3742f0",
+    "activities.py": "2c8ec372fb5313a6954349e7ab79d4d796fa230408bf762783bb39d80c56ef1d",
     "workflow.py": "2cd4301b0529d0f567b59420e3ec41f0e70c4707cff45aa915d4e6b45f5e0ab8"
   }
 }

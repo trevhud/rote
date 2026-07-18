@@ -820,6 +820,22 @@ class Pipeline(BaseModel):
         """
         return any(n.kind is NodeKind.HITL_GATE for n in self.nodes)
 
+    @property
+    def required_mcp_servers(self) -> dict[str, list[str]]:
+        """Logical MCP server name → sorted ids of the nodes bound to it.
+
+        Derived, not stored — the requirements manifest is a property the
+        DAG already has, so persisting it would only let it drift. Includes
+        loop-body sub-nodes: a binding anywhere in the pipeline means the
+        server must be reachable (and authenticated) at run time. Empty for
+        pipelines with no ``mcp:`` bindings.
+        """
+        by_server: dict[str, list[str]] = {}
+        for n in self.nodes:
+            if n.mcp is not None:
+                by_server.setdefault(n.mcp.server, []).append(n.id)
+        return {server: sorted(ids) for server, ids in sorted(by_server.items())}
+
 
 def load_pipeline(path: str | Path) -> Pipeline:
     """Load and validate a pipeline.yaml file."""

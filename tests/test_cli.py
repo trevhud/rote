@@ -971,3 +971,135 @@ def test_graduate_progress_printer_annotates_tool_lines_with_tokens(
 
     err = capsys.readouterr().err
     assert "[turn 7] Write signatures/foo.py (in 40.2k / out 8.1k tok)" in err
+
+
+# ───────── MCP requirements surfacing (analyze / graduate / emit) ─────────
+
+DEAL_MONITOR_PIPELINE_YAML = REPO_ROOT / "examples" / "deal-monitor" / "expected" / "pipeline.yaml"
+
+
+def _isolate_mcp_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point the MCP registry + token store at hermetic tmp locations.
+
+    Without this, requirement-surfacing tests would read the developer's
+    real ~/.config/rote/mcp.json and report whatever they have logged in.
+    Returns the registry path (absent until a test writes it).
+    """
+    registry = tmp_path / "mcp.json"
+    monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
+    monkeypatch.setenv("ROTE_MCP_TOKEN_DIR", str(tmp_path / "tokens"))
+    return registry
+
+
+def test_mcp_requirements_classify_registered_and_unregistered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """slack registered but tokenless → not authenticated; gmail unknown →
+    not registered. Node ids and tool names ride along for the report."""
+    import json
+
+    from rote.cli import _mcp_requirements
+    from rote.ir import load_pipeline
+
+    registry = _isolate_mcp_stores(monkeypatch, tmp_path)
+    registry.write_text(
+        json.dumps({"version": 1, "servers": {"slack": {"url": "https://slack.example/mcp"}}}),
+        encoding="utf-8",
+    )
+
+    report = _mcp_requirements(load_pipeline(DEAL_MONITOR_PIPELINE_YAML))
+    by_server = {entry["server"]: entry for entry in report}
+    assert set(by_server) == {"gmail", "slack"}
+    assert by_server["slack"]["auth"] == "not authenticated"
+    assert by_server["gmail"]["auth"] == "not registered"
+    assert by_server["slack"]["nodes"] == ["fetch_intake_messages"]
+    assert by_server["slack"]["tools"] == ["slack_read_channel"]
+    assert by_server["gmail"]["tools"] == ["get_thread", "search_threads"]
+
+
+def test_mcp_requirements_empty_pipeline_skips_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No mcp: bindings → empty manifest, registry never consulted."""
+    from rote.cli import _mcp_requirements
+    from rote.ir import load_pipeline
+
+    monkeypatch.setattr(
+        "rote.mcp.load_registry",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("registry read")),
+    )
+    assert _mcp_requirements(load_pipeline(BDR_PIPELINE_YAML)) == []
+
+
+def test_emit_surfaces_mcp_requirements_with_login_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Human emit output lists required servers and the non-blocking
+    `rote mcp login` recommendation for servers that would park a run."""
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+
+    rc = cli_main(
+        [
+            "emit",
+            str(DEAL_MONITOR_PIPELINE_YAML),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "required MCP servers:" in out
+    assert "gmail [not registered]" in out
+    assert "slack [not registered]" in out
+    assert "rote mcp add gmail" in out
+    assert "rote mcp login gmail" in out
+
+
+def test_emit_json_includes_mcp_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+
+    rc = cli_main(
+        [
+            "emit",
+            str(DEAL_MONITOR_PIPELINE_YAML),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "out"),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    servers = {entry["server"]: entry for entry in payload["mcp_servers"]}
+    assert servers["gmail"]["auth"] == "not registered"
+    assert servers["gmail"]["nodes"] == [
+        "fetch_email_thread_content",
+        "search_gmail_by_accounts",
+        "search_gmail_standard",
+    ]
+
+
+def test_analyze_json_includes_empty_mcp_manifest_for_unbound_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """BDR's expected IR has no mcp: bindings → manifest present but empty,
+    so agents can distinguish 'no requirements' from 'field missing'."""
+    import json
+
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+
+    rc = cli_main(["analyze", str(skill_dir), "--json"])
+    assert rc == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["mcp_servers"] == []

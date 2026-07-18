@@ -223,7 +223,7 @@ class VetContact:
             messages=[
                 {
                     "role": "user",
-                    "content": _interpolate(PROMPT, inputs.model_dump()),
+                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),
                 }
             ],
         )

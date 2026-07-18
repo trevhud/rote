@@ -597,6 +597,14 @@ Don't waste time debugging stubs. These are intentional.
   roteness matching `rote eval`, HITL gates, targetable runtimes)
   instead of emitting runtime code. `--json` for machines; `--out`
   keeps the IR for a later `rote emit`.
+- MCP requirements manifest: `Pipeline.required_mcp_servers` (derived,
+  never stored — same rationale as `requires_durable_execution`) feeds
+  an `mcp_servers` entry — `{server, nodes, tools, auth}` — in
+  `analyze`/`emit`/`graduate` output (human, `--json`, and the
+  progress-file summary line), joined against the local registry +
+  token store. Deliberately **advisory-only**: rote never hard-gates
+  on auth (park-on-auth is the backstop); it prints `rote mcp login`
+  recommendations for servers that would park a run.
 - Data-flow threading: nodes declare `inputs:` (param → source
   reference, grammar in `rote.ir.parse_input_ref`) and all three
   adapters — Temporal, Cloudflare, and DBOS — thread real payloads
