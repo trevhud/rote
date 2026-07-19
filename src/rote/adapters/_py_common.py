@@ -135,6 +135,30 @@ def _literal_alias(name: str, values: list[Any]) -> str:
     return f"{name} = Literal[\n{body}\n]"
 
 
+def _safe_field_ident(name: str, taken: set[str]) -> str:
+    """Map a JSON property name to a usable Pydantic attribute name.
+
+    Valid non-keyword identifiers pass through unchanged (no alias needed).
+    Everything else is sanitized — non-word characters become ``_``, a
+    leading digit gets an ``f_`` prefix, keywords get a trailing ``_`` —
+    and deduplicated against ``taken`` so two JSON keys can't collapse
+    onto one attribute (e.g. ``from`` and ``from_`` in the same object).
+    """
+    if name.isidentifier() and not keyword.iskeyword(name) and name not in taken:
+        return name
+    ident = re.sub(r"\W", "_", name)
+    if not ident or ident[0].isdigit():
+        ident = f"f_{ident}"
+    if keyword.iskeyword(ident):
+        ident += "_"
+    base = ident
+    counter = 2
+    while ident in taken:
+        ident = f"{base}_{counter}"
+        counter += 1
+    return ident
+
+
 class _SchemaToPydantic:
     """Convert JSON Schemas (with ``$defs``/``$ref``) to Pydantic source.
 
@@ -153,6 +177,7 @@ class _SchemaToPydantic:
         self._used_names: set[str] = set()
         self.uses_literal = False
         self.uses_config_dict = False
+        self.uses_field = False
 
     # ── public API ──
 
@@ -268,23 +293,35 @@ class _SchemaToPydantic:
         properties: dict[str, Any] = schema.get("properties", {})
 
         field_lines: list[str] = []
+        has_alias = False
+        taken: set[str] = set()
         for field_name, field_schema in properties.items():
-            if not field_name.isidentifier() or keyword.iskeyword(field_name):
-                raise ValueError(
-                    f"signature emission: schema property {field_name!r} in "
-                    f"{class_name} is not a valid Python identifier"
-                )
+            # Real-world schemas legitimately carry keys Python can't use as
+            # attribute names ("from" on an email, "message-id"): those get a
+            # sanitized attribute plus a Field(alias=...) back to the JSON
+            # key. The alias is rendered via _py_literal (json escaping), so
+            # an adversarial key can't break out of the string literal.
+            py_name = _safe_field_ident(field_name, taken)
+            taken.add(py_name)
+            aliased = py_name != field_name
+            if aliased:
+                has_alias = True
+                self.uses_field = True
+            alias_arg = f"alias={_py_literal(field_name)}" if aliased else None
+
             expr = self._type_expr(field_schema, f"{class_name}{_pascal_ident(field_name)}")
             if field_name in required and "default" not in field_schema:
-                field_lines.append(f"    {field_name}: {expr}")
+                suffix = f" = Field({alias_arg})" if alias_arg else ""
+                field_lines.append(f"    {py_name}: {expr}{suffix}")
             elif "default" in field_schema:
-                field_lines.append(
-                    f"    {field_name}: {expr} = {_py_literal(field_schema['default'])}"
-                )
+                default = _py_literal(field_schema["default"])
+                value = f"Field(default={default}, {alias_arg})" if alias_arg else default
+                field_lines.append(f"    {py_name}: {expr} = {value}")
             else:
                 if not expr.endswith("| None") and expr != "None":
                     expr += " | None"
-                field_lines.append(f"    {field_name}: {expr} = None")
+                value = f"Field(default=None, {alias_arg})" if alias_arg else "None"
+                field_lines.append(f"    {py_name}: {expr} = {value}")
 
         lines = [f"class {class_name}(BaseModel):"]
         description = schema.get("description")
@@ -292,9 +329,16 @@ class _SchemaToPydantic:
             first = safe_docstring_line(str(description))
             lines.append(f'    """{first}"""')
             lines.append("")
+        config_args: list[str] = []
         if schema.get("additionalProperties") is False:
+            config_args.append('extra="forbid"')
+        if has_alias:
+            # Aliased models must also accept their python attribute names so
+            # user code can construct them without knowing the JSON spelling.
+            config_args.append("populate_by_name=True")
+        if config_args:
             self.uses_config_dict = True
-            lines.append('    model_config = ConfigDict(extra="forbid")')
+            lines.append(f"    model_config = ConfigDict({', '.join(config_args)})")
             lines.append("")
         if field_lines:
             lines.extend(field_lines)
@@ -396,7 +440,12 @@ def emit_signature_module(
     desc_first = safe_docstring_line(node.description, fallback=node.id)
 
     typing_names = "Any, Literal" if converter.uses_literal else "Any"
-    pydantic_names = "BaseModel, ConfigDict" if converter.uses_config_dict else "BaseModel"
+    pydantic_parts = ["BaseModel"]
+    if converter.uses_config_dict:
+        pydantic_parts.append("ConfigDict")
+    if converter.uses_field:
+        pydantic_parts.append("Field")
+    pydantic_names = ", ".join(pydantic_parts)
     schema_json = json.dumps(spec.output_schema, separators=(",", ":"))
 
     header = (
@@ -587,7 +636,7 @@ def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"            messages=[\n"
         f"                {{\n"
         f'                    "role": "user",\n'
-        f'                    "content": _interpolate(PROMPT, inputs.model_dump()),\n'
+        f'                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n'
         f"                }}\n"
         f"            ],\n"
         f"        )\n"
@@ -627,7 +676,7 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"            messages=[\n"
         f"                {{\n"
         f'                    "role": "user",\n'
-        f'                    "content": _interpolate(PROMPT, inputs.model_dump()),\n'
+        f'                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n'
         f"                }}\n"
         f"            ],\n"
         f"        )\n"
@@ -781,7 +830,7 @@ def _serialize(obj: Any) -> Any:
     {purpose}
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return obj.model_dump(by_alias=True)
     if isinstance(obj, (list, tuple)):
         return [_serialize(x) for x in obj]
     if isinstance(obj, dict):

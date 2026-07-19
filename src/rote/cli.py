@@ -150,6 +150,8 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     record_app(out_dir, args.runtime, pipeline.name)
 
+    mcp_servers = _mcp_requirements(pipeline)
+
     if args.json:
         import json
 
@@ -160,12 +162,18 @@ def _cmd_emit(args: argparse.Namespace) -> int:
             "written": {label: str(path) for label, path in written.items()},
             "preserved_new_files": _preserved_new_files(written),
             "unimplemented_stubs": _unimplemented_stubs(written),
+            "mcp_servers": mcp_servers,
         }
         print(json.dumps(payload, indent=2))
         return 0
 
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
     _print_written(written)
+    if mcp_servers:
+        rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
+        print(f"  required MCP servers: {rendered}")
+        for line in _mcp_recommendation_lines(mcp_servers):
+            print(line)
     return 0
 
 
@@ -460,6 +468,16 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
     _print_written(written, indent="    ", stream=summary_stream)
 
+    # ── Required MCP servers ── advisory only: the run parks-on-auth as
+    # the backstop, so a dead credential is never fatal — but telling the
+    # user now beats discovering it mid-flight.
+    mcp_servers = _mcp_requirements(result.pipeline)
+    if mcp_servers:
+        rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
+        print(f"  required MCP servers: {rendered}", file=summary_stream)
+        for line in _mcp_recommendation_lines(mcp_servers):
+            print(line, file=summary_stream)
+
     if args.json:
         import json
 
@@ -475,6 +493,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             "written": {label: str(path) for label, path in written.items()},
             "preserved_new_files": _preserved_new_files(written),
             "unimplemented_stubs": _unimplemented_stubs(written),
+            "mcp_servers": mcp_servers,
         }
         print(json.dumps(payload, indent=2))
 
@@ -504,6 +523,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 "graduated_dir": str(graduated_dir.resolve()),
                 "runtime_dir": str(runtime_dir.resolve()),
                 "unimplemented_stubs": _unimplemented_stubs(written),
+                "mcp_servers": analysis["mcp_servers"],
                 "total_tokens": total_tokens,
             }
         )
@@ -976,6 +996,76 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mcp_requirements(pipeline: Pipeline) -> list[dict[str, object]]:
+    """Per required MCP server: the binding nodes, tools, and current auth state.
+
+    Requirement detection is pure IR (``Pipeline.required_mcp_servers``);
+    the ``auth`` column reads the local registry + token store — no
+    network. A server the registry doesn't know reports ``"not
+    registered"``; registry/token read failures degrade to ``"unknown"``
+    rather than sinking the report (same posture as doctor). Nothing here
+    gates anything — callers render recommendations, and park-on-auth
+    remains the runtime backstop.
+    """
+    from rote.mcp import auth_status, load_registry, read_token_file
+
+    required = pipeline.required_mcp_servers
+    if not required:
+        return []
+    try:
+        registry_servers = load_registry().servers
+    except Exception:
+        registry_servers = None
+
+    report: list[dict[str, object]] = []
+    for server, node_ids in required.items():
+        tools = sorted(
+            {n.mcp.tool for n in pipeline.nodes if n.mcp is not None and n.mcp.server == server}
+        )
+        if registry_servers is None:
+            auth = "unknown"
+        elif server not in registry_servers:
+            auth = "not registered"
+        else:
+            try:
+                auth = auth_status(registry_servers[server], read_token_file(server))
+            except Exception:
+                auth = "unknown"
+        report.append({"server": server, "nodes": node_ids, "tools": tools, "auth": auth})
+    return report
+
+
+#: Auth states that mean a run would park on its first call to the server.
+#: "expired (refreshable)" recovers unattended and "static headers" never
+#: touches OAuth, so neither warrants a recommendation.
+_MCP_AUTH_NEEDS_ACTION = frozenset({"not registered", "not authenticated", "expired"})
+
+
+def _mcp_recommendation_lines(mcp_servers: list[dict[str, object]]) -> list[str]:
+    """Non-blocking auth recommendations for servers that would park a run.
+
+    Deliberately advisory: rote never hard-gates on auth (time-to-value),
+    it tells you what to run so the pipeline won't park mid-flight.
+    """
+    lines: list[str] = []
+    for entry in mcp_servers:
+        auth = entry["auth"]
+        if auth not in _MCP_AUTH_NEEDS_ACTION:
+            continue
+        server = entry["server"]
+        if auth == "not registered":
+            lines.append(
+                f"  {server}: not in the rote registry — register and authenticate "
+                f"before running: rote mcp add {server} <url> && rote mcp login {server}"
+            )
+        else:
+            lines.append(
+                f"  {server}: {auth} — the run will park at its first {server} call; "
+                f"recommended: rote mcp login {server}"
+            )
+    return lines
+
+
 def _build_analysis(
     pipeline: Pipeline,
     driver_name: str,
@@ -984,10 +1074,11 @@ def _build_analysis(
 ) -> dict[str, object]:
     """Derive a structural report from a graduated pipeline's IR.
 
-    Pure function of the IR — no model, no network. Step counting mirrors
-    the eval scorecard exactly (top-level execution-wave nodes; loop_body
-    sub-nodes are costed inside their parent loop, so they're excluded
-    from the top-level count) so ``analyze``'s roteness equals ``eval``'s.
+    Pure function of the IR plus the local MCP registry/token files — no
+    model, no network. Step counting mirrors the eval scorecard exactly
+    (top-level execution-wave nodes; loop_body sub-nodes are costed inside
+    their parent loop, so they're excluded from the top-level count) so
+    ``analyze``'s roteness equals ``eval``'s.
     """
     from rote.adapters import ADAPTERS
     from rote.adapters._common import _execution_waves
@@ -1042,6 +1133,7 @@ def _build_analysis(
         ],
         "targetable_runtimes": targetable,
         "untargetable_runtimes": untargetable,
+        "mcp_servers": _mcp_requirements(pipeline),
     }
 
 
@@ -1104,6 +1196,22 @@ def _render_analysis_text(report: dict[str, object]) -> str:
             for loop in loops
         )
         lines.append(f"Agent loops: {rendered}")
+
+    mcp_servers = report["mcp_servers"]
+    assert isinstance(mcp_servers, list)
+    if mcp_servers:
+        lines.append("")
+        lines.append(f"Required MCP servers ({len(mcp_servers)})")
+        for entry in mcp_servers:
+            entry_nodes = entry["nodes"]
+            assert isinstance(entry_nodes, list)
+            lines.append(
+                f"  {entry['server']:<12} {len(entry_nodes)} node(s): "
+                f"{', '.join(entry_nodes)}  [{entry['auth']}]"
+            )
+        recommendations = _mcp_recommendation_lines(mcp_servers)
+        if recommendations:
+            lines.extend(recommendations)
 
     targetable = report["targetable_runtimes"]
     assert isinstance(targetable, list)

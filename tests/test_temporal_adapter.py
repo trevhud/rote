@@ -25,7 +25,8 @@ from rote.adapters.temporal import (
     _pipeline_hash,
     _to_pascal_case,
 )
-from rote.ir import NodeKind, Pipeline
+from rote.ir import Node, NodeKind, Pipeline
+from tests._helpers import mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -387,7 +388,13 @@ def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> Non
 
 
 def test_custom_config_is_respected(bdr_pipeline: Pipeline) -> None:
-    """Module paths in the config should appear in the emitted code."""
+    """Module paths in the config should appear in the emitted code.
+
+    ``signatures_module`` only governs the *legacy* ``signature:`` form:
+    BDR's judges carry both forms and must prefer the generated
+    ``signatures/`` package, so the legacy import is asserted on a
+    legacy-only judge instead.
+    """
     cfg = TemporalAdapterConfig(
         types_module="myproj.types",
         extracted_module="myproj.extracted",
@@ -396,7 +403,18 @@ def test_custom_config_is_respected(bdr_pipeline: Pipeline) -> None:
     adapter = TemporalAdapter(cfg)
     activities_src = adapter.emit_activities(bdr_pipeline)
     assert "from myproj.extracted.taxonomy import" in activities_src
-    assert "from myproj.signatures.vet_contact import" in activities_src
+    # Both-forms judge: signature_spec wins (generated module).
+    assert "from signatures.vet_contact import" in activities_src
+    assert "from myproj.signatures.vet_contact import" not in activities_src
+
+    legacy_judge = Node(
+        id="grade_essay",
+        kind=NodeKind.LLM_JUDGE,
+        description="Grade an essay.",
+        signature="signatures/grade_essay.py:GradeEssay",
+    )
+    legacy_src = adapter.emit_activities(mini_pipeline(legacy_judge))
+    assert "from myproj.signatures.grade_essay import" in legacy_src
 
 
 # ───────── Code-injection hardening ─────────

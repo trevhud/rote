@@ -61,7 +61,7 @@ def _serialize(obj: Any) -> Any:
     portable across the system database.
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return obj.model_dump(by_alias=True)
     if isinstance(obj, (list, tuple)):
         return [_serialize(x) for x in obj]
     if isinstance(obj, dict):
@@ -137,7 +137,7 @@ def vet_contact(payload: dict) -> dict:
     from signatures.vet_contact import VetContact, VetContactInput
 
     judge = VetContact()
-    return judge.forward(VetContactInput(**payload)).model_dump()
+    return judge.forward(VetContactInput(**payload)).model_dump(by_alias=True)
 
 
 @DBOS.step(name="hubspot_upsert", retries_allowed=True, max_attempts=6, backoff_rate=2.0)
@@ -218,7 +218,7 @@ def personalize_email(payload: dict) -> dict:
     from signatures.personalize_email import PersonalizeEmail, PersonalizeEmailInput
 
     judge = PersonalizeEmail()
-    return judge.forward(PersonalizeEmailInput(**payload)).model_dump()
+    return judge.forward(PersonalizeEmailInput(**payload)).model_dump(by_alias=True)
 
 
 @DBOS.step(name="create_sales_template", retries_allowed=True, max_attempts=4, backoff_rate=2.0)

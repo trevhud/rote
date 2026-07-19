@@ -14,6 +14,7 @@ direct API calls during the rote emission step.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from temporalio import activity
@@ -26,7 +27,7 @@ def _serialize(obj: Any) -> Any:
     doesn't carry typed objects through Temporal's history.
     """
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return obj.model_dump(by_alias=True)
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
     if isinstance(obj, tuple):
@@ -99,13 +100,11 @@ async def vet_contact(payload: dict) -> dict:
     LLM judge — typed input/output, bounded decision space. The
     non-determinism lives inside this activity, not the workflow.
     """
-    from expected.signatures.vet_contact import (
-        VetContact,
-        VetContactInput,
-    )
+    from signatures.vet_contact import VetContact, VetContactInput
+
     judge = VetContact()
-    result = await judge.forward(VetContactInput(**payload))
-    return result.model_dump()
+    result = await asyncio.to_thread(judge.forward, VetContactInput(**payload))
+    return result.model_dump(by_alias=True)
 
 @activity.defn(name="hubspot_upsert")
 async def hubspot_upsert(payload: dict) -> dict:
@@ -182,13 +181,11 @@ async def personalize_email(payload: dict) -> dict:
     LLM judge — typed input/output, bounded decision space. The
     non-determinism lives inside this activity, not the workflow.
     """
-    from expected.signatures.personalize_email import (
-        PersonalizeEmail,
-        PersonalizeEmailInput,
-    )
+    from signatures.personalize_email import PersonalizeEmail, PersonalizeEmailInput
+
     judge = PersonalizeEmail()
-    result = await judge.forward(PersonalizeEmailInput(**payload))
-    return result.model_dump()
+    result = await asyncio.to_thread(judge.forward, PersonalizeEmailInput(**payload))
+    return result.model_dump(by_alias=True)
 
 @activity.defn(name="create_sales_template")
 async def create_sales_template(payload: dict) -> dict:

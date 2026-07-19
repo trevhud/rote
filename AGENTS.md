@@ -149,12 +149,23 @@ Pass `--json` to get structured output instead of prose:
 - `rote mcp list --json` — registered MCP servers + auth status.
 - `rote emit --json` — the final result object: pipeline name/version,
   `runtime`, `out_dir`, `written` (label → absolute path), `preserved_new_files`
-  (`.new` siblings), and `unimplemented_stubs` (the `extracted/*` files still
-  needing an implementation — your TODO list). Parse this instead of scraping
-  the human summary.
+  (`.new` siblings), `unimplemented_stubs` (the `extracted/*` files still
+  needing an implementation — your TODO list), and `mcp_servers` (see below).
+  Parse this instead of scraping the human summary.
 - `rote graduate --json` — a superset of the emit object that also carries
   `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
   a price-fetch failure), and the `driver` used.
+
+`mcp_servers` (on `analyze`, `emit`, `graduate`, and the progress-file
+summary line) is the pipeline's MCP requirements manifest: one entry per
+required server — `{server, nodes, tools, auth}` — derived from the IR's
+`mcp:` bindings and joined against the local registry/token store. `auth`
+is the five-state value doctor uses, plus `"not registered"` when the
+server isn't in the rote registry at all. This is **advisory, never
+blocking**: an unauthenticated server won't fail a run (it parks durably
+and `rote mcp login <server>` releases it), but resolving the listed
+recommendations *before* running avoids mid-flight parks. Empty list means
+the pipeline makes no MCP calls.
 
 Note: `unimplemented_stubs` is read off the emitted `extracted/*` files, so it
 is populated for the `dbos` (default), `python`, `cloudflare`, `dbos-ts`, and

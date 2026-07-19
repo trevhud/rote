@@ -665,3 +665,28 @@ def test_pipeline_rejects_unknown_edge_target() -> None:
             ],
             edges=[Edge(**{"from": "a", "to": "nonexistent"})],
         )
+
+
+# ───────── required_mcp_servers (the MCP requirements manifest) ─────────
+
+
+def test_required_mcp_servers_derived_from_bindings() -> None:
+    """The manifest is derived per logical server, node ids sorted."""
+    from rote.ir import load_pipeline
+
+    pipeline = load_pipeline(REPO_ROOT / "examples" / "deal-monitor" / "expected" / "pipeline.yaml")
+    assert pipeline.required_mcp_servers == {
+        "gmail": [
+            "fetch_email_thread_content",
+            "search_gmail_by_accounts",
+            "search_gmail_standard",
+        ],
+        "slack": ["fetch_intake_messages"],
+    }
+
+
+def test_required_mcp_servers_empty_without_bindings() -> None:
+    """A pipeline with no mcp: bindings requires nothing (BDR expected IR)."""
+    from rote.ir import load_pipeline
+
+    assert load_pipeline(BDR_PIPELINE).required_mcp_servers == {}

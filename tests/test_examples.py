@@ -10,10 +10,12 @@ agent-loop archetype (and the loop-aware eval-sidecar fixture).
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
 
+from rote.adapters import ADAPTERS, get_adapter
 from rote.eval.sidecar import load_eval_estimates
 from rote.ir import NodeKind, load_pipeline
 
@@ -95,3 +97,38 @@ def test_deal_monitor_is_the_data_heavy_fan_out_archetype() -> None:
     # payload model keys off these (payload_tokens_per_tool).
     bound = [n for n in pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL and n.mcp]
     assert len(bound) >= 3
+
+
+# ───────── Full emission matrix: every example × every adapter ─────────
+#
+# The expected IRs are hand-adapted baselines that historically were only
+# ever *loaded*, never emitted — which let a crash-class signature-emission
+# bug (schema keys like "from") hide in deal-monitor for weeks. Emitting
+# each one through every registered adapter is cheap (<1s total, pure
+# template substitution) and keeps fixture-vs-emitter conflicts from
+# surviving until a real (paid) graduation run finds them.
+
+
+@pytest.mark.parametrize("runtime", sorted(ADAPTERS))
+@pytest.mark.parametrize("pipeline_yaml", EXAMPLE_PIPELINES, ids=lambda p: p.parent.parent.name)
+def test_every_example_emits_on_every_adapter(
+    pipeline_yaml: Path, runtime: str, tmp_path: Path
+) -> None:
+    pipeline = load_pipeline(pipeline_yaml)
+    adapter = get_adapter(runtime)
+
+    if runtime == "python" and pipeline.requires_durable_execution:
+        # The documented refusal, not a failure: a plain script cannot
+        # durably park on a hitl_gate. The error must point at dbos.
+        with pytest.raises(ValueError, match="dbos"):
+            adapter.emit(pipeline, tmp_path / "out")
+        return
+
+    written = adapter.emit(pipeline, tmp_path / "out")
+    assert written
+
+    # Every emitted Python file must at least parse; TS compile checks
+    # live in the slow e2e suites (they need npm + tsc).
+    for path in written.values():
+        if path.suffix == ".py":
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
