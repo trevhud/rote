@@ -1,5 +1,5 @@
 version: 1
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/deal-monitor/skill
+source_skill: ../../skill
 
 steps:
   - description: "Fetch 50 most recent messages from #deal-intake Slack channel"

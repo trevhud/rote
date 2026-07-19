@@ -1,5 +1,5 @@
 version: 1
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/invoice-push/skill
+source_skill: ../../skill
 
 steps:
   - description: "Verify browser-automation plugin is active and user is logged in"

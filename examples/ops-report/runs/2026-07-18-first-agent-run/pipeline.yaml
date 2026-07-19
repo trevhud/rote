@@ -8,7 +8,7 @@
 
 name: ops-report
 version: "0.1.0"
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/ops-report/skill
+source_skill: ../../skill
 description: |
   Scheduled daily executive operations report for a parcel fulfillment network.
   Pulls four data sources in parallel (shipment containers, dock pending log,
