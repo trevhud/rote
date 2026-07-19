@@ -630,6 +630,17 @@ Don't waste time debugging stubs. These are intentional.
   `test_mcp_park_ts_e2e.py`, `test_mcp_park_inngest_e2e.py`,
   `test_mcp_park_cf_e2e.py` (the last also runs the TS MCP SDK live
   inside workerd).
+- `rote run` — one-off local execution of either side, built as a thin
+  detection/dispatch layer (`rote.runners`) over the proven trial
+  primitives: a skill dir runs via `rote.eval.baseline.run_baseline_trial`
+  (registry MCP injection + read-only gate), an emitted dir via
+  `rote.eval.empirical.run_pipeline_trial` (python in-process; dbos with
+  cross-process `DBOSClient` gate delivery — payloads are collected up
+  front, safe because DBOS notifications persist per-topic). Temporal /
+  Cloudflare / Inngest / DBOS-TS targets print their native dev command
+  until the dev-server orchestration layer lands. Detection understands
+  both the `graduate --out` layout (`runtime/<target>/`) and bare
+  emitted dirs (marker files — see `rote.runners._detect_runtime`).
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
