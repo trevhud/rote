@@ -257,7 +257,7 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_runnable_runtimes_is_the_current_set() -> None:
-    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare", "inngest"}
+    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare", "inngest", "dbos-ts"}
 
 
 def test_resolve_input_declined_returns_none(
@@ -409,3 +409,52 @@ def test_inngest_run_output_errors_without_run_complete(
     monkeypatch.setattr(ig, "http_json", lambda *a, **k: response)
     with pytest.raises(EmpiricalError, match="RunComplete"):
         ig._run_output("http://x", "r1")
+
+
+# ───────── DBOS-TS runner (unit level — live path in test_dbos_ts_e2e) ─────────
+
+
+def test_run_pipeline_dispatches_dbos_ts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import rote.runners.dbos_ts as ts_runner
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
+        captured["kwargs"] = kwargs
+        return MeasuredRun(wall_seconds=3.0, output={"ts": True})
+
+    monkeypatch.setattr(ts_runner, "run_dbos_ts", fake_run)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="dbos-ts")
+    outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=7.0)
+    assert outcome.run.output == {"ts": True}
+    assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 7.0}
+
+
+def test_dbos_ts_unreachable_env_url_is_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.empirical import EmpiricalError
+    from rote.runners import dbos_ts as ts
+
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "main.js").write_text("", encoding="utf-8")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "dbos-config.yaml").write_text("name: p\n", encoding="utf-8")
+    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://u:p@127.0.0.1:1/x")
+    monkeypatch.setattr(ts, "_tcp_reachable", lambda url: False)
+    with pytest.raises(EmpiricalError, match="unreachable Postgres"):
+        ts.run_dbos_ts(tmp_path, {}, signals={})
+
+
+def test_dbos_ts_parses_trailing_json_after_sdk_banner() -> None:
+    from rote.runners.dbos_ts import _parse_trailing_json
+
+    stdout = (
+        "Running DBOS system database migrations...\n"
+        "Initializing DBOS (v4.23.6)\n"
+        "System Database URL: postgresql://postgres:***@localhost:5432/x\n"
+        '{\n  "gate": {\n    "ok": true\n  }\n}\n'
+    )
+    assert _parse_trailing_json(stdout) == {"gate": {"ok": True}}
+    assert _parse_trailing_json("no json here\n") is None
+    assert _parse_trailing_json("[1, 2]\n") == {"result": [1, 2]}

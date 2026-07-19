@@ -191,7 +191,8 @@ emitted code + a README on how to run, signal gates, and deploy).
   emitted runtime directory — or a `graduate --out` directory — runs
   the pipeline itself (`python` and `dbos` execute in-process,
   `cloudflare` under a managed `wrangler dev`, `inngest` against a
-  managed `inngest-cli dev` server; HITL gate payloads via
+  managed `inngest-cli dev` server, `dbos-ts` against your Postgres —
+  or a throwaway Docker one; HITL gate payloads via
   `--signal name='{...}'` or an interactive prompt). Output JSON on
   stdout, status on stderr, so it pipes.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
