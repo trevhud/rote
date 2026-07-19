@@ -101,6 +101,17 @@ check "Internal scripts path" \
 check "Customer friction claim (BMS and Bayer)" \
     'BMS and Bayer'
 
+# ───── Stord / current-employer identifiers ─────
+# The deal-monitor / invoice-push / ops-report examples are adapted from
+# real production skills; fictionalization must hold. "stord" has no
+# common-English collisions ("stored" does not match), so scan broadly.
+
+check "Stord name (case-insensitive)" \
+    'stord' -i
+
+check "Stord email" \
+    '@stord\.com' -i
+
 # ───── Personal identifiers ─────
 
 check "PicnicHealth email" \
@@ -108,6 +119,9 @@ check "PicnicHealth email" \
 
 check "Hard-coded home path" \
     '/Users/trevhud|/home/trevhud|C:\\\\Users\\\\trevhud'
+
+check "Work-machine home path" \
+    '/Users/Trevor\.Hudson'
 
 # ───── Plausibly-real API keys / tokens / secrets ─────
 # Test fixtures with obviously-fake values are allowed via an explicit
