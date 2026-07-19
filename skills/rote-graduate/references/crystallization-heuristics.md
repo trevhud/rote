@@ -110,6 +110,17 @@ code makes skipping impossible.
 "always", "must", "never skip", "do not skip", "be sure to". Audit
 every hit.
 
+**Calibration — err toward marking.** On real production skills MOST
+deterministic nodes end up `mandatory: true`, not a handful: every
+fixed threshold, every filter/exclusion rule, every data pull the
+output cannot be correct without, every fixed template render. (The
+first agent run on the ops-report example marked 1 of 13 nodes when
+9 of 10 was right — a daily report is *made of* rules that must all
+fire.) Ask per node: "if the agent version silently skipped this
+step, would the output be wrong or dangerous?" If yes, mark it.
+Reserve unmarked for genuinely optional enrichment — a nice-to-have
+field, a best-effort lookup with a fallback.
+
 ---
 
 ### Pattern 4 — Fixed string templates for reports and outputs
@@ -199,6 +210,29 @@ but they're actually hard thresholds.
 
 **How to detect:** look for numeric comparisons in rubrics ("below X",
 "above Y", "at least Z"). Every one is a potential pre-filter.
+
+### Pattern 8 — Independent data pulls hiding in sequential prose
+
+**What it looks like:** the skill lists data-gathering steps in
+sequence ("First pull the Slack channel. Then run the Gmail
+searches.") but no step consumes another's output — the ordering
+exists only because an agent executes one tool call at a time.
+
+**What to do:** give the independent pulls no connecting edges so
+they land in the same execution wave, and list every independent
+entry point in `entry_nodes` (plural!). Adapters run same-wave nodes
+concurrently — the graduated pipeline should be *faster* than the
+agent, and parallel data pulls are usually the single biggest
+wall-clock win available.
+
+**How to detect:** for each pair of adjacent data-pull steps, ask
+"does step B's input mention anything step A produced?" If not, they
+are parallel regardless of the prose order. The deal-monitor example
+is the canonical case: the Slack intake pull and the fixed Gmail
+searches share nothing and must be two entry nodes — the first agent
+run serialized them into one entry and left the speedup on the table.
+
+---
 
 ## When NOT to crystallize
 

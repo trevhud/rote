@@ -66,10 +66,18 @@ deterministic. If the agent decides which tool to call and what to pass
 each iteration, it's an `agent_loop`.
 
 **MCP → deterministic API:** this is the kind that most often originates
-as an MCP tool call in the source skill. The graduation step is to record
-the underlying vendor API the tool wraps (e.g.,
-`POST /crm/v3/objects/contacts/batch/upsert`) in the `impl`'s docstring so
-the trace from skill → MCP tool → REST endpoint is visible in the code.
+as an MCP tool call in the source skill. Graduating it has TWO required
+outputs, not one:
+
+1. An **`mcp:` binding on the node** — `server` + `tool`, exactly as the
+   skill calls it (see "MCP bindings" in ir-schema.md). This is
+   load-bearing: the default backend emits a working call to that tool
+   from the binding, and requirements/auth features derive from it.
+   Omitting it on a step that calls an MCP tool is a graduation bug.
+2. The underlying vendor API the tool wraps (e.g.,
+   `POST /crm/v3/objects/contacts/batch/upsert`) recorded in the
+   `impl`'s docstring, so the trace from skill → MCP tool → REST
+   endpoint is visible in the code.
 
 ---
 
