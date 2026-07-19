@@ -54,12 +54,23 @@ minutes + tens of cents) that produces three things at once under
 turns, tokens, cost), the full transcript per trial, and
 `observed-tools.json` — every MCP tool the agent actually called with its
 real input/result payloads (ground truth for which servers the skill needs).
-`--input` is the skill's task payload as a JSON object. rote's registered
-MCP servers are injected automatically (`rote mcp login` covers this run
-too). **Side effects are gated**: only tools whose server declares
-`readOnlyHint` are callable; pass `--allow-writes` only after the human
-confirms this skill's writes may fire once. `--json` mirrors the metrics
-plus `observed_servers` and per-server skip reasons.
+`--input` is the skill's task payload as a JSON object. **Omit it** and rote
+derives a representative input from SKILL.md (cheap single-shot call) and
+asks for confirmation before spending; as an agent you are not on a TTY, so
+either pass `--input` (preferred — confirm the payload with the human first)
+or `--yes` to accept the derived proposal. The proposal is always saved to
+`baseline/derived-input.json` for editing. rote's registered MCP servers are
+injected automatically (`rote mcp login` covers this run too). **Side
+effects are gated**: only tools whose server declares `readOnlyHint` are
+callable; pass `--allow-writes` only after the human confirms this skill's
+writes may fire once. `--json` mirrors the metrics plus `observed_servers`
+and per-server skip reasons.
+
+`rote graduate --baseline` runs the same measurement immediately before
+graduating (flags: `--baseline-input`, `--yes`, `--allow-writes`) — the
+scorecard then gains a **Measured baseline** section and the `--json`
+payload a `baseline` object. Without `--baseline`, graduate prints a
+one-line tip recommending it; it never blocks.
 
 ## `rote graduate` is slow and costs money — plan for it
 

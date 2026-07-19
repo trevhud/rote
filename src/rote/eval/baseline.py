@@ -52,6 +52,95 @@ from rote.graduator.drivers.claude import (
 BASELINE_DIRNAME = "baseline"
 METRICS_FILENAME = "metrics.json"
 OBSERVED_TOOLS_FILENAME = "observed-tools.json"
+DERIVED_INPUT_FILENAME = "derived-input.json"
+
+#: Model for input derivation — a cheap, single-shot reading task.
+DERIVE_MODEL = "claude-haiku-4-5"
+
+
+# ───────── Input derivation ─────────
+
+
+def derive_input_payload(
+    skill_dir: str | Path,
+    *,
+    model: str = DERIVE_MODEL,
+    executable: str = "claude",
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
+    """Propose one representative input payload for a skill, from its text.
+
+    A cheap single-shot ``claude -p`` call (no tools, cents) reads the
+    SKILL.md and answers with a JSON object. The caller MUST confirm the
+    proposal with the user before spending real money on a baseline run —
+    a derived input is a guess about how the skill is actually invoked.
+    """
+    skill_path = Path(skill_dir).resolve()
+    skill_md_path = skill_path / "SKILL.md"
+    if not skill_md_path.is_file():
+        raise EmpiricalError(f"{skill_path} does not contain a SKILL.md")
+    if shutil.which(executable) is None:
+        raise EmpiricalError(
+            f"`{executable}` CLI not found — install Claude Code or pass a different executable"
+        )
+    skill_md = skill_md_path.read_text(encoding="utf-8")
+    prompt = (
+        "Read this skill definition and produce ONE representative input "
+        "payload for invoking it — the JSON object a user would supply for "
+        "a single, typical run. Prefer values the skill's own examples "
+        "mention; otherwise invent plausible, obviously-sample values.\n\n"
+        "<skill>\n"
+        f"{skill_md}\n"
+        "</skill>\n\n"
+        "Answer with ONLY the JSON object — no prose, no markdown fences."
+    )
+    try:
+        proc = subprocess.run(
+            [
+                executable,
+                "-p",
+                prompt,
+                "--model",
+                model,
+                "--allowedTools",
+                "",
+                "--output-format",
+                "json",
+                "--max-turns",
+                "2",
+            ],
+            env=build_subscription_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise EmpiricalError(f"input derivation timed out after {timeout_seconds:g}s") from e
+    if proc.returncode != 0:
+        raise EmpiricalError(
+            f"input derivation failed: claude exited {proc.returncode}: "
+            f"{(proc.stderr or proc.stdout)[:300]}"
+        )
+    try:
+        meta = json.loads(proc.stdout)
+        text = meta.get("result") or ""
+    except json.JSONDecodeError as e:
+        raise EmpiricalError(f"input derivation: could not parse claude output: {e}") from e
+    # Models occasionally fence anyway; strip a ```json wrapper before parsing.
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0]
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        raise EmpiricalError(
+            f"input derivation: the model did not answer with a JSON object: {text[:300]!r}"
+        ) from e
+    if not isinstance(payload, dict):
+        raise EmpiricalError(
+            f"input derivation: expected a JSON object, got {type(payload).__name__}"
+        )
+    return payload
 
 
 # ───────── MCP wiring (whole registry — no pipeline exists yet) ─────────
@@ -477,3 +566,48 @@ def run_baseline(
         encoding="utf-8",
     )
     return result
+
+
+def render_baseline_markdown(result: BaselineResult) -> str:
+    """The scorecard's measured-baseline section (the skill side, measured).
+
+    Appended after the static estimate when a baseline ran alongside a
+    graduation — the "before" column stops being a model and becomes data.
+    """
+    ok = [r for r in result.runs if r.succeeded]
+    lines = [
+        f"## Measured baseline ({len(ok)}/{len(result.runs)} "
+        f"trial{'s' if len(result.runs) != 1 else ''} succeeded)",
+        "",
+        f"Raw skill executed as an agent (`{result.model}`), "
+        + ("read-only MCP gate." if result.read_only else "writes allowed."),
+        "",
+        "| Metric | Measured |",
+        "|---|---|",
+    ]
+
+    def _fmt(values: list[float], fmt: str) -> str:
+        if not values:
+            return "—"
+        if len(values) == 1:
+            return format(values[0], fmt)
+        lo, hi = min(values), max(values)
+        return f"{format(lo, fmt)}–{format(hi, fmt)}"
+
+    lines.append(f"| Wall clock (s) | {_fmt([r.wall_seconds for r in ok], '.0f')} |")
+    lines.append(f"| Turns | {_fmt([float(r.turns) for r in ok if r.turns], '.0f')} |")
+    lines.append(
+        f"| Cost (USD) | {_fmt([r.cost_usd for r in ok if r.cost_usd is not None], '.2f')} |"
+    )
+    if result.observations:
+        by_server: dict[str, int] = {}
+        for o in result.observations:
+            by_server[o.server] = by_server.get(o.server, 0) + 1
+        traffic = ", ".join(f"{s} ×{n}" for s, n in sorted(by_server.items()))
+        lines.append(f"| Observed MCP calls | {traffic} |")
+    flagged = [r for r in result.runs if r.flags]
+    if flagged:
+        notes = sorted({f for r in flagged for f in r.flags})
+        lines.append(f"| Reliability flags | {', '.join(notes)} |")
+    lines.append("")
+    return "\n".join(lines)

@@ -438,3 +438,208 @@ def test_cli_baseline_rejects_bad_input(skill_dir: Path, tmp_path: Path, capsys:
     rc = cli_main(["baseline", str(skill_dir), "--out", str(tmp_path / "o"), "--input", str(bad)])
     assert rc == 2
     assert "JSON object" in capsys.readouterr().err
+
+
+# ───────── Input derivation ─────────
+
+
+def _install_fake_derive_claude(
+    monkeypatch: pytest.MonkeyPatch, result_text: str, *, returncode: int = 0
+) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    def fake_run(args: list[str], **kwargs: Any) -> _FakeProc:
+        captured["args"] = args
+        return _FakeProc(json.dumps({"type": "result", "result": result_text}), returncode)
+
+    monkeypatch.setattr("rote.eval.baseline.subprocess.run", fake_run)
+    monkeypatch.setattr("rote.eval.baseline.shutil.which", lambda _: "/usr/bin/claude")
+    return captured
+
+
+def test_derive_input_payload_parses_plain_json(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.baseline import derive_input_payload
+
+    captured = _install_fake_derive_claude(monkeypatch, '{"campaign": "expo-2026"}')
+    payload = derive_input_payload(skill_dir)
+    assert payload == {"campaign": "expo-2026"}
+    # Cheap and toolless by construction.
+    args = captured["args"]
+    assert args[args.index("--allowedTools") + 1] == ""
+    assert args[args.index("--max-turns") + 1] == "2"
+
+
+def test_derive_input_payload_strips_markdown_fences(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.baseline import derive_input_payload
+
+    _install_fake_derive_claude(monkeypatch, '```json\n{"a": 1}\n```')
+    assert derive_input_payload(skill_dir) == {"a": 1}
+
+
+def test_derive_input_payload_rejects_non_object(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.baseline import derive_input_payload
+    from rote.eval.empirical import EmpiricalError
+
+    _install_fake_derive_claude(monkeypatch, "[1, 2, 3]")
+    with pytest.raises(EmpiricalError, match="JSON object"):
+        derive_input_payload(skill_dir)
+
+
+def test_derive_input_payload_surfaces_agent_failure(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.baseline import derive_input_payload
+    from rote.eval.empirical import EmpiricalError
+
+    _install_fake_derive_claude(monkeypatch, "", returncode=1)
+    with pytest.raises(EmpiricalError, match="exited 1"):
+        derive_input_payload(skill_dir)
+
+
+# ───────── CLI input resolution (derive + confirm) ─────────
+
+
+def test_cli_baseline_derives_with_yes(
+    skill_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """No --input + --yes: derived proposal is accepted, saved, and used."""
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "rote.eval.baseline.derive_input_payload",
+        lambda *a, **k: {"campaign": "derived-expo"},
+    )
+    _install_fake_claude(monkeypatch, [_result_event()], write_result={"ok": 1})
+
+    out = tmp_path / "out"
+    rc = cli_main(["baseline", str(skill_dir), "--out", str(out), "--yes", "--json"])
+    assert rc == 0
+    derived = json.loads((out / "baseline" / "derived-input.json").read_text())
+    assert derived == {"campaign": "derived-expo"}
+    metrics = json.loads((out / "baseline" / "metrics.json").read_text())
+    assert metrics["input"] == {"campaign": "derived-expo"}
+
+
+def test_cli_baseline_requires_yes_when_not_a_tty(
+    skill_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    monkeypatch.setattr("rote.eval.baseline.derive_input_payload", lambda *a, **k: {"x": 1})
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    rc = cli_main(["baseline", str(skill_dir), "--out", str(tmp_path / "o")])
+    assert rc == 2
+    assert "--yes" in capsys.readouterr().err
+
+
+def test_cli_baseline_interactive_decline_exits_cleanly(
+    skill_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    monkeypatch.setattr("rote.eval.baseline.derive_input_payload", lambda *a, **k: {"x": 1})
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+
+    rc = cli_main(["baseline", str(skill_dir), "--out", str(tmp_path / "o")])
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "declined" in err
+    # The proposal survives for editing.
+    assert (tmp_path / "o" / "baseline" / "derived-input.json").is_file()
+
+
+# ───────── graduate --baseline integration ─────────
+
+
+def test_graduate_baseline_runs_and_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """--baseline: the raw skill runs before the graduator, its measured
+    runs land in the --json payload, and artifacts are on disk."""
+    from tests.test_cli import _install_mock_graduator
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    input_file = tmp_path / "input.json"
+    input_file.write_text('{"a": 1}', encoding="utf-8")
+
+    _install_mock_graduator(monkeypatch)
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__gmail__search_threads", {"q": "x"}),
+            _tool_result_event("t1", "r"),
+            _result_event(),
+        ],
+        write_result={"ok": True},
+    )
+
+    out = tmp_path / "out"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill),
+            "--out",
+            str(out),
+            "--no-eval",
+            "--json",
+            "--baseline",
+            "--baseline-input",
+            str(input_file),
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["baseline"]["observed_servers"] == ["gmail"]
+    assert payload["baseline"]["runs"][0]["turns"] == 7
+    assert (out / "baseline" / "metrics.json").is_file()
+
+
+def test_graduate_without_baseline_prints_nudge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    from tests.test_cli import _install_mock_graduator
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+
+    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out"), "--no-eval"])
+    assert rc == 0
+    assert "--baseline" in capsys.readouterr().err
+
+
+# ───────── Scorecard section ─────────
+
+
+def test_render_baseline_markdown() -> None:
+    from rote.eval.baseline import BaselineResult, render_baseline_markdown
+    from rote.eval.empirical import MeasuredRun
+
+    result = BaselineResult(
+        skill_dir=Path("/s"),
+        input_payload={},
+        model="claude-test",
+        read_only=True,
+        runs=(
+            MeasuredRun(wall_seconds=61.0, output={}, turns=12, cost_usd=0.31, model="claude-test"),
+        ),
+        observations=(
+            ObservedToolCall(server="gmail", tool="search_threads", input={}),
+            ObservedToolCall(server="gmail", tool="get_thread", input={}),
+        ),
+    )
+    md = render_baseline_markdown(result)
+    assert "## Measured baseline (1/1" in md
+    assert "| Wall clock (s) | 61 |" in md
+    assert "| Cost (USD) | 0.31 |" in md
+    assert "gmail ×2" in md
+    assert "read-only MCP gate" in md
