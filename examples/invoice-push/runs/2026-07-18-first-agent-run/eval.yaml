@@ -1,0 +1,102 @@
+version: 1
+source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/invoice-push/skill
+
+steps:
+  - description: "Verify browser-automation plugin is active and user is logged in"
+    node_id: check_prerequisites
+    phase: "Prerequisites"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 2, high: 3}
+
+  - description: "Calculate 7-day rolling date window ending yesterday"
+    node_id: calculate_date_window
+    phase: "Prerequisites"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Navigate to Cloud Imports screen, wait for table load"
+    node_id: navigate_to_imports
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 3}
+
+  - description: "Clear all active filter pills to start clean"
+    node_id: clear_filters
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 5}
+
+  - description: "Apply Date Imported range and Sent To Procurement = No filters"
+    node_id: apply_filters
+    phase: "Setup"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 3, high: 7}
+
+  - description: "Set page size to 90"
+    node_id: set_page_size
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 2, high: 3}
+
+  - description: "Note run start timestamp"
+    node_id: record_run_start
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Read total qualifying invoice count from pagination label"
+    node_id: read_total_count
+    phase: "Setup"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Read all columns for one invoice row"
+    node_id: read_invoice_row
+    phase: "Processing"
+    estimated_turns: {low: 1, high: 2}   # PER ROW —
+    iterations: {low: 5, high: 90}       # — × realistic qualifying row count
+
+  - description: "Check row eligibility (status == IMPORTED, 24-hour rule)"
+    node_id: check_row_eligibility
+    phase: "Processing"
+    estimated_turns: {low: 1, high: 1}   # PER ROW —
+    iterations: {low: 5, high: 90}       # — × qualifying rows
+
+  - description: "Open ⋮ menu, click Push to Procurement, wait for toast"
+    node_id: push_invoice
+    phase: "Processing"
+    estimated_turns: {low: 2, high: 4}   # PER ELIGIBLE ROW (menu + click + wait + classify)
+    iterations: {low: 4, high: 88}       # — × rows that pass eligibility
+
+  - description: "Refresh table, re-locate row by Batch ID, read Sent Date"
+    node_id: capture_sent_date
+    phase: "Processing"
+    estimated_turns: {low: 2, high: 3}   # PER SUCCESSFUL PUSH (refresh + locate + read)
+    iterations: {low: 3, high: 85}       # — × rows that push successfully
+
+  - description: "Assemble three-tab report structure from collected results"
+    node_id: build_report
+    phase: "Reporting"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Create Drive folder structure, create Sheet, populate three tabs"
+    node_id: save_report_to_drive
+    phase: "Reporting"
+    estimated_turns: {low: 3, high: 7}
+    estimated_tool_calls: {low: 4, high: 10}
+
+totals:
+  low: 30
+  high: 680
+
+notes: >-
+  This is a per-item loop skill dominated by the row-processing multiplier.
+  Setup and reporting steps together consume 12–29 turns. The bulk is the
+  per-row browser cycle: read (1–2t) + eligibility check (1t) + push+toast
+  (2–4t) + refresh+capture (2–3t) = 6–10 turns per eligible row. A typical
+  run of ~22 qualifying invoices (as shown in the skill example) lands at
+  ~140–240 turns. A full 90-row page (max page size) with near-100% eligibility
+  pushes toward the high end (~650 turns). The calibration anchor for per-item
+  loop skills (184–730 turns measured) fits this range well. The 'low' of 30
+  represents a near-empty filtered result set (5 rows, mostly skipped).

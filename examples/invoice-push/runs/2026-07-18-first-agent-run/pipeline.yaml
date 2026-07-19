@@ -1,0 +1,421 @@
+name: invoice-push
+version: "0.1.0"
+source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/invoice-push/skill
+description: |
+  Bulk "Push to Procurement" automation for the Cloud Imports screen.
+  Calculates a 7-day rolling date window ending yesterday, navigates the
+  browser to the imports screen, applies Date Imported + Sent To Procurement
+  = No filters, sets page size to 90, pushes each eligible IMPORTED invoice
+  via the ⋮ menu, captures the Sent Date after each successful push, paginates
+  through all pages, and generates a three-tab Google Sheet report (Invoice
+  Detail, Run Summary, Failure Code Reference) saved to the archive folder.
+
+config:
+  on_failure: notify_owner
+  observability:
+    traces: true
+
+input:
+  type: RunConfig
+  required: []
+  optional:
+    - override_date
+  input_schema:
+    type: object
+    title: RunConfig
+    description: >-
+      Runtime configuration for the invoice-push pipeline. All fields are
+      optional — the pipeline is self-contained when invoked with no input.
+    properties:
+      override_date:
+        type: string
+        description: >-
+          Override "today" for testing (ISO-8601 YYYY-MM-DD). When set,
+          calculate_date_window uses this date instead of the wall clock.
+          Omit in production.
+    additionalProperties: false
+
+nodes:
+
+  # ── Setup: prerequisites and date window ──────────────────────────────────
+
+  - id: check_prerequisites
+    kind: external_call
+    mandatory: true
+    phase: "Prerequisites"
+    source:
+      section: "Prerequisites Check"
+    description: |
+      MANDATORY: Verify the browser-automation plugin is active and the user
+      is logged in to the Cloud Imports screen. Raises RuntimeError with an
+      operator-facing message if either check fails; the workflow does not
+      proceed.
+    impl: extracted/browser_ops.py:check_prerequisites
+    output: prerequisites_ok bool
+    timeout: 30s
+    retry:
+      max: 1
+      backoff: constant
+
+  - id: calculate_date_window
+    kind: pure_function
+    phase: "Prerequisites"
+    source:
+      section: "Date Window Calculation"
+    description: |
+      Calculate the 7-day rolling import window ending yesterday.
+      end_date = today − 1 day; start_date = end_date − 7 days.
+      Formatted as M/D/YYYY. Optional override_date for testing.
+    impl: extracted/date_utils.py:calculate_date_window
+    input:
+      override_date: str | None
+    inputs:
+      override_date: pipeline.input.override_date
+    output:
+      start_date: str
+      end_date: str
+    constants:
+      window_days: 7
+      date_format: "M/D/YYYY"
+
+  # ── Browser setup ──────────────────────────────────────────────────────────
+
+  - id: navigate_to_imports
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 1 — Navigate to the Imports Screen"
+    description: |
+      Navigate the browser to the Cloud Imports screen
+      (https://ops.example.com/app/audit/import) and wait for the table
+      to fully load (tab title = "Imports", rows visible).
+    impl: extracted/browser_ops.py:navigate_to_imports
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network]
+
+  - id: clear_filters
+    kind: external_call
+    mandatory: true
+    phase: "Setup"
+    source:
+      section: "Step 2 — Clear All Existing Filter Pills"
+    description: |
+      MANDATORY: Remove all active filter pills before applying the run's
+      filters. Stale filters silently exclude qualifying invoices.
+      Clicks × on each pill or uses Filters → Clear all. Confirms table
+      resets to unfiltered state.
+    impl: extracted/browser_ops.py:clear_filters
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+
+  - id: apply_filters
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 3 — Apply Qualifying Filters"
+    description: |
+      Apply the qualifying filters: Date Imported (start_date – end_date)
+      and Sent To Procurement = No. Confirms both pills appear after closing
+      the filter panel.
+    impl: extracted/browser_ops.py:apply_filters
+    input:
+      start_date: str
+      end_date: str
+    inputs:
+      start_date: calculate_date_window.output.start_date
+      end_date: calculate_date_window.output.end_date
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+
+  - id: set_page_size
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 4 — Set Page Size to 90"
+    description: |
+      Set the pagination page size to 90 via the bottom-left dropdown.
+      Waits for the table to reload.
+    impl: extracted/browser_ops.py:set_page_size
+    timeout: 20s
+    retry:
+      max: 3
+      backoff: exponential
+    constants:
+      page_size: 90
+
+  - id: record_run_start
+    kind: pure_function
+    phase: "Setup"
+    source:
+      section: "Step 5 — Record Run Start Time"
+    description: |
+      Capture the current UTC timestamp immediately before row processing
+      begins. Provides the run start time for the Run Summary tab and the
+      run_time used in the 24-hour eligibility rule.
+    impl: extracted/date_utils.py:record_run_start
+    output:
+      timestamp: datetime
+      iso_date: str
+
+  - id: read_total_count
+    kind: external_call
+    phase: "Setup"
+    source:
+      section: "Step 6 — Read Total Record Count"
+    description: |
+      Read the total qualifying invoice count from the pagination label
+      (e.g. "1-22 of 22 imports" → 22). Recorded for the Run Summary.
+    impl: extracted/browser_ops.py:read_total_count
+    output:
+      count: int
+    timeout: 10s
+    retry:
+      max: 3
+      backoff: constant
+
+  # ── Main processing loop ───────────────────────────────────────────────────
+
+  - id: process_invoices_loop
+    kind: agent_loop
+    phase: "Processing"
+    source:
+      section: "Step 7 — Process Each Invoice Row"
+    description: |
+      Iterate over all pages and rows of the filtered invoice table.
+      For each row: read data, check eligibility, push via ⋮ menu,
+      capture Sent Date on success. Paginate until no more pages.
+      Terminates immediately on ERR-AUTH or ERR-CONN (FatalPushError).
+    input:
+      run_time: datetime
+      total_count: int
+    inputs:
+      run_time: record_run_start.output.timestamp
+      total_count: read_total_count.output.count
+    output:
+      results: list[InvoiceResult]
+      stopped_early: bool
+      stop_reason: str
+    tools:
+      - browser_navigate
+      - browser_click
+      - browser_read_element
+      - browser_wait_for_element
+      - browser_refresh
+      - browser_get_pagination_info
+    loop_body:
+      - read_invoice_row
+      - check_row_eligibility
+      - push_invoice
+      - capture_sent_date
+    termination:
+      condition: "no more pages in pagination"
+      max_iterations: 100
+    timeout: 90m
+
+  # ── Loop body sub-nodes (also top-level for isolation testing) ─────────────
+
+  - id: read_invoice_row
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "7a — Read All Column Values"
+    description: |
+      Read all 15 column values for one row on the current page.
+      Values are read exactly as displayed — no inference. Parses
+      date_imported into date_imported_dt (datetime) for the 24-hour check.
+    impl: extracted/browser_ops.py:read_invoice_row
+    input:
+      # row_index: provided by the loop harness per iteration
+      row_index: int
+    output:
+      batch_id: str
+      status: str
+      sent_date: str
+      invoice_number: str
+      carrier: str
+      invoice_type: str
+      import_file: str
+      date_imported: str
+      date_imported_dt: datetime
+      imported_by: str
+      record_count: str
+      charges: str
+      packages: str
+      ship_packages: str
+      earliest_ship_date: str
+      latest_ship_date: str
+    timeout: 10s
+    retry:
+      max: 2
+      backoff: constant
+
+  - id: check_row_eligibility
+    kind: pure_function
+    mandatory: true
+    phase: "Processing"
+    source:
+      section: "7b — Check Status Eligibility"
+    description: |
+      MANDATORY: Check that status == "IMPORTED" and that Date Imported
+      is at least 24 hours before run_time. Returns EligibilityResult.
+      Must run before any ⋮ menu interaction — never skip.
+    impl: extracted/eligibility.py:check_row_eligibility
+    input:
+      status: str
+      date_imported_dt: datetime
+      # run_time: threaded from process_invoices_loop.inputs.run_time
+      #   (loop harness responsibility — not expressible in cross-loop
+      #    data-flow grammar; the adapter must thread it explicitly)
+      run_time: datetime
+    inputs:
+      status: read_invoice_row.output.status
+      date_imported_dt: read_invoice_row.output.date_imported_dt
+    output:
+      eligible: bool
+      outcome: EligibilityOutcome
+      skip_reason: str | None
+    constants:
+      eligible_status: "IMPORTED"
+      recent_hours: 24
+
+  - id: push_invoice
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "7d — Open the ⋮ Menu"
+    description: |
+      Open the ⋮ menu for the row identified by batch_id, click
+      "Push to Procurement", wait up to 5 seconds for a toast, and
+      map the toast to an error code. Raises FatalPushError for
+      ERR-AUTH or ERR-CONN (stops the run). Only called when
+      check_row_eligibility.output.eligible is True.
+    impl: extracted/browser_ops.py:push_invoice
+    input:
+      batch_id: str
+    inputs:
+      batch_id: read_invoice_row.output.batch_id
+    output:
+      batch_id: str
+      is_success: bool
+      error_code: str | None
+      toast_message: str | None
+    constants:
+      toast_timeout_seconds: 5
+    timeout: 30s
+    retry:
+      max: 1
+      backoff: constant
+      retry_on: [network]
+
+  - id: capture_sent_date
+    kind: external_call
+    phase: "Processing"
+    source:
+      section: "7g — Refresh and Capture Sent Date (Success Only)"
+    description: |
+      Refresh the table and re-locate the row by Batch ID to read the
+      Sent Date populated after a successful push. Row identification
+      MUST use batch_id — never row position (order may shift after refresh).
+      Only called when push_invoice.output.is_success is True.
+    impl: extracted/browser_ops.py:capture_sent_date
+    input:
+      batch_id: str
+    inputs:
+      batch_id: read_invoice_row.output.batch_id
+    output: sent_date str
+    timeout: 20s
+    retry:
+      max: 2
+      backoff: constant
+
+  # ── Report generation ──────────────────────────────────────────────────────
+
+  - id: build_report
+    kind: pure_function
+    phase: "Reporting"
+    source:
+      section: "Step 9 — Generate and Save the Google Sheet Report"
+    description: |
+      Assemble the three-tab report structure from collected run results.
+      No LLM — pure formatting from typed inputs. Produces invoice_detail_rows
+      (18 columns), run_summary_rows (7 metrics), and failure_code_reference
+      (static 4-column table).
+    impl: extracted/report_builder.py:build_report
+    input:
+      results: list[InvoiceResult]
+      run_start_time: datetime
+      date_window_start: str
+      date_window_end: str
+      total_qualifying: int
+      stopped_early: bool
+      stop_reason: str
+    inputs:
+      results: process_invoices_loop.output.results
+      run_start_time: record_run_start.output.timestamp
+      date_window_start: calculate_date_window.output.start_date
+      date_window_end: calculate_date_window.output.end_date
+      total_qualifying: read_total_count.output.count
+      stopped_early: process_invoices_loop.output.stopped_early
+      stop_reason: process_invoices_loop.output.stop_reason
+    output:
+      invoice_detail_rows: list[dict]
+      run_summary_rows: list[dict]
+      failure_code_reference: list[dict]
+
+  - id: save_report_to_drive
+    kind: external_call
+    phase: "Reporting"
+    source:
+      section: "Step 9 — Generate and Save the Google Sheet Report"
+    description: |
+      Create or navigate the YYYY/MM folder structure under the archive
+      folder, create a Google Sheet named Invoice_Push_Report_{YYYY-MM-DD}
+      in the MM subfolder, populate all three tabs, and return the sheet URL.
+    impl: extracted/drive_ops.py:save_report_to_drive
+    input:
+      run_date: str
+      invoice_detail_rows: list[dict]
+      run_summary_rows: list[dict]
+      failure_code_reference: list[dict]
+    inputs:
+      run_date: record_run_start.output.iso_date
+      invoice_detail_rows: build_report.output.invoice_detail_rows
+      run_summary_rows: build_report.output.run_summary_rows
+      failure_code_reference: build_report.output.failure_code_reference
+    output:
+      sheet_id: str
+      sheet_url: str
+      folder_path: str
+    constants:
+      archive_folder_id: "1ExampleInvoicePushArchiveFolderId0000000000"
+      file_prefix: "Invoice_Push_Report"
+    timeout: 60s
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network, rate_limit]
+
+edges:
+  - { from: check_prerequisites,   to: calculate_date_window }
+  - { from: calculate_date_window,  to: navigate_to_imports }
+  - { from: navigate_to_imports,    to: clear_filters }
+  - { from: clear_filters,          to: apply_filters }
+  - { from: apply_filters,          to: set_page_size }
+  - { from: set_page_size,          to: record_run_start }
+  - { from: record_run_start,       to: read_total_count }
+  - { from: read_total_count,       to: process_invoices_loop }
+  - { from: process_invoices_loop,  to: build_report }
+  - { from: build_report,           to: save_report_to_drive }
+
+entry_nodes:
+  - check_prerequisites
+
+exit_nodes:
+  - save_report_to_drive
