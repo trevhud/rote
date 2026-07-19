@@ -232,7 +232,9 @@ def test_run_skill_applies_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def test_run_pipeline_rejects_unorchestrated_runtimes(tmp_path: Path) -> None:
-    target = RunTarget(kind="pipeline", path=tmp_path, runtime="temporal")
+    # Every current adapter is orchestrated; the guard now protects
+    # against future adapters landing before their runner does.
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="somefuture-runtime")
     with pytest.raises(TargetError, match="cannot orchestrate"):
         run_pipeline(target, {})
 
@@ -257,7 +259,14 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_runnable_runtimes_is_the_current_set() -> None:
-    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare", "inngest", "dbos-ts"}
+    assert set(RUNNABLE_RUNTIMES) == {
+        "python",
+        "dbos",
+        "cloudflare",
+        "inngest",
+        "dbos-ts",
+        "temporal",
+    }
 
 
 def test_resolve_input_declined_returns_none(
@@ -458,3 +467,30 @@ def test_dbos_ts_parses_trailing_json_after_sdk_banner() -> None:
     assert _parse_trailing_json(stdout) == {"gate": {"ok": True}}
     assert _parse_trailing_json("no json here\n") is None
     assert _parse_trailing_json("[1, 2]\n") == {"result": [1, 2]}
+
+
+# ───────── Temporal runner (unit level) ─────────
+
+
+def test_run_pipeline_dispatches_temporal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import rote.runners.temporal as t_runner
+
+    captured: dict[str, Any] = {}
+
+    def fake_run(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
+        captured["kwargs"] = kwargs
+        return MeasuredRun(wall_seconds=1.5, output={"temporal": True})
+
+    monkeypatch.setattr(t_runner, "run_temporal", fake_run)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="temporal")
+    outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=5.0)
+    assert outcome.run.output == {"temporal": True}
+    assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 5.0}
+
+
+def test_temporal_load_modules_requires_emitted_files(tmp_path: Path) -> None:
+    from rote.eval.empirical import EmpiricalError
+    from rote.runners.temporal import _load_app_modules
+
+    with pytest.raises(EmpiricalError, match="workflow.py"):
+        _load_app_modules(tmp_path)

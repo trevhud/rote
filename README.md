@@ -189,12 +189,12 @@ emitted code + a README on how to run, signal gates, and deploy).
   skill directory runs as an agent via `claude -p` (your registered MCP
   servers injected, read-only tool gate unless `--allow-writes`); an
   emitted runtime directory — or a `graduate --out` directory — runs
-  the pipeline itself (`python` and `dbos` execute in-process,
-  `cloudflare` under a managed `wrangler dev`, `inngest` against a
-  managed `inngest-cli dev` server, `dbos-ts` against your Postgres —
-  or a throwaway Docker one; HITL gate payloads via
-  `--signal name='{...}'` or an interactive prompt). Output JSON on
-  stdout, status on stderr, so it pipes.
+  the pipeline itself — all six runtimes (`python`/`dbos`/`temporal`
+  in-process or on a managed local dev server, `cloudflare` under
+  `wrangler dev`, `inngest` against a managed `inngest-cli dev`,
+  `dbos-ts` against your Postgres or a throwaway Docker one). HITL
+  gate payloads via `--signal name='{...}'` or an interactive prompt.
+  Output JSON on stdout, status on stderr, so it pipes.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to
