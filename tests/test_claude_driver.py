@@ -612,3 +612,25 @@ async def test_missing_graduator_skill_md_fails_before_subprocess(
         await driver.run(skill_dir, bad_graduator, work_dir)
 
     assert len(recorder.calls) == 0
+
+
+def test_web_tools_flag_appends_research_tools() -> None:
+    """--backend api graduations get WebSearch/WebFetch so vendor code is
+    written against current docs, not training-data memory."""
+    from rote.graduator.drivers.claude import DEFAULT_ALLOWED_TOOLS, WEB_TOOLS, ClaudeDriver
+
+    assert ClaudeDriver().allowed_tools == DEFAULT_ALLOWED_TOOLS  # off by default
+    driver = ClaudeDriver(web_tools=True)
+    assert driver.allowed_tools == f"{DEFAULT_ALLOWED_TOOLS},{WEB_TOOLS}"
+    assert "WebSearch" in driver.allowed_tools
+    assert "WebFetch" in driver.allowed_tools
+
+
+def test_other_drivers_swallow_web_tools_kwarg() -> None:
+    """The registry contract: cross-driver kwargs never hard-fail a
+    driver that doesn't implement them."""
+    from rote.graduator.drivers.anthropic_api import AnthropicApiDriver
+    from rote.graduator.drivers.codex import CodexDriver
+
+    CodexDriver(web_tools=True)
+    AnthropicApiDriver(web_tools=True)
