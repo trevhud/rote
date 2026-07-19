@@ -376,6 +376,51 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     graduated_dir = out_dir / "graduated"
     runtime_dir = out_dir / "runtime" / args.runtime
 
+    # ── Optional measured baseline (before the graduator spends money) ──
+    baseline_result = None
+    if args.baseline:
+        from rote.eval.baseline import run_baseline
+        from rote.eval.empirical import EmpiricalError
+        from rote.graduator.drivers.claude import DEFAULT_MODEL as _BASELINE_MODEL
+
+        try:
+            baseline_payload = _resolve_baseline_input(
+                skill_path, args.baseline_input, assume_yes=args.yes, out_dir=out_dir
+            )
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+        except EmpiricalError as e:
+            print(f"rote graduate: baseline: {e}", file=sys.stderr)
+            return 1
+        if baseline_payload is None:
+            return 0
+        print("rote graduate: running measured baseline of the raw skill…", file=sys.stderr)
+        try:
+            baseline_result = run_baseline(
+                skill_path,
+                baseline_payload,
+                out_dir,
+                model=_BASELINE_MODEL,
+                allow_writes=args.allow_writes,
+            )
+        except EmpiricalError as e:
+            print(f"rote graduate: baseline: {e}", file=sys.stderr)
+            return 1
+        for r in baseline_result.runs:
+            cost = f"${r.cost_usd:.2f}" if r.cost_usd is not None else "cost n/a"
+            note = f" [{', '.join(r.flags)}]" if r.flags else ""
+            print(
+                f"  baseline: {r.wall_seconds:.0f}s, {r.turns} turns, {cost}{note}",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            "rote graduate: tip — add --baseline to measure the raw skill first "
+            "(the scorecard's before-side becomes data, not an estimate)",
+            file=sys.stderr,
+        )
+
     # A JSONL progress sink (opt-in via --progress-file) runs alongside the
     # stderr printer: both fire for every event. The sink writes one machine-
     # readable line per event for an agent tailing the run; the printer keeps
@@ -443,7 +488,12 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 provider="anthropic",
             )
             scorecard_path = graduated_dir / "scorecard.md"
-            scorecard_path.write_text(scorecard.to_markdown() + "\n", encoding="utf-8")
+            scorecard_md = scorecard.to_markdown() + "\n"
+            if baseline_result is not None:
+                from rote.eval.baseline import render_baseline_markdown
+
+                scorecard_md += "\n" + render_baseline_markdown(baseline_result)
+            scorecard_path.write_text(scorecard_md, encoding="utf-8")
         except PricingError as e:
             print(
                 f"rote graduate: warning: skipped scorecard (live price fetch "
@@ -495,6 +545,16 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             "unimplemented_stubs": _unimplemented_stubs(written),
             "mcp_servers": mcp_servers,
         }
+        if baseline_result is not None:
+            from rote.eval.baseline import BASELINE_DIRNAME
+            from rote.eval.empirical import measured_run_record
+
+            payload["baseline"] = {
+                "read_only": baseline_result.read_only,
+                "runs": [measured_run_record(r) for r in baseline_result.runs],
+                "observed_servers": baseline_result.observed_servers,
+                "baseline_dir": str((out_dir / BASELINE_DIRNAME).resolve()),
+            }
         print(json.dumps(payload, indent=2))
 
     # ── Machine end-of-run digest ── The per-event `complete` line is for
@@ -1418,6 +1478,68 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _resolve_baseline_input(
+    skill_path: Path, input_arg: str | None, *, assume_yes: bool, out_dir: Path
+) -> dict[str, Any] | None:
+    """The baseline's task payload: from ``--input``, or derived + confirmed.
+
+    Derivation is a guess about how the skill is invoked, so it is never
+    spent against silently: the proposal is printed and must be accepted —
+    interactively on a terminal, or via ``--yes`` for non-interactive
+    callers. Either way the proposal is saved to
+    ``baseline/derived-input.json`` so a declined run can be edited and
+    re-invoked with ``--input``. Returns ``None`` when the user declines
+    (callers exit 0); raises ``ValueError`` for usage errors.
+    """
+    import json
+
+    from rote.eval.baseline import (
+        BASELINE_DIRNAME,
+        DERIVED_INPUT_FILENAME,
+        derive_input_payload,
+    )
+
+    if input_arg is not None:
+        input_path = Path(input_arg)
+        if not input_path.is_file():
+            raise ValueError(f"--input file not found: {input_path}")
+        try:
+            payload = json.loads(input_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"--input is not valid JSON: {e}") from e
+        if not isinstance(payload, dict):
+            raise ValueError("--input must be a JSON object")
+        return payload
+
+    print(
+        "no --input given — deriving a representative task from SKILL.md (cheap single-shot call)…",
+        file=sys.stderr,
+    )
+    derived = derive_input_payload(skill_path)
+    derived_path = out_dir / BASELINE_DIRNAME / DERIVED_INPUT_FILENAME
+    derived_path.parent.mkdir(parents=True, exist_ok=True)
+    derived_path.write_text(json.dumps(derived, indent=2) + "\n", encoding="utf-8")
+
+    print("derived input proposal:", file=sys.stderr)
+    print(json.dumps(derived, indent=2), file=sys.stderr)
+    if assume_yes:
+        print("--yes: accepting derived input", file=sys.stderr)
+        return derived
+    if not sys.stdin.isatty():
+        raise ValueError(
+            "not a terminal and no --input given — pass --input FILE, or --yes "
+            f"to accept the derived proposal (saved to {derived_path})"
+        )
+    answer = input(f"Run the baseline with this input? (saved to {derived_path}) [y/N] ")
+    if answer.strip().lower() not in {"y", "yes"}:
+        print(
+            f"declined — edit {derived_path} and re-run with --input {derived_path}",
+            file=sys.stderr,
+        )
+        return None
+    return derived
+
+
 def _cmd_baseline(args: argparse.Namespace) -> int:
     """Run the raw skill as an agent, measured and observed (pre-graduation).
 
@@ -1435,18 +1557,19 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     if not skill_path.is_dir():
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
-    input_path = Path(args.input)
-    if not input_path.is_file():
-        print(f"error: --input file not found: {input_path}", file=sys.stderr)
-        return 2
     try:
-        input_payload = json.loads(input_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        print(f"error: --input is not valid JSON: {e}", file=sys.stderr)
+        maybe_payload = _resolve_baseline_input(
+            skill_path, args.input, assume_yes=args.yes, out_dir=Path(args.out)
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
-    if not isinstance(input_payload, dict):
-        print("error: --input must be a JSON object", file=sys.stderr)
-        return 2
+    except EmpiricalError as e:
+        print(f"rote baseline: {e}", file=sys.stderr)
+        return 1
+    if maybe_payload is None:
+        return 0
+    input_payload = maybe_payload
 
     try:
         result = run_baseline(
@@ -1972,6 +2095,38 @@ def _build_parser() -> argparse.ArgumentParser:
             "alongside the stderr progress log; composes with --json."
         ),
     )
+    graduate.add_argument(
+        "--baseline",
+        action="store_true",
+        help=(
+            "Run the raw skill once as an agent BEFORE graduating (measured "
+            "wall/turns/cost + observed MCP traffic; see `rote baseline`). "
+            "The scorecard then carries a measured before-side instead of an "
+            "estimate. Adds minutes and tens of cents."
+        ),
+    )
+    graduate.add_argument(
+        "--baseline-input",
+        default=None,
+        metavar="FILE",
+        help=(
+            "Task payload for --baseline as a JSON object file. Omit to have "
+            "one derived from SKILL.md and confirmed before spending."
+        ),
+    )
+    graduate.add_argument(
+        "--yes",
+        action="store_true",
+        help="With --baseline: accept the derived input proposal without prompting",
+    )
+    graduate.add_argument(
+        "--allow-writes",
+        action="store_true",
+        help=(
+            "With --baseline: lift the read-only MCP gate — the skill runs "
+            "exactly as in production, side effects included"
+        ),
+    )
     graduate.set_defaults(func=_cmd_graduate)
 
     # rote register
@@ -2405,8 +2560,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     baseline.add_argument(
         "--input",
-        required=True,
-        help="Task file: the skill's input payload as a JSON object",
+        default=None,
+        help=(
+            "Task file: the skill's input payload as a JSON object. Omit to "
+            "have a representative input derived from SKILL.md and confirmed "
+            "with you before any money is spent."
+        ),
+    )
+    baseline.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept the derived input proposal without prompting (non-interactive runs)",
     )
     baseline.add_argument(
         "--trials",
