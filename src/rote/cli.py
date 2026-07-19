@@ -528,6 +528,48 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         for line in _mcp_recommendation_lines(mcp_servers):
             print(line, file=summary_stream)
 
+    # ── Static vs observed cross-check ── runs whenever baseline
+    # observations exist for this out dir (from --baseline just now, or a
+    # prior `rote baseline --out` here). observed_only entries are the
+    # loud ones: the skill demonstrably calls a tool the pipeline missed.
+    cross: dict[str, object] | None = None
+    if baseline_result is not None:
+        observations = list(baseline_result.observations)
+    else:
+        from rote.eval.baseline import BASELINE_DIRNAME as _BASELINE_DIRNAME
+        from rote.eval.baseline import load_observations
+
+        observations = load_observations(out_dir / _BASELINE_DIRNAME)
+    if observations:
+        from rote.probe import cross_check
+
+        cross = cross_check(result.pipeline, observations)
+        observed_only = cross["observed_only"]
+        static_only = cross["static_only"]
+        confirmed = cross["confirmed"]
+        assert isinstance(observed_only, list)
+        assert isinstance(static_only, list)
+        assert isinstance(confirmed, list)
+        if confirmed:
+            print(
+                f"  cross-check: {len(confirmed)} MCP binding(s) confirmed by observed traffic",
+                file=summary_stream,
+            )
+        for entry in observed_only:
+            print(
+                f"  cross-check: skill called {entry['server']}.{entry['tool']} "
+                f"({entry['observed_calls']}×) but no pipeline node binds it — "
+                "likely a missed requirement; review the graduated IR",
+                file=summary_stream,
+            )
+        for entry in static_only:
+            print(
+                f"  cross-check: {entry['server']}.{entry['tool']} is bound "
+                f"({', '.join(entry['nodes'])}) but was not observed in the "
+                "baseline (different task path, or held back by the read-only gate)",
+                file=summary_stream,
+            )
+
     if args.json:
         import json
 
@@ -555,6 +597,8 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 "observed_servers": baseline_result.observed_servers,
                 "baseline_dir": str((out_dir / BASELINE_DIRNAME).resolve()),
             }
+        if cross is not None:
+            payload["mcp_cross_check"] = cross
         print(json.dumps(payload, indent=2))
 
     # ── Machine end-of-run digest ── The per-event `complete` line is for
