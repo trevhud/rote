@@ -641,8 +641,13 @@ Don't waste time debugging stubs. These are intentional.
   the emitted `src/index.ts` router with parked-then-send gate delivery
   in topological gate order — parking is inferred from
   `__LOCAL_DEV_STEP_OUTPUTS` stability because local-dev status lies,
-  see the Cloudflare gotcha). Temporal / Inngest / DBOS-TS targets
-  print their native dev command until their orchestration lands.
+  see the Cloudflare gotcha; inngest via `rote.runners.inngest` —
+  emitted serve entrypoint + managed `inngest-cli dev`, forced PUT
+  registration, and gate events RE-BROADCAST every poll tick because
+  Inngest drops events with no active waitForEvent, with output read
+  from the dev server's GraphQL RunComplete op). Temporal / DBOS-TS
+  targets print their native dev command until their orchestration
+  lands.
   Detection understands both the `graduate --out` layout
   (`runtime/<target>/`) and bare emitted dirs (marker files — see
   `rote.runners._detect_runtime`).

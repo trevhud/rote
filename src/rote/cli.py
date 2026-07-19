@@ -1889,6 +1889,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             maybe_payload,
             signals=signals or None,
             gate_order=gate_order or None,
+            pipeline=pipeline,
             timeout_seconds=args.timeout or 600.0,
         )
         run = p_outcome.run

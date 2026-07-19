@@ -257,7 +257,7 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
 
 
 def test_runnable_runtimes_is_the_current_set() -> None:
-    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare"}
+    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare", "inngest"}
 
 
 def test_resolve_input_declined_returns_none(
@@ -351,3 +351,61 @@ def test_cf_wait_times_out_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cf.time, "sleep", lambda s: None)
     with pytest.raises(EmpiricalError, match="timed out"):
         cf._wait_until_parked_or_complete(1, "id", deadline=cf.time.monotonic() + 0.2)
+
+
+# ───────── Inngest runner (unit level — live path in test_inngest_e2e) ─────────
+
+
+def test_run_pipeline_inngest_requires_pipeline(tmp_path: Path) -> None:
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="inngest")
+    with pytest.raises(TargetError, match="pipeline.yaml"):
+        run_pipeline(target, {}, pipeline=None)
+
+
+def test_run_pipeline_dispatches_inngest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import rote.runners.inngest as inngest_runner
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_inngest(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
+        captured["kwargs"] = kwargs
+        return MeasuredRun(wall_seconds=2.0, output={"inngest": True})
+
+    monkeypatch.setattr(inngest_runner, "run_inngest", fake_run_inngest)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="inngest")
+    sentinel = object()
+    outcome = run_pipeline(
+        target,
+        {"x": 1},
+        signals={"g": {}},
+        gate_order=["g"],
+        pipeline=sentinel,
+        timeout_seconds=9.0,
+    )
+    assert outcome.run.output == {"inngest": True}
+    assert captured["kwargs"]["pipeline"] is sentinel
+    assert captured["kwargs"]["gate_order"] == ["g"]
+
+
+def test_inngest_run_output_parses_run_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.runners import inngest as ig
+
+    ops = [
+        {"op": "Step", "id": "a"},
+        {"op": "RunComplete", "data": {"final": {"ok": 1}}},
+    ]
+    response = {"data": {"run": {"status": "Completed", "output": json.dumps(ops)}}}
+    monkeypatch.setattr(ig, "http_json", lambda *a, **k: response)
+    assert ig._run_output("http://x", "r1") == {"final": {"ok": 1}}
+
+
+def test_inngest_run_output_errors_without_run_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.eval.empirical import EmpiricalError
+    from rote.runners import inngest as ig
+
+    response = {"data": {"run": {"status": "Completed", "output": json.dumps([])}}}
+    monkeypatch.setattr(ig, "http_json", lambda *a, **k: response)
+    with pytest.raises(EmpiricalError, match="RunComplete"):
+        ig._run_output("http://x", "r1")
