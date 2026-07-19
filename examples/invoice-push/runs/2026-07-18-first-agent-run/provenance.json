@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "skill_md_sha256": "618ca9068d57e4700be9526825af67295ca2de63c3c56b7bc252a4bec134d845",
+  "sections": {
+    "": "a096fddb0213a96055a27ad2ff763ac68eba2631dafd4acb83c2e0ee78d9e81d",
+    "7a \u2014 Read All Column Values": "aaa44f6af0fed24dd1b6da728435f05b8b91bd2211b33851e257f34c39ab91db",
+    "7b \u2014 Check Status Eligibility": "d8cfdf475309fd659a7ecdaa31908606af235463bd022ff3ada4b39395138673",
+    "7c \u2014 Apply the 24-Hour Rule": "05174c9505dd98f678decd2899b2f7e70deb8db2fca1f65843839a2a755901b8",
+    "7d \u2014 Open the \u22ee Menu": "65b386a9c096ae5433c49fbcb957dd77942b9e8a9ff224f852f201807cc2544e",
+    "7e \u2014 Click \"Push to Procurement\"": "8892e8b55028f0e9406b865fa52eb0fe306fc8adc24eb438bc8a73f4fad6862b",
+    "7f \u2014 Wait for Toast Notification (up to 5 seconds)": "35fb18c90603ba6af9fb9007569e9b904eefbec6e5dc73e39d5410c8897f1374",
+    "7g \u2014 Refresh and Capture Sent Date (Success Only)": "d236ce60c848b455ecc12f080746450845968fba146151a705bb48a851bac487",
+    "Date Window Calculation": "71029aebe27c907b392930c73501a662d69dcebfb3ca393f69fe240dd1a5363b",
+    "Prerequisites Check": "9f4c9bd4ae1279d60decad7c3832217a38153b4dda93e761c1561dd021ab4752",
+    "Step 1 \u2014 Navigate to the Imports Screen": "28132a96355d16ea87c70cfccee02fa33ab008445bf39eed8dd9d92fc79efa34",
+    "Step 2 \u2014 Clear All Existing Filter Pills": "3b0575b7c7c2ddbf0af8ba49134c251045fc3bce96724c04e07ed74229d66d3a",
+    "Step 3 \u2014 Apply Qualifying Filters": "675af3fb7469c763ad39c14c9b087826c55e4b88a49ed813d4541b5bab739ea8",
+    "Step 4 \u2014 Set Page Size to 90": "2b71509096a10a0791cc93b71752c031f40532433ffd7c6b3f3c0a415e4bd81d",
+    "Step 5 \u2014 Record Run Start Time": "08b89822ff8bc6d3e5787ec4a3e075b972d114dd0fe5607988b2ef297965f96a",
+    "Step 6 \u2014 Read Total Record Count": "b6871c6d5e69b0372a4b3f7e1b5fafccd5392063cce258af99bc0a548503be57",
+    "Step 7 \u2014 Process Each Invoice Row": "2cf64ea2a475efad709883a352529726c866dd8b2ecbe5d6b11514e026415441",
+    "Step 8 \u2014 Pagination": "c5f86192f69faf2ade4663c80709991cf31f30c391c965c265d0b4ca1fd33dfa",
+    "Step 9 \u2014 Generate and Save the Google Sheet Report": "39287d433028ec4a0f0b386540c57510894a1bf88a625f5941c5b071c98a3df1",
+    "Step-by-Step Automation": "286f95a167d5321dcafa02e0f2e70ae1af6bcd1ac171b54c7bd1bc6411583f8b",
+    "Tab 1 \u2014 Invoice Detail": "3b26ff6bad6f578e2503396ad606688117f01d57da61f2255298ab9044ddaee0",
+    "Tab 2 \u2014 Run Summary": "80c2e57a4cd2a432157b352fcfd1002591c8956d1a8b821aa2e6e18627c317fa",
+    "Tab 3 \u2014 Failure Code Reference": "7ef12b969fd6edd0cff367a0d021752eeff7b924fde7850731ba13e7d62de7ad",
+    "Trigger Phrases": "c5bd1119af82f816cf0f599abcd6533ecf9d3573d3662bc4036834b9696048b2",
+    "invoice-push": "dc7cca2d0e78c2b28e506e71538b8c4b172aba5c246a9051a26e245199a9080d"
+  },
+  "nodes": {
+    "apply_filters": {
+      "section": "Step 3 \u2014 Apply Qualifying Filters",
+      "content_hash": "675af3fb7469c763ad39c14c9b087826c55e4b88a49ed813d4541b5bab739ea8"
+    },
+    "build_report": {
+      "section": "Step 9 \u2014 Generate and Save the Google Sheet Report",
+      "content_hash": "39287d433028ec4a0f0b386540c57510894a1bf88a625f5941c5b071c98a3df1"
+    },
+    "calculate_date_window": {
+      "section": "Date Window Calculation",
+      "content_hash": "71029aebe27c907b392930c73501a662d69dcebfb3ca393f69fe240dd1a5363b"
+    },
+    "capture_sent_date": {
+      "section": "7g \u2014 Refresh and Capture Sent Date (Success Only)",
+      "content_hash": "d236ce60c848b455ecc12f080746450845968fba146151a705bb48a851bac487"
+    },
+    "check_prerequisites": {
+      "section": "Prerequisites Check",
+      "content_hash": "9f4c9bd4ae1279d60decad7c3832217a38153b4dda93e761c1561dd021ab4752"
+    },
+    "check_row_eligibility": {
+      "section": "7b \u2014 Check Status Eligibility",
+      "content_hash": "d8cfdf475309fd659a7ecdaa31908606af235463bd022ff3ada4b39395138673"
+    },
+    "clear_filters": {
+      "section": "Step 2 \u2014 Clear All Existing Filter Pills",
+      "content_hash": "3b0575b7c7c2ddbf0af8ba49134c251045fc3bce96724c04e07ed74229d66d3a"
+    },
+    "navigate_to_imports": {
+      "section": "Step 1 \u2014 Navigate to the Imports Screen",
+      "content_hash": "28132a96355d16ea87c70cfccee02fa33ab008445bf39eed8dd9d92fc79efa34"
+    },
+    "process_invoices_loop": {
+      "section": "Step 7 \u2014 Process Each Invoice Row",
+      "content_hash": "2cf64ea2a475efad709883a352529726c866dd8b2ecbe5d6b11514e026415441"
+    },
+    "push_invoice": {
+      "section": "7d \u2014 Open the \u22ee Menu",
+      "content_hash": "65b386a9c096ae5433c49fbcb957dd77942b9e8a9ff224f852f201807cc2544e"
+    },
+    "read_invoice_row": {
+      "section": "7a \u2014 Read All Column Values",
+      "content_hash": "aaa44f6af0fed24dd1b6da728435f05b8b91bd2211b33851e257f34c39ab91db"
+    },
+    "read_total_count": {
+      "section": "Step 6 \u2014 Read Total Record Count",
+      "content_hash": "b6871c6d5e69b0372a4b3f7e1b5fafccd5392063cce258af99bc0a548503be57"
+    },
+    "record_run_start": {
+      "section": "Step 5 \u2014 Record Run Start Time",
+      "content_hash": "08b89822ff8bc6d3e5787ec4a3e075b972d114dd0fe5607988b2ef297965f96a"
+    },
+    "save_report_to_drive": {
+      "section": "Step 9 \u2014 Generate and Save the Google Sheet Report",
+      "content_hash": "39287d433028ec4a0f0b386540c57510894a1bf88a625f5941c5b071c98a3df1"
+    },
+    "set_page_size": {
+      "section": "Step 4 \u2014 Set Page Size to 90",
+      "content_hash": "2b71509096a10a0791cc93b71752c031f40532433ffd7c6b3f3c0a415e4bd81d"
+    }
+  }
+}

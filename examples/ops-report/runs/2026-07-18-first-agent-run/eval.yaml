@@ -1,0 +1,109 @@
+version: 1
+source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/ops-report/skill
+
+# Estimates for running the ops-report skill as raw agent instructions.
+# This is the BEFORE side of the rote eval scorecard — what the agent spends
+# when following the SKILL.md prose directly.
+#
+# Shape: sequential tool-heavy skill, one HITL pause, no per-item loops.
+# Expected range based on calibration anchors: 10–22 turns total.
+# The data pulls dominate (4 separate tool calls, often in parallel but
+# the agent may not always batch them), and report assembly requires the
+# agent to generate all three sections from scratch.
+
+steps:
+  - description: "Fetch Shipment Containers spreadsheet via Google Drive MCP"
+    node_id: fetch_shipment_containers
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Fetch Dock Pending Log spreadsheet via Google Drive MCP"
+    node_id: fetch_dock_pending_log
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Search Gmail for dock-activity threads"
+    node_id: fetch_dock_emails
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Fetch Open Dwell Ticket Log (specific tab) via Google Drive MCP"
+    node_id: fetch_dwell_tickets
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Parse facility summary table — completion % per site, flag < 75%"
+    node_id: parse_shipment_containers
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Count Resolved=FALSE rows, group by site and issue type"
+    node_id: parse_dock_pending_log
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Count Approved vs Requested Gmail threads, flag outstanding"
+    node_id: parse_dock_emails
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Filter Open dwell tickets, apply 25/41/80 package thresholds"
+    node_id: parse_dwell_tickets
+    phase: "auto-pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Compose request for duty manager (dock appointments, sorter, BI dwell)"
+    node_id: duty_manager_data_gate
+    phase: "manual-data"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+
+  - description: "Apply dock appointment rules — detect and flag Non-Compliant (MANDATORY)"
+    node_id: apply_dock_appointment_rules
+    phase: "manual-data"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Apply sorter thresholds — fail rate > 5%, volume drop > 15%"
+    node_id: apply_sorter_rules
+    phase: "manual-data"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Apply BI dwell thresholds — brand 25/41, carrier 80"
+    node_id: apply_dwell_thresholds
+    phase: "manual-data"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Assemble three-section executive report with KPI header"
+    node_id: assemble_report
+    phase: "report"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 0, high: 0}
+
+totals:
+  low: 13
+  high: 21
+
+notes: >-
+  This is a sequential, data-pull-plus-report skill with no per-item loops
+  and no fuzzy classification. The agent cost is dominated by (a) the four
+  MCP data-pull turns, which an agent sometimes batches into fewer turns
+  via parallel tool calls, and (b) the report-assembly turns where the agent
+  must write all three sections from scratch each run. The HITL wait (duty
+  manager response) is wall-clock time, not agent turns.
+
+  In the graduated pipeline, the 8 deterministic nodes (4 external_call +
+  8 pure_function = 12 total, excluding the 1 hitl_gate) require exactly
+  zero LLM tokens at runtime. The only LLM-adjacent cost is the HITL
+  notification message. Expected per-run cost reduction: ~95% of agent turns
+  eliminated.
