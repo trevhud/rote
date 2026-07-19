@@ -660,6 +660,16 @@ Don't waste time debugging stubs. These are intentional.
   Detection understands both the `graduate --out` layout
   (`runtime/<target>/`) and bare emitted dirs (marker files — see
   `rote.runners._detect_runtime`).
+- `rote deploy` — push-deploy wrappers (`rote.deploy`): cloudflare via
+  `npx wrangler deploy` (whoami-preflight surfaces the session account
+  first — ambient wrangler state on this machine is the WORK account),
+  dbos/dbos-ts via `npx dbos-cloud app deploy` (verified current: no
+  `app register` step anymore; CI auth = `login --with-refresh-token`).
+  Temporal/Inngest/python have NO push model — the command prints
+  current hosting guidance with doc URLs instead of pretending
+  (Temporal Cloud hosts only the server; Inngest syncs via
+  authenticated POST to api.inngest.com/v2/apps/<id>/syncs, the old
+  unauthenticated PUT-to-your-endpoint flow is deprecated).
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
