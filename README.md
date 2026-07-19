@@ -185,6 +185,13 @@ emitted code + a README on how to run, signal gates, and deploy).
   `provenance.json` and re-derives only the nodes whose source sections
   changed; unchanged nodes keep their ids (so in-flight durable workflows
   aren't orphaned) and implemented stubs are kept. No change → no agent run.
+- **`rote run <path>`** — one-off local execution of either side. A
+  skill directory runs as an agent via `claude -p` (your registered MCP
+  servers injected, read-only tool gate unless `--allow-writes`); an
+  emitted runtime directory — or a `graduate --out` directory — runs
+  the pipeline itself (`python` and `dbos` execute in-process; HITL
+  gate payloads via `--signal name='{...}'` or an interactive prompt).
+  Output JSON on stdout, status on stderr, so it pipes.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to

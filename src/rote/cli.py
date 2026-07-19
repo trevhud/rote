@@ -9,6 +9,7 @@ building block for that flow:
 
     rote emit    <pipeline.yaml> --runtime temporal  # IR → code only
     rote analyze <skill-path>                        # graduator dry run
+    rote run     <skill-or-graduated-dir>            # one-off local execution
     rote eval    <graduated-dir>                     # before/after scorecard
 
 Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
@@ -1775,6 +1776,145 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    """One-off local execution of a skill or an emitted pipeline.
+
+    The skill side is a baseline-grade ``claude -p`` run without the
+    artifact ceremony; the pipeline side executes the emitted app
+    (python script, or DBOS app with HITL gate payloads delivered
+    cross-process). The run's output JSON goes to stdout so it pipes;
+    status lines go to stderr.
+    """
+    from rote.eval.empirical import EmpiricalError, measured_run_record
+    from rote.graduator.drivers.claude import DEFAULT_MODEL
+    from rote.ir import NodeKind
+    from rote.runners import (
+        TargetError,
+        detect_target,
+        parse_signal_args,
+        resolve_gate_signals,
+        resolve_input,
+        run_pipeline,
+        run_skill,
+    )
+
+    try:
+        target = detect_target(Path(args.path), runtime=args.runtime)
+    except TargetError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    try:
+        if target.kind == "skill":
+            maybe_payload = resolve_input(args.input, skill_dir=target.path, assume_yes=args.yes)
+            if maybe_payload is None:
+                return 0
+            outcome = run_skill(
+                target.path,
+                maybe_payload,
+                model=args.model or DEFAULT_MODEL,
+                allow_writes=args.allow_writes,
+                max_turns=args.max_turns,
+                timeout_seconds=args.timeout or 1800.0,
+            )
+            run = outcome.run
+            gate_note = "read-only MCP gate" if outcome.read_only else "writes allowed"
+            status = "succeeded" if run.succeeded else f"failed: {run.error}"
+            print(f"rote run (skill): {status} ({gate_note})", file=sys.stderr)
+            cost = f"${run.cost_usd:.2f}" if run.cost_usd is not None else "cost n/a"
+            turns = f"{run.turns} turns" if run.turns is not None else "turns n/a"
+            print(f"  {run.wall_seconds:.0f}s, {turns}, {cost}", file=sys.stderr)
+            if outcome.observations:
+                print(
+                    f"  observed MCP traffic: {len(outcome.observations)} call(s) across "
+                    f"{', '.join(outcome.observed_servers)}",
+                    file=sys.stderr,
+                )
+            for server, reason in outcome.servers_skipped.items():
+                print(f"  {server}: {reason}", file=sys.stderr)
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "kind": "skill",
+                            "skill_dir": str(target.path),
+                            "model": run.model,
+                            "read_only": outcome.read_only,
+                            "run": measured_run_record(run),
+                            "output": run.output,
+                            "observed_servers": outcome.observed_servers,
+                        },
+                        indent=2,
+                    )
+                )
+            elif run.output is not None:
+                print(json.dumps(run.output, indent=2))
+            return 0 if run.succeeded else 1
+
+        pipeline: Pipeline | None = None
+        if target.pipeline_yaml is not None:
+            pipeline = load_pipeline(target.pipeline_yaml)
+        skill_dir = (
+            _resolve_eval_skill_dir(None, target.pipeline_yaml, pipeline.source_skill)
+            if pipeline is not None and target.pipeline_yaml is not None
+            else None
+        )
+        maybe_payload = resolve_input(args.input, skill_dir=skill_dir, assume_yes=args.yes)
+        if maybe_payload is None:
+            return 0
+        signals = parse_signal_args(args.signal)
+        if pipeline is not None:
+            gates = [n.signal for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE and n.signal]
+            signals = resolve_gate_signals(gates, signals, interactive=sys.stdin.isatty())
+        # No IR located (bare emitted dir): --signal payloads pass through
+        # unvalidated — the app itself is the contract then.
+        p_outcome = run_pipeline(
+            target,
+            maybe_payload,
+            signals=signals or None,
+            timeout_seconds=args.timeout or 600.0,
+        )
+        run = p_outcome.run
+        status = "succeeded" if run.succeeded else f"failed: {run.error}"
+        print(f"rote run ({p_outcome.runtime}): {status}", file=sys.stderr)
+        print(f"  {run.wall_seconds:.1f}s", file=sys.stderr)
+        if run.judge_usage:
+            tokens_in = sum(r.get("input_tokens") or 0 for r in run.judge_usage)
+            tokens_out = sum(r.get("output_tokens") or 0 for r in run.judge_usage)
+            print(
+                f"  judge usage: {len(run.judge_usage)} call(s), "
+                f"{tokens_in} in / {tokens_out} out tokens",
+                file=sys.stderr,
+            )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "kind": "pipeline",
+                        "runtime": p_outcome.runtime,
+                        "app_dir": str(p_outcome.app_dir),
+                        "wall_seconds": run.wall_seconds,
+                        "output": run.output,
+                        "error": run.error,
+                        "judge_usage": list(run.judge_usage),
+                    },
+                    indent=2,
+                )
+            )
+        elif run.output is not None:
+            print(json.dumps(run.output, indent=2))
+        return 0 if run.succeeded else 1
+    except TargetError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except EmpiricalError as e:
+        print(f"rote run: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("rote run: interrupted", file=sys.stderr)
+        return 130
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a graduation set up to succeed before spending money?
 
@@ -2273,6 +2413,83 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     graduate.set_defaults(func=_cmd_graduate)
+
+    # rote run
+    run_p = subparsers.add_parser(
+        "run",
+        help="Run a skill (via claude -p) or an emitted pipeline locally, once",
+        description=(
+            "One-off local execution of either side of a graduation. A skill "
+            "directory runs as an agent via `claude -p` — registered MCP "
+            "servers injected, read-only gate unless --allow-writes, billed "
+            "to your Claude subscription. An emitted runtime directory (or a "
+            "`rote graduate --out` directory) runs the pipeline itself: "
+            "python and dbos execute in-process today; other runtimes print "
+            "their native dev command. The run's output JSON lands on stdout "
+            "so it pipes; status goes to stderr."
+        ),
+    )
+    run_p.add_argument(
+        "path",
+        help="Skill dir (SKILL.md), emitted runtime dir, or `rote graduate --out` dir",
+    )
+    run_p.add_argument(
+        "--input",
+        default=None,
+        help=(
+            "Input payload: an inline JSON object or a path to a JSON file. "
+            "Omit to have one derived from the skill and confirmed with you."
+        ),
+    )
+    run_p.add_argument(
+        "--runtime",
+        default=None,
+        help="Which emitted runtime to run when several exist under <path>/runtime/",
+    )
+    run_p.add_argument(
+        "--signal",
+        action="append",
+        default=[],
+        metavar="NAME=JSON",
+        help=(
+            "Resume payload for a HITL gate (repeatable). Gates without one "
+            "are prompted for interactively before the run starts — payloads "
+            "are delivered when the workflow parks."
+        ),
+    )
+    run_p.add_argument(
+        "--model",
+        default=None,
+        help="Skill runs: the agent model (default: the graduator's default Sonnet)",
+    )
+    run_p.add_argument(
+        "--allow-writes",
+        action="store_true",
+        help="Skill runs: lift the read-only MCP gate — side effects included",
+    )
+    run_p.add_argument(
+        "--max-turns",
+        type=int,
+        default=60,
+        help="Skill runs: turn budget (default: 60)",
+    )
+    run_p.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Seconds before the run is killed (default: 1800 skill / 600 pipeline)",
+    )
+    run_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Accept the derived input proposal without prompting (non-interactive runs)",
+    )
+    run_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a single JSON result object on stdout",
+    )
+    run_p.set_defaults(func=_cmd_run)
 
     # rote register
     register = subparsers.add_parser(

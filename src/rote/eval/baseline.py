@@ -227,6 +227,33 @@ async def read_only_allowlist(
     return allowed, skipped
 
 
+def resolve_mcp_wiring(
+    *, allow_writes: bool
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, str]]:
+    """The full MCP wiring decision for one ``claude -p`` skill run.
+
+    Returns ``(servers, allowed_tool_ids, skipped)``: the registry-wide
+    mcp-config entries, the tool allowlist (read-only gate applied unless
+    ``allow_writes``), and per-server reasons for contributing nothing.
+    Shared by the baseline and ``rote run`` so both make identical
+    auth/side-effect decisions.
+    """
+    import asyncio
+
+    servers = mcp_servers_from_registry()
+    skipped: dict[str, str] = {}
+    mcp_tool_ids: list[str] = []
+    if servers:
+        if allow_writes:
+            mcp_tool_ids = [f"mcp__{name}__*" for name in sorted(servers)]
+        else:
+            mcp_tool_ids, skipped = asyncio.run(read_only_allowlist(sorted(servers)))
+            # A server contributing zero allowed tools stays wired (its
+            # tools just aren't callable) — cheaper than rewriting config,
+            # and the strictness lives in --allowedTools anyway.
+    return servers, mcp_tool_ids, skipped
+
+
 # ───────── Transcript observation (pure, testable) ─────────
 
 
@@ -484,19 +511,7 @@ def run_baseline(
     ``observed-tools.json`` (deduplicated by call — full payloads), and
     one ``trial-<n>.transcript.jsonl`` per trial.
     """
-    import asyncio
-
-    servers = mcp_servers_from_registry()
-    skipped: dict[str, str] = {}
-    mcp_tool_ids: list[str] = []
-    if servers:
-        if allow_writes:
-            mcp_tool_ids = [f"mcp__{name}__*" for name in sorted(servers)]
-        else:
-            mcp_tool_ids, skipped = asyncio.run(read_only_allowlist(sorted(servers)))
-            # A server contributing zero allowed tools stays wired (its
-            # tools just aren't callable) — cheaper than rewriting config,
-            # and the strictness lives in --allowedTools anyway.
+    servers, mcp_tool_ids, skipped = resolve_mcp_wiring(allow_writes=allow_writes)
 
     baseline_dir = Path(out_dir) / BASELINE_DIRNAME
     baseline_dir.mkdir(parents=True, exist_ok=True)

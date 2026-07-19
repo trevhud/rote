@@ -143,9 +143,17 @@ scaffolds that `raise NotImplementedError`:
 - **`signatures/*.py`** — already complete typed LLM judges (Pydantic
   input/output, embedded schema, prompt). Do not rewrite them.
 
-To run a graduated DBOS app locally once stubs are filled:
-`python main.py '{"your": "input"}'` (one run) or `python main.py --serve`
-(long-lived worker). See the runtime `README.md`.
+To run a graduated pipeline locally once stubs are filled:
+`rote run <out-dir> --input '{"your": "input"}'` — it resolves the
+emitted runtime (`--runtime` disambiguates when several were emitted),
+executes `python`/`dbos` in-process, and delivers HITL gate payloads
+passed as `--signal <gate>='{...}'` (non-interactive runs **must** pass
+one per gate or the command exits 2 listing them). The run's output JSON
+is stdout; status is stderr. `rote run <skill-dir>` runs the *raw skill*
+the same way `rote baseline` does (read-only MCP gate, `--allow-writes`
+to lift), without writing baseline artifacts. Equivalent manual form for
+a DBOS app: `python main.py '{"your": "input"}'` (see the runtime
+`README.md`).
 
 ## Re-running is safe — retry freely
 
@@ -185,6 +193,11 @@ Pass `--json` to get structured output instead of prose:
 - `rote graduate --json` — a superset of the emit object that also carries
   `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
   a price-fetch failure), and the `driver` used.
+- `rote run --json` — one result object: `kind` (`skill`/`pipeline`), the
+  run's `output`, and side-specific measurement (`run` metrics +
+  `observed_servers` for skills; `runtime`, `wall_seconds`, `error`,
+  `judge_usage` for pipelines). Without `--json`, stdout is the bare
+  output JSON.
 
 `mcp_servers` (on `analyze`, `emit`, `graduate`, and the progress-file
 summary line) is the pipeline's MCP requirements manifest: one entry per
