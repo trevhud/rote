@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "skill_md_sha256": "179aff4db535ec53a79627a026a0476abe24f96ec04afadcc915db0c9663d4ba",
+  "sections": {
+    "": "ad2c5bcbbf4a7fc38eff5809ea8b65cf2948fe1ab2a7d81e61ea2bd5780e0c5f",
+    "Daily Executive Operations Report": "5e34bbaec28cc7edded2239bd21d6e839c828c13dd1d385a5ee68b8340e0fd53",
+    "Data sources to auto-pull:": "b6ec0de160c3553a9fed18939da9a7e29a841edb37e0824bdaa3767e0a1af9b5",
+    "Manual data to request from user:": "58d3f7327d9af899a79f751a7fe6768d94f03bc8509f43039839b6226da3a3a3",
+    "Report format:": "595caf692565f4c3a79c0090e2ca744efdca9e252574611b28ee3532c053cb54"
+  },
+  "nodes": {
+    "assemble_report": {
+      "section": "Report format",
+      "content_hash": null
+    },
+    "duty_manager_data_gate": {
+      "section": "Manual data to request from user",
+      "content_hash": null
+    },
+    "fetch_dock_activity_emails": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "fetch_dock_pending_log": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "fetch_dwell_tickets": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "fetch_shipment_containers": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "parse_dock_activity": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "parse_dock_pending_log": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "parse_dwell_tickets": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "parse_shipment_containers": {
+      "section": "Data sources to auto-pull",
+      "content_hash": null
+    },
+    "validate_manager_data": {
+      "section": "Manual data to request from user",
+      "content_hash": null
+    }
+  }
+}
