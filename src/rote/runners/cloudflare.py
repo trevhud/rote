@@ -24,62 +24,23 @@ a loop.
 from __future__ import annotations
 
 import json
-import shutil
-import socket
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
+from rote.runners._node import (
+    ensure_npm_install,
+    find_free_port,
+    http_get_json,
+    http_post_json,
+    terminate,
+)
 
 #: wrangler dev cold start is ~5-10s; CI machines need headroom.
 READY_TIMEOUT_SECONDS = 60.0
-NPM_INSTALL_TIMEOUT_SECONDS = 300.0
-
-
-def find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        port: int = s.getsockname()[1]
-        return port
-
-
-def http_get_json(url: str, timeout: float = 10.0) -> dict[str, Any]:
-    with urlopen(url, timeout=timeout) as resp:
-        data: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
-        return data
-
-
-def http_post_json(url: str, body: dict[str, Any] | None, timeout: float = 10.0) -> dict[str, Any]:
-    payload = json.dumps(body or {}).encode("utf-8")
-    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-    with urlopen(req, timeout=timeout) as resp:
-        data: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
-        return data
-
-
-def ensure_npm_install(app_dir: Path) -> None:
-    """Install the emitted app's node dependencies once (idempotent)."""
-    if (app_dir / "node_modules").is_dir():
-        return
-    if shutil.which("npm") is None:
-        raise EmpiricalError("`npm` not found — a Node toolchain is required to run this runtime")
-    print("rote run: installing npm dependencies (first run, ~30-60s)…", file=sys.stderr)
-    proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=NPM_INSTALL_TIMEOUT_SECONDS,
-    )
-    if proc.returncode != 0:
-        raise EmpiricalError(
-            f"npm install failed in {app_dir}:\n{(proc.stderr or proc.stdout)[:800]}"
-        )
 
 
 def _wait_until_parked_or_complete(
@@ -186,12 +147,7 @@ def run_cloudflare(
                     payload if isinstance(payload, dict) else {"payload": payload},
                 )
         finally:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+            terminate(proc)
 
 
 def _wait_for_ready(proc: subprocess.Popen[Any], port: int, log_path: Path) -> None:

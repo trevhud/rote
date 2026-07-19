@@ -51,11 +51,10 @@ class TargetError(RuntimeError):
 #: runtimes (temporal / inngest / dbos-ts) need a dev-server
 #: orchestration layer; until that lands we point at the runtime's own
 #: dev command instead of pretending.
-RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare"})
+RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare", "inngest"})
 
 _NATIVE_RUN_HINTS = {
     "temporal": "start a Temporal dev server and the emitted worker (see the emitted README.md)",
-    "inngest": "npx inngest-cli dev + the emitted serve entrypoint (see the emitted README.md)",
     "dbos-ts": "npm install && npm start against a Postgres (see the emitted README.md)",
 }
 
@@ -380,6 +379,7 @@ def run_pipeline(
     *,
     signals: dict[str, Any] | None = None,
     gate_order: list[str] | None = None,
+    pipeline: Any = None,
     timeout_seconds: float = 600.0,
 ) -> PipelineRunOutcome:
     """Run an emitted pipeline once.
@@ -388,7 +388,9 @@ def run_pipeline(
     runner (DBOS gate payloads are sent up front — notifications
     persist per-topic). ``cloudflare`` runs under ``wrangler dev`` with
     parked-then-send gate delivery, which needs ``gate_order`` (the
-    pipeline's gate signal names in topological order).
+    pipeline's gate signal names in topological order). ``inngest``
+    runs the emitted serve entrypoint against a managed dev server and
+    additionally needs the loaded ``pipeline`` IR for event naming.
     """
     if target.runtime not in RUNNABLE_RUNTIMES:
         raise TargetError(
@@ -401,6 +403,24 @@ def run_pipeline(
         run = run_cloudflare(
             target.path,
             input_payload,
+            signals=signals or {},
+            gate_order=gate_order or sorted(signals or {}),
+            timeout_seconds=timeout_seconds,
+        )
+    elif target.runtime == "inngest":
+        if pipeline is None:
+            raise TargetError(
+                "running an inngest app needs the graduated pipeline.yaml for "
+                "event naming — keep it at ../../graduated/pipeline.yaml "
+                "relative to the app (the `rote graduate --out` layout) or "
+                "next to it"
+            )
+        from rote.runners.inngest import run_inngest
+
+        run = run_inngest(
+            target.path,
+            input_payload,
+            pipeline=pipeline,
             signals=signals or {},
             gate_order=gate_order or sorted(signals or {}),
             timeout_seconds=timeout_seconds,
