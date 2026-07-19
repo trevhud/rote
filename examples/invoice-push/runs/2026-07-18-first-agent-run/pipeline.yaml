@@ -1,6 +1,6 @@
 name: invoice-push
 version: "0.1.0"
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/invoice-push/skill
+source_skill: ../../skill
 description: |
   Bulk "Push to Procurement" automation for the Cloud Imports screen.
   Calculates a 7-day rolling date window ending yesterday, navigates the

@@ -99,7 +99,50 @@ kind. The validator enforces kind-specific requirements.
     strategy: persistent
     ttl: 30d
   fan_out: false                 # optional, if true node invoked per input element
+  mcp:                           # external_call only — see "MCP bindings" below
+    server: hubspot              # logical MCP server name (identifier)
+    tool: hubspot_batch_upsert   # exact MCP tool name the skill calls
 ```
+
+### MCP bindings (`mcp:`) — REQUIRED when the source step is an MCP tool call
+
+If the skill step you are graduating calls an MCP tool — and in
+production skills, almost every data pull and vendor write does — the
+`external_call` node **must** carry an `mcp:` binding recording the
+logical server name and the exact tool name:
+
+```yaml
+- id: fetch_intake_messages
+  kind: external_call
+  impl: extracted/slack.py:fetch_intake_messages
+  mcp:
+    server: slack                # the MCP server the skill's tool lives on
+    tool: slack_read_channel     # the tool name, exactly as the skill calls it
+```
+
+This is not documentation — the binding is load-bearing:
+
+- With `--backend mcp` (the default), adapters emit a **working call to
+  that tool** instead of a NotImplementedError stub; without the binding
+  the user has to hand-write the integration you could have wired.
+- The pipeline's required-MCP-servers manifest, preflight auth
+  recommendations, and durable park-on-auth all derive from bindings —
+  an unbound node is invisible to all three.
+- `rote graduate` cross-checks bindings against traffic observed in a
+  baseline run; a tool the skill demonstrably calls with no binding is
+  reported as a missed requirement (i.e., a graduation bug).
+
+Rules:
+
+- One binding per node — the server + tool pair the step actually uses.
+  If a step uses two tools, it's two nodes (or an `agent_loop`).
+- `server` is the *logical* name (identifier: letters/digits/underscore);
+  it resolves to an endpoint at runtime via the rote registry — do not
+  put URLs in the binding unless the skill pins an explicit endpoint.
+- Keep `impl:` too: the binding and the extracted stub are the two
+  backends (`mcp` vs `api`) of the same node.
+- Steps that are *not* MCP tool calls (plain HTTP the skill documents,
+  browser automation, file I/O) take no binding — never invent one.
 
 ### Data-flow bindings (`inputs:`)
 

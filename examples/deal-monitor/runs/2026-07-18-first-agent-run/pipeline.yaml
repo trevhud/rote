@@ -1,6 +1,6 @@
 name: deal-monitor
 version: "0.1.0"
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/deal-monitor/skill
+source_skill: ../../skill
 description: |
   Scheduled morning dashboard for a fulfillment brokerage's deal pipeline.
   Pulls the #deal-intake Slack channel (50 most recent messages), runs 5 Gmail

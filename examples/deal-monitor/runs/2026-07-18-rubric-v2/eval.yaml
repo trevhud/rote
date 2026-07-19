@@ -1,0 +1,75 @@
+version: 1
+source_skill: ../../skill
+
+steps:
+  - description: "Pull 50 most recent messages from #deal-intake Slack channel"
+    node_id: fetch_slack_messages
+    phase: "1"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Run 5 Gmail searches (subjects + warehouse domains + account names)"
+    node_id: search_gmail_fixed
+    phase: "2"
+    estimated_turns: {low: 3, high: 6}
+    estimated_tool_calls: {low: 4, high: 8}
+
+  - description: "Extract and filter Slack messages into structured opportunities"
+    node_id: filter_and_extract_opps
+    phase: "1"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Search Gmail by account names from Slack"
+    node_id: search_gmail_by_account
+    phase: "2"
+    estimated_turns: {low: 2, high: 5}
+    estimated_tool_calls: {low: 3, high: 10}
+    iterations: {low: 5, high: 20}
+
+  - description: "Fuzzy-match Gmail threads to deal-intake opps"
+    node_id: match_opps_to_threads
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Read and classify each warehouse email thread into pipeline step 1-6"
+    node_id: classify_warehouse_thread
+    phase: "3"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 2, high: 4}
+    iterations: {low: 3, high: 20}
+
+  - description: "Read deal-scoring skill and score each new (unmatched) opportunity"
+    node_id: score_new_opportunity
+    phase: "4"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 2, high: 4}
+    iterations: {low: 2, high: 15}
+
+  - description: "Generate self-contained three-tab HTML dashboard"
+    node_id: render_dashboard
+    phase: "5"
+    estimated_turns: {low: 2, high: 5}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Save HTML file and emit text summary"
+    node_id: write_dashboard
+    phase: "6"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+totals:
+  low: 20
+  high: 90
+
+notes: >-
+  The dominant cost drivers are (a) the per-thread classification step —
+  a real morning run might have 5–20 active quoting threads, each requiring
+  the agent to read a multi-message thread before classifying — and (b) the
+  account-name Gmail searches, which can require many serial calls if the
+  account list is large. The classify_warehouse_thread and score_new_opportunity
+  steps run serially in the agent but could be concurrent; graduated pipeline
+  runs them in parallel. In the agent, reading the deal-scoring skill
+  adds 1–2 extra turns of file-reading overhead per scoring call. Total
+  range (20–90) reflects a typical morning of 5–25 active threads.

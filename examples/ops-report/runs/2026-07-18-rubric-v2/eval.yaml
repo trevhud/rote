@@ -1,0 +1,76 @@
+version: 1
+source_skill: ../../skill
+steps:
+  - description: "Fetch Shipment Containers spreadsheet from Google Drive"
+    node_id: fetch_shipment_containers
+    phase: "Data Pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Parse facility summary table; flag sites below 75% completion"
+    node_id: parse_shipment_containers
+    phase: "Parse"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Fetch Dock Pending Log spreadsheet from Google Drive"
+    node_id: fetch_dock_pending_log
+    phase: "Data Pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Parse pending log; count Resolved=FALSE rows by site and issue type"
+    node_id: parse_dock_pending_log
+    phase: "Parse"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Search Gmail for dock-activity threads newer_than:1d"
+    node_id: fetch_dock_activity_emails
+    phase: "Data Pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Parse dock-activity threads; count Approved vs. Requested; flag outstanding"
+    node_id: parse_dock_activity
+    phase: "Parse"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Fetch Dwell Ticket Log from Google Drive (Dwell Log tab)"
+    node_id: fetch_dwell_tickets
+    phase: "Data Pull"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Parse dwell tickets; filter Open; apply missort thresholds (25/41 pkg)"
+    node_id: parse_dwell_tickets
+    phase: "Parse"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Ask duty manager to provide appointment completion, sorter metrics, and BI dwell"
+    node_id: duty_manager_data_gate
+    phase: "Manager Input"
+    estimated_turns: {low: 1, high: 3}
+
+  - description: "Apply threshold rules to manager data (Non-Compliant escalation, sorter flags, dwell color codes)"
+    node_id: validate_manager_data
+    phase: "Validation"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Render three-section executive report with KPI header and color-coded alerts"
+    node_id: assemble_report
+    phase: "Report"
+    estimated_turns: {low: 2, high: 5}
+
+totals:
+  low: 12
+  high: 25
+notes: >-
+  This skill runs almost entirely deterministic code in the agent version too —
+  the agent is primarily doing file reads and template rendering. The four data
+  pulls happen sequentially in the agent (one tool call per turn), whereas the
+  graduated pipeline runs them concurrently. The duty manager gate is asynchronous
+  latency, not turns. The biggest variance is in report rendering (2–5 turns)
+  because the agent must read back the data it just parsed before writing the
+  report. No search loops, no iteration, no per-item fan-out — this is a
+  sequential ETL + template skill that should run end-to-end in 12–25 agent
+  turns before graduation, dominated by the four sequential data pulls and
+  the final report render.

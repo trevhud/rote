@@ -1,5 +1,5 @@
 version: 1
-source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/ops-report/skill
+source_skill: ../../skill
 
 # Estimates for running the ops-report skill as raw agent instructions.
 # This is the BEFORE side of the rote eval scorecard — what the agent spends
