@@ -455,7 +455,19 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     )
 
     try:
-        result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
+        from rote.eval.baseline import BASELINE_DIRNAME as _PROBE_BASELINE_DIRNAME
+
+        result = asyncio.run(
+            graduator.graduate(
+                skill_path,
+                graduated_dir,
+                update=args.update,
+                # Baseline artifacts (from --baseline just now, or a prior
+                # `rote baseline --out` here) are ground truth the agent
+                # reads during graduation — observed MCP traffic + schemas.
+                probe_dir=out_dir / _PROBE_BASELINE_DIRNAME,
+            )
+        )
     except GraduatorError as e:
         if progress_sink is not None:
             progress_sink.close()
