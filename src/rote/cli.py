@@ -521,6 +521,27 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
     record_app(runtime_dir, args.runtime, pipeline.name)
 
+    # ── Generated-test verification ── the implementation rubric has the
+    # agent write deterministic, offline golden-fixture tests when it
+    # implements extracted modules for real. Run them now so the user
+    # learns immediately whether the agent's implementations hold against
+    # the observed payloads. Strictly non-fatal: a red test (or a missing
+    # pytest) is a report line, never a failed graduation.
+    verification = _run_generated_tests(graduated_dir)
+    if verification is not None:
+        status = "passed" if verification["passed"] else "FAILED"
+        print(
+            f"rote graduate: generated tests {status} ({verification['summary']})",
+            file=sys.stderr,
+        )
+        if not verification["passed"]:
+            print(
+                f"  review the agent's implementations against {graduated_dir / 'tests'} "
+                "— a red golden-fixture test means an implementation disagrees with "
+                "the observed payloads",
+                file=sys.stderr,
+            )
+
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
     # just-completed, real-money graduation run) ──
     scorecard_path: Path | None = None
@@ -640,6 +661,8 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             }
         if cross is not None:
             payload["mcp_cross_check"] = cross
+        if verification is not None:
+            payload["generated_tests"] = verification
         print(json.dumps(payload, indent=2))
 
     # ── Machine end-of-run digest ── The per-event `complete` line is for
@@ -1621,6 +1644,45 @@ def _resolve_baseline_input(
         )
         return None
     return derived
+
+
+def _run_generated_tests(graduated_dir: Path) -> dict[str, object] | None:
+    """Run the agent-written test suite under a graduation's output, if any.
+
+    The implementation rubric asks the agent for deterministic, offline
+    tests in ``tests/`` (golden fixtures from observed payloads,
+    transport-stubbed network calls). ``None`` when there's nothing to
+    run; otherwise ``{"passed": bool, "summary": str}``. Degrades to a
+    "couldn't run" summary (never raises) when pytest is unavailable or
+    the run blows up — verification is advisory, the graduation already
+    materially succeeded.
+    """
+    import subprocess
+
+    tests_dir = graduated_dir / "tests"
+    if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                str(tests_dir),
+                "-q",
+                "--no-header",
+                "-p",
+                "no:cacheprovider",
+            ],
+            cwd=graduated_dir,
+            capture_output=True,
+            text=True,
+            timeout=300.0,
+        )
+    except Exception as e:  # noqa: BLE001 — advisory check, never fatal
+        return {"passed": False, "summary": f"could not run pytest: {e}"}
+    tail = (proc.stdout or proc.stderr).strip().splitlines()
+    return {"passed": proc.returncode == 0, "summary": tail[-1] if tail else "no output"}
 
 
 def _cmd_baseline(args: argparse.Namespace) -> int:
