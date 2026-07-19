@@ -229,3 +229,108 @@ def test_cross_check_empty_observations() -> None:
     assert result["confirmed"] == []
     assert result["observed_only"] == []
     assert len(result["static_only"]) == 3  # slack + 2 distinct gmail tools
+
+
+# ───────── enrich_pipeline + typed stub contracts ─────────
+
+
+def _wordbank_schema() -> object:
+    from rote.probe import InferredToolSchema
+
+    return InferredToolSchema(
+        server="slack",
+        tool="slack_read_channel",
+        input_schema={
+            "type": "object",
+            "properties": {"channel": {"type": "string"}},
+            "required": ["channel"],
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"messages": {"type": "array", "items": {"type": "string"}}},
+            "required": ["messages"],
+        },
+        samples=2,
+        error_samples=0,
+    )
+
+
+def test_enrich_pipeline_fills_only_missing_contracts() -> None:
+    from pathlib import Path
+
+    from rote.ir import load_pipeline
+    from rote.probe import enrich_pipeline
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pipeline = load_pipeline(repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml")
+    enriched, ids = enrich_pipeline(pipeline, [_wordbank_schema()])
+
+    assert ids == ["fetch_intake_messages"]
+    node = enriched.node_by_id("fetch_intake_messages")
+    assert node.input_schema["required"] == ["channel"]
+    assert node.output_schema["properties"]["messages"]["type"] == "array"
+    # Original untouched; unmatched nodes unchanged.
+    assert pipeline.node_by_id("fetch_intake_messages").input_schema is None
+    assert enriched.node_by_id("search_gmail_standard").input_schema is None
+
+
+def test_enrich_pipeline_never_overwrites_existing_contract() -> None:
+    from pathlib import Path
+
+    from rote.ir import load_pipeline
+    from rote.probe import enrich_pipeline
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pipeline = load_pipeline(repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml")
+    preset = {"type": "object", "properties": {"authored": {"type": "string"}}}
+    nodes = [
+        n.model_copy(update={"input_schema": preset}) if n.id == "fetch_intake_messages" else n
+        for n in pipeline.nodes
+    ]
+    pipeline = pipeline.model_copy(update={"nodes": nodes})
+
+    enriched, ids = enrich_pipeline(pipeline, [_wordbank_schema()])
+    # output_schema was still missing → enriched; input_schema kept.
+    assert ids == ["fetch_intake_messages"]
+    node = enriched.node_by_id("fetch_intake_messages")
+    assert node.input_schema == preset
+    assert node.output_schema is not None
+
+
+def test_save_pipeline_round_trips_enriched_contracts(tmp_path) -> None:
+    from pathlib import Path
+
+    from rote.ir import load_pipeline, save_pipeline
+    from rote.probe import enrich_pipeline
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pipeline = load_pipeline(repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml")
+    enriched, _ = enrich_pipeline(pipeline, [_wordbank_schema()])
+    out = tmp_path / "pipeline.yaml"
+    save_pipeline(enriched, out)
+    reloaded = load_pipeline(out)
+    assert reloaded == enriched
+    assert reloaded.node_by_id("fetch_intake_messages").output_schema is not None
+
+
+def test_emitted_stub_carries_observed_contract(tmp_path) -> None:
+    """The dbos-emitted extracted stub documents the observed contracts."""
+    from pathlib import Path
+
+    from rote.adapters import get_adapter
+    from rote.ir import load_pipeline
+    from rote.probe import enrich_pipeline
+
+    repo_root = Path(__file__).resolve().parent.parent
+    pipeline = load_pipeline(repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml")
+    enriched, _ = enrich_pipeline(pipeline, [_wordbank_schema()])
+    written = get_adapter("dbos").emit(enriched, tmp_path / "out")
+
+    stub_src = written["extracted/slack"].read_text(encoding="utf-8")
+    assert "Input contract (JSON Schema, from observed real payloads):" in stub_src
+    assert '"channel"' in stub_src
+    assert "Output contract (JSON Schema, from observed real payloads):" in stub_src
+    assert '"messages"' in stub_src
+    # Unenriched stubs stay contract-free.
+    gmail_src = written["extracted/gmail"].read_text(encoding="utf-8")
+    assert "Input contract" not in gmail_src

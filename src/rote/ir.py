@@ -507,6 +507,24 @@ class Node(BaseModel):
         default_factory=dict,
         description="Output field name → type name, or a single type name",
     )
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "JSON Schema for this node's input payload. Runtime-agnostic "
+            "data contract (same convention as PipelineInput.input_schema); "
+            "typically populated from observed baseline traffic "
+            "(rote.probe) or by the graduator. Adapters may render it into "
+            "stub documentation and typed signatures."
+        ),
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "JSON Schema for this node's result. Same provenance and use "
+            "as input_schema — evidence from real payloads beats guessed "
+            "types."
+        ),
+    )
     timeout: str | None = Field(
         default=None,
         description="Duration string, e.g., '5m', '60s'",
@@ -843,3 +861,21 @@ def load_pipeline(path: str | Path) -> Pipeline:
     with p.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return Pipeline.model_validate(raw)
+
+
+def save_pipeline(pipeline: Pipeline, path: str | Path) -> Path:
+    """Write a pipeline back to YAML, round-trippable through load_pipeline.
+
+    Dumped from the model (``by_alias`` so ``Edge.from_`` serializes as
+    ``from:``, ``exclude_none``/``exclude_defaults`` to keep the file
+    close to what the graduator writes). Formatting and comments from the
+    original file are not preserved — callers rewrite pipeline.yaml only
+    when they materially changed the IR (e.g. observed-schema enrichment).
+    """
+    p = Path(path)
+    data = pipeline.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_defaults=True)
+    p.write_text(
+        yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100),
+        encoding="utf-8",
+    )
+    return p
