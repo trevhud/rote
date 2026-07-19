@@ -778,3 +778,80 @@ def test_graduate_cross_checks_prior_baseline_artifacts(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["mcp_cross_check"]["observed_only"][0]["server"] == "gmail"
+
+
+def test_graduate_enriches_contracts_from_baseline_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """End-to-end: observed traffic types the matching node's contracts,
+    the rewritten pipeline.yaml carries them, and the emitted stub
+    documents them."""
+    from rote.graduator import GraduationResult
+    from rote.ir import load_pipeline
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    repo_root = Path(__file__).resolve().parent.parent
+    dm_yaml = repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml"
+    dm_pipeline = load_pipeline(dm_yaml)
+
+    class _DealMonitorGraduator:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "pipeline.yaml").write_text(
+                dm_yaml.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            return GraduationResult(
+                pipeline=dm_pipeline,
+                output_dir=output_dir,
+                driver_name="mock",
+                driver_metadata={},
+            )
+
+    monkeypatch.setattr("rote.cli.Graduator", _DealMonitorGraduator)
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    input_file = tmp_path / "input.json"
+    input_file.write_text("{}", encoding="utf-8")
+
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__slack__slack_read_channel", {"channel": "C0EXAMPLE000"}),
+            _tool_result_event("t1", [{"type": "text", "text": '{"messages": ["deal one"]}'}]),
+            _result_event(),
+        ],
+        write_result={"ok": True},
+    )
+
+    out = tmp_path / "out"
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill),
+            "--out",
+            str(out),
+            "--no-eval",
+            "--baseline",
+            "--baseline-input",
+            str(input_file),
+        ]
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "typed 1 node contract(s)" in err
+
+    # The rewritten IR is the source of truth for the contracts…
+    reloaded = load_pipeline(out / "graduated" / "pipeline.yaml")
+    node = reloaded.node_by_id("fetch_intake_messages")
+    assert node.input_schema["required"] == ["channel"]
+    assert node.output_schema["properties"]["messages"]["type"] == "array"
+    # …and the emitted stub documents them.
+    stub = (out / "runtime" / "dbos" / "extracted" / "slack.py").read_text(encoding="utf-8")
+    assert "Output contract (JSON Schema, from observed real payloads):" in stub
+    assert '"messages"' in stub

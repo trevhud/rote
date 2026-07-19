@@ -266,3 +266,36 @@ def infer_tool_schemas(
             )
         )
     return inferred
+
+
+def enrich_pipeline(pipeline: Any, inferred: list[InferredToolSchema]) -> tuple[Any, list[str]]:
+    """Fill nodes' missing data contracts from observed-tool schemas.
+
+    A node with an ``mcp:`` binding whose ``(server, tool)`` was observed
+    gains ``input_schema``/``output_schema`` inferred from the real
+    payloads — but only where the field is currently unset: an
+    agent-authored (or user-edited) contract always wins over inference.
+    Returns ``(new_pipeline, enriched_node_ids)``; the input pipeline is
+    not mutated.
+    """
+    by_tool = {(s.server, s.tool): s for s in inferred}
+    enriched_ids: list[str] = []
+    new_nodes = []
+    for node in pipeline.nodes:
+        schema = by_tool.get((node.mcp.server, node.mcp.tool)) if node.mcp else None
+        if schema is None:
+            new_nodes.append(node)
+            continue
+        updates: dict[str, Any] = {}
+        if node.input_schema is None and schema.input_schema:
+            updates["input_schema"] = schema.input_schema
+        if node.output_schema is None and schema.output_schema:
+            updates["output_schema"] = schema.output_schema
+        if not updates:
+            new_nodes.append(node)
+            continue
+        new_nodes.append(node.model_copy(update=updates))
+        enriched_ids.append(node.id)
+    if not enriched_ids:
+        return pipeline, []
+    return pipeline.model_copy(update={"nodes": new_nodes}), enriched_ids

@@ -808,6 +808,18 @@ def emit_extracted_module(
                         subsequent_indent="          ",
                     )
                 )
+        for label, schema in (
+            ("Input contract", node.input_schema),
+            ("Output contract", node.output_schema),
+        ):
+            if not schema:
+                continue
+            doc_lines.append("")
+            doc_lines.append(f"    {label} (JSON Schema, from observed real payloads):")
+            # json.dumps escapes every quote inside strings, so the rendered
+            # block cannot contain an unescaped triple-quote; a trailing
+            # backslash is impossible before the newline-terminated fence.
+            doc_lines.extend(f"      {line}" for line in json.dumps(schema, indent=2).splitlines())
 
         doc = "\n".join(doc_lines)
         parts.append(

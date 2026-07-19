@@ -467,11 +467,39 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
 
-    written = adapter.emit(result.pipeline, runtime_dir)
+    # ── Observed-contract enrichment ── baseline observations (from
+    # --baseline just now, or a prior `rote baseline --out` here) carry
+    # real payloads per MCP tool; nodes bound to observed tools gain
+    # input/output JSON-Schema contracts the agent didn't set. Must happen
+    # BEFORE emission so stubs carry the contracts, and the rewritten
+    # pipeline.yaml stays the single source of truth for what was emitted.
+    if baseline_result is not None:
+        observations = list(baseline_result.observations)
+    else:
+        from rote.eval.baseline import BASELINE_DIRNAME as _BASELINE_DIRNAME
+        from rote.eval.baseline import load_observations
+
+        observations = load_observations(out_dir / _BASELINE_DIRNAME)
+
+    pipeline = result.pipeline
+    if observations:
+        from rote.ir import save_pipeline
+        from rote.probe import enrich_pipeline, infer_tool_schemas
+
+        pipeline, enriched_ids = enrich_pipeline(pipeline, infer_tool_schemas(observations))
+        if enriched_ids:
+            save_pipeline(pipeline, graduated_dir / "pipeline.yaml")
+            print(
+                f"rote graduate: typed {len(enriched_ids)} node contract(s) from "
+                f"observed baseline traffic: {', '.join(enriched_ids)}",
+                file=sys.stderr,
+            )
+
+    written = adapter.emit(pipeline, runtime_dir)
 
     from rote.app_registry import record_app
 
-    record_app(runtime_dir, args.runtime, result.pipeline.name)
+    record_app(runtime_dir, args.runtime, pipeline.name)
 
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
     # just-completed, real-money graduation run) ──
@@ -482,7 +510,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
         try:
             scorecard = build_scorecard_for(
-                result.pipeline,
+                pipeline,
                 graduated_dir / "pipeline.yaml",
                 skill_path,
                 provider="anthropic",
@@ -505,7 +533,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # JSON object only — the same stdout-contract split as `rote mcp headers`)
     summary_stream = sys.stderr if args.json else sys.stdout
     print(
-        f"rote graduate: ✓ {result.pipeline.name} v{result.pipeline.version}",
+        f"rote graduate: ✓ {pipeline.name} v{pipeline.version}",
         file=summary_stream,
     )
     print(f"  driver: {result.driver_name}", file=summary_stream)
@@ -521,7 +549,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
     # user now beats discovering it mid-flight.
-    mcp_servers = _mcp_requirements(result.pipeline)
+    mcp_servers = _mcp_requirements(pipeline)
     if mcp_servers:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}", file=summary_stream)
@@ -533,17 +561,10 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # prior `rote baseline --out` here). observed_only entries are the
     # loud ones: the skill demonstrably calls a tool the pipeline missed.
     cross: dict[str, object] | None = None
-    if baseline_result is not None:
-        observations = list(baseline_result.observations)
-    else:
-        from rote.eval.baseline import BASELINE_DIRNAME as _BASELINE_DIRNAME
-        from rote.eval.baseline import load_observations
-
-        observations = load_observations(out_dir / _BASELINE_DIRNAME)
     if observations:
         from rote.probe import cross_check
 
-        cross = cross_check(result.pipeline, observations)
+        cross = cross_check(pipeline, observations)
         observed_only = cross["observed_only"]
         static_only = cross["static_only"]
         confirmed = cross["confirmed"]
@@ -574,7 +595,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         import json
 
         payload = {
-            "pipeline": {"name": result.pipeline.name, "version": result.pipeline.version},
+            "pipeline": {"name": pipeline.name, "version": pipeline.version},
             "runtime": args.runtime,
             "out_dir": str(out_dir.resolve()),
             "graduated_dir": str(graduated_dir.resolve()),
@@ -608,9 +629,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # the remaining stub TODOs, and the run's total token spend + cost. It's
     # the LAST NDJSON line, written after everything else is on disk.
     if progress_sink is not None:
-        analysis = _build_analysis(
-            result.pipeline, result.driver_name, result.driver_metadata, skill_path
-        )
+        analysis = _build_analysis(pipeline, result.driver_name, result.driver_metadata, skill_path)
         analysis_nodes = analysis["nodes"]
         assert isinstance(analysis_nodes, dict)
         meta = result.driver_metadata
