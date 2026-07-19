@@ -798,7 +798,7 @@ def test_graduate_enriches_contracts_from_baseline_observations(
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "pipeline.yaml").write_text(
@@ -898,3 +898,89 @@ def test_graduate_api_backend_enables_web_tools(
     rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out2"), "--no-eval"])
     assert rc == 0
     assert captured["driver_kwargs"] is None
+
+
+# ───────── Probe artifacts fed into the graduator ─────────
+
+
+def test_materialize_probe_context_copies_artifacts(tmp_path: Path) -> None:
+    from rote.graduator import PROBE_CONTEXT_DIRNAME, Graduator
+
+    probe = tmp_path / "baseline"
+    probe.mkdir()
+    (probe / "observed-tools.json").write_text("[]", encoding="utf-8")
+    (probe / "inferred-schemas.json").write_text("[]", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+
+    instructions = Graduator._materialize_probe_context(work, probe)
+    assert instructions is not None
+    assert "GROUND TRUTH" in instructions
+    assert "mcp: binding" in instructions
+    ctx = work / PROBE_CONTEXT_DIRNAME
+    assert (ctx / "observed-tools.json").is_file()
+    assert (ctx / "inferred-schemas.json").is_file()
+
+
+def test_materialize_probe_context_absent_artifacts_is_none(tmp_path: Path) -> None:
+    from rote.graduator import Graduator
+
+    work = tmp_path / "work"
+    work.mkdir()
+    assert Graduator._materialize_probe_context(work, tmp_path / "nowhere") is None
+    assert not list(work.iterdir())  # no empty probe-context dir left behind
+
+
+def test_graduate_threads_probe_dir_to_driver_instructions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end through the real Graduator with a fake driver: probe
+    artifacts land in the work dir and the prompt instructions."""
+    import asyncio
+
+    from rote.graduator import PROBE_CONTEXT_DIRNAME, Graduator
+    from rote.graduator.drivers import DriverResult
+
+    repo_root = Path(__file__).resolve().parent.parent
+    bdr_yaml = repo_root / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n# T\n\n## Step 1\ndo\n")
+    probe = tmp_path / "out" / "baseline"
+    probe.mkdir(parents=True)
+    (probe / "observed-tools.json").write_text(
+        '[{"server": "gmail", "tool": "search_threads", "input": {}, '
+        '"result": null, "is_error": false}]',
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeDriver:
+        name = "fake"
+
+        def is_available(self):  # noqa: ANN201
+            return True, ""
+
+        async def run(self, *, skill_dir, graduator_skill_dir, work_dir, **kwargs):  # noqa: ANN001, ANN201
+            captured["extra_instructions"] = kwargs.get("extra_instructions")
+            captured["probe_files"] = sorted(
+                p.name for p in (Path(work_dir) / PROBE_CONTEXT_DIRNAME).iterdir()
+            )
+            (Path(work_dir) / "pipeline.yaml").write_text(
+                bdr_yaml.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            return DriverResult(
+                pipeline_yaml_path=Path(work_dir) / "pipeline.yaml",
+                work_dir=Path(work_dir),
+                driver_name="fake",
+            )
+
+    graduator = Graduator(agent="claude")
+    monkeypatch.setattr(graduator, "select_driver", lambda: _FakeDriver())
+
+    result = asyncio.run(graduator.graduate(skill, tmp_path / "out" / "graduated", probe_dir=probe))
+    assert result.pipeline.name == "bdr-campaign"
+    assert captured["probe_files"] == ["observed-tools.json"]
+    assert "GROUND TRUTH" in captured["extra_instructions"]

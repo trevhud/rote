@@ -49,6 +49,10 @@ from rote.graduator.update import (
 from rote.ir import Pipeline, load_pipeline
 from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
 
+#: Work-dir directory the baseline's probe artifacts are materialized
+#: into for the agent (mirrors update-context's convention).
+PROBE_CONTEXT_DIRNAME = "probe-context"
+
 
 class GraduatorError(RuntimeError):
     """High-level graduator failure.
@@ -209,6 +213,7 @@ class Graduator:
         output_dir: Path | str,
         update: bool = False,
         extra_instructions: str | None = None,
+        probe_dir: Path | str | None = None,
     ) -> GraduationResult:
         """Run the full graduation flow.
 
@@ -231,6 +236,12 @@ class Graduator:
             typically a hosting runtime's contract (e.g. which
             ``signature_spec.client`` values its isolates can execute).
             Composed with (not replaced by) the update-mode brief.
+        probe_dir
+            A ``rote baseline`` artifact directory. When it holds
+            observed-tools.json / inferred-schemas.json they are
+            materialized into the agent's work dir as ground truth
+            (observed MCP traffic + inferred schemas). Missing dir or
+            artifacts is the normal no-baseline case, never an error.
 
         Returns
         -------
@@ -249,8 +260,11 @@ class Graduator:
         skill_dir = Path(skill_dir).resolve()
         output_dir = Path(output_dir).resolve()
 
+        resolved_probe_dir = Path(probe_dir).resolve() if probe_dir is not None else None
         try:
-            return await self._graduate_inner(skill_dir, output_dir, update, extra_instructions)
+            return await self._graduate_inner(
+                skill_dir, output_dir, update, extra_instructions, resolved_probe_dir
+            )
         except GraduatorError as e:
             self._emit("error", f"graduation failed: {e}")
             raise
@@ -261,6 +275,7 @@ class Graduator:
         output_dir: Path,
         update: bool,
         extra_instructions: str | None = None,
+        probe_dir: Path | None = None,
     ) -> GraduationResult:
         """The graduation body, bracketed by ``graduate``'s error event."""
         if not skill_dir.is_dir():
@@ -302,6 +317,13 @@ class Graduator:
                 instructions.append(extra_instructions)
             if plan is not None:
                 instructions.append(self._materialize_update_context(work_dir, output_dir, plan))
+            if probe_dir is not None:
+                probe_instructions = self._materialize_probe_context(work_dir, probe_dir)
+                if probe_instructions is not None:
+                    self._emit(
+                        "log", "probe artifacts found — feeding observed traffic to the agent"
+                    )
+                    instructions.append(probe_instructions)
             run_kwargs: dict[str, Any] = {}
             if instructions:
                 run_kwargs["extra_instructions"] = "\n\n".join(instructions)
@@ -461,6 +483,46 @@ class Graduator:
             f"changed and which existing nodes must be preserved verbatim. "
             f"Start from the previous pipeline at {ctx_dir}/pipeline.yaml and "
             f"make the minimal changes the brief describes."
+        )
+
+    @staticmethod
+    def _materialize_probe_context(work_dir: Path, probe_dir: Path) -> str | None:
+        """Copy baseline probe artifacts into the work dir, if any exist.
+
+        A prior ``rote baseline`` run recorded the skill's *actual* MCP
+        traffic (real inputs and result payloads) and the schemas
+        inferred from it. Those artifacts are ground truth the agent
+        must not have to guess at, so they travel into the work dir the
+        same way update context does. Returns the extra prompt
+        instructions, or ``None`` when no artifacts are present (the
+        common no-baseline case — never an error).
+        """
+        artifact_names = ("observed-tools.json", "inferred-schemas.json")
+        present = [name for name in artifact_names if (probe_dir / name).is_file()]
+        if not present:
+            return None
+        ctx_dir = work_dir / PROBE_CONTEXT_DIRNAME
+        ctx_dir.mkdir(parents=True)
+        for name in present:
+            shutil.copy2(probe_dir / name, ctx_dir / name)
+        return (
+            f"GROUND TRUTH from an instrumented run of this exact skill is "
+            f"available in {ctx_dir}/ — read it before classifying nodes:\n"
+            f"- observed-tools.json: every MCP tool the skill actually "
+            f"called (server, tool, real input, real result payload).\n"
+            f"- inferred-schemas.json: per-tool input/output JSON Schemas "
+            f"inferred from those payloads.\n"
+            f"Use it three ways: (1) every observed (server, tool) that "
+            f"corresponds to a pipeline step MUST appear as that node's "
+            f"mcp: binding — observed traffic with no binding is a "
+            f"graduation bug; (2) prefer the observed payload shapes over "
+            f"guesses when designing signature_spec schemas and data-flow "
+            f"inputs; (3) when you implement extracted/ modules, use the "
+            f"real payloads as worked examples in docstrings and, if you "
+            f"write tests, as golden fixtures. Observation beats "
+            f"inference: if the skill prose and the observed traffic "
+            f"disagree, trust the traffic and note the discrepancy in the "
+            f"graduation report."
         )
 
     @staticmethod

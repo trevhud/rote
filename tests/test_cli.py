@@ -220,7 +220,7 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
             self.agent = agent
             self.on_event = kwargs.get("on_event")
 
-        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "pipeline.yaml").write_text(
@@ -350,7 +350,7 @@ def test_analyze_surfaces_graduator_error_with_exit_1(
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             raise GraduatorError("simulated failure: no agent driver available")
 
     monkeypatch.setattr("rote.cli.Graduator", _ExplodingGraduator)
@@ -388,7 +388,7 @@ def test_graduate_happy_path_with_mocked_graduator(
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             self.agent = agent
 
-        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             # Write a placeholder pipeline.yaml in the output dir so
             # downstream debugging is possible (mimics what a real run
             # produces). Use a copy of the BDR yaml for realism.
@@ -675,7 +675,7 @@ def test_graduate_surfaces_graduator_error_with_exit_1(
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False):  # noqa: ANN001
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             raise GraduatorError("simulated failure: no agent driver available")
 
     from rote.cli import GraduatorError  # re-imported here for typing visibility
