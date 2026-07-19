@@ -185,6 +185,22 @@ def test_unknown_runtime_lists_cloudflare() -> None:
 # ───────── Emission tests ─────────
 
 
+def test_emitted_index_is_a_driver_router(emit_result: dict[str, Path]) -> None:
+    """The emitted index.ts must expose the routes `rote run` drives.
+
+    /start (create), /healthz (readiness), /status/<id> (poll), and
+    /event/<id>/<type> (HITL gate delivery) — the e2e test and the
+    cloudflare runner both depend on this surface.
+    """
+    content = emit_result["index"].read_text(encoding="utf-8")
+    assert '"/healthz"' in content
+    assert '"/start"' in content
+    assert "/status\\/" in content.replace("\\\\", "\\")
+    assert "sendEvent" in content
+    assert "env.PIPELINE.create" in content
+    assert 'req.method === "POST"' in content
+
+
 def test_emit_produces_expected_files(emit_result: dict[str, Path], bdr_pipeline: Pipeline) -> None:
     assert emit_result["workflow"].exists()
     assert emit_result["index"].exists()

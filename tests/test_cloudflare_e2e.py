@@ -118,43 +118,8 @@ def _to_camel_case(s: str) -> str:
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
 
-# Test wrapper for the emitted index.ts. Adds /event/<id>/<type> and
-# /status/<id> routes so the test can drive a real instance through
-# its HITL gates over plain HTTP.
-_TEST_INDEX_TS = """\
-import { BdrCampaignWorkflow, type Env, type Params } from "./workflow";
-
-export { BdrCampaignWorkflow };
-
-export default {
-    async fetch(req: Request, env: Env): Promise<Response> {
-        const url = new URL(req.url);
-        if (url.pathname === "/start" || url.pathname === "/") {
-            const raw = await req.json().catch(() => ({}));
-            const params = (raw ?? {}) as Params;
-            const inst = await env.PIPELINE.create({ params });
-            return Response.json({ id: inst.id, status: await inst.status() });
-        }
-        let m = url.pathname.match(/^\\/status\\/([^/]+)$/);
-        if (m) {
-            const inst = await env.PIPELINE.get(m[1]);
-            return Response.json(await inst.status());
-        }
-        m = url.pathname.match(/^\\/event\\/([^/]+)\\/([^/]+)$/);
-        if (m) {
-            const inst = await env.PIPELINE.get(m[1]);
-            const payload = await req.json().catch(() => ({}));
-            await inst.sendEvent({ type: m[2], payload });
-            return Response.json({ ok: true });
-        }
-        return new Response("not found", { status: 404 });
-    },
-} satisfies ExportedHandler<Env>;
-"""
-
-
 def _write_test_overlay(out_dir: Path) -> None:
-    """Replace stubs with echo mocks and overlay the test index.ts.
+    """Replace stubs with echo mocks.
 
     The emitted ``extracted/*.ts`` and ``signatures/*.ts`` modules all
     throw NotImplementedError. For an integration test that exercises
@@ -181,7 +146,6 @@ def _write_test_overlay(out_dir: Path) -> None:
                 f"}}\n",
                 encoding="utf-8",
             )
-    (src / "index.ts").write_text(_TEST_INDEX_TS, encoding="utf-8")
 
 
 def _find_free_port() -> int:
@@ -305,7 +269,7 @@ def wrangler_dev_session(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPa
                 f"{log_path.read_text()}"
             )
         try:
-            with urlopen(f"http://127.0.0.1:{port}/", timeout=2) as resp:
+            with urlopen(f"http://127.0.0.1:{port}/healthz", timeout=2) as resp:
                 resp.read()
             break
         except (TimeoutError, URLError, ConnectionResetError):

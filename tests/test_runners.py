@@ -256,8 +256,8 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
     assert outcome.run.output == {"done": 1}
 
 
-def test_runnable_runtimes_is_the_v1_set() -> None:
-    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos"}
+def test_runnable_runtimes_is_the_current_set() -> None:
+    assert set(RUNNABLE_RUNTIMES) == {"python", "dbos", "cloudflare"}
 
 
 def test_resolve_input_declined_returns_none(
@@ -278,3 +278,76 @@ def test_resolve_input_derived_proposal_is_persisted(
     err = capsys.readouterr().err
     assert "derived input proposal" in err
     assert json.dumps({"d": 1}, indent=2) in err
+
+
+# ───────── Cloudflare runner (unit level — live path in test_cloudflare_e2e) ─────────
+
+
+def test_run_pipeline_dispatches_cloudflare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import rote.runners.cloudflare as cf_runner
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_cloudflare(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
+        captured["app_dir"] = app_dir
+        captured["kwargs"] = kwargs
+        return MeasuredRun(wall_seconds=1.0, output={"cf": True})
+
+    monkeypatch.setattr(cf_runner, "run_cloudflare", fake_run_cloudflare)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="cloudflare")
+    outcome = run_pipeline(
+        target,
+        {"x": 1},
+        signals={"g1": {"ok": True}},
+        gate_order=["g1"],
+        timeout_seconds=42.0,
+    )
+    assert outcome.run.output == {"cf": True}
+    assert captured["kwargs"] == {
+        "signals": {"g1": {"ok": True}},
+        "gate_order": ["g1"],
+        "timeout_seconds": 42.0,
+    }
+
+
+def test_cf_wait_returns_on_terminal_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.runners import cloudflare as cf
+
+    states = iter(
+        [
+            {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [1]},
+            {"status": "complete", "output": {"done": 1}},
+        ]
+    )
+    monkeypatch.setattr(cf, "http_get_json", lambda url, timeout=10.0: next(states))
+    monkeypatch.setattr(cf.time, "sleep", lambda s: None)
+    state = cf._wait_until_parked_or_complete(1, "id", deadline=cf.time.monotonic() + 30)
+    assert state["status"] == "complete"
+
+
+def test_cf_wait_infers_parking_from_step_stability(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.runners import cloudflare as cf
+
+    stable_state = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [1, 2, 3]}
+    monkeypatch.setattr(cf, "http_get_json", lambda url, timeout=10.0: dict(stable_state))
+    monkeypatch.setattr(cf.time, "sleep", lambda s: None)
+    state = cf._wait_until_parked_or_complete(1, "id", deadline=cf.time.monotonic() + 30)
+    assert state["status"] == "running"  # parked, inferred
+
+
+def test_cf_wait_times_out_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.eval.empirical import EmpiricalError
+    from rote.runners import cloudflare as cf
+
+    growing: list[int] = []
+
+    def _grow(url: str, timeout: float = 10.0) -> dict[str, Any]:
+        growing.append(1)
+        return {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": list(growing)}
+
+    monkeypatch.setattr(cf, "http_get_json", _grow)
+    monkeypatch.setattr(cf.time, "sleep", lambda s: None)
+    with pytest.raises(EmpiricalError, match="timed out"):
+        cf._wait_until_parked_or_complete(1, "id", deadline=cf.time.monotonic() + 0.2)
