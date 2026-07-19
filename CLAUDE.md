@@ -669,7 +669,15 @@ Don't waste time debugging stubs. These are intentional.
   current hosting guidance with doc URLs instead of pretending
   (Temporal Cloud hosts only the server; Inngest syncs via
   authenticated POST to api.inngest.com/v2/apps/<id>/syncs, the old
-  unauthenticated PUT-to-your-endpoint flow is deprecated).
+  unauthenticated PUT-to-your-endpoint flow is deprecated). The
+  `rote-cloud` target (`rote.deploy_rote_cloud`) bundles the emitted
+  `src/workflow.ts` with `npx esbuild` (esm/neutral, worker-first
+  conditions, `cloudflare:workers` + `node:*` external — must match the
+  platform's reference bundler) and POSTs the manifest-derived
+  DeployPayload to `/v1/pipelines` with a tenant bearer token; the
+  emitted cloudflare `manifest.json` is REQUIRED (no TS-regex
+  fallback). Proven live against the platform running under
+  `vite dev`.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

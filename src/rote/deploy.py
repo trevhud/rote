@@ -99,6 +99,15 @@ _GUIDANCE = {
 def resolve_deploy_target(target_flag: str | None, runtime: str) -> str | None:
     """The deploy target for an emitted runtime (explicit flag wins)."""
     if target_flag is not None and target_flag != "auto":
+        if target_flag == "rote-cloud":
+            # The platform's Worker Loader executes bundled cloudflare
+            # workflow modules — other runtimes' output can't run there.
+            if runtime != "cloudflare":
+                raise DeployError(
+                    "rote-cloud runs bundled Cloudflare workflow modules — emit "
+                    "with `--runtime cloudflare` first"
+                )
+            return "rote-cloud"
         expected = TARGET_BY_RUNTIME.get(runtime)
         if expected != target_flag:
             raise DeployError(

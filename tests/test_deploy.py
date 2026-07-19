@@ -182,3 +182,87 @@ def test_deploy_mismatched_target_exits_1(
     rc = cli_main(["deploy", str(app), "--target", "cloudflare"])
     assert rc == 1
     assert "does not apply" in capsys.readouterr().err
+
+
+# ───────── rote-cloud client ─────────
+
+
+def test_rote_cloud_target_requires_cloudflare_runtime() -> None:
+    assert resolve_deploy_target("rote-cloud", "cloudflare") == "rote-cloud"
+    with pytest.raises(DeployError, match="runtime cloudflare"):
+        resolve_deploy_target("rote-cloud", "dbos")
+
+
+def test_rote_cloud_endpoint_and_token_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.deploy_rote_cloud import resolve_endpoint, resolve_token
+
+    monkeypatch.delenv("ROTE_CLOUD_URL", raising=False)
+    monkeypatch.delenv("ROTE_CLOUD_TOKEN", raising=False)
+    with pytest.raises(DeployError, match="ROTE_CLOUD_URL"):
+        resolve_endpoint(None)
+    with pytest.raises(DeployError, match="ROTE_CLOUD_TOKEN"):
+        resolve_token(None)
+    monkeypatch.setenv("ROTE_CLOUD_URL", "http://x:1/")
+    monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_t")
+    assert resolve_endpoint(None) == "http://x:1"
+    assert resolve_token(None) == "rote_t"
+    assert resolve_endpoint("http://flag:2/") == "http://flag:2"
+
+
+def test_rote_cloud_manifest_required(tmp_path: Path) -> None:
+    from rote.deploy_rote_cloud import load_manifest
+
+    with pytest.raises(DeployError, match="manifest.json"):
+        load_manifest(tmp_path)
+    (tmp_path / "manifest.json").write_text('{"name": "p"}', encoding="utf-8")
+    with pytest.raises(DeployError, match="class_name"):
+        load_manifest(tmp_path)
+
+
+def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import rote.deploy_rote_cloud as rc
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "name": "word-lookup",
+                "version": "0.1.0",
+                "pipeline_hash": "abc",
+                "class_name": "WordLookupWorkflow",
+                "node_ids": ["lookup_word"],
+                "input_schema": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rc, "bundle_workflow", lambda app_dir: "export class X {}")
+    sent: dict[str, Any] = {}
+
+    class _Resp:
+        def __enter__(self) -> _Resp:
+            return self
+
+        def __exit__(self, *a: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"ok": true, "pipeline_id": "p1"}'
+
+    def fake_urlopen(req: Any, timeout: float = 0) -> _Resp:
+        sent["url"] = req.full_url
+        sent["auth"] = req.headers.get("Authorization")
+        sent["payload"] = json.loads(req.data.decode())
+        return _Resp()
+
+    monkeypatch.setattr(rc, "urlopen", fake_urlopen)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="cloudflare")
+    report = rc.deploy_rote_cloud(
+        target, url="http://127.0.0.1:8787", token="rote_tok", input_example={"word": "hi"}
+    )
+    assert report.ok and report.target == "rote-cloud"
+    assert sent["url"] == "http://127.0.0.1:8787/v1/pipelines"
+    assert sent["auth"] == "Bearer rote_tok"
+    assert sent["payload"]["class_name"] == "WordLookupWorkflow"
+    assert sent["payload"]["module_js"] == "export class X {}"
+    assert sent["payload"]["input_schema"] == {"examples": [{"word": "hi"}]}
+    assert "pipeline_id" in report.detail

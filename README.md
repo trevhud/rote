@@ -202,6 +202,9 @@ emitted code + a README on how to run, signal gates, and deploy).
   *which* account your wrangler session belongs to before uploading).
   Runtimes with no push model (temporal, inngest, python) print honest
   hosting guidance with doc links instead of a fake action.
+  `--target rote-cloud` bundles a cloudflare-emitted app (esbuild via
+  npx) and uploads it to a hosted rote-cloud instance
+  (`$ROTE_CLOUD_URL` + `$ROTE_CLOUD_TOKEN`).
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to

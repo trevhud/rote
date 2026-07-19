@@ -1984,6 +1984,19 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
         report: DeployReport
         if deploy_target == "cloudflare":
             report = deploy_cloudflare(target, dry_run=args.dry_run)
+        elif deploy_target == "rote-cloud":
+            from rote.deploy_rote_cloud import deploy_rote_cloud
+
+            input_example = None
+            if args.input_example:
+                try:
+                    input_example = json.loads(args.input_example)
+                except json.JSONDecodeError as e:
+                    print(f"error: --input-example is not valid JSON: {e}", file=sys.stderr)
+                    return 2
+            report = deploy_rote_cloud(
+                target, url=args.url, token=args.token, input_example=input_example
+            )
         else:  # dbos-cloud
             report = deploy_dbos_cloud(target)
     except TargetError as e:
@@ -2611,8 +2624,28 @@ def _build_parser() -> argparse.ArgumentParser:
     deploy_p.add_argument(
         "--target",
         default="auto",
-        choices=["auto", "cloudflare", "dbos-cloud"],
-        help="Deploy target (default: auto-detected from the emitted runtime)",
+        choices=["auto", "cloudflare", "dbos-cloud", "rote-cloud"],
+        help=(
+            "Deploy target (default: auto-detected from the emitted runtime). "
+            "rote-cloud bundles a cloudflare-emitted app and uploads it to a "
+            "hosted rote-cloud instance."
+        ),
+    )
+    deploy_p.add_argument(
+        "--url",
+        default=None,
+        help="rote-cloud: the platform base URL (default: $ROTE_CLOUD_URL)",
+    )
+    deploy_p.add_argument(
+        "--token",
+        default=None,
+        help="rote-cloud: tenant API token (default: $ROTE_CLOUD_TOKEN)",
+    )
+    deploy_p.add_argument(
+        "--input-example",
+        default=None,
+        metavar="JSON",
+        help="rote-cloud: example input attached to the pipeline (dashboard Run buttons)",
     )
     deploy_p.add_argument(
         "--runtime",
