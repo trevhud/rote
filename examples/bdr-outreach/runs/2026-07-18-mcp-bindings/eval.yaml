@@ -1,0 +1,199 @@
+version: 1
+source_skill: examples/bdr-outreach/skill
+
+# Per-step agent-turn estimates for running the BDR skill as raw instructions.
+# "Agent turn" = one assistant message, usually one tool call.
+# Steps that repeat per item declare `iterations`; the loader multiplies.
+# Does NOT estimate the graduated pipeline cost — rote eval derives that from the IR.
+
+steps:
+
+  # ─────────── Phase 1.5: Target Company Research ────────────────────────────
+
+  - description: "Research drug pipeline, RWE signals, and prior account history across Bright Data, ClinicalTrials.gov, Airweave, and Salesforce"
+    node_id: target_research
+    phase: "1.5"
+    estimated_turns: {low: 4, high: 10}
+    estimated_tool_calls: {low: 6, high: 14}
+    # 4 data sources, some run in parallel; extra turns for re-reads when signals are weak
+
+  # ─────────── Phase 2: Lead Generation (Iterative) ──────────────────────────
+
+  - description: "Resolve ZoomInfo taxonomy IDs for management level, industry, and department (4 fixed lookup calls)"
+    node_id: taxonomy_lookup
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 4, high: 5}
+    # Tight range — fixed 4-call pattern described verbatim in the skill
+
+  - description: "Coordinate the iterative search-enrich-vet loop: dispatch initial parallel searches, evaluate coverage, plan backfill searches between iterations"
+    node_id: lead_generation_loop
+    phase: "2"
+    estimated_turns: {low: 2, high: 4}
+    iterations: {low: 3, high: 7}
+    # Per-iteration loop overhead (planning, gap analysis, deciding whether quota is met).
+    # Does not include the enrich/vet sub-steps — those are separate rows below.
+    # Typical campaigns converge in 3-5 iterations; 7 is realistic for niche TAs.
+
+  - description: "Batch-enrich contacts via ZoomInfo (10 per call), extract LinkedIn URL"
+    node_id: enrich_contact_batch
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    iterations: {low: 8, high: 20}
+    estimated_tool_calls: {low: 1, high: 2}
+    # Per batch. 8-20 batches across all iterations to enrich 80-200 raw contacts.
+
+  - description: "Vet a single enriched contact against the red-flags rubric; decide keep/discard and tier"
+    node_id: vet_contact
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    iterations: {low: 30, high: 80}
+    estimated_tool_calls: {low: 1, high: 1}
+    # Fan-out: one LLM judgment per contact. 30-80 contacts vetted across all iterations
+    # to fill a quota of ~25; typical discard rate 50-70% for first searches.
+
+  # ─────────── Phase 3: Contact Review Gate ──────────────────────────────────
+
+  - description: "Render ranked contact table (ideal → strong → good) with discard summary in Markdown"
+    node_id: build_contact_table
+    phase: "3"
+    estimated_turns: {low: 1, high: 3}
+    # Deterministic formatting in practice, but agent often reads rubric again (1 extra turn)
+
+  - description: "Present contact table; wait for human approval / edits"
+    node_id: contact_review_gate
+    phase: "3"
+    estimated_turns: {low: 0, high: 0}
+    # Zero agent turns — pure human step; agent resumes after signal
+
+  # ─────────── Phase 4: CRM Upload + List Creation ───────────────────────────
+
+  - description: "Batch-upsert vetted contacts to HubSpot by email (100 per batch)"
+    node_id: hubspot_upsert
+    phase: "4"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Create a static HubSpot contact list named after the campaign"
+    node_id: hubspot_create_list
+    phase: "4"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Add upserted contacts to the campaign list (250 per batch); retrieve list URL"
+    node_id: hubspot_add_to_list
+    phase: "4"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  # ─────────── Phase 5: Exclusion Checks (MANDATORY) ─────────────────────────
+
+  - description: "MANDATORY: Check each contact against the 'BDR do not contact' HubSpot list; skip matches"
+    node_id: exclusion_check_dnc
+    phase: "5"
+    estimated_turns: {low: 2, high: 3}
+    estimated_tool_calls: {low: 2, high: 3}
+    # Lookup list ID by name, then filter — 2 calls minimum; sometimes 3 if pagination needed
+
+  - description: "MANDATORY: Check each contact for outbound emails in the last 30 days; skip recently emailed"
+    node_id: exclusion_check_recent
+    phase: "5"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 2, high: 4}
+    # Email history query may require filtering by direction=OUTBOUND and date window
+
+  - description: "MANDATORY: Check each contact for active HubSpot sequence enrollment; skip enrolled contacts"
+    node_id: exclusion_check_sequence
+    phase: "5"
+    estimated_turns: {low: 2, high: 3}
+    estimated_tool_calls: {low: 2, high: 3}
+
+  # ─────────── Phase 6: Email Templates ──────────────────────────────────────
+
+  - description: "Generate personalised opening_line and ta_callout for each cleared contact"
+    node_id: personalize_email
+    phase: "6"
+    estimated_turns: {low: 1, high: 2}
+    iterations: {low: 10, high: 25}
+    estimated_tool_calls: {low: 1, high: 1}
+    # Fan-out: one LLM call per contact. 10-25 contacts reach this step after exclusions.
+
+  - description: "Upsert personalised email templates into HubSpot Sales Content API"
+    node_id: create_sales_template
+    phase: "6"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 3}
+    # Internal API requires cookie auth; occasional retry on auth failure adds a turn
+
+  - description: "Render the pre-enrollment Markdown report (contacts vetted, exclusions, template IDs)"
+    node_id: pre_enrollment_report
+    phase: "6"
+    estimated_turns: {low: 1, high: 2}
+    # Fixed template from hubspot-operations.md — tight range
+
+  # ─────────── Phase 7: Handoff ──────────────────────────────────────────────
+
+  - description: "Present report and HubSpot list URL to BDR; wait for manual enrollment signal"
+    node_id: manual_enrollment_handoff
+    phase: "7"
+    estimated_turns: {low: 0, high: 0}
+    # Zero agent turns — human enrollment step
+
+  # ─────────── Phase 2-alt: Conference List Enrichment ───────────────────────
+
+  - description: "Load conference attendee CSV/XLSX into normalized contact dicts"
+    node_id: conf_load_file
+    phase: "2-alt"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Classify each attendee's company as pharma/biotech using keyword rules"
+    node_id: conf_pharma_filter
+    phase: "2-alt"
+    estimated_turns: {low: 2, high: 5}
+    # Agent applies the include/exclude keyword logic row by row; range widens
+    # with list size; skill says up to 500 attendees at large conferences.
+
+  - description: "Present pharma/non-pharma split for human review before enrichment spend"
+    node_id: conf_exclusion_review_gate
+    phase: "2-alt"
+    estimated_turns: {low: 0, high: 0}
+    # Zero agent turns — human review step
+
+  - description: "ZoomInfo-enrich confirmed pharma attendees (10 per batch)"
+    node_id: conf_enrich_batch
+    phase: "2-alt"
+    estimated_turns: {low: 1, high: 2}
+    iterations: {low: 5, high: 30}
+    estimated_tool_calls: {low: 1, high: 2}
+    # 5-30 batches depending on conference size; 50-300 contacts is the realistic range.
+
+  - description: "Build formatted XLSX with dark-navy header, alternating rows, frozen pane"
+    node_id: conf_build_xlsx
+    phase: "2-alt"
+    estimated_turns: {low: 2, high: 5}
+    # Agent must use openpyxl or similar; formatting instructions in prose require
+    # multiple tool calls (set fonts, set fills, set widths, freeze pane, save)
+
+totals:
+  main_campaign_path:
+    description: "target_research + taxonomy_lookup + lead_gen_loop (incl. per-contact iterations) + CRM + exclusions + personalization + handoff"
+    low: 75
+    high: 320
+  conference_path_only:
+    description: "conf_load_file + conf_pharma_filter + conf_exclusion_review_gate + conf_enrich_batch + conf_build_xlsx"
+    low: 11
+    high: 72
+
+notes: >-
+  The per-contact fan-out nodes dominate both paths. vet_contact (30-80
+  iterations) and personalize_email (10-25 iterations) together account for
+  40-160 turns on the main path — roughly 60% of total cost. The lead gen
+  loop's iteration overhead (3-7 × 2-4 turns) adds another 6-28 turns.
+  Deterministic steps (taxonomy_lookup, build_contact_table, exclusion checks,
+  pre_enrollment_report) collectively cost only 10-22 turns yet require the
+  most careful rubric-reading per run — these are the highest-value graduation
+  targets. HITL gates (contact_review_gate, manual_enrollment_handoff,
+  conf_exclusion_review_gate) contribute zero agent turns. The conference path
+  totals are independent of the main campaign path and are driven almost
+  entirely by conf_enrich_batch batch count.
