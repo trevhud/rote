@@ -678,6 +678,30 @@ Don't waste time debugging stubs. These are intentional.
   emitted cloudflare `manifest.json` is REQUIRED (no TS-regex
   fallback). Proven live against the platform running under
   `vite dev`.
+- `rote login` / `logout` / `whoami` (`rote.cloud_auth`) — OAuth 2.0
+  device flow (RFC 8628) against the platform's better-auth
+  `deviceAuthorization` plugin. BOTH UXes ride the one grant path:
+  browser available → auto-open `verification_uri_complete` (code
+  pre-filled, one Approve click); `--device`/headless → printed code +
+  URL. There is deliberately NO localhost-callback listener — no second
+  server-side mechanism to secure. The polled session token is traded
+  at `POST /v1/cli/keys` for a durable tenant `rote_…` API key; the CLI
+  never persists a session token. Credential at
+  `~/.local/share/rote/cloud.json` (0600, atomic;
+  `ROTE_CLOUD_CRED_PATH` test override — conftest sets it suite-wide).
+  Resolution everywhere: flag > `ROTE_CLOUD_URL`/`ROTE_CLOUD_TOKEN` >
+  stored login. `logout` revokes server-side (`DELETE /v1/cli/keys`,
+  the key revokes itself) but ALWAYS clears the local store; `whoami`
+  verifies live via `GET /v1/me`.
+- Login-aware graduate default: logged in + no explicit `--runtime` →
+  emit `cloudflare` and auto-deploy to rote cloud after emission
+  (`--no-deploy` or explicit `--runtime` opt out; a deploy failure
+  exits 1 but keeps all local artifacts and prints the
+  `rote deploy … --target rote-cloud` retry). Logged out → today's
+  `dbos` default with a one-line hint, never a prompt (CI-safe). The
+  parser's `--runtime` default is now `None` — resolution happens at
+  the top of `_cmd_graduate`; don't reintroduce a static default in
+  the parser.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

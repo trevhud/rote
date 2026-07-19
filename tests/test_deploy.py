@@ -198,15 +198,30 @@ def test_rote_cloud_endpoint_and_token_resolution(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.delenv("ROTE_CLOUD_URL", raising=False)
     monkeypatch.delenv("ROTE_CLOUD_TOKEN", raising=False)
-    with pytest.raises(DeployError, match="ROTE_CLOUD_URL"):
+    with pytest.raises(DeployError, match="rote login"):
         resolve_endpoint(None)
-    with pytest.raises(DeployError, match="ROTE_CLOUD_TOKEN"):
+    with pytest.raises(DeployError, match="rote login"):
         resolve_token(None)
     monkeypatch.setenv("ROTE_CLOUD_URL", "http://x:1/")
     monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_t")
     assert resolve_endpoint(None) == "http://x:1"
     assert resolve_token(None) == "rote_t"
     assert resolve_endpoint("http://flag:2/") == "http://flag:2"
+
+
+def test_stored_login_feeds_deploy_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """flag > env > stored login — the stored credential is the quiet default."""
+    from rote.cloud_auth import CloudCredential, save_credential
+    from rote.deploy_rote_cloud import resolve_endpoint, resolve_token
+
+    monkeypatch.delenv("ROTE_CLOUD_URL", raising=False)
+    monkeypatch.delenv("ROTE_CLOUD_TOKEN", raising=False)
+    save_credential(CloudCredential(url="http://stored:3/", token="rote_stored", user="t@x"))
+    assert resolve_endpoint(None) == "http://stored:3"
+    assert resolve_token(None) == "rote_stored"
+    monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_env")
+    assert resolve_token(None) == "rote_env"
+    assert resolve_token("rote_flag") == "rote_flag"
 
 
 def test_rote_cloud_manifest_required(tmp_path: Path) -> None:

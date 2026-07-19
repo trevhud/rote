@@ -11,6 +11,10 @@ building block for that flow:
     rote analyze <skill-path>                        # graduator dry run
     rote run     <skill-or-graduated-dir>            # one-off local execution
     rote eval    <graduated-dir>                     # before/after scorecard
+    rote login                                       # connect to rote cloud
+
+With a stored login, ``rote graduate`` defaults to emitting the
+cloudflare runtime and hosting the result on rote cloud in one step.
 
 Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
 loop, which reads the source skill, produces a ``pipeline.yaml``, stubs
@@ -373,6 +377,27 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # ── Runtime default follows the login state ── logged in means the
+    # destination is rote cloud: emit the cloudflare runtime and upload
+    # at the end. Logged out silently keeps the local dbos default (a
+    # hint, never a prompt — CI must not block here). An explicit
+    # --runtime always wins, and auto-deploy only makes sense for the
+    # cloud-runnable runtime.
+    from rote.cloud_auth import load_credential as _load_cloud_credential
+
+    cloud_cred = _load_cloud_credential()
+    if args.runtime is None:
+        if cloud_cred is not None:
+            args.runtime = "cloudflare"
+        else:
+            args.runtime = "dbos"
+            print(
+                "rote graduate: tip — `rote login` makes rote cloud the default "
+                "host (graduate + deploy in one step)",
+                file=sys.stderr,
+            )
+    auto_deploy = cloud_cred is not None and args.runtime == "cloudflare" and not args.no_deploy
+
     out_dir = Path(args.out)
     graduated_dir = out_dir / "graduated"
     runtime_dir = out_dir / "runtime" / args.runtime
@@ -633,6 +658,37 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 file=summary_stream,
             )
 
+    # ── The upload leg of the logged-in default ── runs last so a deploy
+    # failure can never cost the local artifacts; those are already on
+    # disk and re-deployable without another agent run.
+    deploy_entry: dict[str, object] | None = None
+    exit_code = 0
+    if auto_deploy:
+        from rote.deploy import DeployError
+        from rote.deploy_rote_cloud import deploy_rote_cloud
+        from rote.runners import RunTarget
+
+        cloud_target = RunTarget(
+            kind="pipeline",
+            path=runtime_dir,
+            runtime="cloudflare",
+            pipeline_yaml=graduated_dir / "pipeline.yaml",
+        )
+        try:
+            report = deploy_rote_cloud(cloud_target)
+            deploy_entry = {"target": "rote-cloud", "ok": True, "detail": report.detail}
+            assert cloud_cred is not None
+            print(f"  hosted on rote cloud: {cloud_cred.url}", file=summary_stream)
+        except DeployError as e:
+            deploy_entry = {"target": "rote-cloud", "ok": False, "error": str(e)}
+            exit_code = 1
+            print(f"rote graduate: deploy to rote cloud failed: {e}", file=sys.stderr)
+            print(
+                f"  the graduation itself succeeded — retry the upload with: "
+                f"rote deploy {out_dir} --target rote-cloud",
+                file=sys.stderr,
+            )
+
     if args.json:
         import json
 
@@ -664,6 +720,8 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             payload["mcp_cross_check"] = cross
         if verification is not None:
             payload["generated_tests"] = verification
+        if deploy_entry is not None:
+            payload["deploy"] = deploy_entry
         print(json.dumps(payload, indent=2))
 
     # ── Machine end-of-run digest ── The per-event `complete` line is for
@@ -695,7 +753,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             }
         )
         progress_sink.close()
-    return 0
+    return exit_code
 
 
 # ───────── Subcommand: register ─────────
@@ -2028,6 +2086,83 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+def _cmd_login(args: argparse.Namespace) -> int:
+    """Connect the CLI to a rote-cloud account (OAuth device flow).
+
+    One grant path serves both UXes: with a browser we open the
+    verification URL (code pre-filled, one Approve click); with
+    ``--device`` or no browser the printed code + URL do the same job
+    over SSH. Either way the CLI ends up holding a tenant ``rote_…``
+    API key in the credential store — never a session token.
+    """
+    from rote.cloud_auth import LoginError, login
+
+    try:
+        login(args.url, open_browser=not args.device)
+    except LoginError as e:
+        print(f"rote login: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("rote login: interrupted", file=sys.stderr)
+        return 130
+    return 0
+
+
+def _cmd_logout(args: argparse.Namespace) -> int:
+    from rote.cloud_auth import LoginError, clear_credential, load_credential, revoke_key
+
+    cred = load_credential()
+    if cred is None:
+        print("rote logout: not logged in", file=sys.stderr)
+        return 0
+    revoked = True
+    try:
+        revoke_key(cred)
+    except LoginError as e:
+        # The local credential still gets cleared: an unreachable
+        # platform must not trap the user in a logged-in state. The
+        # server-side key outlives this, so say so loudly.
+        revoked = False
+        print(
+            f"rote logout: warning — {e}\n"
+            "  the key is still active server-side; revoke it in the "
+            "dashboard (profile → API keys)",
+            file=sys.stderr,
+        )
+    clear_credential()
+    print(
+        f"rote logout: ✓ logged out of {cred.url}"
+        + ("" if revoked else " (local credential cleared)"),
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _cmd_whoami(args: argparse.Namespace) -> int:
+    """Who the stored credential is, verified live against ``/v1/me``."""
+    from rote.cloud_auth import LoginError, fetch_me, load_credential
+
+    cred = load_credential()
+    if cred is None:
+        print("rote whoami: not logged in — run `rote login`", file=sys.stderr)
+        return 1
+    try:
+        me = fetch_me(cred)
+    except LoginError as e:
+        print(f"rote whoami: {e}", file=sys.stderr)
+        return 1
+    user = str(me.get("user") or cred.user or "(unknown user)")
+    tenant = str(me.get("tenant", ""))
+    if args.json:
+        print(json.dumps({"url": cred.url, "user": user, "tenant": tenant}, indent=2))
+    else:
+        line = f"rote whoami: {user} @ {cred.url}"
+        if tenant:
+            line += f" (tenant: {tenant})"
+        print(line)
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a graduation set up to succeed before spending money?
 
@@ -2407,11 +2542,21 @@ def _build_parser() -> argparse.ArgumentParser:
     graduate.add_argument("skill_path", help="Path to the source skill directory")
     graduate.add_argument(
         "--runtime",
-        default="dbos",
+        default=None,
         choices=available_runtimes,
         help=(
-            f"Target workflow runtime (default: dbos — durable execution as a "
-            f"library, no orchestrator to run). Available: {', '.join(available_runtimes)}"
+            f"Target workflow runtime. Default: cloudflare + auto-deploy to "
+            f"rote cloud when logged in (`rote login`), else dbos (durable "
+            f"execution as a library, no orchestrator to run). "
+            f"Available: {', '.join(available_runtimes)}"
+        ),
+    )
+    graduate.add_argument(
+        "--no-deploy",
+        action="store_true",
+        help=(
+            "When logged in to rote cloud: emit locally but skip the "
+            "auto-deploy (deploy later with `rote deploy --target rote-cloud`)"
         ),
     )
     graduate.add_argument(
@@ -2663,6 +2808,47 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print a machine-readable deploy report on stdout",
     )
     deploy_p.set_defaults(func=_cmd_deploy)
+
+    # rote login / logout / whoami
+    login_p = subparsers.add_parser(
+        "login",
+        help="Connect the CLI to a rote-cloud account",
+        description=(
+            "OAuth device-flow login: opens the browser to approve a "
+            "one-time code (or prints code + URL over SSH with --device), "
+            "then stores a tenant API key at ~/.local/share/rote/cloud.json. "
+            "Once logged in, `rote graduate` defaults to hosting on rote "
+            "cloud and `rote deploy --target rote-cloud` needs no flags."
+        ),
+    )
+    login_p.add_argument(
+        "--url",
+        default=None,
+        help="Platform base URL (default: https://app.roteskills.com; use a dev instance URL here)",
+    )
+    login_p.add_argument(
+        "--device",
+        action="store_true",
+        help="Don't open a browser — print the code + verification URL only (SSH/headless)",
+    )
+    login_p.set_defaults(func=_cmd_login)
+
+    logout_p = subparsers.add_parser(
+        "logout",
+        help="Revoke the rote-cloud API key and clear the stored login",
+    )
+    logout_p.set_defaults(func=_cmd_logout)
+
+    whoami_p = subparsers.add_parser(
+        "whoami",
+        help="Show the logged-in rote-cloud account (verified live)",
+    )
+    whoami_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print {url, user, tenant} as JSON on stdout",
+    )
+    whoami_p.set_defaults(func=_cmd_whoami)
 
     # rote register
     register = subparsers.add_parser(

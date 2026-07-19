@@ -33,6 +33,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from rote.cloud_auth import load_credential
 from rote.deploy import DeployError, DeployReport
 from rote.runners import RunTarget
 
@@ -53,9 +54,12 @@ BUNDLE_ARGS = [
 def resolve_endpoint(url_flag: str | None) -> str:
     url = url_flag or os.environ.get("ROTE_CLOUD_URL")
     if not url:
+        cred = load_credential()
+        if cred is not None:
+            return cred.url
         raise DeployError(
-            "no rote-cloud endpoint: pass --url or set ROTE_CLOUD_URL "
-            "(local dev: http://127.0.0.1:8787)"
+            "no rote-cloud endpoint: run `rote login`, pass --url, or set "
+            "ROTE_CLOUD_URL (local dev: http://127.0.0.1:8787)"
         )
     return url.rstrip("/")
 
@@ -63,10 +67,10 @@ def resolve_endpoint(url_flag: str | None) -> str:
 def resolve_token(token_flag: str | None) -> str:
     token = token_flag or os.environ.get("ROTE_CLOUD_TOKEN")
     if not token:
-        raise DeployError(
-            "no rote-cloud token: pass --token or set ROTE_CLOUD_TOKEN "
-            "(create one in the dashboard: profile → API keys)"
-        )
+        cred = load_credential()
+        if cred is not None:
+            return cred.token
+        raise DeployError("no rote-cloud credential: run `rote login` (or pass --token)")
     return token
 
 

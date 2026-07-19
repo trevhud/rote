@@ -479,6 +479,129 @@ def test_graduate_json_mode_is_machine_readable(
     assert any("extracted/" in s for s in payload["unimplemented_stubs"])
 
 
+# ───────── graduate × rote-cloud login default ─────────
+
+
+def _cloud_logged_in() -> None:
+    from rote.cloud_auth import CloudCredential, save_credential
+
+    save_credential(CloudCredential(url="http://p", token="rote_k", user="t@x"))
+
+
+def _fake_cloud_deploy(monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -> list:
+    from rote.deploy import DeployError, DeployReport
+
+    calls: list = []
+
+    def fake(target, *, url=None, token=None, input_example=None):  # noqa: ANN001
+        calls.append(target)
+        if fail:
+            raise DeployError("upload failed: HTTP 500")
+        return DeployReport(
+            target="rote-cloud",
+            runtime="cloudflare",
+            app_dir=target.path,
+            ok=True,
+            action="deployed",
+            detail='{"pipeline_id": "p1"}',
+        )
+
+    monkeypatch.setattr("rote.deploy_rote_cloud.deploy_rote_cloud", fake)
+    return calls
+
+
+def _graduate(skill_dir: Path, out_dir: Path, *extra: str) -> int:
+    return cli_main(["graduate", str(skill_dir), "--out", str(out_dir), "--no-eval", *extra])
+
+
+def test_graduate_logged_in_defaults_to_cloudflare_and_deploys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+    _cloud_logged_in()
+    calls = _fake_cloud_deploy(monkeypatch)
+
+    rc = _graduate(skill_dir, tmp_path / "out")
+    assert rc == 0
+    assert (tmp_path / "out" / "runtime" / "cloudflare" / "src" / "workflow.ts").exists()
+    assert len(calls) == 1
+    assert calls[0].path == tmp_path / "out" / "runtime" / "cloudflare"
+    assert "hosted on rote cloud: http://p" in capsys.readouterr().out
+
+
+def test_graduate_no_deploy_still_emits_cloudflare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+    _cloud_logged_in()
+    calls = _fake_cloud_deploy(monkeypatch)
+
+    rc = _graduate(skill_dir, tmp_path / "out", "--no-deploy")
+    assert rc == 0
+    assert (tmp_path / "out" / "runtime" / "cloudflare").is_dir()
+    assert calls == []
+
+
+def test_graduate_logged_out_falls_back_to_local_with_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The silent local fallback: no prompt, dbos default, one tip line."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+    calls = _fake_cloud_deploy(monkeypatch)
+
+    rc = _graduate(skill_dir, tmp_path / "out")
+    assert rc == 0
+    assert (tmp_path / "out" / "runtime" / "dbos" / "main.py").exists()
+    assert calls == []
+    assert "`rote login` makes rote cloud the default host" in capsys.readouterr().err
+
+
+def test_graduate_explicit_runtime_wins_over_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+    _cloud_logged_in()
+    calls = _fake_cloud_deploy(monkeypatch)
+
+    rc = _graduate(skill_dir, tmp_path / "out", "--runtime", "temporal")
+    assert rc == 0
+    assert (tmp_path / "out" / "runtime" / "temporal" / "workflow.py").exists()
+    assert calls == []  # temporal isn't cloud-runnable; no upload attempted
+
+
+def test_graduate_deploy_failure_keeps_artifacts_and_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_graduator(monkeypatch)
+    _cloud_logged_in()
+    _fake_cloud_deploy(monkeypatch, fail=True)
+
+    out_dir = tmp_path / "out"
+    rc = _graduate(skill_dir, out_dir)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "deploy to rote cloud failed" in err
+    assert "rote deploy" in err  # retry instructions
+    # the paid-for artifacts survived the failed upload
+    assert (out_dir / "graduated" / "pipeline.yaml").exists()
+    assert (out_dir / "runtime" / "cloudflare").is_dir()
+
+
 # ───────── graduate --progress-file (JSONL sink) ─────────
 
 
