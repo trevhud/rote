@@ -53,6 +53,7 @@ BASELINE_DIRNAME = "baseline"
 METRICS_FILENAME = "metrics.json"
 OBSERVED_TOOLS_FILENAME = "observed-tools.json"
 DERIVED_INPUT_FILENAME = "derived-input.json"
+INFERRED_SCHEMAS_FILENAME = "inferred-schemas.json"
 
 #: Model for input derivation — a cheap, single-shot reading task.
 DERIVE_MODEL = "claude-haiku-4-5"
@@ -565,7 +566,33 @@ def run_baseline(
         + "\n",
         encoding="utf-8",
     )
+    if result.observations:
+        # Local import: rote.probe imports ObservedToolCall from this
+        # module at import time, so the dependency must stay one-way here.
+        from rote.probe import infer_tool_schemas
+
+        (baseline_dir / INFERRED_SCHEMAS_FILENAME).write_text(
+            json.dumps(
+                [s.as_dict() for s in infer_tool_schemas(list(result.observations))],
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     return result
+
+
+def load_observations(baseline_dir: str | Path) -> list[ObservedToolCall]:
+    """Read a persisted baseline's observed MCP calls back into objects.
+
+    Returns an empty list when no baseline artifacts exist — callers use
+    this to make baseline-informed features opt-in by presence.
+    """
+    path = Path(baseline_dir) / OBSERVED_TOOLS_FILENAME
+    if not path.is_file():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [ObservedToolCall(**entry) for entry in raw]
 
 
 def render_baseline_markdown(result: BaselineResult) -> str:

@@ -643,3 +643,138 @@ def test_render_baseline_markdown() -> None:
     assert "| Cost (USD) | 0.31 |" in md
     assert "gmail ×2" in md
     assert "read-only MCP gate" in md
+
+
+# ───────── Inferred schemas artifact + cross-check surfacing ─────────
+
+
+def test_run_baseline_writes_inferred_schemas(
+    skill_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__gmail__search_threads", {"query": "q"}),
+            _tool_result_event("t1", [{"type": "text", "text": '{"threads": [1]}'}]),
+            _result_event(),
+        ],
+        write_result={"ok": 1},
+    )
+    out = tmp_path / "out"
+    run_baseline(skill_dir, {}, out, model="m")
+
+    from rote.eval.baseline import INFERRED_SCHEMAS_FILENAME
+
+    inferred = json.loads((out / "baseline" / INFERRED_SCHEMAS_FILENAME).read_text())
+    (entry,) = inferred
+    assert entry["server"] == "gmail"
+    assert entry["tool"] == "search_threads"
+    assert entry["input_schema"]["required"] == ["query"]
+    assert entry["output_schema"]["properties"]["threads"]["type"] == "array"
+
+
+def test_load_observations_round_trips(
+    skill_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.baseline import load_observations
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__gmail__get_thread", {"id": "x"}),
+            _tool_result_event("t1", "r"),
+            _result_event(),
+        ],
+        write_result={},
+    )
+    out = tmp_path / "out"
+    result = run_baseline(skill_dir, {}, out, model="m")
+    loaded = load_observations(out / "baseline")
+    assert loaded == list(result.observations)
+    # Absent dir → empty, not an error.
+    assert load_observations(tmp_path / "nowhere") == []
+
+
+def test_graduate_baseline_cross_check_flags_unbound_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """BDR's expected IR has no mcp bindings, so an observed gmail call
+    must surface as observed_only — the loud missed-requirement case."""
+    from tests.test_cli import _install_mock_graduator
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    input_file = tmp_path / "input.json"
+    input_file.write_text('{"a": 1}', encoding="utf-8")
+
+    _install_mock_graduator(monkeypatch)
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__gmail__search_threads", {"q": "x"}),
+            _tool_result_event("t1", "r"),
+            _result_event(),
+        ],
+        write_result={"ok": True},
+    )
+
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill),
+            "--out",
+            str(tmp_path / "out"),
+            "--no-eval",
+            "--json",
+            "--baseline",
+            "--baseline-input",
+            str(input_file),
+        ]
+    )
+    assert rc == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["mcp_cross_check"]["observed_only"] == [
+        {"server": "gmail", "tool": "search_threads", "observed_calls": 1}
+    ]
+    assert "likely a missed requirement" in captured.err
+
+
+def test_graduate_cross_checks_prior_baseline_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A baseline run earlier into the same --out is picked up from disk —
+    no --baseline flag needed on the graduate call."""
+    from tests.test_cli import _install_mock_graduator
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    out = tmp_path / "out"
+
+    # Step 1: standalone baseline into the out dir.
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__gmail__search_threads", {"q": "x"}),
+            _tool_result_event("t1", "r"),
+            _result_event(),
+        ],
+        write_result={"ok": True},
+    )
+    input_file = tmp_path / "input.json"
+    input_file.write_text("{}", encoding="utf-8")
+    assert cli_main(["baseline", str(skill), "--out", str(out), "--input", str(input_file)]) == 0
+    capsys.readouterr()
+
+    # Step 2: graduate later, same out dir, no --baseline.
+    _install_mock_graduator(monkeypatch)
+    rc = cli_main(["graduate", str(skill), "--out", str(out), "--no-eval", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mcp_cross_check"]["observed_only"][0]["server"] == "gmail"
