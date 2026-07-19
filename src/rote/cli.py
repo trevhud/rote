@@ -1863,15 +1863,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
         if maybe_payload is None:
             return 0
         signals = parse_signal_args(args.signal)
+        gate_order: list[str] = []
         if pipeline is not None:
-            gates = [n.signal for n in pipeline.nodes if n.kind is NodeKind.HITL_GATE and n.signal]
-            signals = resolve_gate_signals(gates, signals, interactive=sys.stdin.isatty())
+            from rote.adapters._common import _execution_waves
+
+            # Topological order — parked-then-send runtimes (cloudflare)
+            # deliver gate payloads in this order. Any loop-body gate
+            # falls back to node-list order at the end.
+            gate_order = [
+                n.signal
+                for wave in _execution_waves(pipeline)
+                for n in wave
+                if n.kind is NodeKind.HITL_GATE and n.signal
+            ]
+            gate_order += [
+                n.signal
+                for n in pipeline.nodes
+                if n.kind is NodeKind.HITL_GATE and n.signal and n.signal not in gate_order
+            ]
+            signals = resolve_gate_signals(gate_order, signals, interactive=sys.stdin.isatty())
         # No IR located (bare emitted dir): --signal payloads pass through
         # unvalidated — the app itself is the contract then.
         p_outcome = run_pipeline(
             target,
             maybe_payload,
             signals=signals or None,
+            gate_order=gate_order or None,
             timeout_seconds=args.timeout or 600.0,
         )
         run = p_outcome.run

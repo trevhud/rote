@@ -636,11 +636,16 @@ Don't waste time debugging stubs. These are intentional.
   (registry MCP injection + read-only gate), an emitted dir via
   `rote.eval.empirical.run_pipeline_trial` (python in-process; dbos with
   cross-process `DBOSClient` gate delivery — payloads are collected up
-  front, safe because DBOS notifications persist per-topic). Temporal /
-  Cloudflare / Inngest / DBOS-TS targets print their native dev command
-  until the dev-server orchestration layer lands. Detection understands
-  both the `graduate --out` layout (`runtime/<target>/`) and bare
-  emitted dirs (marker files — see `rote.runners._detect_runtime`).
+  front, safe because DBOS notifications persist per-topic; cloudflare
+  under `wrangler dev --local` via `rote.runners.cloudflare`, driving
+  the emitted `src/index.ts` router with parked-then-send gate delivery
+  in topological gate order — parking is inferred from
+  `__LOCAL_DEV_STEP_OUTPUTS` stability because local-dev status lies,
+  see the Cloudflare gotcha). Temporal / Inngest / DBOS-TS targets
+  print their native dev command until their orchestration lands.
+  Detection understands both the `graduate --out` layout
+  (`runtime/<target>/`) and bare emitted dirs (marker files — see
+  `rote.runners._detect_runtime`).
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

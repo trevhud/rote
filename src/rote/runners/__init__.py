@@ -47,15 +47,14 @@ class TargetError(RuntimeError):
     """The path cannot be run as given; the message carries the fix."""
 
 
-#: Adapter names ``rote run`` can execute in-process today. The
-#: remaining runtimes (temporal / cloudflare / inngest / dbos-ts) need
-#: a dev-server orchestration layer; until that lands we point at the
-#: runtime's own dev command instead of pretending.
-RUNNABLE_RUNTIMES = frozenset({"python", "dbos"})
+#: Adapter names ``rote run`` can execute locally today. The remaining
+#: runtimes (temporal / inngest / dbos-ts) need a dev-server
+#: orchestration layer; until that lands we point at the runtime's own
+#: dev command instead of pretending.
+RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare"})
 
 _NATIVE_RUN_HINTS = {
     "temporal": "start a Temporal dev server and the emitted worker (see the emitted README.md)",
-    "cloudflare": "npx wrangler dev (see the emitted README.md)",
     "inngest": "npx inngest-cli dev + the emitted serve entrypoint (see the emitted README.md)",
     "dbos-ts": "npm install && npm start against a Postgres (see the emitted README.md)",
 }
@@ -380,18 +379,37 @@ def run_pipeline(
     input_payload: dict[str, Any],
     *,
     signals: dict[str, Any] | None = None,
+    gate_order: list[str] | None = None,
     timeout_seconds: float = 600.0,
 ) -> PipelineRunOutcome:
-    """Run an emitted pipeline once (python script or DBOS app)."""
+    """Run an emitted pipeline once.
+
+    ``python``/``dbos`` execute in-process via the empirical trial
+    runner (DBOS gate payloads are sent up front — notifications
+    persist per-topic). ``cloudflare`` runs under ``wrangler dev`` with
+    parked-then-send gate delivery, which needs ``gate_order`` (the
+    pipeline's gate signal names in topological order).
+    """
     if target.runtime not in RUNNABLE_RUNTIMES:
         raise TargetError(
             f"`rote run` cannot orchestrate the `{target.runtime}` runtime yet — "
             f"{native_run_hint(target.runtime or '')}"
         )
-    run = run_pipeline_trial(
-        target.path,
-        input_payload,
-        signals=signals or None,
-        timeout_seconds=timeout_seconds,
-    )
+    if target.runtime == "cloudflare":
+        from rote.runners.cloudflare import run_cloudflare
+
+        run = run_cloudflare(
+            target.path,
+            input_payload,
+            signals=signals or {},
+            gate_order=gate_order or sorted(signals or {}),
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        run = run_pipeline_trial(
+            target.path,
+            input_payload,
+            signals=signals or None,
+            timeout_seconds=timeout_seconds,
+        )
     return PipelineRunOutcome(run=run, runtime=target.runtime, app_dir=target.path)
