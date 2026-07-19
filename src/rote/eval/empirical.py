@@ -637,6 +637,21 @@ def suggested_priors(
     return fitted
 
 
+def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
+    """A skill-side run's JSON-safe measurement record (corpus + baseline)."""
+    return {
+        "wall_seconds": r.wall_seconds,
+        "turns": r.turns,
+        "cost_usd": r.cost_usd,
+        "input_tokens": r.input_tokens,
+        "cache_read_tokens": r.cache_read_tokens,
+        "cache_creation_tokens": r.cache_creation_tokens,
+        "output_tokens": r.output_tokens,
+        "succeeded": r.succeeded,
+        "flags": list(r.flags),
+    }
+
+
 def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | None = None) -> Path:
     """Append this measurement to the local calibration corpus (JSONL)."""
     corpus_path = path or DEFAULT_CORPUS_PATH
@@ -645,20 +660,7 @@ def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | No
         "generated_at": generated_at,
         "trials": result.trials,
         "skill_model": result.skill_model,
-        "skill_runs": [
-            {
-                "wall_seconds": r.wall_seconds,
-                "turns": r.turns,
-                "cost_usd": r.cost_usd,
-                "input_tokens": r.input_tokens,
-                "cache_read_tokens": r.cache_read_tokens,
-                "cache_creation_tokens": r.cache_creation_tokens,
-                "output_tokens": r.output_tokens,
-                "succeeded": r.succeeded,
-                "flags": list(r.flags),
-            }
-            for r in result.skill_runs
-        ],
+        "skill_runs": [measured_run_record(r) for r in result.skill_runs],
         "pipeline_runs": [
             {
                 "wall_seconds": r.wall_seconds,
