@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "skill_md_sha256": "e88181f41be766ff783d9639ff51819135e52e324944299b3b4565c433870fd9",
+  "sections": {
+    "": "e945272314513ce6b22c7c611b8548fea778efe70bac029c09d8eaaddac62cbe",
+    "Available Tools": "de9f47c52fc5c58aeda6585f73268e3658c5273482990b627010b7b44a5f8e0a",
+    "BDR Outreach Campaign": "56c1cba358bf265bfa48ab39a2182986d1faf3065deceadef2ba27ea25fcca7c",
+    "HubSpot CRM": "cc93e396e0bd801af50dd22a02138bda4e3a5520a7f63ba5bed77fb03d40bfaf",
+    "HubSpot Lists": "24c40b274a83803164ea45ff459d1481d2fbb8fe4eccd767f3563ce2e167a7c1",
+    "HubSpot Sales Templates (Internal API)": "3aa1ae562f9bd796e7220312ce4e87b38ecd93d0cc6c45c36a4e94f8d674e5e3",
+    "HubSpot Sequences & Engagement (Read-Only)": "1112301cfb59877e3b13bfd98e3782f2e31a3a3968c693fe6e2eaf872245e445",
+    "Limits & Gotchas": "0fff134b570fdb50af3bb1c83b0a7425baacc422e1c110a18c0dc106ea24dd8e",
+    "Phase 1.5: Target Company Research": "cd6b2f2ff1df911c44045a5a6aafdc6eae0d470b7f48855899e8097cca45fdbc",
+    "Phase 1: Campaign Brief": "d033281c7c56f1514c539918ed72d2b872b3e2dc8f3e343ee46f58257ed6ddd6",
+    "Phase 2-alt: Conference List Enrichment": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f",
+    "Phase 2: Lead Generation (Iterative)": "291a8e1df302084998dc6c096c80bd62ed042998732643027d4987ddb8b69d6c",
+    "Phase 3: Contact Review Gate": "cc36aaba07e27c4609872ecf34a1557295d01560e71ecded44266f43998bceb4",
+    "Phase 4: CRM Upload + List Creation": "1a1ff3f339e5323b302cf291b76ea32283f93839fd45b4e01f6041ef39f6a594",
+    "Phase 5: Exclusion Checks (MANDATORY)": "a968b73b75d00b35b6dc144564d5d82aeb16e57851d4693616be2d33dc89a5f0",
+    "Phase 6: Email Templates": "d0ee7cceb8955ea7ee65adc905adb0abfee45c1ee894559d03c897bd0226a9e6",
+    "Phase 7: Handoff": "d8562c446dc66c51681c928a4b9a69bc7bf166e5d38713f90d396c1e635bc2f2",
+    "Phase Routing": "33a9ea76a7e881dc8659c52ede6686d13b8be490bded0f780e2d5e8b06885250",
+    "Pipeline": "e284ac00682059a1d96b2fb40aed29468c331a623047d7f69313f2733ecba06d",
+    "Related Skills": "7c669bbb41c90eace2576e395624b1e72131b713262e74ffdea314f4fa5a0251",
+    "ZoomInfo (Lead Generation)": "cd5d828cda1e885a7c0e70a33d8f452574b891fe435412d21d854d0e213332f5"
+  },
+  "nodes": {
+    "build_contact_table": {
+      "section": "Phase 3: Contact Review Gate",
+      "content_hash": "cc36aaba07e27c4609872ecf34a1557295d01560e71ecded44266f43998bceb4"
+    },
+    "conf_build_xlsx": {
+      "section": "Phase 2-alt: Conference List Enrichment",
+      "content_hash": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f"
+    },
+    "conf_enrich_batch": {
+      "section": "Phase 2-alt: Conference List Enrichment",
+      "content_hash": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f"
+    },
+    "conf_exclusion_review_gate": {
+      "section": "Phase 2-alt: Conference List Enrichment",
+      "content_hash": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f"
+    },
+    "conf_load_file": {
+      "section": "Phase 2-alt: Conference List Enrichment",
+      "content_hash": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f"
+    },
+    "conf_pharma_filter": {
+      "section": "Phase 2-alt: Conference List Enrichment",
+      "content_hash": "c7d2bfc3b44a7ba84da6c2c732009750362fb51ce7e27a74069b50f18c5f2f0f"
+    },
+    "contact_review_gate": {
+      "section": "Phase 3: Contact Review Gate",
+      "content_hash": "cc36aaba07e27c4609872ecf34a1557295d01560e71ecded44266f43998bceb4"
+    },
+    "create_sales_template": {
+      "section": "Phase 6: Email Templates",
+      "content_hash": "d0ee7cceb8955ea7ee65adc905adb0abfee45c1ee894559d03c897bd0226a9e6"
+    },
+    "enrich_contact_batch": {
+      "section": "Phase 2: Lead Generation (Iterative)",
+      "content_hash": "291a8e1df302084998dc6c096c80bd62ed042998732643027d4987ddb8b69d6c"
+    },
+    "exclusion_check_dnc": {
+      "section": "Phase 5: Exclusion Checks (MANDATORY)",
+      "content_hash": "a968b73b75d00b35b6dc144564d5d82aeb16e57851d4693616be2d33dc89a5f0"
+    },
+    "exclusion_check_recent": {
+      "section": "Phase 5: Exclusion Checks (MANDATORY)",
+      "content_hash": "a968b73b75d00b35b6dc144564d5d82aeb16e57851d4693616be2d33dc89a5f0"
+    },
+    "exclusion_check_sequence": {
+      "section": "Phase 5: Exclusion Checks (MANDATORY)",
+      "content_hash": "a968b73b75d00b35b6dc144564d5d82aeb16e57851d4693616be2d33dc89a5f0"
+    },
+    "hubspot_add_to_list": {
+      "section": "Phase 4: CRM Upload + List Creation",
+      "content_hash": "1a1ff3f339e5323b302cf291b76ea32283f93839fd45b4e01f6041ef39f6a594"
+    },
+    "hubspot_create_list": {
+      "section": "Phase 4: CRM Upload + List Creation",
+      "content_hash": "1a1ff3f339e5323b302cf291b76ea32283f93839fd45b4e01f6041ef39f6a594"
+    },
+    "hubspot_upsert": {
+      "section": "Phase 4: CRM Upload + List Creation",
+      "content_hash": "1a1ff3f339e5323b302cf291b76ea32283f93839fd45b4e01f6041ef39f6a594"
+    },
+    "lead_generation_loop": {
+      "section": "Phase 2: Lead Generation (Iterative)",
+      "content_hash": "291a8e1df302084998dc6c096c80bd62ed042998732643027d4987ddb8b69d6c"
+    },
+    "manual_enrollment_handoff": {
+      "section": "Phase 7: Handoff",
+      "content_hash": "d8562c446dc66c51681c928a4b9a69bc7bf166e5d38713f90d396c1e635bc2f2"
+    },
+    "personalize_email": {
+      "section": "Phase 6: Email Templates",
+      "content_hash": "d0ee7cceb8955ea7ee65adc905adb0abfee45c1ee894559d03c897bd0226a9e6"
+    },
+    "pre_enrollment_report": {
+      "section": "Phase 6: Email Templates",
+      "content_hash": "d0ee7cceb8955ea7ee65adc905adb0abfee45c1ee894559d03c897bd0226a9e6"
+    },
+    "target_research": {
+      "section": "Phase 1.5: Target Company Research",
+      "content_hash": "cd6b2f2ff1df911c44045a5a6aafdc6eae0d470b7f48855899e8097cca45fdbc"
+    },
+    "taxonomy_lookup": {
+      "section": "Phase 2: Lead Generation (Iterative)",
+      "content_hash": "291a8e1df302084998dc6c096c80bd62ed042998732643027d4987ddb8b69d6c"
+    },
+    "vet_contact": {
+      "section": "Phase 2: Lead Generation (Iterative)",
+      "content_hash": "291a8e1df302084998dc6c096c80bd62ed042998732643027d4987ddb8b69d6c"
+    }
+  }
+}
