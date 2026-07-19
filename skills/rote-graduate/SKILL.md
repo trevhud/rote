@@ -99,7 +99,13 @@ justification per row.
 
 ### Phase 3: Codification Scan
 
-Read `references/crystallization-heuristics.md` before starting this phase.
+Read `references/crystallization-heuristics.md` and
+`references/implementation.md` before starting this phase. The second
+file governs how far to take each extracted module: contract-documented
+stubs by default, **working implementations plus golden-fixture tests**
+when ground truth is available (a `probe-context/` directory of observed
+MCP traffic in your work dir, and/or web research tools to verify
+current vendor API shapes).
 
 For each node classified as `pure_function` or `external_call`, surface every
 codification opportunity:
@@ -187,6 +193,12 @@ Checklist before declaring Phase 5 done:
 
 - Every `pure_function` / `external_call` node has an `impl:` pointing
   at a real file you created in Phase 3.
+- Every step that calls an MCP tool in the source skill carries the
+  matching `mcp:` binding (see ir-schema.md — and cross-check against
+  `probe-context/observed-tools.json` when it exists: observed traffic
+  with no binding is a graduation bug).
+- If you wrote working implementations, `tests/test_extracted.py`
+  exists, is deterministic and offline, and you believe it passes.
 - Every `llm_judge` node has a `signature:` pointing at a real file
   you created in Phase 4.
 - Every `agent_loop` node has `tools:` listed.

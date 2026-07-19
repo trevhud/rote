@@ -44,9 +44,9 @@ comes from keeping them clean.
 ### Layer 1 — The graduator agent (the "brain")
 
 - **Lives at:** [`skills/rote-graduate/`](skills/rote-graduate/)
-- **Consists of:** a `SKILL.md` plus four rubric files
+- **Consists of:** a `SKILL.md` plus five rubric files
   (`node-kinds.md`, `crystallization-heuristics.md`, `ir-schema.md`,
-  `llm-judge-extraction.md`)
+  `llm-judge-extraction.md`, `implementation.md`)
 - **What it does:** classifies every step of a source skill into
   one of 5 node kinds, extracts deterministic procedures into
   Python modules, designs typed signatures for LLM-judge steps, and
