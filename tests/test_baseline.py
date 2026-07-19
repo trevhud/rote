@@ -855,3 +855,46 @@ def test_graduate_enriches_contracts_from_baseline_observations(
     stub = (out / "runtime" / "dbos" / "extracted" / "slack.py").read_text(encoding="utf-8")
     assert "Output contract (JSON Schema, from observed real payloads):" in stub
     assert '"messages"' in stub
+
+
+def test_graduate_api_backend_enables_web_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """--backend api constructs the graduator with web research enabled."""
+    captured: dict[str, Any] = {}
+
+    from tests.test_cli import _install_mock_graduator
+
+    _install_mock_graduator(monkeypatch)
+    original = __import__("rote.cli", fromlist=["Graduator"]).Graduator
+
+    class _CapturingGraduator(original):  # type: ignore[misc, valid-type]
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr("rote.cli.Graduator", _CapturingGraduator)
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    rc = cli_main(
+        [
+            "graduate",
+            str(skill),
+            "--out",
+            str(tmp_path / "out"),
+            "--backend",
+            "api",
+            "--no-eval",
+        ]
+    )
+    assert rc == 0
+    assert captured["driver_kwargs"] == {"web_tools": True}
+    capsys.readouterr()
+
+    captured.clear()
+    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out2"), "--no-eval"])
+    assert rc == 0
+    assert captured["driver_kwargs"] is None
