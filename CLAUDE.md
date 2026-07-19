@@ -651,8 +651,12 @@ Don't waste time debugging stubs. These are intentional.
   serialization channel, and an unreachable Postgres falls back to a
   throwaway Docker container; NOTE the TS SDK prints its startup
   banner to STDOUT ahead of the result JSON, hence the trailing-JSON
-  extraction). Temporal targets print their native dev command until
-  their orchestration lands.
+  extraction; temporal via `rote.runners.temporal` — no subprocess
+  dance at all: temporalio's WorkflowEnvironment.start_local() manages
+  a real dev server, the worker runs in-process on the emitted
+  workflow.py/activities.py with UnsandboxedWorkflowRunner, and
+  signals send up front because Temporal buffers them server-side).
+  ALL SIX emitted runtimes are now locally runnable.
   Detection understands both the `graduate --out` layout
   (`runtime/<target>/`) and bare emitted dirs (marker files — see
   `rote.runners._detect_runtime`).

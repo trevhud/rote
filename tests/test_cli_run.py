@@ -50,18 +50,24 @@ def test_run_unrecognizable_path_exits_2(
     assert "neither a skill" in capsys.readouterr().err
 
 
-def test_run_unorchestrated_runtime_exits_2_with_hint(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_run_temporal_dir_dispatches_to_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     app = tmp_path / "app"
     app.mkdir()
     (app / "workflow.py").write_text("", encoding="utf-8")
     (app / "activities.py").write_text("", encoding="utf-8")
+    import rote.runners.temporal as t_runner
+    from rote.eval.empirical import MeasuredRun as MR
+
+    monkeypatch.setattr(
+        t_runner, "run_temporal", lambda *a, **k: MR(wall_seconds=0.1, output={"t": 1})
+    )
     rc = cli_main(["run", str(app), "--input", "{}"])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "cannot orchestrate" in err
-    assert "Temporal dev server" in err
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out) == {"t": 1}
+    assert "rote run (temporal): succeeded" in captured.err
 
 
 def test_run_pipeline_success_prints_output_json(

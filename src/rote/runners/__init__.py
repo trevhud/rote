@@ -47,15 +47,12 @@ class TargetError(RuntimeError):
     """The path cannot be run as given; the message carries the fix."""
 
 
-#: Adapter names ``rote run`` can execute locally today. The remaining
-#: runtimes (temporal / inngest / dbos-ts) need a dev-server
-#: orchestration layer; until that lands we point at the runtime's own
-#: dev command instead of pretending.
-RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare", "inngest", "dbos-ts"})
+#: Adapter names ``rote run`` can execute locally — all six emitted
+#: runtimes. The hint table below covers any future adapter whose
+#: orchestration hasn't landed yet.
+RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare", "inngest", "dbos-ts", "temporal"})
 
-_NATIVE_RUN_HINTS = {
-    "temporal": "start a Temporal dev server and the emitted worker (see the emitted README.md)",
-}
+_NATIVE_RUN_HINTS: dict[str, str] = {}
 
 
 def native_run_hint(runtime: str) -> str:
@@ -428,6 +425,15 @@ def run_pipeline(
         from rote.runners.dbos_ts import run_dbos_ts
 
         run = run_dbos_ts(
+            target.path,
+            input_payload,
+            signals=signals or {},
+            timeout_seconds=timeout_seconds,
+        )
+    elif target.runtime == "temporal":
+        from rote.runners.temporal import run_temporal
+
+        run = run_temporal(
             target.path,
             input_payload,
             signals=signals or {},
