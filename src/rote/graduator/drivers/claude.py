@@ -90,9 +90,16 @@ the agent to recover from tool errors."""
 
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
 """Conservative tool allowlist for the graduator. No Bash (no shell
-access needed), no WebFetch / WebSearch (no external network), no
-TodoWrite. Read + Write + Edit cover file I/O; Glob + Grep cover
-discovery of source skill structure and reference content."""
+access needed), no WebFetch / WebSearch by default (no external
+network), no TodoWrite. Read + Write + Edit cover file I/O; Glob +
+Grep cover discovery of source skill structure and reference content."""
+
+WEB_TOOLS = "WebSearch,WebFetch"
+"""Research tools appended when ``web_tools=True``: the agent may look
+up *current* vendor API docs instead of trusting training-data memory.
+Required for reliable ``--backend api`` output — SDK shapes drift faster
+than model knowledge — and off by default because ordinary graduation
+needs no network and shouldn't pay the latency."""
 
 
 def build_subscription_env() -> dict[str, str]:
@@ -265,9 +272,12 @@ class ClaudeDriver(GraduatorDriver):
         max_turns: int = DEFAULT_MAX_TURNS,
         allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
         claude_executable: str = "claude",
+        web_tools: bool = False,
     ) -> None:
         self.model = model
         self.max_turns = max_turns
+        if web_tools:
+            allowed_tools = ",".join([allowed_tools, WEB_TOOLS])
         self.allowed_tools = allowed_tools
         self.claude_executable = claude_executable
 

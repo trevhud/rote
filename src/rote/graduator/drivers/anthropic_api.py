@@ -168,12 +168,18 @@ class AnthropicApiDriver(GraduatorDriver):
         max_tokens_per_turn: int = DEFAULT_MAX_TOKENS_PER_TURN,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
+        **_ignored: Any,
     ) -> None:
         """
         Parameters
         ----------
         model, max_iterations, max_tokens_per_turn
             Loop knobs (see the module constants for defaults).
+        **_ignored
+            Cross-driver kwargs this driver doesn't implement yet are
+            swallowed per the registry contract — notably ``web_tools``
+            (ClaudeDriver only for now; the api driver's equivalent is
+            the server-side web_search tool, a planned follow-up).
         base_url
             Override the Anthropic API base URL — point the SDK at a
             proxy or a Cloudflare AI Gateway endpoint. ``None`` lets the

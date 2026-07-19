@@ -444,7 +444,15 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         if progress_sink is not None:
             progress_sink.emit(event)
 
-    graduator = Graduator(agent=args.agent, model=args.model, on_event=_on_event)
+    # --backend api asks the graduator for *working* vendor-SDK code, and
+    # current API docs beat training-data memory — so the api backend
+    # grants the agent web research tools (ClaudeDriver appends
+    # WebSearch/WebFetch; other drivers swallow the flag until they grow
+    # an equivalent).
+    driver_kwargs = {"web_tools": True} if args.backend == "api" else None
+    graduator = Graduator(
+        agent=args.agent, model=args.model, on_event=_on_event, driver_kwargs=driver_kwargs
+    )
 
     try:
         result = asyncio.run(graduator.graduate(skill_path, graduated_dir, update=args.update))
