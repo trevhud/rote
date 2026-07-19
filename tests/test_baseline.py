@@ -984,3 +984,72 @@ def test_graduate_threads_probe_dir_to_driver_instructions(
     assert result.pipeline.name == "bdr-campaign"
     assert captured["probe_files"] == ["observed-tools.json"]
     assert "GROUND TRUTH" in captured["extra_instructions"]
+
+
+# ───────── Generated-test verification ─────────
+
+
+def test_run_generated_tests_none_without_tests(tmp_path: Path) -> None:
+    from rote.cli import _run_generated_tests
+
+    assert _run_generated_tests(tmp_path) is None
+    (tmp_path / "tests").mkdir()
+    assert _run_generated_tests(tmp_path) is None  # dir but no test files
+
+
+def test_run_generated_tests_reports_pass_and_fail(tmp_path: Path) -> None:
+    from rote.cli import _run_generated_tests
+
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_ok.py").write_text("def test_ok():\n    assert 1 + 1 == 2\n")
+    result = _run_generated_tests(tmp_path)
+    assert result is not None and result["passed"] is True
+
+    (tests / "test_bad.py").write_text("def test_bad():\n    assert False\n")
+    result = _run_generated_tests(tmp_path)
+    assert result is not None and result["passed"] is False
+    assert "failed" in str(result["summary"])
+
+
+def test_graduate_reports_generated_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A graduation whose agent wrote tests gets them run and reported."""
+    from rote.graduator import GraduationResult
+    from rote.ir import load_pipeline
+
+    repo_root = Path(__file__).resolve().parent.parent
+    bdr_yaml = repo_root / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
+
+    class _TestWritingGraduator:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+            output_dir = Path(output_dir)
+            (output_dir / "tests").mkdir(parents=True, exist_ok=True)
+            (output_dir / "pipeline.yaml").write_text(
+                bdr_yaml.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            (output_dir / "tests" / "test_extracted.py").write_text(
+                "def test_fixture():\n    assert True\n"
+            )
+            return GraduationResult(
+                pipeline=load_pipeline(bdr_yaml),
+                output_dir=output_dir,
+                driver_name="mock",
+                driver_metadata={},
+            )
+
+    monkeypatch.setattr("rote.cli.Graduator", _TestWritingGraduator)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out"), "--no-eval", "--json"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["generated_tests"]["passed"] is True
+    assert "generated tests passed" in captured.err
