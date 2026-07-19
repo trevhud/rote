@@ -1,0 +1,93 @@
+version: 1
+source_skill: ../../../../../../../../../Users/Trevor.Hudson/Personal/rote/examples/deal-monitor/skill
+
+steps:
+  - description: "Fetch 50 most recent messages from #deal-intake Slack channel"
+    node_id: fetch_slack_messages
+    phase: "1"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Extract structured deal fields from all Slack messages (bulk)"
+    node_id: extract_deal_fields
+    phase: "1"
+    estimated_turns: {low: 3, high: 6}
+    estimated_tool_calls: {low: 1, high: 3}
+    # Agent processes all 50 messages in bulk over 3-6 turns; not per-item.
+
+  - description: "Apply EU/UK and SKU-count inclusion filter"
+    node_id: apply_inclusion_filter
+    phase: "1"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Run Gmail searches — 3 fixed subjects + warehouse domains + account names"
+    node_id: search_gmail
+    phase: "2"
+    estimated_turns: {low: 4, high: 8}
+    estimated_tool_calls: {low: 14, high: 30}
+    # 4 fixed searches + 10-20 account-name searches; agent may batch some.
+
+  - description: "Fetch full thread content for each matched Gmail thread"
+    node_id: fetch_thread_content
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+    iterations: {low: 8, high: 40}
+    # Per-thread fetch; 8-40 threads matched across all searches.
+
+  - description: "Extract account name, warehouse contacts, and state from each thread"
+    node_id: extract_thread_data
+    phase: "2"
+    estimated_turns: {low: 1, high: 3}
+    iterations: {low: 8, high: 40}
+    # Per-thread extraction; agent reads each thread and extracts fields.
+
+  - description: "Fuzzy-match threads to deal records by account name"
+    node_id: match_threads_to_deals
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+
+  - description: "Classify each warehouse thread into pipeline step 1-6"
+    node_id: classify_thread_status
+    phase: "3"
+    estimated_turns: {low: 1, high: 2}
+    iterations: {low: 8, high: 40}
+    # Per-thread classification; agent reads full thread then decides.
+
+  - description: "Score each unquoted opportunity with the deal-scoring rubric"
+    node_id: score_new_opportunity
+    phase: "4"
+    estimated_turns: {low: 1, high: 3}
+    iterations: {low: 3, high: 20}
+    # Per-opp scoring; typically 3-20 unquoted deals per morning run.
+
+  - description: "Generate the self-contained three-tab HTML dashboard"
+    node_id: generate_dashboard_html
+    phase: "5"
+    estimated_turns: {low: 3, high: 7}
+    estimated_tool_calls: {low: 1, high: 2}
+    # Generating complex HTML with three tabs, summary tiles, color-coding.
+
+  - description: "Save HTML file to ./outputs/deal-monitor.html"
+    node_id: save_dashboard
+    phase: "5"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Generate brief text summary for chat"
+    node_id: generate_summary
+    phase: "6"
+    estimated_turns: {low: 1, high: 2}
+
+totals:
+  low: 50
+  high: 260
+
+notes: >-
+  Thread classification and opportunity scoring dominate the run cost when the
+  pipeline is large. A typical morning run with 8-15 quoting threads and 5-10
+  new opps lands around 60-120 turns. Runs with many active threads (25+) can
+  approach 200+ turns. The HTML generation step is the second-largest cost
+  on most runs (3-7 turns for a complex self-contained template). The bulk
+  Slack extraction is surprisingly cheap — agents process all 50 messages in a
+  handful of turns rather than iterating one by one.

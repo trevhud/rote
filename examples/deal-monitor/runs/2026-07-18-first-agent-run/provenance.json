@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "skill_md_sha256": "c919ba3c7f8aa3b81342514813a7d51c60c731ec5f7f68c46f97685e8a619e68",
+  "sections": {
+    "": "b3e189daff3688dd4f03cab98740119f9139a6bdd826b01b695434c93d4ec06e",
+    "Deal Monitoring Dashboard": "1918965af2e6c5be93062dea2beb256194701440e057472fb949f4bce44e21e1",
+    "Objective": "6ca15d9e295183b973b60b994df6b8473f5756870c703fea3ddde113b8ba3549",
+    "Step 1: Pull #deal-intake Slack messages": "0f9932b0ae2982dd49e1397bb47e18ee2e0ae92291c951d2a803878a967f716c",
+    "Step 2: Search Gmail for outbound quoting emails": "99f1961b4a263540a94b41c98eca03509c4b11e11b0a25900787214a4db34a50",
+    "Step 3: Classify each warehouse thread into a pipeline step": "98f35158ac90d07f6685ce3b949519c61926c24bfe6d403b58c91b39ef615fe8",
+    "Step 4: Score New Opportunities": "7fc8a2d2d13c09fa81ca34ed78935ef01d19695cf0f40a12bb042faa8bebd4bf",
+    "Step 5: Generate the HTML Dashboard": "2d605baf694eb636ed1acb4cd3a19c08c4e8b8f7f39343f7529f7869d7425f92",
+    "Step 6: Output": "0760f93b638b640df81971fb3b9bd72a81eeaa4493cb1d52916c1b51cd6e660e",
+    "Steps": "04e379c6932bff1c589362d6982930b2c138dcfe9fe69c56c9c028b070168dc3"
+  },
+  "nodes": {
+    "apply_inclusion_filter": {
+      "section": "Step 1: Pull #deal-intake Slack messages",
+      "content_hash": "0f9932b0ae2982dd49e1397bb47e18ee2e0ae92291c951d2a803878a967f716c"
+    },
+    "classify_thread_status": {
+      "section": "Step 3: Classify each warehouse thread into a pipeline step",
+      "content_hash": "98f35158ac90d07f6685ce3b949519c61926c24bfe6d403b58c91b39ef615fe8"
+    },
+    "extract_deal_fields": {
+      "section": "Step 1: Pull #deal-intake Slack messages",
+      "content_hash": "0f9932b0ae2982dd49e1397bb47e18ee2e0ae92291c951d2a803878a967f716c"
+    },
+    "extract_thread_data": {
+      "section": "Step 2: Search Gmail for outbound quoting emails",
+      "content_hash": "99f1961b4a263540a94b41c98eca03509c4b11e11b0a25900787214a4db34a50"
+    },
+    "fetch_slack_messages": {
+      "section": "Step 1: Pull #deal-intake Slack messages",
+      "content_hash": "0f9932b0ae2982dd49e1397bb47e18ee2e0ae92291c951d2a803878a967f716c"
+    },
+    "fetch_thread_content": {
+      "section": "Step 2: Search Gmail for outbound quoting emails",
+      "content_hash": "99f1961b4a263540a94b41c98eca03509c4b11e11b0a25900787214a4db34a50"
+    },
+    "generate_dashboard_html": {
+      "section": "Step 5: Generate the HTML Dashboard",
+      "content_hash": "2d605baf694eb636ed1acb4cd3a19c08c4e8b8f7f39343f7529f7869d7425f92"
+    },
+    "generate_summary": {
+      "section": "Step 6: Output",
+      "content_hash": "0760f93b638b640df81971fb3b9bd72a81eeaa4493cb1d52916c1b51cd6e660e"
+    },
+    "match_threads_to_deals": {
+      "section": "Step 2: Search Gmail for outbound quoting emails",
+      "content_hash": "99f1961b4a263540a94b41c98eca03509c4b11e11b0a25900787214a4db34a50"
+    },
+    "save_dashboard": {
+      "section": "Step 5: Generate the HTML Dashboard",
+      "content_hash": "2d605baf694eb636ed1acb4cd3a19c08c4e8b8f7f39343f7529f7869d7425f92"
+    },
+    "score_new_opportunity": {
+      "section": "Step 4: Score New Opportunities",
+      "content_hash": "7fc8a2d2d13c09fa81ca34ed78935ef01d19695cf0f40a12bb042faa8bebd4bf"
+    },
+    "search_gmail": {
+      "section": "Step 2: Search Gmail for outbound quoting emails",
+      "content_hash": "99f1961b4a263540a94b41c98eca03509c4b11e11b0a25900787214a4db34a50"
+    }
+  }
+}
