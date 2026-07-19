@@ -234,6 +234,31 @@ def test_rote_cloud_manifest_required(tmp_path: Path) -> None:
         load_manifest(tmp_path)
 
 
+def test_bundle_installs_npm_deps_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A freshly emitted app (the graduate auto-deploy path) has no
+    node_modules; the bundle step must install so judge deps (zod,
+    vendor SDKs) can be inlined — found live when esbuild failed to
+    resolve @anthropic-ai/sdk on a clean emit."""
+    import rote.deploy_rote_cloud as rc
+
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "workflow.ts").write_text("export class X {}", encoding="utf-8")
+    installed: list[Path] = []
+    monkeypatch.setattr(
+        "rote.runners._node.ensure_npm_install", lambda app_dir: installed.append(app_dir)
+    )
+    monkeypatch.setattr(rc.shutil, "which", lambda name: "/usr/bin/npx")
+
+    class _Proc:
+        returncode = 0
+        stdout = "export class X {}"
+        stderr = ""
+
+    monkeypatch.setattr(rc.subprocess, "run", lambda *a, **k: _Proc())
+    assert rc.bundle_workflow(tmp_path) == "export class X {}"
+    assert installed == [tmp_path]
+
+
 def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import rote.deploy_rote_cloud as rc
 
