@@ -1310,6 +1310,95 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _cmd_baseline(args: argparse.Namespace) -> int:
+    """Run the raw skill as an agent, measured and observed (pre-graduation).
+
+    The three-artifacts-in-one-run command: measured "before" metrics,
+    the full stream-json transcript, and the observed MCP tool traffic
+    (real inputs and payloads). See :mod:`rote.eval.baseline`.
+    """
+    import json
+
+    from rote.eval.baseline import BASELINE_DIRNAME, run_baseline
+    from rote.eval.empirical import EmpiricalError, measured_run_record
+    from rote.graduator.drivers.claude import DEFAULT_MODEL
+
+    skill_path = Path(args.skill_path)
+    if not skill_path.is_dir():
+        print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
+        return 2
+    input_path = Path(args.input)
+    if not input_path.is_file():
+        print(f"error: --input file not found: {input_path}", file=sys.stderr)
+        return 2
+    try:
+        input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"error: --input is not valid JSON: {e}", file=sys.stderr)
+        return 2
+    if not isinstance(input_payload, dict):
+        print("error: --input must be a JSON object", file=sys.stderr)
+        return 2
+
+    try:
+        result = run_baseline(
+            skill_path,
+            input_payload,
+            args.out,
+            model=args.model or DEFAULT_MODEL,
+            trials=args.trials,
+            allow_writes=args.allow_writes,
+            max_turns=args.max_turns,
+        )
+    except EmpiricalError as e:
+        print(f"rote baseline: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("rote baseline: interrupted", file=sys.stderr)
+        return 130
+
+    baseline_dir = Path(args.out) / BASELINE_DIRNAME
+    ok_runs = [r for r in result.runs if r.succeeded]
+
+    summary_stream = sys.stderr if args.json else sys.stdout
+    print(
+        f"rote baseline: {len(ok_runs)}/{len(result.runs)} trial(s) succeeded "
+        f"({'read-only MCP gate' if result.read_only else 'writes allowed'})",
+        file=summary_stream,
+    )
+    for r in result.runs:
+        note = f" [{', '.join(r.flags)}]" if r.flags else ""
+        cost = f"${r.cost_usd:.2f}" if r.cost_usd is not None else "cost n/a"
+        turns = f"{r.turns} turns" if r.turns is not None else "turns n/a"
+        print(f"  {r.wall_seconds:.0f}s, {turns}, {cost}{note}", file=summary_stream)
+    if result.observations:
+        print(
+            f"  observed MCP traffic: {len(result.observations)} call(s) across "
+            f"{', '.join(result.observed_servers)}",
+            file=summary_stream,
+        )
+    else:
+        print("  observed MCP traffic: none", file=summary_stream)
+    for server, reason in result.servers_skipped.items():
+        print(f"  {server}: {reason}", file=summary_stream)
+    print(f"  artifacts: {baseline_dir}", file=summary_stream)
+
+    if args.json:
+        payload = {
+            "skill_dir": str(result.skill_dir),
+            "model": result.model,
+            "read_only": result.read_only,
+            "runs": [measured_run_record(r) for r in result.runs],
+            "observed_servers": result.observed_servers,
+            "observed_calls": len(result.observations),
+            "servers_wired": list(result.servers_wired),
+            "servers_skipped": result.servers_skipped,
+            "baseline_dir": str(baseline_dir.resolve()),
+        }
+        print(json.dumps(payload, indent=2))
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a graduation set up to succeed before spending money?
 
@@ -2183,6 +2272,66 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     eval_cmd.set_defaults(func=_cmd_eval)
+
+    # rote baseline
+    baseline = subparsers.add_parser(
+        "baseline",
+        help="Run the raw skill once as an agent — measured and observed (pre-graduation)",
+        description=(
+            "Execute the source skill via `claude -p` before graduating it: "
+            "capture measured before-metrics (wall clock, turns, tokens, "
+            "cost), the full transcript, and every MCP tool call the agent "
+            "actually made with its real payloads. rote's registered MCP "
+            "servers are injected into the run (`rote mcp login` covers it); "
+            "by default only tools whose server declares readOnlyHint are "
+            "callable — pass --allow-writes if this skill's side effects are "
+            "acceptable to fire once. Billed to your Claude subscription; "
+            "minutes per trial."
+        ),
+    )
+    baseline.add_argument("skill_path", help="Path to the source skill directory")
+    baseline.add_argument(
+        "--out",
+        required=True,
+        help="Output directory — artifacts land under <out>/baseline/",
+    )
+    baseline.add_argument(
+        "--input",
+        required=True,
+        help="Task file: the skill's input payload as a JSON object",
+    )
+    baseline.add_argument(
+        "--trials",
+        type=int,
+        default=1,
+        help="How many times to run the skill (default: 1)",
+    )
+    baseline.add_argument(
+        "--model",
+        default=None,
+        help="Model for the agent run (default: the graduator's default Sonnet)",
+    )
+    baseline.add_argument(
+        "--max-turns",
+        type=int,
+        default=60,
+        help="Turn budget per trial (default: 60)",
+    )
+    baseline.add_argument(
+        "--allow-writes",
+        action="store_true",
+        help=(
+            "Lift the read-only MCP gate: allow every tool on every wired "
+            "server, including destructive ones. The skill runs exactly as "
+            "in production — sent emails send, pushed records push."
+        ),
+    )
+    baseline.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the baseline summary as JSON on stdout",
+    )
+    baseline.set_defaults(func=_cmd_baseline)
 
     return parser
 

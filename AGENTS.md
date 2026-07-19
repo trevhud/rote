@@ -42,6 +42,25 @@ servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.
 
+## Optional but recommended: `rote baseline` before graduating
+
+```sh
+uvx --from rote-cli rote baseline <skill-dir> --out <out-dir> --input task.json --json
+```
+
+One instrumented run of the *raw* skill (via `claude -p`, subscription-billed,
+minutes + tens of cents) that produces three things at once under
+`<out-dir>/baseline/`: measured before-metrics (`metrics.json` — wall clock,
+turns, tokens, cost), the full transcript per trial, and
+`observed-tools.json` — every MCP tool the agent actually called with its
+real input/result payloads (ground truth for which servers the skill needs).
+`--input` is the skill's task payload as a JSON object. rote's registered
+MCP servers are injected automatically (`rote mcp login` covers this run
+too). **Side effects are gated**: only tools whose server declares
+`readOnlyHint` are callable; pass `--allow-writes` only after the human
+confirms this skill's writes may fire once. `--json` mirrors the metrics
+plus `observed_servers` and per-server skip reasons.
+
 ## `rote graduate` is slow and costs money — plan for it
 
 ```sh
