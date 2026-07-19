@@ -1933,6 +1933,88 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 130
 
 
+def _cmd_deploy(args: argparse.Namespace) -> int:
+    """Deploy an emitted pipeline to its hosting target.
+
+    Push targets get a thin wrapper over the vendor CLI (wrangler /
+    dbos-cloud own auth and output; rote adds detection + preflight).
+    Runtimes with no push-deploy get honest, current guidance instead of
+    a fake action — see :mod:`rote.deploy`.
+    """
+    from rote.deploy import (
+        DeployError,
+        DeployReport,
+        deploy_cloudflare,
+        deploy_dbos_cloud,
+        guidance_for,
+        resolve_deploy_target,
+    )
+    from rote.runners import TargetError, detect_target
+
+    try:
+        target = detect_target(Path(args.path), runtime=args.runtime)
+        if target.kind != "pipeline":
+            print(
+                "error: deploy takes an emitted runtime dir (or a `rote graduate "
+                "--out` dir) — a skill isn't deployable, graduate it first",
+                file=sys.stderr,
+            )
+            return 2
+        assert target.runtime is not None
+        deploy_target = resolve_deploy_target(args.target, target.runtime)
+
+        if deploy_target is None:
+            print(f"rote deploy ({target.runtime}): no push-deploy target exists —")
+            print(guidance_for(target.runtime))
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "target": None,
+                            "runtime": target.runtime,
+                            "app_dir": str(target.path),
+                            "ok": True,
+                            "action": "guidance",
+                        },
+                        indent=2,
+                    )
+                )
+            return 0
+
+        report: DeployReport
+        if deploy_target == "cloudflare":
+            report = deploy_cloudflare(target, dry_run=args.dry_run)
+        else:  # dbos-cloud
+            report = deploy_dbos_cloud(target)
+    except TargetError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except DeployError as e:
+        print(f"rote deploy: {e}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("rote deploy: interrupted", file=sys.stderr)
+        return 130
+
+    status = "ok" if report.ok else f"failed: {report.detail}"
+    print(f"rote deploy ({report.target}): {report.action} — {status}", file=sys.stderr)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "target": report.target,
+                    "runtime": report.runtime,
+                    "app_dir": str(report.app_dir),
+                    "ok": report.ok,
+                    "action": report.action,
+                    "detail": report.detail,
+                },
+                indent=2,
+            )
+        )
+    return 0 if report.ok else 1
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a graduation set up to succeed before spending money?
 
@@ -2508,6 +2590,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Print a single JSON result object on stdout",
     )
     run_p.set_defaults(func=_cmd_run)
+
+    # rote deploy
+    deploy_p = subparsers.add_parser(
+        "deploy",
+        help="Deploy an emitted pipeline to its hosting target",
+        description=(
+            "Push an emitted pipeline where it will actually run. Targets "
+            "with a real push-deploy are wrapped thinly — the vendor CLI "
+            "owns auth and output: cloudflare via `npx wrangler deploy`, "
+            "dbos/dbos-ts via `npx dbos-cloud app deploy`. Runtimes with no "
+            "push model (temporal, inngest, python) print honest, current "
+            "hosting guidance with doc links instead of a fake action."
+        ),
+    )
+    deploy_p.add_argument(
+        "path",
+        help="Emitted runtime dir, or a `rote graduate --out` dir",
+    )
+    deploy_p.add_argument(
+        "--target",
+        default="auto",
+        choices=["auto", "cloudflare", "dbos-cloud"],
+        help="Deploy target (default: auto-detected from the emitted runtime)",
+    )
+    deploy_p.add_argument(
+        "--runtime",
+        default=None,
+        help="Which emitted runtime to deploy when several exist under <path>/runtime/",
+    )
+    deploy_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="cloudflare: build and validate without uploading (`wrangler deploy --dry-run`)",
+    )
+    deploy_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable deploy report on stdout",
+    )
+    deploy_p.set_defaults(func=_cmd_deploy)
 
     # rote register
     register = subparsers.add_parser(

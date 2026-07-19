@@ -195,6 +195,13 @@ emitted code + a README on how to run, signal gates, and deploy).
   `dbos-ts` against your Postgres or a throwaway Docker one). HITL
   gate payloads via `--signal name='{...}'` or an interactive prompt.
   Output JSON on stdout, status on stderr, so it pipes.
+- **`rote deploy <path>`** — push an emitted pipeline where it runs:
+  `cloudflare` wraps `npx wrangler deploy` (with `--dry-run`), `dbos` /
+  `dbos-ts` wrap `npx dbos-cloud app deploy` — the vendor CLI owns auth
+  and output; rote adds detection and preflights (including surfacing
+  *which* account your wrangler session belongs to before uploading).
+  Runtimes with no push model (temporal, inngest, python) print honest
+  hosting guidance with doc links instead of a fake action.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to

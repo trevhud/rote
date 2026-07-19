@@ -193,6 +193,9 @@ Pass `--json` to get structured output instead of prose:
 - `rote graduate --json` — a superset of the emit object that also carries
   `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
   a price-fetch failure), and the `driver` used.
+- `rote deploy --json` — one deploy report: `target`, `runtime`, `app_dir`,
+  `ok`, `action` (`deployed`/`dry-run`/`guidance`), `detail`. Guidance
+  runtimes (temporal/inngest/python) exit 0 with `action: "guidance"`.
 - `rote run --json` — one result object: `kind` (`skill`/`pipeline`), the
   run's `output`, and side-specific measurement (`run` metrics +
   `observed_servers` for skills; `runtime`, `wall_seconds`, `error`,
