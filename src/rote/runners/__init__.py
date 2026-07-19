@@ -51,11 +51,10 @@ class TargetError(RuntimeError):
 #: runtimes (temporal / inngest / dbos-ts) need a dev-server
 #: orchestration layer; until that lands we point at the runtime's own
 #: dev command instead of pretending.
-RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare", "inngest"})
+RUNNABLE_RUNTIMES = frozenset({"python", "dbos", "cloudflare", "inngest", "dbos-ts"})
 
 _NATIVE_RUN_HINTS = {
     "temporal": "start a Temporal dev server and the emitted worker (see the emitted README.md)",
-    "dbos-ts": "npm install && npm start against a Postgres (see the emitted README.md)",
 }
 
 
@@ -423,6 +422,15 @@ def run_pipeline(
             pipeline=pipeline,
             signals=signals or {},
             gate_order=gate_order or sorted(signals or {}),
+            timeout_seconds=timeout_seconds,
+        )
+    elif target.runtime == "dbos-ts":
+        from rote.runners.dbos_ts import run_dbos_ts
+
+        run = run_dbos_ts(
+            target.path,
+            input_payload,
+            signals=signals or {},
             timeout_seconds=timeout_seconds,
         )
     else:

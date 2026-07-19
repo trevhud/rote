@@ -645,9 +645,14 @@ Don't waste time debugging stubs. These are intentional.
   emitted serve entrypoint + managed `inngest-cli dev`, forced PUT
   registration, and gate events RE-BROADCAST every poll tick because
   Inngest drops events with no active waitForEvent, with output read
-  from the dev server's GraphQL RunComplete op). Temporal / DBOS-TS
-  targets print their native dev command until their orchestration
-  lands.
+  from the dev server's GraphQL RunComplete op; dbos-ts via
+  `rote.runners.dbos_ts` — the emitted main.ts shares dbos-py's
+  one-shot CLI contract, signals go Python→TS over the portable
+  serialization channel, and an unreachable Postgres falls back to a
+  throwaway Docker container; NOTE the TS SDK prints its startup
+  banner to STDOUT ahead of the result JSON, hence the trailing-JSON
+  extraction). Temporal targets print their native dev command until
+  their orchestration lands.
   Detection understands both the `graduate --out` layout
   (`runtime/<target>/`) and bare emitted dirs (marker files — see
   `rote.runners._detect_runtime`).
