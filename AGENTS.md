@@ -155,6 +155,22 @@ to lift), without writing baseline artifacts. Equivalent manual form for
 a DBOS app: `python main.py '{"your": "input"}'` (see the runtime
 `README.md`).
 
+## The graduate default follows the login state
+
+If the machine has a rote-cloud login (`rote login`; credential at
+`~/.local/share/rote/cloud.json`), `rote graduate` **without an explicit
+`--runtime` defaults to `cloudflare` and auto-deploys the emitted app to
+rote cloud** after emission. Consequences for automation:
+
+- Pass `--runtime <x>` explicitly (or `--no-deploy`) if you need
+  deterministic local-only behavior regardless of login state.
+- A deploy failure exits 1 but the local artifacts are complete — retry
+  with `rote deploy <out-dir> --target rote-cloud`, don't re-graduate.
+- Logged out, nothing changes: local `dbos` default, plus a one-line
+  stderr hint. There is never an interactive prompt on this path.
+- `rote whoami --json` → `{url, user, tenant}` (exit 1 when not logged
+  in or the credential is rejected) is the cheap way to probe the state.
+
 ## Re-running is safe — retry freely
 
 `rote` never silently clobbers your edits.
@@ -192,7 +208,8 @@ Pass `--json` to get structured output instead of prose:
   Parse this instead of scraping the human summary.
 - `rote graduate --json` — a superset of the emit object that also carries
   `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
-  a price-fetch failure), and the `driver` used.
+  a price-fetch failure), the `driver` used, and — when the logged-in
+  auto-deploy ran — a `deploy` object (`target`, `ok`, `detail`/`error`).
 - `rote deploy --json` — one deploy report: `target`, `runtime`, `app_dir`,
   `ok`, `action` (`deployed`/`dry-run`/`guidance`), `detail`. Guidance
   runtimes (temporal/inngest/python) exit 0 with `action: "guidance"`.

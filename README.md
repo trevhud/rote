@@ -203,8 +203,19 @@ emitted code + a README on how to run, signal gates, and deploy).
   Runtimes with no push model (temporal, inngest, python) print honest
   hosting guidance with doc links instead of a fake action.
   `--target rote-cloud` bundles a cloudflare-emitted app (esbuild via
-  npx) and uploads it to a hosted rote-cloud instance
-  (`$ROTE_CLOUD_URL` + `$ROTE_CLOUD_TOKEN`).
+  npx) and uploads it to a hosted rote-cloud instance — with a stored
+  `rote login`, no flags or env vars needed (`--url`/`--token` and
+  `$ROTE_CLOUD_URL`/`$ROTE_CLOUD_TOKEN` still override).
+- **`rote login`** — connect the CLI to a rote-cloud account via the
+  OAuth device flow: your browser opens with a one-time code pre-filled
+  (over SSH, `--device` prints the code + URL instead), you click
+  Approve, and the CLI stores a tenant API key at
+  `~/.local/share/rote/cloud.json` (mode 0600). Once logged in,
+  `rote graduate` defaults to the cloudflare runtime and auto-deploys
+  the result to rote cloud — graduate and host in one step (`--no-deploy`
+  or an explicit `--runtime` opt out; logged out, everything works
+  locally exactly as before). `rote whoami` shows the account (verified
+  live); `rote logout` revokes the key server-side and clears the store.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to

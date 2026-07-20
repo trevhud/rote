@@ -198,15 +198,30 @@ def test_rote_cloud_endpoint_and_token_resolution(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.delenv("ROTE_CLOUD_URL", raising=False)
     monkeypatch.delenv("ROTE_CLOUD_TOKEN", raising=False)
-    with pytest.raises(DeployError, match="ROTE_CLOUD_URL"):
+    with pytest.raises(DeployError, match="rote login"):
         resolve_endpoint(None)
-    with pytest.raises(DeployError, match="ROTE_CLOUD_TOKEN"):
+    with pytest.raises(DeployError, match="rote login"):
         resolve_token(None)
     monkeypatch.setenv("ROTE_CLOUD_URL", "http://x:1/")
     monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_t")
     assert resolve_endpoint(None) == "http://x:1"
     assert resolve_token(None) == "rote_t"
     assert resolve_endpoint("http://flag:2/") == "http://flag:2"
+
+
+def test_stored_login_feeds_deploy_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """flag > env > stored login — the stored credential is the quiet default."""
+    from rote.cloud_auth import CloudCredential, save_credential
+    from rote.deploy_rote_cloud import resolve_endpoint, resolve_token
+
+    monkeypatch.delenv("ROTE_CLOUD_URL", raising=False)
+    monkeypatch.delenv("ROTE_CLOUD_TOKEN", raising=False)
+    save_credential(CloudCredential(url="http://stored:3/", token="rote_stored", user="t@x"))
+    assert resolve_endpoint(None) == "http://stored:3"
+    assert resolve_token(None) == "rote_stored"
+    monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_env")
+    assert resolve_token(None) == "rote_env"
+    assert resolve_token("rote_flag") == "rote_flag"
 
 
 def test_rote_cloud_manifest_required(tmp_path: Path) -> None:
@@ -217,6 +232,31 @@ def test_rote_cloud_manifest_required(tmp_path: Path) -> None:
     (tmp_path / "manifest.json").write_text('{"name": "p"}', encoding="utf-8")
     with pytest.raises(DeployError, match="class_name"):
         load_manifest(tmp_path)
+
+
+def test_bundle_installs_npm_deps_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A freshly emitted app (the graduate auto-deploy path) has no
+    node_modules; the bundle step must install so judge deps (zod,
+    vendor SDKs) can be inlined — found live when esbuild failed to
+    resolve @anthropic-ai/sdk on a clean emit."""
+    import rote.deploy_rote_cloud as rc
+
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "workflow.ts").write_text("export class X {}", encoding="utf-8")
+    installed: list[Path] = []
+    monkeypatch.setattr(
+        "rote.runners._node.ensure_npm_install", lambda app_dir: installed.append(app_dir)
+    )
+    monkeypatch.setattr(rc.shutil, "which", lambda name: "/usr/bin/npx")
+
+    class _Proc:
+        returncode = 0
+        stdout = "export class X {}"
+        stderr = ""
+
+    monkeypatch.setattr(rc.subprocess, "run", lambda *a, **k: _Proc())
+    assert rc.bundle_workflow(tmp_path) == "export class X {}"
+    assert installed == [tmp_path]
 
 
 def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

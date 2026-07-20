@@ -21,6 +21,9 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("ROTE_MCP_CONFIG", str(tmp_path / "mcp-config" / "mcp.json"))
     monkeypatch.setenv("ROTE_MCP_TOKEN_DIR", str(tmp_path / "mcp-tokens"))
     monkeypatch.setenv("ROTE_APPS_PATH", str(tmp_path / "rote-apps" / "apps.json"))
+    # Same rule for the rote-cloud login: a developer's real credential
+    # must never satisfy (or be clobbered by) a test's resolution chain.
+    monkeypatch.setenv("ROTE_CLOUD_CRED_PATH", str(tmp_path / "cloud-cred" / "cloud.json"))
 
 
 @pytest.fixture(scope="session")
