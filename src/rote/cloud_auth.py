@@ -44,8 +44,16 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from rote import __version__
+
 #: The hosted platform. ``rote login --url`` targets a dev instance.
 DEFAULT_CLOUD_URL = "https://app.roteskills.com"
+
+#: Sent on every platform request. urllib's default ``Python-urllib/3.x``
+#: is banned outright by Cloudflare's bot protection in front of the
+#: platform (HTTP 403, error 1010) — and the server deserves to know the
+#: client version regardless.
+USER_AGENT = f"rote-cli/{__version__}"
 
 #: OAuth client identifier the platform's device flow accepts.
 CLIENT_ID = "rote-cli"
@@ -142,7 +150,7 @@ def _request_json(
     req = Request(
         url,
         data=json.dumps(body).encode("utf-8") if body is not None else None,
-        headers={"Content-Type": "application/json", **(headers or {})},
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, **(headers or {})},
         method=method,
     )
     try:

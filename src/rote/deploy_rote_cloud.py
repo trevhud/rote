@@ -33,7 +33,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from rote.cloud_auth import load_credential
+from rote.cloud_auth import USER_AGENT, load_credential
 from rote.deploy import DeployError, DeployReport
 from rote.runners import RunTarget
 
@@ -159,6 +159,7 @@ def deploy_rote_cloud(
         headers={
             "Authorization": f"Bearer {bearer}",
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
         method="POST",
     )

@@ -36,6 +36,7 @@ from typing import Any, cast, get_args
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from rote.cloud_auth import USER_AGENT
 from rote.graduator.events import EventCallback, EventType, GraduationEvent, emit_safely
 
 #: Client-side bundle caps (enforced before any upload, with actionable
@@ -140,6 +141,7 @@ def _request_json(
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
+            "User-Agent": USER_AGENT,
         },
         method=method,
     )
