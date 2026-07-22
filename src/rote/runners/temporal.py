@@ -84,11 +84,20 @@ async def _run_async(
     from temporalio.testing import WorkflowEnvironment
     from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
+    from rote.runners._node import find_free_port
+
     print(
         "rote run: starting a local Temporal dev server (first use downloads the binary)…",
         file=sys.stderr,
     )
-    env = await WorkflowEnvironment.start_local()
+    # The dev server bundles the Temporal Web UI; an explicit port lets
+    # us print a working URL (ui_port=None would pick one we can't see).
+    ui_port = find_free_port()
+    env = await WorkflowEnvironment.start_local(ui=True, ui_port=ui_port)
+    print(
+        f"rote run: temporal dev UI: http://127.0.0.1:{ui_port} (live while the run lasts)",
+        file=sys.stderr,
+    )
     try:
         task_queue = f"rote-run-{uuid4()}"
         started = time.monotonic()

@@ -494,3 +494,28 @@ def test_temporal_load_modules_requires_emitted_files(tmp_path: Path) -> None:
 
     with pytest.raises(EmpiricalError, match="workflow.py"):
         _load_app_modules(tmp_path)
+
+
+def test_temporal_runner_enables_the_dev_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bdr_pipeline: Any
+) -> None:
+    """`rote run` on a temporal app hosts the bundled Web UI and prints
+    its URL — the dev server has one, so surface it (see also the
+    inngest runner, whose dashboard rides the managed dev port)."""
+    from rote.adapters import get_adapter
+    from rote.runners.temporal import run_temporal
+
+    get_adapter("temporal").emit(bdr_pipeline, tmp_path)
+    captured: dict[str, Any] = {}
+
+    async def fake_start_local(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise RuntimeError("stop-after-capture")
+
+    from temporalio.testing import WorkflowEnvironment
+
+    monkeypatch.setattr(WorkflowEnvironment, "start_local", fake_start_local)
+    with pytest.raises(RuntimeError, match="stop-after-capture"):
+        run_temporal(tmp_path, {}, signals={})
+    assert captured["ui"] is True
+    assert isinstance(captured["ui_port"], int)
