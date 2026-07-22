@@ -693,15 +693,55 @@ Don't waste time debugging stubs. These are intentional.
   stored login. `logout` revokes server-side (`DELETE /v1/cli/keys`,
   the key revokes itself) but ALWAYS clears the local store; `whoami`
   verifies live via `GET /v1/me`.
-- Login-aware graduate default: logged in + no explicit `--runtime` →
-  emit `cloudflare` and auto-deploy to rote cloud after emission
-  (`--no-deploy` or explicit `--runtime` opt out; a deploy failure
-  exits 1 but keeps all local artifacts and prints the
-  `rote deploy … --target rote-cloud` retry). Logged out → today's
-  `dbos` default with a one-line hint, never a prompt (CI-safe). The
-  parser's `--runtime` default is now `None` — resolution happens at
-  the top of `_cmd_graduate`; don't reintroduce a static default in
-  the parser.
+- Layered defaults (`rote.config`) + `rote init` + `rote config`:
+  `runtime`/`deploy`/`agent`/`model` resolve flag > `ROTE_*` env >
+  project `rote.yaml` (walk-up discovery, stops at `.git`;
+  `ROTE_PROJECT_CONFIG_PATH` overrides) > user
+  `~/.config/rote/config.yaml` (`ROTE_CONFIG_PATH` overrides —
+  conftest isolates both suite-wide) > the command's built-in. Config
+  files are strict: unknown key or invalid value = loud exit 2, never
+  a silent fallback. `rote init` is the interactive wizard that writes
+  them (the ONLY interactive command besides login; exits 2 without a
+  TTY; I/O injected for tests — and its `input_fn` default resolves at
+  call time, not def time, or monkeypatched `builtins.input` never
+  lands). `rote config` prints each key's value + winning source.
+  Graduate deploy semantics: config `deploy: rote-cloud` + logged out
+  fails fast BEFORE the agent spends money; an explicit `--runtime`
+  flag downgrades a configured cloud deploy with a warning instead of
+  blocking; contradictory config (non-cloudflare runtime + rote-cloud
+  deploy, both from files) is exit 2.
+- `rote run` surfaces bundled dev UIs: the temporal runner starts its
+  dev server with `ui=True` on an explicit `find_free_port()` port
+  (`ui_port=None` picks one we couldn't print) and the inngest runner
+  prints the dev-server dashboard URL — both live only while the run
+  lasts.
+- Cloud-side graduation (`rote.cloud_graduate` + `_cmd_graduate_cloud`):
+  logged in + flagless → the graduation runs ON rote cloud — bundle
+  sync with per-file sha diff-skip, start-or-attach (an active
+  graduation for the same skill attaches instead of double-spending;
+  Ctrl-C cancels a run we started but only detaches from one we
+  attached to), server events streamed through the same progress
+  renderer/JSONL sink as local, artifacts downloaded into the standard
+  `--out` layout. `--local`/`--cloud` flags (mutually exclusive);
+  local-only flags (`--agent`, `--backend`, `--baseline*`, `--yes`,
+  `--no-eval`) reject in cloud mode with a `--local` pointer. Config
+  interplay: a config-pinned local runtime or `deploy: none` opts out
+  of the cloud default (one-line reason printed); config `agent`/
+  `model` NEVER leak into cloud mode — the server owns driver choice
+  and validates models against its own lineup. Server contract lives
+  in rote-cloud (`/v1/skills` + bundle endpoints, `/v1/skills/:id/
+  graduations`, container job) — the server must be deployed before a
+  CLI release that enables this. E2E-proven against local dev
+  (including a drained-tenant "insufficient credits" path).
+- Login-aware LOCAL graduate default (applies when the cloud path is
+  opted out but a login exists): no explicit `--runtime` → emit
+  `cloudflare` and auto-deploy to rote cloud after emission
+  (`--no-deploy` opts out; a deploy failure exits 1 but keeps all
+  local artifacts and prints the `rote deploy … --target rote-cloud`
+  retry). Logged out → today's `dbos` default with a one-line hint,
+  never a prompt (CI-safe). The parser's `--runtime` default is now
+  `None` — resolution happens at the top of `_cmd_graduate`; don't
+  reintroduce a static default in the parser.
 - `rote register` + `rote serve` (graduated pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))

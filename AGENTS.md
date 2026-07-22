@@ -155,17 +155,44 @@ to lift), without writing baseline artifacts. Equivalent manual form for
 a DBOS app: `python main.py '{"your": "input"}'` (see the runtime
 `README.md`).
 
+## Layered defaults can change what a flagless command does
+
+`rote graduate` / `rote emit` / `rote analyze` resolve `runtime`,
+`deploy`, `agent`, and `model` as **flag > `ROTE_*` env
+(`ROTE_RUNTIME`, `ROTE_DEPLOY`, `ROTE_AGENT`, `ROTE_MODEL`) > project
+`rote.yaml` (discovered upward from cwd, stopping at the first `.git`)
+> user `~/.config/rote/config.yaml` > built-in**. Humans write these
+files with the interactive `rote init`; automation should either pass
+explicit flags (fully deterministic, config-proof) or write the YAML
+directly — the keys above are the whole schema, and unknown keys or
+invalid values make every command exit 2 loudly. `rote config --json`
+returns `{settings: {<key>: {value, source}}, cloud: {logged_in, url,
+user}}` — the cheap way to learn what a flagless invocation would do
+on this machine. `rote init` itself is interactive-only (exits 2
+without a TTY); never invoke it from automation.
+
 ## The graduate default follows the login state
 
 If the machine has a rote-cloud login (`rote login`; credential at
-`~/.local/share/rote/cloud.json`), `rote graduate` **without an explicit
-`--runtime` defaults to `cloudflare` and auto-deploys the emitted app to
-rote cloud** after emission. Consequences for automation:
+`~/.local/share/rote/cloud.json`), a flagless `rote graduate` **runs
+the graduation on rote cloud**: skill bundle synced up (sha-diffed),
+server-side agent run, live events streamed back, server-side
+auto-deploy, artifacts downloaded into `--out` in the standard local
+layout. Consequences for automation:
 
-- Pass `--runtime <x>` explicitly (or `--no-deploy`) if you need
-  deterministic local-only behavior regardless of login state.
-- A deploy failure exits 1 but the local artifacts are complete — retry
-  with `rote deploy <out-dir> --target rote-cloud`, don't re-graduate.
+- Pass `--local` (or `--runtime <x>` / `--no-deploy`, or set a config
+  opt-out) for deterministic on-machine behavior regardless of login
+  state; pass `--cloud` to require the server (it errors logged-out
+  rather than silently falling back).
+- Local-only flags (`--agent`, `--backend`, `--baseline`,
+  `--baseline-input`, `--yes`, `--no-eval`) are rejected in cloud mode
+  with a pointer at `--local` — add it if you need them.
+- An unchanged skill with `--update` in cloud mode exits 0 with "no
+  changes" and no agent run (and no upload).
+- On the *local* path while logged in, the previous behavior holds:
+  default `cloudflare` emit + auto-deploy of the emitted app; a deploy
+  failure exits 1 but the local artifacts are complete — retry with
+  `rote deploy <out-dir> --target rote-cloud`, don't re-graduate.
 - Logged out, nothing changes: local `dbos` default, plus a one-line
   stderr hint. There is never an interactive prompt on this path.
 - `rote whoami --json` → `{url, user, tenant}` (exit 1 when not logged

@@ -24,6 +24,11 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # Same rule for the rote-cloud login: a developer's real credential
     # must never satisfy (or be clobbered by) a test's resolution chain.
     monkeypatch.setenv("ROTE_CLOUD_CRED_PATH", str(tmp_path / "cloud-cred" / "cloud.json"))
+    # And for the layered config: a developer's ~/.config/rote/config.yaml
+    # (or a stray rote.yaml above the test cwd) must not change what any
+    # command resolves. Both paths point at files that don't exist.
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(tmp_path / "rote-config" / "config.yaml"))
+    monkeypatch.setenv("ROTE_PROJECT_CONFIG_PATH", str(tmp_path / "rote-config" / "rote.yaml"))
 
 
 @pytest.fixture(scope="session")

@@ -12,9 +12,13 @@ building block for that flow:
     rote run     <skill-or-graduated-dir>            # one-off local execution
     rote eval    <graduated-dir>                     # before/after scorecard
     rote login                                       # connect to rote cloud
+    rote init                                        # save defaults (one-time wizard)
+    rote config                                      # show effective defaults + sources
 
 With a stored login, ``rote graduate`` defaults to emitting the
 cloudflare runtime and hosting the result on rote cloud in one step.
+Defaults resolve as flag > ROTE_* env > project rote.yaml > user
+config > built-in (see ``rote.config``).
 
 Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
 loop, which reads the source skill, produces a ``pipeline.yaml``, stubs
@@ -42,7 +46,7 @@ from typing import Any
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
 from rote.graduator import Graduator, GraduatorError
-from rote.graduator.drivers import available_drivers
+from rote.graduator.drivers import DRIVERS, available_drivers
 from rote.graduator.events import GraduationEvent
 from rote.ir import Pipeline, load_pipeline
 
@@ -126,6 +130,17 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     if not pipeline_path.exists():
         print(f"error: pipeline file not found: {pipeline_path}", file=sys.stderr)
         return 2
+
+    # Layered runtime default (flag > ROTE_RUNTIME > project > user),
+    # falling back to emit's historical built-in: dbos.
+    from rote import config as rote_config
+
+    try:
+        runtime_rv = rote_config.resolve("runtime", args.runtime, layers=rote_config.load_layers())
+    except rote_config.ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    args.runtime = runtime_rv.value or "dbos"
 
     try:
         pipeline = load_pipeline(pipeline_path)
@@ -377,26 +392,123 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # ── Runtime default follows the login state ── logged in means the
-    # destination is rote cloud: emit the cloudflare runtime and upload
-    # at the end. Logged out silently keeps the local dbos default (a
-    # hint, never a prompt — CI must not block here). An explicit
-    # --runtime always wins, and auto-deploy only makes sense for the
-    # cloud-runnable runtime.
-    from rote.cloud_auth import load_credential as _load_cloud_credential
+    # ── Layered defaults ── flag > ROTE_* env > project rote.yaml >
+    # user config > built-in. Resolved up front because the logged-in
+    # cloud default (below) must honor a config-pinned local runtime or a
+    # disabled deploy — those are explicit user choices, not the cloud path.
+    from rote import config as rote_config
+    from rote.cloud_auth import load_credential
 
-    cloud_cred = _load_cloud_credential()
-    if args.runtime is None:
-        if cloud_cred is not None:
-            args.runtime = "cloudflare"
-        else:
-            args.runtime = "dbos"
+    if args.cloud and args.no_deploy:
+        print(
+            "error: --cloud always deploys on rote cloud — drop --no-deploy "
+            "(or use --local for a local run)",
+            file=sys.stderr,
+        )
+        return 2
+
+    cloud_cred = load_credential()
+    try:
+        layers = rote_config.load_layers()
+        runtime_rv = rote_config.resolve("runtime", args.runtime, layers=layers)
+        deploy_rv = rote_config.resolve("deploy", "none" if args.no_deploy else None, layers=layers)
+        agent_rv = rote_config.resolve("agent", args.agent, layers=layers)
+        model_rv = rote_config.resolve("model", args.model, layers=layers)
+    except rote_config.ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    # ── Cloud vs local mode ── with a login the graduation runs server-side
+    # by default; --local / --no-deploy opt out, --cloud forces it. A
+    # resolved runtime that isn't cloudflare, or a disabled deploy, is an
+    # explicit choice for a local run — honor it silently (a config pin
+    # earns a one-line reason). --cloud overrides (it always emits
+    # cloudflare; an explicit --runtime FLAG + --cloud is rejected inside
+    # _cmd_graduate_cloud).
+    config_prefers_local = runtime_rv.value not in (None, "cloudflare") or deploy_rv.value == "none"
+    if args.cloud:
+        use_cloud = True
+    elif args.local or args.no_deploy or cloud_cred is None:
+        use_cloud = False
+    else:
+        use_cloud = not config_prefers_local
+    if use_cloud:
+        # Cloud mode sees only per-run FLAG values — args is NOT yet
+        # overwritten with config-resolved agent/model. Config `agent` /
+        # `model` are local-execution preferences (the server picks the
+        # graduator driver and has its own model default); leaking them here
+        # would spuriously trip the local-only flag rejection or fail
+        # resolve_model against the server lineup.
+        return _cmd_graduate_cloud(args)
+
+    # Local path: fold the config-resolved agent/model into args now.
+    args.agent, args.model = agent_rv.value, model_rv.value
+    if cloud_cred is not None and config_prefers_local and not args.local and not args.no_deploy:
+        # A config file (not a per-run flag/env) opted out of the cloud
+        # default — say why once, the way the logged-out path hints login.
+        pinned_runtime = runtime_rv.value not in (None, "cloudflare")
+        pin_rv = runtime_rv if pinned_runtime else deploy_rv
+        if pin_rv.source not in ("flag",) and not pin_rv.source.startswith("env "):
+            setting = "runtime" if pinned_runtime else "deploy"
+            print(
+                f"rote graduate: your {setting} config opts out of the rote-cloud "
+                "default — running locally (pass --cloud to override)",
+                file=sys.stderr,
+            )
+
+    if runtime_rv.value is not None:
+        args.runtime = runtime_rv.value
+    elif cloud_cred is not None:
+        args.runtime = "cloudflare"
+    else:
+        args.runtime = "dbos"
+        if layers.user or layers.project:
             print(
                 "rote graduate: tip — `rote login` makes rote cloud the default "
                 "host (graduate + deploy in one step)",
                 file=sys.stderr,
             )
-    auto_deploy = cloud_cred is not None and args.runtime == "cloudflare" and not args.no_deploy
+        else:
+            print(
+                "rote graduate: tip — `rote init` saves your defaults; `rote login` "
+                "makes rote cloud the default host (graduate + deploy in one step)",
+                file=sys.stderr,
+            )
+
+    if deploy_rv.value == "rote-cloud":
+        if args.runtime != "cloudflare":
+            if runtime_rv.source == "flag" or runtime_rv.source.startswith("env "):
+                # An explicit runtime override beats the configured cloud
+                # destination for this run — downgrade loudly, don't block.
+                print(
+                    f"rote graduate: skipping the configured rote-cloud deploy — "
+                    f"--runtime {args.runtime} is not cloud-hostable",
+                    file=sys.stderr,
+                )
+                auto_deploy = False
+            else:
+                print(
+                    f"error: {deploy_rv.source} sets `deploy: rote-cloud`, which requires "
+                    f"the cloudflare runtime — but runtime resolves to {args.runtime} "
+                    f"({runtime_rv.source})",
+                    file=sys.stderr,
+                )
+                return 2
+        elif cloud_cred is None:
+            # An explicit cloud destination fails fast BEFORE the agent
+            # spends money, not after the paid run.
+            print(
+                f"error: {deploy_rv.source} sets `deploy: rote-cloud` but you are not "
+                "logged in — run `rote login`, or pass --no-deploy for a local-only run",
+                file=sys.stderr,
+            )
+            return 2
+        else:
+            auto_deploy = True
+    elif deploy_rv.value == "none":
+        auto_deploy = False
+    else:
+        auto_deploy = cloud_cred is not None and args.runtime == "cloudflare"
 
     out_dir = Path(args.out)
     graduated_dir = out_dir / "graduated"
@@ -754,6 +866,266 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         )
         progress_sink.close()
     return exit_code
+
+
+def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
+    """Message for the first local-only flag set under cloud mode, else None.
+
+    Cloud graduation emits the cloudflare runtime and runs the graduator
+    server-side, so the flags that only mean something on the local path
+    (a chosen driver/backend, the local baseline pass, the local eval
+    scorecard) are rejected with a pointer to ``--local``. ``--agent``
+    defaults to ``None`` (auto-detect) so it only counts as set when the
+    user passed a value; ``--backend`` defaults to ``mcp``.
+    """
+    if args.runtime not in (None, "cloudflare"):
+        return (
+            f"rote graduate: cloud graduation emits the cloudflare runtime — "
+            f"add --local for --runtime {args.runtime}"
+        )
+    for flag, is_set in (
+        ("--agent", args.agent is not None),
+        ("--backend", args.backend != "mcp"),
+        ("--baseline", args.baseline),
+        ("--baseline-input", args.baseline_input is not None),
+        ("--yes", args.yes),
+        ("--no-eval", args.no_eval),
+    ):
+        if is_set:
+            return f"rote graduate: {flag} runs locally — add --local to use it"
+    return None
+
+
+def _cloud_manifest_identity(written: dict[str, Path], runtime_dir: Path) -> tuple[str, str]:
+    """``(name, version)`` from the downloaded manifest.json, or ``("?", "?")``."""
+    manifest_path = runtime_dir / "manifest.json"
+    for rel, dest in written.items():
+        if Path(rel).name == "manifest.json":
+            manifest_path = dest
+            break
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "?", "?"
+    return str(data.get("name") or "?"), str(data.get("version") or "?")
+
+
+def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
+    """Run the graduation on rote cloud and download the artifacts.
+
+    Mirrors ``_cmd_graduate``'s output conventions (the stderr progress
+    printer, the optional ``--progress-file`` JSONL sink, the stdout/stderr
+    split under ``--json``) but the work happens server-side: sync the
+    skill bundle, start (or attach to) a graduation, stream its events,
+    then download the finished tree. Full-mode graduations auto-deploy on
+    the server, so there is no local deploy leg here.
+    """
+    from rote.cloud_graduate import (
+        ActiveGraduationExists,
+        CloudGraduateError,
+        NoChanges,
+        cancel_graduation,
+        download_artifacts,
+        poll_graduation,
+        resolve_cloud_endpoint,
+        resolve_model,
+        start_graduation,
+        sync_skill,
+    )
+
+    rejection = _reject_local_only_cloud_flags(args)
+    if rejection is not None:
+        print(rejection, file=sys.stderr)
+        return 2
+
+    skill_path = Path(args.skill_path)
+    try:
+        ep = resolve_cloud_endpoint()
+        model = resolve_model(ep, args.model)
+    except CloudGraduateError as e:
+        print(f"rote graduate: {e}", file=sys.stderr)
+        return e.exit_code
+
+    print(
+        f"rote graduate: running on rote cloud ({ep.url}), model {model}",
+        file=sys.stderr,
+    )
+
+    out_dir = Path(args.out)
+    graduated_dir = out_dir / "graduated"
+    runtime_dir = out_dir / "runtime" / "cloudflare"
+
+    printer = _graduate_progress_printer()
+    progress_sink: _JsonlProgressSink | None = None
+    if args.progress_file:
+        progress_sink = _JsonlProgressSink(Path(args.progress_file), model)
+
+    def _on_event(event: GraduationEvent) -> None:
+        printer(event)
+        if progress_sink is not None:
+            progress_sink.emit(event)
+
+    def _close_sink() -> None:
+        if progress_sink is not None:
+            progress_sink.close()
+
+    # ── Sync the skill, or attach to a graduation already running ──
+    attached = False
+    graduation_id: str | None = None
+    try:
+        skill_id = sync_skill(ep, skill_path)
+    except ActiveGraduationExists as e:
+        print(
+            "rote graduate: a graduation is already running for this skill — attaching "
+            "(local changes NOT uploaded; Ctrl-C detaches)",
+            file=sys.stderr,
+        )
+        skill_id, graduation_id, attached = e.skill_id or "", e.graduation_id, True
+    except CloudGraduateError as e:
+        _close_sink()
+        print(f"rote graduate: {e}", file=sys.stderr)
+        return e.exit_code
+
+    if not attached:
+        mode = "update" if args.update else "full"
+        try:
+            record = start_graduation(ep, skill_id, mode=mode, model=model)
+            graduation_id = str(record.get("id") or "")
+        except NoChanges:
+            _close_sink()
+            print(
+                "rote graduate: no changes since the last graduation — nothing to do",
+                file=sys.stderr,
+            )
+            return 0
+        except ActiveGraduationExists as e:
+            print(
+                "rote graduate: a graduation is already running for this skill — attaching "
+                "(Ctrl-C detaches)",
+                file=sys.stderr,
+            )
+            graduation_id, attached = e.graduation_id, True
+        except CloudGraduateError as e:
+            _close_sink()
+            print(f"rote graduate: {e}", file=sys.stderr)
+            return e.exit_code
+
+    if not graduation_id:
+        _close_sink()
+        print("rote graduate: rote cloud did not return a graduation id", file=sys.stderr)
+        return 1
+
+    # ── Stream events to a terminal state ──
+    try:
+        final = poll_graduation(ep, graduation_id, _on_event)
+    except KeyboardInterrupt:
+        if attached:
+            print(
+                f"rote graduate: detached — the graduation keeps running (id {graduation_id})",
+                file=sys.stderr,
+            )
+        else:
+            cancel_graduation(ep, graduation_id)
+            print(
+                f"rote graduate: interrupted — canceled graduation {graduation_id}",
+                file=sys.stderr,
+            )
+        _close_sink()
+        return 130
+    except CloudGraduateError as e:
+        _close_sink()
+        print(f"rote graduate: {e}", file=sys.stderr)
+        return e.exit_code
+
+    status = final.get("status")
+    summary_stream = sys.stderr if args.json else sys.stdout
+
+    if status == "canceled":
+        print(f"rote graduate: graduation {graduation_id} was canceled", file=sys.stderr)
+        _close_sink()
+        return 130
+
+    if status == "error":
+        server_error = final.get("error") or "the graduation failed on rote cloud"
+        print(f"rote graduate: {server_error}", file=sys.stderr)
+        # Best-effort partial download so the user keeps whatever landed.
+        with contextlib.suppress(CloudGraduateError):
+            download_artifacts(ep, graduation_id, out_dir)
+        _close_sink()
+        return 1
+
+    # ── status == complete: download the artifacts, then report ──
+    try:
+        written = download_artifacts(ep, graduation_id, out_dir)
+    except CloudGraduateError as e:
+        _close_sink()
+        print(f"rote graduate: {e}", file=sys.stderr)
+        print(
+            f"  the graduation itself succeeded — artifacts remain on {ep.url}",
+            file=sys.stderr,
+        )
+        return 1
+
+    name, version = _cloud_manifest_identity(written, runtime_dir)
+    scorecard_path = next(
+        (dest for rel, dest in written.items() if Path(rel).name == "scorecard.md"), None
+    )
+    tokens = final.get("tokens") if isinstance(final.get("tokens"), dict) else None
+    cost_usd = final.get("cost_usd")
+    pipeline_id = final.get("pipeline_id")
+    deployed = bool(final.get("deployed"))
+
+    print(f"rote graduate: ✓ {name} v{version}", file=summary_stream)
+    print(f"  graduated artifacts: {graduated_dir}", file=summary_stream)
+    print(f"  emitted runtime (cloudflare): {runtime_dir}", file=summary_stream)
+    if scorecard_path is not None:
+        print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
+    print(f"  hosted on rote cloud: {ep.url}", file=summary_stream)
+    if pipeline_id:
+        print(f"  pipeline id: {pipeline_id}", file=summary_stream)
+    if tokens is not None:
+        note = _format_token_note(tokens).strip()
+        cost = f", cost ${cost_usd:.4f}" if isinstance(cost_usd, (int, float)) else ""
+        print(f"  {note}{cost}".rstrip(), file=summary_stream)
+
+    cloud_entry: dict[str, Any] = {
+        "graduation_id": graduation_id,
+        "skill_id": skill_id,
+        "status": status,
+        "mode": final.get("mode"),
+        "model": final.get("model") or model,
+        "tokens": tokens,
+        "cost_usd": cost_usd,
+        "pipeline_id": pipeline_id,
+        "url": ep.url,
+    }
+
+    if args.json:
+        payload = {
+            "pipeline": {"name": name, "version": version},
+            "runtime": "cloudflare",
+            "out_dir": str(out_dir.resolve()),
+            "graduated_dir": str(graduated_dir.resolve()),
+            "runtime_dir": str(runtime_dir.resolve()),
+            "scorecard": str(scorecard_path.resolve()) if scorecard_path is not None else None,
+            "written": {rel: str(dest.resolve()) for rel, dest in written.items()},
+            "cloud": cloud_entry,
+            "deploy": {"target": "rote-cloud", "ok": deployed, "pipeline_id": pipeline_id},
+        }
+        print(json.dumps(payload, indent=2))
+
+    if progress_sink is not None:
+        progress_sink.write_summary(
+            {
+                "type": "summary",
+                "graduated_dir": str(graduated_dir.resolve()),
+                "runtime_dir": str(runtime_dir.resolve()),
+                "cloud": cloud_entry,
+                "total_tokens": tokens or {"input": 0, "output": 0},
+            }
+        )
+        progress_sink.close()
+    return 0
 
 
 # ───────── Subcommand: register ─────────
@@ -1468,7 +1840,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
 
-    graduator = Graduator(agent=args.agent, model=args.model)
+    # Same layered agent/model defaults as graduate — analyze is its dry run.
+    from rote import config as rote_config
+
+    try:
+        layers = rote_config.load_layers()
+        agent = rote_config.resolve("agent", args.agent, layers=layers).value
+        model = rote_config.resolve("model", args.model, layers=layers).value
+    except rote_config.ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    graduator = Graduator(agent=agent, model=model)
 
     out_ctx: Any = (
         nullcontext(str(args.out))
@@ -2163,6 +2545,127 @@ def _cmd_whoami(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_init(args: argparse.Namespace) -> int:
+    """Interactive onboarding: choose the defaults once, save them.
+
+    The only interactive command besides login — everything else stays
+    prompt-free for CI, so a non-TTY invocation is a usage error, not a
+    hang.
+    """
+    from rote.init_wizard import WizardAborted, run_wizard
+
+    if not sys.stdin.isatty():
+        print(
+            "error: rote init is interactive — run it in a terminal. "
+            "Automation should write the config file directly (see `rote config`) "
+            "or pass explicit flags per command.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        run_wizard(project=args.project)
+    except WizardAborted as e:
+        print(f"rote init: {e}", file=sys.stderr)
+        return 1
+    except EOFError:
+        # stdin closed mid-wizard (Ctrl-D, or a pipe that ran dry).
+        print("\nrote init: aborted (stdin closed) — nothing was written", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nrote init: aborted", file=sys.stderr)
+        return 130
+    return 0
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    """Show every configurable default, its effective value, and its source."""
+    from rote import config as rote_config
+    from rote.cloud_auth import load_credential
+
+    try:
+        layers = rote_config.load_layers()
+        resolved = {
+            key.name: rote_config.resolve(key.name, None, layers=layers)
+            for key in rote_config.CONFIG_KEYS
+        }
+    except rote_config.ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+    cred = load_credential()
+    # Mirror graduate's built-in resolution so this report shows what a
+    # flagless `rote graduate` would actually do, not just raw file
+    # contents.
+    runtime = resolved["runtime"].value or ("cloudflare" if cred is not None else "dbos")
+    deploy = resolved["deploy"].value or (
+        "rote-cloud" if cred is not None and runtime == "cloudflare" else "none"
+    )
+    login_note = "logged in" if cred is not None else "logged out"
+    effective: dict[str, tuple[str, str]] = {
+        "runtime": (runtime, resolved["runtime"].source)
+        if resolved["runtime"].value
+        else (runtime, f"built-in default ({login_note})"),
+        "deploy": (deploy, resolved["deploy"].source)
+        if resolved["deploy"].value
+        else (deploy, f"built-in default ({login_note})"),
+        "agent": (resolved["agent"].value or "auto-detect", resolved["agent"].source),
+        "model": (resolved["model"].value or "driver default", resolved["model"].source),
+    }
+
+    if args.json:
+        # Machine consumers get real values or null, never display prose:
+        # runtime/deploy are always concrete (built-in resolution applies),
+        # agent/model stay null when nothing configured them.
+        json_values: dict[str, str | None] = {
+            "runtime": runtime,
+            "deploy": deploy,
+            "agent": resolved["agent"].value,
+            "model": resolved["model"].value,
+        }
+        payload = {
+            "user_config": {
+                "path": str(layers.user_path),
+                "present": layers.user_path.is_file(),
+            },
+            "project_config": {
+                "path": str(layers.project_path) if layers.project_path else None,
+                "present": layers.project_path is not None,
+            },
+            "settings": {
+                name: {"value": json_values[name], "source": source}
+                for name, (_value, source) in effective.items()
+            },
+            "cloud": {
+                "logged_in": cred is not None,
+                "url": cred.url if cred else None,
+                "user": cred.user if cred else None,
+            },
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    home = str(Path.home())
+
+    def _tilde(text: str) -> str:
+        return text.replace(home, "~")
+
+    print("rote config — effective defaults (flag > ROTE_* env > project > user > built-in)")
+    print()
+    user_state = "present" if layers.user_path.is_file() else "absent — run `rote init`"
+    print(f"  user config:    {_tilde(str(layers.user_path))}  ({user_state})")
+    project_state = _tilde(str(layers.project_path)) if layers.project_path else "(none found)"
+    print(f"  project config: {project_state}")
+    print()
+    for name, (value, source) in effective.items():
+        print(f"  {name:<8} {value:<18} {_tilde(source)}")
+    print()
+    if cred is not None:
+        print(f"  rote cloud: logged in as {cred.user or '(unknown)'} ({cred.url})")
+    else:
+        print("  rote cloud: logged out (`rote login` to make it the default host)")
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a graduation set up to succeed before spending money?
 
@@ -2492,11 +2995,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     emit.add_argument(
         "--runtime",
-        default="dbos",
+        default=None,
         choices=available_runtimes,
         help=(
-            f"Target workflow runtime (default: dbos — durable execution as a "
-            f"library, no orchestrator to run). Available: {', '.join(available_runtimes)}"
+            f"Target workflow runtime (default: the configured `runtime` — see "
+            f"`rote config` — else dbos, durable execution as a library with no "
+            f"orchestrator to run). Available: {', '.join(available_runtimes)}"
         ),
     )
     emit.add_argument(
@@ -2545,8 +3049,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         choices=available_runtimes,
         help=(
-            f"Target workflow runtime. Default: cloudflare + auto-deploy to "
-            f"rote cloud when logged in (`rote login`), else dbos (durable "
+            f"Target workflow runtime. Default: the configured `runtime` "
+            f"(see `rote config`), else cloudflare + auto-deploy to rote "
+            f"cloud when logged in (`rote login`), else dbos (durable "
             f"execution as a library, no orchestrator to run). "
             f"Available: {', '.join(available_runtimes)}"
         ),
@@ -2555,9 +3060,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-deploy",
         action="store_true",
         help=(
-            "When logged in to rote cloud: emit locally but skip the "
-            "auto-deploy (deploy later with `rote deploy --target rote-cloud`)"
+            "When logged in to rote cloud: run the graduation locally and "
+            "skip the auto-deploy (implies a local run; deploy later with "
+            "`rote deploy --target rote-cloud`)"
         ),
+    )
+    cloud_mode = graduate.add_mutually_exclusive_group()
+    cloud_mode.add_argument(
+        "--local",
+        action="store_true",
+        help="Run the graduation on this machine even when logged in to rote cloud",
+    )
+    cloud_mode.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Run the graduation on rote cloud; requires login or ROTE_CLOUD_* env",
     )
     graduate.add_argument(
         "--backend",
@@ -2576,13 +3093,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     graduate.add_argument(
         "--agent",
-        choices=["claude", "codex", "api"],
+        choices=sorted(DRIVERS),
         default=None,
         help=(
             "Agent runtime to use for the graduator. Defaults to auto-detect "
             "(claude CLI first, then codex, then anthropic API). Users with "
             "a Claude Max/Pro or ChatGPT subscription should prefer claude/codex "
-            "to avoid per-token API charges."
+            "to avoid per-token API charges. openai-api is explicit-only and "
+            "requires --model."
         ),
     )
     graduate.add_argument(
@@ -3103,11 +3621,12 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("skill_path", help="Path to the source skill directory")
     analyze.add_argument(
         "--agent",
-        choices=["claude", "codex", "api"],
+        choices=sorted(DRIVERS),
         default=None,
         help=(
             "Agent runtime for the graduator (default: auto-detect — claude "
-            "CLI first, then codex, then the anthropic API)."
+            "CLI first, then codex, then the anthropic API). openai-api is "
+            "explicit-only and requires --model."
         ),
     )
     analyze.add_argument(
@@ -3151,6 +3670,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the report as a single JSON object to stdout instead of the checklist.",
     )
     doctor.set_defaults(func=_cmd_doctor)
+
+    # rote init
+    init_p = subparsers.add_parser(
+        "init",
+        help="Interactive onboarding — pick your defaults once (hosting, runtime, driver)",
+        description=(
+            "Walk through the choices that shape every later command — "
+            "rote cloud vs a local runtime, graduator driver, model — and "
+            "save them to a config file. Writes the user-level config "
+            "(~/.config/rote/config.yaml) by default; --project writes a "
+            "./rote.yaml that overrides it for this repo."
+        ),
+    )
+    init_p.add_argument(
+        "--project",
+        action="store_true",
+        help="Write ./rote.yaml (per-repo, beats the user config) instead",
+    )
+    init_p.set_defaults(func=_cmd_init)
+
+    # rote config
+    config_p = subparsers.add_parser(
+        "config",
+        help="Show the effective defaults and where each one comes from",
+        description=(
+            "Print every configurable default with its effective value and "
+            "the layer that set it (flag > ROTE_* env > project rote.yaml > "
+            "user config > built-in), plus the rote cloud login state."
+        ),
+    )
+    config_p.add_argument("--json", action="store_true", help="Machine-readable report")
+    config_p.set_defaults(func=_cmd_config)
 
     # rote eval
     eval_cmd = subparsers.add_parser(

@@ -524,7 +524,11 @@ def test_graduate_logged_in_defaults_to_cloudflare_and_deploys(
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    rc = _graduate(skill_dir, tmp_path / "out")
+    # --local keeps the graduation on this machine; logged in, it still
+    # emits cloudflare and uploads (the local auto-deploy leg). The no-flag
+    # logged-in default now runs the whole graduation on rote cloud instead
+    # (see tests/test_cloud_graduate.py).
+    rc = _graduate(skill_dir, tmp_path / "out", "--local")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "cloudflare" / "src" / "workflow.ts").exists()
     assert len(calls) == 1
@@ -575,6 +579,8 @@ def test_graduate_explicit_runtime_wins_over_login(
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
+    # An explicit non-cloudflare runtime is itself a local opt-out (no
+    # --local needed): temporal isn't cloud-runnable, so the run stays local.
     rc = _graduate(skill_dir, tmp_path / "out", "--runtime", "temporal")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "temporal" / "workflow.py").exists()
@@ -592,7 +598,7 @@ def test_graduate_deploy_failure_keeps_artifacts_and_exits_1(
     _fake_cloud_deploy(monkeypatch, fail=True)
 
     out_dir = tmp_path / "out"
-    rc = _graduate(skill_dir, out_dir)
+    rc = _graduate(skill_dir, out_dir, "--local")
     assert rc == 1
     err = capsys.readouterr().err
     assert "deploy to rote cloud failed" in err

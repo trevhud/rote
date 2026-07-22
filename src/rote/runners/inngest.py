@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -190,6 +191,11 @@ def run_inngest(
         )
         try:
             _wait_until_healthy(f"{dev_base}/health", dev_proc, dev_log_path, "inngest dev server")
+            # The dev server serves its dashboard on the same port.
+            print(
+                f"rote run: inngest dev UI: {dev_base} (live while the run lasts)",
+                file=sys.stderr,
+            )
             _wait_until_healthy(
                 f"http://127.0.0.1:{app_port}/", app_proc, app_log_path, "emitted app"
             )

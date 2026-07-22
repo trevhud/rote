@@ -194,7 +194,10 @@ emitted code + a README on how to run, signal gates, and deploy).
   `wrangler dev`, `inngest` against a managed `inngest-cli dev`,
   `dbos-ts` against your Postgres or a throwaway Docker one). HITL
   gate payloads via `--signal name='{...}'` or an interactive prompt.
-  Output JSON on stdout, status on stderr, so it pipes.
+  Runtimes that bundle a dev UI surface it: temporal runs print a live
+  Temporal Web UI URL and inngest runs print the dev-server dashboard,
+  both live for the duration of the run. Output JSON on stdout, status
+  on stderr, so it pipes.
 - **`rote deploy <path>`** — push an emitted pipeline where it runs:
   `cloudflare` wraps `npx wrangler deploy` (with `--dry-run`), `dbos` /
   `dbos-ts` wrap `npx dbos-cloud app deploy` — the vendor CLI owns auth
@@ -211,11 +214,32 @@ emitted code + a README on how to run, signal gates, and deploy).
   (over SSH, `--device` prints the code + URL instead), you click
   Approve, and the CLI stores a tenant API key at
   `~/.local/share/rote/cloud.json` (mode 0600). Once logged in,
-  `rote graduate` defaults to the cloudflare runtime and auto-deploys
-  the result to rote cloud — graduate and host in one step (`--no-deploy`
-  or an explicit `--runtime` opt out; logged out, everything works
-  locally exactly as before). `rote whoami` shows the account (verified
+  `rote graduate` runs **on rote cloud by default**: the skill bundle
+  syncs up (sha-diffed, so unchanged files don't re-upload), the
+  platform runs the graduation server-side, live progress streams back
+  through the same renderer as a local run, the result auto-deploys,
+  and the artifacts download into your `--out` directory in the exact
+  local layout. `--local` keeps the graduation on your machine (then
+  the cloudflare-emit + auto-deploy flow applies), `--no-deploy` or a
+  config opt-out (`runtime:` pinned to a local target, or
+  `deploy: none`) keeps everything local; `--cloud` forces the server
+  even where config says otherwise. Logged out, everything works
+  locally exactly as before. `rote whoami` shows the account (verified
   live); `rote logout` revokes the key server-side and clears the store.
+- **`rote init`** — one-time interactive onboarding: pick where
+  graduated pipelines run (rote cloud — with login offered inline — or
+  a local runtime, with a one-line pitch for each), which graduator
+  driver does the work (availability probed live), and optionally a
+  model. Answers are saved to `~/.config/rote/config.yaml`
+  (`--project` writes a `./rote.yaml` that overrides it per-repo) and
+  every later command reads them. It's the only interactive command
+  besides login — CI never hits a prompt.
+- **`rote config`** — print every configurable default with its
+  effective value *and the layer that set it*. Resolution everywhere is
+  `flag > ROTE_* env (ROTE_RUNTIME, ROTE_DEPLOY, ROTE_AGENT,
+  ROTE_MODEL) > project rote.yaml > user config > built-in`. Config
+  files are strict: a typo'd key or value is a loud error, never a
+  silent fallback. `--json` for automation.
 - **`rote eval <graduated>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote graduate` writes this to
