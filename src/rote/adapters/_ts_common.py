@@ -150,6 +150,37 @@ def override_env_vars(node_id: str) -> tuple[str, str]:
     return f"ROTE_MODEL_{suffix}", f"ROTE_BASE_URL_{suffix}"
 
 
+def temperature_env_var(node_id: str) -> str:
+    """The per-node ``temperature`` override env var name.
+
+    Kept separate from :func:`override_env_vars` (whose two-tuple shape
+    several emitters unpack) because it is only emitted for judges whose
+    IR actually sets a temperature. Setting it to an empty string drops
+    the parameter from the request entirely — current Anthropic models
+    reject ``temperature`` with a 400, so an operator retargeting
+    ``ROTE_MODEL_<ID>`` at a newer model needs a way out that does not
+    require re-emitting.
+    """
+    return f"ROTE_TEMPERATURE_{node_id.upper()}"
+
+
+def _temperature_block(node_id: str, temperature: float | None) -> tuple[str, str, str]:
+    """``(env_type_line, const_line, spread_line)`` for the temperature knob.
+
+    All three are empty when the IR sets no temperature — the judge then
+    sends no sampling parameter at all, which is the right default given
+    the output shape is already pinned by schema-locked decoding.
+    """
+    if temperature is None:
+        return "", "", ""
+    var = temperature_env_var(node_id)
+    return (
+        f"        {var}?: string;",
+        f"    const TEMPERATURE = env.{var} ?? {json.dumps(str(temperature))};",
+        "        ...(TEMPERATURE.trim() ? { temperature: Number(TEMPERATURE) } : {}),",
+    )
+
+
 _INTERPOLATE_HELPER = """\
 function interpolate(template: string, vars: Record<string, unknown>): string {
     return template.replace(/\\{\\{\\s*([\\w.]+)\\s*\\}\\}/g, (_match, key: string) => {
@@ -197,7 +228,7 @@ def emit_signature_anthropic(
     instructions point at the right runtime.
     """
     desc_first = safe_block_comment_line(description, fallback=node_id)
-    temp_line = f"        temperature: {temperature},\n" if temperature is not None else ""
+    temp_env_line, temp_const_line, temp_line = _temperature_block(node_id, temperature)
     quoted_id = json.dumps(node_id)
     quoted_desc = json.dumps(desc_first)
     quoted_model = json.dumps(model)
@@ -237,9 +268,11 @@ def emit_signature_anthropic(
         "        // Operator overrides — swap the model or endpoint without re-emitting.",
         f"        {model_var}?: string;",
         f"        {base_var}?: string;",
+        *([temp_env_line] if temp_env_line else []),
         "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
+        *([temp_const_line] if temp_const_line else []),
         "    const client = new Anthropic({",
         "        apiKey: env.ANTHROPIC_API_KEY,",
         f"        baseURL: env.{base_var}{base_default},",
@@ -250,7 +283,7 @@ def emit_signature_anthropic(
         "        max_tokens: 4096,",
     ]
     if temp_line:
-        parts.append(temp_line.rstrip("\n"))
+        parts.append(temp_line)
     schema_cast = 'as { type: "object"; [k: string]: unknown }'
     msg_line = (
         '            { role: "user", '
@@ -300,7 +333,7 @@ def emit_signature_openai(
 ) -> str:
     """Emit a signatures/<id>.ts module using OpenAI structured outputs."""
     desc_first = safe_block_comment_line(description, fallback=node_id)
-    temp_line = f"        temperature: {temperature},\n" if temperature is not None else ""
+    temp_env_line, temp_const_line, temp_line = _temperature_block(node_id, temperature)
     quoted_id = json.dumps(node_id)
     quoted_model = json.dumps(model)
     quoted_prompt = json.dumps(prompt_template)
@@ -337,9 +370,11 @@ def emit_signature_openai(
         "        // Operator overrides — swap the model or endpoint without re-emitting.",
         f"        {model_var}?: string;",
         f"        {base_var}?: string;",
+        *([temp_env_line] if temp_env_line else []),
         "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
+        *([temp_const_line] if temp_const_line else []),
         "    const client = new OpenAI({",
         "        apiKey: env.OPENAI_API_KEY,",
         f"        baseURL: env.{base_var}{base_default},",
@@ -349,7 +384,7 @@ def emit_signature_openai(
         f"        model: env.{model_var} ?? {quoted_model},",
     ]
     if temp_line:
-        parts.append(temp_line.rstrip("\n"))
+        parts.append(temp_line)
     schema_inline = (
         f"            json_schema: {{ name: {quoted_id}, "
         "schema: OUTPUT_JSON_SCHEMA, strict: true },"
@@ -413,7 +448,7 @@ def emit_signature_workers_ai(
     quoted_model = json.dumps(model)
     quoted_node = json.dumps(node_id)
     model_var, _base_var = override_env_vars(node_id)
-    temp_line = f"        temperature: {temperature},\n" if temperature is not None else ""
+    temp_env_line, temp_const_line, temp_line = _temperature_block(node_id, temperature)
     parts = [
         "/**",
         f" * Typed LLM signature: {node_id}",
@@ -444,6 +479,7 @@ def emit_signature_workers_ai(
         "        AI: Ai;",
         "        // Operator override — swap the Workers AI model without re-emitting.",
         f"        {model_var}?: string;",
+        *([temp_env_line] if temp_env_line else []),
         "        // Injected by the host at load time; harmless when unset.",
         "        ROTE_GATEWAY_ID?: string;",
         "        ROTE_TENANT_ID?: string;",
@@ -452,6 +488,7 @@ def emit_signature_workers_ai(
         "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
+        *([temp_const_line] if temp_const_line else []),
         "",
         "    // Attribution tags (max 5, primitive values) for gateway cost logs.",
         "    const metadata: Record<string, string> = { node: " + quoted_node + " };",
@@ -473,7 +510,7 @@ def emit_signature_workers_ai(
         ),
         "        ],",
         '        response_format: { type: "json_schema", json_schema: OUTPUT_JSON_SCHEMA },',
-        temp_line.rstrip("\n") if temp_line else "        // temperature: vendor default",
+        temp_line if temp_line else "        // temperature: vendor default",
         "        seed: 1,",
         "        max_tokens: 2048,",
         "    }, {",

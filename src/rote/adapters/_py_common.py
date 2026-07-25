@@ -545,6 +545,12 @@ def emit_signature_module(
         f'MODEL = os.environ.get("ROTE_MODEL_{env_suffix}", {json.dumps(model)})\n'
         f'BASE_URL = os.environ.get("ROTE_BASE_URL_{env_suffix}"{base_url_default})'
     )
+    if spec.temperature is not None:
+        overrides_block += (
+            f"\nTEMPERATURE = os.environ.get(\n"
+            f'    "ROTE_TEMPERATURE_{env_suffix}", {json.dumps(str(spec.temperature))}\n'
+            f")"
+        )
 
     interpolate_block = textwrap.dedent(
         '''\
@@ -583,6 +589,8 @@ def emit_signature_module(
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
 
     usage_block = _emit_usage_logger(node, spec)
+    error_block = _emit_durable_error_helper(node)
+    sampling_block = _emit_sampling_helper(spec)
 
     return (
         header
@@ -598,9 +606,67 @@ def emit_signature_module(
         + "\n\n\n"
         + interpolate_block
         + "\n\n"
+        + sampling_block
         + usage_block
         + "\n\n"
+        + error_block
+        + "\n\n"
         + call_block
+    )
+
+
+def _emit_sampling_helper(spec: LLMSignature) -> str:
+    """Emit ``temperature`` as a runtime knob rather than a baked constant.
+
+    Current Anthropic models **reject** ``temperature`` outright with a
+    400 ("`temperature` is not supported on this model"), so a constant
+    compiled into the judge makes it unrunnable the moment an operator
+    points ``ROTE_MODEL_<ID>`` at a newer model — which is the whole
+    point of that knob. An empty ``ROTE_TEMPERATURE_<ID>`` omits the
+    parameter entirely; unset keeps the IR's value.
+
+    No IR temperature → no knob and no keyword argument, which is the
+    right default: the forced tool call already pins the output shape.
+    """
+    if spec.temperature is None:
+        return ""
+    return (
+        "def _sampling_kwargs() -> dict[str, Any]:\n"
+        '    """``temperature`` if configured; empty env value omits it."""\n'
+        "    if not TEMPERATURE.strip():\n"
+        "        return {}\n"
+        '    return {"temperature": float(TEMPERATURE)}\n'
+        "\n\n"
+    )
+
+
+def _emit_durable_error_helper(node: Node) -> str:
+    """Emit the SDK-error translator every judge raises through.
+
+    A durable runtime persists a failed step by serializing the
+    exception, and the vendor SDKs' error classes take keyword-only
+    ``response``/``body`` arguments — pickle cannot reconstruct them.
+    Re-raising one across a step boundary therefore replaces the real
+    status and body with a bare ``TypeError`` at the join, which is how
+    a 400 rejecting ``temperature`` first surfaced as
+    ``APIStatusError.__init__() missing 2 required keyword-only
+    arguments``. Carrying the detail in a plain ``RuntimeError`` keeps
+    the message readable wherever the failure is finally observed.
+    """
+    return (
+        "def _durable_error(exc: Exception) -> RuntimeError:\n"
+        '    """Vendor SDK errors do not survive a durable step boundary.\n'
+        "\n"
+        "    Their classes take keyword-only ``response``/``body`` arguments, so a\n"
+        "    runtime that persists a failed step by pickling the exception cannot\n"
+        "    rebuild it — the real status and body would be replaced by a bare\n"
+        "    ``TypeError``. Re-raise a plain exception carrying the detail.\n"
+        '    """\n'
+        '    status = getattr(exc, "status_code", None)\n'
+        '    where = f" (HTTP {status})" if status is not None else ""\n'
+        "    return RuntimeError(\n"
+        f'        f"{{type(exc).__name__}}{{where}} calling {{MODEL}} for {node.id}: {{exc}}"\n'
+        "    )\n"
     )
 
 
@@ -652,14 +718,15 @@ def _default_model_for(
     return anthropic_default_model
 
 
-def _temperature_line(spec: LLMSignature) -> str:
+def _sampling_line(spec: LLMSignature, indent: str) -> str:
+    """The ``**_sampling_kwargs(),`` argument, only when a temperature exists."""
     if spec.temperature is None:
         return ""
-    return f"            temperature={spec.temperature},\n"
+    return f"{indent}**_sampling_kwargs(),\n"
 
 
 def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
-    temp = _temperature_line(spec)
+    temp = _sampling_line(spec, " " * 16)
     return (
         f"class {pascal}:\n"
         f'    """Typed LLM judge for {node.id} (Anthropic structured output)."""\n'
@@ -670,25 +737,30 @@ def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"        import anthropic\n"
         f"\n"
         f"        client = anthropic.Anthropic(base_url=BASE_URL)\n"
-        f"        response = client.messages.create(\n"
-        f"            model=MODEL,\n"
-        f"            max_tokens=4096,\n"
+        f"        try:\n"
+        f"            response = client.messages.create(\n"
+        f"                model=MODEL,\n"
+        f"                max_tokens=4096,\n"
         f"{temp}"
-        f"            tools=[\n"
-        f"                {{\n"
-        f'                    "name": {json.dumps(node.id)},\n'
-        f'                    "description": TOOL_DESCRIPTION,\n'
-        f'                    "input_schema": OUTPUT_JSON_SCHEMA,\n'
-        f"                }}\n"
-        f"            ],\n"
-        f'            tool_choice={{"type": "tool", "name": {json.dumps(node.id)}}},\n'
-        f"            messages=[\n"
-        f"                {{\n"
-        f'                    "role": "user",\n'
-        f'                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n'
-        f"                }}\n"
-        f"            ],\n"
-        f"        )\n"
+        f"                tools=[\n"
+        f"                    {{\n"
+        f'                        "name": {json.dumps(node.id)},\n'
+        f'                        "description": TOOL_DESCRIPTION,\n'
+        f'                        "input_schema": OUTPUT_JSON_SCHEMA,\n'
+        f"                    }}\n"
+        f"                ],\n"
+        f'                tool_choice={{"type": "tool", "name": {json.dumps(node.id)}}},\n'
+        f"                messages=[\n"
+        f"                    {{\n"
+        f'                        "role": "user",\n'
+        f'                        "content": _interpolate(\n'
+        f"                            PROMPT, inputs.model_dump(by_alias=True)\n"
+        f"                        ),\n"
+        f"                    }}\n"
+        f"                ],\n"
+        f"            )\n"
+        f"        except anthropic.APIError as exc:\n"
+        f"            raise _durable_error(exc) from None\n"
         f"        _log_usage(response)\n"
         f"        for block in response.content:\n"
         f'            if block.type == "tool_use":\n'
@@ -700,7 +772,7 @@ def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
 
 
 def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
-    temp = _temperature_line(spec)
+    temp = _sampling_line(spec, " " * 16)
     return (
         f"class {pascal}:\n"
         f'    """Typed LLM judge for {node.id} (OpenAI structured output)."""\n'
@@ -711,24 +783,29 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"        import openai\n"
         f"\n"
         f"        client = openai.OpenAI(base_url=BASE_URL)\n"
-        f"        response = client.chat.completions.create(\n"
-        f"            model=MODEL,\n"
+        f"        try:\n"
+        f"            response = client.chat.completions.create(\n"
+        f"                model=MODEL,\n"
         f"{temp}"
-        f"            response_format={{\n"
-        f'                "type": "json_schema",\n'
-        f'                "json_schema": {{\n'
-        f'                    "name": {json.dumps(node.id)},\n'
-        f'                    "schema": OUTPUT_JSON_SCHEMA,\n'
-        f'                    "strict": True,\n'
+        f"                response_format={{\n"
+        f'                    "type": "json_schema",\n'
+        f'                    "json_schema": {{\n'
+        f'                        "name": {json.dumps(node.id)},\n'
+        f'                        "schema": OUTPUT_JSON_SCHEMA,\n'
+        f'                        "strict": True,\n'
+        f"                    }},\n"
         f"                }},\n"
-        f"            }},\n"
-        f"            messages=[\n"
-        f"                {{\n"
-        f'                    "role": "user",\n'
-        f'                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n'
-        f"                }}\n"
-        f"            ],\n"
-        f"        )\n"
+        f"                messages=[\n"
+        f"                    {{\n"
+        f'                        "role": "user",\n'
+        f'                        "content": _interpolate(\n'
+        f"                            PROMPT, inputs.model_dump(by_alias=True)\n"
+        f"                        ),\n"
+        f"                    }}\n"
+        f"                ],\n"
+        f"            )\n"
+        f"        except openai.APIError as exc:\n"
+        f"            raise _durable_error(exc) from None\n"
         f"        _log_usage(response)\n"
         f"        content = response.choices[0].message.content\n"
         f"        if not content:\n"
