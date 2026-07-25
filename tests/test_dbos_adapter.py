@@ -17,9 +17,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import pickle
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -423,11 +420,16 @@ def test_signature_module_from_spec(emit_result: dict[str, Path]) -> None:
     assert "class VetContactOutput(BaseModel):" in src
     assert "class EmploymentEntry(BaseModel):" in src  # interior caps preserved
     assert 'VetDecision = Literal["keep", "discard"]' in src
-    # Prompt + structured output call (Anthropic tool-use)
+    # Prompt + schema stay per-node; the vendor call does not — it is
+    # delegated so one resolver picks the provider (and the payer).
     assert "PROMPT = " in src
     assert "OUTPUT_JSON_SCHEMA" in src
-    assert 'tool_choice={"type": "tool", "name": "vet_contact"}' in src
-    assert "VetContactOutput.model_validate(block.input)" in src
+    assert "from signatures._rote_inference import call_judge" in src
+    assert 'client="anthropic",' in src
+    assert "tool_description=TOOL_DESCRIPTION," in src
+    assert "VetContactOutput.model_validate(payload)" in src
+    # No vendor SDK is imported per judge any more.
+    assert "import anthropic" not in src
     # Judge class exposes the Temporal-convention forward()
     assert "class VetContact:" in src
     assert "def forward(self, inputs: VetContactInput) -> VetContactOutput:" in src
@@ -479,10 +481,12 @@ def test_openai_client_signature_module() -> None:
         },
     )
     src = emit_signature_module(judge, DbosAdapterConfig())
-    assert "import openai" in src
-    assert '"type": "json_schema"' in src
-    assert "**_sampling_kwargs()," in src
-    assert "GradeEssayOutput.model_validate(json.loads(content))" in src
+    # The client is what the judge *declares* (it selects the wire
+    # format); the SDK call itself lives in the shared helper.
+    assert 'client="openai",' in src
+    assert "tool_description" not in src  # anthropic-only argument
+    assert "sampling=_sampling_kwargs()," in src
+    assert "GradeEssayOutput.model_validate(payload)" in src
     ast.parse(src)
 
 
@@ -517,68 +521,10 @@ def test_temperature_is_a_runtime_knob_not_a_baked_constant() -> None:
     assert 'os.environ.get(\n    "ROTE_TEMPERATURE_GRADE_ESSAY", "0.2"\n)' in src
     assert "def _sampling_kwargs() -> dict[str, Any]:" in src
     assert "if not TEMPERATURE.strip():" in src
-    assert "**_sampling_kwargs()," in src
+    assert "sampling=_sampling_kwargs()," in src
     # …and never as a literal keyword argument to the SDK call.
     assert "temperature=0.2" not in src
     ast.parse(src)
-
-
-class _FakeAPIError(Exception):
-    """Shaped like the vendor SDKs' error classes: reconstructible only
-    with keyword-only ``response`` / ``body``, so pickle cannot rebuild it
-    from ``BaseException.__reduce__``'s ``(cls, args)``. Module-level so
-    it is picklable at all — the failure under test is on *load*."""
-
-    def __init__(self, message: str, *, response: object, body: object) -> None:
-        super().__init__(message)
-        self.response = response
-        self.body = body
-        self.status_code = 400
-
-
-def test_judge_translates_sdk_errors_so_they_survive_a_durable_step(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A durable runtime persists a failed step by pickling the exception,
-    and the vendor SDKs' error classes take keyword-only ``response`` /
-    ``body`` arguments — pickle cannot rebuild them. Raising one straight
-    out of a judge replaced a real 400 (rejecting ``temperature``) with a
-    bare ``TypeError`` at the fan-out join, hiding the cause entirely.
-    """
-
-    raised = _FakeAPIError("temperature is not supported on this model", response=object(), body={})
-    with pytest.raises(TypeError):  # the bug this translation exists to avoid
-        pickle.loads(pickle.dumps(raised))
-
-    fake = types.ModuleType("anthropic")
-    fake.APIError = _FakeAPIError  # type: ignore[attr-defined]
-    fake.Anthropic = lambda **_kwargs: types.SimpleNamespace(  # type: ignore[attr-defined]
-        messages=types.SimpleNamespace(create=_raise(raised))
-    )
-    monkeypatch.setitem(sys.modules, "anthropic", fake)
-
-    src = emit_signature_module(_judge_with(), DbosAdapterConfig())
-    namespace: dict[str, object] = {}
-    exec(compile(src, "grade_essay.py", "exec"), namespace)  # noqa: S102 — emitted code under test
-    judge = namespace["GradeEssay"]()  # type: ignore[operator]
-    inputs = namespace["GradeEssayInput"](essay="hi")  # type: ignore[operator]
-
-    with pytest.raises(RuntimeError) as excinfo:
-        judge.forward(inputs)
-
-    message = str(excinfo.value)
-    assert "APIError" in message
-    assert "HTTP 400" in message
-    assert "temperature is not supported" in message
-    # The whole point: this one crosses the boundary intact.
-    assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
-
-
-def _raise(exc: Exception):  # type: ignore[no-untyped-def]
-    def _call(**_kwargs: object) -> object:
-        raise exc
-
-    return _call
 
 
 def test_no_temperature_means_no_sampling_parameter_at_all() -> None:
@@ -619,8 +565,10 @@ def test_signature_module_model_and_endpoint_are_env_overridable() -> None:
     assert (
         'BASE_URL = os.environ.get("ROTE_BASE_URL_GRADE_ESSAY", "http://localhost:11434/v1")'
     ) in src
-    assert "client = openai.OpenAI(base_url=BASE_URL)" in src
+    # Both constants reach the shared caller, which is what makes an
+    # operator's gateway config work without a re-emit.
     assert "model=MODEL," in src
+    assert "base_url=BASE_URL," in src
     ast.parse(src)
 
 
@@ -631,7 +579,7 @@ def test_signature_module_base_url_defaults_to_vendor_endpoint(
     override; None falls through to the vendor SDK's default endpoint."""
     src = emit_result["signatures/vet_contact"].read_text(encoding="utf-8")
     assert 'BASE_URL = os.environ.get("ROTE_BASE_URL_VET_CONTACT")' in src
-    assert "client = anthropic.Anthropic(base_url=BASE_URL)" in src
+    assert "base_url=BASE_URL," in src
     assert 'MODEL = os.environ.get("ROTE_MODEL_VET_CONTACT", ' in src
 
 

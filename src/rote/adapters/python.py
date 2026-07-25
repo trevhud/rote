@@ -74,12 +74,11 @@ from rote.adapters._py_common import (
     _signature_path_parts,
     resolve_extracted_source,
     serialize_helper,
+    spec_judges,
+    write_signature_package,
 )
 from rote.adapters._py_common import (
     emit_extracted_module as _shared_emit_extracted_module,
-)
-from rote.adapters._py_common import (
-    emit_signature_module as _shared_emit_signature_module,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
@@ -619,34 +618,22 @@ class PythonAdapter:
                     ),
                 )
 
-        spec_judges = [
-            n
-            for n in pipeline.nodes
-            if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
-        ]
-        if spec_judges:
-            written["signatures/__init__"] = writer.write(
-                "signatures",
-                "__init__.py",
-                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
+        written.update(
+            write_signature_package(
+                writer,
+                spec_judges(pipeline),
+                pipeline_name=pipeline.name,
+                anthropic_default_model=self.config.anthropic_default_model,
+                openai_default_model=self.config.openai_default_model,
+                generated_by="rote.adapters.python",
+                regen_command="rote emit --runtime python",
+                context_note=(
+                    "The non-determinism lives inside this module; the plain\n"
+                    "function in main.py that calls it stays a reviewable,\n"
+                    "retryable unit."
+                ),
             )
-            for node in spec_judges:
-                written[f"signatures/{node.id}"] = writer.write(
-                    "signatures",
-                    f"{node.id}.py",
-                    content=_shared_emit_signature_module(
-                        node,
-                        anthropic_default_model=self.config.anthropic_default_model,
-                        openai_default_model=self.config.openai_default_model,
-                        generated_by="rote.adapters.python",
-                        regen_command="rote emit --runtime python",
-                        context_note=(
-                            "The non-determinism lives inside this module; the plain\n"
-                            "function in main.py that calls it stays a reviewable,\n"
-                            "retryable unit."
-                        ),
-                    ),
-                )
+        )
 
         written["requirements"] = writer.write(
             "requirements.txt", content=emit_requirements(pipeline)

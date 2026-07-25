@@ -26,7 +26,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from rote.adapters._common import _to_pascal_case, safe_docstring_line
+from rote.adapters._common import EmitWriter, _to_pascal_case, safe_docstring_line
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── impl / signature path references ─────────
@@ -581,15 +581,9 @@ def emit_signature_module(
         '''
     )
 
-    if spec.client == "anthropic":
-        call_block = _emit_forward_anthropic(node, pascal, spec)
-    elif spec.client == "openai":
-        call_block = _emit_forward_openai(node, pascal, spec)
-    else:  # pragma: no cover — LLMSignature validates the client field
+    if spec.client not in ("anthropic", "openai"):  # pragma: no cover — IR-validated
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
 
-    usage_block = _emit_usage_logger(node, spec)
-    error_block = _emit_durable_error_helper(node)
     sampling_block = _emit_sampling_helper(spec)
 
     return (
@@ -607,11 +601,7 @@ def emit_signature_module(
         + interpolate_block
         + "\n\n"
         + sampling_block
-        + usage_block
-        + "\n\n"
-        + error_block
-        + "\n\n"
-        + call_block
+        + _emit_forward(node, pascal, spec)
     )
 
 
@@ -640,76 +630,6 @@ def _emit_sampling_helper(spec: LLMSignature) -> str:
     )
 
 
-def _emit_durable_error_helper(node: Node) -> str:
-    """Emit the SDK-error translator every judge raises through.
-
-    A durable runtime persists a failed step by serializing the
-    exception, and the vendor SDKs' error classes take keyword-only
-    ``response``/``body`` arguments — pickle cannot reconstruct them.
-    Re-raising one across a step boundary therefore replaces the real
-    status and body with a bare ``TypeError`` at the join, which is how
-    a 400 rejecting ``temperature`` first surfaced as
-    ``APIStatusError.__init__() missing 2 required keyword-only
-    arguments``. Carrying the detail in a plain ``RuntimeError`` keeps
-    the message readable wherever the failure is finally observed.
-    """
-    return (
-        "def _durable_error(exc: Exception) -> RuntimeError:\n"
-        '    """Vendor SDK errors do not survive a durable step boundary.\n'
-        "\n"
-        "    Their classes take keyword-only ``response``/``body`` arguments, so a\n"
-        "    runtime that persists a failed step by pickling the exception cannot\n"
-        "    rebuild it — the real status and body would be replaced by a bare\n"
-        "    ``TypeError``. Re-raise a plain exception carrying the detail.\n"
-        '    """\n'
-        '    status = getattr(exc, "status_code", None)\n'
-        '    where = f" (HTTP {status})" if status is not None else ""\n'
-        "    return RuntimeError(\n"
-        f'        f"{{type(exc).__name__}}{{where}} calling {{MODEL}} for {node.id}: {{exc}}"\n'
-        "    )\n"
-    )
-
-
-def _emit_usage_logger(node: Node, spec: LLMSignature) -> str:
-    """Emit the opt-in usage log hook.
-
-    When ``ROTE_USAGE_LOG`` names a file, every judge call appends one
-    JSONL record with its real token usage. This is what lets
-    ``rote eval --run`` measure the compiled pipeline's actual LLM
-    footprint instead of estimating it — and it doubles as a zero-setup
-    observability tap in production. No env var → no-op, and a logging
-    failure never breaks the judge call itself.
-
-    Records the module-level ``MODEL`` constant, not the emit-time
-    default — operators can swap models at runtime via
-    ``ROTE_MODEL_<NODE>``, and measured usage must be priced against
-    the model that actually served the call.
-    """
-    if spec.client == "openai":
-        in_attr, out_attr = "prompt_tokens", "completion_tokens"
-    else:
-        in_attr, out_attr = "input_tokens", "output_tokens"
-    return (
-        f"def _log_usage(response: Any) -> None:\n"
-        f'    """Append token usage as JSONL to $ROTE_USAGE_LOG, if set."""\n'
-        f'    path = os.environ.get("ROTE_USAGE_LOG")\n'
-        f"    if not path:\n"
-        f"        return\n"
-        f"    try:\n"
-        f'        usage = getattr(response, "usage", None)\n'
-        f"        record = {{\n"
-        f'            "node": {json.dumps(node.id)},\n'
-        f'            "model": MODEL,\n'
-        f'            "input_tokens": getattr(usage, {json.dumps(in_attr)}, None),\n'
-        f'            "output_tokens": getattr(usage, {json.dumps(out_attr)}, None),\n'
-        f"        }}\n"
-        f'        with open(path, "a", encoding="utf-8") as f:\n'
-        f'            f.write(json.dumps(record) + "\\n")\n'
-        f"    except OSError:\n"
-        f"        pass\n"
-    )
-
-
 def _default_model_for(
     spec: LLMSignature, anthropic_default_model: str, openai_default_model: str
 ) -> str:
@@ -718,100 +638,125 @@ def _default_model_for(
     return anthropic_default_model
 
 
-def _sampling_line(spec: LLMSignature, indent: str) -> str:
-    """The ``**_sampling_kwargs(),`` argument, only when a temperature exists."""
-    if spec.temperature is None:
-        return ""
-    return f"{indent}**_sampling_kwargs(),\n"
+def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
+    """Emit the judge class: interpolate, delegate, validate.
 
+    The vendor call itself is deliberately *not* emitted per node. It
+    lives in ``signatures/_rote_inference.py`` — the verbatim copy of
+    :mod:`rote.inference._runtime_helper` — because the same call has to
+    choose between three billing lanes (the user's Claude subscription
+    via ``claude -p``, their API key, or their rote cloud tenant) and
+    that decision is a fact about the machine, not about the pipeline.
+    Emitting it once per judge would mean N copies of the resolver
+    drifting apart inside a single generated app.
 
-def _emit_forward_anthropic(node: Node, pascal: str, spec: LLMSignature) -> str:
-    temp = _sampling_line(spec, " " * 16)
+    What stays here is what genuinely differs per node: the typed
+    models, the prompt, the schema, and the operator knobs.
+    """
+    kind = "Anthropic" if spec.client == "anthropic" else "OpenAI"
+    description_arg = (
+        "            tool_description=TOOL_DESCRIPTION,\n" if spec.client == "anthropic" else ""
+    )
+    sampling_arg = (
+        "            sampling=_sampling_kwargs(),\n" if spec.temperature is not None else ""
+    )
     return (
         f"class {pascal}:\n"
-        f'    """Typed LLM judge for {node.id} (Anthropic structured output)."""\n'
+        f'    """Typed LLM judge for {node.id} ({kind} structured output)."""\n'
         f"\n"
         f"    def forward(self, inputs: {pascal}Input) -> {pascal}Output:\n"
-        f"        # Lazy import: the SDK is only needed at call time, and the\n"
-        f"        # module stays importable in environments without it.\n"
-        f"        import anthropic\n"
+        f"        # Which provider serves this call — and who is billed for it —\n"
+        f"        # is resolved at runtime; see signatures/_rote_inference.py.\n"
+        f"        from signatures._rote_inference import call_judge\n"
         f"\n"
-        f"        client = anthropic.Anthropic(base_url=BASE_URL)\n"
-        f"        try:\n"
-        f"            response = client.messages.create(\n"
-        f"                model=MODEL,\n"
-        f"                max_tokens=4096,\n"
-        f"{temp}"
-        f"                tools=[\n"
-        f"                    {{\n"
-        f'                        "name": {json.dumps(node.id)},\n'
-        f'                        "description": TOOL_DESCRIPTION,\n'
-        f'                        "input_schema": OUTPUT_JSON_SCHEMA,\n'
-        f"                    }}\n"
-        f"                ],\n"
-        f'                tool_choice={{"type": "tool", "name": {json.dumps(node.id)}}},\n'
-        f"                messages=[\n"
-        f"                    {{\n"
-        f'                        "role": "user",\n'
-        f'                        "content": _interpolate(\n'
-        f"                            PROMPT, inputs.model_dump(by_alias=True)\n"
-        f"                        ),\n"
-        f"                    }}\n"
-        f"                ],\n"
-        f"            )\n"
-        f"        except anthropic.APIError as exc:\n"
-        f"            raise _durable_error(exc) from None\n"
-        f"        _log_usage(response)\n"
-        f"        for block in response.content:\n"
-        f'            if block.type == "tool_use":\n'
-        f"                return {pascal}Output.model_validate(block.input)\n"
-        f"        raise RuntimeError(\n"
-        f'            "LLM did not return a tool_use block for {node.id}"\n'
+        f"        payload = call_judge(\n"
+        f"            node_id={json.dumps(node.id)},\n"
+        f"            client={json.dumps(spec.client)},\n"
+        f"            model=MODEL,\n"
+        f"            base_url=BASE_URL,\n"
+        f"            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n"
+        f"            output_schema=OUTPUT_JSON_SCHEMA,\n"
+        f"{description_arg}"
+        f"{sampling_arg}"
         f"        )\n"
+        f"        return {pascal}Output.model_validate(payload)\n"
     )
 
 
-def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
-    temp = _sampling_line(spec, " " * 16)
-    return (
-        f"class {pascal}:\n"
-        f'    """Typed LLM judge for {node.id} (OpenAI structured output)."""\n'
-        f"\n"
-        f"    def forward(self, inputs: {pascal}Input) -> {pascal}Output:\n"
-        f"        # Lazy import: the SDK is only needed at call time, and the\n"
-        f"        # module stays importable in environments without it.\n"
-        f"        import openai\n"
-        f"\n"
-        f"        client = openai.OpenAI(base_url=BASE_URL)\n"
-        f"        try:\n"
-        f"            response = client.chat.completions.create(\n"
-        f"                model=MODEL,\n"
-        f"{temp}"
-        f"                response_format={{\n"
-        f'                    "type": "json_schema",\n'
-        f'                    "json_schema": {{\n'
-        f'                        "name": {json.dumps(node.id)},\n'
-        f'                        "schema": OUTPUT_JSON_SCHEMA,\n'
-        f'                        "strict": True,\n'
-        f"                    }},\n"
-        f"                }},\n"
-        f"                messages=[\n"
-        f"                    {{\n"
-        f'                        "role": "user",\n'
-        f'                        "content": _interpolate(\n'
-        f"                            PROMPT, inputs.model_dump(by_alias=True)\n"
-        f"                        ),\n"
-        f"                    }}\n"
-        f"                ],\n"
-        f"            )\n"
-        f"        except openai.APIError as exc:\n"
-        f"            raise _durable_error(exc) from None\n"
-        f"        _log_usage(response)\n"
-        f"        content = response.choices[0].message.content\n"
-        f"        if not content:\n"
-        f'            raise RuntimeError("OpenAI returned no content for {node.id}")\n'
-        f"        return {pascal}Output.model_validate(json.loads(content))\n"
-    )
+def inference_helper_source() -> str:
+    """The source text emitted as ``signatures/_rote_inference.py``.
+
+    Verbatim, byte for byte — the same contract
+    ``extracted/_rote_mcp.py`` has with :mod:`rote.mcp._runtime_helper`.
+    **Never hand-edit the emitted copy; fix the module and re-emit.**
+    """
+    from rote.inference import _runtime_helper
+
+    return Path(_runtime_helper.__file__).read_text(encoding="utf-8")
+
+
+def write_signature_package(
+    writer: EmitWriter,
+    judges: list[Node],
+    *,
+    pipeline_name: str,
+    anthropic_default_model: str,
+    openai_default_model: str,
+    generated_by: str,
+    regen_command: str,
+    context_note: str,
+) -> dict[str, Path]:
+    """Write the whole ``signatures/`` package for a pipeline's judges.
+
+    Every Python-emitting adapter needs the identical tree — the package
+    marker, one typed module per judge, and the verbatim inference
+    helper they all import — differing only in the identity strings
+    stamped into each module's docstring. Those are parameters; the
+    layout is not, because a runtime that emitted a *different* judge
+    package would be a second implementation of the judge.
+
+    Returns the manifest entries to merge into the adapter's ``written``
+    map. Empty when the pipeline has no spec-bearing judges.
+    """
+    if not judges:
+        return {}
+    written: dict[str, Path] = {
+        "signatures/__init__": writer.write(
+            "signatures",
+            "__init__.py",
+            content=f'"""Generated LLM signatures for {pipeline_name}."""\n',
+        ),
+        # The provider resolver is the *source text* of
+        # rote.inference._runtime_helper — one tested implementation,
+        # emitted verbatim so the app stays standalone (no rote import
+        # at runtime) while every judge shares one billing decision.
+        "signatures/_rote_inference": writer.write(
+            "signatures",
+            "_rote_inference.py",
+            content=inference_helper_source(),
+        ),
+    }
+    for node in judges:
+        written[f"signatures/{node.id}"] = writer.write(
+            "signatures",
+            f"{node.id}.py",
+            content=emit_signature_module(
+                node,
+                anthropic_default_model=anthropic_default_model,
+                openai_default_model=openai_default_model,
+                generated_by=generated_by,
+                regen_command=regen_command,
+                context_note=context_note,
+            ),
+        )
+    return written
+
+
+def spec_judges(pipeline: Pipeline) -> list[Node]:
+    """The llm_judge nodes carrying a structured ``signature_spec``."""
+    return [
+        n for n in pipeline.nodes if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
+    ]
 
 
 # ───────── extracted/<module>.py emission ─────────
@@ -820,8 +765,8 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
 def resolve_extracted_source(source_dir: Path | None, module_name: str) -> str | None:
     """The agent-written ``extracted/<module>.py`` beside the pipeline, if any.
 
-    A compilation writes its real (test-verified) implementations into
-    ``<compiled>/extracted/`` next to ``pipeline.yaml``. Emission
+    A graduation writes its real (test-verified) implementations into
+    ``<graduated>/extracted/`` next to ``pipeline.yaml``. Emission
     prefers those files verbatim over IR-derived stubs so the runtime
     dir runs without anyone hand-copying modules across — the gap that
     made the first real-server pipeline raise ``NotImplementedError``
@@ -881,7 +826,7 @@ def emit_extracted_module(
 
     Same scaffolding convention as the Temporal example package: the
     functions raise ``NotImplementedError`` until the user fills them in
-    with direct vendor API calls. The compilation history (MCP origin) is
+    with direct vendor API calls. The graduation history (MCP origin) is
     documented in docstrings only — never in executable code.
 
     ``caller_note`` finishes the "Keep the signatures: …" sentence with
@@ -893,7 +838,7 @@ def emit_extracted_module(
 
         Auto-generated stubs by {generated_by}. Replace each body
         with the real implementation (direct vendor API calls — the MCP
-        tool calls from the source skill were compiled away at emit
+        tool calls from the source skill were graduated away at emit
         time). Keep the signatures: {caller_note}
         """
 
