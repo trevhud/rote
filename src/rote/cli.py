@@ -566,23 +566,27 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # A JSONL progress sink (opt-in via --progress-file) runs alongside the
-    # stderr printer: both fire for every event. The sink writes one machine-
-    # readable line per event for an agent tailing the run; the printer keeps
-    # the human view. A sink failure must never take down a paid run, so its
-    # body is self-guarded (and emit_safely wraps the whole callback anyway).
+    # A JSONL progress sink runs alongside the stderr printer: both fire
+    # for every event. The sink writes one machine-readable line per
+    # event; the printer keeps the human view. It always writes to
+    # <out>/progress.jsonl (--progress-file overrides the path) so that
+    # a run driven by an agent stays observable from the user's own
+    # terminal — the watch hint below is printed first thing for exactly
+    # that tail. A sink failure must never take down a paid run, so its
+    # body is self-guarded (and emit_safely wraps the whole callback
+    # anyway).
     printer = _graduate_progress_printer()
-    progress_sink: _JsonlProgressSink | None = None
-    if args.progress_file:
-        # Price against the model the run actually uses: the --model override
-        # when given, else the graduator's default (the subscription path's
-        # Sonnet). Both subprocess and api drivers share this default.
-        from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
+    # Price against the model the run actually uses: the --model override
+    # when given, else the graduator's default (the subscription path's
+    # Sonnet). Both subprocess and api drivers share this default.
+    from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
 
-        progress_sink = _JsonlProgressSink(
-            Path(args.progress_file),
-            model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
-        )
+    progress_path = Path(args.progress_file) if args.progress_file else out_dir / "progress.jsonl"
+    progress_sink: _JsonlProgressSink | None = _JsonlProgressSink(
+        progress_path,
+        model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
+    )
+    print(f"rote graduate: watch progress with: tail -f {progress_path}", file=sys.stderr)
 
     def _on_event(event: GraduationEvent) -> None:
         printer(event)
