@@ -79,6 +79,29 @@ outputs, not one:
    `impl`'s docstring, so the trace from skill → MCP tool → REST
    endpoint is visible in the code.
 
+**An mcp-bound node must be a BARE tool call.** On the default backend
+the emitted step is exactly "call `server.tool(arguments)` and return
+the result" — any post-processing you fold into the node silently
+vanishes at emission. So the node's declared `output` must be the tool's
+own result shape (which the observed baseline traffic shows you). If the
+skill's step is "call the tool, then filter/match/reshape the response",
+that is TWO nodes:
+
+- an `external_call` with the `mcp:` binding whose output is the raw
+  tool result, and
+- a `pure_function` that does the filtering/matching/reshaping, taking
+  the raw result via `inputs:`.
+
+Real failure this rule comes from: a skill step "call
+`list_organizations`, keep the org whose name matches, return its id"
+graduated as one mcp-bound node with `output: {organization_id}`. The
+emitted pipeline called the tool bare, returned the raw org array, and
+the name-matching logic existed nowhere — the workflow crashed
+dereferencing `organization_id`. Split, both halves emit working code.
+The declared-output-vs-observed-schema mismatch is also what
+`rote graduate` warns about at cross-check time; treat that warning as
+this rule being violated.
+
 ---
 
 ### `llm_judge`

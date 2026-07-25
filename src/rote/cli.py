@@ -149,7 +149,14 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        adapter = get_adapter(args.runtime, external_backend=args.backend)
+        adapter = get_adapter(
+            args.runtime,
+            external_backend=args.backend,
+            # The agent's real extracted/ modules live beside the
+            # pipeline.yaml; Python-emitting adapters use them verbatim
+            # instead of stubs.
+            extracted_source_dir=pipeline_path.parent,
+        )
     except KeyError as e:
         print(f"error: {e.args[0]}", file=sys.stderr)
         return 2
@@ -559,23 +566,27 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # A JSONL progress sink (opt-in via --progress-file) runs alongside the
-    # stderr printer: both fire for every event. The sink writes one machine-
-    # readable line per event for an agent tailing the run; the printer keeps
-    # the human view. A sink failure must never take down a paid run, so its
-    # body is self-guarded (and emit_safely wraps the whole callback anyway).
+    # A JSONL progress sink runs alongside the stderr printer: both fire
+    # for every event. The sink writes one machine-readable line per
+    # event; the printer keeps the human view. It always writes to
+    # <out>/progress.jsonl (--progress-file overrides the path) so that
+    # a run driven by an agent stays observable from the user's own
+    # terminal — the watch hint below is printed first thing for exactly
+    # that tail. A sink failure must never take down a paid run, so its
+    # body is self-guarded (and emit_safely wraps the whole callback
+    # anyway).
     printer = _graduate_progress_printer()
-    progress_sink: _JsonlProgressSink | None = None
-    if args.progress_file:
-        # Price against the model the run actually uses: the --model override
-        # when given, else the graduator's default (the subscription path's
-        # Sonnet). Both subprocess and api drivers share this default.
-        from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
+    # Price against the model the run actually uses: the --model override
+    # when given, else the graduator's default (the subscription path's
+    # Sonnet). Both subprocess and api drivers share this default.
+    from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
 
-        progress_sink = _JsonlProgressSink(
-            Path(args.progress_file),
-            model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
-        )
+    progress_path = Path(args.progress_file) if args.progress_file else out_dir / "progress.jsonl"
+    progress_sink: _JsonlProgressSink | None = _JsonlProgressSink(
+        progress_path,
+        model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
+    )
+    print(f"rote graduate: watch progress with: tail -f {progress_path}", file=sys.stderr)
 
     def _on_event(event: GraduationEvent) -> None:
         printer(event)
@@ -618,7 +629,13 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         return 130
 
     try:
-        adapter = get_adapter(args.runtime, external_backend=args.backend)
+        adapter = get_adapter(
+            args.runtime,
+            external_backend=args.backend,
+            # Use the just-graduated extracted/ implementations verbatim
+            # in the runtime dir (Python-emitting adapters only).
+            extracted_source_dir=graduated_dir,
+        )
     except KeyError as e:
         if progress_sink is not None:
             progress_sink.close()
@@ -767,6 +784,19 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 f"  cross-check: {entry['server']}.{entry['tool']} is bound "
                 f"({', '.join(entry['nodes'])}) but was not observed in the "
                 "baseline (different task path, or held back by the read-only gate)",
+                file=summary_stream,
+            )
+        output_mismatch = cross["output_mismatch"]
+        assert isinstance(output_mismatch, list)
+        for entry in output_mismatch:
+            print(
+                f"  cross-check: WARNING node {entry['node']} declares output "
+                f"key(s) [{', '.join(entry['missing_keys'])}] that the observed "
+                f"{entry['server']}.{entry['tool']} result "
+                f"(a JSON {entry['observed_shape']}) cannot provide — an "
+                "mcp-bound node emits a bare tool call, so post-processing "
+                "folded into it is dropped; split the transformation into a "
+                "pure_function node (node-kinds.md, external_call)",
                 file=summary_stream,
             )
 

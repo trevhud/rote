@@ -330,13 +330,14 @@ def run_pipeline(pipeline_input: dict) -> dict:
     )
 
     # ─── Wave 9 ───
-    personalize_email_result = personalize_email(
-        {
-            "contact": exclusion_check_sequence_result["passed"],
-            "intel": target_research_result,
-            "campaign_type": pipeline_input["campaign_type"],
-        }
-    )
+    # fan_out: personalize_email runs once per element of the bound
+    # list, each as its own enqueued durable step.
+    personalize_email_payloads = [
+        {"contact": _item, "campaign_type": pipeline_input["campaign_type"], "intel": target_research_result}
+        for _item in exclusion_check_sequence_result["passed"]
+    ]
+    personalize_email_handles = [queue.enqueue(personalize_email, _p) for _p in personalize_email_payloads]
+    personalize_email_result = [_h.get_result() for _h in personalize_email_handles]
 
     # ─── Wave 10 ───
     create_sales_template_result = create_sales_template(

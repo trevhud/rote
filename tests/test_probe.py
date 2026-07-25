@@ -229,6 +229,65 @@ def test_cross_check_empty_observations() -> None:
     assert result["confirmed"] == []
     assert result["observed_only"] == []
     assert len(result["static_only"]) == 3  # slack + 2 distinct gmail tools
+    assert result["output_mismatch"] == []
+
+
+def test_cross_check_flags_declared_output_the_tool_cannot_provide() -> None:
+    """An mcp-bound node whose declared output keys aren't in the observed
+    tool result means post-processing was folded into the node — dropped
+    at emission (the step is a bare tool call). The live failure: a node
+    declaring {organization_id} over a tool returning a raw org array."""
+    import json
+
+    from rote.ir import Node, NodeKind, Pipeline
+
+    def _node(node_id: str, tool: str, output: dict[str, str]) -> Node:
+        return Node(
+            id=node_id,
+            kind=NodeKind.EXTERNAL_CALL,
+            description="d",
+            impl="api.py:" + node_id,
+            mcp={"server": "vaib", "tool": tool},
+            output=output,
+        )
+
+    pipeline = Pipeline(
+        name="p",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[
+            # Declared output invents keys over an array result → flagged.
+            _node("resolve_org", "list_organizations", {"organization_id": "str"}),
+            # Declared output matches the observed object keys → clean.
+            _node("fetch_stats", "get_stats", {"posts": "dict", "blogs": "dict"}),
+        ],
+        edges=[],
+        entry_nodes=["resolve_org"],
+        exit_nodes=["fetch_stats"],
+    )
+    observations = [
+        ObservedToolCall(
+            server="vaib",
+            tool="list_organizations",
+            input={},
+            result=[{"type": "text", "text": json.dumps([{"id": "x", "name": "Org"}])}],
+        ),
+        ObservedToolCall(
+            server="vaib",
+            tool="get_stats",
+            input={},
+            result=[{"type": "text", "text": json.dumps({"posts": {}, "blogs": {}})}],
+        ),
+    ]
+    result = cross_check(pipeline, observations)
+    assert result["output_mismatch"] == [
+        {
+            "server": "vaib",
+            "tool": "list_organizations",
+            "node": "resolve_org",
+            "missing_keys": ["organization_id"],
+            "observed_shape": "list",
+        }
+    ]
 
 
 # ───────── enrich_pipeline + typed stub contracts ─────────

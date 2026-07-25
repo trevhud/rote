@@ -455,6 +455,64 @@ def test_call_mcp_tool_maps_401_to_auth_needed(monkeypatch: pytest.MonkeyPatch) 
         asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
 
 
+def test_call_mcp_tool_falls_back_to_text_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A server with no output schema (fastmcp leaves ``result.data`` as
+    None) must not yield None when the payload sits in text content —
+    the shape every TS-SDK server produces. Found live against a real
+    server: every emitted MCP step silently returned None."""
+    from types import SimpleNamespace
+
+    from rote.mcp import _runtime_helper as helper
+
+    def _client_returning(result: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                return SimpleNamespace(call_tool=self._call_tool)
+
+            async def __aexit__(self, *a: Any) -> None:
+                return None
+
+            @staticmethod
+            async def _call_tool(tool: str, arguments: dict[str, Any]) -> Any:
+                return result
+
+        return _Ctx()
+
+    def _result(**kw: Any) -> Any:
+        fields: dict[str, Any] = {
+            "data": None,
+            "structured_content": None,
+            "content": [],
+            "is_error": False,
+        }
+        fields.update(kw)
+        return SimpleNamespace(**fields)
+
+    def _call(result: Any) -> Any:
+        monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_returning(result))
+        return asyncio.run(helper.call_mcp_tool("slack", None, "t", {}))
+
+    orgs = [{"id": "abc", "name": "Vaib Studio"}]
+    text_block = SimpleNamespace(text=json.dumps(orgs))
+
+    # Hydrated data still wins when present.
+    assert _call(_result(data={"already": "structured"})) == {"already": "structured"}
+    # Structured content is preferred over text parsing.
+    assert _call(_result(structured_content={"result": 1})) == {"result": 1}
+    # The real-world case: JSON riding in a single text block.
+    assert _call(_result(content=[text_block])) == orgs
+    # Non-JSON text comes back verbatim, not None and not an error.
+    assert _call(_result(content=[SimpleNamespace(text="plain words")])) == "plain words"
+    # Non-text blocks (image/audio) are skipped, not crashed on.
+    image_block = SimpleNamespace(mimeType="image/png")
+    assert _call(_result(content=[image_block, text_block])) == orgs
+    # Several text blocks parse independently.
+    two = _call(_result(content=[SimpleNamespace(text='{"a": 1}'), SimpleNamespace(text="raw")]))
+    assert two == [{"a": 1}, "raw"]
+    # Nothing usable at all stays None.
+    assert _call(_result()) is None
+
+
 def test_auth_needed_survives_pickling() -> None:
     """DBOS serializes step errors across queue workers — the two-arg
     __init__ needs the explicit __reduce__ to round-trip."""

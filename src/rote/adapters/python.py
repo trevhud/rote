@@ -72,6 +72,7 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    resolve_extracted_source,
     serialize_helper,
 )
 from rote.adapters._py_common import (
@@ -99,6 +100,11 @@ class PythonAdapterConfig:
     # loops. Exponential backoff doubles it per attempt; linear grows it
     # linearly; constant repeats it.
     retry_base_delay_seconds: float = 1.0
+    # Directory holding the graduation's pipeline.yaml. When its
+    # extracted/<module>.py exists (the agent's real, test-verified
+    # implementation), emission uses that file verbatim instead of an
+    # IR-derived NotImplementedError stub.
+    extracted_source_dir: Path | None = None
 
 
 # ───────── HITL refusal ─────────
@@ -601,7 +607,8 @@ class PythonAdapter:
                 written[f"extracted/{module_name}"] = writer.write(
                     "extracted",
                     f"{module_name}.py",
-                    content=_shared_emit_extracted_module(
+                    content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
+                    or _shared_emit_extracted_module(
                         module_name,
                         nodes,
                         generated_by="rote.adapters.python",

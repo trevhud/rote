@@ -249,6 +249,7 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
     )
 
     node_ids = {n.id for n in bdr_pipeline.nodes}
+    fan_out_ids = {n.id for n in bdr_pipeline.nodes if n.fan_out}
     payload_keys_by_node: dict[str, set[str]] = {}
     for call in ast.walk(run_fn):
         if not isinstance(call, ast.Call):
@@ -267,6 +268,14 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
             payload_arg = call.args[0]
         else:
             continue
+        if step_name in fan_out_ids and isinstance(payload_arg, ast.Name):
+            # fan_out enqueues per element: queue.enqueue(<step>, _p)
+            # where _p iterates the <id>_payloads comprehension. The
+            # dict-literal shape lives in that comprehension instead.
+            assert payload_arg.id == "_p", (
+                f"fan_out payload for {step_name!r} must be the _p comprehension var"
+            )
+            continue
         assert isinstance(payload_arg, ast.Dict), (
             f"payload for {step_name!r} must be a dict literal"
         )
@@ -277,6 +286,11 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
     nested_ids = {sub for n in bdr_pipeline.nodes if n.loop_body for sub in n.loop_body}
     for node in bdr_pipeline.nodes:
         if node.kind is NodeKind.HITL_GATE or node.id in nested_ids:
+            continue
+        if node.id in fan_out_ids:
+            # Covered structurally above; the per-element dict lives in
+            # the <id>_payloads comprehension, asserted in the dedicated
+            # fan_out tests.
             continue
         expected_keys = set(node.inputs.keys()) if node.inputs else set()
         assert payload_keys_by_node[node.id] == expected_keys, (
@@ -575,3 +589,162 @@ def test_signature_spec_aliases_non_identifier_properties() -> None:
     ast.parse(src)
     # Prompt interpolation must see the JSON spelling, not the python one.
     assert "model_dump(by_alias=True)" in src
+
+
+# ───────── agent implementations reach the runtime dir ─────────
+
+
+def test_emit_prefers_agent_written_extracted_modules(tmp_path: Path) -> None:
+    """When the pipeline.yaml's directory carries the agent's real
+    extracted/<module>.py, emission uses it verbatim instead of an
+    IR-derived stub. Found live: the graduator wrote working,
+    test-verified implementations into graduated/extracted/ while the
+    runtime dir got NotImplementedError stubs — the emitted pipeline
+    crashed on its first pure_function step."""
+    from tests._helpers import mini_pipeline
+
+    real_impl = (
+        '"""Agent-written implementation."""\n\ndef y(**payload):\n    return {"ok": True}\n'
+    )
+    source = tmp_path / "graduated"
+    (source / "extracted").mkdir(parents=True)
+    (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
+
+    node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="d", impl="x.py:y")
+
+    with_source = get_adapter("dbos", extracted_source_dir=source)
+    out = tmp_path / "out-with-source"
+    with_source.emit(mini_pipeline(node), out)
+    assert (out / "extracted" / "x.py").read_text(encoding="utf-8") == real_impl
+
+    without_source = get_adapter("dbos")
+    out_stub = tmp_path / "out-without-source"
+    without_source.emit(mini_pipeline(node), out_stub)
+    assert "NotImplementedError" in (out_stub / "extracted" / "x.py").read_text(encoding="utf-8")
+
+    # Missing individual module falls back to the stub, not an error.
+    partial = get_adapter("dbos", extracted_source_dir=tmp_path / "nowhere")
+    out_partial = tmp_path / "out-partial"
+    partial.emit(mini_pipeline(node), out_partial)
+    assert "NotImplementedError" in (out_partial / "extracted" / "x.py").read_text(encoding="utf-8")
+
+
+def test_python_adapter_also_prefers_agent_written_modules(tmp_path: Path) -> None:
+    """Same sourcing rule on the plain-python adapter (shared resolver)."""
+    from tests._helpers import mini_pipeline
+
+    real_impl = "def y(**payload):\n    return 1\n"
+    source = tmp_path / "graduated"
+    (source / "extracted").mkdir(parents=True)
+    (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
+
+    node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="d", impl="x.py:y")
+    adapter = get_adapter("python", extracted_source_dir=source)
+    out = tmp_path / "out"
+    adapter.emit(mini_pipeline(node), out)
+    assert (out / "extracted" / "x.py").read_text(encoding="utf-8") == real_impl
+
+
+# ───────── fan_out: per-element dispatch ─────────
+
+
+def _fan_out_pipeline(judge_mcp: dict[str, str] | None = None) -> Pipeline:
+    """list-producer → fan_out judge, the vaib-weekly-report shape."""
+    producer = Node(
+        id="filter_posts",
+        kind=NodeKind.PURE_FUNCTION,
+        description="d",
+        impl="filters.py:filter_posts",
+        inputs={"raw": "pipeline.input.raw"},
+    )
+    judge = Node(
+        id="judge_content",
+        kind=NodeKind.LLM_JUDGE,
+        description="d",
+        signature="signatures/judge.py:Judge",
+        fan_out=True,
+        inputs={
+            "post": "filter_posts.output.published_posts",
+            "brief": "pipeline.input.brief",
+        },
+        mcp=judge_mcp,
+    )
+    return Pipeline(
+        name="fan",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[producer, judge],
+        edges=[{"from": "filter_posts", "to": "judge_content", "fan_out": True}],
+        entry_nodes=["filter_posts"],
+        exit_nodes=["judge_content"],
+    )
+
+
+def test_fan_out_node_dispatches_per_element() -> None:
+    """A fan_out node must enqueue one durable step per element of the
+    bound list — not pass the whole list in one invocation. Live
+    failure: a per-post judge signature handed the full post list blew
+    up in pydantic validation."""
+    src = emit_main(_fan_out_pipeline(), DbosAdapterConfig())
+    ast.parse(src)
+
+    assert '{"post": _item, "brief": pipeline_input["brief"]}' in src, (
+        "element param bound per item, scalars shared"
+    )
+    assert 'for _item in filter_posts_result["published_posts"]' in src
+    assert "judge_content_handles = [queue.enqueue(judge_content, _p)" in src
+    assert "judge_content_result = [_h.get_result() for _h in judge_content_handles]" in src
+    # The whole-list single-call shape must be gone.
+    assert "judge_content_result = judge_content(" not in src
+
+
+def test_fan_out_binding_edge_disambiguates_multiple_node_refs() -> None:
+    """BDR's shape: the element param (contact ← edge source) plus shared
+    context bound to a node with NO incoming edge (intel). The edge
+    picks the element; the no-edge ref becomes a shared scalar."""
+    from rote.adapters._py_common import fan_out_binding
+
+    def _impl_node(node_id: str) -> Node:
+        return Node(
+            id=node_id, kind=NodeKind.PURE_FUNCTION, description="d", impl=f"m.py:{node_id}"
+        )
+
+    judge = Node(
+        id="personalize",
+        kind=NodeKind.LLM_JUDGE,
+        description="d",
+        signature="signatures/p.py:P",
+        fan_out=True,
+        inputs={
+            "contact": "passed_contacts.output.passed",
+            "intel": "research.output",
+            "campaign": "pipeline.input.campaign",
+        },
+    )
+    pipeline = Pipeline(
+        name="p",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[_impl_node("passed_contacts"), _impl_node("research"), judge],
+        edges=[{"from": "passed_contacts", "to": "personalize"}],
+        entry_nodes=["passed_contacts", "research"],
+        exit_nodes=["personalize"],
+    )
+    element_param, list_expr, scalars = fan_out_binding(judge, pipeline)
+    assert element_param == "contact"
+    assert list_expr == 'passed_contacts_result["passed"]'
+    assert scalars == {
+        "intel": "research_result",
+        "campaign": 'pipeline_input["campaign"]',
+    }
+
+    # Two node-bound params, both edge-fed, no fan_out edge marker →
+    # loud emit-time error, no guess.
+    ambiguous = pipeline.model_copy(
+        update={
+            "edges": [
+                Edge.model_validate({"from": "passed_contacts", "to": "personalize"}),
+                Edge.model_validate({"from": "research", "to": "personalize"}),
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="cannot identify the element param"):
+        fan_out_binding(judge, ambiguous)

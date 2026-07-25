@@ -319,6 +319,38 @@ def _find_http_401(exc: BaseException) -> bool:
     return False
 
 
+def _result_payload(result: Any) -> Any:
+    """Extract the useful payload from a fastmcp ``CallToolResult``.
+
+    ``result.data`` is fastmcp's hydrated structured output — populated
+    only when the server declares an output schema or returns structured
+    content. Many real-world servers (the TS SDK in particular) declare
+    neither and return plain text content carrying JSON; without this
+    fallback every such call would silently yield ``None``. Text that
+    isn't JSON comes back verbatim — the workflow step decides what it
+    means.
+    """
+    if result.data is not None:
+        return result.data
+    if result.structured_content is not None:
+        return result.structured_content
+    # Duck-typed on `.text` so image/audio blocks are skipped without
+    # importing mcp.types (this module ships verbatim in emitted apps).
+    texts = [block.text for block in result.content if getattr(block, "text", None) is not None]
+
+    def _parse(text: str) -> Any:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
+
+    if not texts:
+        return None
+    if len(texts) == 1:
+        return _parse(texts[0])
+    return [_parse(text) for text in texts]
+
+
 async def call_mcp_tool(
     server: str, pipeline_url: str | None, tool: str, arguments: dict[str, Any]
 ) -> Any:
@@ -337,7 +369,7 @@ async def call_mcp_tool(
     try:
         async with mcp_client(server, pipeline_url) as client:
             result = await client.call_tool(tool, arguments)
-            return result.data
+            return _result_payload(result)
     except RoteMcpAuthNeeded:
         raise
     except BaseException as exc:

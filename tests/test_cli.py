@@ -612,27 +612,19 @@ def test_graduate_deploy_failure_keeps_artifacts_and_exits_1(
 
 
 def _patch_pricing(monkeypatch: pytest.MonkeyPatch, prices: tuple[float, float] | None) -> None:
-    """Patch ``fetch_catalog`` so the sink prices offline and hermetically.
+    """Patch the sink's price resolution so it runs hermetically.
 
-    ``prices`` = ``(input_per_mtok, output_per_mtok)`` makes ``price_for``
-    return that pair; ``None`` makes ``fetch_catalog`` raise ``PricingError``
-    (the offline path — the sink must then omit ``cost_usd`` and keep going).
+    ``prices`` = ``(input_per_mtok, output_per_mtok)`` is what the sink
+    resolves; ``None`` is the offline path — the sink must then omit
+    ``cost_usd`` and keep going. Patches ``_resolve_prices`` (not
+    ``fetch_catalog``) because the suite-wide conftest fixture already
+    stubs ``_resolve_prices`` to None; a test overriding pricing must
+    patch the same seam to win.
     """
-    from rote.eval.pricing import PricingError
-
-    if prices is None:
-
-        def _raise(*_a: object, **_k: object) -> object:
-            raise PricingError("offline (test)")
-
-        monkeypatch.setattr("rote.eval.pricing.fetch_catalog", _raise)
-        return
-
-    class _FakeCatalog:
-        def price_for(self, _model_id: str) -> tuple[float, float]:
-            return prices
-
-    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda *a, **k: _FakeCatalog())
+    monkeypatch.setattr(
+        "rote.cli._JsonlProgressSink._resolve_prices",
+        staticmethod(lambda _model_id: prices),
+    )
 
 
 def _read_ndjson(path: Path) -> list[dict[str, object]]:
@@ -704,6 +696,30 @@ def test_graduate_progress_file_writes_ndjson_with_cost_and_summary(
     assert any("extracted/" in s for s in summary["unimplemented_stubs"])  # type: ignore[union-attr]
     assert summary["graduated_dir"] == str((out_dir / "graduated").resolve())
     assert summary["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
+
+
+def test_graduate_writes_progress_sidecar_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --progress-file the sink still runs, writing
+    <out>/progress.jsonl, and the watch hint is printed first thing —
+    that's how a user observes a graduation an agent is driving."""
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+
+    _install_mock_graduator(monkeypatch)
+
+    out_dir = tmp_path / "out"
+    rc = cli_main(
+        ["graduate", str(skill_dir), "--runtime", "dbos", "--out", str(out_dir), "--no-eval"]
+    )
+    assert rc == 0
+
+    sidecar = out_dir / "progress.jsonl"
+    objs = _read_ndjson(sidecar)
+    assert objs[-1]["type"] == "summary"
+    assert f"watch progress with: tail -f {sidecar}" in capsys.readouterr().err
 
 
 def test_graduate_progress_file_survives_offline_pricing(

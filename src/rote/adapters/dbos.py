@@ -86,6 +86,8 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    fan_out_binding,
+    resolve_extracted_source,
     serialize_helper,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
@@ -120,6 +122,11 @@ class DbosAdapterConfig:
     #           key in .env). Nodes without an ``mcp`` binding always use
     #           ``impl`` regardless of this setting.
     external_backend: Literal["mcp", "api"] = "mcp"
+    # Directory holding the graduation's pipeline.yaml. When its
+    # extracted/<module>.py exists (the agent's real, test-verified
+    # implementation), emission uses that file verbatim instead of an
+    # IR-derived NotImplementedError stub.
+    extracted_source_dir: Path | None = None
 
 
 # ───────── Retry mapping ─────────
@@ -433,6 +440,11 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
 
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/multi payload shapes below.
+        fan_out_nodes = [n for n in non_hitl if n.fan_out]
+        non_hitl = [n for n in non_hitl if not n.fan_out]
+
         if len(non_hitl) == 1:
             node = non_hitl[0]
             if _is_mcp_backed(node, cfg):
@@ -492,6 +504,39 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     lines.append("    )")
                 else:
                     lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
+
+        for node in fan_out_nodes:
+            element_param, list_expr, scalars = fan_out_binding(node, pipeline)
+            payload_items = "".join(
+                f', "{param}": {expr}' for param, expr in sorted(scalars.items())
+            )
+            lines.append(f"    # fan_out: {node.id} runs once per element of the bound")
+            lines.append("    # list, each as its own enqueued durable step.")
+            lines.append(f"    {node.id}_payloads = [")
+            lines.append(f'        {{"{element_param}": _item{payload_items}}}')
+            lines.append(f"        for _item in {list_expr}")
+            lines.append("    ]")
+            lines.append(
+                f"    {node.id}_handles = "
+                f"[queue.enqueue({node.id}, _p) for _p in {node.id}_payloads]"
+            )
+            if _is_mcp_backed(node, cfg):
+                assert node.mcp is not None
+                lines.append(f"    {node.id}_result = [")
+                lines.append("        _join_with_auth_park(")
+                lines.append(
+                    f"            _h, lambda _p=_p: queue.enqueue({node.id}, _p), "
+                    f"{node.mcp.server!r}"
+                )
+                lines.append("        )")
+                lines.append(
+                    f"        for _h, _p in zip({node.id}_handles, {node.id}_payloads, strict=True)"
+                )
+                lines.append("    ]")
+            else:
+                lines.append(
+                    f"    {node.id}_result = [_h.get_result() for _h in {node.id}_handles]"
+                )
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -959,7 +1004,8 @@ class DbosAdapter:
                 written[f"extracted/{module_name}"] = writer.write(
                     "extracted",
                     f"{module_name}.py",
-                    content=emit_extracted_module(module_name, nodes),
+                    content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
+                    or emit_extracted_module(module_name, nodes),
                 )
         if mcp_backed:
             # The connection helper is the *source text* of

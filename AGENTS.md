@@ -264,16 +264,22 @@ an empty list.
 
 Exit codes above let you distinguish success from failure without parsing.
 
-### Watching a `graduate` run live: `--progress-file`
+### Watching a `graduate` run live: the progress sidecar
 
-`graduate` runs for ~13 minutes; `--json` only prints once, at the end. To
-see what it's doing *as it happens*, pass `--progress-file PATH` — rote streams
-one JSON object per line (NDJSON), flushed live, that you tail while the run
-proceeds. It runs alongside the human stderr log and composes with `--json`.
+`graduate` runs for ~13 minutes; `--json` only prints once, at the end.
+Every run streams one JSON object per line (NDJSON), flushed live, to
+`<out>/progress.jsonl` — no flag needed; `--progress-file PATH` only moves
+it. The first stderr line of every run is the exact watch command
+(`rote graduate: watch progress with: tail -f …`).
+
+**If you are an agent driving a graduation for a human: relay that watch
+command to them immediately, before the run finishes.** The run is long
+and costs real money; the sidecar is how the human sees it working
+without waiting on your next summary.
 
 ```sh
-uvx --from rote-cli rote graduate <skill> --out <dir> --progress-file run.ndjson &
-tail -f run.ndjson        # each line is a complete JSON object
+uvx --from rote-cli rote graduate <skill> --out <dir> &
+tail -f <dir>/progress.jsonl        # each line is a complete JSON object
 ```
 
 Event lines (`None` fields omitted):

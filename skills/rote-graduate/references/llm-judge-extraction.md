@@ -69,9 +69,9 @@ field the LLM needs to make the decision. For `vet_contact`:
 class VetContactInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    contact: EnrichedContact   # from enrich_contact_batch upstream
-    brief: CampaignBrief        # from pipeline input
-    intel: IntelBrief           # from target_research upstream
+    contact: EnrichedContact  # from enrich_contact_batch upstream
+    brief: CampaignBrief  # from pipeline input
+    intel: IntelBrief  # from target_research upstream
 ```
 
 **`extra="forbid"`** prevents accidental field additions that would
@@ -84,10 +84,12 @@ class VetDecision(str, Enum):
     KEEP = "keep"
     DISCARD = "discard"
 
+
 class ContactTier(str, Enum):
     IDEAL = "ideal"
     STRONG = "strong"
     GOOD = "good"
+
 
 class DiscardReason(str, Enum):
     INDICATION_MISMATCH = "indication_mismatch"
@@ -95,12 +97,13 @@ class DiscardReason(str, Enum):
     BIOMARKER_DISCOVERY = "biomarker_discovery"
     # ... one per rubric category
 
+
 class VetContactOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: VetDecision
-    tier: ContactTier | None = None           # only when decision == keep
-    discard_reason: DiscardReason | None = None   # only when decision == discard
+    tier: ContactTier | None = None  # only when decision == keep
+    discard_reason: DiscardReason | None = None  # only when decision == discard
     relevance_evidence: str
 ```
 
@@ -118,6 +121,7 @@ From `signatures/vet_contact.py`:
 
 ```python
 MIN_ACCURACY_SCORE: int = 85
+
 
 class VetContact:
     async def forward(self, inputs: VetContactInput) -> VetContactOutput:

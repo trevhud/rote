@@ -23,6 +23,7 @@ import json
 import keyword
 import re
 import textwrap
+from pathlib import Path
 from typing import Any
 
 from rote.adapters._common import _to_pascal_case, safe_docstring_line
@@ -85,6 +86,54 @@ def _payload_literal(node: Node, indent: str) -> str:
         lines.append(f'{inner}"{param}": {_ref_to_python_expr(ref)},')
     lines.append(indent + "}")
     return "\n".join(lines)
+
+
+def fan_out_binding(node: Node, pipeline: Pipeline) -> tuple[str, str, dict[str, str]]:
+    """``(element_param, list_expr, scalar_exprs)`` for a ``fan_out`` node.
+
+    The element parameter is the one bound to the upstream *list* the
+    node fans over (ir-schema.md); every other input is shared verbatim
+    by all invocations. Which param that is, in precedence order:
+
+    1. the param bound to the source of an incoming ``fan_out: true``
+       edge (the IR's explicit marker);
+    2. else the param bound to a node with any incoming edge — inputs
+       may also reference nodes *without* an edge (shared context, e.g.
+       BDR's ``intel``), which is what makes "the only node-bound
+       param" too naive;
+    3. else the only node-bound param.
+
+    Ambiguity after all three is an emit-time error, never a guess:
+    dispatching over the wrong list would silently judge the wrong
+    things.
+    """
+    if not node.inputs:
+        raise ValueError(f"fan_out node {node.id!r} has no inputs: nothing to fan over")
+    node_bound = {
+        param: parsed.node_id
+        for param, ref in node.inputs.items()
+        if (parsed := parse_input_ref(ref)).node_id is not None
+    }
+    edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
+    fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
+
+    for sources in (fan_edge_sources, edge_sources):
+        matching = sorted(p for p, src in node_bound.items() if src in sources)
+        if len(matching) == 1:
+            element_param = matching[0]
+            break
+    else:
+        if len(node_bound) != 1:
+            raise ValueError(
+                f"fan_out node {node.id!r}: cannot identify the element param — "
+                f"node-bound inputs {sorted(node_bound)} and incoming edges "
+                f"{sorted(edge_sources)} don't single one out; mark the list edge "
+                f"with `fan_out: true`"
+            )
+        element_param = next(iter(node_bound))
+
+    scalars = {p: _ref_to_python_expr(r) for p, r in node.inputs.items() if p != element_param}
+    return element_param, _ref_to_python_expr(node.inputs[element_param]), scalars
 
 
 # ───────── JSON Schema → Pydantic source ─────────
@@ -689,6 +738,24 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
 
 
 # ───────── extracted/<module>.py emission ─────────
+
+
+def resolve_extracted_source(source_dir: Path | None, module_name: str) -> str | None:
+    """The agent-written ``extracted/<module>.py`` beside the pipeline, if any.
+
+    A graduation writes its real (test-verified) implementations into
+    ``<graduated>/extracted/`` next to ``pipeline.yaml``. Emission
+    prefers those files verbatim over IR-derived stubs so the runtime
+    dir runs without anyone hand-copying modules across — the gap that
+    made the first real-server pipeline raise ``NotImplementedError``
+    on step one despite the agent having written the code.
+    """
+    if source_dir is None:
+        return None
+    candidate = Path(source_dir) / "extracted" / f"{module_name}.py"
+    if not candidate.is_file():
+        return None
+    return candidate.read_text(encoding="utf-8")
 
 
 def _extracted_layout(pipeline: Pipeline) -> dict[str, list[Node]]:
