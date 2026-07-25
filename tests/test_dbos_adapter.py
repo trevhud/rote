@@ -575,3 +575,57 @@ def test_signature_spec_aliases_non_identifier_properties() -> None:
     ast.parse(src)
     # Prompt interpolation must see the JSON spelling, not the python one.
     assert "model_dump(by_alias=True)" in src
+
+
+# ───────── agent implementations reach the runtime dir ─────────
+
+
+def test_emit_prefers_agent_written_extracted_modules(tmp_path: Path) -> None:
+    """When the pipeline.yaml's directory carries the agent's real
+    extracted/<module>.py, emission uses it verbatim instead of an
+    IR-derived stub. Found live: the graduator wrote working,
+    test-verified implementations into graduated/extracted/ while the
+    runtime dir got NotImplementedError stubs — the emitted pipeline
+    crashed on its first pure_function step."""
+    from tests._helpers import mini_pipeline
+
+    real_impl = (
+        '"""Agent-written implementation."""\n\ndef y(**payload):\n    return {"ok": True}\n'
+    )
+    source = tmp_path / "graduated"
+    (source / "extracted").mkdir(parents=True)
+    (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
+
+    node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="d", impl="x.py:y")
+
+    with_source = get_adapter("dbos", extracted_source_dir=source)
+    out = tmp_path / "out-with-source"
+    with_source.emit(mini_pipeline(node), out)
+    assert (out / "extracted" / "x.py").read_text(encoding="utf-8") == real_impl
+
+    without_source = get_adapter("dbos")
+    out_stub = tmp_path / "out-without-source"
+    without_source.emit(mini_pipeline(node), out_stub)
+    assert "NotImplementedError" in (out_stub / "extracted" / "x.py").read_text(encoding="utf-8")
+
+    # Missing individual module falls back to the stub, not an error.
+    partial = get_adapter("dbos", extracted_source_dir=tmp_path / "nowhere")
+    out_partial = tmp_path / "out-partial"
+    partial.emit(mini_pipeline(node), out_partial)
+    assert "NotImplementedError" in (out_partial / "extracted" / "x.py").read_text(encoding="utf-8")
+
+
+def test_python_adapter_also_prefers_agent_written_modules(tmp_path: Path) -> None:
+    """Same sourcing rule on the plain-python adapter (shared resolver)."""
+    from tests._helpers import mini_pipeline
+
+    real_impl = "def y(**payload):\n    return 1\n"
+    source = tmp_path / "graduated"
+    (source / "extracted").mkdir(parents=True)
+    (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
+
+    node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="d", impl="x.py:y")
+    adapter = get_adapter("python", extracted_source_dir=source)
+    out = tmp_path / "out"
+    adapter.emit(mini_pipeline(node), out)
+    assert (out / "extracted" / "x.py").read_text(encoding="utf-8") == real_impl

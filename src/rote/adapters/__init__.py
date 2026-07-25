@@ -61,13 +61,29 @@ def _cloudflare_adapter_factory(**options: Any) -> Adapter:
     return CloudflareAdapter(CloudflareAdapterConfig(external_backend=backend))
 
 
+def _source_dir(options: dict[str, Any]) -> Path | None:
+    """The ``extracted_source_dir`` option, normalized to a Path.
+
+    Directory of the pipeline.yaml being emitted; Python-emitting
+    adapters use the agent-written ``extracted/`` modules found there
+    verbatim instead of IR-derived stubs. TS adapters ignore it — a
+    Python module can't back a TS step (the graduator would have to
+    emit TS implementations; a known, documented gap).
+    """
+    value = options.get("extracted_source_dir")
+    return Path(value) if value is not None else None
+
+
 def _dbos_adapter_factory(**options: Any) -> Adapter:
     from rote.adapters.dbos import DbosAdapter, DbosAdapterConfig
 
     backend = _validated_backend(options)
-    if backend is None:
-        return DbosAdapter()
-    return DbosAdapter(DbosAdapterConfig(external_backend=backend))
+    return DbosAdapter(
+        DbosAdapterConfig(
+            external_backend=backend or "mcp",
+            extracted_source_dir=_source_dir(options),
+        )
+    )
 
 
 def _dbos_ts_adapter_factory(**options: Any) -> Adapter:
@@ -89,9 +105,9 @@ def _inngest_adapter_factory(**options: Any) -> Adapter:
 
 
 def _python_adapter_factory(**options: Any) -> Adapter:
-    from rote.adapters.python import PythonAdapter
+    from rote.adapters.python import PythonAdapter, PythonAdapterConfig
 
-    return PythonAdapter()
+    return PythonAdapter(PythonAdapterConfig(extracted_source_dir=_source_dir(options)))
 
 
 #: Name → factory. Factories accept ``**options`` (forwarded from

@@ -86,6 +86,7 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    resolve_extracted_source,
     serialize_helper,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
@@ -120,6 +121,11 @@ class DbosAdapterConfig:
     #           key in .env). Nodes without an ``mcp`` binding always use
     #           ``impl`` regardless of this setting.
     external_backend: Literal["mcp", "api"] = "mcp"
+    # Directory holding the graduation's pipeline.yaml. When its
+    # extracted/<module>.py exists (the agent's real, test-verified
+    # implementation), emission uses that file verbatim instead of an
+    # IR-derived NotImplementedError stub.
+    extracted_source_dir: Path | None = None
 
 
 # ───────── Retry mapping ─────────
@@ -959,7 +965,8 @@ class DbosAdapter:
                 written[f"extracted/{module_name}"] = writer.write(
                     "extracted",
                     f"{module_name}.py",
-                    content=emit_extracted_module(module_name, nodes),
+                    content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
+                    or emit_extracted_module(module_name, nodes),
                 )
         if mcp_backed:
             # The connection helper is the *source text* of

@@ -23,6 +23,7 @@ import json
 import keyword
 import re
 import textwrap
+from pathlib import Path
 from typing import Any
 
 from rote.adapters._common import _to_pascal_case, safe_docstring_line
@@ -689,6 +690,24 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
 
 
 # ───────── extracted/<module>.py emission ─────────
+
+
+def resolve_extracted_source(source_dir: Path | None, module_name: str) -> str | None:
+    """The agent-written ``extracted/<module>.py`` beside the pipeline, if any.
+
+    A graduation writes its real (test-verified) implementations into
+    ``<graduated>/extracted/`` next to ``pipeline.yaml``. Emission
+    prefers those files verbatim over IR-derived stubs so the runtime
+    dir runs without anyone hand-copying modules across — the gap that
+    made the first real-server pipeline raise ``NotImplementedError``
+    on step one despite the agent having written the code.
+    """
+    if source_dir is None:
+        return None
+    candidate = Path(source_dir) / "extracted" / f"{module_name}.py"
+    if not candidate.is_file():
+        return None
+    return candidate.read_text(encoding="utf-8")
 
 
 def _extracted_layout(pipeline: Pipeline) -> dict[str, list[Node]]:
