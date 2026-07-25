@@ -35,10 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rote.compiler.drivers.claude import (
-    DEFAULT_ALLOWED_TOOLS,
-    build_subscription_env,
-)
+from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
 from rote.eval.empirical import (
     MCP_CONFIG_FILENAME,
     RESULT_FILENAME,
@@ -48,6 +45,7 @@ from rote.eval.empirical import (
     _skill_prompt,
     measured_run_record,
 )
+from rote.inference import build_subscription_env
 
 BASELINE_DIRNAME = "baseline"
 METRICS_FILENAME = "metrics.json"
