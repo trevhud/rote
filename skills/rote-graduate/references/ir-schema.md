@@ -199,8 +199,12 @@ Rules and edge cases:
    level, so treat them as documentation for the loop harness.
 5. **`fan_out` nodes:** bind the element parameter to the upstream
    *list* (e.g. `contact: exclusion_check_sequence.output.passed`).
-   The runtime is responsible for per-element dispatch; v0 adapters
-   pass the whole list in a single invocation.
+   The runtime is responsible for per-element dispatch — the DBOS
+   adapter enqueues one durable step per element (other adapters still
+   pass the whole list in one invocation). Type the node's signature
+   for a SINGLE element, and when the node also binds other upstream
+   outputs as shared context, mark the list edge with `fan_out: true`
+   so the element parameter is unambiguous.
 6. **HITL gates need no `inputs:`** — a gate's "output" is the signal
    payload the human sends, and downstream nodes reference it as
    `<gate_id>.output[...]`.

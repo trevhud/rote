@@ -586,9 +586,14 @@ Don't waste time debugging stubs. These are intentional.
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
   code; the graduator produces scaffolding, not production code
-- `fan_out` nodes receive the whole upstream list in one invocation —
-  per-element dispatch is a planned enhancement on top of data-flow
-  threading
+- `fan_out` nodes receive the whole upstream list in one invocation on
+  every adapter EXCEPT DBOS, which dispatches one enqueued durable step
+  per element (element param resolved by
+  `rote.adapters._py_common.fan_out_binding` — fan_out edge marker >
+  incoming-edge source > only node-bound param; ambiguity is an
+  emit-time error). Per-element dispatch on the other adapters is the
+  remaining enhancement — until then their judge signatures must accept
+  the batch
 
 **Working end-to-end:**
 
