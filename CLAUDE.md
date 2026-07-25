@@ -332,6 +332,64 @@ bites hardest on the fan_out enqueue path, where the failure is
 observed in a *different* process from where it was raised — any
 durability boundary is also an error-fidelity boundary.
 
+### Emitted judges do not contain the vendor call
+
+A judge module holds its Pydantic models, prompt, schema and operator
+knobs; the call itself goes through `call_judge` in
+`signatures/_rote_inference.py` — the verbatim source of
+`rote.inference._runtime_helper` (never hand-edit the emitted copy; fix
+the module — byte-equality test in `tests/test_inference.py`). That
+helper resolves *who pays*: `claude-cli` (subscription, local only),
+`api` (the user's key), `rote-cloud` (tenant account), selected by
+`ROTE_INFERENCE_<NODE_ID>` > `ROTE_INFERENCE` > auto-detect
+(cheapest-to-the-user first). See [`docs/inference-runtime.md`](docs/inference-runtime.md).
+
+Traps if you touch this:
+
+- **The provider is not in the IR and must never be.** A
+  `pipeline.yaml` is shared, committed, and sometimes third-party — a
+  billing decision encoded there travels to people it doesn't belong
+  to. `signature_spec.client` stays (wire format is behavior); the
+  provider is a deployment fact. Consequence to preserve: the same
+  emitted artifact runs on a subscription locally and a key in CI with
+  no re-emit and no diff.
+- **`build_subscription_env()` lives in the helper**, not beside the
+  Claude driver, and `drivers/claude.py` / `eval/*` import it back. Two
+  copies is exactly how the `ANTHROPIC_API_KEY` scrub gets fixed in one
+  place and silently drifts back to key billing in the other.
+- **The refusal is at `rote deploy`, not `rote emit`.** Emit cannot
+  know where the directory is headed — that's the point of the bullet
+  above. Don't "move it earlier".
+- **An explicit endpoint rules out `claude-cli` in auto-detect.** The
+  proven AI Gateway config is `ROTE_BASE_URL_<ID>` + a bearer token; a
+  laptop with `claude` on PATH would otherwise ignore it silently.
+- **The helper is stdlib-only at module level** (vendor SDKs import
+  lazily inside functions) and imports nothing from rote. That
+  constraint is what makes the verbatim copy safe.
+- **No custom exception classes in the helper.** A custom class only
+  unpickles where its module is importable, and the observer of a
+  failed durable step isn't always the process that raised it — the
+  same failure mode as the vendor-SDK gotcha below. Plain
+  `RuntimeError` carrying type / status / model / node / provider.
+
+### `claude -p` gets schema-locked output, and costs 37k tokens if you let it
+
+`claude -p --json-schema <schema> --output-format json` is a **forced
+tool call** under the hood (`stop_reason: "tool_use"`) and returns the
+validated object in `structured_output` — the subscription lane has the
+same structural guarantee as the SDK lane, not "prose that parses".
+Prompt goes on **stdin**, not argv (judge prompts carry whole
+documents; argv is size-limited and visible in `ps`).
+
+The default invocation ships Claude Code's entire coding-agent system
+prompt: measured ~37k cache-creation tokens and 11.5s for a
+one-sentence judge. `--system-prompt <one line>` + `--tools` (no
+arguments = no tools) + `--setting-sources ""` brings the identical
+call to ~740 tokens and ~3.5s. All three are in the emitted helper;
+removing any of them silently restores the overhead. Also: the CLI
+reports API failures *inside a zero exit* (`is_error: true` in the
+envelope), so returncode alone calls a failed judge a success.
+
 ### Sonnet is the default, not Opus
 
 Both `ClaudeDriver` and `AnthropicApiDriver` default to
