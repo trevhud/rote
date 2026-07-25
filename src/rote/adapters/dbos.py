@@ -89,6 +89,8 @@ from rote.adapters._py_common import (
     fan_out_binding,
     resolve_extracted_source,
     serialize_helper,
+    spec_judges,
+    write_signature_package,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
@@ -189,15 +191,21 @@ def _timeout_comment(node: Node) -> str:
 # ───────── signatures/<id>.py emission ─────────
 
 
+_DBOS_SIGNATURE_CONTEXT = (
+    "The non-determinism lives inside this module; the workflow step that\n"
+    "calls it stays a checkpointed, retryable unit."
+)
+
+
 def emit_signature_module(node: Node, cfg: DbosAdapterConfig) -> str:
     """Emit signatures/<node_id>.py for an llm_judge node with a spec.
 
     Delegates to the shared Python signature emitter
     (:func:`rote.adapters._py_common.emit_signature_module`) with this
     adapter's identity strings: generated Pydantic models from the
-    ``signature_spec`` JSON Schemas plus a typed judge class that calls
-    the vendor SDK with structured output. See the shared module for the
-    full emission contract.
+    ``signature_spec`` JSON Schemas plus a typed judge class that
+    delegates the vendor call to ``signatures/_rote_inference.py``. See
+    the shared module for the full emission contract.
     """
     return _shared_emit_signature_module(
         node,
@@ -205,10 +213,7 @@ def emit_signature_module(node: Node, cfg: DbosAdapterConfig) -> str:
         openai_default_model=cfg.openai_default_model,
         generated_by="rote.adapters.dbos",
         regen_command="rote emit --runtime dbos",
-        context_note=(
-            "The non-determinism lives inside this module; the workflow step that\n"
-            "calls it stays a checkpointed, retryable unit."
-        ),
+        context_note=_DBOS_SIGNATURE_CONTEXT,
     )
 
 
@@ -1020,23 +1025,18 @@ class DbosAdapter:
                 content=Path(_runtime_helper.__file__).read_text(encoding="utf-8"),
             )
 
-        spec_judges = [
-            n
-            for n in pipeline.nodes
-            if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
-        ]
-        if spec_judges:
-            written["signatures/__init__"] = writer.write(
-                "signatures",
-                "__init__.py",
-                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
+        written.update(
+            write_signature_package(
+                writer,
+                spec_judges(pipeline),
+                pipeline_name=pipeline.name,
+                anthropic_default_model=self.config.anthropic_default_model,
+                openai_default_model=self.config.openai_default_model,
+                generated_by="rote.adapters.dbos",
+                regen_command="rote emit --runtime dbos",
+                context_note=_DBOS_SIGNATURE_CONTEXT,
             )
-            for node in spec_judges:
-                written[f"signatures/{node.id}"] = writer.write(
-                    "signatures",
-                    f"{node.id}.py",
-                    content=emit_signature_module(node, self.config),
-                )
+        )
 
         written["dbos-config"] = writer.write(
             "dbos-config.yaml", content=emit_dbos_config(pipeline)

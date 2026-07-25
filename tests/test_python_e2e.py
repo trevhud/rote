@@ -237,10 +237,19 @@ def test_all_imports_resolve_from_stdlib_and_emitted_files(
 ) -> None:
     """Dependency-light means it: after the judge overlay, every import
     anywhere in the directory (module-level or lazy) is stdlib or one of
-    the emitted local packages."""
+    the emitted local packages.
+
+    ``signatures/_rote_inference.py`` is exempt and only it: that module
+    *is* the vendor call, so its lazy ``import anthropic`` / ``import
+    openai`` are the dependency the overlay exists to replace. Nothing
+    imports it once the judges are stubbed out, so it never executes —
+    but every other file must stay clean whether stubbed or not.
+    """
     out, _, _ = script_run
     allowed = set(sys.stdlib_module_names) | {"extracted", "signatures"}
     for path in out.rglob("*.py"):
+        if path.name == "_rote_inference.py":
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             roots: list[str] = []
