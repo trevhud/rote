@@ -92,7 +92,13 @@ _MOCK_OUTPUTS: dict[str, dict] = {
     "hubspot_create_list": {"list_id": "list-abc123"},
     "exclusion_check_dnc": {"passed": [], "excluded": []},
     "exclusion_check_recent": {"passed": [], "excluded": []},
-    "exclusion_check_sequence": {"passed": [], "excluded": []},
+    # Two survivors so the personalize_email fan_out exercises real
+    # per-element dispatch (one enqueued step per contact) on the
+    # live runtime — an empty list would emit zero invocations.
+    "exclusion_check_sequence": {
+        "passed": [{"vid": "hs-1", "name": "Ada"}, {"vid": "hs-2", "name": "Grace"}],
+        "excluded": [],
+    },
     "create_sales_template": {"template_ids": ["t1", "t2"]},
 }
 
@@ -131,7 +137,7 @@ def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) ->
             f"    def __init__(self, **kwargs):\n"
             f"        self.kwargs = kwargs\n"
             f"\n\nclass _Result:\n"
-            f"    def model_dump(self):\n"
+            f"    def model_dump(self, **kwargs):\n"
             f"        return {_mock_output(node.id)!r}\n"
             f"\n\nclass {pascal}:\n"
             f"    def forward(self, inputs):\n"
@@ -329,8 +335,21 @@ def test_bdr_workflow_runs_through_hitl_gates(
     # pipeline input field + two different upstream nodes.
     report_payload = payloads["pre_enrollment_report"]
     assert report_payload["campaign_name"] == brief["drug_brand"]
-    assert report_payload["passed_contacts"] == []
+    passed = _mock_output("exclusion_check_sequence")["passed"]
+    assert report_payload["passed_contacts"] == passed
     assert report_payload["template_ids"] == ["t1", "t2"]
+
+    # ── fan_out: personalize_email dispatched once per surviving contact,
+    # each invocation carrying ONE element plus the shared scalars —
+    # never the whole list in a single call.
+    personalize_calls = [
+        r["payload"] for r in _recorded(record_path) if r["node"] == "personalize_email"
+    ]
+    # Enqueued steps may complete in any order; compare as a set of elements.
+    assert sorted(c["contact"]["vid"] for c in personalize_calls) == ["hs-1", "hs-2"]
+    for call in personalize_calls:
+        assert call["intel"] == _mock_output("target_research")
+        assert call["campaign_type"] == brief["campaign_type"]
 
     # ── Durability: the gates were checkpointed recv steps in the system
     # database, not in-memory waits. A crashed process would recover the
