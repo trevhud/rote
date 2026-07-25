@@ -269,6 +269,31 @@ Two regimes, don't mix them up:
   reconstruct as plain `Error`s). See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
+### fastmcp `result.data` is None on most real-world servers
+
+`call_mcp_tool` in `rote.mcp._runtime_helper` must NOT be "simplified"
+back to `return result.data`: fastmcp only hydrates `.data` when the
+server declares an output schema or returns structured content. FastMCP
+servers auto-generate output schemas (which is why the wordbank e2e
+fixtures never caught this), but real-world servers — the TS SDK in
+particular — return plain text-content JSON, and `.data` is silently
+None. The helper's `_result_payload` falls back to parsing text blocks
+(regression: `tests/test_mcp_client.py::
+test_call_mcp_tool_falls_back_to_text_content`). Found live on the
+first real-server run: every MCP step returned None.
+
+### An mcp-bound node is a BARE tool call — post-processing must split
+
+The default backend emits an mcp-bound step as exactly "call the tool,
+return the result". If a skill step is "call X, then filter/match/
+reshape", the transformation half must be its own `pure_function` node
+or it silently vanishes at emission (live failure: match-by-name logic
+lost, workflow crashed dereferencing a declared-but-never-computed
+key). The rubric (`node-kinds.md`, external_call) mandates the split;
+`rote.probe.cross_check` flags violations as `output_mismatch` (node
+declares `output` keys the observed tool result can't provide) and
+`rote graduate` prints them as WARNINGs.
+
 ### Sonnet is the default, not Opus
 
 Both `ClaudeDriver` and `AnthropicApiDriver` default to
@@ -574,9 +599,20 @@ Don't waste time debugging stubs. These are intentional.
   `.rote-manifest.json` and, on re-emit, preserves any file the user
   edited (fresh content lands in a `<name>.new` sibling and the CLI
   reports it). Never write emitted files with bare `write_text` in an
-  adapter — route through the writer.
+  adapter — route through the writer. Emission also sources the agent's
+  REAL `extracted/<module>.py` implementations found beside the
+  pipeline.yaml verbatim into the runtime dir (dbos + python adapters,
+  `rote.adapters._py_common.resolve_extracted_source`); IR-derived
+  stubs are only the fallback. Known gaps: temporal keeps its
+  config-driven `expected.extracted` module path, and TS runtimes
+  can't consume Python modules at all (the graduator would have to
+  emit TS implementations).
 - `rote graduate` (SKILL.md → IR → Temporal code), stamping a
-  `provenance.json` sidecar (section hashes; see `rote.skill_source`)
+  `provenance.json` sidecar (section hashes; see `rote.skill_source`).
+  Every run streams NDJSON progress to `<out>/progress.jsonl`
+  (`--progress-file` just moves it) and prints the `tail -f` watch
+  command as its first stderr line — agents driving a run relay that
+  line to the human (AGENTS.md).
 - `rote graduate --update` — incremental re-graduation: diffs the
   skill against the stamped provenance, re-derives only nodes whose
   source sections changed, enforces that unchanged nodes' ids survive,
