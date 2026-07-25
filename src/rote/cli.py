@@ -782,6 +782,19 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 "baseline (different task path, or held back by the read-only gate)",
                 file=summary_stream,
             )
+        output_mismatch = cross["output_mismatch"]
+        assert isinstance(output_mismatch, list)
+        for entry in output_mismatch:
+            print(
+                f"  cross-check: WARNING node {entry['node']} declares output "
+                f"key(s) [{', '.join(entry['missing_keys'])}] that the observed "
+                f"{entry['server']}.{entry['tool']} result "
+                f"(a JSON {entry['observed_shape']}) cannot provide — an "
+                "mcp-bound node emits a bare tool call, so post-processing "
+                "folded into it is dropped; split the transformation into a "
+                "pure_function node (node-kinds.md, external_call)",
+                file=summary_stream,
+            )
 
     # ── The upload leg of the logged-in default ── runs last so a deploy
     # failure can never cost the local artifacts; those are already on

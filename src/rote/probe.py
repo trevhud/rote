@@ -193,6 +193,14 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
       the baseline task didn't take, or a write tool the read-only gate
       held back), so it's a note, not an alarm.
     * ``confirmed`` — bound and observed; the binding is evidenced.
+    * ``output_mismatch`` — an mcp-bound node declares ``output`` keys
+      the observed tool result cannot provide. The default backend emits
+      a *bare* tool call, so post-processing folded into the node
+      (filter/match/reshape) silently disappears at emission; the rubric
+      requires it split into a downstream ``pure_function``. Found live:
+      "call list_organizations then match by name" graduated as one node
+      with ``output: {organization_id}`` — the emitted step returned the
+      raw org array and the match logic existed nowhere.
 
     ``pipeline`` is a :class:`rote.ir.Pipeline`; typed as ``Any`` to keep
     this module import-light (it must not pull the IR at import time).
@@ -226,10 +234,42 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
         for (server, tool), nodes in sorted(static.items())
         if (server, tool) not in observed_counts
     ]
+    payloads_by_tool: dict[tuple[str, str], list[Any]] = {}
+    for o in observations:
+        if not o.is_error and (parsed := parse_tool_result(o.result)) is not None:
+            payloads_by_tool.setdefault((o.server, o.tool), []).append(parsed)
+
+    node_by_id = {node.id: node for node in pipeline.nodes}
+    output_mismatch = []
+    for (server, tool), node_ids in sorted(static.items()):
+        payloads = payloads_by_tool.get((server, tool))
+        if not payloads:
+            continue
+        observed_keys = {key for p in payloads if isinstance(p, dict) for key in p}
+        observed_shape = (
+            "object" if all(isinstance(p, dict) for p in payloads) else type(payloads[0]).__name__
+        )
+        for node_id in sorted(node_ids):
+            declared = node_by_id[node_id].output
+            if not isinstance(declared, dict):
+                continue
+            missing = sorted(key for key in declared if key not in observed_keys)
+            if missing:
+                output_mismatch.append(
+                    {
+                        "server": server,
+                        "tool": tool,
+                        "node": node_id,
+                        "missing_keys": missing,
+                        "observed_shape": observed_shape,
+                    }
+                )
+
     return {
         "observed_only": observed_only,
         "static_only": static_only,
         "confirmed": confirmed,
+        "output_mismatch": output_mismatch,
     }
 
 
