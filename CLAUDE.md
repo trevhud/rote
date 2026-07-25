@@ -294,6 +294,44 @@ key). The rubric (`node-kinds.md`, external_call) mandates the split;
 declares `output` keys the observed tool result can't provide) and
 `rote compile` prints them as WARNINGs.
 
+### `temperature` is rejected outright by current Claude models
+
+A judge carrying `temperature` 400s on every call against a current
+Anthropic model (`invalid_request_error: \`temperature\` is not
+supported on this model`). The compiler used to write
+`temperature: 0.0` on judges as a determinism instinct, which made
+every compiled pipeline dead on arrival the moment `ROTE_MODEL_<ID>`
+pointed at a current model — found live, first real gateway run.
+
+Two halves of the fix, keep both: the rubric
+(`llm-judge-extraction.md`) says never set `temperature` — determinism
+comes from schema-locked decoding (forced tool call / `json_schema`),
+not the sampler — and when the IR *does* set one, emitted judges
+render it as a `ROTE_TEMPERATURE_<NODE_ID>` env knob whose empty value
+drops the parameter entirely (`_sampling_kwargs()` in Python,
+`...(TEMPERATURE.trim() ? … : {})` in TS). Don't "simplify" it back to
+a literal keyword argument: a baked constant cannot be escaped without
+a re-emit, which defeats the model-override knob next to it.
+
+### Vendor SDK errors do not survive a durable step boundary
+
+`anthropic.APIError` / `openai.APIError` subclasses take keyword-only
+`response`/`body` arguments, so `BaseException.__reduce__`'s
+`(cls, args)` cannot rebuild them. A runtime that persists a failed
+step by pickling the exception — DBOS does — therefore replaces the
+real status and body with `TypeError: APIStatusError.__init__()
+missing 2 required keyword-only arguments` at the join. That masked
+the temperature 400 above completely.
+
+Emitted judges wrap the SDK call and re-raise through
+`_durable_error()`, a plain `RuntimeError` carrying type, HTTP status,
+model, node id, and the original message (regression:
+`tests/test_dbos_adapter.py::test_judge_translates_sdk_errors_so_they_survive_a_durable_step`,
+which asserts the translated error actually pickle-round-trips). This
+bites hardest on the fan_out enqueue path, where the failure is
+observed in a *different* process from where it was raised — any
+durability boundary is also an error-fidelity boundary.
+
 ### Sonnet is the default, not Opus
 
 Both `ClaudeDriver` and `AnthropicApiDriver` default to
@@ -624,11 +662,25 @@ Don't waste time debugging stubs. These are intentional.
   and merges file-level so user-filled stubs are kept. No section
   changes → no agent run at all.
 - Per-node inference overrides in emitted judges: `ROTE_MODEL_<ID>` /
-  `ROTE_BASE_URL_<ID>` env vars beat the IR defaults on all four
-  runtimes, and `signature_spec.base_url` reaches any
-  OpenAI-compatible endpoint. Node.source (provenance) is excluded
-  from the pipeline hash on purpose — metadata must not re-version
-  in-flight workflows.
+  `ROTE_BASE_URL_<ID>` (plus `ROTE_TEMPERATURE_<ID>` when the IR sets
+  one) env vars beat the IR defaults on all four runtimes, and
+  `signature_spec.base_url` reaches any OpenAI-compatible endpoint.
+  Node.source (provenance) is excluded from the pipeline hash on
+  purpose — metadata must not re-version in-flight workflows.
+  **Proven config — judges through a Cloudflare AI Gateway** (no
+  Anthropic key at all; Unified Billing pays provider rates from CF
+  credits and logs every call's tokens + cost):
+  `ROTE_BASE_URL_<ID>=https://api.cloudflare.com/client/v4/accounts/<ACCT>/ai`,
+  `ROTE_MODEL_<ID>=anthropic/claude-sonnet-5`, and the CF API token in
+  `ANTHROPIC_AUTH_TOKEN` — the SDK sends it as `Authorization: Bearer`,
+  which is what that endpoint wants; passing it as `ANTHROPIC_API_KEY`
+  (→ `x-api-key`) gets a 401, contradicting Cloudflare's own JS
+  example. Two more traps: only *current-generation* model ids resolve
+  (`anthropic/claude-sonnet-4-5` from the CF docs 404s), and `@cf/*`
+  Workers AI models are rejected by the `/v1/messages` route entirely —
+  they only work on `/v1/chat/completions`. Routing to a *named*
+  gateway needs a `cf-aig-gateway-id` header, which emitted clients
+  can't inject; the account's default gateway needs no header.
 - All three compiler drivers: `ClaudeDriver` (`claude -p`),
   `CodexDriver` (`codex exec` — workspace-write sandbox, no env
   scrubbing since Codex login is only overridden by `CODEX_API_KEY`,
