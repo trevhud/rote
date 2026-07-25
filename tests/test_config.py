@@ -374,3 +374,45 @@ def test_emit_honors_config_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert rc == 0
     assert (out_dir / "workflow.py").exists()  # temporal shape, not dbos main.py
     assert not (out_dir / "main.py").exists()
+
+
+# ───────── inference provider selection ─────────
+
+
+def test_inference_resolves_through_the_same_layers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Who pays for judges is a configurable default like any other — the
+    point of the key is that a user sets it once instead of exporting an
+    env var before every run."""
+    layers = _layers(monkeypatch, tmp_path, user="inference: api\n")
+    assert resolve("inference", None, layers=layers).value == "api"
+    monkeypatch.setenv("ROTE_INFERENCE", "rote-cloud")
+    assert resolve("inference", None, layers=layers).value == "rote-cloud"
+    assert resolve("inference", "claude-cli", layers=layers).value == "claude-cli"
+
+
+def test_inference_rejects_a_provider_that_does_not_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ConfigError, match="not valid"):
+        _layers(monkeypatch, tmp_path, user="inference: free-lunch\n")
+
+
+def test_config_reports_the_inference_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _layers(monkeypatch, tmp_path, user="inference: rote-cloud\n")
+    rc = cli_main(["config", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["settings"]["inference"]["value"] == "rote-cloud"
+
+
+def test_unset_inference_reports_auto_detect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _layers(monkeypatch, tmp_path)
+    rc = cli_main(["config"])
+    assert rc == 0
+    assert "auto-detect" in capsys.readouterr().out

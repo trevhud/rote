@@ -49,6 +49,12 @@ def _agent_choices() -> tuple[str, ...]:
     return tuple(sorted(DRIVERS))
 
 
+def _inference_choices() -> tuple[str, ...]:
+    from rote.inference import PROVIDERS
+
+    return PROVIDERS
+
+
 @dataclass(frozen=True)
 class ConfigKey:
     """One configurable default: its name, env override, and validity."""
@@ -57,13 +63,16 @@ class ConfigKey:
     env: str
     description: str
     choices: tuple[str, ...] | None = None
-    lazy_choices: str | None = None  # "runtime" | "agent" — resolved on demand
+    # "runtime" | "agent" | "inference" — resolved on demand
+    lazy_choices: str | None = None
 
     def valid_choices(self) -> tuple[str, ...] | None:
         if self.lazy_choices == "runtime":
             return _runtime_choices()
         if self.lazy_choices == "agent":
             return _agent_choices()
+        if self.lazy_choices == "inference":
+            return _inference_choices()
         return self.choices
 
 
@@ -93,6 +102,12 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         name="model",
         env="ROTE_MODEL",
         description="compiler model override (unset = driver default)",
+    ),
+    ConfigKey(
+        name="inference",
+        env="ROTE_INFERENCE",
+        description="who serves (and pays for) emitted judges; unset = auto-detect",
+        lazy_choices="inference",
     ),
 )
 
