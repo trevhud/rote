@@ -37,12 +37,10 @@ from statistics import mean
 from typing import Any
 
 from rote._dbos import dbos_system_database_url as _dbos_system_database_url
-from rote.compiler.drivers.claude import (
-    DEFAULT_ALLOWED_TOOLS,
-    build_subscription_env,
-)
+from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
+from rote.inference import build_subscription_env
 from rote.ir import NodeKind, Pipeline
 
 RESULT_FILENAME = "result.json"
