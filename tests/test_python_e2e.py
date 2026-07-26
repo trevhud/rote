@@ -86,9 +86,18 @@ def score_item(**payload):
     _record("score_item", payload)
     return {"score": 1}
 """,
-    "extracted/research_loop.py": """\
-def research_loop(**payload):
-    _record("research_loop", payload)
+    # The agent loop is no longer a stub in extracted/ — it calls
+    # run_agent_loop in the shared inference helper, which would spawn
+    # `claude -p` or hit a vendor endpoint. Overlay the helper for the
+    # same reason the judge is overlaid: this test is about
+    # orchestration, not vendor I/O.
+    "signatures/_rote_inference.py": """\
+def run_agent_loop(**kwargs):
+    # The node payload reaches the agent as the JSON `task`; record it
+    # decoded so the data-flow assertions read the same as every other
+    # node. Also record the loop_body sub-nodes actually bound as tools.
+    _record("research_loop", json.loads(kwargs["task"]))
+    _record("research_loop:tools", sorted(kwargs.get("local_tools") or {}))
     return {"findings": ["f1", "f2"]}
 """,
     "extracted/report.py": """\
@@ -239,7 +248,7 @@ def test_all_imports_resolve_from_stdlib_and_emitted_files(
     anywhere in the directory (module-level or lazy) is stdlib or one of
     the emitted local packages.
 
-    ``signatures/_rote_inference.py`` is exempt and only it: that module
+    The two verbatim shared helpers are exempt: ``_rote_inference.py``
     *is* the vendor call, so its lazy ``import anthropic`` / ``import
     openai`` are the dependency the overlay exists to replace. Nothing
     imports it once the judges are stubbed out, so it never executes —
@@ -248,7 +257,7 @@ def test_all_imports_resolve_from_stdlib_and_emitted_files(
     out, _, _ = script_run
     allowed = set(sys.stdlib_module_names) | {"extracted", "signatures"}
     for path in out.rglob("*.py"):
-        if path.name == "_rote_inference.py":
+        if path.name in {"_rote_inference.py", "_rote_mcp.py"}:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -259,3 +268,17 @@ def test_all_imports_resolve_from_stdlib_and_emitted_files(
                 roots = [node.module.split(".")[0]]
             for root in roots:
                 assert root in allowed, f"{path.name} imports non-stdlib module {root!r}"
+
+
+def test_loop_body_sub_nodes_are_bound_as_agent_tools(
+    script_run: tuple[Path, Path, str],
+) -> None:
+    """The agent_loop drives its loop_body sub-nodes, as the IR says.
+
+    This is the half of "agent loops are no longer stubs" that the
+    emission tests can't prove: the sub-node arrived at the runtime as a
+    live callable the agent can invoke, not as prose in a docstring.
+    """
+    _, record_path, _ = script_run
+    bound = [r["payload"] for r in _records(record_path) if r["node"] == "research_loop:tools"]
+    assert bound == [["score_item"]]

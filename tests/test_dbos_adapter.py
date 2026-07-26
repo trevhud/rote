@@ -98,8 +98,6 @@ def test_emit_produces_expected_files(emit_result: dict[str, Path]) -> None:
         "extracted/hubspot",
         "extracted/exclusion_checks",
         "extracted/report",
-        "extracted/target_research",
-        "extracted/lead_generation_loop",
     ):
         assert emit_result[key].exists(), f"missing {key}"
     # Both BDR judges carry signature_spec → generated modules.
@@ -356,6 +354,12 @@ def test_sqlite_default_with_env_override(main_src: str) -> None:
 # ───────── The MCP invariant ─────────
 
 
+#: The two verbatim shared helpers, exempt from the MCP-free scan below.
+#: Neither is code emitted *for a node*: one is the MCP client itself,
+#: the other reaches it only to wire an agent_loop's declared tools.
+_MCP_HELPER_FILES = {"_rote_mcp.py", "_rote_inference.py"}
+
+
 def _assert_mcp_free(path: Path) -> None:
     """Walk executable statements; comments/docstrings may mention MCP to
     explain the compilation history, but no identifier can reference it."""
@@ -387,7 +391,7 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
     emitted app — main.py, extracted stubs, or generated signatures."""
     checked = 0
     for path in emit_result.values():
-        if path.suffix == ".py":
+        if path.suffix == ".py" and path.name not in _MCP_HELPER_FILES:
             _assert_mcp_free(path)
             checked += 1
     assert checked >= 10  # main + __init__s + extracted + signatures
@@ -400,14 +404,30 @@ def test_extracted_stubs_raise_not_implemented(emit_result: dict[str, Path]) -> 
     for label, path in emit_result.items():
         if not label.startswith("extracted/") or label.endswith("__init__"):
             continue
+        if label.endswith("_rote_mcp"):
+            continue  # the verbatim MCP client, not a scaffolded stub
         src = path.read_text(encoding="utf-8")
         assert "raise NotImplementedError(" in src, f"{label} lost its stub"
 
 
-def test_agent_loop_stub_documents_tools(emit_result: dict[str, Path]) -> None:
-    src = emit_result["extracted/lead_generation_loop"].read_text(encoding="utf-8")
-    assert "zoominfo_search_contacts" in src
-    assert "enrich_contact_batch" in src  # loop_body sub-node documented
+def test_agent_loop_emits_a_real_bounded_loop(main_src: str) -> None:
+    """The one node kind that used to hand work back to the user now runs.
+
+    A stub here meant a graduated pipeline stopped at its hardest step,
+    so the emitted code drives a real bounded loop through the shared
+    provider resolver — and passes the loop_body sub-nodes as callables
+    so the agent drives them per iteration, as the IR describes.
+    """
+    assert "from signatures._rote_inference import run_agent_loop" in main_src
+    assert "raise NotImplementedError" not in main_src
+    assert 'node_id="lead_generation_loop",' in main_src
+    assert '"zoominfo_search_contacts",' in main_src
+    assert "local_tools={" in main_src
+    assert '"enrich_contact_batch": enrich_contact_batch,' in main_src
+    assert '"vet_contact": vet_contact,' in main_src
+    # The IR's termination config is the loop's actual bound.
+    assert "max_iterations=10," in main_src
+    assert "vetted_count >= target_quota" in main_src
 
 
 # ───────── Generated signature modules ─────────

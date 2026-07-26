@@ -4,7 +4,7 @@ How an emitted pipeline's `llm_judge` steps get their inference, who
 pays for it, and how that choice is made.
 
 This is the sibling of [`agent-runtime.md`](agent-runtime.md), which
-records the same decision one layer up — for the graduator *agent*.
+records the same decision one layer up — for the compiler *agent*.
 Read that first. Everything here is deliberately shaped to match it,
 because rote should have exactly one way of answering "which model
 provider, billed to whom".
@@ -18,12 +18,12 @@ had an answer to "whose money".
 
 | Layer | What runs | Selection | Billing |
 | --- | --- | --- | --- |
-| Graduator agent | `rote graduate` | `--agent` / `agent:` | subscription (`claude`, `codex`) or key (`api`) |
+| Compiler agent | `rote compile` | `--agent` / `agent:` | subscription (`claude`, `codex`) or key (`api`) |
 | Skill baseline | `rote run <skill>`, `rote eval --run` | fixed: `claude -p` | subscription |
-| **Emitted judge** | the graduated pipeline | **none — API key only** | **user's key, always** |
+| **Emitted judge** | the compiled pipeline | **none — API key only** | **user's key, always** |
 
 The gap has a real cost. A user with a Claude Max subscription can
-graduate a skill for free and then cannot run the result without
+compile a skill for free and then cannot run the result without
 putting a paid API key somewhere, which is a strange cliff to fall off
 at the exact moment the product is supposed to be paying off. And a
 user logged into rote cloud has a billing relationship with us that
@@ -139,13 +139,13 @@ model. Vendor call code stops being duplicated per node.
 always beat an active OAuth session, defeating the entire point),
 preserve `CLAUDE_CODE_OAUTH_TOKEN` for CI, silence non-interactive
 animations. Today it lives in
-`rote.graduator.drivers.claude` and is imported by the baseline runner
+`rote.compiler.drivers.claude` and is imported by the baseline runner
 and the empirical eval runner.
 
 It **moves into `rote.inference._runtime_helper`**, and
 `drivers/claude.py` imports it back from there. The emitted app needs
 that exact rule for its `claude-cli` provider, the repo needs it for
-the graduator, and neither gets its own copy — there is one definition
+the compiler, and neither gets its own copy — there is one definition
 and one byte-identical build artifact, asserted the same way
 `_rote_mcp.py` is:
 
@@ -161,9 +161,9 @@ under, and it is what makes the copy safe rather than a fork.
 
 ## The cloud runs the CLI; the cloud route stays a proxy
 
-rote-cloud's graduation container already installs
-`rote-cli[api,openai-api]` and runs the OSS graduator — the platform
-does not reimplement graduation, it *runs rote*. Inference keeps that
+rote-cloud's compilation container already installs
+`rote-cli[api,openai-api]` and runs the OSS compiler — the platform
+does not reimplement compilation, it *runs rote*. Inference keeps that
 rule, from the other end.
 
 The `rote-cloud` provider sends the **vendor's own wire format** to
@@ -270,8 +270,8 @@ nothing can answer reliably anyway.
 
 | Name | Means |
 | --- | --- |
-| `--agent` / `ROTE_AGENT` | which **graduator driver** runs the agent loop |
-| `--model` / `ROTE_MODEL` | the **graduator's** model |
+| `--agent` / `ROTE_AGENT` | which **compiler driver** runs the agent loop |
+| `--model` / `ROTE_MODEL` | the **compiler's** model |
 | `--inference` / `ROTE_INFERENCE` | which **judge provider** serves emitted judges |
 | `ROTE_MODEL_<NODE_ID>` | one **judge's** model |
 | `--backend` | how an `external_call` reaches its tool (`mcp` \| `api`) |
@@ -279,12 +279,12 @@ nothing can answer reliably anyway.
 `ROTE_MODEL` and `ROTE_MODEL_<NODE_ID>` are adjacent and mean
 different things. That is survivable because the suffixed form is
 always node-scoped, but do not add a bare `ROTE_TEMPERATURE` or
-`ROTE_BASE_URL` — the unsuffixed namespace belongs to the graduator.
+`ROTE_BASE_URL` — the unsuffixed namespace belongs to the compiler.
 
 ## References
 
 * [`agent-runtime.md`](agent-runtime.md) — the same decision for the
-  graduator agent, and the source of this document's shape
+  compiler agent, and the source of this document's shape
 * [`mcp-client.md`](mcp-client.md) — the verbatim-shipped-helper
   pattern this reuses
 * `rote.config` — the layered resolution every selection flag uses
