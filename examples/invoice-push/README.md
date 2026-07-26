@@ -13,11 +13,11 @@ eligibility, click ⋮ → Push, interpret the toast, refresh and
 re-locate by Batch ID) can't be a pure function or a single external
 call: it's a bounded loop of browser actions with data-dependent
 branching, including two toast results (`ERR-AUTH`, `ERR-CONN`) that
-abort the entire run. The graduated pipeline keeps exactly that one
+abort the entire run. The compiled pipeline keeps exactly that one
 step as a bounded `agent_loop` (with a five-node `loop_body`, a
 termination condition, and a 200-iteration cap) while everything
 around it — date-window math, filter setup, toast interpretation,
-report assembly, Drive I/O — graduates to deterministic code.
+report assembly, Drive I/O — compiles to deterministic code.
 Roteness: 12 of 13 steps.
 
 ## Why the eval sidecar matters here
@@ -38,7 +38,7 @@ heavy data).
 
 - [`skill/SKILL.md`](skill/SKILL.md) — the source skill, as an agent
   would run it
-- [`expected/pipeline.yaml`](expected/pipeline.yaml) — the graduated
+- [`expected/pipeline.yaml`](expected/pipeline.yaml) — the compiled
   IR (13 nodes: 1 agent_loop + 5 loop-body sub-nodes, 4 more external
   calls, 3 pure functions)
 - [`expected/eval.yaml`](expected/eval.yaml) — the eval sidecar with

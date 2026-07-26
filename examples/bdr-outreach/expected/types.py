@@ -1,4 +1,4 @@
-"""Shared types for the graduated BDR pipeline.
+"""Shared types for the compiled BDR pipeline.
 
 These models are referenced from the IR's input/output type names
 (``CampaignBrief``, ``EnrichedContact``, etc.) and are imported by both

@@ -1,4 +1,4 @@
-"""Validation tests for the graduator-emitted eval.yaml sidecar."""
+"""Validation tests for the compiler-emitted eval.yaml sidecar."""
 
 from __future__ import annotations
 

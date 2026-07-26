@@ -1,7 +1,7 @@
-"""Manifest registry for graduated pipelines served over MCP.
+"""Manifest registry for compiled pipelines served over MCP.
 
 The registry is a single JSON file (default ``~/.rote/registry.json``)
-listing every graduated pipeline the user wants exposed as an MCP tool:
+listing every compiled pipeline the user wants exposed as an MCP tool:
 tool name, description, the pipeline.yaml it came from, a JSON Schema
 for the tool's input, and the runtime trigger config (Temporal address /
 task queue, Cloudflare workflow URL, …).
@@ -37,7 +37,7 @@ def default_registry_path() -> Path:
 
 
 class TemporalTrigger(BaseModel):
-    """How to start a graduated pipeline on a Temporal cluster."""
+    """How to start a compiled pipeline on a Temporal cluster."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -47,7 +47,7 @@ class TemporalTrigger(BaseModel):
         description="Temporal frontend address, host:port",
     )
     namespace: str = Field(default="default")
-    task_queue: str = Field(description="Task queue the graduated worker polls")
+    task_queue: str = Field(description="Task queue the compiled worker polls")
     workflow_name: str = Field(
         description=(
             "Registered workflow *type* name. The Temporal adapter emits a "
@@ -58,7 +58,7 @@ class TemporalTrigger(BaseModel):
 
 
 class CloudflareTrigger(BaseModel):
-    """How to start a graduated pipeline deployed as a Cloudflare Worker.
+    """How to start a compiled pipeline deployed as a Cloudflare Worker.
 
     The emitted ``src/index.ts`` fetch handler accepts a JSON POST body
     (the workflow params) and responds with ``{id, status}``.
@@ -80,7 +80,7 @@ class CloudflareTrigger(BaseModel):
 
 
 class DbosTrigger(BaseModel):
-    """How to start a graduated pipeline running as a DBOS application.
+    """How to start a compiled pipeline running as a DBOS application.
 
     DBOS has no orchestrator process — the coordinates are the *system
     database* the emitted app checkpoints to. ``DBOSClient.enqueue``
@@ -130,13 +130,13 @@ Trigger = Annotated[
 
 
 class RegistryEntry(BaseModel):
-    """One graduated pipeline exposed as one MCP tool."""
+    """One compiled pipeline exposed as one MCP tool."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="MCP tool name (unique within the registry)")
     description: str = ""
-    pipeline_yaml: str = Field(description="Absolute path to the graduated pipeline.yaml")
+    pipeline_yaml: str = Field(description="Absolute path to the compiled pipeline.yaml")
     input_schema: dict[str, Any] = Field(
         description="JSON Schema for the tool input (the pipeline's input contract)",
     )
@@ -215,7 +215,7 @@ def input_schema_for(pipeline_input: PipelineInput) -> dict[str, Any]:
         "type": "object",
         "title": pipeline_input.type,
         "description": (
-            f"Input contract for the graduated pipeline "
+            f"Input contract for the compiled pipeline "
             f"(type {pipeline_input.type}; field types are untyped in the IR v0)"
         ),
         "properties": properties,

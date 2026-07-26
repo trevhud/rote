@@ -6,7 +6,7 @@
 
 ## Context
 
-`rote` graduates AI skills into deterministic workflows. The graduator
+`rote` compiles AI skills into deterministic workflows. The compiler
 phase — reading a source skill, producing a `pipeline.yaml`, stubbing
 extracted modules and signatures — requires an LLM agent loop. That
 agent has to run *somewhere*.
@@ -20,7 +20,7 @@ users" sweet spot that an OSS dev tool needs.
 
 ## Decision
 
-**rote ships with three interchangeable graduator drivers, all
+**rote ships with three interchangeable compiler drivers, all
 implementing the same Protocol:**
 
 | Driver | Runtime | Auth | Install cost |
@@ -33,10 +33,10 @@ Auto-detection order when `--agent` is not specified:
 **`claude` → `codex` → `api`**. The CLI surface:
 
 ```sh
-rote graduate ./skill --runtime temporal --out ./graduated/          # auto-detect
-rote graduate ./skill --agent claude ...                              # explicit
-rote graduate ./skill --agent codex ...
-rote graduate ./skill --agent api ...
+rote compile ./skill --runtime temporal --out ./compiled/          # auto-detect
+rote compile ./skill --agent claude ...                              # explicit
+rote compile ./skill --agent codex ...
+rote compile ./skill --agent api ...
 ```
 
 ## The output contract (unifying the three drivers)
@@ -44,14 +44,14 @@ rote graduate ./skill --agent api ...
 All drivers contract on the **filesystem**, not stdout parsing:
 
 1. rote creates a scratch `work_dir/`.
-2. The driver is told: "run the graduator agent against `skill_dir/`,
-   using the rubric at `graduator_skill_dir/`, and the agent's final
+2. The driver is told: "run the compiler agent against `skill_dir/`,
+   using the rubric at `compiler_skill_dir/`, and the agent's final
    deliverable is `work_dir/pipeline.yaml`."
 3. The driver returns after the agent exits (or the in-process loop
    completes). rote reads `work_dir/pipeline.yaml` and validates it
    with `rote.ir.load_pipeline`.
 4. The agent may also write `work_dir/extracted/*.py`,
-   `work_dir/signatures/*.py`, etc. — those land in the graduated
+   `work_dir/signatures/*.py`, etc. — those land in the compiled
    output directory alongside the IR.
 
 This means every driver has the same interface and every rote user
@@ -68,7 +68,7 @@ claude -p "<prompt>" \
     --model claude-sonnet-4-6 \
     --append-system-prompt "<inlined SKILL.md>" \
     --add-dir "<skill_dir>" \
-    --add-dir "<graduator_skill_dir>" \
+    --add-dir "<compiler_skill_dir>" \
     --add-dir "<work_dir>" \
     --allowedTools "Read,Write,Edit,Glob,Grep" \
     --output-format json \
@@ -76,14 +76,14 @@ claude -p "<prompt>" \
 ```
 
 **Model selection — this matters a lot.** Claude Code's interactive
-default is Opus 4.6, which is expensive overkill for the graduator's
-structured-rubric task. The first two real graduations on BDR with
+default is Opus 4.6, which is expensive overkill for the compiler's
+structured-rubric task. The first two real compilations on BDR with
 Opus burned ~$3.50 each in subscription accounting (2.6M cache-read
 tokens per run, 31 turns, ~8 minutes) and exhausted the Max/Pro
 "extra usage" budget in two runs. Switching to Sonnet 4.6 drops per-
 run cost to ~$0.70, which makes iterative rubric tuning feasible.
 rote defaults to ``claude-sonnet-4-6`` for that reason; users can
-override with ``rote graduate --model claude-opus-4-6`` for complex
+override with ``rote compile --model claude-opus-4-6`` for complex
 skills where Opus's extra reasoning earns its cost.
 
 **Turn budget.** BDR-scale skills need ~25 tool calls minimum and
@@ -106,7 +106,7 @@ their env, `ClaudeDriver` passes it through. This is the cleanest
 path for CI environments where no interactive `claude login` has
 been run.
 
-**Skill injection:** the rote-graduate SKILL.md is passed via
+**Skill injection:** the rote-compile SKILL.md is passed via
 `--append-system-prompt` rather than relying on Claude's skill
 auto-discovery from `.claude/skills/`. This is deterministic and
 doesn't depend on the user installing rote's skill to a global
@@ -118,7 +118,7 @@ to silence progress spinners in the subprocess output.
 
 **Output capture:** `--output-format json` emits one JSON object with
 `result`, `cost_usd`, `duration_ms`, `num_turns`, `session_id`. rote
-captures this for the graduation report. The actual `pipeline.yaml`
+captures this for the compilation report. The actual `pipeline.yaml`
 comes from the filesystem, not stdout.
 
 ### `codex` (primary target for ChatGPT users)
@@ -166,7 +166,7 @@ Unlike Claude (where `ANTHROPIC_API_KEY` overrides the OAuth session),
 a stored Codex login is only overridden by `CODEX_API_KEY` /
 `CODEX_ACCESS_TOKEN` — *not* by `OPENAI_API_KEY`. And because rote has
 no OpenAI-API driver, a user whose only credential is `OPENAI_API_KEY`
-must still be able to graduate through Codex, so forcing subscription
+must still be able to compile through Codex, so forcing subscription
 auth would be wrong here.
 
 **Git repo requirement:** by default Codex insists the workspace be a
@@ -174,7 +174,7 @@ git repo; rote's scratch `work_dir/` isn't, so `--skip-git-repo-check`
 is required.
 
 **Skill injection:** Codex has no `--append-system-prompt` flag, so the
-rote-graduate SKILL.md is inlined directly into the prompt argument
+rote-compile SKILL.md is inlined directly into the prompt argument
 (its reference files are read from disk under the sandbox's global read
 access). As with Claude, the `pipeline.yaml` comes from the filesystem.
 
@@ -248,7 +248,7 @@ choice > auto-detect.
 ## The Protocol
 
 ```python
-class GraduatorDriver(Protocol):
+class CompilerDriver(Protocol):
     name: str
 
     def is_available(self) -> tuple[bool, str]:
@@ -261,10 +261,10 @@ class GraduatorDriver(Protocol):
     async def run(
         self,
         skill_dir: Path,
-        graduator_skill_dir: Path,
+        compiler_skill_dir: Path,
         work_dir: Path,
     ) -> DriverResult:
-        """Run the graduator agent and return a DriverResult.
+        """Run the compiler agent and return a DriverResult.
 
         Raises DriverError on any failure (CLI missing, auth missing,
         agent crashed, pipeline.yaml not produced, etc.).
@@ -274,7 +274,7 @@ class GraduatorDriver(Protocol):
 
 `DriverResult` carries the path to the produced `pipeline.yaml`
 plus metadata (token counts, cost estimate, duration, driver name)
-for the graduation report.
+for the compilation report.
 
 ## References
 

@@ -35,7 +35,7 @@ def search_gmail_fixed(lookback_days: int = GMAIL_LOOKBACK_DAYS) -> list[dict]:
     Returns merged list of thread dicts with keys:
       thread_id, account_name_raw, warehouse, sent_date, replies, state, thread_url
 
-    Graduated from: SKILL.md > Step 2 searches 1-4
+    Compiled from: SKILL.md > Step 2 searches 1-4
     """
     after = _lookback_date(lookback_days)
     queries = [f'subject:"{s}" {after}' for s in GMAIL_SUBJECT_FILTERS]
@@ -56,7 +56,7 @@ def search_gmail_by_account(account_names: list[str], lookback_days: int = GMAIL
     This is search 5 from the skill — depends on filter_and_extract_opps output.
     Returns same schema as search_gmail_fixed.
 
-    Graduated from: SKILL.md > Step 2 search 5
+    Compiled from: SKILL.md > Step 2 search 5
     """
     after = _lookback_date(lookback_days)
     raise NotImplementedError(

@@ -13,9 +13,9 @@ The MCP tools used were:
 * ``hubspot_get_contact_emails`` (with ``daysBack=30``, ``direction=OUTBOUND``)
 * ``hubspot_get_contact_enrollment``
 
-# Graduated form
+# Compiled form
 
-Graduation is the highest-leverage move for these checks because it
+Compilation is the highest-leverage move for these checks because it
 **makes them impossible to skip**. Each function is a deterministic
 loop. The IR marks the corresponding nodes ``mandatory: true``, the
 Temporal adapter emits them as activities the workflow always calls in

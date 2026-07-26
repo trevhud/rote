@@ -15,7 +15,7 @@
  * Architecture note: every step in this file wraps a deterministic
  * function from `extracted/` or a typed LLM signature from
  * `signatures/`. None of them call MCP tools at runtime — the MCP
- * tool calls from the source skill were graduated into direct API
+ * tool calls from the source skill were compiled into direct API
  * calls during the rote emission step.
  */
 
@@ -65,7 +65,7 @@ export const targetResearchStep = DBOS.registerStep(
 /**
  * Resolve ZoomInfo IDs for management levels (VP, Director), industries
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/taxonomy_lookup` for the implementation.
  */
 export const taxonomyLookupStep = DBOS.registerStep(
@@ -88,7 +88,7 @@ export const leadGenerationLoopStep = DBOS.registerStep(
 /**
  * Batch enrich contacts via ZoomInfo. Always requests employmentHistory
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/enrich_contact_batch` for the implementation.
  */
 // retry_on categories from the IR: rate_limit, network. DBOS retries any
@@ -116,7 +116,7 @@ export const vetContactStep = DBOS.registerStep(
 /**
  * Batch upsert contacts to HubSpot (create or update by email). Hard
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/hubspot_upsert` for the implementation.
  */
 export const hubspotUpsertStep = DBOS.registerStep(
@@ -127,7 +127,7 @@ export const hubspotUpsertStep = DBOS.registerStep(
 /**
  * Create a static list named after the campaign and add the upserted
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/hubspot_create_list` for the implementation.
  */
 export const hubspotCreateListStep = DBOS.registerStep(
@@ -138,7 +138,7 @@ export const hubspotCreateListStep = DBOS.registerStep(
 /**
  * For each contact, look up "BDR do not contact" list memberships.
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/exclusion_check_dnc` for the implementation.
  *
  * MANDATORY: this node was marked mandatory in the source skill.
@@ -152,7 +152,7 @@ export const exclusionCheckDncStep = DBOS.registerStep(
 /**
  * For each contact, check if they were emailed (outbound) in the last
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/exclusion_check_recent` for the implementation.
  *
  * MANDATORY: this node was marked mandatory in the source skill.
@@ -166,7 +166,7 @@ export const exclusionCheckRecentStep = DBOS.registerStep(
 /**
  * For each contact, check if they are already enrolled in an active
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/exclusion_check_sequence` for the implementation.
  *
  * MANDATORY: this node was marked mandatory in the source skill.
@@ -195,7 +195,7 @@ export const personalizeEmailStep = DBOS.registerStep(
 /**
  * Create or update HubSpot sales templates for the campaign sequence
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/create_sales_template` for the implementation.
  */
 export const createSalesTemplateStep = DBOS.registerStep(
@@ -206,7 +206,7 @@ export const createSalesTemplateStep = DBOS.registerStep(
 /**
  * Generate the final pre-enrollment report (markdown) with totals,
  *
- * Graduated from MCP tool call → deterministic API call. See
+ * Compiled from MCP tool call → deterministic API call. See
  * `extracted/pre_enrollment_report` for the implementation.
  */
 export const preEnrollmentReportStep = DBOS.registerStep(

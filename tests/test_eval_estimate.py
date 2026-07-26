@@ -182,7 +182,7 @@ def test_bdr_skill_estimate_structural(counter: HeuristicTokenCounter) -> None:
     assert est.turns.low >= 3
     # Cache-aware split: later turns re-read context, so cached >> fresh.
     assert est.cached_read_tokens.high > est.fresh_input_tokens.high
-    # Before graduation every step is sampled and nothing is constrained.
+    # Before compilation every step is sampled and nothing is constrained.
     assert est.sampling.sampled_steps == est.sampling.total_steps
     assert est.sampling.schema_constrained_steps == 0
 
@@ -195,7 +195,7 @@ def test_sidecar_overrides_structural_heuristic(counter: HeuristicTokenCounter) 
         ]
     )
     est = estimate_skill(BDR_SKILL, counter, sidecar=sidecar)
-    assert est.turn_method == "graduator sidecar (eval.yaml)"
+    assert est.turn_method == "compiler sidecar (eval.yaml)"
     assert (est.turns.low, est.turns.high) == (15.0, 30.0)
 
 

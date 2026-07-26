@@ -84,11 +84,11 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # ── rote-specific artifacts ──
-# The graduator writes scratch work dirs via tempfile.TemporaryDirectory
+# The compiler writes scratch work dirs via tempfile.TemporaryDirectory
 # (they land in /tmp by default so they don't affect the repo), but in
 # case a user points --out or a test fixture at the repo root, ignore
 # the standard output dir name here too.
-/graduated/
+/compiled/
 /runtimes/generated/
 /examples/**/generated/
 

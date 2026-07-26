@@ -93,12 +93,12 @@ jobs:
           /tmp/smoke/bin/rote --version
           /tmp/smoke/bin/rote emit examples/bdr-outreach/expected/pipeline.yaml \
             --runtime temporal --out /tmp/pkg-smoke
-          # The graduator skill bundle must resolve from inside the wheel,
+          # The compiler skill bundle must resolve from inside the wheel,
           # not from this checkout (regression guard for package data).
           cd /tmp
           /tmp/smoke/bin/python -c "
-          from rote.graduator import _default_graduator_skill_dir
-          p = _default_graduator_skill_dir()
+          from rote.compiler import _default_compiler_skill_dir
+          p = _default_compiler_skill_dir()
           assert 'site-packages' in str(p), f'skill bundle missing from wheel: {p}'
           print(f'skill bundle resolved from wheel: {p}')
           "

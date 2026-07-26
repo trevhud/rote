@@ -73,7 +73,7 @@ class RunTarget:
     runtime: str | None = None
     """Adapter name for pipeline targets (``python`` / ``dbos`` / …)."""
     pipeline_yaml: Path | None = None
-    """The graduated IR, when it can be located — enables gate-name
+    """The compiled IR, when it can be located — enables gate-name
     discovery and input derivation from the recorded source skill."""
 
 
@@ -99,15 +99,15 @@ def _detect_runtime(d: Path) -> str | None:
 
 
 def _find_pipeline_yaml(runtime_dir: Path) -> Path | None:
-    """Locate the graduated IR for an emitted runtime directory.
+    """Locate the compiled IR for an emitted runtime directory.
 
-    A ``graduate --out`` layout keeps it at ``../../graduated/`` relative
+    A ``compile --out`` layout keeps it at ``../../compiled/`` relative
     to ``runtime/<target>/``; a bare ``rote emit`` output may sit next to
     the pipeline.yaml it was rendered from.
     """
     candidates = [runtime_dir / "pipeline.yaml"]
     if runtime_dir.parent.name == "runtime":
-        candidates.append(runtime_dir.parent.parent / "graduated" / "pipeline.yaml")
+        candidates.append(runtime_dir.parent.parent / "compiled" / "pipeline.yaml")
     candidates.append(runtime_dir.parent / "pipeline.yaml")
     for candidate in candidates:
         if candidate.is_file():
@@ -119,7 +119,7 @@ def detect_target(path: str | Path, runtime: str | None = None) -> RunTarget:
     """Resolve ``rote run``'s path argument to something executable.
 
     Accepts a skill directory (``SKILL.md``), an emitted runtime
-    directory (marker files), or a ``rote graduate --out`` directory
+    directory (marker files), or a ``rote compile --out`` directory
     (``runtime/<target>/`` children — ``runtime`` disambiguates when
     several were emitted). Raises :class:`TargetError` with actionable
     guidance for everything else.
@@ -165,7 +165,7 @@ def detect_target(path: str | Path, runtime: str | None = None) -> RunTarget:
         raise TargetError(
             f"{p} is neither a skill (no SKILL.md) nor an emitted runtime "
             "directory — pass a skill dir, an emitted runtime dir, or a "
-            "`rote graduate --out` dir"
+            "`rote compile --out` dir"
         )
     if runtime is not None and runtime != detected:
         raise TargetError(f"{p} looks like an emitted `{detected}` runtime, not `{runtime}`")
@@ -406,9 +406,9 @@ def run_pipeline(
     elif target.runtime == "inngest":
         if pipeline is None:
             raise TargetError(
-                "running an inngest app needs the graduated pipeline.yaml for "
-                "event naming — keep it at ../../graduated/pipeline.yaml "
-                "relative to the app (the `rote graduate --out` layout) or "
+                "running an inngest app needs the compiled pipeline.yaml for "
+                "event naming — keep it at ../../compiled/pipeline.yaml "
+                "relative to the app (the `rote compile --out` layout) or "
                 "next to it"
             )
         from rote.runners.inngest import run_inngest

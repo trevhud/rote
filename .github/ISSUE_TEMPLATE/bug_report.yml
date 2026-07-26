@@ -5,9 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report. If this is about the graduator making a
+        Thanks for the report. If this is about the compiler making a
         weird *classification* call (rather than a crash), the
-        **Graduation report** template captures the right context.
+        **Compilation report** template captures the right context.
   - type: textarea
     id: what-happened
     attributes:
@@ -21,7 +21,7 @@ body:
       label: Reproduction
       description: >
         The exact command(s) you ran. If it involves `rote emit`, attach
-        or paste the `pipeline.yaml`. If it involves `rote graduate`,
+        or paste the `pipeline.yaml`. If it involves `rote compile`,
         note the driver (`claude` / `codex` / `api`).
       render: shell
     validations:

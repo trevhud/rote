@@ -144,7 +144,7 @@ def test_deploy_skill_dir_is_rejected(tmp_path: Path, capsys: pytest.CaptureFixt
     (skill / "SKILL.md").write_text("# s", encoding="utf-8")
     rc = cli_main(["deploy", str(skill)])
     assert rc == 2
-    assert "graduate it first" in capsys.readouterr().err
+    assert "compile it first" in capsys.readouterr().err
 
 
 def test_deploy_dispatches_cloudflare_wrapper(
@@ -235,7 +235,7 @@ def test_rote_cloud_manifest_required(tmp_path: Path) -> None:
 
 
 def test_bundle_installs_npm_deps_first(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A freshly emitted app (the graduate auto-deploy path) has no
+    """A freshly emitted app (the compile auto-deploy path) has no
     node_modules; the bundle step must install so judge deps (zod,
     vendor SDKs) can be inlined — found live when esbuild failed to
     resolve @anthropic-ai/sdk on a clean emit."""

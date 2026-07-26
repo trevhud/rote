@@ -12,7 +12,7 @@ Decision space (SKILL.md Step 3):
   5 = Pricing Sent    — we sent pricing to the client
   6 = Declined        — warehouse declined or opp is dead
 
-Graduated from: SKILL.md > Step 3
+Compiled from: SKILL.md > Step 3
 """
 from __future__ import annotations
 from enum import Enum

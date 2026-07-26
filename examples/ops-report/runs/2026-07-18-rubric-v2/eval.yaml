@@ -67,10 +67,10 @@ notes: >-
   This skill runs almost entirely deterministic code in the agent version too —
   the agent is primarily doing file reads and template rendering. The four data
   pulls happen sequentially in the agent (one tool call per turn), whereas the
-  graduated pipeline runs them concurrently. The duty manager gate is asynchronous
+  compiled pipeline runs them concurrently. The duty manager gate is asynchronous
   latency, not turns. The biggest variance is in report rendering (2–5 turns)
   because the agent must read back the data it just parsed before writing the
   report. No search loops, no iteration, no per-item fan-out — this is a
   sequential ETL + template skill that should run end-to-end in 12–25 agent
-  turns before graduation, dominated by the four sequential data pulls and
+  turns before compilation, dominated by the four sequential data pulls and
   the final report render.

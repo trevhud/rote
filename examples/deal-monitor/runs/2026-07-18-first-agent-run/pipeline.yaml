@@ -360,7 +360,7 @@ nodes:
       deal-scoring rubric. Only opps with NO matched email threads are scored.
       IMPORTANT: The scoring rubric must be inlined into the signature prompt from
       ~/.claude/skills/deal-scoring/SKILL.md before this node can produce reliable
-      results. See graduation-report.md §Open Questions.
+      results. See compile-report.md §Open Questions.
     signature: signatures/score_new_opportunity.py:ScoreNewOpportunity
     signature_spec:
       input_schema:

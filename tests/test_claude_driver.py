@@ -19,7 +19,7 @@ Coverage:
 * Nonzero exit → DriverError with stderr; nonzero exit after
   pipeline.yaml written → recovered; exit 0 without pipeline.yaml →
   DriverError; missing result object → minimal metadata
-* Missing graduator SKILL.md → DriverError before subprocess
+* Missing compiler SKILL.md → DriverError before subprocess
 """
 
 from __future__ import annotations
@@ -30,15 +30,15 @@ from typing import Any
 
 import pytest
 
-from rote.graduator.drivers import DriverError
-from rote.graduator.drivers.claude import (
+from rote.compiler.drivers import DriverError
+from rote.compiler.drivers.claude import (
     DEFAULT_ALLOWED_TOOLS,
     DEFAULT_MAX_TURNS,
     DEFAULT_MODEL,
     ClaudeDriver,
     _map_stream_line,
 )
-from rote.graduator.events import GraduationEvent
+from rote.compiler.events import CompilationEvent
 
 # ───────── stream-json line builders ─────────
 
@@ -172,11 +172,11 @@ def fake_claude_subprocess(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
             write_files=write_files,
         )
         monkeypatch.setattr(
-            "rote.graduator.drivers.claude.asyncio.create_subprocess_exec",
+            "rote.compiler.drivers.claude.asyncio.create_subprocess_exec",
             recorder,
         )
         monkeypatch.setattr(
-            "rote.graduator.drivers.claude.which",
+            "rote.compiler.drivers.claude.which",
             lambda name: "/usr/local/bin/claude" if name == "claude" else None,
         )
         return recorder
@@ -193,16 +193,16 @@ def fake_skills(tmp_path: Path) -> tuple[Path, Path, Path]:
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: fake\n---\n\n# Fake skill\n", encoding="utf-8")
 
-    graduator_dir = tmp_path / "graduator"
-    graduator_dir.mkdir()
-    (graduator_dir / "SKILL.md").write_text(
-        "# Fake graduator rubric\n\nDo the graduation thing.\n",
+    compiler_dir = tmp_path / "compiler"
+    compiler_dir.mkdir()
+    (compiler_dir / "SKILL.md").write_text(
+        "# Fake compiler rubric\n\nDo the compilation thing.\n",
         encoding="utf-8",
     )
-    (graduator_dir / "references").mkdir()
+    (compiler_dir / "references").mkdir()
 
     work_dir = tmp_path / "work"
-    return skill_dir, graduator_dir, work_dir
+    return skill_dir, compiler_dir, work_dir
 
 
 VALID_PIPELINE_YAML = """\
@@ -236,7 +236,7 @@ async def test_happy_path_args_env_and_metadata(
     fake_claude_subprocess,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-scrubbed")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-should-be-scrubbed")
@@ -245,7 +245,7 @@ async def test_happy_path_args_env_and_metadata(
     stdout = _stream(
         _assistant_line(text="Reading the rubric."),
         _result_line(
-            result="Graduated successfully.",
+            result="Compiled successfully.",
             cost_usd=0.42,
             duration_ms=58000,
             num_turns=18,
@@ -259,7 +259,7 @@ async def test_happy_path_args_env_and_metadata(
     )
 
     driver = ClaudeDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
 
     assert result.driver_name == "claude"
     assert result.pipeline_yaml_path == (work_dir / "pipeline.yaml").resolve()
@@ -299,25 +299,25 @@ async def test_prompt_and_system_prompt_content(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_claude_subprocess(
         stdout_text=_stream(_result_line(result="ok")),
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
     )
 
     driver = ClaudeDriver()
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     args = list(recorder.calls[0]["args"])
     user_prompt = args[args.index("-p") + 1]
     assert str(skill_dir.resolve()) in user_prompt
-    assert str(graduator_dir.resolve()) in user_prompt
+    assert str(compiler_dir.resolve()) in user_prompt
     assert str(work_dir.resolve()) in user_prompt
     assert "pipeline.yaml" in user_prompt
 
     system_prompt = args[args.index("--append-system-prompt") + 1]
-    assert "ROTE GRADUATE SKILL" in system_prompt
-    assert "Fake graduator rubric" in system_prompt
+    assert "ROTE COMPILE SKILL" in system_prompt
+    assert "Fake compiler rubric" in system_prompt
 
 
 # ───────── Live events ─────────
@@ -330,7 +330,7 @@ async def test_stream_emits_turn_tool_and_phase_events(
 ) -> None:
     """assistant lines → turn events, tool_use → tool events (work-dir
     relative path), and progress.ndjson → phase events via the watcher."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     sig_path = str((work_dir / "signatures" / "qualify.ts").resolve())
 
     stdout = _stream(
@@ -351,9 +351,9 @@ async def test_stream_emits_turn_tool_and_phase_events(
         },
     )
 
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     driver = ClaudeDriver()
-    await driver.run(skill_dir, graduator_dir, work_dir, on_event=events.append)
+    await driver.run(skill_dir, compiler_dir, work_dir, on_event=events.append)
 
     turns = [e for e in events if e.type == "turn"]
     tools = [e for e in events if e.type == "tool"]
@@ -375,7 +375,7 @@ async def test_no_events_when_on_event_none_still_parses_metadata(
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
     """The stream is parsed the same way without a sink — metadata still lands."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(
             _assistant_line(text="working"),
@@ -385,7 +385,7 @@ async def test_no_events_when_on_event_none_still_parses_metadata(
     )
 
     driver = ClaudeDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["num_turns"] == 5
     assert result.metadata["cost_usd"] == 0.1
 
@@ -475,7 +475,7 @@ async def test_nonzero_exit_raises_driver_error_with_stderr(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text="",
         stderr_text="Error: rate limit exceeded",
@@ -484,7 +484,7 @@ async def test_nonzero_exit_raises_driver_error_with_stderr(
 
     driver = ClaudeDriver()
     with pytest.raises(DriverError) as excinfo:
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
     assert "exited with code 1" in str(excinfo.value)
     assert "rate limit exceeded" in (excinfo.value.details or "")
 
@@ -495,7 +495,7 @@ async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
     """A nonzero exit after pipeline.yaml was written is treated as success."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(_result_line(result="API Error: ECONNRESET", is_error=True)),
         stderr_text="",
@@ -504,7 +504,7 @@ async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
     )
 
     driver = ClaudeDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.pipeline_yaml_path.is_file()
     assert "subprocess_warning" in result.metadata
     assert "exited with code 1" in result.metadata["subprocess_warning"]
@@ -515,7 +515,7 @@ async def test_exit_zero_without_pipeline_yaml_raises_driver_error(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(_result_line(result="I gave up")),
         returncode=0,
@@ -524,7 +524,7 @@ async def test_exit_zero_without_pipeline_yaml_raises_driver_error(
 
     driver = ClaudeDriver()
     with pytest.raises(DriverError, match="did not produce"):
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
 
 
 @pytest.mark.asyncio
@@ -534,7 +534,7 @@ async def test_missing_result_object_returns_minimal_metadata(
 ) -> None:
     """A stream that ends without a result line still yields a result;
     metadata degrades to the driver name plus the (here zero) token totals."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(_assistant_line(text="done but no summary line")),
         returncode=0,
@@ -542,7 +542,7 @@ async def test_missing_result_object_returns_minimal_metadata(
     )
 
     driver = ClaudeDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata == {"driver": "claude", "input_tokens": 0, "output_tokens": 0}
 
 
@@ -553,7 +553,7 @@ async def test_metadata_carries_cumulative_stream_tokens(
 ) -> None:
     """The final metadata sums the per-message usage across the stream,
     mirroring the api driver's input_tokens / output_tokens final fields."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_claude_subprocess(
         stdout_text=_stream(
             _assistant_line(text="one", usage={"input_tokens": 100, "output_tokens": 20}),
@@ -564,7 +564,7 @@ async def test_metadata_carries_cumulative_stream_tokens(
     )
 
     driver = ClaudeDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["input_tokens"] == 350
     assert result.metadata["output_tokens"] == 50
     assert result.metadata["num_turns"] == 2
@@ -575,21 +575,21 @@ async def test_custom_model_override(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_claude_subprocess(
         stdout_text=_stream(_result_line(result="ok")),
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
     )
 
     driver = ClaudeDriver(model="claude-opus-4-6")
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     args = list(recorder.calls[0]["args"])
     assert args[args.index("--model") + 1] == "claude-opus-4-6"
 
 
 @pytest.mark.asyncio
-async def test_missing_graduator_skill_md_fails_before_subprocess(
+async def test_missing_compiler_skill_md_fails_before_subprocess(
     tmp_path: Path,
     fake_claude_subprocess,  # noqa: ANN001
 ) -> None:
@@ -597,8 +597,8 @@ async def test_missing_graduator_skill_md_fails_before_subprocess(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("hi")
 
-    bad_graduator = tmp_path / "no-skill-md"
-    bad_graduator.mkdir()
+    bad_compiler = tmp_path / "no-skill-md"
+    bad_compiler.mkdir()
 
     work_dir = tmp_path / "work"
 
@@ -608,16 +608,16 @@ async def test_missing_graduator_skill_md_fails_before_subprocess(
     )
 
     driver = ClaudeDriver()
-    with pytest.raises(DriverError, match="rote-graduate SKILL.md not found"):
-        await driver.run(skill_dir, bad_graduator, work_dir)
+    with pytest.raises(DriverError, match="rote-compile SKILL.md not found"):
+        await driver.run(skill_dir, bad_compiler, work_dir)
 
     assert len(recorder.calls) == 0
 
 
 def test_web_tools_flag_appends_research_tools() -> None:
-    """--backend api graduations get WebSearch/WebFetch so vendor code is
+    """--backend api compilations get WebSearch/WebFetch so vendor code is
     written against current docs, not training-data memory."""
-    from rote.graduator.drivers.claude import DEFAULT_ALLOWED_TOOLS, WEB_TOOLS, ClaudeDriver
+    from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS, WEB_TOOLS, ClaudeDriver
 
     assert ClaudeDriver().allowed_tools == DEFAULT_ALLOWED_TOOLS  # off by default
     driver = ClaudeDriver(web_tools=True)
@@ -629,8 +629,8 @@ def test_web_tools_flag_appends_research_tools() -> None:
 def test_other_drivers_swallow_web_tools_kwarg() -> None:
     """The registry contract: cross-driver kwargs never hard-fail a
     driver that doesn't implement them."""
-    from rote.graduator.drivers.anthropic_api import AnthropicApiDriver
-    from rote.graduator.drivers.codex import CodexDriver
+    from rote.compiler.drivers.anthropic_api import AnthropicApiDriver
+    from rote.compiler.drivers.codex import CodexDriver
 
     CodexDriver(web_tools=True)
     AnthropicApiDriver(web_tools=True)

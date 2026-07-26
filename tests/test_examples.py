@@ -52,7 +52,7 @@ def test_invoice_push_is_the_agent_loop_archetype() -> None:
     assert [n.id for n in loops] == ["process_invoices_loop"]
     (loop,) = loops
     # The archetype: a bounded loop with a declared body — the browser
-    # cycle the graduator could not (and should not) crystallize.
+    # cycle the compiler could not (and should not) crystallize.
     assert loop.loop_body and len(loop.loop_body) == 5
     assert loop.termination is not None
     assert loop.termination.max_iterations is not None
@@ -106,7 +106,7 @@ def test_deal_monitor_is_the_data_heavy_fan_out_archetype() -> None:
 # bug (schema keys like "from") hide in deal-monitor for weeks. Emitting
 # each one through every registered adapter is cheap (<1s total, pure
 # template substitution) and keeps fixture-vs-emitter conflicts from
-# surviving until a real (paid) graduation run finds them.
+# surviving until a real (paid) compilation run finds them.
 
 
 @pytest.mark.parametrize("runtime", sorted(ADAPTERS))

@@ -248,9 +248,9 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     # a pipeline came from must not re-version in-flight workflows whose
     # behavior didn't change. That covers ``Node.source`` (which SKILL.md
     # section produced a node) and ``source_skill`` (where the skill bundle
-    # lived): the latter is a filesystem path the graduator re-points per
+    # lived): the latter is a filesystem path the compiler re-points per
     # output location, so hashing it would mint a new workflow type on
-    # every re-graduation to a different directory.
+    # every re-compilation to a different directory.
     payload = pipeline.model_dump_json(
         by_alias=True,
         exclude_none=True,

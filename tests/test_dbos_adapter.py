@@ -358,7 +358,7 @@ def test_sqlite_default_with_env_override(main_src: str) -> None:
 
 def _assert_mcp_free(path: Path) -> None:
     """Walk executable statements; comments/docstrings may mention MCP to
-    explain the graduation history, but no identifier can reference it."""
+    explain the compilation history, but no identifier can reference it."""
     src = path.read_text(encoding="utf-8")
     tree = ast.parse(src)
 
@@ -597,8 +597,8 @@ def test_signature_spec_aliases_non_identifier_properties() -> None:
 def test_emit_prefers_agent_written_extracted_modules(tmp_path: Path) -> None:
     """When the pipeline.yaml's directory carries the agent's real
     extracted/<module>.py, emission uses it verbatim instead of an
-    IR-derived stub. Found live: the graduator wrote working,
-    test-verified implementations into graduated/extracted/ while the
+    IR-derived stub. Found live: the compiler wrote working,
+    test-verified implementations into compiled/extracted/ while the
     runtime dir got NotImplementedError stubs — the emitted pipeline
     crashed on its first pure_function step."""
     from tests._helpers import mini_pipeline
@@ -606,7 +606,7 @@ def test_emit_prefers_agent_written_extracted_modules(tmp_path: Path) -> None:
     real_impl = (
         '"""Agent-written implementation."""\n\ndef y(**payload):\n    return {"ok": True}\n'
     )
-    source = tmp_path / "graduated"
+    source = tmp_path / "compiled"
     (source / "extracted").mkdir(parents=True)
     (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
 
@@ -634,7 +634,7 @@ def test_python_adapter_also_prefers_agent_written_modules(tmp_path: Path) -> No
     from tests._helpers import mini_pipeline
 
     real_impl = "def y(**payload):\n    return 1\n"
-    source = tmp_path / "graduated"
+    source = tmp_path / "compiled"
     (source / "extracted").mkdir(parents=True)
     (source / "extracted" / "x.py").write_text(real_impl, encoding="utf-8")
 

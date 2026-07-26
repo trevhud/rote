@@ -89,8 +89,8 @@ def test_no_samples_is_empty_schema() -> None:
 
 
 def test_parse_content_blocks_with_json_text() -> None:
-    result = [{"type": "text", "text": '{"word": "graduate", "length": 8}'}]
-    assert parse_tool_result(result) == {"word": "graduate", "length": 8}
+    result = [{"type": "text", "text": '{"word": "compile", "length": 8}'}]
+    assert parse_tool_result(result) == {"word": "compile", "length": 8}
 
 
 def test_parse_bare_json_string() -> None:
@@ -126,7 +126,7 @@ def test_parse_non_text_blocks_pass_through() -> None:
 def _call(
     tool: str = "lookup_word",
     server: str = "wordbank",
-    word: str = "graduate",
+    word: str = "compile",
     result: dict | None = None,
     is_error: bool = False,
 ) -> ObservedToolCall:
@@ -142,7 +142,7 @@ def _call(
 
 def test_infer_tool_schemas_groups_and_infers() -> None:
     observations = [
-        _call(word="graduate"),
+        _call(word="compile"),
         _call(word="rote"),
         ObservedToolCall(server="slack", tool="read_channel", input={"channel": "C1"}),
     ]

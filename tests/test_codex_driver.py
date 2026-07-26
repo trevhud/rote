@@ -18,7 +18,7 @@ Coverage:
 * Nonzero exit without pipeline.yaml → DriverError with stderr in details
 * Nonzero exit WITH pipeline.yaml → recovered, warning in metadata
 * Exit 0 but no pipeline.yaml → DriverError
-* Missing graduator SKILL.md → DriverError before subprocess
+* Missing compiler SKILL.md → DriverError before subprocess
 * The last-message temp file is cleaned up and never lands in work_dir
 """
 
@@ -29,8 +29,8 @@ from typing import Any
 
 import pytest
 
-from rote.graduator.drivers import DriverError
-from rote.graduator.drivers.codex import DEFAULT_SANDBOX, CodexDriver
+from rote.compiler.drivers import DriverError
+from rote.compiler.drivers.codex import DEFAULT_SANDBOX, CodexDriver
 
 # ───────── Fake subprocess ─────────
 
@@ -117,11 +117,11 @@ def fake_codex_subprocess(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
             last_message=last_message,
         )
         monkeypatch.setattr(
-            "rote.graduator.drivers.codex.asyncio.create_subprocess_exec",
+            "rote.compiler.drivers.codex.asyncio.create_subprocess_exec",
             recorder,
         )
         monkeypatch.setattr(
-            "rote.graduator.drivers.codex.which",
+            "rote.compiler.drivers.codex.which",
             lambda name: "/usr/local/bin/codex" if name == "codex" else None,
         )
         return recorder
@@ -138,15 +138,15 @@ def fake_skills(tmp_path: Path) -> tuple[Path, Path, Path]:
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: fake\n---\n\n# Fake skill\n", encoding="utf-8")
 
-    graduator_dir = tmp_path / "graduator"
-    graduator_dir.mkdir()
-    (graduator_dir / "SKILL.md").write_text(
-        "# Fake graduator rubric\n\nDo the graduation thing.\n", encoding="utf-8"
+    compiler_dir = tmp_path / "compiler"
+    compiler_dir.mkdir()
+    (compiler_dir / "SKILL.md").write_text(
+        "# Fake compiler rubric\n\nDo the compilation thing.\n", encoding="utf-8"
     )
-    (graduator_dir / "references").mkdir()
+    (compiler_dir / "references").mkdir()
 
     work_dir = tmp_path / "work"
-    return skill_dir, graduator_dir, work_dir
+    return skill_dir, compiler_dir, work_dir
 
 
 VALID_PIPELINE_YAML = """\
@@ -180,7 +180,7 @@ async def test_happy_path_args_env_and_metadata(
     fake_codex_subprocess,  # noqa: ANN001
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
 
     # Both key vars set in the parent env — prove they pass THROUGH
     # (Codex driver does not scrub, unlike the Claude driver).
@@ -188,14 +188,14 @@ async def test_happy_path_args_env_and_metadata(
     monkeypatch.setenv("CODEX_API_KEY", "codex-should-pass-through")
 
     recorder = fake_codex_subprocess(
-        stdout_text="Graduated.",
+        stdout_text="Compiled.",
         returncode=0,
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
         last_message="Wrote pipeline.yaml with 1 node.",
     )
 
     driver = CodexDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
 
     assert result.driver_name == "codex"
     assert result.pipeline_yaml_path == (work_dir / "pipeline.yaml").resolve()
@@ -218,8 +218,8 @@ async def test_happy_path_args_env_and_metadata(
     prompt = args[-1]
     assert str(skill_dir.resolve()) in prompt
     assert str(work_dir.resolve()) in prompt
-    assert "ROTE GRADUATE SKILL" in prompt
-    assert "Fake graduator rubric" in prompt
+    assert "ROTE COMPILE SKILL" in prompt
+    assert "Fake compiler rubric" in prompt
 
     # Env passed through untouched.
     env = recorder.calls[0]["env"]
@@ -235,13 +235,13 @@ async def test_does_not_emit_removed_or_wrong_flags(
     """``--ask-for-approval`` hard-errors on exec, and ``--add-dir`` would
     wrongly grant write access to the read-only source skill. Neither must
     appear."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_codex_subprocess(
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
     )
 
     driver = CodexDriver()
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     args = list(recorder.calls[0]["args"])
     assert "--ask-for-approval" not in args
@@ -253,11 +253,11 @@ async def test_model_override_flows_to_flag(
     fake_skills: tuple[Path, Path, Path],
     fake_codex_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_codex_subprocess(write_files={"pipeline.yaml": VALID_PIPELINE_YAML})
 
     driver = CodexDriver(model="gpt-5.1-codex")
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     args = list(recorder.calls[0]["args"])
     assert args[args.index("--model") + 1] == "gpt-5.1-codex"
@@ -270,11 +270,11 @@ async def test_no_model_flag_when_default(
 ) -> None:
     """With no model set we omit ``--model`` and let Codex use its
     configured default."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_codex_subprocess(write_files={"pipeline.yaml": VALID_PIPELINE_YAML})
 
     driver = CodexDriver()
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     assert "--model" not in list(recorder.calls[0]["args"])
 
@@ -286,11 +286,11 @@ async def test_absorbs_unknown_kwargs(
 ) -> None:
     """The registry forwards kwargs like max_turns; Codex has no such
     concept and must swallow them, not crash."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_codex_subprocess(write_files={"pipeline.yaml": VALID_PIPELINE_YAML})
 
     driver = CodexDriver(model=None, max_turns=99)  # type: ignore[call-arg]
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.pipeline_yaml_path.is_file()
 
 
@@ -302,12 +302,12 @@ async def test_nonzero_exit_raises_driver_error_with_stderr(
     fake_skills: tuple[Path, Path, Path],
     fake_codex_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_codex_subprocess(stderr_text="Error: not authenticated", returncode=1)
 
     driver = CodexDriver()
     with pytest.raises(DriverError) as excinfo:
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
     assert "exited with code 1" in str(excinfo.value)
     assert "not authenticated" in (excinfo.value.details or "")
 
@@ -319,7 +319,7 @@ async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
 ) -> None:
     """A nonzero exit after pipeline.yaml was written (transient blip on a
     final self-check turn) is treated as success with a warning."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_codex_subprocess(
         stderr_text="stream error",
         returncode=1,
@@ -327,7 +327,7 @@ async def test_nonzero_exit_with_pipeline_yaml_recovers_run(
     )
 
     driver = CodexDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.pipeline_yaml_path.is_file()
     assert "subprocess_warning" in result.metadata
     assert "exited with code 1" in result.metadata["subprocess_warning"]
@@ -338,31 +338,31 @@ async def test_exit_zero_without_pipeline_yaml_raises(
     fake_skills: tuple[Path, Path, Path],
     fake_codex_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_codex_subprocess(stdout_text="I could not finish.", returncode=0, write_files=None)
 
     driver = CodexDriver()
     with pytest.raises(DriverError, match="did not produce"):
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
 
 
 @pytest.mark.asyncio
-async def test_missing_graduator_skill_md_fails_before_subprocess(
+async def test_missing_compiler_skill_md_fails_before_subprocess(
     tmp_path: Path,
     fake_codex_subprocess,  # noqa: ANN001
 ) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("hi")
-    bad_graduator = tmp_path / "no-skill-md"
-    bad_graduator.mkdir()
+    bad_compiler = tmp_path / "no-skill-md"
+    bad_compiler.mkdir()
     work_dir = tmp_path / "work"
 
     recorder = fake_codex_subprocess(write_files={"pipeline.yaml": VALID_PIPELINE_YAML})
 
     driver = CodexDriver()
-    with pytest.raises(DriverError, match="rote-graduate SKILL.md not found"):
-        await driver.run(skill_dir, bad_graduator, work_dir)
+    with pytest.raises(DriverError, match="rote-compile SKILL.md not found"):
+        await driver.run(skill_dir, bad_compiler, work_dir)
     assert len(recorder.calls) == 0
 
 
@@ -376,14 +376,14 @@ async def test_last_message_tempfile_is_cleaned_up_and_out_of_tree(
 ) -> None:
     """The --output-last-message file must live outside work_dir (so it's
     not swept into the user's output) and be unlinked after the run."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     recorder = fake_codex_subprocess(
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
         last_message="done",
     )
 
     driver = CodexDriver()
-    await driver.run(skill_dir, graduator_dir, work_dir)
+    await driver.run(skill_dir, compiler_dir, work_dir)
 
     last_value = _FakeSubprocessRecorder._flag_value(
         recorder.calls[0]["args"], "--output-last-message"
@@ -403,12 +403,12 @@ async def test_empty_last_message_yields_minimal_metadata(
     fake_skills: tuple[Path, Path, Path],
     fake_codex_subprocess,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     fake_codex_subprocess(
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
         last_message="",
     )
 
     driver = CodexDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata == {"driver": "codex"}

@@ -41,7 +41,7 @@ def _parse_minutes(s: str) -> float:
 
 @workflow.defn(name="BdrCampaign_68ef477f")
 class BdrCampaignWorkflow:
-    """Graduated workflow for bdr-campaign."""
+    """Compiled workflow for bdr-campaign."""
 
     def __init__(self) -> None:
         self._contact_review_approved_payload: dict | None = None

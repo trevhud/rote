@@ -176,7 +176,7 @@ def test_helper_resolve_url_order(monkeypatch: pytest.MonkeyPatch) -> None:
         McpRegistry(servers={"slack": McpServerConfig(url="https://registry.example/slack")})
     )
     # Env beats registry beats the pipeline-recorded URL at runtime —
-    # deployment context outranks graduation-time capture.
+    # deployment context outranks compilation-time capture.
     monkeypatch.setenv("ROTE_MCP_SLACK_URL", "https://env.example/slack")
     assert helper.resolve_url("slack", "https://ir.example/slack") == "https://env.example/slack"
     monkeypatch.delenv("ROTE_MCP_SLACK_URL")

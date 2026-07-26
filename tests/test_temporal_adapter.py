@@ -70,10 +70,10 @@ def test_pipeline_hash_is_stable(bdr_pipeline: Pipeline) -> None:
 
 
 def test_pipeline_hash_ignores_source_skill(bdr_pipeline: Pipeline) -> None:
-    """``source_skill`` is provenance, not behavior. The graduator
+    """``source_skill`` is provenance, not behavior. The compiler
     re-points it per output location, so hashing it would mint a new
     workflow type (re-versioning in-flight workflows) on every
-    re-graduation to a different directory — same rule as ``Node.source``."""
+    re-compilation to a different directory — same rule as ``Node.source``."""
     moved = bdr_pipeline.model_copy(update={"source_skill": "/somewhere/else/entirely"})
     assert _pipeline_hash(moved) == _pipeline_hash(bdr_pipeline)
     unset = bdr_pipeline.model_copy(update={"source_skill": None})
@@ -170,13 +170,13 @@ def test_emitted_activities_never_reference_mcp(
 ) -> None:
     """Architectural invariant: no MCP runtime references in emitted code.
 
-    MCP tool calls from the source skill must be graduated into direct
+    MCP tool calls from the source skill must be compiled into direct
     API calls at emission time. If this assertion ever fails, it means
     the adapter is leaking the MCP abstraction into the runtime hot path.
 
     We parse the AST and walk only executable statements (imports,
     calls, attribute accesses) — comments and docstrings are allowed to
-    *mention* MCP to explain the graduation history.
+    *mention* MCP to explain the compilation history.
     """
     src = emit_result["activities"].read_text()
     tree = ast.parse(src)

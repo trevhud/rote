@@ -8,7 +8,7 @@ DO NOT EDIT BY HAND. Re-run ``rote emit`` to regenerate.
 Architecture note: every external_call activity in this file
 wraps a deterministic Python function from the ``extracted/``
 package. None of them call MCP tools at runtime — the MCP
-tool calls from the source skill have been graduated into
+tool calls from the source skill have been compiled into
 direct API calls during the rote emission step.
 """
 
@@ -56,7 +56,7 @@ async def target_research(payload: dict) -> dict:
 async def taxonomy_lookup(payload: dict) -> dict:
     """Resolve ZoomInfo IDs for management levels (VP, Director), industries
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.taxonomy`` for implementation.
     """
     from expected.extracted.taxonomy import resolve_taxonomy_ids
@@ -83,7 +83,7 @@ async def lead_generation_loop(payload: dict) -> dict:
 async def enrich_contact_batch(payload: dict) -> dict:
     """Batch enrich contacts via ZoomInfo. Always requests employmentHistory
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.zoominfo`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
@@ -110,7 +110,7 @@ async def vet_contact(payload: dict) -> dict:
 async def hubspot_upsert(payload: dict) -> dict:
     """Batch upsert contacts to HubSpot (create or update by email). Hard
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.hubspot`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
@@ -123,7 +123,7 @@ async def hubspot_upsert(payload: dict) -> dict:
 async def hubspot_create_list(payload: dict) -> dict:
     """Create a static list named after the campaign and add the upserted
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.hubspot`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
@@ -136,7 +136,7 @@ async def hubspot_create_list(payload: dict) -> dict:
 async def exclusion_check_dnc(payload: dict) -> dict:
     """For each contact, look up \"BDR do not contact\" list memberships.
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -149,7 +149,7 @@ async def exclusion_check_dnc(payload: dict) -> dict:
 async def exclusion_check_recent(payload: dict) -> dict:
     """For each contact, check if they were emailed (outbound) in the last
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -165,7 +165,7 @@ async def exclusion_check_recent(payload: dict) -> dict:
 async def exclusion_check_sequence(payload: dict) -> dict:
     """For each contact, check if they are already enrolled in an active
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -191,7 +191,7 @@ async def personalize_email(payload: dict) -> dict:
 async def create_sales_template(payload: dict) -> dict:
     """Create or update HubSpot sales templates for the campaign sequence
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.hubspot`` for implementation.
     """
     from expected.extracted.hubspot import upsert_sales_template
@@ -202,7 +202,7 @@ async def create_sales_template(payload: dict) -> dict:
 async def pre_enrollment_report(payload: dict) -> dict:
     """Generate the final pre-enrollment report (markdown) with totals,
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``expected.extracted.report`` for implementation.
     """
     from expected.extracted.report import generate_pre_enrollment_report

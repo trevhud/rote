@@ -2,7 +2,7 @@
 
 Auto-generated stubs by rote.adapters.dbos. Replace each body
 with the real implementation (direct vendor API calls — the MCP
-tool calls from the source skill were graduated away at emit
+tool calls from the source skill were compiled away at emit
 time). Keep the signatures: the DBOS steps in main.py call these
 with the step payload as keyword arguments.
 """

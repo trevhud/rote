@@ -15,7 +15,7 @@ from rote.ir import Node, Pipeline
 
 # ───────── MCP invariant scan (TS) ─────────
 #
-# Comments and JSDoc may *mention* MCP to explain the graduation
+# Comments and JSDoc may *mention* MCP to explain the compilation
 # history; only executable code is forbidden from referencing it. So
 # strip /* ... */ blocks, // line comments, and string literals —
 # including backtick template literals — before scanning.

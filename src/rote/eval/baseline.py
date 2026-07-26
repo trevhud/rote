@@ -1,7 +1,7 @@
-"""Pre-graduation baseline: run the raw skill as an agent, measured *and observed*.
+"""Pre-compilation baseline: run the raw skill as an agent, measured *and observed*.
 
-``rote eval --run`` measures a skill *after* graduation, to compare both
-sides. The baseline runs **before** any graduation: one instrumented
+``rote eval --run`` measures a skill *after* compilation, to compare both
+sides. The baseline runs **before** any compilation: one instrumented
 ``claude -p`` execution of the raw skill that produces three artifacts at
 once —
 
@@ -35,6 +35,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rote.compiler.drivers.claude import (
+    DEFAULT_ALLOWED_TOOLS,
+    build_subscription_env,
+)
 from rote.eval.empirical import (
     MCP_CONFIG_FILENAME,
     RESULT_FILENAME,
@@ -43,10 +47,6 @@ from rote.eval.empirical import (
     _reliability_flags,
     _skill_prompt,
     measured_run_record,
-)
-from rote.graduator.drivers.claude import (
-    DEFAULT_ALLOWED_TOOLS,
-    build_subscription_env,
 )
 
 BASELINE_DIRNAME = "baseline"
@@ -150,7 +150,7 @@ def derive_input_payload(
 def mcp_servers_from_registry() -> dict[str, dict[str, Any]]:
     """Every rote-registered server as a ``claude -p`` mcp-config entry.
 
-    Pre-graduation there is no pipeline to name the skill's servers, so
+    Pre-compilation there is no pipeline to name the skill's servers, so
     the baseline wires *all* registered servers and lets the observed
     traffic report which ones the skill actually used — that observation
     is the requirements ground truth, so over-wiring here is a feature,
@@ -614,7 +614,7 @@ def render_baseline_markdown(result: BaselineResult) -> str:
     """The scorecard's measured-baseline section (the skill side, measured).
 
     Appended after the static estimate when a baseline ran alongside a
-    graduation — the "before" column stops being a model and becomes data.
+    compilation — the "before" column stops being a model and becomes data.
     """
     ok = [r for r in result.runs if r.succeeded]
     lines = [

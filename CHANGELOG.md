@@ -9,6 +9,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-26
+
 ### Added
 - **Park-on-auth for Cloudflare Workflows — every MCP-capable runtime
   now parks.** MCP-backed `step.do` calls wrap auth failures in
@@ -80,7 +82,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   budget and advertised via the `rote_auth_status` workflow event.
   `rote mcp login <server>` now finishes the loop: after a successful
   dance it scans the new app registry (`~/.local/share/rote/apps.json`,
-  recorded by `rote emit`/`rote graduate`; `ROTE_APPS_PATH` overrides),
+  recorded by `rote emit`/`rote compile`; `ROTE_APPS_PATH` overrides),
   discovers workflows parked on that server, and releases them — the
   run picks up exactly where it stopped, with the fresh credential.
   Parallel-wave siblings retry once before parking so a stale auth
@@ -90,27 +92,61 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   server (`tests/test_mcp_park_e2e.py`). The TS runtimes still fail
   loud on dead credentials — extending the park is a known follow-up.
 
+### Changed
+
+- **`rote graduate` is now `rote compile`.** The operation always was
+  compilation: read a source artifact, classify its parts, lower the
+  deterministic ones into typed code, keep a runtime for what genuinely
+  needs judgment. `graduate` described what happened to the skill
+  socially rather than what the tool does mechanically, and nobody
+  reaching for this searches for it. Asked cold to name the operation,
+  both Claude and Codex produce "compile" unprompted; the experiment is
+  recorded in the rote-cloud repo under `seo/reports/verb-experiment.json`.
+
+  The rename runs through the whole surface: the command, the
+  `rote.compiler` package (was `rote.graduator`), `Compiler` /
+  `CompilerError` / `CompilationEvent`, the `skills/rote-compile` agent
+  bundle, the `/rote:compile` plugin skill, the `<out>/compiled/`
+  artifact directory (was `<out>/graduated/`), the emitted
+  `compile-report.md` (was `graduation-report.md`), and all docs.
+
+  **`rote graduate` still works.** It dispatches to `rote compile` and
+  prints a one-line notice on stderr. It is deliberately absent from
+  `--help`: the alias exists so scripts written against 0.10.x keep
+  running, not to offer a second spelling.
+
+  **Breaking, without an alias:** the `--json` payload and progress
+  sidecar now carry `cloud.compilation_id` instead of
+  `cloud.graduation_id`, and artifacts land under `<out>/compiled/`.
+  Anything parsing that output needs a one-word edit.
+
+  **Not renamed:** the rote cloud HTTP routes (`/v1/graduations`) and
+  the server response keys (`graduation_id`, `active_graduation`). Those
+  name endpoints on a separately deployed platform; renaming them
+  client-side would 404 against every released server. See the module
+  docstring in `src/rote/cloud_compile.py`.
+
 ## [0.9.0] - 2026-07-11
 
 ### Added
-- **Live graduation progress** — the graduator now emits structured
-  `GraduationEvent`s (`rote.graduator.events`): phase transitions
-  (driven by `progress.ndjson` markers the graduator skill writes at
+- **Live compilation progress** — the compiler now emits structured
+  `CompilationEvent`s (`rote.compiler.events`): phase transitions
+  (driven by `progress.ndjson` markers the compiler skill writes at
   the start of each phase), per-turn token counts, tool calls, and
-  artifacts. `rote graduate` renders them live on stderr; hosts embed
-  the stream via `Graduator(on_event=...)`. Works across the Claude
+  artifacts. `rote compile` renders them live on stderr; hosts embed
+  the stream via `Compiler(on_event=...)`. Works across the Claude
   subprocess driver (stream-json) and both in-process API drivers.
 - **OpenAI-compatible API driver** (`--agent openai-api`) — the same
-  in-process graduation loop against any OpenAI-shaped endpoint
+  in-process compilation loop against any OpenAI-shaped endpoint
   (GPT, GLM, Kimi, …), sharing one filesystem-tool surface with the
   Anthropic driver.
 - **Gateway-friendly driver auth** — both API drivers accept
   `base_url` and `default_headers` (through the new
-  `Graduator(driver_kwargs=...)`), so graduations can route through
+  `Compiler(driver_kwargs=...)`), so compilations can route through
   proxies like Cloudflare AI Gateway with no provider key in the
   environment.
-- `Graduator.graduate()` accepts `extra_instructions`, appended to the
-  graduator skill prompt (e.g. pinning emitted judge calls to a
+- `Compiler.compile()` accepts `extra_instructions`, appended to the
+  compiler skill prompt (e.g. pinning emitted judge calls to a
   specific runtime client).
 - The Cloudflare adapter emits `manifest.json` at the runtime-dir
   root — machine-readable pipeline identity (name, version, pipeline
@@ -210,7 +246,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `eval.yaml` sidecar — with per-row `iterations`, the calibration
   fixture for the loop-aware cost model below.
 - **`eval --run` auto-wires the pipeline's MCP servers into the skill
-  trial.** The graduated pipeline's `mcp:` bindings name exactly the
+  trial.** The compiled pipeline's `mcp:` bindings name exactly the
   servers the source skill uses, so the "before" measurement now runs
   the agent over the same live tools (`--mcp-config` +
   `--strict-mcp-config`, per-server `mcp__<server>__*` allowlists;
@@ -235,7 +271,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     turns and realistic repeat count, and the whole-run turn estimate
     multiplies them. Loop-dominated skills were previously understated
     5–20× because the schema could not express iteration at all (the
-    graduator's own notes described the loop economics correctly; the
+    compiler's own notes described the loop economics correctly; the
     form had nowhere to put the number).
   - New `transcript_cap_tokens` prior (default 165k, the per-turn
     cache-read plateau measured on both production runs): the transcript
@@ -244,7 +280,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     from quadratic to linear on long runs. Without the cap, correcting
     the turn count would have swung the error the other way (~2.5×
     over).
-  - The graduator rubric's calibration anchors are now regime-aware:
+  - The compiler rubric's calibration anchors are now regime-aware:
     sequential tool-heavy skills anchor at 30–57 turns, per-item loop
     skills at hundreds (the old universal 30–57 anchor actively pulled
     loop-skill estimates down an order of magnitude).
@@ -254,9 +290,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   (Sonnet), 98M estimated token ceiling vs 96M measured.
 
 ### Fixed
-- `rote graduate` now re-points `eval.yaml`'s `source_skill` alongside
+- `rote compile` now re-points `eval.yaml`'s `source_skill` alongside
   `pipeline.yaml`'s — the sidecar previously kept the agent's
-  temp-work-dir-relative path, a dead pointer in every kept graduation.
+  temp-work-dir-relative path, a dead pointer in every kept compilation.
 
 ## [0.7.0] - 2026-07-09
 
@@ -273,7 +309,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   that its `source_skill` pointer resolves.
 - **Payload-aware "before" cost estimator** — the static scorecard now
   models the data a skill pulls into context, not just its turn count.
-  The graduated pipeline's `external_call` footprint sizes the agent-side
+  The compiled pipeline's `external_call` footprint sizes the agent-side
   context payload (`tokens_per_external_call_result`, default 6k/call,
   with a per-MCP-tool override table `payload_tokens_per_tool`), folded
   into C₀ of the cache-aware transcript model. Calibrated against a real
@@ -286,8 +322,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   under the quadratic transcript model — so every empirical run reports
   the effective payload-inclusive growth rate alongside
   `seconds_per_turn` and `output_tokens_per_turn`.
-- **`CodexDriver` is now implemented** — `rote graduate --agent codex`
-  spawns `codex exec` (OpenAI Codex CLI) as a graduator backend,
+- **`CodexDriver` is now implemented** — `rote compile --agent codex`
+  spawns `codex exec` (OpenAI Codex CLI) as a compiler backend,
   completing the three-driver lineup. Runs headless under a
   `workspace-write` sandbox (global reads so it can read the skill +
   rubric in place, writes confined to the work dir, no network). The
@@ -295,19 +331,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   session is only overridden by `CODEX_API_KEY`/`CODEX_ACCESS_TOKEN`,
   not `OPENAI_API_KEY`, and there is no separate OpenAI-API driver, so
   no auth is forced. Verified against the real CLI (codex-cli 0.142.4).
-- **`rote analyze` is now implemented** — the `plan` to `graduate`'s
-  `apply`. Runs the graduator against a skill and prints a structural
+- **`rote analyze` is now implemented** — the `plan` to `compile`'s
+  `apply`. Runs the compiler against a skill and prints a structural
   report (node-kind breakdown, roteness — matching `rote eval` — plus
   mandatory checks, HITL gates, agent loops, and which runtimes can
   target it) *without* emitting runtime code. `--json` for a
-  machine-readable report; `--out` keeps the graduated IR for a later
+  machine-readable report; `--out` keeps the compiled IR for a later
   `rote emit`. Previously a stub that printed "not yet implemented".
 
 ### Changed
 - **`source_skill` no longer participates in the pipeline hash** — it's
-  provenance (a filesystem path the graduator re-points per output
+  provenance (a filesystem path the compiler re-points per output
   location), and hashing it minted a new workflow type on every
-  re-graduation to a different directory, re-versioning in-flight
+  re-compilation to a different directory, re-versioning in-flight
   workflows whose behavior didn't change. Same rule as `Node.source`,
   which was already excluded. **One-time consequence:** every pipeline's
   hash (and therefore emitted workflow type name) changes once with this
@@ -324,13 +360,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `rote eval` on the canonical example silently dropped its before-side
   baseline. Corrected to `../skill`; now regression-guarded for every
   example.
-- `rote graduate`/`rote analyze --out` now re-point the pipeline's
+- `rote compile`/`rote analyze --out` now re-point the pipeline's
   `source_skill` to resolve from the emitted `pipeline.yaml`'s location
   (relative when possible, absolute otherwise). The agent records the
   path relative to its temp work dir — deleted when the run ends — so
-  every kept graduation carried a dead pointer and a later `rote eval`
+  every kept compilation carried a dead pointer and a later `rote eval`
   silently dropped the entire before-side baseline ("source_skill did
-  not resolve — emitting the after-side only"). Found by graduating a
+  not resolve — emitting the after-side only"). Found by compiling a
   real production skill.
 
 ## [0.6.0] - 2026-07-05
@@ -348,13 +384,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the empirical determinism metric. On `SamplingSurface.roteness`,
   `Scorecard.to_dict()`, and the markdown scorecard.
 - MCP-backed `external_call` nodes: an IR `mcp:` binding (server / tool /
-  args / url / transport) lets a graduated pipeline **call the MCP tool
+  args / url / transport) lets a compiled pipeline **call the MCP tool
   the source skill used, over Streamable HTTP**, instead of emitting a
   `NotImplementedError` stub — so the output runs out of the box. The DBOS
   adapter emits a working FastMCP client call by default
   (`external_backend="mcp"`); `api` falls back to the direct-SDK `impl`.
   Verified end-to-end against a live mock MCP server (`tests/test_mcp_e2e.py`).
-- `rote emit`/`rote graduate` gained `--backend mcp|api` to choose that
+- `rote emit`/`rote compile` gained `--backend mcp|api` to choose that
   backend at emit time (adapter factories now accept forwarded options).
 - `rote eval` harness: an auto-emitted `scorecard.md` with a static
   before/after estimate of speed, cost, and determinism (live-fetched
@@ -402,7 +438,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ### Added
 - **Cloudflare Workflows adapter** (`cloudflare`) — the second runtime,
   proving the IR is runtime-agnostic — and the **DBOS adapter**.
-- `rote serve` / `rote register`: expose graduated pipelines as MCP
+- `rote serve` / `rote register`: expose compiled pipelines as MCP
   tools (FastMCP 3.x, stdio + Streamable HTTP).
 - Data-flow threading: nodes declare `inputs:` and adapters thread real
   payloads through the DAG.
@@ -417,8 +453,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Added
 - Initial release: the runtime-agnostic IR (`pipeline.yaml`), the
-  Temporal adapter, the graduator agent + driver layer (Claude,
-  Anthropic API, Codex stub), the `rote graduate` / `rote emit` CLI,
+  Temporal adapter, the compiler agent + driver layer (Claude,
+  Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
 [Unreleased]: https://github.com/trevhud/rote/compare/v0.9.0...HEAD

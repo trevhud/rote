@@ -7,9 +7,9 @@ loop via the ``zoominfo_enrich_contacts`` MCP tool. The skill always
 requested ``employmentHistory`` because the LLM vetting step depended on
 it.
 
-# Graduated form
+# Compiled form
 
-After graduation, this is a deterministic call to the ZoomInfo
+After compilation, this is a deterministic call to the ZoomInfo
 Enrichment REST endpoint::
 
     POST https://api.zoominfo.com/enrich/contact

@@ -1,11 +1,11 @@
-"""``rote serve`` — expose graduated pipelines as MCP tools.
+"""``rote serve`` — expose compiled pipelines as MCP tools.
 
 Three modules:
 
 * :mod:`rote.serve.registry` — the manifest registry (``~/.rote/registry.json``)
-  mapping tool names to graduated pipelines and their runtime trigger config.
+  mapping tool names to compiled pipelines and their runtime trigger config.
 * :mod:`rote.serve.backends` — runtime trigger backends (Temporal, Cloudflare)
-  that start a graduated workflow and poll its status.
+  that start a compiled workflow and poll its status.
 * :mod:`rote.serve.server` — the FastMCP server that sources one MCP tool
   (plus a ``<tool>_status`` companion) per registry entry.
 

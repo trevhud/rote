@@ -394,13 +394,13 @@ def test_register_dbos_requires_system_database_url(
     assert "--system-database-url is required" in capsys.readouterr().err
 
 
-def test_register_resolves_graduate_out_layout(tmp_path: Path) -> None:
-    """A `rote graduate --out` dir nests pipeline.yaml under graduated/;
+def test_register_resolves_compile_out_layout(tmp_path: Path) -> None:
+    """A `rote compile --out` dir nests pipeline.yaml under compiled/;
     with the default dbos runtime, the system DB URL derives from the
     emitted app dir at runtime/dbos/."""
     out_dir = tmp_path / "bdr-out"
-    (out_dir / "graduated").mkdir(parents=True)
-    (out_dir / "graduated" / "pipeline.yaml").write_text(
+    (out_dir / "compiled").mkdir(parents=True)
+    (out_dir / "compiled" / "pipeline.yaml").write_text(
         BDR_PIPELINE_YAML.read_text(encoding="utf-8"), encoding="utf-8"
     )
     (out_dir / "runtime" / "dbos").mkdir(parents=True)
@@ -410,7 +410,7 @@ def test_register_resolves_graduate_out_layout(tmp_path: Path) -> None:
     rc = cli_main(["register", str(out_dir), "--registry", str(registry_path)])
     assert rc == 0
     entry = Registry.load(registry_path).entries[0]
-    assert entry.pipeline_yaml == str((out_dir / "graduated" / "pipeline.yaml").resolve())
+    assert entry.pipeline_yaml == str((out_dir / "compiled" / "pipeline.yaml").resolve())
     assert isinstance(entry.trigger, DbosTrigger)
     expected_sqlite = (out_dir / "runtime" / "dbos" / "bdr-campaign.dbos.sqlite").resolve()
     assert entry.trigger.system_database_url == f"sqlite:///{expected_sqlite}"

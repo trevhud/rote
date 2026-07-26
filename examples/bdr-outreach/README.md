@@ -1,8 +1,8 @@
 # Example: BDR Outreach
 
 This directory is the canonical real-world example for `rote` — a BDR
-outreach skill graduated into a durable pipeline. It's the dogfooding
-target and the regression suite for the graduator. The hand-drafted IR
+outreach skill compiled into a durable pipeline. It's the dogfooding
+target and the regression suite for the compiler. The hand-drafted IR
 is emitted to every runtime under `expected/runtimes/` (DBOS is the CLI
 default; Temporal, Cloudflare, DBOS-TS, and Inngest are also emitted).
 
@@ -31,15 +31,15 @@ examples/bdr-outreach/
 │       ├── cloudflare/               #   TypeScript
 │       ├── dbos-ts/                  #   TypeScript
 │       └── inngest/                  #   TypeScript
-└── runs/                             # real graduator run snapshots
+└── runs/                             # real compiler run snapshots
     └── <timestamp>/                  # one per committed run
 ```
 
-The `skill/` directory is the **input** to `rote graduate`. The
+The `skill/` directory is the **input** to `rote compile`. The
 `expected/` directory is my hand-drafted IR and stubs — the ground
 truth the IR schema was designed against, and the regression baseline
 for every adapter. The `runs/` directory holds snapshots of
-real graduator runs; `tests/test_graduator_bdr_regression.py` loads
+real compiler runs; `tests/test_compiler_bdr_regression.py` loads
 the most recent one and asserts semantic invariants (node kinds,
 mandatory flags, HITL gates, file references, codifiable percentage).
 
@@ -56,7 +56,7 @@ to point at your actual internal databases.
 
 ## Why this example
 
-The BDR skill is a good graduation target because it combines all five
+The BDR skill is a good compilation target because it combines all five
 node kinds in a single pipeline:
 
 - **`pure_function`**: HubSpot batch upsert (fixed batch size of 100),
@@ -74,36 +74,36 @@ node kinds in a single pipeline:
   check.
 
 Hitting every node kind means the BDR example also validates the IR:
-if `rote` can graduate this skill cleanly, the IR is probably
+if `rote` can compile this skill cleanly, the IR is probably
 expressive enough for the long tail.
 
-## Running the graduator on this example
+## Running the compiler on this example
 
 From the repo root, with a valid agent driver available (see the top-
 level README for installation):
 
 ```sh
-rote graduate examples/bdr-outreach/skill \
+rote compile examples/bdr-outreach/skill \
   --runtime temporal \
-  --out /tmp/bdr-graduated
+  --out /tmp/bdr-compiled
 ```
 
 The run takes about 13 minutes wall-clock (mostly the agent loop; the
 adapter step is instantaneous) and produces:
 
-- `graduated/pipeline.yaml` — the IR
-- `graduated/extracted/*.py` — deterministic function stubs
-- `graduated/signatures/*.py` — typed LLM-judge signatures
-- `graduated/evals/*.jsonl` — seed eval examples
-- `graduated/graduation-report.md` — human-readable summary
+- `compiled/pipeline.yaml` — the IR
+- `compiled/extracted/*.py` — deterministic function stubs
+- `compiled/signatures/*.py` — typed LLM-judge signatures
+- `compiled/evals/*.jsonl` — seed eval examples
+- `compiled/compile-report.md` — human-readable summary
 - `runtime/temporal/workflow.py` — the Temporal workflow class
 - `runtime/temporal/activities.py` — one `@activity.defn` per node
 
 To commit a run as a new regression snapshot:
 
 ```sh
-cp -r /tmp/bdr-graduated/graduated examples/bdr-outreach/runs/$(date -u +%Y-%m-%d)
-pytest tests/test_graduator_bdr_regression.py
+cp -r /tmp/bdr-compiled/compiled examples/bdr-outreach/runs/$(date -u +%Y-%m-%d)
+pytest tests/test_compiler_bdr_regression.py
 ```
 
 If the regression test passes against the new snapshot, you're good to

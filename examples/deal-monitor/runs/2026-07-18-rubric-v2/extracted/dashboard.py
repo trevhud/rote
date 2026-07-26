@@ -5,7 +5,7 @@ render_dashboard: pure_function — fixed template, no external calls.
 write_dashboard: external_call — filesystem write with error handling.
 generate_summary: pure_function — fixed text template.
 
-Graduated from: SKILL.md > Step 5 (Generate HTML Dashboard) and Step 6 (Output).
+Compiled from: SKILL.md > Step 5 (Generate HTML Dashboard) and Step 6 (Output).
 """
 from __future__ import annotations
 import os
@@ -194,7 +194,7 @@ def write_dashboard(dashboard: DashboardData, output_path: str = DASHBOARD_OUTPU
     Creates the output directory if it does not exist.
     Returns the absolute path of the written file.
 
-    Graduated from: SKILL.md > Step 5 ("Save the HTML file to ./outputs/deal-monitor.html")
+    Compiled from: SKILL.md > Step 5 ("Save the HTML file to ./outputs/deal-monitor.html")
     """
     abs_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)

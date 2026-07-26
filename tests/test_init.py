@@ -25,7 +25,7 @@ def _quiet_doctor(monkeypatch: pytest.MonkeyPatch) -> None:
         "rote.cli._build_doctor_report",
         lambda: {"version": "0", "python": "3", "drivers": [], "runtimes": [], "ok": True},
     )
-    monkeypatch.setattr("rote.graduator.drivers.available_drivers", lambda: _FAKE_DRIVERS)
+    monkeypatch.setattr("rote.compiler.drivers.available_drivers", lambda: _FAKE_DRIVERS)
 
 
 class _ScriptedIO:

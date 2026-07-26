@@ -183,11 +183,11 @@ class InferredToolSchema:
 def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str, Any]:
     """Static MCP bindings vs. observed traffic — the two-source check.
 
-    The graduator *infers* the skill's MCP usage from prose; the baseline
+    The compiler *infers* the skill's MCP usage from prose; the baseline
     *observed* it. Disagreements mean different things:
 
     * ``observed_only`` — the skill called a tool the pipeline doesn't
-      bind. The graduator likely missed a requirement; the strongest
+      bind. The compiler likely missed a requirement; the strongest
       signal here, surfaced first.
     * ``static_only`` — bound but never observed. Often benign (a branch
       the baseline task didn't take, or a write tool the read-only gate
@@ -198,7 +198,7 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
       a *bare* tool call, so post-processing folded into the node
       (filter/match/reshape) silently disappears at emission; the rubric
       requires it split into a downstream ``pure_function``. Found live:
-      "call list_organizations then match by name" graduated as one node
+      "call list_organizations then match by name" compiled as one node
       with ``output: {organization_id}`` — the emitted step returned the
       raw org array and the match logic existed nowhere.
 

@@ -1,12 +1,12 @@
 # The MCP client layer
 
-How rote connects graduated workflows (and the eval harness) to
+How rote connects compiled workflows (and the eval harness) to
 authenticated Streamable-HTTP MCP servers. This is the design record —
 the user-facing surface is `rote mcp --help`.
 
 ## The problem
 
-Graduated pipelines carry `mcp:` bindings (server / tool / transport)
+Compiled pipelines carry `mcp:` bindings (server / tool / transport)
 and the DBOS adapter emits working FastMCP calls — but real remote MCP
 servers authenticate with OAuth 2.1. Without a client that can run the
 authorization flow, store tokens durably, and refresh them, MCP-backed
@@ -56,7 +56,7 @@ Everywhere (CLI, eval, emitted code):
 3. `ROTE_MCP_<SERVER>_URL` environment variable.
 
 Exception: *at workflow runtime* the env var outranks the IR-recorded
-URL (deployment context beats graduation-time capture) — see
+URL (deployment context beats compilation-time capture) — see
 `rote/mcp/_runtime_helper.py:resolve_url`.
 
 ## The token-file contract (version 1)
@@ -116,7 +116,7 @@ opens a browser) — the step raises `RoteMcpAuthNeeded` and the workflow
    impossible — IR signal charsets exclude it).
 4. `rote mcp login <server>`, after a successful dance, scans the app
    registry (`~/.local/share/rote/apps.json`, written by
-   `rote emit`/`rote graduate`; `ROTE_APPS_PATH` overrides), finds
+   `rote emit`/`rote compile`; `ROTE_APPS_PATH` overrides), finds
    PENDING workflows awaiting that server via `DBOSClient.get_event`,
    and sends each the release message. DBOS notifications persist
    per-topic, so releasing a workflow that hasn't quite reached its

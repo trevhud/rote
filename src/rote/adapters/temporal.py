@@ -7,7 +7,7 @@ files:
   thin wrapper around the corresponding ``extracted/`` function or
   ``signatures/`` class. **No MCP runtime ever appears in this file.**
   External calls are direct API calls (deterministic Python), and
-  LLM judge calls are typed signatures. The graduation of an MCP tool
+  LLM judge calls are typed signatures. The compilation of an MCP tool
   call into a deterministic activity happens *here*.
 * ``workflow.py`` — one ``@workflow.defn`` class with the orchestration:
   topologically-sorted activity calls grouped into parallel waves,
@@ -129,7 +129,7 @@ def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) 
         async def {node.id}(payload: dict) -> dict:
             """{safe_docstring_line(node.description)}
 
-            Graduated from MCP tool call → deterministic API call. See
+            Compiled from MCP tool call → deterministic API call. See
             ``{cfg.extracted_module}.{module_name}`` for implementation.
             """
         '''
@@ -250,7 +250,7 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
         Architecture note: every external_call activity in this file
         wraps a deterministic Python function from the ``extracted/``
         package. None of them call MCP tools at runtime — the MCP
-        tool calls from the source skill have been graduated into
+        tool calls from the source skill have been compiled into
         direct API calls during the rote emission step.
         """
 
@@ -509,7 +509,7 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
 
             @workflow.defn(name="{versioned_workflow_name}")
             class {class_name}:
-                """Graduated workflow for {pipeline.name}."""
+                """Compiled workflow for {pipeline.name}."""
 
             '''
         ).lstrip("\n")

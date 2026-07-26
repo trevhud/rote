@@ -1,4 +1,4 @@
-"""Intermediate representation for graduated skills.
+"""Intermediate representation for compiled skills.
 
 The IR is a runtime-agnostic DAG of typed nodes. Adapters
 (``rote/adapters/temporal.py``, etc.) consume an :class:`Pipeline` and emit
@@ -151,9 +151,9 @@ def parse_input_ref(ref: str) -> InputRef:
 
 
 class NodeKind(StrEnum):
-    """The five kinds a graduated step can be classified as.
+    """The five kinds a compiled step can be classified as.
 
-    Every node in a graduated pipeline is exactly one kind. Adapters
+    Every node in a compiled pipeline is exactly one kind. Adapters
     decide how to emit each kind for their target runtime.
     """
 
@@ -287,7 +287,7 @@ class SourceRef(BaseModel):
     """Provenance: which SKILL.md section a node was derived from.
 
     ``section`` is the heading text (any level, without the ``#``
-    markers) of the source skill section — written by the graduator
+    markers) of the source skill section — written by the compiler
     agent, which knows the mapping. ``content_hash`` is the sha256 of
     that section's text; it's stamped by rote tooling (agents can't
     compute hashes) and normally lives in the ``provenance.json``
@@ -303,7 +303,7 @@ class SourceRef(BaseModel):
     section: str = Field(description="Heading text of the source SKILL.md section")
     content_hash: str | None = Field(
         default=None,
-        description="sha256 hex of the section text at graduation time (tool-stamped)",
+        description="sha256 hex of the section text at compilation time (tool-stamped)",
     )
 
     @field_validator("content_hash")
@@ -389,7 +389,7 @@ class MCPBinding(BaseModel):
 
 
 class Node(BaseModel):
-    """A single step in the graduated pipeline.
+    """A single step in the compiled pipeline.
 
     The fields used depend on the node ``kind``. Cross-field validation
     enforces that, e.g., ``llm_judge`` nodes have a ``signature`` and
@@ -409,7 +409,7 @@ class Node(BaseModel):
         default=None,
         description=(
             "Provenance: the SKILL.md section this node was derived from. "
-            "Enables incremental re-graduation (only nodes whose source "
+            "Enables incremental re-compilation (only nodes whose source "
             "section changed get re-derived). Metadata only — adapters "
             "ignore it and it never affects the pipeline identity hash."
         ),
@@ -513,7 +513,7 @@ class Node(BaseModel):
             "JSON Schema for this node's input payload. Runtime-agnostic "
             "data contract (same convention as PipelineInput.input_schema); "
             "typically populated from observed baseline traffic "
-            "(rote.probe) or by the graduator. Adapters may render it into "
+            "(rote.probe) or by the compiler. Adapters may render it into "
             "stub documentation and typed signatures."
         ),
     )
@@ -702,7 +702,7 @@ class PipelineInput(BaseModel):
 
 
 class Pipeline(BaseModel):
-    """A graduated skill, ready to be emitted into a runtime adapter."""
+    """A compiled skill, ready to be emitted into a runtime adapter."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -710,7 +710,7 @@ class Pipeline(BaseModel):
     version: str = "0.1.0"
     source_skill: str | None = Field(
         default=None,
-        description="Path to the source skill bundle this was graduated from",
+        description="Path to the source skill bundle this was compiled from",
     )
     description: str = ""
     config: PipelineConfig = Field(default_factory=PipelineConfig)
@@ -868,7 +868,7 @@ def save_pipeline(pipeline: Pipeline, path: str | Path) -> Path:
 
     Dumped from the model (``by_alias`` so ``Edge.from_`` serializes as
     ``from:``, ``exclude_none``/``exclude_defaults`` to keep the file
-    close to what the graduator writes). Formatting and comments from the
+    close to what the compiler writes). Formatting and comments from the
     original file are not preserved — callers rewrite pipeline.yaml only
     when they materially changed the IR (e.g. observed-schema enrichment).
     """

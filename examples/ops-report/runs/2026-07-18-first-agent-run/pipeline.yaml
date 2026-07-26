@@ -1,7 +1,7 @@
-# ops-report — Graduated Pipeline IR
+# ops-report — Compiled Pipeline IR
 #
 # Daily executive operations report for a parcel fulfillment network.
-# Graduated from examples/ops-report/skill/SKILL.md by the rote-graduate skill.
+# Compiled from examples/ops-report/skill/SKILL.md by the rote-compile skill.
 #
 # All non-HITL nodes are pure_function or external_call — no LLM judge calls
 # are needed because every decision is a numeric threshold check.
@@ -282,7 +282,7 @@ nodes:
       Apply sorter metric thresholds. Flags fail_rate_pct > 5% as 'action
       needed' and day-over-day volume drop > 15% as 'divert adjustment may be
       needed'. DoD comparison requires prior_volume per site (see open
-      questions in graduation-report.md).
+      questions in compile-report.md).
     impl: extracted/manual_data_rules.py:apply_sorter_rules
     input:
       sorter_metrics: "list[SorterSiteData]"

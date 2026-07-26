@@ -2,25 +2,25 @@
 
 The north star for this CLI:
 
-    rote graduate ./path/to/skill --runtime temporal --out ./graduated/
+    rote compile ./path/to/skill --runtime temporal --out ./compiled/
 
 One command, skill in, runnable workflow out. Every other command is a
 building block for that flow:
 
     rote emit    <pipeline.yaml> --runtime temporal  # IR → code only
-    rote analyze <skill-path>                        # graduator dry run
-    rote run     <skill-or-graduated-dir>            # one-off local execution
-    rote eval    <graduated-dir>                     # before/after scorecard
+    rote analyze <skill-path>                        # compiler dry run
+    rote run     <skill-or-compiled-dir>            # one-off local execution
+    rote eval    <compiled-dir>                     # before/after scorecard
     rote login                                       # connect to rote cloud
     rote init                                        # save defaults (one-time wizard)
     rote config                                      # show effective defaults + sources
 
-With a stored login, ``rote graduate`` defaults to emitting the
+With a stored login, ``rote compile`` defaults to emitting the
 cloudflare runtime and hosting the result on rote cloud in one step.
 Defaults resolve as flag > ROTE_* env > project rote.yaml > user
 config > built-in (see ``rote.config``).
 
-Internally ``rote graduate`` runs the ``rote-graduate`` skill in an agent
+Internally ``rote compile`` runs the ``rote-compile`` skill in an agent
 loop, which reads the source skill, produces a ``pipeline.yaml``, stubs
 the extracted/signature modules, then invokes the chosen adapter to emit
 the runtime code.
@@ -45,9 +45,9 @@ from typing import Any
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
-from rote.graduator import Graduator, GraduatorError
-from rote.graduator.drivers import DRIVERS, available_drivers
-from rote.graduator.events import GraduationEvent
+from rote.compiler import Compiler, CompilerError
+from rote.compiler.drivers import DRIVERS, available_drivers
+from rote.compiler.events import CompilationEvent
 from rote.ir import Pipeline, load_pipeline
 
 # ───────── Subcommand: emit ─────────
@@ -123,7 +123,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     Pure IR → code. No agent involved. This is the lowest-level
     subcommand and the simplest to reason about — it should be used
-    when the user already has a hand-written or previously-graduated
+    when the user already has a hand-written or previously-compiled
     ``pipeline.yaml`` and just wants to re-render the runtime code.
     """
     pipeline_path = Path(args.pipeline_yaml)
@@ -204,12 +204,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     return 0
 
 
-# ───────── Subcommand stubs (graduate / analyze / eval) ─────────
+# ───────── Subcommand stubs (compile / analyze / eval) ─────────
 
 
-#: The rote-graduate skill runs seven numbered phases; used to render
-#: ``[phase N/7]`` progress lines. Kept in sync with skills/rote-graduate.
-_GRADUATE_TOTAL_PHASES = 7
+#: The rote-compile skill runs seven numbered phases; used to render
+#: ``[phase N/7]`` progress lines. Kept in sync with skills/rote-compile.
+_COMPILE_TOTAL_PHASES = 7
 
 
 def _format_token_note(tokens: dict[str, int] | None) -> str:
@@ -228,8 +228,8 @@ def _format_token_note(tokens: dict[str, int] | None) -> str:
     return f" (in {_h(tokens.get('input', 0))} / out {_h(tokens.get('output', 0))} tok)"
 
 
-def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
-    """One-line live progress to stderr for ``rote graduate``.
+def _compile_progress_printer() -> Callable[[CompilationEvent], None]:
+    """One-line live progress to stderr for ``rote compile``.
 
     Plain ``print(file=sys.stderr)`` — no rich, no spinner, so it composes
     with piping and CI logs. Renders the event types a human watching a run
@@ -243,12 +243,12 @@ def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
     """
     last_tokens: dict[str, int] | None = None
 
-    def printer(event: GraduationEvent) -> None:
+    def printer(event: CompilationEvent) -> None:
         nonlocal last_tokens
         line: str | None
         if event.type == "phase":
             name = event.phase_name or ""
-            line = f"[phase {event.phase}/{_GRADUATE_TOTAL_PHASES}] {name}".rstrip()
+            line = f"[phase {event.phase}/{_COMPILE_TOTAL_PHASES}] {name}".rstrip()
         elif event.type == "tool":
             loc = f" {event.path}" if event.path else ""
             line = f"[turn {event.turn}] {event.tool_name}{loc}{_format_token_note(last_tokens)}"
@@ -269,18 +269,18 @@ def _graduate_progress_printer() -> Callable[[GraduationEvent], None]:
 
 
 class _JsonlProgressSink:
-    """Append-per-event JSONL progress sink for ``rote graduate``.
+    """Append-per-event JSONL progress sink for ``rote compile``.
 
-    A graduation is a long, real-money agent loop; an agent (or a cloud
+    A compilation is a long, real-money agent loop; an agent (or a cloud
     runner) that launched it wants to tail its progress live. This sink
-    writes one JSON object per :class:`GraduationEvent` to a file —
+    writes one JSON object per :class:`CompilationEvent` to a file —
     ``json.dumps`` of the event's fields with the ``None``-valued ones
     dropped for compactness — flushed per event so a tailer sees each
     line the instant it lands. It runs *alongside* the stderr printer, not
     instead of it.
 
     Two enrichments live only in the serialized line, never on the wire
-    :class:`GraduationEvent` (whose schema is locked across a network
+    :class:`CompilationEvent` (whose schema is locked across a network
     boundary): a per-event ``cost_usd`` priced from the model's current
     published rates for any event carrying cumulative ``tokens``, and a
     final ``type: "summary"`` digest written last (see
@@ -340,7 +340,7 @@ class _JsonlProgressSink:
         except (OSError, ValueError, TypeError):
             pass
 
-    def emit(self, event: GraduationEvent) -> None:
+    def emit(self, event: CompilationEvent) -> None:
         """Serialize one event as an NDJSON line (never raises)."""
         try:
             obj = {k: v for k, v in dataclasses.asdict(event).items() if v is not None}
@@ -376,14 +376,14 @@ class _JsonlProgressSink:
             self._file = None
 
 
-def _cmd_graduate(args: argparse.Namespace) -> int:
-    """Run the full one-shot graduation flow.
+def _cmd_compile(args: argparse.Namespace) -> int:
+    """Run the full one-shot compilation flow.
 
     Steps:
 
     1. Resolve the source skill directory; reject if it's not a skill bundle.
-    2. Run the graduator agent (via ``Graduator.graduate``) to produce
-       ``<out>/graduated/pipeline.yaml`` plus extracted modules and stubs.
+    2. Run the compiler agent (via ``Compiler.compile``) to produce
+       ``<out>/compiled/pipeline.yaml`` plus extracted modules and stubs.
     3. Hand the IR to the chosen runtime adapter to emit
        ``<out>/runtime/<target>/`` with workflow.py + activities.py.
     4. Print a one-screen summary of what was produced.
@@ -425,13 +425,13 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    # ── Cloud vs local mode ── with a login the graduation runs server-side
+    # ── Cloud vs local mode ── with a login the compilation runs server-side
     # by default; --local / --no-deploy opt out, --cloud forces it. A
     # resolved runtime that isn't cloudflare, or a disabled deploy, is an
     # explicit choice for a local run — honor it silently (a config pin
     # earns a one-line reason). --cloud overrides (it always emits
     # cloudflare; an explicit --runtime FLAG + --cloud is rejected inside
-    # _cmd_graduate_cloud).
+    # _cmd_compile_cloud).
     config_prefers_local = runtime_rv.value not in (None, "cloudflare") or deploy_rv.value == "none"
     if args.cloud:
         use_cloud = True
@@ -443,10 +443,10 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         # Cloud mode sees only per-run FLAG values — args is NOT yet
         # overwritten with config-resolved agent/model. Config `agent` /
         # `model` are local-execution preferences (the server picks the
-        # graduator driver and has its own model default); leaking them here
+        # compiler driver and has its own model default); leaking them here
         # would spuriously trip the local-only flag rejection or fail
         # resolve_model against the server lineup.
-        return _cmd_graduate_cloud(args)
+        return _cmd_compile_cloud(args)
 
     # Local path: fold the config-resolved agent/model into args now.
     args.agent, args.model = agent_rv.value, model_rv.value
@@ -458,7 +458,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         if pin_rv.source not in ("flag",) and not pin_rv.source.startswith("env "):
             setting = "runtime" if pinned_runtime else "deploy"
             print(
-                f"rote graduate: your {setting} config opts out of the rote-cloud "
+                f"rote compile: your {setting} config opts out of the rote-cloud "
                 "default — running locally (pass --cloud to override)",
                 file=sys.stderr,
             )
@@ -471,14 +471,14 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         args.runtime = "dbos"
         if layers.user or layers.project:
             print(
-                "rote graduate: tip — `rote login` makes rote cloud the default "
-                "host (graduate + deploy in one step)",
+                "rote compile: tip — `rote login` makes rote cloud the default "
+                "host (compile + deploy in one step)",
                 file=sys.stderr,
             )
         else:
             print(
-                "rote graduate: tip — `rote init` saves your defaults; `rote login` "
-                "makes rote cloud the default host (graduate + deploy in one step)",
+                "rote compile: tip — `rote init` saves your defaults; `rote login` "
+                "makes rote cloud the default host (compile + deploy in one step)",
                 file=sys.stderr,
             )
 
@@ -488,7 +488,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 # An explicit runtime override beats the configured cloud
                 # destination for this run — downgrade loudly, don't block.
                 print(
-                    f"rote graduate: skipping the configured rote-cloud deploy — "
+                    f"rote compile: skipping the configured rote-cloud deploy — "
                     f"--runtime {args.runtime} is not cloud-hostable",
                     file=sys.stderr,
                 )
@@ -518,15 +518,15 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         auto_deploy = cloud_cred is not None and args.runtime == "cloudflare"
 
     out_dir = Path(args.out)
-    graduated_dir = out_dir / "graduated"
+    compiled_dir = out_dir / "compiled"
     runtime_dir = out_dir / "runtime" / args.runtime
 
-    # ── Optional measured baseline (before the graduator spends money) ──
+    # ── Optional measured baseline (before the compiler spends money) ──
     baseline_result = None
     if args.baseline:
+        from rote.compiler.drivers.claude import DEFAULT_MODEL as _BASELINE_MODEL
         from rote.eval.baseline import run_baseline
         from rote.eval.empirical import EmpiricalError
-        from rote.graduator.drivers.claude import DEFAULT_MODEL as _BASELINE_MODEL
 
         try:
             baseline_payload = _resolve_baseline_input(
@@ -536,11 +536,11 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             print(f"error: {e}", file=sys.stderr)
             return 2
         except EmpiricalError as e:
-            print(f"rote graduate: baseline: {e}", file=sys.stderr)
+            print(f"rote compile: baseline: {e}", file=sys.stderr)
             return 1
         if baseline_payload is None:
             return 0
-        print("rote graduate: running measured baseline of the raw skill…", file=sys.stderr)
+        print("rote compile: running measured baseline of the raw skill…", file=sys.stderr)
         try:
             baseline_result = run_baseline(
                 skill_path,
@@ -550,7 +550,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 allow_writes=args.allow_writes,
             )
         except EmpiricalError as e:
-            print(f"rote graduate: baseline: {e}", file=sys.stderr)
+            print(f"rote compile: baseline: {e}", file=sys.stderr)
             return 1
         for r in baseline_result.runs:
             cost = f"${r.cost_usd:.2f}" if r.cost_usd is not None else "cost n/a"
@@ -561,7 +561,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             )
     else:
         print(
-            "rote graduate: tip — add --baseline to measure the raw skill first "
+            "rote compile: tip — add --baseline to measure the raw skill first "
             "(the scorecard's before-side becomes data, not an estimate)",
             file=sys.stderr,
         )
@@ -575,31 +575,31 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # that tail. A sink failure must never take down a paid run, so its
     # body is self-guarded (and emit_safely wraps the whole callback
     # anyway).
-    printer = _graduate_progress_printer()
+    printer = _compile_progress_printer()
     # Price against the model the run actually uses: the --model override
-    # when given, else the graduator's default (the subscription path's
+    # when given, else the compiler's default (the subscription path's
     # Sonnet). Both subprocess and api drivers share this default.
-    from rote.graduator.drivers.claude import DEFAULT_MODEL as _GRADUATOR_DEFAULT_MODEL
+    from rote.compiler.drivers.claude import DEFAULT_MODEL as _COMPILER_DEFAULT_MODEL
 
     progress_path = Path(args.progress_file) if args.progress_file else out_dir / "progress.jsonl"
     progress_sink: _JsonlProgressSink | None = _JsonlProgressSink(
         progress_path,
-        model_id=args.model or _GRADUATOR_DEFAULT_MODEL,
+        model_id=args.model or _COMPILER_DEFAULT_MODEL,
     )
-    print(f"rote graduate: watch progress with: tail -f {progress_path}", file=sys.stderr)
+    print(f"rote compile: watch progress with: tail -f {progress_path}", file=sys.stderr)
 
-    def _on_event(event: GraduationEvent) -> None:
+    def _on_event(event: CompilationEvent) -> None:
         printer(event)
         if progress_sink is not None:
             progress_sink.emit(event)
 
-    # --backend api asks the graduator for *working* vendor-SDK code, and
+    # --backend api asks the compiler for *working* vendor-SDK code, and
     # current API docs beat training-data memory — so the api backend
     # grants the agent web research tools (ClaudeDriver appends
     # WebSearch/WebFetch; other drivers swallow the flag until they grow
     # an equivalent).
     driver_kwargs = {"web_tools": True} if args.backend == "api" else None
-    graduator = Graduator(
+    compiler = Compiler(
         agent=args.agent, model=args.model, on_event=_on_event, driver_kwargs=driver_kwargs
     )
 
@@ -607,34 +607,34 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         from rote.eval.baseline import BASELINE_DIRNAME as _PROBE_BASELINE_DIRNAME
 
         result = asyncio.run(
-            graduator.graduate(
+            compiler.compile(
                 skill_path,
-                graduated_dir,
+                compiled_dir,
                 update=args.update,
                 # Baseline artifacts (from --baseline just now, or a prior
                 # `rote baseline --out` here) are ground truth the agent
-                # reads during graduation — observed MCP traffic + schemas.
+                # reads during compilation — observed MCP traffic + schemas.
                 probe_dir=out_dir / _PROBE_BASELINE_DIRNAME,
             )
         )
-    except GraduatorError as e:
+    except CompilerError as e:
         if progress_sink is not None:
             progress_sink.close()
-        print(f"rote graduate: {e}", file=sys.stderr)
+        print(f"rote compile: {e}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         if progress_sink is not None:
             progress_sink.close()
-        print("rote graduate: interrupted", file=sys.stderr)
+        print("rote compile: interrupted", file=sys.stderr)
         return 130
 
     try:
         adapter = get_adapter(
             args.runtime,
             external_backend=args.backend,
-            # Use the just-graduated extracted/ implementations verbatim
+            # Use the just-compiled extracted/ implementations verbatim
             # in the runtime dir (Python-emitting adapters only).
-            extracted_source_dir=graduated_dir,
+            extracted_source_dir=compiled_dir,
         )
     except KeyError as e:
         if progress_sink is not None:
@@ -663,9 +663,9 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
         pipeline, enriched_ids = enrich_pipeline(pipeline, infer_tool_schemas(observations))
         if enriched_ids:
-            save_pipeline(pipeline, graduated_dir / "pipeline.yaml")
+            save_pipeline(pipeline, compiled_dir / "pipeline.yaml")
             print(
-                f"rote graduate: typed {len(enriched_ids)} node contract(s) from "
+                f"rote compile: typed {len(enriched_ids)} node contract(s) from "
                 f"observed baseline traffic: {', '.join(enriched_ids)}",
                 file=sys.stderr,
             )
@@ -681,24 +681,24 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # implements extracted modules for real. Run them now so the user
     # learns immediately whether the agent's implementations hold against
     # the observed payloads. Strictly non-fatal: a red test (or a missing
-    # pytest) is a report line, never a failed graduation.
-    verification = _run_generated_tests(graduated_dir)
+    # pytest) is a report line, never a failed compilation.
+    verification = _run_generated_tests(compiled_dir)
     if verification is not None:
         status = "passed" if verification["passed"] else "FAILED"
         print(
-            f"rote graduate: generated tests {status} ({verification['summary']})",
+            f"rote compile: generated tests {status} ({verification['summary']})",
             file=sys.stderr,
         )
         if not verification["passed"]:
             print(
-                f"  review the agent's implementations against {graduated_dir / 'tests'} "
+                f"  review the agent's implementations against {compiled_dir / 'tests'} "
                 "— a red golden-fixture test means an implementation disagrees with "
                 "the observed payloads",
                 file=sys.stderr,
             )
 
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
-    # just-completed, real-money graduation run) ──
+    # just-completed, real-money compilation run) ──
     scorecard_path: Path | None = None
     if not args.no_eval:
         from rote.eval import build_scorecard_for
@@ -707,11 +707,11 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         try:
             scorecard = build_scorecard_for(
                 pipeline,
-                graduated_dir / "pipeline.yaml",
+                compiled_dir / "pipeline.yaml",
                 skill_path,
                 provider="anthropic",
             )
-            scorecard_path = graduated_dir / "scorecard.md"
+            scorecard_path = compiled_dir / "scorecard.md"
             scorecard_md = scorecard.to_markdown() + "\n"
             if baseline_result is not None:
                 from rote.eval.baseline import render_baseline_markdown
@@ -720,7 +720,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             scorecard_path.write_text(scorecard_md, encoding="utf-8")
         except PricingError as e:
             print(
-                f"rote graduate: warning: skipped scorecard (live price fetch "
+                f"rote compile: warning: skipped scorecard (live price fetch "
                 f"failed: {e}). Generate it later with: rote eval {out_dir}",
                 file=sys.stderr,
             )
@@ -729,14 +729,14 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
     # JSON object only — the same stdout-contract split as `rote mcp headers`)
     summary_stream = sys.stderr if args.json else sys.stdout
     print(
-        f"rote graduate: ✓ {pipeline.name} v{pipeline.version}",
+        f"rote compile: ✓ {pipeline.name} v{pipeline.version}",
         file=summary_stream,
     )
     print(f"  driver: {result.driver_name}", file=summary_stream)
     if result.driver_metadata:
         meta_str = ", ".join(f"{k}={v}" for k, v in result.driver_metadata.items())
         print(f"  metadata: {meta_str}", file=summary_stream)
-    print(f"  graduated artifacts: {graduated_dir}", file=summary_stream)
+    print(f"  compiled artifacts: {compiled_dir}", file=summary_stream)
     if scorecard_path is not None:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
@@ -776,7 +776,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             print(
                 f"  cross-check: skill called {entry['server']}.{entry['tool']} "
                 f"({entry['observed_calls']}×) but no pipeline node binds it — "
-                "likely a missed requirement; review the graduated IR",
+                "likely a missed requirement; review the compiled IR",
                 file=summary_stream,
             )
         for entry in static_only:
@@ -814,7 +814,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             kind="pipeline",
             path=runtime_dir,
             runtime="cloudflare",
-            pipeline_yaml=graduated_dir / "pipeline.yaml",
+            pipeline_yaml=compiled_dir / "pipeline.yaml",
         )
         try:
             report = deploy_rote_cloud(cloud_target)
@@ -824,9 +824,9 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
         except DeployError as e:
             deploy_entry = {"target": "rote-cloud", "ok": False, "error": str(e)}
             exit_code = 1
-            print(f"rote graduate: deploy to rote cloud failed: {e}", file=sys.stderr)
+            print(f"rote compile: deploy to rote cloud failed: {e}", file=sys.stderr)
             print(
-                f"  the graduation itself succeeded — retry the upload with: "
+                f"  the compilation itself succeeded — retry the upload with: "
                 f"rote deploy {out_dir} --target rote-cloud",
                 file=sys.stderr,
             )
@@ -838,7 +838,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
             "pipeline": {"name": pipeline.name, "version": pipeline.version},
             "runtime": args.runtime,
             "out_dir": str(out_dir.resolve()),
-            "graduated_dir": str(graduated_dir.resolve()),
+            "compiled_dir": str(compiled_dir.resolve()),
             "runtime_dir": str(runtime_dir.resolve()),
             "scorecard": str(scorecard_path.resolve()) if scorecard_path is not None else None,
             "driver": result.driver_name,
@@ -868,7 +868,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 
     # ── Machine end-of-run digest ── The per-event `complete` line is for
     # a human tailer; this is the structured summary an agent reads: the
-    # graduated pipeline's shape (roteness / node-kind counts, reusing the
+    # compiled pipeline's shape (roteness / node-kind counts, reusing the
     # same pure analysis `rote analyze` prints), where the artifacts landed,
     # the remaining stub TODOs, and the run's total token spend + cost. It's
     # the LAST NDJSON line, written after everything else is on disk.
@@ -887,7 +887,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
                 "roteness": analysis["roteness"],
                 "node_kinds": analysis_nodes["by_kind"],
                 "nodes": analysis_nodes["total"],
-                "graduated_dir": str(graduated_dir.resolve()),
+                "compiled_dir": str(compiled_dir.resolve()),
                 "runtime_dir": str(runtime_dir.resolve()),
                 "unimplemented_stubs": _unimplemented_stubs(written),
                 "mcp_servers": analysis["mcp_servers"],
@@ -901,7 +901,7 @@ def _cmd_graduate(args: argparse.Namespace) -> int:
 def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
     """Message for the first local-only flag set under cloud mode, else None.
 
-    Cloud graduation emits the cloudflare runtime and runs the graduator
+    Cloud compilation emits the cloudflare runtime and runs the compiler
     server-side, so the flags that only mean something on the local path
     (a chosen driver/backend, the local baseline pass, the local eval
     scorecard) are rejected with a pointer to ``--local``. ``--agent``
@@ -910,7 +910,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
     """
     if args.runtime not in (None, "cloudflare"):
         return (
-            f"rote graduate: cloud graduation emits the cloudflare runtime — "
+            f"rote compile: cloud compilation emits the cloudflare runtime — "
             f"add --local for --runtime {args.runtime}"
         )
     for flag, is_set in (
@@ -922,7 +922,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-eval", args.no_eval),
     ):
         if is_set:
-            return f"rote graduate: {flag} runs locally — add --local to use it"
+            return f"rote compile: {flag} runs locally — add --local to use it"
     return None
 
 
@@ -940,26 +940,26 @@ def _cloud_manifest_identity(written: dict[str, Path], runtime_dir: Path) -> tup
     return str(data.get("name") or "?"), str(data.get("version") or "?")
 
 
-def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
-    """Run the graduation on rote cloud and download the artifacts.
+def _cmd_compile_cloud(args: argparse.Namespace) -> int:
+    """Run the compilation on rote cloud and download the artifacts.
 
-    Mirrors ``_cmd_graduate``'s output conventions (the stderr progress
+    Mirrors ``_cmd_compile``'s output conventions (the stderr progress
     printer, the optional ``--progress-file`` JSONL sink, the stdout/stderr
     split under ``--json``) but the work happens server-side: sync the
-    skill bundle, start (or attach to) a graduation, stream its events,
-    then download the finished tree. Full-mode graduations auto-deploy on
+    skill bundle, start (or attach to) a compilation, stream its events,
+    then download the finished tree. Full-mode compilations auto-deploy on
     the server, so there is no local deploy leg here.
     """
-    from rote.cloud_graduate import (
-        ActiveGraduationExists,
-        CloudGraduateError,
+    from rote.cloud_compile import (
+        ActiveCompilationExists,
+        CloudCompileError,
         NoChanges,
-        cancel_graduation,
+        cancel_compilation,
         download_artifacts,
-        poll_graduation,
+        poll_compilation,
         resolve_cloud_endpoint,
         resolve_model,
-        start_graduation,
+        start_compilation,
         sync_skill,
     )
 
@@ -972,25 +972,25 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
     try:
         ep = resolve_cloud_endpoint()
         model = resolve_model(ep, args.model)
-    except CloudGraduateError as e:
-        print(f"rote graduate: {e}", file=sys.stderr)
+    except CloudCompileError as e:
+        print(f"rote compile: {e}", file=sys.stderr)
         return e.exit_code
 
     print(
-        f"rote graduate: running on rote cloud ({ep.url}), model {model}",
+        f"rote compile: running on rote cloud ({ep.url}), model {model}",
         file=sys.stderr,
     )
 
     out_dir = Path(args.out)
-    graduated_dir = out_dir / "graduated"
+    compiled_dir = out_dir / "compiled"
     runtime_dir = out_dir / "runtime" / "cloudflare"
 
-    printer = _graduate_progress_printer()
+    printer = _compile_progress_printer()
     progress_sink: _JsonlProgressSink | None = None
     if args.progress_file:
         progress_sink = _JsonlProgressSink(Path(args.progress_file), model)
 
-    def _on_event(event: GraduationEvent) -> None:
+    def _on_event(event: CompilationEvent) -> None:
         printer(event)
         if progress_sink is not None:
             progress_sink.emit(event)
@@ -999,99 +999,99 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
         if progress_sink is not None:
             progress_sink.close()
 
-    # ── Sync the skill, or attach to a graduation already running ──
+    # ── Sync the skill, or attach to a compilation already running ──
     attached = False
-    graduation_id: str | None = None
+    compilation_id: str | None = None
     try:
         skill_id = sync_skill(ep, skill_path)
-    except ActiveGraduationExists as e:
+    except ActiveCompilationExists as e:
         print(
-            "rote graduate: a graduation is already running for this skill — attaching "
+            "rote compile: a compilation is already running for this skill — attaching "
             "(local changes NOT uploaded; Ctrl-C detaches)",
             file=sys.stderr,
         )
-        skill_id, graduation_id, attached = e.skill_id or "", e.graduation_id, True
-    except CloudGraduateError as e:
+        skill_id, compilation_id, attached = e.skill_id or "", e.compilation_id, True
+    except CloudCompileError as e:
         _close_sink()
-        print(f"rote graduate: {e}", file=sys.stderr)
+        print(f"rote compile: {e}", file=sys.stderr)
         return e.exit_code
 
     if not attached:
         mode = "update" if args.update else "full"
         try:
-            record = start_graduation(ep, skill_id, mode=mode, model=model)
-            graduation_id = str(record.get("id") or "")
+            record = start_compilation(ep, skill_id, mode=mode, model=model)
+            compilation_id = str(record.get("id") or "")
         except NoChanges:
             _close_sink()
             print(
-                "rote graduate: no changes since the last graduation — nothing to do",
+                "rote compile: no changes since the last compilation — nothing to do",
                 file=sys.stderr,
             )
             return 0
-        except ActiveGraduationExists as e:
+        except ActiveCompilationExists as e:
             print(
-                "rote graduate: a graduation is already running for this skill — attaching "
+                "rote compile: a compilation is already running for this skill — attaching "
                 "(Ctrl-C detaches)",
                 file=sys.stderr,
             )
-            graduation_id, attached = e.graduation_id, True
-        except CloudGraduateError as e:
+            compilation_id, attached = e.compilation_id, True
+        except CloudCompileError as e:
             _close_sink()
-            print(f"rote graduate: {e}", file=sys.stderr)
+            print(f"rote compile: {e}", file=sys.stderr)
             return e.exit_code
 
-    if not graduation_id:
+    if not compilation_id:
         _close_sink()
-        print("rote graduate: rote cloud did not return a graduation id", file=sys.stderr)
+        print("rote compile: rote cloud did not return a compilation id", file=sys.stderr)
         return 1
 
     # ── Stream events to a terminal state ──
     try:
-        final = poll_graduation(ep, graduation_id, _on_event)
+        final = poll_compilation(ep, compilation_id, _on_event)
     except KeyboardInterrupt:
         if attached:
             print(
-                f"rote graduate: detached — the graduation keeps running (id {graduation_id})",
+                f"rote compile: detached — the compilation keeps running (id {compilation_id})",
                 file=sys.stderr,
             )
         else:
-            cancel_graduation(ep, graduation_id)
+            cancel_compilation(ep, compilation_id)
             print(
-                f"rote graduate: interrupted — canceled graduation {graduation_id}",
+                f"rote compile: interrupted — canceled compilation {compilation_id}",
                 file=sys.stderr,
             )
         _close_sink()
         return 130
-    except CloudGraduateError as e:
+    except CloudCompileError as e:
         _close_sink()
-        print(f"rote graduate: {e}", file=sys.stderr)
+        print(f"rote compile: {e}", file=sys.stderr)
         return e.exit_code
 
     status = final.get("status")
     summary_stream = sys.stderr if args.json else sys.stdout
 
     if status == "canceled":
-        print(f"rote graduate: graduation {graduation_id} was canceled", file=sys.stderr)
+        print(f"rote compile: compilation {compilation_id} was canceled", file=sys.stderr)
         _close_sink()
         return 130
 
     if status == "error":
-        server_error = final.get("error") or "the graduation failed on rote cloud"
-        print(f"rote graduate: {server_error}", file=sys.stderr)
+        server_error = final.get("error") or "the compilation failed on rote cloud"
+        print(f"rote compile: {server_error}", file=sys.stderr)
         # Best-effort partial download so the user keeps whatever landed.
-        with contextlib.suppress(CloudGraduateError):
-            download_artifacts(ep, graduation_id, out_dir)
+        with contextlib.suppress(CloudCompileError):
+            download_artifacts(ep, compilation_id, out_dir)
         _close_sink()
         return 1
 
     # ── status == complete: download the artifacts, then report ──
     try:
-        written = download_artifacts(ep, graduation_id, out_dir)
-    except CloudGraduateError as e:
+        written = download_artifacts(ep, compilation_id, out_dir)
+    except CloudCompileError as e:
         _close_sink()
-        print(f"rote graduate: {e}", file=sys.stderr)
+        print(f"rote compile: {e}", file=sys.stderr)
         print(
-            f"  the graduation itself succeeded — artifacts remain on {ep.url}",
+            f"  the compilation itself succeeded — artifacts remain on {ep.url}",
             file=sys.stderr,
         )
         return 1
@@ -1105,8 +1105,8 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
     pipeline_id = final.get("pipeline_id")
     deployed = bool(final.get("deployed"))
 
-    print(f"rote graduate: ✓ {name} v{version}", file=summary_stream)
-    print(f"  graduated artifacts: {graduated_dir}", file=summary_stream)
+    print(f"rote compile: ✓ {name} v{version}", file=summary_stream)
+    print(f"  compiled artifacts: {compiled_dir}", file=summary_stream)
     print(f"  emitted runtime (cloudflare): {runtime_dir}", file=summary_stream)
     if scorecard_path is not None:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
@@ -1119,7 +1119,7 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
         print(f"  {note}{cost}".rstrip(), file=summary_stream)
 
     cloud_entry: dict[str, Any] = {
-        "graduation_id": graduation_id,
+        "compilation_id": compilation_id,
         "skill_id": skill_id,
         "status": status,
         "mode": final.get("mode"),
@@ -1135,7 +1135,7 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
             "pipeline": {"name": name, "version": version},
             "runtime": "cloudflare",
             "out_dir": str(out_dir.resolve()),
-            "graduated_dir": str(graduated_dir.resolve()),
+            "compiled_dir": str(compiled_dir.resolve()),
             "runtime_dir": str(runtime_dir.resolve()),
             "scorecard": str(scorecard_path.resolve()) if scorecard_path is not None else None,
             "written": {rel: str(dest.resolve()) for rel, dest in written.items()},
@@ -1148,7 +1148,7 @@ def _cmd_graduate_cloud(args: argparse.Namespace) -> int:
         progress_sink.write_summary(
             {
                 "type": "summary",
-                "graduated_dir": str(graduated_dir.resolve()),
+                "compiled_dir": str(compiled_dir.resolve()),
                 "runtime_dir": str(runtime_dir.resolve()),
                 "cloud": cloud_entry,
                 "total_tokens": tokens or {"input": 0, "output": 0},
@@ -1165,30 +1165,30 @@ def _resolve_pipeline_yaml(path: Path) -> Path | None:
     """Find the pipeline.yaml behind a user-supplied path.
 
     Accepts the file itself, a directory containing one, or a
-    ``rote graduate --out`` directory (which nests it under graduated/).
+    ``rote compile --out`` directory (which nests it under compiled/).
     """
     if path.is_file():
         return path
-    for candidate in (path / "pipeline.yaml", path / "graduated" / "pipeline.yaml"):
+    for candidate in (path / "pipeline.yaml", path / "compiled" / "pipeline.yaml"):
         if candidate.is_file():
             return candidate
     return None
 
 
-def _derive_dbos_sqlite_url(graduated_arg: Path, pipeline_name: str) -> str | None:
+def _derive_dbos_sqlite_url(compiled_arg: Path, pipeline_name: str) -> str | None:
     """Locate the emitted DBOS app dir and derive its default SQLite URL.
 
     The emitted main.py defaults its system database to
     ``sqlite:///<app dir>/<pipeline.name>.dbos.sqlite``. Given what the
     user passed to ``rote register`` (the pipeline.yaml, its directory,
-    or a ``rote graduate --out`` directory), the app dir is wherever a
+    or a ``rote compile --out`` directory), the app dir is wherever a
     ``main.py`` is found in the known layouts.
     """
-    base = graduated_arg if graduated_arg.is_dir() else graduated_arg.parent
+    base = compiled_arg if compiled_arg.is_dir() else compiled_arg.parent
     candidates = (
         base,  # the emitted runtime dir itself
-        base / "runtime" / "dbos",  # a graduate --out dir
-        base.parent / "runtime" / "dbos",  # the graduated/ dir inside one
+        base / "runtime" / "dbos",  # a compile --out dir
+        base.parent / "runtime" / "dbos",  # the compiled/ dir inside one
     )
     for app_dir in candidates:
         if (app_dir / "main.py").is_file():
@@ -1197,9 +1197,9 @@ def _derive_dbos_sqlite_url(graduated_arg: Path, pipeline_name: str) -> str | No
 
 
 def _cmd_register(args: argparse.Namespace) -> int:
-    """Add or update a registry entry for a graduated pipeline.
+    """Add or update a registry entry for a compiled pipeline.
 
-    Reads the pipeline.yaml from a graduate run, derives the MCP tool
+    Reads the pipeline.yaml from a compile run, derives the MCP tool
     name / description / inputSchema from it, attaches the runtime
     trigger config from the flags, and upserts ``~/.rote/registry.json``
     (or ``--registry``). ``rote serve`` picks the change up live.
@@ -1216,10 +1216,10 @@ def _cmd_register(args: argparse.Namespace) -> int:
         entry_from_pipeline,
     )
 
-    pipeline_yaml = _resolve_pipeline_yaml(Path(args.graduated_dir))
+    pipeline_yaml = _resolve_pipeline_yaml(Path(args.compiled_dir))
     if pipeline_yaml is None:
         print(
-            f"error: no pipeline.yaml found at or under: {args.graduated_dir}",
+            f"error: no pipeline.yaml found at or under: {args.compiled_dir}",
             file=sys.stderr,
         )
         return 2
@@ -1244,7 +1244,7 @@ def _cmd_register(args: argparse.Namespace) -> int:
         system_database_url = (
             args.system_database_url
             or os.environ.get("DBOS_SYSTEM_DATABASE_URL")
-            or _derive_dbos_sqlite_url(Path(args.graduated_dir), pipeline.name)
+            or _derive_dbos_sqlite_url(Path(args.compiled_dir), pipeline.name)
         )
         if not system_database_url:
             print(
@@ -1699,7 +1699,7 @@ def _build_analysis(
     driver_metadata: dict[str, object],
     skill_path: Path,
 ) -> dict[str, object]:
-    """Derive a structural report from a graduated pipeline's IR.
+    """Derive a structural report from a compiled pipeline's IR.
 
     Pure function of the IR plus the local MCP registry/token files — no
     model, no network. Step counting mirrors the eval scorecard exactly
@@ -1853,11 +1853,11 @@ def _render_analysis_text(report: dict[str, object]) -> str:
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
-    """Dry-run the graduator: report a skill's graduated shape, emit nothing.
+    """Dry-run the compiler: report a skill's compiled shape, emit nothing.
 
-    The ``plan`` to ``graduate``'s ``apply`` — runs the same graduator
+    The ``plan`` to ``compile``'s ``apply`` — runs the same compiler
     agent to produce a validated IR, then prints a structural report
-    instead of emitting runtime code. With ``--out`` the graduated IR +
+    instead of emitting runtime code. With ``--out`` the compiled IR +
     stubs are kept (ready for a later ``rote emit``); without it, they're
     produced in a temp dir and discarded after reporting.
     """
@@ -1870,7 +1870,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
 
-    # Same layered agent/model defaults as graduate — analyze is its dry run.
+    # Same layered agent/model defaults as compile — analyze is its dry run.
     from rote import config as rote_config
 
     try:
@@ -1880,7 +1880,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    graduator = Graduator(agent=agent, model=model)
+    compiler = Compiler(agent=agent, model=model)
 
     out_ctx: Any = (
         nullcontext(str(args.out))
@@ -1888,10 +1888,10 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         else tempfile.TemporaryDirectory(prefix="rote-analyze-")
     )
     with out_ctx as out_raw:
-        graduated_dir = Path(out_raw)
+        compiled_dir = Path(out_raw)
         try:
-            result = asyncio.run(graduator.graduate(skill_path, graduated_dir))
-        except GraduatorError as e:
+            result = asyncio.run(compiler.compile(skill_path, compiled_dir))
+        except CompilerError as e:
             print(f"rote analyze: {e}", file=sys.stderr)
             return 1
         except KeyboardInterrupt:
@@ -1907,9 +1907,9 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             print(_render_analysis_text(report))
             if args.out:
                 print()
-                print(f"  graduated IR kept at: {graduated_dir / 'pipeline.yaml'}")
+                print(f"  compiled IR kept at: {compiled_dir / 'pipeline.yaml'}")
                 print(
-                    f"  emit a runtime with:  rote emit {graduated_dir / 'pipeline.yaml'} "
+                    f"  emit a runtime with:  rote emit {compiled_dir / 'pipeline.yaml'} "
                     f"--runtime dbos --out ./runtime"
                 )
             else:
@@ -2010,7 +2010,7 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append(f"  rote {report['version']}  ·  Python {report['python']}")
     lines.append("")
 
-    lines.append("Graduator drivers (at least one required):")
+    lines.append("Compiler drivers (at least one required):")
     for driver in report["drivers"]:
         mark = "✓" if driver["available"] else "✗"
         suffix = "" if driver["available"] else f" — {driver['reason']}"
@@ -2051,7 +2051,7 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append("  (MCP and app issues are informational — they do not fail this check.)")
     lines.append("")
 
-    lines.append("✓ ready to graduate" if report["ok"] else "✗ no graduator driver available")
+    lines.append("✓ ready to compile" if report["ok"] else "✗ no compiler driver available")
     return "\n".join(lines)
 
 
@@ -2117,20 +2117,20 @@ def _resolve_baseline_input(
     return derived
 
 
-def _run_generated_tests(graduated_dir: Path) -> dict[str, object] | None:
-    """Run the agent-written test suite under a graduation's output, if any.
+def _run_generated_tests(compiled_dir: Path) -> dict[str, object] | None:
+    """Run the agent-written test suite under a compilation's output, if any.
 
     The implementation rubric asks the agent for deterministic, offline
     tests in ``tests/`` (golden fixtures from observed payloads,
     transport-stubbed network calls). ``None`` when there's nothing to
     run; otherwise ``{"passed": bool, "summary": str}``. Degrades to a
     "couldn't run" summary (never raises) when pytest is unavailable or
-    the run blows up — verification is advisory, the graduation already
+    the run blows up — verification is advisory, the compilation already
     materially succeeded.
     """
     import subprocess
 
-    tests_dir = graduated_dir / "tests"
+    tests_dir = compiled_dir / "tests"
     if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
         return None
     try:
@@ -2145,7 +2145,7 @@ def _run_generated_tests(graduated_dir: Path) -> dict[str, object] | None:
                 "-p",
                 "no:cacheprovider",
             ],
-            cwd=graduated_dir,
+            cwd=compiled_dir,
             capture_output=True,
             text=True,
             timeout=300.0,
@@ -2157,7 +2157,7 @@ def _run_generated_tests(graduated_dir: Path) -> dict[str, object] | None:
 
 
 def _cmd_baseline(args: argparse.Namespace) -> int:
-    """Run the raw skill as an agent, measured and observed (pre-graduation).
+    """Run the raw skill as an agent, measured and observed (pre-compilation).
 
     The three-artifacts-in-one-run command: measured "before" metrics,
     the full stream-json transcript, and the observed MCP tool traffic
@@ -2165,9 +2165,9 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     """
     import json
 
+    from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval.baseline import BASELINE_DIRNAME, run_baseline
     from rote.eval.empirical import EmpiricalError, measured_run_record
-    from rote.graduator.drivers.claude import DEFAULT_MODEL
 
     skill_path = Path(args.skill_path)
     if not skill_path.is_dir():
@@ -2255,8 +2255,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     cross-process). The run's output JSON goes to stdout so it pipes;
     status lines go to stderr.
     """
+    from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval.empirical import EmpiricalError, measured_run_record
-    from rote.graduator.drivers.claude import DEFAULT_MODEL
     from rote.ir import NodeKind
     from rote.runners import (
         TargetError,
@@ -2425,8 +2425,8 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
         target = detect_target(Path(args.path), runtime=args.runtime)
         if target.kind != "pipeline":
             print(
-                "error: deploy takes an emitted runtime dir (or a `rote graduate "
-                "--out` dir) — a skill isn't deployable, graduate it first",
+                "error: deploy takes an emitted runtime dir (or a `rote compile "
+                "--out` dir) — a skill isn't deployable, compile it first",
                 file=sys.stderr,
             )
             return 2
@@ -2623,8 +2623,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
         return 2
 
     cred = load_credential()
-    # Mirror graduate's built-in resolution so this report shows what a
-    # flagless `rote graduate` would actually do, not just raw file
+    # Mirror compile's built-in resolution so this report shows what a
+    # flagless `rote compile` would actually do, not just raw file
     # contents.
     runtime = resolved["runtime"].value or ("cloudflare" if cred is not None else "dbos")
     deploy = resolved["deploy"].value or (
@@ -2697,12 +2697,12 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    """Read-only preflight: is a graduation set up to succeed before spending money?
+    """Read-only preflight: is a compilation set up to succeed before spending money?
 
-    Reports the rote/Python versions, which graduator drivers are usable
+    Reports the rote/Python versions, which compiler drivers are usable
     (the load-bearing gate), which optional runtime deps are installed,
     the auth state of every registered MCP server, and every emitted app
-    rote knows about. Exits non-zero only when NO graduator driver is
+    rote knows about. Exits non-zero only when NO compiler driver is
     available, so it doubles as a scriptable gate; MCP and app findings
     are informational.
     """
@@ -2727,7 +2727,7 @@ def _resolve_eval_skill_dir(
         p = Path(args_skill)
         return p if (p / "SKILL.md").is_file() else None
     if source_skill:
-        # source_skill was recorded relative to wherever the graduation
+        # source_skill was recorded relative to wherever the compilation
         # ran (often a temp work dir), so no single base is reliable —
         # try the cwd, then every ancestor of the pipeline.yaml.
         pipeline_dir = pipeline_yaml.resolve().parent
@@ -2755,7 +2755,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     if pipeline_yaml is None:
         print(
             f"error: no pipeline.yaml found at or under {target} — "
-            f"pass a graduated dir, a graduate --out dir, or the file itself",
+            f"pass a compiled dir, a compile --out dir, or the file itself",
             file=sys.stderr,
         )
         return 2
@@ -2825,7 +2825,7 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 def _resolve_runtime_dir(explicit: str | None, pipeline_yaml: Path) -> Path:
     """Locate the emitted runtime app for empirical pipeline trials.
 
-    Explicit ``--runtime-dir`` wins; otherwise try the ``rote graduate
+    Explicit ``--runtime-dir`` wins; otherwise try the ``rote compile
     --out`` layout's siblings (runtime/dbos, runtime/python) and the
     pipeline's own directory.
     """
@@ -2990,8 +2990,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rote",
         description=(
-            "Graduate fuzzy AI skills into deterministic, reliable workflows. "
-            "The north-star command is `rote graduate`; `rote emit` exposes "
+            "Compile fuzzy AI skills into deterministic, reliable workflows. "
+            "The north-star command is `rote compile`; `rote emit` exposes "
             "the underlying IR → code step for users who already have a "
             "pipeline.yaml."
         ),
@@ -3016,7 +3016,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Render runtime code from a pipeline.yaml (IR → code only)",
         description=(
             "Render runtime code from a pipeline.yaml. This is the pure "
-            "IR → adapter step — no graduator agent is invoked."
+            "IR → adapter step — no compiler agent is invoked."
         ),
     )
     emit.add_argument(
@@ -3061,20 +3061,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     emit.set_defaults(func=_cmd_emit)
 
-    # rote graduate (stub)
-    graduate = subparsers.add_parser(
-        "graduate",
-        help="Graduate a skill into a runnable pipeline (north-star command)",
+    # rote compile (stub)
+    compile_p = subparsers.add_parser(
+        "compile",
+        help="Compile a skill into a runnable pipeline (north-star command)",
         description=(
-            "Read a skill bundle, run the rote-graduate agent to produce "
+            "Read a skill bundle, run the rote-compile agent to produce "
             "a pipeline IR + extracted modules + signature stubs, then "
             "emit runtime code for the chosen adapter. Output layout: "
-            "<out>/graduated/ (the IR + stubs) and <out>/runtime/<target>/ "
+            "<out>/compiled/ (the IR + stubs) and <out>/runtime/<target>/ "
             "(the emitted workflow code)."
         ),
     )
-    graduate.add_argument("skill_path", help="Path to the source skill directory")
-    graduate.add_argument(
+    compile_p.add_argument("skill_path", help="Path to the source skill directory")
+    compile_p.add_argument(
         "--runtime",
         default=None,
         choices=available_runtimes,
@@ -3086,27 +3086,27 @@ def _build_parser() -> argparse.ArgumentParser:
             f"Available: {', '.join(available_runtimes)}"
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--no-deploy",
         action="store_true",
         help=(
-            "When logged in to rote cloud: run the graduation locally and "
+            "When logged in to rote cloud: run the compilation locally and "
             "skip the auto-deploy (implies a local run; deploy later with "
             "`rote deploy --target rote-cloud`)"
         ),
     )
-    cloud_mode = graduate.add_mutually_exclusive_group()
+    cloud_mode = compile_p.add_mutually_exclusive_group()
     cloud_mode.add_argument(
         "--local",
         action="store_true",
-        help="Run the graduation on this machine even when logged in to rote cloud",
+        help="Run the compilation on this machine even when logged in to rote cloud",
     )
     cloud_mode.add_argument(
         "--cloud",
         action="store_true",
-        help="Run the graduation on rote cloud; requires login or ROTE_CLOUD_* env",
+        help="Run the compilation on rote cloud; requires login or ROTE_CLOUD_* env",
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--backend",
         default="mcp",
         choices=["mcp", "api"],
@@ -3116,34 +3116,34 @@ def _build_parser() -> argparse.ArgumentParser:
             "used; 'api' emits the direct vendor-SDK path. See `rote emit`."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--out",
         required=True,
-        help="Output directory for the graduated artifacts",
+        help="Output directory for the compiled artifacts",
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--agent",
         choices=sorted(DRIVERS),
         default=None,
         help=(
-            "Agent runtime to use for the graduator. Defaults to auto-detect "
+            "Agent runtime to use for the compiler. Defaults to auto-detect "
             "(claude CLI first, then codex, then anthropic API). Users with "
             "a Claude Max/Pro or ChatGPT subscription should prefer claude/codex "
             "to avoid per-token API charges. openai-api is explicit-only and "
             "requires --model."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--model",
         default=None,
         help=(
-            "Override the LLM model used by the graduator agent "
+            "Override the LLM model used by the compiler agent "
             "(e.g. 'claude-opus-4-6' for higher-quality / higher-cost "
             "runs on complex skills). Defaults to the driver's default, "
             "which is Sonnet 4.6 for the subscription path."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--no-eval",
         action="store_true",
         help=(
@@ -3152,28 +3152,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "everything else about it is static."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--update",
         action="store_true",
         help=(
-            "Incremental re-graduation: requires a previous graduation in "
+            "Incremental re-compilation: requires a previous compilation in "
             "--out. Diffs the skill against the previous run's provenance "
             "and re-derives only nodes whose source sections changed — "
             "unchanged nodes are preserved verbatim (ids and all), and a "
             "skill with no changes skips the agent entirely."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--json",
         action="store_true",
         help=(
-            "Emit a single JSON object (graduated_dir, runtime_dir, written "
+            "Emit a single JSON object (compiled_dir, runtime_dir, written "
             "files, scorecard path, unimplemented stubs) to stdout; keep the "
             "progress log and summary on stderr. For piping into another tool "
             "or agent."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--progress-file",
         default=None,
         metavar="PATH",
@@ -3186,17 +3186,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "alongside the stderr progress log; composes with --json."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--baseline",
         action="store_true",
         help=(
-            "Run the raw skill once as an agent BEFORE graduating (measured "
+            "Run the raw skill once as an agent BEFORE compiling (measured "
             "wall/turns/cost + observed MCP traffic; see `rote baseline`). "
             "The scorecard then carries a measured before-side instead of an "
             "estimate. Adds minutes and tens of cents."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--baseline-input",
         default=None,
         metavar="FILE",
@@ -3205,12 +3205,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "one derived from SKILL.md and confirmed before spending."
         ),
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--yes",
         action="store_true",
         help="With --baseline: accept the derived input proposal without prompting",
     )
-    graduate.add_argument(
+    compile_p.add_argument(
         "--allow-writes",
         action="store_true",
         help=(
@@ -3218,18 +3218,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "exactly as in production, side effects included"
         ),
     )
-    graduate.set_defaults(func=_cmd_graduate)
+    compile_p.set_defaults(func=_cmd_compile)
 
     # rote run
     run_p = subparsers.add_parser(
         "run",
         help="Run a skill (via claude -p) or an emitted pipeline locally, once",
         description=(
-            "One-off local execution of either side of a graduation. A skill "
+            "One-off local execution of either side of a compilation. A skill "
             "directory runs as an agent via `claude -p` — registered MCP "
             "servers injected, read-only gate unless --allow-writes, billed "
             "to your Claude subscription. An emitted runtime directory (or a "
-            "`rote graduate --out` directory) runs the pipeline itself: "
+            "`rote compile --out` directory) runs the pipeline itself: "
             "python and dbos execute in-process today; other runtimes print "
             "their native dev command. The run's output JSON lands on stdout "
             "so it pipes; status goes to stderr."
@@ -3237,7 +3237,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_p.add_argument(
         "path",
-        help="Skill dir (SKILL.md), emitted runtime dir, or `rote graduate --out` dir",
+        help="Skill dir (SKILL.md), emitted runtime dir, or `rote compile --out` dir",
     )
     run_p.add_argument(
         "--input",
@@ -3266,7 +3266,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--model",
         default=None,
-        help="Skill runs: the agent model (default: the graduator's default Sonnet)",
+        help="Skill runs: the agent model (default: the compiler's default Sonnet)",
     )
     run_p.add_argument(
         "--allow-writes",
@@ -3312,7 +3312,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     deploy_p.add_argument(
         "path",
-        help="Emitted runtime dir, or a `rote graduate --out` dir",
+        help="Emitted runtime dir, or a `rote compile --out` dir",
     )
     deploy_p.add_argument(
         "--target",
@@ -3365,7 +3365,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "OAuth device-flow login: opens the browser to approve a "
             "one-time code (or prints code + URL over SSH with --device), "
             "then stores a tenant API key at ~/.local/share/rote/cloud.json. "
-            "Once logged in, `rote graduate` defaults to hosting on rote "
+            "Once logged in, `rote compile` defaults to hosting on rote "
             "cloud and `rote deploy --target rote-cloud` needs no flags."
         ),
     )
@@ -3401,19 +3401,19 @@ def _build_parser() -> argparse.ArgumentParser:
     # rote register
     register = subparsers.add_parser(
         "register",
-        help="Register a graduated pipeline as an MCP tool for `rote serve`",
+        help="Register a compiled pipeline as an MCP tool for `rote serve`",
         description=(
             "Append or update an entry in the serve registry "
-            "(~/.rote/registry.json by default) from a graduate run's "
+            "(~/.rote/registry.json by default) from a compile run's "
             "pipeline.yaml. Tool name comes from pipeline.name, description "
             "from pipeline.description, inputSchema from the pipeline input "
             "contract. A running `rote serve` picks the change up live."
         ),
     )
     register.add_argument(
-        "graduated_dir",
+        "compiled_dir",
         help=(
-            "A graduate --out directory, a directory containing pipeline.yaml, "
+            "A compile --out directory, a directory containing pipeline.yaml, "
             "or the pipeline.yaml itself"
         ),
     )
@@ -3427,8 +3427,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="dbos",
         choices=["dbos", "temporal", "cloudflare"],
         help=(
-            "Runtime the graduated pipeline is deployed on (default: dbos, "
-            "matching `rote graduate`)"
+            "Runtime the compiled pipeline is deployed on (default: dbos, matching `rote compile`)"
         ),
     )
     register.add_argument(
@@ -3469,7 +3468,7 @@ def _build_parser() -> argparse.ArgumentParser:
     register.add_argument(
         "--task-queue",
         default=None,
-        help="Temporal task queue the graduated worker polls (default: pipeline.name)",
+        help="Temporal task queue the compiled worker polls (default: pipeline.name)",
     )
     register.add_argument(
         "--workflow-name",
@@ -3537,7 +3536,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Manage MCP servers: register endpoints, authenticate (OAuth), mint headers",
         description=(
             "The MCP client layer. Registered server names match the logical "
-            "`mcp.server` names in graduated pipelines; `login` runs the full "
+            "`mcp.server` names in compiled pipelines; `login` runs the full "
             "OAuth 2.1 dance (discovery, PKCE, dynamic registration) and "
             "stores tokens durably so emitted workflows and eval trials "
             "authenticate without re-prompting."
@@ -3638,13 +3637,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # rote analyze
     analyze = subparsers.add_parser(
         "analyze",
-        help="Dry-run the graduator: report a skill's graduated shape, emit no runtime code",
+        help="Dry-run the compiler: report a skill's compiled shape, emit no runtime code",
         description=(
-            "Run the rote-graduate agent against a skill and print what "
-            "graduation would produce — node-kind breakdown, roteness "
+            "Run the rote-compile agent against a skill and print what "
+            "compilation would produce — node-kind breakdown, roteness "
             "(deterministic vs. LLM-sampled steps), mandatory checks, HITL "
             "gates, agent loops, and which runtimes can target it — without "
-            "emitting any runtime code. This is the `plan` to `graduate`'s "
+            "emitting any runtime code. This is the `plan` to `compile`'s "
             "`apply`. Pass --out to keep the pipeline.yaml for a later `rote emit`."
         ),
     )
@@ -3654,7 +3653,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(DRIVERS),
         default=None,
         help=(
-            "Agent runtime for the graduator (default: auto-detect — claude "
+            "Agent runtime for the compiler (default: auto-detect — claude "
             "CLI first, then codex, then the anthropic API). openai-api is "
             "explicit-only and requires --model."
         ),
@@ -3662,13 +3661,13 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--model",
         default=None,
-        help="Override the LLM model the graduator uses (default: the driver's default).",
+        help="Override the LLM model the compiler uses (default: the driver's default).",
     )
     analyze.add_argument(
         "--out",
         default=None,
         help=(
-            "Keep the graduated IR + stubs in this directory (ready for "
+            "Keep the compiled IR + stubs in this directory (ready for "
             "`rote emit`). Default: produce them in a temp dir and discard "
             "after reporting."
         ),
@@ -3683,14 +3682,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # rote doctor
     doctor = subparsers.add_parser(
         "doctor",
-        help="Preflight check: graduator drivers, runtime deps, MCP auth, and registered apps",
+        help="Preflight check: compiler drivers, runtime deps, MCP auth, and registered apps",
         description=(
             "Read-only preflight that tells you (or your agent) whether a "
-            "graduation will succeed before spending a cent: which graduator "
+            "compilation will succeed before spending a cent: which compiler "
             "drivers are usable, which optional runtime dependencies are "
             "installed, the auth state of every registered MCP server, and "
             "every emitted app rote knows about. Nothing is executed and "
-            "nothing is spent. Exits non-zero only when no graduator driver "
+            "nothing is spent. Exits non-zero only when no compiler driver "
             "is available, so it works as a scriptable gate."
         ),
     )
@@ -3707,7 +3706,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Interactive onboarding — pick your defaults once (hosting, runtime, driver)",
         description=(
             "Walk through the choices that shape every later command — "
-            "rote cloud vs a local runtime, graduator driver, model — and "
+            "rote cloud vs a local runtime, compiler driver, model — and "
             "save them to a config file. Writes the user-level config "
             "(~/.config/rote/config.yaml) by default; --project writes a "
             "./rote.yaml that overrides it for this repo."
@@ -3739,14 +3738,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Before/after scorecard: speed, cost, determinism (static, no execution)",
         description=(
             "Estimate what a skill costs to run as raw agent instructions "
-            "versus as its graduated pipeline — wall clock, dollars across "
+            "versus as its compiled pipeline — wall clock, dollars across "
             "a sampling of current models at live official prices, and "
             "determinism (LLM sampling surface). Static: nothing executes."
         ),
     )
     eval_cmd.add_argument(
         "target",
-        help=("A graduated directory, a graduate --out directory, or a pipeline.yaml path"),
+        help=("A compiled directory, a compile --out directory, or a pipeline.yaml path"),
     )
     eval_cmd.add_argument(
         "--skill",
@@ -3824,7 +3823,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Emitted runtime app for the pipeline trials (default: the "
-            "graduate --out layout's runtime/dbos or runtime/python sibling)"
+            "compile --out layout's runtime/dbos or runtime/python sibling)"
         ),
     )
     eval_cmd.add_argument(
@@ -3841,9 +3840,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # rote baseline
     baseline = subparsers.add_parser(
         "baseline",
-        help="Run the raw skill once as an agent — measured and observed (pre-graduation)",
+        help="Run the raw skill once as an agent — measured and observed (pre-compilation)",
         description=(
-            "Execute the source skill via `claude -p` before graduating it: "
+            "Execute the source skill via `claude -p` before compiling it: "
             "capture measured before-metrics (wall clock, turns, tokens, "
             "cost), the full transcript, and every MCP tool call the agent "
             "actually made with its real payloads. rote's registered MCP "
@@ -3883,7 +3882,7 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument(
         "--model",
         default=None,
-        help="Model for the agent run (default: the graduator's default Sonnet)",
+        help="Model for the agent run (default: the compiler's default Sonnet)",
     )
     baseline.add_argument(
         "--max-turns",
@@ -3910,13 +3909,45 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: Retired subcommand names that still dispatch, mapped to their replacement.
+#: ``rote graduate`` shipped through 0.10.x, so it lives in people's shell
+#: history, scripts and CI. It keeps working, and it is absent from ``--help``
+#: on purpose: the alias exists so old invocations do not break, not to offer a
+#: second spelling anyone should learn.
+_RETIRED_COMMANDS = {"graduate": "compile"}
+
+
+def _resolve_retired_command(argv: list[str]) -> list[str]:
+    """Rewrite a retired subcommand, telling the caller once on stderr.
+
+    Only the first token that is not an option is considered, which is
+    unambiguously the subcommand because no top-level option takes a value.
+    That keeps ``rote compile ./graduate`` (a skill directory that happens to
+    be named after the old verb) untouched.
+    """
+    for index, token in enumerate(argv):
+        if token.startswith("-"):
+            continue
+        replacement = _RETIRED_COMMANDS.get(token)
+        if replacement is None:
+            return argv
+        print(
+            f"rote: `{token}` is now `{replacement}` — running `rote {replacement}`. "
+            f"The old name still works; update your scripts when convenient.",
+            file=sys.stderr,
+        )
+        return [*argv[:index], replacement, *argv[index + 1 :]]
+    return argv
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(_resolve_retired_command(raw))
 
     if not getattr(args, "command", None):
         # No subcommand — print a helpful banner and usage.
-        print(f"rote {__version__} — graduate fuzzy AI skills into deterministic workflows")
+        print(f"rote {__version__} — compile fuzzy AI skills into deterministic workflows")
         print()
         parser.print_help()
         return 0

@@ -11,7 +11,7 @@ The endpoint contract (mirrors the platform's ``DeployPayload``):
 ``name`` + ``class_name`` + ``module_js`` required; ``version``,
 ``pipeline_hash``, ``node_ids``, ``input_schema`` ride along. The
 platform stores the module in R2 keyed by tenant and registers the
-pipeline row — the same code path its own in-cloud graduation deploy
+pipeline row — the same code path its own in-cloud compilation deploy
 uses.
 
 Bundling matches the platform's reference client exactly: esbuild,
@@ -94,7 +94,7 @@ def bundle_workflow(app_dir: Path) -> str:
     The app's npm dependencies must be present first: the platform's
     Worker Loader executes the bundle stand-alone, so judge deps (zod,
     vendor SDKs) get inlined — only ``cloudflare:workers``/``node:*``
-    stay external. A freshly emitted app (the graduate auto-deploy
+    stay external. A freshly emitted app (the compile auto-deploy
     path) has no ``node_modules`` yet, so install idempotently here.
     """
     if shutil.which("npx") is None:

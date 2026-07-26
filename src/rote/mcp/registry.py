@@ -1,7 +1,7 @@
 """The MCP server registry — ``rote mcp add``'s persistent store.
 
 One user-level JSON file maps *logical server names* (the same names
-graduated pipelines carry in their ``mcp:`` bindings) to endpoints and
+compiled pipelines carry in their ``mcp:`` bindings) to endpoints and
 client credentials. The registry is deliberately tiny: names, URLs,
 transports, and the OAuth escape hatches real servers need
 (pre-registered ``client_id``/``client_secret`` for DCR-less servers

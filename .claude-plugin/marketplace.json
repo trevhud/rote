@@ -4,13 +4,13 @@
     "name": "Trevor Hudson",
     "email": "trevhud@gmail.com"
   },
-  "description": "Graduate fuzzy AI skills into deterministic, reliable workflows",
+  "description": "Compile fuzzy AI skills into deterministic, reliable workflows",
   "plugins": [
     {
       "name": "rote",
       "source": "./plugin",
-      "description": "Graduate an Anthropic-style skill into a deterministic pipeline (Temporal, Cloudflare Workflows, or DBOS) from inside Claude Code, then trigger the deployed workflows over MCP.",
-      "version": "0.10.0"
+      "description": "Compile an Anthropic-style skill into a deterministic pipeline (Temporal, Cloudflare Workflows, or DBOS) from inside Claude Code, then trigger the deployed workflows over MCP.",
+      "version": "0.11.0"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # rote
 
-**Graduate fuzzy AI skills into deterministic, reliable workflows.**
+**Compile fuzzy AI skills into deterministic, reliable workflows.**
 
 [![CI](https://github.com/trevhud/rote/actions/workflows/ci.yml/badge.svg)](https://github.com/trevhud/rote/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rote-cli.svg)](https://pypi.org/project/rote-cli/)
@@ -10,7 +10,7 @@
 `rote` is a CLI that takes an Anthropic-style Skill (a `SKILL.md` plus
 `references/`) and turns it into a runnable background pipeline in one
 shot. An LLM agent (itself defined as a skill) reads the source skill,
-applies a structured graduation rubric, and emits a runtime-agnostic
+applies a structured compilation rubric, and emits a runtime-agnostic
 intermediate representation (`pipeline.yaml`), extracted Python modules
 for the deterministic parts, typed signature stubs for the LLM-judge
 parts, and runnable code for the durable execution engine of your
@@ -19,22 +19,22 @@ choice.
 ```sh
 pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
 
-# `rote graduate` runs an LLM agent, so it needs a driver: Claude Code
+# `rote compile` runs an LLM agent, so it needs a driver: Claude Code
 # (`claude`) or Codex (`codex`) installed and authed, or ANTHROPIC_API_KEY
 # for the in-process `api` driver. The BDR run below takes ~13 min and
 # ~$0.70 with Sonnet. (`rote emit` needs no LLM — see below.)
 
 # Default target is DBOS — durable execution as a plain Python library,
 # no orchestrator to run, SQLite for dev / Postgres for prod:
-rote graduate ./examples/bdr-outreach/skill --out ./graduated/
+rote compile ./examples/bdr-outreach/skill --out ./compiled/
 
 # Or pick another runtime (see the table below):
-rote graduate ./examples/bdr-outreach/skill --runtime temporal   --out ./graduated/
-rote graduate ./examples/bdr-outreach/skill --runtime cloudflare --out ./graduated/
+rote compile ./examples/bdr-outreach/skill --runtime temporal   --out ./compiled/
+rote compile ./examples/bdr-outreach/skill --runtime cloudflare --out ./compiled/
 ```
 
 The name comes from *rote learning* — doing something so many times, so
-reliably, that it becomes mechanical. That's what graduation does to a
+reliably, that it becomes mechanical. That's what compilation does to a
 skill: a fuzzy 10–20 minute agent loop becomes a deterministic pipeline
 that runs in the background, costs a fraction of the tokens, and can be
 regression-tested.
@@ -55,7 +55,7 @@ from the deterministic procedures wearing fuzzy clothing. Move the
 deterministic parts into code, keep the LLM only where the input is
 genuinely unbounded (parsing, classifying, drafting), and wrap the whole
 thing in a durable execution engine with explicit human-in-the-loop
-gates. That graduation step is what `rote` automates.
+gates. That compilation step is what `rote` automates.
 
 There's third-party data for what this buys. ["Compiled AI: Deterministic
 Code Generation for LLM-Based Workflow Automation"](https://arxiv.org/abs/2604.05150)
@@ -87,10 +87,10 @@ a small interface.
 
 ```
    SKILL.md + references/          Source skill bundle (untouched)
-             │  rote graduate
+             │  rote compile
              ▼
-   graduator agent                 An LLM agent (Claude / Codex /
-   (pluggable driver)              Anthropic SDK) runs the rote-graduate
+   compiler agent                 An LLM agent (Claude / Codex /
+   (pluggable driver)              Anthropic SDK) runs the rote-compile
              │                     skill against the source bundle.
              │  filesystem contract: work_dir/pipeline.yaml
              ▼                     + extracted/ + signatures/
@@ -102,7 +102,7 @@ a small interface.
                                    execution engine.
 ```
 
-1. **The graduator agent** (`skills/rote-graduate/`) — a regular
+1. **The compiler agent** (`skills/rote-compile/`) — a regular
    Anthropic Skill (`SKILL.md` + four reference files). This is the
    *brain*; it runs inside any Skills-compatible surface, and you don't
    need `rote` to use it.
@@ -112,7 +112,7 @@ a small interface.
 3. **Runtime adapters** (`src/rote/adapters/`) — pluggable modules that
    consume an IR and emit runnable code for one engine.
 
-The graduator's job ends when it has produced a valid `pipeline.yaml`.
+The compiler's job ends when it has produced a valid `pipeline.yaml`.
 Code emission is *deterministic Python* — never agent-driven — so the
 same IR always produces byte-identical output.
 
@@ -122,7 +122,7 @@ same IR always produces byte-identical output.
 
 ### From Claude Code (recommended)
 
-`rote` ships as a Claude Code plugin, so you can graduate a skill without
+`rote` ships as a Claude Code plugin, so you can compile a skill without
 touching Python tooling:
 
 ```
@@ -130,17 +130,17 @@ touching Python tooling:
 /plugin install rote@rote
 ```
 
-Then say "graduate this skill" (or run `/rote:graduate`). It confirms the
+Then say "compile this skill" (or run `/rote:compile`). It confirms the
 source directory, asks which runtime you want, runs the CLI via
 [uv](https://docs.astral.sh/uv/) in the background, and reports the
-emitted pipeline. A second skill, `/rote:serve`, wires graduated
+emitted pipeline. A second skill, `/rote:serve`, wires compiled
 pipelines up as MCP tools so Claude can trigger the deployed workflows
 (see [docs/mcp-trigger.md](docs/mcp-trigger.md)).
 
 Prefer a terminal? The same thing is one `uvx` command:
 
 ```sh
-uvx --from rote-cli rote graduate ./my-skill --runtime dbos --out ./graduated
+uvx --from rote-cli rote compile ./my-skill --runtime dbos --out ./compiled
 ```
 
 > **Naming note:** the `rote` package on PyPI is an unrelated
@@ -156,10 +156,10 @@ vetting, CRM upload, mandatory exclusion checks, email personalization,
 manual enrollment handoff) in `examples/bdr-outreach/skill/`:
 
 ```sh
-rote graduate examples/bdr-outreach/skill --out /tmp/bdr-graduated
+rote compile examples/bdr-outreach/skill --out /tmp/bdr-compiled
 ```
 
-On that skill the graduator produces a 22-node IR that's **78.9%
+On that skill the compiler produces a 22-node IR that's **78.9%
 codifiable** (15 of 19 non-gate nodes), extracts 5 Python modules and 2
 typed judge signatures, and flags 4 mandatory nodes and 3 HITL gates —
 in ~13 minutes for ~$0.70 (Sonnet via Claude Code). Along the way it
@@ -168,9 +168,9 @@ pulls four batch-size constants out of prompt text, and models a
 parallel entry path the hand-written baseline missed.
 
 `rote` auto-detects a driver in the order `claude` → `codex` → `api`;
-override with `--agent`. The output directory splits into `graduated/`
+override with `--agent`. The output directory splits into `compiled/`
 (the agent's `pipeline.yaml`, `extracted/`, `signatures/`, eval seeds,
-and a `graduation-report.md`) and `runtime/<runtime>/` (the adapter's
+and a `compile-report.md`) and `runtime/<runtime>/` (the adapter's
 emitted code + a README on how to run, signal gates, and deploy).
 
 ### Other commands
@@ -180,7 +180,7 @@ emitted code + a README on how to run, signal gates, and deploy).
   adapters or IR shapes. Re-emitting is safe: a `.rote-manifest.json`
   tracks what `rote` wrote, and files you've edited are left untouched
   (the fresh version lands as `<name>.new`).
-- **`rote graduate --update`** — re-graduate incrementally when the skill
+- **`rote compile --update`** — re-compile incrementally when the skill
   changes. `rote` diffs the skill against the previous run's
   `provenance.json` and re-derives only the nodes whose source sections
   changed; unchanged nodes keep their ids (so in-flight durable workflows
@@ -188,7 +188,7 @@ emitted code + a README on how to run, signal gates, and deploy).
 - **`rote run <path>`** — one-off local execution of either side. A
   skill directory runs as an agent via `claude -p` (your registered MCP
   servers injected, read-only tool gate unless `--allow-writes`); an
-  emitted runtime directory — or a `graduate --out` directory — runs
+  emitted runtime directory — or a `compile --out` directory — runs
   the pipeline itself — all six runtimes (`python`/`dbos`/`temporal`
   in-process or on a managed local dev server, `cloudflare` under
   `wrangler dev`, `inngest` against a managed `inngest-cli dev`,
@@ -214,12 +214,12 @@ emitted code + a README on how to run, signal gates, and deploy).
   (over SSH, `--device` prints the code + URL instead), you click
   Approve, and the CLI stores a tenant API key at
   `~/.local/share/rote/cloud.json` (mode 0600). Once logged in,
-  `rote graduate` runs **on rote cloud by default**: the skill bundle
+  `rote compile` runs **on rote cloud by default**: the skill bundle
   syncs up (sha-diffed, so unchanged files don't re-upload), the
-  platform runs the graduation server-side, live progress streams back
+  platform runs the compilation server-side, live progress streams back
   through the same renderer as a local run, the result auto-deploys,
   and the artifacts download into your `--out` directory in the exact
-  local layout. `--local` keeps the graduation on your machine (then
+  local layout. `--local` keeps the compilation on your machine (then
   the cloudflare-emit + auto-deploy flow applies), `--no-deploy` or a
   config opt-out (`runtime:` pinned to a local target, or
   `deploy: none`) keeps everything local; `--cloud` forces the server
@@ -227,8 +227,8 @@ emitted code + a README on how to run, signal gates, and deploy).
   locally exactly as before. `rote whoami` shows the account (verified
   live); `rote logout` revokes the key server-side and clears the store.
 - **`rote init`** — one-time interactive onboarding: pick where
-  graduated pipelines run (rote cloud — with login offered inline — or
-  a local runtime, with a one-line pitch for each), which graduator
+  compiled pipelines run (rote cloud — with login offered inline — or
+  a local runtime, with a one-line pitch for each), which compiler
   driver does the work (availability probed live), and optionally a
   model. Answers are saved to `~/.config/rote/config.yaml`
   (`--project` writes a `./rote.yaml` that overrides it per-repo) and
@@ -240,10 +240,10 @@ emitted code + a README on how to run, signal gates, and deploy).
   ROTE_MODEL) > project rote.yaml > user config > built-in`. Config
   files are strict: a typo'd key or value is a loud error, never a
   silent fallback. `--json` for automation.
-- **`rote eval <graduated>`** — render the before/after scorecard (wall
+- **`rote eval <compiled>`** — render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
-  much of the run is still LLM-decided). `rote graduate` writes this to
-  `graduated/scorecard.md` automatically. Add `--run` to *measure*
+  much of the run is still LLM-decided). `rote compile` writes this to
+  `compiled/scorecard.md` automatically. Add `--run` to *measure*
   instead of estimate: it executes both sides for real and appends
   measured cost, turns, and output agreement across trials.
 - **Per-node inference** — emitted judges read `ROTE_MODEL_<ID>` and
@@ -255,9 +255,9 @@ emitted code + a README on how to run, signal gates, and deploy).
 
 ## The five node kinds
 
-Every step in a graduated pipeline is exactly one of five kinds. Full
+Every step in a compiled pipeline is exactly one of five kinds. Full
 guidance:
-[`references/node-kinds.md`](skills/rote-graduate/references/node-kinds.md).
+[`references/node-kinds.md`](skills/rote-compile/references/node-kinds.md).
 
 | Kind | What it is | Where the LLM lives |
 | --- | --- | --- |
@@ -295,7 +295,7 @@ see [`docs/mcp-client.md`](docs/mcp-client.md).
 
 ## Drivers
 
-`rote` ships three interchangeable graduator drivers — pick whichever
+`rote` ships three interchangeable compiler drivers — pick whichever
 matches your auth. The same `pipeline.yaml` comes out either way.
 
 | Driver | Backend | Auth | Install |
@@ -361,11 +361,11 @@ Trusted Publishing ([docs/releasing.md](docs/releasing.md)).
 ```
 rote/
 ├── docs/                  agent-runtime · mcp-client · mcp-trigger · releasing
-├── skills/rote-graduate/  the graduator agent (SKILL.md + 4 reference files)
+├── skills/rote-compile/  the compiler agent (SKILL.md + 4 reference files)
 ├── src/rote/
-│   ├── cli.py             rote graduate / emit / eval / serve
+│   ├── cli.py             rote compile / emit / eval / serve
 │   ├── ir.py              Pydantic IR models + load_pipeline
-│   ├── graduator/         orchestrator + drivers/ (claude · codex · anthropic_api)
+│   ├── compiler/         orchestrator + drivers/ (claude · codex · anthropic_api)
 │   └── adapters/          dbos · temporal · python · cloudflare · dbos_ts · inngest
 │                          (+ _common / _py_common / _ts_common emit helpers)
 ├── examples/
@@ -381,7 +381,7 @@ rote/
 
 - [`AGENTS.md`](AGENTS.md) — operating manual for a coding agent *driving*
   `rote` as an installed tool (invocation contract, the slow/costs-money
-  `graduate` flow, auth, failure recovery, the stub-filling job, `--json`)
+  `compile` flow, auth, failure recovery, the stub-filling job, `--json`)
 - [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for the
   driver abstraction (the `claude -p` env gotcha; the non-use of
   `claude-agent-sdk`)
@@ -389,17 +389,17 @@ rote/
   emitted code uses under `--backend mcp`: endpoint/credential
   resolution and durable park-on-auth across every MCP-capable runtime
 - [`docs/mcp-trigger.md`](docs/mcp-trigger.md) — `rote register` +
-  `rote serve`: graduated pipelines as MCP tools (FastMCP 3.x)
+  `rote serve`: compiled pipelines as MCP tools (FastMCP 3.x)
 - [`docs/releasing.md`](docs/releasing.md) — tag-driven PyPI Trusted
   Publishing
-- [`skills/rote-graduate/`](skills/rote-graduate/) — the graduator's
+- [`skills/rote-compile/`](skills/rote-compile/) — the compiler's
   `SKILL.md` and its four rubric files (node kinds, crystallization
   heuristics, IR schema, LLM-judge extraction)
 - [`examples/bdr-outreach/`](examples/bdr-outreach/) — the canonical
-  skill, its ground-truth IR, and snapshotted real graduator runs
+  skill, its ground-truth IR, and snapshotted real compiler runs
 - [`examples/ops-report/`](examples/ops-report/) — the 100%-roteness
   archetype: every step deterministic, one durable HITL gate, zero LLM
-  nodes after graduation
+  nodes after compilation
 - [`examples/deal-monitor/`](examples/deal-monitor/) — the data-heavy
   archetype: parallel entry waves, fan-out judges, and a template render
   replacing per-run LLM-generated HTML
@@ -410,7 +410,7 @@ rote/
 
 In rough priority order:
 
-1. **Re-graduate BDR end-to-end with `signature_spec`** — the bundled IR
+1. **Re-compile BDR end-to-end with `signature_spec`** — the bundled IR
    was hand-extended with structured schemas; the rubric now teaches the
    field, but no real run has produced one yet.
 2. **Pre-filter as a `pure_function` node** — today hard thresholds are
@@ -420,18 +420,18 @@ In rough priority order:
    retrieval-heavy, and code-review skills stress the IR differently.
 4. **`fan_out` per-element dispatch** — currently the whole upstream list
    arrives in one invocation.
-5. **The graduator graduating itself** — `rote-graduate` is a SKILL.md;
-   pointing `rote graduate` at it should crystallize its rubric-grade
+5. **The compiler compiling itself** — `rote-compile` is a SKILL.md;
+   pointing `rote compile` at it should crystallize its rubric-grade
    pieces and leave only the genuinely fuzzy judgments in the loop.
 
 ---
 
 ## Contributing
 
-The most useful contribution right now is to **run `rote graduate` on a
+The most useful contribution right now is to **run `rote compile` on a
 real skill of your own and report what happens** — the rubric was
 designed against one skill and needs more. Adding a runtime adapter or a
-graduator driver, or improving the rubric, are all good next steps. See
+compiler driver, or improving the rubric, are all good next steps. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, the test layout, and
 the adapter/driver how-tos.
 

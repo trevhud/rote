@@ -76,9 +76,9 @@ def test_pipeline_cost_only_bills_llm_tokens(estimates) -> None:  # type: ignore
     assert cost.high == pytest.approx(expected_high)
 
 
-def test_graduation_saves_money_on_bdr(estimates) -> None:  # type: ignore[no-untyped-def]
+def test_compilation_saves_money_on_bdr(estimates) -> None:  # type: ignore[no-untyped-def]
     """The product claim, as a regression test: for the canonical BDR
-    skill, the graduated pipeline must estimate cheaper than the raw
+    skill, the compiled pipeline must estimate cheaper than the raw
     agent run at every point of the range, for the same model."""
     _, pe, se = estimates
     price = _price()
@@ -103,7 +103,7 @@ def test_scorecard_markdown_and_dict(estimates) -> None:  # type: ignore[no-unty
     assert "test-model-1" in md and "test-model-2" in md
     assert "https://example.test/prices" in md
     # The turn-estimate method must be auditable from the rendered card.
-    assert "graduator sidecar (eval.yaml)" in md
+    assert "compiler sidecar (eval.yaml)" in md
 
     # Roteness is a first-class, purely-structural scorecard field.
     assert "| Roteness (deterministic steps) |" in md

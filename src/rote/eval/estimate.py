@@ -1,4 +1,4 @@
-"""Static estimators: raw skill (before) and graduated pipeline (after).
+"""Static estimators: raw skill (before) and compiled pipeline (after).
 
 The two sides are deliberately asymmetric in confidence:
 
@@ -8,7 +8,7 @@ The two sides are deliberately asymmetric in confidence:
   prompt template is countable text. The residual uncertainty (runtime
   payload sizes, loop iteration counts) is carried as explicit ranges.
 * :func:`estimate_skill` models an open-world agent loop. The dominant
-  unknown is the turn count; it comes from the graduator-emitted
+  unknown is the turn count; it comes from the compiler-emitted
   ``eval.yaml`` sidecar when present (an agent that read the skill
   estimated each step) or a labeled structural heuristic otherwise.
   Everything downstream of the turn count is arithmetic on the
@@ -152,7 +152,7 @@ class NodeEstimate:
 
 @dataclass(frozen=True)
 class PipelineEstimate:
-    """Predicted footprint of one run of the graduated pipeline."""
+    """Predicted footprint of one run of the compiled pipeline."""
 
     nodes: list[NodeEstimate]
     critical_path_seconds: Range
@@ -257,7 +257,7 @@ def estimate_pipeline(
     counter: TokenCounter,
     priors: Priors | None = None,
 ) -> PipelineEstimate:
-    """Predict one run of the graduated pipeline, without executing it.
+    """Predict one run of the compiled pipeline, without executing it.
 
     Uses the same wave decomposition the adapters emit, so the critical
     path matches the parallelism of the generated code. Loop-body
@@ -313,7 +313,7 @@ def external_call_payload_tokens(pipeline: Pipeline, priors: Priors | None = Non
     """Estimate the data the agent pulls into context, from the pipeline's
     ``external_call`` footprint.
 
-    The graduated pipeline's ``external_call`` nodes name the sources the
+    The compiled pipeline's ``external_call`` nodes name the sources the
     skill fetches (Slack, Gmail, a Drive file …); the *before*-side agent
     pulls the same data, so its transcript carries the same payload. Each
     external_call contributes ``payload_tokens_per_tool[tool]`` when its MCP
@@ -395,7 +395,7 @@ def estimate_skill(
     if sidecar is not None and (sidecar.steps or sidecar.totals is not None):
         tr = sidecar.turn_range()
         turns = Range(tr.low, tr.high)
-        turn_method = "graduator sidecar (eval.yaml)"
+        turn_method = "compiler sidecar (eval.yaml)"
         step_count = len(sidecar.steps) or _structural_step_count(
             (skill_path / "SKILL.md").read_text(encoding="utf-8")
         )

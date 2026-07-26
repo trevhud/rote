@@ -19,7 +19,7 @@ Plus the explicit discard categories:
     Indication mismatch (different TA franchise)
     Low accuracy (< 85)
 
-# Graduated form
+# Compiled form
 
 This is the canonical "fuzzy classification with structured output" case.
 The LLM is still in the loop because employment-history reasoning is

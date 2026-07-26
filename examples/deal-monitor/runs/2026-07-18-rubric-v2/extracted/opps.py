@@ -2,7 +2,7 @@
 Opportunity extraction and inclusion filtering for deal-monitor.
 
 All logic here is deterministic — no LLM needed.
-Graduated from: SKILL.md > Step 1 (filter and extract)
+Compiled from: SKILL.md > Step 1 (filter and extract)
 """
 from __future__ import annotations
 from dataclasses import dataclass

@@ -20,7 +20,7 @@ Freshness has two layers:
    middleware and use the low-level SDK's
    ``ServerSession.send_tool_list_changed()`` directly.
 
-Long-running handling: graduated pipelines run minutes to days (HITL
+Long-running handling: compiled pipelines run minutes to days (HITL
 gates), and their durability lives in Temporal / Cloudflare — not in
 this process. Trigger tools therefore return ``{workflow_id, status:
 "started"}`` immediately and clients poll the ``_status`` companion.
@@ -67,7 +67,7 @@ SIGNAL_TOOL_SUFFIX = "_signal"
 
 
 class PipelineTool(Tool):
-    """Triggers the graduated workflow behind one registry entry."""
+    """Triggers the compiled workflow behind one registry entry."""
 
     entry: RegistryEntry
 
@@ -116,7 +116,7 @@ def _trigger_tool(entry: RegistryEntry) -> PipelineTool:
         name=entry.name,
         description=(
             f"{entry.description}\n\n"
-            f"Starts the graduated '{entry.name}' pipeline on "
+            f"Starts the compiled '{entry.name}' pipeline on "
             f"{entry.trigger.runtime} and returns immediately with a workflow_id. "
             f"Poll progress with the {entry.name}{STATUS_TOOL_SUFFIX} tool."
         ).strip(),
@@ -327,7 +327,7 @@ def build_server(
     return FastMCP(
         name="rote",
         instructions=(
-            "Tools on this server trigger graduated rote pipelines — "
+            "Tools on this server trigger compiled rote pipelines — "
             "deterministic workflows produced from Anthropic-style skills. "
             "Each pipeline has a trigger tool (returns a workflow_id "
             "immediately) and a companion <name>_status tool for polling, "

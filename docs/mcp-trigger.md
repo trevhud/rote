@@ -1,7 +1,7 @@
-# Triggering graduated pipelines from Claude — `rote serve`
+# Triggering compiled pipelines from Claude — `rote serve`
 
-`rote serve` is a single MCP server that exposes every graduated
-pipeline as a callable MCP tool. Graduate a skill once, register it,
+`rote serve` is a single MCP server that exposes every compiled
+pipeline as a callable MCP tool. Compile a skill once, register it,
 and any MCP client (Claude Code, Claude Desktop, claude.ai custom
 connectors) can trigger the deterministic workflow instead of
 re-running the fuzzy skill.
@@ -15,14 +15,14 @@ pip install 'rote-cli[serve]'
 ## The flow
 
 ```
-rote graduate  →  deploy the runtime  →  rote register  →  rote serve  →  call from Claude
+rote compile  →  deploy the runtime  →  rote register  →  rote serve  →  call from Claude
 ```
 
-### 1. Graduate and deploy
+### 1. Compile and deploy
 
 ```sh
-rote graduate ./my-skill --out ./my-skill-out          # default runtime: dbos
-# → my-skill-out/graduated/pipeline.yaml
+rote compile ./my-skill --out ./my-skill-out          # default runtime: dbos
+# → my-skill-out/compiled/pipeline.yaml
 # → my-skill-out/runtime/dbos/{main.py,dbos-config.yaml,...}
 ```
 
@@ -65,7 +65,7 @@ worker has one — the emitted default doesn't).
 
 Note the DBOS/Temporal `--workflow-name` default is derived from the
 pipeline *content hash* (matching the emitted `@DBOS.workflow` /
-`@workflow.defn` name). If you re-graduate and re-emit a changed
+`@workflow.defn` name). If you re-compile and re-emit a changed
 pipeline, re-register so the name stays in sync.
 
 ### 3. Serve
@@ -79,7 +79,7 @@ Each registry entry becomes two tools (three for DBOS):
 
 - **`<name>`** — triggers the workflow. Returns immediately with
   `{workflow_id, status: "started", runtime}`. It never blocks on the
-  workflow: graduated pipelines run minutes to days (HITL gates), and
+  workflow: compiled pipelines run minutes to days (HITL gates), and
   their durability lives in DBOS / Temporal / Cloudflare, not in this
   process.
 - **`<name>_status`** — polls a run by `workflow_id`. For DBOS this

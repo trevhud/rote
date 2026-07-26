@@ -4,7 +4,7 @@
  * For each contact, check if they are already enrolled in an active
  *
  * Replace this stub with the deterministic API call. Direct vendor SDKs
- * are preferred over MCP wrappers — the rote graduator removes the MCP
+ * are preferred over MCP wrappers — the rote compiler removes the MCP
  * layer at emit time, so production code calls the vendor APIs directly.
  *
  * MANDATORY: this node was marked mandatory in the source skill.
