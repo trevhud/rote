@@ -546,3 +546,37 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
             _assert_mcp_free(path)
             checked += 1
     assert checked >= 7  # main + __init__s + extracted + signatures
+
+
+# ───────── MCP-only external_call refusal ─────────
+
+
+def _mcp_only_pipeline() -> Pipeline:
+    """`impl` or `mcp` satisfies external_call in the IR — this is the
+    legal shape the python adapter cannot emit."""
+    return mini_pipeline(
+        Node(
+            id="search_docs",
+            kind=NodeKind.EXTERNAL_CALL,
+            description="Search the docs over MCP.",
+            mcp={"server": "docs", "tool": "search"},
+        )
+    )
+
+
+def test_refuses_mcp_only_node_with_actionable_error(tmp_path: Path) -> None:
+    """Valid IR the adapter can't serve must produce an explanatory
+    refusal, not a bare AssertionError from a type-narrowing assert."""
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="no MCP backend") as excinfo:
+        PythonAdapter().emit(_mcp_only_pipeline(), out)
+    message = str(excinfo.value)
+    assert "search_docs" in message
+    assert "--runtime dbos" in message
+    # Refusal happens before any file is written — no partial output.
+    assert not out.exists()
+
+
+def test_emit_main_also_refuses_mcp_only_node() -> None:
+    with pytest.raises(ValueError, match="no MCP backend"):
+        emit_main(_mcp_only_pipeline())

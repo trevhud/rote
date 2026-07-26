@@ -72,6 +72,7 @@ class BdrCampaignWorkflow:
                     "brief": pipeline_input,
                 },
                 start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+                retry_policy=RetryPolicy(maximum_attempts=3, backoff_coefficient=2.0),
             ),
             workflow.execute_activity(
                 "taxonomy_lookup",

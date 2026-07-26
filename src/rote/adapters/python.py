@@ -65,6 +65,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    refuse_mcp_only_nodes,
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
@@ -207,6 +208,9 @@ def _emit_return(node: Node, call_expr: str) -> str:
 
 
 def _emit_node_pure_or_external(node: Node) -> str:
+    # Type narrowing only. An mcp-only external_call is valid IR but has
+    # no module to import here; emit_main() already refused the whole
+    # pipeline with an actionable message before reaching this.
     assert node.impl is not None
     module_name, func_name = _impl_path_parts(node.impl)
     return (
@@ -345,10 +349,12 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     """Render the main.py source for a pipeline.
 
     Raises ``ValueError`` if the pipeline requires durable execution
-    (see :func:`_refuse_if_durable`).
+    (see :func:`_refuse_if_durable`) or binds an external_call to MCP
+    without an ``impl`` (see :func:`refuse_mcp_only_nodes`).
     """
     cfg = cfg or PythonAdapterConfig()
     _refuse_if_durable(pipeline)
+    refuse_mcp_only_nodes(pipeline, "python")
 
     pipeline_h = _pipeline_hash(pipeline)
     desc_first = safe_docstring_line(pipeline.description, fallback=pipeline.name)
@@ -589,6 +595,7 @@ class PythonAdapter:
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
         # Refuse before touching the filesystem: no partial output.
         _refuse_if_durable(pipeline)
+        refuse_mcp_only_nodes(pipeline, "python")
 
         writer = EmitWriter(output_dir)
 
