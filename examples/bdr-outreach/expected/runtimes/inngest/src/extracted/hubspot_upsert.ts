@@ -4,7 +4,7 @@
  * Batch upsert contacts to HubSpot (create or update by email). Hard
  *
  * Replace this stub with the deterministic API call. Direct vendor SDKs
- * are preferred over MCP wrappers — the rote graduator removes the MCP
+ * are preferred over MCP wrappers — the rote compiler removes the MCP
  * layer at emit time, so production code calls the vendor APIs directly.
  *
  * Constants from the source skill (lifted into the IR):

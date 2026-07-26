@@ -1,4 +1,4 @@
-"""Tests for the graduation event machinery.
+"""Tests for the compilation event machinery.
 
 Covers the wire helpers every driver funnels progress through:
 
@@ -18,9 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from rote.graduator.events import (
+from rote.compiler.events import (
     PROGRESS_FILENAME,
-    GraduationEvent,
+    CompilationEvent,
     ProgressFileWatcher,
     emit_safely,
     parse_progress_lines,
@@ -68,20 +68,20 @@ def test_parse_progress_lines_empty() -> None:
 
 
 def test_emit_safely_swallows_sink_exceptions() -> None:
-    def boom(_event: GraduationEvent) -> None:
+    def boom(_event: CompilationEvent) -> None:
         raise RuntimeError("UI bug")
 
     # Must not raise.
-    emit_safely(boom, GraduationEvent(type="log", ts=0.0, message="x"))
+    emit_safely(boom, CompilationEvent(type="log", ts=0.0, message="x"))
 
 
 def test_emit_safely_none_sink_is_noop() -> None:
-    emit_safely(None, GraduationEvent(type="log", ts=0.0, message="x"))
+    emit_safely(None, CompilationEvent(type="log", ts=0.0, message="x"))
 
 
 def test_emit_safely_forwards_event() -> None:
-    seen: list[GraduationEvent] = []
-    event = GraduationEvent(type="turn", ts=1.0, turn=3, message="turn 3")
+    seen: list[CompilationEvent] = []
+    event = CompilationEvent(type="turn", ts=1.0, turn=3, message="turn 3")
     emit_safely(seen.append, event)
     assert seen == [event]
 
@@ -108,7 +108,7 @@ def test_relative_display_path_none() -> None:
 
 @pytest.mark.asyncio
 async def test_watcher_polls_incrementally(tmp_path: Path) -> None:
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     progress = tmp_path / PROGRESS_FILENAME
 
     async with ProgressFileWatcher(tmp_path, events.append, poll_interval=0.02):
@@ -127,14 +127,14 @@ async def test_watcher_polls_incrementally(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_watcher_final_flush_on_stop(tmp_path: Path) -> None:
     """A phase written between the last poll and stop is still delivered."""
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     progress = tmp_path / PROGRESS_FILENAME
 
     # A poll interval far longer than the test guarantees the only read
     # that can see the file is the final flush in stop().
     watcher = ProgressFileWatcher(tmp_path, events.append, poll_interval=1000)
     await watcher.__aenter__()
-    progress.write_text('{"phase": 7, "name": "Graduation Report"}\n', encoding="utf-8")
+    progress.write_text('{"phase": 7, "name": "Compilation Report"}\n', encoding="utf-8")
     await watcher.__aexit__()
 
     assert [e.phase for e in events] == [7]
@@ -142,7 +142,7 @@ async def test_watcher_final_flush_on_stop(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_watcher_no_file_is_harmless(tmp_path: Path) -> None:
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     async with ProgressFileWatcher(tmp_path, events.append, poll_interval=0.02):
         await asyncio.sleep(0.05)
     assert events == []
@@ -150,7 +150,7 @@ async def test_watcher_no_file_is_harmless(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_watcher_does_not_double_emit(tmp_path: Path) -> None:
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     progress = tmp_path / PROGRESS_FILENAME
     progress.write_text('{"phase": 1, "name": "Intake"}\n', encoding="utf-8")
 

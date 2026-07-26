@@ -7,7 +7,7 @@ Phase 7, formatting a fixed template with run-time counts. The skill's
 prose included the exact format string already, which is the canonical
 "why are we paying tokens to re-derive a string template" smell.
 
-# Graduated form
+# Compiled form
 
 Pure Python. No LLM, no MCP, no API calls. The function takes typed
 inputs from upstream nodes and produces a markdown string. Cheap,

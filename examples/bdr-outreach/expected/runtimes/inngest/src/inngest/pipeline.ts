@@ -14,7 +14,7 @@
  * Architecture note: every step in this function wraps a deterministic
  * function from `extracted/` or a typed LLM signature from
  * `signatures/`. None of them call MCP tools at runtime — the MCP
- * tool calls from the source skill were graduated into direct API
+ * tool calls from the source skill were compiled into direct API
  * calls during the rote emission step.
  */
 

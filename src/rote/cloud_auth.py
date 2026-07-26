@@ -3,7 +3,7 @@
 ``rote login`` stores one credential — the platform URL, a tenant
 ``rote_…`` API key, and a display label for ``rote whoami`` — and every
 cloud-touching command (``rote deploy --target rote-cloud``, the
-graduate auto-deploy default) resolves it with the same precedence:
+compile auto-deploy default) resolves it with the same precedence:
 
     explicit flag  >  ROTE_CLOUD_URL / ROTE_CLOUD_TOKEN  >  stored login
 

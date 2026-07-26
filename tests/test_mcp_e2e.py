@@ -2,7 +2,7 @@
 
 Slow (spawns a real FastMCP Streamable-HTTP server and runs the emitted
 DBOS app as a subprocess over SQLite). Proves the thing unit tests can't:
-a graduated pipeline with an ``mcp:`` binding actually calls the tool and
+a compiled pipeline with an ``mcp:`` binding actually calls the tool and
 returns live data — keyless, no stubs — and that failure modes surface
 loudly rather than silently. The fast-suite counterpart is
 ``test_mcp_backend.py``.

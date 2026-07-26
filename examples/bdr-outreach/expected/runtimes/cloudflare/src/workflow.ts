@@ -9,7 +9,7 @@
  *
  * Architecture note: every external_call step in this workflow wraps a
  * deterministic API call from the `extracted/` modules. None of them call
- * MCP tools at runtime — those calls were graduated into direct API calls
+ * MCP tools at runtime — those calls were compiled into direct API calls
  * during the rote emission step.
  */
 

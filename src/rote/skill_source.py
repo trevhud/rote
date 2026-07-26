@@ -1,13 +1,13 @@
-"""Provenance between a SKILL.md and its graduated pipeline.
+"""Provenance between a SKILL.md and its compiled pipeline.
 
-A graduated ``pipeline.yaml`` records, per node, which SKILL.md section
+A compiled ``pipeline.yaml`` records, per node, which SKILL.md section
 the node was derived from (``Node.source.section`` — written by the
-graduator agent, which knows the mapping but cannot compute hashes).
+compiler agent, which knows the mapping but cannot compute hashes).
 This module supplies the deterministic half: it splits a SKILL.md into
 heading-delimited sections, hashes each one, and writes a
 ``provenance.json`` sidecar next to the pipeline.
 
-The sidecar is what makes incremental re-graduation possible: when the
+The sidecar is what makes incremental re-compilation possible: when the
 skill changes, comparing fresh section hashes against the stamped ones
 identifies exactly which nodes' source material moved — unchanged
 sections keep their nodes verbatim, so the agent only re-derives what
@@ -83,7 +83,7 @@ def compute_section_hashes(markdown: str) -> dict[str, str]:
 def build_provenance(pipeline: Pipeline, skill_md_text: str) -> dict[str, Any]:
     """Assemble the provenance sidecar payload.
 
-    ``sections`` records the hash of *every* section at graduation time
+    ``sections`` records the hash of *every* section at compilation time
     (not just node-mapped ones) so a later diff can also detect sections
     that were added to the skill. A node whose ``source.section`` names
     a heading that doesn't exist gets ``content_hash: null`` — treated

@@ -67,7 +67,7 @@ def _source_dir(options: dict[str, Any]) -> Path | None:
     Directory of the pipeline.yaml being emitted; Python-emitting
     adapters use the agent-written ``extracted/`` modules found there
     verbatim instead of IR-derived stubs. TS adapters ignore it — a
-    Python module can't back a TS step (the graduator would have to
+    Python module can't back a TS step (the compiler would have to
     emit TS implementations; a known, documented gap).
     """
     value = options.get("extracted_source_dir")

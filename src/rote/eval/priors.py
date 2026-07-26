@@ -6,7 +6,7 @@ in one place, with provenance, and every one is overridable. They are
 grows), not prices — prices are always fetched live and never appear
 here.
 
-Provenance: calibrated against the BDR graduation runs in
+Provenance: calibrated against the BDR compilation runs in
 ``examples/bdr-outreach/runs/`` (real ``claude -p`` agent runs over a
 tool-heavy skill: 30–57 turns, ~13 minutes wall clock, Sonnet-class
 models) and Anthropic's published latency characteristics. As the
@@ -33,7 +33,7 @@ class Priors:
     seconds_per_turn: float = 13.0
     """Wall-clock seconds per agent turn, including tool execution.
 
-    BDR graduation runs: ~13 min for 57 turns ≈ 13.7 s/turn; earlier
+    BDR compilation runs: ~13 min for 57 turns ≈ 13.7 s/turn; earlier
     runs were similar. Tool-light skills run faster.
     """
 
@@ -73,7 +73,7 @@ class Priors:
     """Tokens a single data-pull injects into the agent's transcript — the
     payload of one tool/MCP result (a page of Slack messages, a Gmail
     thread, a spreadsheet dump). Inferred for the *before* side from the
-    graduated pipeline's ``external_call`` footprint: the agent pulls the
+    compiled pipeline's ``external_call`` footprint: the agent pulls the
     same sources the pipeline binds to, and that payload then re-reads on
     every subsequent turn (the dominant cache-read cost on data-heavy
     skills).
@@ -94,13 +94,13 @@ class Priors:
 
     turns_per_step_low: float = 1.0
     turns_per_step_high: float = 2.5
-    """Structural fallback when no graduator-emitted eval sidecar exists:
+    """Structural fallback when no compiler-emitted eval sidecar exists:
     each identifiable step in the skill costs this many agent turns.
     The sidecar's per-step estimates, produced by an agent that actually
     read the skill, always take precedence.
     """
 
-    # ── Graduated pipeline (the "after" side) ──
+    # ── Compiled pipeline (the "after" side) ──
     llm_ttft_seconds: float = 1.2
     """Time to first token for a single bounded LLM call."""
 

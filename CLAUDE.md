@@ -15,10 +15,10 @@ needs a fast mental model before it starts editing code.
 ## What rote is
 
 `rote` is a CLI that takes an Anthropic-style Skill (a `SKILL.md` +
-`references/`) and graduates it into a runnable background pipeline:
+`references/`) and compiles it into a runnable background pipeline:
 
 1. An LLM agent (itself defined as a skill at
-   [`skills/rote-graduate/`](skills/rote-graduate/)) reads the
+   [`skills/rote-compile/`](skills/rote-compile/)) reads the
    source skill and applies a structured rubric.
 2. The agent produces a `pipeline.yaml` (runtime-agnostic IR) plus
    extracted Python modules and typed LLM-judge signatures.
@@ -41,9 +41,9 @@ Every piece of code in this repo belongs to exactly one layer.
 **Respect the layer boundaries** — most of the project's value
 comes from keeping them clean.
 
-### Layer 1 — The graduator agent (the "brain")
+### Layer 1 — The compiler agent (the "brain")
 
-- **Lives at:** [`skills/rote-graduate/`](skills/rote-graduate/)
+- **Lives at:** [`skills/rote-compile/`](skills/rote-compile/)
 - **Consists of:** a `SKILL.md` plus five rubric files
   (`node-kinds.md`, `crystallization-heuristics.md`, `ir-schema.md`,
   `llm-judge-extraction.md`, `implementation.md`)
@@ -54,17 +54,17 @@ comes from keeping them clean.
 - **Runs under:** a pluggable driver layer (see Layer 2)
 
 **When you edit this layer:** you are changing how the agent
-behaves. Changes are testable by running `rote graduate` end-to-end
+behaves. Changes are testable by running `rote compile` end-to-end
 against `examples/bdr-outreach/skill` and diffing the output
 against the previously committed snapshot in
 `examples/bdr-outreach/runs/`.
 
 ### Layer 2 — The driver layer (the "runtime for the agent")
 
-- **Lives at:** [`src/rote/graduator/drivers/`](src/rote/graduator/drivers/)
-- **Protocol:** every driver implements `GraduatorDriver` with
+- **Lives at:** [`src/rote/compiler/drivers/`](src/rote/compiler/drivers/)
+- **Protocol:** every driver implements `CompilerDriver` with
   `name`, `is_available() -> (bool, str)`, and
-  `async run(skill_dir, graduator_skill_dir, work_dir) -> DriverResult`
+  `async run(skill_dir, compiler_skill_dir, work_dir) -> DriverResult`
 - **Three concrete drivers:** `ClaudeDriver` (subprocess to `claude -p`),
   `CodexDriver` (subprocess to `codex exec`), `AnthropicApiDriver`
   (in-process via the `anthropic` SDK)
@@ -226,7 +226,7 @@ for the reference implementation.
 ### Driver factories accept `**kwargs`
 
 The driver registry's factories have signature `**kwargs ->
-GraduatorDriver` because `Graduator(model=...)` needs to pass
+CompilerDriver` because `Compiler(model=...)` needs to pass
 kwargs through at construction time. Drivers that don't care about
 a particular kwarg should swallow it via `**kwargs` in their
 `__init__`, not hard-fail. **Do not change the factory signature
@@ -292,7 +292,7 @@ lost, workflow crashed dereferencing a declared-but-never-computed
 key). The rubric (`node-kinds.md`, external_call) mandates the split;
 `rote.probe.cross_check` flags violations as `output_mismatch` (node
 declares `output` keys the observed tool result can't provide) and
-`rote graduate` prints them as WARNINGs.
+`rote compile` prints them as WARNINGs.
 
 ### Sonnet is the default, not Opus
 
@@ -403,7 +403,7 @@ a baked-in table). Two things you will get wrong if you touch it:
    instead of trusting either side silently.
 
 Related invariant: the eval sidecar (`eval.yaml`, per-step agent-turn
-estimates written by the graduator) is deliberately NOT part of the IR
+estimates written by the compiler) is deliberately NOT part of the IR
 — it describes the *source skill's* behavior as an agent, not the
 pipeline. Don't move it into `pipeline.yaml`; invariant #1 (the IR is
 runtime-agnostic and behavior-only) applies.
@@ -436,13 +436,13 @@ copy the shape of an existing canonical example.
 | Add a new node kind to the IR | `rote.ir.Node` — add an enum variant, a kind-specific required field, and a branch in `_validate_kind_specific_fields` |
 | Add a Python-emitting runtime adapter | `src/rote/adapters/temporal.py` (~570 lines) |
 | Add a TS-emitting runtime adapter | `src/rote/adapters/cloudflare.py` (~750 lines) — includes the JSON-Schema-to-Zod converter and signal-name validator |
-| Add a subprocess-based driver | `src/rote/graduator/drivers/claude.py` + `tests/test_claude_driver.py` |
-| Add an in-process driver | `src/rote/graduator/drivers/anthropic_api.py` + `tests/test_anthropic_driver.py` |
-| Add a new CLI subcommand | `_cmd_emit` in `src/rote/cli.py` (simple) or `_cmd_graduate` (which calls into the Graduator orchestrator) |
+| Add a subprocess-based driver | `src/rote/compiler/drivers/claude.py` + `tests/test_claude_driver.py` |
+| Add an in-process driver | `src/rote/compiler/drivers/anthropic_api.py` + `tests/test_anthropic_driver.py` |
+| Add a new CLI subcommand | `_cmd_emit` in `src/rote/cli.py` (simple) or `_cmd_compile` (which calls into the Compiler orchestrator) |
 | Test a Python-emitting adapter end-to-end | `tests/test_temporal_e2e.py` (uses Temporal's `WorkflowEnvironment.start_time_skipping`) |
 | Test a TS-emitting adapter end-to-end | `tests/test_cloudflare_e2e.py` (real `npm install` + `tsc --noEmit`; `@pytest.mark.slow`) |
 | Test the CLI via subprocess | `tests/test_cli.py::test_subprocess_emit_bdr` |
-| Add a rubric file | Any file in `skills/rote-graduate/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
+| Add a rubric file | Any file in `skills/rote-compile/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
 
 ---
 
@@ -542,18 +542,18 @@ subprocess spawns, no real LLM invocations). Every slow thing is
 mocked. Keep it that way — if a new test needs to be slow, gate
 it behind a `@pytest.mark.slow` decorator and document why.
 
-### Running the real graduator
+### Running the real compiler
 
 ```sh
-.venv/bin/rote graduate examples/bdr-outreach/skill \
+.venv/bin/rote compile examples/bdr-outreach/skill \
   --runtime temporal \
-  --out /tmp/bdr-graduated
+  --out /tmp/bdr-compiled
 ```
 
 ~13 minutes wall clock on BDR. Expect 30-40 turns with Sonnet 4.6.
-The output landing at `/tmp/bdr-graduated` (or wherever you point
+The output landing at `/tmp/bdr-compiled` (or wherever you point
 `--out`) is what you'd commit as a new regression snapshot if the
-rubric or IR changed in a way that requires re-graduating.
+rubric or IR changed in a way that requires re-compiling.
 
 ### Sanity-checking before commit
 
@@ -571,7 +571,7 @@ the side of false positives over false negatives).
 - [ ] `./scripts/sanity-check.sh` — clean
 - [ ] `ruff check . && ruff format .`
 - [ ] `mypy src/rote` — strict, no ignores
-- [ ] If the rubric or IR changed materially: re-run the graduator
+- [ ] If the rubric or IR changed materially: re-run the compiler
       on BDR and diff the snapshot
 - [ ] Commit message explains the *why*, not just the *what*
 
@@ -585,7 +585,7 @@ Don't waste time debugging stubs. These are intentional.
 
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
-  code; the graduator produces scaffolding, not production code
+  code; the compiler produces scaffolding, not production code
 - `fan_out` nodes receive the whole upstream list in one invocation on
   every adapter EXCEPT DBOS, which dispatches one enqueued durable step
   per element (element param resolved by
@@ -610,15 +610,15 @@ Don't waste time debugging stubs. These are intentional.
   `rote.adapters._py_common.resolve_extracted_source`); IR-derived
   stubs are only the fallback. Known gaps: temporal keeps its
   config-driven `expected.extracted` module path, and TS runtimes
-  can't consume Python modules at all (the graduator would have to
+  can't consume Python modules at all (the compiler would have to
   emit TS implementations).
-- `rote graduate` (SKILL.md → IR → Temporal code), stamping a
+- `rote compile` (SKILL.md → IR → Temporal code), stamping a
   `provenance.json` sidecar (section hashes; see `rote.skill_source`).
   Every run streams NDJSON progress to `<out>/progress.jsonl`
   (`--progress-file` just moves it) and prints the `tail -f` watch
   command as its first stderr line — agents driving a run relay that
   line to the human (AGENTS.md).
-- `rote graduate --update` — incremental re-graduation: diffs the
+- `rote compile --update` — incremental re-compilation: diffs the
   skill against the stamped provenance, re-derives only nodes whose
   source sections changed, enforces that unchanged nodes' ids survive,
   and merges file-level so user-filled stubs are kept. No section
@@ -629,19 +629,19 @@ Don't waste time debugging stubs. These are intentional.
   OpenAI-compatible endpoint. Node.source (provenance) is excluded
   from the pipeline hash on purpose — metadata must not re-version
   in-flight workflows.
-- All three graduator drivers: `ClaudeDriver` (`claude -p`),
+- All three compiler drivers: `ClaudeDriver` (`claude -p`),
   `CodexDriver` (`codex exec` — workspace-write sandbox, no env
   scrubbing since Codex login is only overridden by `CODEX_API_KEY`,
   smoke-tested against the real CLI), `AnthropicApiDriver`
-- `rote analyze` — the `plan` to `graduate`'s `apply`: runs the
-  graduator, then prints a structural report (node-kind breakdown,
+- `rote analyze` — the `plan` to `compile`'s `apply`: runs the
+  compiler, then prints a structural report (node-kind breakdown,
   roteness matching `rote eval`, HITL gates, targetable runtimes)
   instead of emitting runtime code. `--json` for machines; `--out`
   keeps the IR for a later `rote emit`.
 - MCP requirements manifest: `Pipeline.required_mcp_servers` (derived,
   never stored — same rationale as `requires_durable_execution`) feeds
   an `mcp_servers` entry — `{server, nodes, tools, auth}` — in
-  `analyze`/`emit`/`graduate` output (human, `--json`, and the
+  `analyze`/`emit`/`compile` output (human, `--json`, and the
   progress-file summary line), joined against the local registry +
   token store. Deliberately **advisory-only**: rote never hard-gates
   on auth (park-on-auth is the backstop); it prints `rote mcp login`
@@ -656,7 +656,7 @@ Don't waste time debugging stubs. These are intentional.
   credential suspend the run durably; `rote mcp login <server>` (or
   `rote mcp release <server>`) releases every parked run across the
   apps recorded in `~/.local/share/rote/apps.json` (written at
-  emit/graduate time). Release channels differ per runtime: DBOS =
+  emit/compile time). Release channels differ per runtime: DBOS =
   discovery + per-workflow send (portable serialization); Inngest =
   one broadcast event per pipeline (events fan out; no discovery
   needed, but NO buffering for unstarted waits — retry-once covers the
@@ -698,7 +698,7 @@ Don't waste time debugging stubs. These are intentional.
   workflow.py/activities.py with UnsandboxedWorkflowRunner, and
   signals send up front because Temporal buffers them server-side).
   ALL SIX emitted runtimes are now locally runnable.
-  Detection understands both the `graduate --out` layout
+  Detection understands both the `compile --out` layout
   (`runtime/<target>/`) and bare emitted dirs (marker files — see
   `rote.runners._detect_runtime`).
 - `rote deploy` — push-deploy wrappers (`rote.deploy`): cloudflare via
@@ -746,7 +746,7 @@ Don't waste time debugging stubs. These are intentional.
   TTY; I/O injected for tests — and its `input_fn` default resolves at
   call time, not def time, or monkeypatched `builtins.input` never
   lands). `rote config` prints each key's value + winning source.
-  Graduate deploy semantics: config `deploy: rote-cloud` + logged out
+  Compile deploy semantics: config `deploy: rote-cloud` + logged out
   fails fast BEFORE the agent spends money; an explicit `--runtime`
   flag downgrades a configured cloud deploy with a warning instead of
   blocking; contradictory config (non-cloudflare runtime + rote-cloud
@@ -756,10 +756,10 @@ Don't waste time debugging stubs. These are intentional.
   (`ui_port=None` picks one we couldn't print) and the inngest runner
   prints the dev-server dashboard URL — both live only while the run
   lasts.
-- Cloud-side graduation (`rote.cloud_graduate` + `_cmd_graduate_cloud`):
-  logged in + flagless → the graduation runs ON rote cloud — bundle
+- Cloud-side compilation (`rote.cloud_compile` + `_cmd_compile_cloud`):
+  logged in + flagless → the compilation runs ON rote cloud — bundle
   sync with per-file sha diff-skip, start-or-attach (an active
-  graduation for the same skill attaches instead of double-spending;
+  compilation for the same skill attaches instead of double-spending;
   Ctrl-C cancels a run we started but only detaches from one we
   attached to), server events streamed through the same progress
   renderer/JSONL sink as local, artifacts downloaded into the standard
@@ -771,22 +771,22 @@ Don't waste time debugging stubs. These are intentional.
   `model` NEVER leak into cloud mode — the server owns driver choice
   and validates models against its own lineup. Server contract lives
   in rote-cloud (`/v1/skills` + bundle endpoints, `/v1/skills/:id/
-  graduations`, container job) — the server must be deployed before a
+  compilations`, container job) — the server must be deployed before a
   CLI release that enables this. E2E-proven against local dev
   (including a drained-tenant "insufficient credits" path).
-- Login-aware LOCAL graduate default (applies when the cloud path is
+- Login-aware LOCAL compile default (applies when the cloud path is
   opted out but a login exists): no explicit `--runtime` → emit
   `cloudflare` and auto-deploy to rote cloud after emission
   (`--no-deploy` opts out; a deploy failure exits 1 but keeps all
   local artifacts and prints the `rote deploy … --target rote-cloud`
   retry). Logged out → today's `dbos` default with a one-line hint,
   never a prompt (CI-safe). The parser's `--runtime` default is now
-  `None` — resolution happens at the top of `_cmd_graduate`; don't
+  `None` — resolution happens at the top of `_cmd_compile`; don't
   reintroduce a static default in the parser.
-- `rote register` + `rote serve` (graduated pipelines as MCP tools,
+- `rote register` + `rote serve` (compiled pipelines as MCP tools,
   FastMCP 3.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
-- `rote eval` + the auto-emitted `graduated/scorecard.md` (static
+- `rote eval` + the auto-emitted `compiled/scorecard.md` (static
   before/after estimate of speed, cost, determinism; live-fetched
   prices — see the eval gotchas below)
 - `rote eval --run` (empirical mode: real trials of both sides —
@@ -818,8 +818,8 @@ that frustrates you, that's the roadmap — pick it up.
   [`docs/agent-runtime.md`](docs/agent-runtime.md), which captures
   the driver-layer decisions with research citations. Read it if
   you're touching the driver layer.
-- **Not the rubric.** The graduator's rubric lives in
-  [`skills/rote-graduate/references/`](skills/rote-graduate/references/) —
+- **Not the rubric.** The compiler's rubric lives in
+  [`skills/rote-compile/references/`](skills/rote-compile/references/) —
   that's what the agent reads. This CLAUDE.md is what *you* read.
 
 If information in this file contradicts information in `ir.py`, the

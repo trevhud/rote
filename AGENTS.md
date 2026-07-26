@@ -2,13 +2,13 @@
 
 This file is for a **coding agent** (Codex, Cursor, a plain API agent, or
 Claude Code without the plugin) that has been asked to **use** `rote` to
-graduate a skill. It covers the operational facts `rote --help` can't tell
+compile a skill. It covers the operational facts `rote --help` can't tell
 you. If you are editing `rote` itself, read `CLAUDE.md` instead — that's the
 contributor manual and does not apply here.
 
 `rote` compiles an Anthropic-style skill (`SKILL.md` + optional
 `references/`) into a deterministic, durable workflow: a `pipeline.yaml` IR
-plus runnable runtime code. The north-star command is `rote graduate`.
+plus runnable runtime code. The north-star command is `rote compile`.
 
 ## Invocation contract
 
@@ -27,7 +27,7 @@ uvx --from rote-cli rote <args>
 
 ## Preflight first: `rote doctor`
 
-Before spending money on a graduation, run the read-only preflight — it costs
+Before spending money on a compilation, run the read-only preflight — it costs
 nothing and tells you whether a run can even succeed:
 
 ```sh
@@ -36,13 +36,13 @@ uvx --from rote-cli rote doctor --json
 
 `--json` gives `{version, python, drivers:[{name,available,reason}], runtimes,
 mcp_servers:[{name,url,auth}], apps, ok}`. Gate on `ok` (true iff at least one
-graduator driver is available — `rote doctor` also exits non-zero when none is).
+compiler driver is available — `rote doctor` also exits non-zero when none is).
 Each unavailable driver's `reason` is an actionable fix. It also surfaces MCP
 servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.
 
-## Optional but recommended: `rote baseline` before graduating
+## Optional but recommended: `rote baseline` before compiling
 
 ```sh
 uvx --from rote-cli rote baseline <skill-dir> --out <out-dir> --input task.json --json
@@ -66,22 +66,22 @@ callable; pass `--allow-writes` only after the human confirms this skill's
 writes may fire once. `--json` mirrors the metrics plus `observed_servers`
 and per-server skip reasons.
 
-`rote graduate --baseline` runs the same measurement immediately before
-graduating (flags: `--baseline-input`, `--yes`, `--allow-writes`) — the
+`rote compile --baseline` runs the same measurement immediately before
+compiling (flags: `--baseline-input`, `--yes`, `--allow-writes`) — the
 scorecard then gains a **Measured baseline** section and the `--json`
-payload a `baseline` object. Without `--baseline`, graduate prints a
+payload a `baseline` object. Without `--baseline`, compile prints a
 one-line tip recommending it; it never blocks.
 
-## `rote graduate` is slow and costs money — plan for it
+## `rote compile` is slow and costs money — plan for it
 
 ```sh
-uvx --from rote-cli rote graduate <skill-dir> --runtime <runtime> --out <out-dir>
+uvx --from rote-cli rote compile <skill-dir> --runtime <runtime> --out <out-dir>
 ```
 
 - A realistic skill takes **~13 minutes** and 30–40 agent turns (~$0.70 on a
   Claude subscription). **Run it backgrounded** and poll — do not block.
 - **Confirm the resolved skill directory as an absolute path** with the human
-  before launching. Graduation spends real time and tokens; never guess-and-go.
+  before launching. Compilation spends real time and tokens; never guess-and-go.
   If the directory has no `SKILL.md`, stop and ask.
 - Progress streams to **stderr**, one line each (stdout is reserved for the
   final summary). Tail it to know where the run is:
@@ -106,22 +106,22 @@ API key to work around it.
 
 ## Failure recovery: check for the file before trusting the exit code
 
-The graduator's deliverable is a file on disk. If a `rote graduate` run exits
-nonzero, **check whether `<out-dir>/graduated/pipeline.yaml` exists anyway** —
+The compiler's deliverable is a file on disk. If a `rote compile` run exits
+nonzero, **check whether `<out-dir>/compiled/pipeline.yaml` exists anyway** —
 a subprocess blip *after* the agent wrote a complete IR still produces valid
 output, and the run has materially succeeded. Treat the file's presence as the
 real success signal; surface the stderr warning either way. Do not re-run a
-graduation (and re-spend ~$0.70) on an exit code alone.
+compilation (and re-spend ~$0.70) on an exit code alone.
 
 ## Output layout
 
-`rote graduate --out <dir>` writes two trees:
+`rote compile --out <dir>` writes two trees:
 
-- `<dir>/graduated/` — the agent's artifacts:
+- `<dir>/compiled/` — the agent's artifacts:
   - `pipeline.yaml` — the validated IR (source of truth).
   - `extracted/*.py` — **stubs you implement** (see below).
   - `signatures/*.py` — complete, typed LLM judges. **Leave these alone.**
-  - `scorecard.md`, `graduation-report.md` — before/after estimate + report.
+  - `scorecard.md`, `compile-report.md` — before/after estimate + report.
 - `<dir>/runtime/<runtime>/` — the deployable code: `main.py` (DBOS/Python),
   `workflow.py` + `activities.py` (Temporal), or `src/workflow.ts` +
   `wrangler.jsonc` (Cloudflare/TS), plus its own `README.md` on how to run,
@@ -132,18 +132,18 @@ cost) writes the runtime tree directly into `<dir>`.
 
 ## The job you finish: implement `extracted/*`, not `signatures/*`
 
-After graduation the pipeline is not yet runnable. The deterministic nodes are
+After compilation the pipeline is not yet runnable. The deterministic nodes are
 scaffolds that `raise NotImplementedError`:
 
 - **`extracted/*.py`** — implement each function body with the real vendor API
-  call (the source skill's MCP tool calls were graduated away). The step in
+  call (the source skill's MCP tool calls were compiled away). The step in
   `main.py` calls these with the node's payload as keyword arguments; to learn
   a stub's exact input/output contract, read its call site in `main.py` and
   the node's `inputs:`/`output:` in `pipeline.yaml`.
 - **`signatures/*.py`** — already complete typed LLM judges (Pydantic
   input/output, embedded schema, prompt). Do not rewrite them.
 
-To run a graduated pipeline locally once stubs are filled:
+To run a compiled pipeline locally once stubs are filled:
 `rote run <out-dir> --input '{"your": "input"}'` — it resolves the
 emitted runtime (`--runtime` disambiguates when several were emitted),
 executes `python`/`dbos` in-process, and delivers HITL gate payloads
@@ -157,7 +157,7 @@ a DBOS app: `python main.py '{"your": "input"}'` (see the runtime
 
 ## Layered defaults can change what a flagless command does
 
-`rote graduate` / `rote emit` / `rote analyze` resolve `runtime`,
+`rote compile` / `rote emit` / `rote analyze` resolve `runtime`,
 `deploy`, `agent`, and `model` as **flag > `ROTE_*` env
 (`ROTE_RUNTIME`, `ROTE_DEPLOY`, `ROTE_AGENT`, `ROTE_MODEL`) > project
 `rote.yaml` (discovered upward from cwd, stopping at the first `.git`)
@@ -171,11 +171,11 @@ user}}` — the cheap way to learn what a flagless invocation would do
 on this machine. `rote init` itself is interactive-only (exits 2
 without a TTY); never invoke it from automation.
 
-## The graduate default follows the login state
+## The compile default follows the login state
 
 If the machine has a rote-cloud login (`rote login`; credential at
-`~/.local/share/rote/cloud.json`), a flagless `rote graduate` **runs
-the graduation on rote cloud**: skill bundle synced up (sha-diffed),
+`~/.local/share/rote/cloud.json`), a flagless `rote compile` **runs
+the compilation on rote cloud**: skill bundle synced up (sha-diffed),
 server-side agent run, live events streamed back, server-side
 auto-deploy, artifacts downloaded into `--out` in the standard local
 layout. Consequences for automation:
@@ -192,7 +192,7 @@ layout. Consequences for automation:
 - On the *local* path while logged in, the previous behavior holds:
   default `cloudflare` emit + auto-deploy of the emitted app; a deploy
   failure exits 1 but the local artifacts are complete — retry with
-  `rote deploy <out-dir> --target rote-cloud`, don't re-graduate.
+  `rote deploy <out-dir> --target rote-cloud`, don't re-compile.
 - Logged out, nothing changes: local `dbos` default, plus a one-line
   stderr hint. There is never an interactive prompt on this path.
 - `rote whoami --json` → `{url, user, tenant}` (exit 1 when not logged
@@ -205,18 +205,18 @@ layout. Consequences for automation:
 - Every emit records what it wrote in `.rote-manifest.json`. On re-emit, any
   file you edited since is **left untouched**; the fresh version lands beside
   it as `<name>.new` and the CLI reports it. Merge or delete `.new` files.
-- `rote graduate --update` is **incremental**: it diffs the skill against the
+- `rote compile --update` is **incremental**: it diffs the skill against the
   previous run's `provenance.json`, re-derives only nodes whose source
   sections changed, keeps unchanged nodes' ids (so in-flight durable workflows
   aren't orphaned), and preserves stubs you've filled. No section changes → no
   agent run at all (no cost).
 
-A naive retry of `emit` or `graduate --update` is therefore non-destructive.
+A naive retry of `emit` or `compile --update` is therefore non-destructive.
 
 ## Exit codes
 
 - `0` — success.
-- `1` — runtime error (bad pipeline, graduator failure, price fetch, etc.).
+- `1` — runtime error (bad pipeline, compiler failure, price fetch, etc.).
 - `2` — usage error (bad flag, missing path, unknown runtime).
 - `130` — interrupted (Ctrl-C).
 
@@ -226,15 +226,15 @@ Pass `--json` to get structured output instead of prose:
 
 - `rote analyze <skill> --json` — node-kind breakdown, roteness, HITL gates,
   targetable runtimes (dry-run; no runtime code emitted).
-- `rote eval <graduated> --json` — the before/after scorecard as JSON.
+- `rote eval <compiled> --json` — the before/after scorecard as JSON.
 - `rote mcp list --json` — registered MCP servers + auth status.
 - `rote emit --json` — the final result object: pipeline name/version,
   `runtime`, `out_dir`, `written` (label → absolute path), `preserved_new_files`
   (`.new` siblings), `unimplemented_stubs` (the `extracted/*` files still
   needing an implementation — your TODO list), and `mcp_servers` (see below).
   Parse this instead of scraping the human summary.
-- `rote graduate --json` — a superset of the emit object that also carries
-  `graduated_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
+- `rote compile --json` — a superset of the emit object that also carries
+  `compiled_dir`, `runtime_dir`, `scorecard` (or `null` under `--no-eval` /
   a price-fetch failure), the `driver` used, and — when the logged-in
   auto-deploy ran — a `deploy` object (`target`, `ok`, `detail`/`error`).
 - `rote deploy --json` — one deploy report: `target`, `runtime`, `app_dir`,
@@ -246,7 +246,7 @@ Pass `--json` to get structured output instead of prose:
   `judge_usage` for pipelines). Without `--json`, stdout is the bare
   output JSON.
 
-`mcp_servers` (on `analyze`, `emit`, `graduate`, and the progress-file
+`mcp_servers` (on `analyze`, `emit`, `compile`, and the progress-file
 summary line) is the pipeline's MCP requirements manifest: one entry per
 required server — `{server, nodes, tools, auth}` — derived from the IR's
 `mcp:` bindings and joined against the local registry/token store. `auth`
@@ -264,21 +264,21 @@ an empty list.
 
 Exit codes above let you distinguish success from failure without parsing.
 
-### Watching a `graduate` run live: the progress sidecar
+### Watching a `compile` run live: the progress sidecar
 
-`graduate` runs for ~13 minutes; `--json` only prints once, at the end.
+`compile` runs for ~13 minutes; `--json` only prints once, at the end.
 Every run streams one JSON object per line (NDJSON), flushed live, to
 `<out>/progress.jsonl` — no flag needed; `--progress-file PATH` only moves
 it. The first stderr line of every run is the exact watch command
-(`rote graduate: watch progress with: tail -f …`).
+(`rote compile: watch progress with: tail -f …`).
 
-**If you are an agent driving a graduation for a human: relay that watch
+**If you are an agent driving a compilation for a human: relay that watch
 command to them immediately, before the run finishes.** The run is long
 and costs real money; the sidecar is how the human sees it working
 without waiting on your next summary.
 
 ```sh
-uvx --from rote-cli rote graduate <skill> --out <dir> &
+uvx --from rote-cli rote compile <skill> --out <dir> &
 tail -f <dir>/progress.jsonl        # each line is a complete JSON object
 ```
 
@@ -296,7 +296,7 @@ Event lines (`None` fields omitted):
   the run). This works on the default `claude` driver and `--agent api`; the
   `codex` driver emits phase lines only.
 - The **last line** is a `type:"summary"` digest — the machine end-of-run
-  report: `roteness`, `node_kinds` (counts by kind), `nodes`, `graduated_dir`,
+  report: `roteness`, `node_kinds` (counts by kind), `nodes`, `compiled_dir`,
   `runtime_dir`, `unimplemented_stubs`, `total_tokens`, `cost_usd`. Read this
   instead of running `rote analyze` again. `roteness`/`node_kinds` are
   terminal (they need the finished pipeline), so they appear only here, not in
@@ -304,7 +304,7 @@ Event lines (`None` fields omitted):
 
 ## MCP-authenticated steps: the park-on-auth loop
 
-If a graduated node calls an MCP server that needs credentials, the emitted
+If a compiled node calls an MCP server that needs credentials, the emitted
 workflow **parks durably** on a missing/dead token rather than failing.
 Authenticate the server (`rote mcp login <server>`) and every parked run is
 released automatically. Full details, including releasing runs when the

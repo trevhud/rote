@@ -1,5 +1,5 @@
 """Tests for the layered config (``rote.config``), ``rote config``, and
-the graduate/emit default wiring.
+the compile/emit default wiring.
 
 The conftest autouse fixture points ``ROTE_CONFIG_PATH`` and
 ``ROTE_PROJECT_CONFIG_PATH`` at nonexistent files, so each test opts
@@ -205,7 +205,7 @@ def test_config_bad_file_exits_2(
     assert "must be a non-empty string" in capsys.readouterr().err
 
 
-# ───────── graduate/emit honor the config ─────────
+# ───────── compile/emit honor the config ─────────
 
 
 def _skill(tmp_path: Path) -> Path:
@@ -215,94 +215,92 @@ def _skill(tmp_path: Path) -> Path:
     return skill_dir
 
 
-def test_graduate_config_runtime_beats_login_default(
+def test_compile_config_runtime_beats_login_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Logged in (built-in default would be cloudflare) but the user
     config pins temporal — the config wins, and no upload happens."""
-    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_graduator
+    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="runtime: temporal\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
     # The config pins temporal (not cloudflare), which is itself a local
     # opt-out — the logged-in cloud default steps aside, no --local needed.
     out_dir = tmp_path / "out"
-    rc = cli_main(["graduate", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval"])
+    rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval"])
     assert rc == 0
     assert (out_dir / "runtime" / "temporal" / "workflow.py").exists()
     assert calls == []
 
 
-def test_graduate_flag_beats_config_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from tests.test_cli import _install_mock_graduator
+def test_compile_flag_beats_config_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_cli import _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="runtime: temporal\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     out_dir = tmp_path / "out"
     rc = cli_main(
-        ["graduate", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval", "--runtime", "dbos"]
+        ["compile", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval", "--runtime", "dbos"]
     )
     assert rc == 0
     assert (out_dir / "runtime" / "dbos" / "main.py").exists()
 
 
-def test_graduate_config_deploy_none_suppresses_upload(
+def test_compile_config_deploy_none_suppresses_upload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_graduator
+    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="deploy: none\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
     # deploy: none is a local opt-out — the logged-in cloud default steps
     # aside (no --local needed), and no upload happens.
-    rc = cli_main(["graduate", str(_skill(tmp_path)), "--out", str(tmp_path / "out"), "--no-eval"])
+    rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(tmp_path / "out"), "--no-eval"])
     assert rc == 0
     # Still emits cloudflare (the logged-in runtime default) — just no upload.
     assert (tmp_path / "out" / "runtime" / "cloudflare").is_dir()
     assert calls == []
 
 
-def test_graduate_configured_cloud_deploy_fails_fast_when_logged_out(
+def test_compile_configured_cloud_deploy_fails_fast_when_logged_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`deploy: rote-cloud` + logged out must error BEFORE the agent
     spends money, with the fix in the message."""
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="runtime: cloudflare\ndeploy: rote-cloud\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     out_dir = tmp_path / "out"
-    rc = cli_main(["graduate", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval"])
+    rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(out_dir), "--no-eval"])
     assert rc == 2
     assert "rote login" in capsys.readouterr().err
     assert not out_dir.exists()  # nothing ran, nothing was written
 
 
-def test_graduate_flag_runtime_downgrades_configured_deploy(
+def test_compile_flag_runtime_downgrades_configured_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """--runtime temporal for one run beats `deploy: rote-cloud` — warn
     and skip the upload rather than blocking the run."""
-    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_graduator
+    from tests.test_cli import _cloud_logged_in, _fake_cloud_deploy, _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="deploy: rote-cloud\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(_skill(tmp_path)),
             "--out",
             str(tmp_path / "out"),
@@ -316,45 +314,45 @@ def test_graduate_flag_runtime_downgrades_configured_deploy(
     assert "skipping the configured rote-cloud deploy" in capsys.readouterr().err
 
 
-def test_graduate_contradictory_config_is_an_error(
+def test_compile_contradictory_config_is_an_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """runtime and deploy both from config, and incompatible → the config
     is self-contradictory; fixing the file beats guessing an intent."""
-    from tests.test_cli import _cloud_logged_in, _install_mock_graduator
+    from tests.test_cli import _cloud_logged_in, _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="runtime: temporal\ndeploy: rote-cloud\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
 
     # config runtime:temporal is a local opt-out, so the contradiction with
     # deploy:rote-cloud surfaces on the local path — no --local needed.
-    rc = cli_main(["graduate", str(_skill(tmp_path)), "--out", str(tmp_path / "out"), "--no-eval"])
+    rc = cli_main(["compile", str(_skill(tmp_path)), "--out", str(tmp_path / "out"), "--no-eval"])
     assert rc == 2
     assert "requires the cloudflare runtime" in capsys.readouterr().err
 
 
-def test_graduate_config_agent_reaches_graduator(
+def test_compile_config_agent_reaches_compiler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
     _layers(monkeypatch, tmp_path, user="agent: codex\nmodel: m-1\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     seen: dict[str, object] = {}
 
     import rote.cli as cli_mod
 
-    real = cli_mod.Graduator
+    real = cli_mod.Compiler
 
     def capture(*, agent=None, model=None, **kwargs):  # noqa: ANN001, ANN202
         seen["agent"], seen["model"] = agent, model
         return real(agent=agent, model=model, **kwargs)
 
-    monkeypatch.setattr(cli_mod, "Graduator", capture)
+    monkeypatch.setattr(cli_mod, "Compiler", capture)
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(_skill(tmp_path)),
             "--out",
             str(tmp_path / "out"),

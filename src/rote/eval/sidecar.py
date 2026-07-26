@@ -1,6 +1,6 @@
-"""The graduator-emitted eval sidecar (``eval.yaml``).
+"""The compiler-emitted eval sidecar (``eval.yaml``).
 
-During graduation the agent reads every step of the source skill
+During compilation the agent reads every step of the source skill
 anyway — the sidecar captures, at near-zero marginal cost, its
 judgment of how many agent turns each step would consume if the skill
 were run as raw instructions. That per-step estimate is the single
@@ -9,7 +9,7 @@ deep-read the skill produces a far better one than any structural
 heuristic.
 
 The sidecar is deliberately *not* part of the IR: it describes the
-source skill's behavior as an agent, not the graduated pipeline, so it
+source skill's behavior as an agent, not the compiled pipeline, so it
 travels next to ``pipeline.yaml`` rather than inside it (the IR stays
 runtime-agnostic and lean — invariant #1).
 """
@@ -41,7 +41,7 @@ class TurnRange(BaseModel):
 
 
 class StepEstimate(BaseModel):
-    """One source-skill step, as the graduator judged it."""
+    """One source-skill step, as the compiler judged it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -95,7 +95,7 @@ class EvalEstimates(BaseModel):
         default=None,
         description=(
             "Whole-run turn estimate. Optional: absent means 'sum the steps'. "
-            "Present when the graduator judges the whole differs from the sum "
+            "Present when the compiler judges the whole differs from the sum "
             "(steps that interleave, shared exploration, etc.)."
         ),
     )

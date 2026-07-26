@@ -1,16 +1,16 @@
-# Expected Graduation Output for BDR
+# Expected Compilation Output for BDR
 
-This directory holds the **golden output** for graduating the BDR outreach
-skill — the hand-written ground truth that the rote graduator should
+This directory holds the **golden output** for compiling the BDR outreach
+skill — the hand-written ground truth that the rote compiler should
 eventually produce automatically. It exists for two reasons:
 
 1. **It drives the IR schema design.** Writing the `pipeline.yaml` by hand
    forces every IR concept (node kinds, edges, HITL gates, retry policies,
    loop bodies) to be tested against a real complex skill *before* the
    schema is formalized in Python.
-2. **It is the regression suite for the graduator.** Once `rote graduate`
+2. **It is the regression suite for the compiler.** Once `rote compile`
    exists, its output will be diffed against this directory. Substantive
-   differences either reveal a bug in the graduator or update the golden
+   differences either reveal a bug in the compiler or update the golden
    output (with a commit explaining why).
 
 ## Contents
@@ -22,7 +22,7 @@ eventually produce automatically. It exists for two reasons:
 | `signatures/` | Typed DSPy/BAML signatures for `llm_judge` nodes |
 | `evals/` | Seed eval sets for each `llm_judge` node, harvested from the skill's rubric |
 | `runtimes/temporal/` | Temporal-specific emitted code (Workflow + Activities) |
-| `graduation-report.md` | Human-readable summary (created later) |
+| `compile-report.md` | Human-readable summary (created later) |
 
 ## Status
 

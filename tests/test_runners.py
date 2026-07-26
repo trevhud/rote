@@ -64,18 +64,18 @@ def test_detect_emitted_runtime_dirs(tmp_path: Path, files: list[str], expected:
     assert target.runtime == expected
 
 
-def test_detect_graduate_out_layout_single_runtime(tmp_path: Path) -> None:
+def test_detect_compile_out_layout_single_runtime(tmp_path: Path) -> None:
     out = tmp_path / "out"
     _mk(out / "runtime" / "dbos", "main.py", "dbos-config.yaml")
-    _mk(out / "graduated", "pipeline.yaml")
+    _mk(out / "compiled", "pipeline.yaml")
     target = detect_target(out)
     assert target.kind == "pipeline"
     assert target.runtime == "dbos"
     assert target.path == (out / "runtime" / "dbos").resolve()
-    assert target.pipeline_yaml == (out / "graduated" / "pipeline.yaml").resolve()
+    assert target.pipeline_yaml == (out / "compiled" / "pipeline.yaml").resolve()
 
 
-def test_detect_graduate_out_layout_needs_runtime_flag_when_ambiguous(tmp_path: Path) -> None:
+def test_detect_compile_out_layout_needs_runtime_flag_when_ambiguous(tmp_path: Path) -> None:
     out = tmp_path / "out"
     _mk(out / "runtime" / "dbos", "main.py", "dbos-config.yaml")
     _mk(out / "runtime" / "python", "main.py")
@@ -85,7 +85,7 @@ def test_detect_graduate_out_layout_needs_runtime_flag_when_ambiguous(tmp_path: 
     assert target.runtime == "python"
 
 
-def test_detect_graduate_out_layout_unknown_runtime_flag(tmp_path: Path) -> None:
+def test_detect_compile_out_layout_unknown_runtime_flag(tmp_path: Path) -> None:
     out = tmp_path / "out"
     _mk(out / "runtime" / "dbos", "main.py", "dbos-config.yaml")
     with pytest.raises(TargetError, match="no emitted `temporal` runtime"):

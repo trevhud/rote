@@ -69,7 +69,7 @@ notes: >-
   the agent to read a multi-message thread before classifying — and (b) the
   account-name Gmail searches, which can require many serial calls if the
   account list is large. The classify_warehouse_thread and score_new_opportunity
-  steps run serially in the agent but could be concurrent; graduated pipeline
+  steps run serially in the agent but could be concurrent; compiled pipeline
   runs them in parallel. In the agent, reading the deal-scoring skill
   adds 1–2 extra turns of file-reading overhead per scoring call. Total
   range (20–90) reflects a typical morning of 5–25 active threads.

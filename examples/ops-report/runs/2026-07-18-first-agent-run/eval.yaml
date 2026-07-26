@@ -102,7 +102,7 @@ notes: >-
   must write all three sections from scratch each run. The HITL wait (duty
   manager response) is wall-clock time, not agent turns.
 
-  In the graduated pipeline, the 8 deterministic nodes (4 external_call +
+  In the compiled pipeline, the 8 deterministic nodes (4 external_call +
   8 pure_function = 12 total, excluding the 1 hitl_gate) require exactly
   zero LLM tokens at runtime. The only LLM-adjacent cost is the HITL
   notification message. Expected per-run cost reduction: ~95% of agent turns

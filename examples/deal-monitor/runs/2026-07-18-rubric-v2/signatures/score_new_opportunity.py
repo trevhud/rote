@@ -18,7 +18,7 @@ Output:
   key_factors: list of 1-3 positive signals
   risks: list of 0-3 risk flags
 
-Graduated from: SKILL.md > Step 4 (Score New Opportunities)
+Compiled from: SKILL.md > Step 4 (Score New Opportunities)
 """
 from __future__ import annotations
 from enum import Enum

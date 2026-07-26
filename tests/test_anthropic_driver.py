@@ -27,14 +27,14 @@ from typing import Any
 
 import pytest
 
-from rote.graduator.drivers import DriverError
-from rote.graduator.drivers.anthropic_api import (
+from rote.compiler.drivers import DriverError
+from rote.compiler.drivers.anthropic_api import (
     AnthropicApiDriver,
     _handle_list_directory,
     _handle_read_file,
     _handle_write_file,
 )
-from rote.graduator.events import GraduationEvent
+from rote.compiler.events import CompilationEvent
 
 # ───────── Fake Anthropic SDK ─────────
 
@@ -91,7 +91,7 @@ def fake_anthropic(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
         holder["client"] = client
         # Patch the symbol the driver actually calls
         monkeypatch.setattr(
-            "rote.graduator.drivers.anthropic_api.anthropic.AsyncAnthropic",
+            "rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic",
             lambda *a, **k: client,
         )
         # Bypass the env-var check
@@ -163,7 +163,7 @@ exit_nodes: [only_node]
 
 @pytest.fixture
 def fake_skills(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Create a fake source skill, fake graduator skill, and work dir."""
+    """Create a fake source skill, fake compiler skill, and work dir."""
     skill_dir = tmp_path / "fake-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
@@ -171,16 +171,16 @@ def fake_skills(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
 
-    graduator_dir = tmp_path / "fake-graduator-skill"
-    graduator_dir.mkdir()
-    (graduator_dir / "SKILL.md").write_text(
-        "# Fake rote-graduate skill\n\nDo the graduation thing.\n",
+    compiler_dir = tmp_path / "fake-compiler-skill"
+    compiler_dir.mkdir()
+    (compiler_dir / "SKILL.md").write_text(
+        "# Fake rote-compile skill\n\nDo the compilation thing.\n",
         encoding="utf-8",
     )
-    (graduator_dir / "references").mkdir()
+    (compiler_dir / "references").mkdir()
 
     work_dir = tmp_path / "work"
-    return skill_dir, graduator_dir, work_dir
+    return skill_dir, compiler_dir, work_dir
 
 
 # ───────── Happy path ─────────
@@ -193,7 +193,7 @@ async def test_happy_path_read_then_write_then_end(
 ) -> None:
     """The driver reads a file, writes pipeline.yaml, ends. We check
     the result and the file."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     # Use the resolved path because the driver resolves before passing
@@ -238,7 +238,7 @@ async def test_happy_path_read_then_write_then_end(
     driver = AnthropicApiDriver()
     result = await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
     )
 
@@ -249,7 +249,7 @@ async def test_happy_path_read_then_write_then_end(
     assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
 
     # Metadata
-    from rote.graduator.drivers.anthropic_api import DEFAULT_MODEL
+    from rote.compiler.drivers.anthropic_api import DEFAULT_MODEL
 
     assert result.metadata["model"] == DEFAULT_MODEL
     assert result.metadata["iterations"] == 3
@@ -266,7 +266,7 @@ async def test_list_directory_tool_works(
     fake_anthropic,  # noqa: ANN001
 ) -> None:
     """Verify the list_directory tool path is wired correctly."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     # Add an extra file so the listing has something to show
@@ -295,7 +295,7 @@ async def test_list_directory_tool_works(
     fake_anthropic(responses)
 
     driver = AnthropicApiDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.pipeline_yaml_path.is_file()
 
 
@@ -377,7 +377,7 @@ async def test_path_security_violations_returned_to_model_as_tool_errors(
     """When the model tries to read outside the allowed roots, the
     driver returns a tool_result with is_error=True instead of crashing.
     The model can then recover."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     # Some file outside both allowed read roots
@@ -409,7 +409,7 @@ async def test_path_security_violations_returned_to_model_as_tool_errors(
     fake_client = fake_anthropic(responses)
 
     driver = AnthropicApiDriver()
-    result = await driver.run(skill_dir, graduator_dir, work_dir)
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
 
     # The driver completed despite the forbidden read
     assert result.pipeline_yaml_path.is_file()
@@ -435,7 +435,7 @@ async def test_max_iterations_exceeded_raises_driver_error(
 ) -> None:
     """If the model never stops calling tools, the driver gives up
     after max_iterations."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     # Build a long chain of tool_use responses; never end_turn
@@ -450,7 +450,7 @@ async def test_max_iterations_exceeded_raises_driver_error(
 
     driver = AnthropicApiDriver(max_iterations=3)
     with pytest.raises(DriverError, match="did not complete within 3 iterations"):
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
 
 
 @pytest.mark.asyncio
@@ -459,7 +459,7 @@ async def test_missing_pipeline_yaml_raises_driver_error(
     fake_anthropic,  # noqa: ANN001
 ) -> None:
     """If the agent ends without producing pipeline.yaml, error out."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     responses = [
@@ -470,15 +470,15 @@ async def test_missing_pipeline_yaml_raises_driver_error(
 
     driver = AnthropicApiDriver()
     with pytest.raises(DriverError, match="did not produce"):
-        await driver.run(skill_dir, graduator_dir, work_dir)
+        await driver.run(skill_dir, compiler_dir, work_dir)
 
 
 @pytest.mark.asyncio
-async def test_missing_graduator_skill_md_raises_driver_error(
+async def test_missing_compiler_skill_md_raises_driver_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If graduator_skill_dir is missing SKILL.md, error before the
+    """If compiler_skill_dir is missing SKILL.md, error before the
     LLM is called."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
 
@@ -486,14 +486,14 @@ async def test_missing_graduator_skill_md_raises_driver_error(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("hi")
 
-    bad_graduator = tmp_path / "no-skill-md"
-    bad_graduator.mkdir()  # but no SKILL.md inside
+    bad_compiler = tmp_path / "no-skill-md"
+    bad_compiler.mkdir()  # but no SKILL.md inside
 
     work_dir = tmp_path / "work"
 
     driver = AnthropicApiDriver()
-    with pytest.raises(DriverError, match="rote-graduate SKILL.md not found"):
-        await driver.run(skill_dir, bad_graduator, work_dir)
+    with pytest.raises(DriverError, match="rote-compile SKILL.md not found"):
+        await driver.run(skill_dir, bad_compiler, work_dir)
 
 
 # ───────── Live events ─────────
@@ -507,7 +507,7 @@ async def test_run_emits_turn_tool_and_phase_events(
     """turn events (with cumulative tokens), tool events (with work-dir
     relative path), and phase events intercepted from a progress.ndjson
     write — all in order."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     skill_md_abs = (skill_dir / "SKILL.md").resolve()
@@ -553,11 +553,11 @@ async def test_run_emits_turn_tool_and_phase_events(
     ]
     fake_anthropic(responses)
 
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     driver = AnthropicApiDriver()
     await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )
@@ -591,7 +591,7 @@ async def test_progress_rewrite_only_emits_new_phases(
 ) -> None:
     """The agent rewrites the whole progress file each phase; only lines
     beyond the last emitted count fire new events."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     progress_abs = (work_dir / "progress.ndjson").resolve()
     pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
@@ -619,11 +619,11 @@ async def test_progress_rewrite_only_emits_new_phases(
     ]
     fake_anthropic(responses)
 
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     driver = AnthropicApiDriver()
     await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )
@@ -695,7 +695,7 @@ async def test_run_constructs_client_with_plumbed_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """base_url / default_headers reach the AsyncAnthropic constructor."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
@@ -720,13 +720,13 @@ async def test_run_constructs_client_with_plumbed_kwargs(
         captured.update(kwargs)
         return client
 
-    monkeypatch.setattr("rote.graduator.drivers.anthropic_api.anthropic.AsyncAnthropic", _ctor)
+    monkeypatch.setattr("rote.compiler.drivers.anthropic_api.anthropic.AsyncAnthropic", _ctor)
 
     driver = AnthropicApiDriver(
         base_url="https://gw.example/anthropic",
         default_headers={"cf-aig-authorization": "Bearer g"},
     )
-    await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+    await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
 
     assert captured["base_url"] == "https://gw.example/anthropic"
     assert captured["default_headers"] == {"cf-aig-authorization": "Bearer g"}
@@ -744,7 +744,7 @@ async def test_max_tokens_truncation_continues_and_warns(
     """A turn that hits the output-token limit mid-thought (stop_reason
     max_tokens, no tool_use) must NOT be treated as completion: the loop
     nudges the agent to continue, fires a warning, and finishes normally."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
 
@@ -767,11 +767,11 @@ async def test_max_tokens_truncation_continues_and_warns(
     ]
     client = fake_anthropic(responses)
 
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     driver = AnthropicApiDriver()
     result = await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )
@@ -791,7 +791,7 @@ async def test_max_tokens_truncation_continues_and_warns(
 
 
 def test_default_max_tokens_per_turn_is_generous() -> None:
-    from rote.graduator.drivers.anthropic_api import DEFAULT_MAX_TOKENS_PER_TURN
+    from rote.compiler.drivers.anthropic_api import DEFAULT_MAX_TOKENS_PER_TURN
 
     assert DEFAULT_MAX_TOKENS_PER_TURN == 32768
 
@@ -805,7 +805,7 @@ async def test_null_content_turn_continues_and_warns(
     that was entirely (stripped) thinking blocks — even at a natural stop.
     That is not completion: the loop must not crash iterating None, must
     nudge the agent, and must finish normally."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
 
@@ -828,11 +828,11 @@ async def test_null_content_turn_continues_and_warns(
     ]
     client = fake_anthropic(responses)
 
-    events: list[GraduationEvent] = []
+    events: list[CompilationEvent] = []
     driver = AnthropicApiDriver()
     result = await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )

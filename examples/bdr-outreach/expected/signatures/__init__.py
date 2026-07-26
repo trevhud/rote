@@ -1,4 +1,4 @@
-"""Typed LLM signatures for the graduated BDR pipeline.
+"""Typed LLM signatures for the compiled BDR pipeline.
 
 Each signature in this package is a typed wrapper around a single LLM
 call. They replace the agent loops in the source skill where the LLM

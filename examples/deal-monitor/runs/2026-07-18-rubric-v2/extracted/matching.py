@@ -5,7 +5,7 @@ Deterministic — uses rapidfuzz for normalized string similarity.
 No LLM needed: the matching criterion is a name similarity threshold,
 not a judgment call.
 
-Graduated from: SKILL.md > Step 2 ("Match threads to #deal-intake opps by
+Compiled from: SKILL.md > Step 2 ("Match threads to #deal-intake opps by
 account name (fuzzy match fine)") and Step 3 (partition for tabs).
 """
 from __future__ import annotations

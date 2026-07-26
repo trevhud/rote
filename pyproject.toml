@@ -8,7 +8,7 @@ build-backend = "hatchling.build"
 # import name and CLI command remain `rote`. See docs/releasing.md.
 name = "rote-cli"
 dynamic = ["version"]
-description = "Graduate fuzzy AI skills into deterministic, reliable workflows"
+description = "Compile fuzzy AI skills into deterministic, reliable workflows"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -25,7 +25,12 @@ keywords = [
     "claude",
     "anthropic",
     "dspy",
-    "graduation",
+    "compilation",
+    "compiler",
+    "agent-skills",
+    "deterministic",
+    "durable-execution",
+    "mcp",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -93,27 +98,27 @@ path = "src/rote/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rote"]
 
-# The graduator agent's skill bundle lives at the repo root (it is the
+# The compiler agent's skill bundle lives at the repo root (it is the
 # product's Layer 1 and is consumed in-place during development), so it
-# is force-included into the wheel at rote/skills/rote-graduate.
-# `_default_graduator_skill_dir()` in src/rote/graduator/__init__.py
+# is force-included into the wheel at rote/skills/rote-compile.
+# `_default_compiler_skill_dir()` in src/rote/compiler/__init__.py
 # checks that packaged location first, then the repo-root layout for
 # editable installs. If you move or rename the bundle, update both.
 [tool.hatch.build.targets.wheel.force-include]
-"skills/rote-graduate" = "rote/skills/rote-graduate"
+"skills/rote-compile" = "rote/skills/rote-compile"
 
 [tool.hatch.build.targets.sdist]
 # Keep the sdist lean but self-sufficient: building a wheel from the
 # sdist needs src/ and the skill bundle at the same relative paths.
 include = [
     "src/rote",
-    "skills/rote-graduate",
+    "skills/rote-compile",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-# examples/ holds machine-emitted snapshots (adapter output, graduator
+# examples/ holds machine-emitted snapshots (adapter output, compiler
 # runs) kept verbatim as regression baselines — hand-linting them would
 # diverge them from what the tools actually produce.
 extend-exclude = ["examples"]

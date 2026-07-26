@@ -10,7 +10,7 @@ What it does, mirroring the rote CLI's behavior exactly:
 
 - **Endpoint resolution**: ``ROTE_MCP_<SERVER>_URL`` env var > the rote
   registry (``~/.config/rote/mcp.json``) > the endpoint recorded in the
-  pipeline at graduation time.
+  pipeline at compilation time.
 - **Auth resolution**: the rote token store
   (``~/.local/share/rote/mcp-tokens/<server>.json``, written by
   ``rote mcp login``) through a durable OAuth provider that refreshes

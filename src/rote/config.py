@@ -19,7 +19,7 @@ skip — a typo'd ``runtime: clouflare`` must not quietly fall back to
 the built-in default.
 
 The built-in default layer is *not* stored here — it stays with the
-command (e.g. graduate's login-derived runtime default), because it can
+command (e.g. compile's login-derived runtime default), because it can
 depend on runtime state a config file can't see.
 """
 
@@ -44,7 +44,7 @@ def _runtime_choices() -> tuple[str, ...]:
 
 
 def _agent_choices() -> tuple[str, ...]:
-    from rote.graduator.drivers import DRIVERS
+    from rote.compiler.drivers import DRIVERS
 
     return tuple(sorted(DRIVERS))
 
@@ -69,30 +69,30 @@ class ConfigKey:
 
 #: The v1 key set. Names match the CLI flags they default
 #: (``--runtime``, ``--agent``, ``--model``); ``deploy`` maps to the
-#: graduate auto-deploy decision (``rote-cloud`` | ``none``).
+#: compile auto-deploy decision (``rote-cloud`` | ``none``).
 CONFIG_KEYS: tuple[ConfigKey, ...] = (
     ConfigKey(
         name="runtime",
         env="ROTE_RUNTIME",
-        description="default --runtime for graduate/emit",
+        description="default --runtime for compile/emit",
         lazy_choices="runtime",
     ),
     ConfigKey(
         name="deploy",
         env="ROTE_DEPLOY",
-        description="after graduate: upload to rote cloud, or stay local",
+        description="after compile: upload to rote cloud, or stay local",
         choices=("rote-cloud", "none"),
     ),
     ConfigKey(
         name="agent",
         env="ROTE_AGENT",
-        description="graduator driver (unset = auto-detect)",
+        description="compiler driver (unset = auto-detect)",
         lazy_choices="agent",
     ),
     ConfigKey(
         name="model",
         env="ROTE_MODEL",
-        description="graduator model override (unset = driver default)",
+        description="compiler model override (unset = driver default)",
     ),
 )
 

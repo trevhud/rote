@@ -308,7 +308,7 @@ def emit_extracted_module(node: Node) -> str:
 
     Same scaffolding convention as the other TS adapters: one module per
     node, throwing until the user fills it in with direct vendor API
-    calls. The graduation history (MCP origin) is documented in JSDoc
+    calls. The compilation history (MCP origin) is documented in JSDoc
     only — never in executable code.
     """
     fn_name = _to_camel_case(node.id)
@@ -339,7 +339,7 @@ def emit_extracted_module(node: Node) -> str:
             [
                 " *",
                 " * Replace this stub with the deterministic API call. Direct vendor SDKs",
-                " * are preferred over MCP wrappers — the rote graduator removes the MCP",
+                " * are preferred over MCP wrappers — the rote compiler removes the MCP",
                 " * layer at emit time, so production code calls the vendor APIs directly.",
             ]
         )
@@ -661,7 +661,7 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
             " * Architecture note: every step in this function wraps a deterministic\n"
             " * function from `extracted/` or a typed LLM signature from\n"
             " * `signatures/`. None of them call MCP tools at runtime — the MCP\n"
-            " * tool calls from the source skill were graduated into direct API\n"
+            " * tool calls from the source skill were compiled into direct API\n"
             " * calls during the rote emission step."
         )
     # The header f-string below is dedent()ed AFTER interpolation; match

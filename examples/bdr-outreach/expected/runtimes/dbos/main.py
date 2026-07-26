@@ -15,7 +15,7 @@ new code.
 Architecture note: every step in this file wraps a deterministic
 function from ``extracted/`` or a typed LLM signature from
 ``signatures/``. None of them call MCP tools at runtime — the MCP
-tool calls from the source skill were graduated into direct API
+tool calls from the source skill were compiled into direct API
 calls during the rote emission step.
 """
 
@@ -88,7 +88,7 @@ def target_research(payload: dict) -> dict:
 def taxonomy_lookup(payload: dict) -> dict:
     """Resolve ZoomInfo IDs for management levels (VP, Director), industries
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.taxonomy`` for the implementation.
     """
     from extracted.taxonomy import resolve_taxonomy_ids
@@ -115,7 +115,7 @@ def lead_generation_loop(payload: dict) -> dict:
 def enrich_contact_batch(payload: dict) -> dict:
     """Batch enrich contacts via ZoomInfo. Always requests employmentHistory
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.zoominfo`` for the implementation.
     """
     # retry_on categories from the IR: rate_limit, network. DBOS retries any
@@ -144,7 +144,7 @@ def vet_contact(payload: dict) -> dict:
 def hubspot_upsert(payload: dict) -> dict:
     """Batch upsert contacts to HubSpot (create or update by email). Hard
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.hubspot`` for the implementation.
     """
     # IR timeout '60s': DBOS has no per-step timeout
@@ -158,7 +158,7 @@ def hubspot_upsert(payload: dict) -> dict:
 def hubspot_create_list(payload: dict) -> dict:
     """Create a static list named after the campaign and add the upserted
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.hubspot`` for the implementation.
     """
     from extracted.hubspot import create_campaign_list
@@ -170,7 +170,7 @@ def hubspot_create_list(payload: dict) -> dict:
 def exclusion_check_dnc(payload: dict) -> dict:
     """For each contact, look up \"BDR do not contact\" list memberships.
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.exclusion_checks`` for the implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -184,7 +184,7 @@ def exclusion_check_dnc(payload: dict) -> dict:
 def exclusion_check_recent(payload: dict) -> dict:
     """For each contact, check if they were emailed (outbound) in the last
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.exclusion_checks`` for the implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -198,7 +198,7 @@ def exclusion_check_recent(payload: dict) -> dict:
 def exclusion_check_sequence(payload: dict) -> dict:
     """For each contact, check if they are already enrolled in an active
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.exclusion_checks`` for the implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
@@ -225,7 +225,7 @@ def personalize_email(payload: dict) -> dict:
 def create_sales_template(payload: dict) -> dict:
     """Create or update HubSpot sales templates for the campaign sequence
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.hubspot`` for the implementation.
     """
     from extracted.hubspot import upsert_sales_template
@@ -237,7 +237,7 @@ def create_sales_template(payload: dict) -> dict:
 def pre_enrollment_report(payload: dict) -> dict:
     """Generate the final pre-enrollment report (markdown) with totals,
 
-    Graduated from MCP tool call → deterministic API call. See
+    Compiled from MCP tool call → deterministic API call. See
     ``extracted.report`` for the implementation.
     """
     from extracted.report import generate_pre_enrollment_report

@@ -158,7 +158,7 @@ class Scorecard:
 
         # ── Headline ──
         lines += ["## Before → after", ""]
-        lines.append("| Metric | As agent instructions | As graduated pipeline | Change |")
+        lines.append("| Metric | As agent instructions | As compiled pipeline | Change |")
         lines.append("|---|---|---|---|")
         if self.skill is not None:
             lines.append(
@@ -313,7 +313,7 @@ def build_scorecard_for(
 ) -> Scorecard:
     """End-to-end eval flow: estimate both sides, fetch live prices, assemble.
 
-    The public entry point behind ``rote eval`` / ``rote graduate``'s
+    The public entry point behind ``rote eval`` / ``rote compile``'s
     scorecard and the cloud runner: given a validated pipeline (and,
     optionally, its source skill for the before-side baseline), it sizes
     both sides, samples live model prices for ``provider``, and returns
@@ -321,7 +321,7 @@ def build_scorecard_for(
 
     Raises :class:`~rote.eval.pricing.PricingError` when the live price
     source is unreachable — callers decide whether that's fatal
-    (``rote eval``) or a warning (``rote graduate``'s auxiliary scorecard).
+    (``rote eval``) or a warning (``rote compile``'s auxiliary scorecard).
     """
     from datetime import UTC, datetime
 

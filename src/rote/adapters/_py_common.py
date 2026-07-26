@@ -609,7 +609,7 @@ def _emit_usage_logger(node: Node, spec: LLMSignature) -> str:
 
     When ``ROTE_USAGE_LOG`` names a file, every judge call appends one
     JSONL record with its real token usage. This is what lets
-    ``rote eval --run`` measure the graduated pipeline's actual LLM
+    ``rote eval --run`` measure the compiled pipeline's actual LLM
     footprint instead of estimating it — and it doubles as a zero-setup
     observability tap in production. No env var → no-op, and a logging
     failure never breaks the judge call itself.
@@ -743,8 +743,8 @@ def _emit_forward_openai(node: Node, pascal: str, spec: LLMSignature) -> str:
 def resolve_extracted_source(source_dir: Path | None, module_name: str) -> str | None:
     """The agent-written ``extracted/<module>.py`` beside the pipeline, if any.
 
-    A graduation writes its real (test-verified) implementations into
-    ``<graduated>/extracted/`` next to ``pipeline.yaml``. Emission
+    A compilation writes its real (test-verified) implementations into
+    ``<compiled>/extracted/`` next to ``pipeline.yaml``. Emission
     prefers those files verbatim over IR-derived stubs so the runtime
     dir runs without anyone hand-copying modules across — the gap that
     made the first real-server pipeline raise ``NotImplementedError``
@@ -804,7 +804,7 @@ def emit_extracted_module(
 
     Same scaffolding convention as the Temporal example package: the
     functions raise ``NotImplementedError`` until the user fills them in
-    with direct vendor API calls. The graduation history (MCP origin) is
+    with direct vendor API calls. The compilation history (MCP origin) is
     documented in docstrings only — never in executable code.
 
     ``caller_note`` finishes the "Keep the signatures: …" sentence with
@@ -816,7 +816,7 @@ def emit_extracted_module(
 
         Auto-generated stubs by {generated_by}. Replace each body
         with the real implementation (direct vendor API calls — the MCP
-        tool calls from the source skill were graduated away at emit
+        tool calls from the source skill were compiled away at emit
         time). Keep the signatures: {caller_note}
         """
 

@@ -20,7 +20,7 @@ few days; fixes for confirmed issues are prioritized over other work.
 published version on PyPI ([`rote-cli`](https://pypi.org/project/rote-cli/))
 only. Pin a version you've reviewed if that matters to you.
 
-## Threat model — read this before graduating third-party skills
+## Threat model — read this before compiling third-party skills
 
 `rote` turns a `SKILL.md` into a `pipeline.yaml` (the IR) and then
 **emits runtime source code** from that IR. Two properties follow:
@@ -35,7 +35,7 @@ only. Pin a version you've reviewed if that matters to you.
    docstring/comment, or write outside the output directory, that's a
    vulnerability — report it.
 
-2. **The graduator runs an LLM agent with tools.** `rote graduate`
+2. **The compiler runs an LLM agent with tools.** `rote compile`
    spawns an agent (Claude Code, Codex, or the Anthropic SDK) that
    reads the source skill and writes files. Treat a skill you did not
    author as untrusted content in an agent's context. The emitted
@@ -44,7 +44,7 @@ only. Pin a version you've reviewed if that matters to you.
    you would any generated scaffold.
 
 Emitted code is guaranteed **never to import or reference MCP**
-(enforced by test); the graduator's job is to replace MCP tool calls
+(enforced by test); the compiler's job is to replace MCP tool calls
 with direct vendor API calls.
 
 ## Handling of credentials

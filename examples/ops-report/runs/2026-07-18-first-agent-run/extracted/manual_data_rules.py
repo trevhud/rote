@@ -105,7 +105,7 @@ def apply_sorter_rules(sorter_metrics: list[SorterSiteData]) -> SorterAnalysis:
 
     Day-over-day comparison requires prior_volume on each SorterSiteData.
     When prior_volume is None the DoD check is skipped (see open question in
-    graduation-report.md about tracking prior-day volumes).
+    compile-report.md about tracking prior-day volumes).
     """
     site_analyses: list[SorterSiteAnalysis] = []
     sites_requiring_action: list[str] = []

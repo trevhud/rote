@@ -1,9 +1,9 @@
-"""Eval harness: speed / cost / determinism, before and after graduation.
+"""Eval harness: speed / cost / determinism, before and after compilation.
 
 The package answers one question in two modes:
 
 *How much does this skill cost to run as agent instructions, and what
-does graduating it buy you?* — expressed on three axes: wall-clock
+does compiling it buy you?* — expressed on three axes: wall-clock
 speed, dollar cost (across a sampling of current models at live
 official prices), and determinism (how much of the work product passes
 through a sampled LLM).

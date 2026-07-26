@@ -9,9 +9,9 @@ The bdr-outreach skill used these HubSpot MCP tools inside its agent loop:
 * ``hubspot_add_contacts_to_list`` (batch=250)
 * ``hubspot_create_sales_template`` / ``hubspot_update_sales_template``
 
-# Graduated form
+# Compiled form
 
-After graduation these become direct calls to the public HubSpot CRM API
+After compilation these become direct calls to the public HubSpot CRM API
 v3 (for contacts/lists) and the internal HubSpot UI API (for sales
 templates — which is why a cookie rotation is required).
 

@@ -1,10 +1,10 @@
 """Runtime trigger backends for ``rote serve``.
 
 Each registry entry names a runtime trigger (Temporal, Cloudflare, or
-DBOS). This module knows how to *start* a graduated workflow on that
+DBOS). This module knows how to *start* a compiled workflow on that
 runtime, how to *poll* its status, and — where the runtime makes it a
 single durable call (DBOS) — how to *signal* a HITL gate. Tool calls
-never block on workflow completion — graduated pipelines run for
+never block on workflow completion — compiled pipelines run for
 minutes to days (HITL gates), and their durability lives in the
 workflow engine, not in this process. Starting returns
 ``{workflow_id, status: "started", ...}`` immediately; the companion
@@ -47,7 +47,7 @@ class BackendError(RuntimeError):
 
 
 async def start_workflow(entry: RegistryEntry, payload: dict[str, Any]) -> dict[str, Any]:
-    """Start the graduated workflow behind ``entry`` with ``payload`` as input."""
+    """Start the compiled workflow behind ``entry`` with ``payload`` as input."""
     trigger = entry.trigger
     if isinstance(trigger, TemporalTrigger):
         return await _start_temporal(trigger, entry.name, payload)

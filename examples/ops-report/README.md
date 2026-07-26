@@ -4,7 +4,7 @@ The **100%-roteness archetype**: a scheduled daily report skill in which
 *every* step is deterministic — fetch three spreadsheets and one Gmail
 label, count rows, apply fixed thresholds, render a report — yet it ran
 in production as a full agent loop, re-reasoning the same row-counting
-from prose every morning. Graduation eliminates the entire inference
+from prose every morning. Compilation eliminates the entire inference
 surface: **roteness 1.0, zero `llm_judge` nodes**.
 
 Adapted from a real production skill (companies, people, file IDs, and
@@ -14,7 +14,7 @@ that is 100% arithmetic.
 
 ## What this example uniquely demonstrates
 
-- **Graduation can eliminate inference entirely.** BDR (the canonical
+- **Compilation can eliminate inference entirely.** BDR (the canonical
   example) shows all five node kinds; this one shows the cleanest win:
   a pipeline whose only non-code element is a human.
 - **`hitl_gate` as the sole blocking element** — `manual_data_gate`
@@ -32,13 +32,13 @@ that is 100% arithmetic.
 examples/ops-report/
 ├── README.md              # this file
 ├── skill/SKILL.md         # input: the source skill
-└── expected/pipeline.yaml # the graduated IR (regression baseline)
+└── expected/pipeline.yaml # the compiled IR (regression baseline)
 ```
 
 ## Try it
 
 ```sh
-# Report what graduation produces (runs the real graduator agent):
+# Report what compilation produces (runs the real compiler agent):
 rote analyze examples/ops-report/skill
 
 # Emit runtime code from the committed IR (no agent, instant):

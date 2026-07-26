@@ -1,7 +1,7 @@
 """The interactive ``rote init`` wizard.
 
-Walks the choices that shape every later command — where graduated
-pipelines run (rote cloud vs a local runtime), which graduator driver
+Walks the choices that shape every later command — where compiled
+pipelines run (rote cloud vs a local runtime), which compiler driver
 does the work, and optionally which model — then writes them to a
 config file (:mod:`rote.config`). It is the only interactive entry
 point in the CLI besides login itself; everything else must stay
@@ -21,7 +21,7 @@ from pathlib import Path
 from rote.config import user_config_path, write_config
 
 #: Runtime menu: (name, one-line pitch). Order = recommendation order,
-#: matching the graduate default (dbos) first for the local path.
+#: matching the compile default (dbos) first for the local path.
 RUNTIME_MENU: tuple[tuple[str, str], ...] = (
     ("dbos", "durable Python, no orchestrator process to run (local default)"),
     ("temporal", "workflow.py + activities.py for a Temporal cluster"),
@@ -64,7 +64,7 @@ def run_wizard(
     if echo is None:
         echo = lambda line: print(line, file=sys.stderr)  # noqa: E731
     from rote.cloud_auth import LoginError, load_credential, login
-    from rote.graduator.drivers import available_drivers
+    from rote.compiler.drivers import available_drivers
 
     echo("rote init — set your defaults once; every command reads them.")
     echo("")
@@ -74,7 +74,7 @@ def run_wizard(
     from rote.cli import _build_doctor_report
 
     report = _build_doctor_report()
-    echo("Graduator drivers (at least one required — see `rote doctor` for the full preflight):")
+    echo("Compiler drivers (at least one required — see `rote doctor` for the full preflight):")
     for driver in report["drivers"]:
         mark = "✓" if driver["available"] else "✗"
         suffix = "" if driver["available"] else f" — {driver['reason']}"
@@ -87,8 +87,8 @@ def run_wizard(
     values: dict[str, str] = {}
 
     # ── 1. Hosting: rote cloud, or a local runtime ──
-    echo("Where should graduated pipelines run?")
-    echo("  1. rote cloud (recommended) — hosted; graduate + deploy in one step")
+    echo("Where should compiled pipelines run?")
+    echo("  1. rote cloud (recommended) — hosted; compile + deploy in one step")
     echo("  2. locally — pick the workflow runtime rote emits")
     hosting = _ask("choice [1]: ", input_fn, default="1", valid={"1", "2"})
     if hosting == "1":
@@ -109,9 +109,9 @@ def run_wizard(
                     login()
                 except LoginError as e:
                     echo(f"  login failed: {e}")
-                    echo("  (kept the cloud default — run `rote login` before graduating)")
+                    echo("  (kept the cloud default — run `rote login` before compiling)")
             else:
-                echo("  ok — `rote graduate` will ask you to `rote login` first")
+                echo("  ok — `rote compile` will ask you to `rote login` first")
     else:
         echo("")
         echo("Which runtime should rote emit by default?")
@@ -126,9 +126,9 @@ def run_wizard(
         values["runtime"] = RUNTIME_MENU[int(pick) - 1][0]
         values["deploy"] = "none"
 
-    # ── 2. Graduator driver ──
+    # ── 2. Compiler driver ──
     echo("")
-    echo("Which agent should run graduations? (auto-detect probes in this order)")
+    echo("Which agent should run compilations? (auto-detect probes in this order)")
     drivers = available_drivers()
     for index, (name, available, reason) in enumerate(drivers, start=1):
         mark = "✓" if available else "✗"
@@ -145,7 +145,7 @@ def run_wizard(
         values["agent"] = drivers[int(pick) - 1][0]
 
     # ── 3. Model override ──
-    model = input_fn("graduator model [driver default — Sonnet]: ").strip()
+    model = input_fn("compiler model [driver default — Sonnet]: ").strip()
     if model:
         values["model"] = model
 
@@ -164,5 +164,5 @@ def run_wizard(
     for name, value in values.items():
         echo(f"    {name}: {value}")
     echo("  see the effective setup any time with: rote config")
-    echo("  next: rote graduate <skill-dir> --out ./graduated")
+    echo("  next: rote compile <skill-dir> --out ./compiled")
     return target

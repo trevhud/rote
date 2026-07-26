@@ -6,7 +6,7 @@
 # ~/.claude/skills/deal-scoring/SKILL.md which does not exist in this
 # workspace. The SCORE_OPP_PROMPT below contains a PLACEHOLDER where that
 # rubric must be inlined before deploying this pipeline.
-# See graduation-report.md §Open Questions.
+# See compile-report.md §Open Questions.
 from __future__ import annotations
 
 from enum import Enum

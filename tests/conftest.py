@@ -29,7 +29,7 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # command resolves. Both paths point at files that don't exist.
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(tmp_path / "rote-config" / "config.yaml"))
     monkeypatch.setenv("ROTE_PROJECT_CONFIG_PATH", str(tmp_path / "rote-config" / "rote.yaml"))
-    # `rote graduate` now always constructs its JSONL progress sink (the
+    # `rote compile` now always constructs its JSONL progress sink (the
     # <out>/progress.jsonl sidecar), whose price enrichment does a live
     # catalog fetch. No unit test may touch the network for it — tests
     # that exercise pricing re-patch this same seam with real numbers.

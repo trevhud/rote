@@ -301,7 +301,7 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
     """Architectural invariant: no MCP runtime in emitted Inngest code.
 
     Comments, JSDoc, and string literals may mention MCP to explain the
-    graduation history; executable code may not. Scan logic is shared —
+    compilation history; executable code may not. Scan logic is shared —
     see tests/_helpers.py.
     """
     assert_no_mcp_in_ts(emit_result, min_files=13)

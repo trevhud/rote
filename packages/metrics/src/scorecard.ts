@@ -15,7 +15,7 @@ export interface Range {
   high: number;
 }
 
-/** Node kinds a graduated step can be (rote IR `NodeKind`). */
+/** Node kinds a compiled step can be (rote IR `NodeKind`). */
 export type NodeKind =
   | "pure_function"
   | "llm_judge"
@@ -55,7 +55,7 @@ export interface ScorecardBefore {
   token_count_method: string;
 }
 
-/** The "after" block: the graduated pipeline. */
+/** The "after" block: the compiled pipeline. */
 export interface ScorecardAfter {
   critical_path_seconds: Range;
   hitl_gates: string[];

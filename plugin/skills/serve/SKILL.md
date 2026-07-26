@@ -1,21 +1,21 @@
 ---
 name: serve
 description: >-
-  Wire a graduated rote pipeline up as an MCP tool so Claude can trigger the
-  deployed workflow directly. Use when the user says "register my graduated
+  Wire a compiled rote pipeline up as an MCP tool so Claude can trigger the
+  deployed workflow directly. Use when the user says "register my compiled
   pipeline", "serve my pipelines over MCP", "trigger the workflow from
   Claude", "hook the pipeline up to Claude", or asks what to do after
-  `rote graduate` and deployment. Covers `rote register` and `rote serve`
+  `rote compile` and deployment. Covers `rote register` and `rote serve`
   plus the `claude mcp add` wiring.
 ---
 
-# Serve graduated pipelines as MCP tools
+# Serve compiled pipelines as MCP tools
 
 `rote serve` is one MCP server exposing every registered pipeline as a
 callable tool. The flow:
 
 ```
-rote graduate → deploy the runtime → rote register → rote serve → call from Claude
+rote compile → deploy the runtime → rote register → rote serve → call from Claude
 ```
 
 `rote serve` **triggers deployed workflows; it does not host them.**
@@ -29,7 +29,7 @@ so every invocation is `uvx --from rote-cli rote <args>` (never
 
 ## 1. Check preconditions
 
-- A graduate output directory exists (contains `graduated/pipeline.yaml`).
+- A compile output directory exists (contains `compiled/pipeline.yaml`).
 - The runtime side is running: for DBOS, the emitted app in worker mode
   (`python main.py --serve` or `dbos start`) against the system
   database you'll register — enqueued runs sit in status `enqueued`
@@ -55,7 +55,7 @@ uvx --from rote-cli rote register <out-dir> --runtime cloudflare \
 ```
 
 This upserts `~/.rote/registry.json`. Re-registering updates in place.
-**After re-graduating a changed skill, register again** — the DBOS and
+**After re-compiling a changed skill, register again** — the DBOS and
 Temporal workflow names are derived from the pipeline content hash and
 must stay in sync with the emitted code.
 
@@ -77,7 +77,7 @@ claude mcp add --scope user rote -- \
 
 Verify with `claude mcp list`. Each registry entry becomes two tools
 (three for DBOS): `<name>` (starts a run, returns `{workflow_id,
-status: "started"}` immediately — graduated pipelines run minutes to
+status: "started"}` immediately — compiled pipelines run minutes to
 days), `<name>_status` (polls a run by `workflow_id`), and for DBOS
 `<name>_signal` (resumes a run parked at a HITL gate: `workflow_id` +
 gate signal name + resume payload — so Claude can deliver approvals

@@ -1,6 +1,6 @@
 """Registry of apps rote has emitted (``~/.local/share/rote/apps.json``).
 
-``rote emit`` and ``rote graduate`` record every output directory here so
+``rote emit`` and ``rote compile`` record every output directory here so
 later commands can find the user's apps without being told where they
 live. Today's consumer is ``rote mcp login``, which scans registered DBOS
 apps for workflows parked on a ``rote:auth:<server>`` topic and releases

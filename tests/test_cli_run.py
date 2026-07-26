@@ -30,10 +30,10 @@ def _emitted_dbos_dir(tmp_path: Path) -> Path:
     return app
 
 
-def _graduate_out_with_bdr(tmp_path: Path) -> Path:
+def _compile_out_with_bdr(tmp_path: Path) -> Path:
     out = tmp_path / "out"
-    (out / "graduated").mkdir(parents=True)
-    shutil.copy(BDR_PIPELINE_YAML, out / "graduated" / "pipeline.yaml")
+    (out / "compiled").mkdir(parents=True)
+    shutil.copy(BDR_PIPELINE_YAML, out / "compiled" / "pipeline.yaml")
     runtime = out / "runtime" / "dbos"
     runtime.mkdir(parents=True)
     (runtime / "main.py").write_text("", encoding="utf-8")
@@ -105,7 +105,7 @@ def test_run_pipeline_failure_exits_1(
 def test_run_gated_pipeline_requires_signals_non_interactive(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    out = _graduate_out_with_bdr(tmp_path)
+    out = _compile_out_with_bdr(tmp_path)
     rc = cli_main(["run", str(out), "--input", "{}"])
     assert rc == 2
     err = capsys.readouterr().err
@@ -117,7 +117,7 @@ def test_run_gated_pipeline_requires_signals_non_interactive(
 def test_run_gated_pipeline_delivers_signals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    out = _graduate_out_with_bdr(tmp_path)
+    out = _compile_out_with_bdr(tmp_path)
     captured: dict[str, Any] = {}
 
     def fake_trial(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
@@ -148,7 +148,7 @@ def test_run_gated_pipeline_delivers_signals(
 def test_run_unknown_signal_name_exits_2(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    out = _graduate_out_with_bdr(tmp_path)
+    out = _compile_out_with_bdr(tmp_path)
     rc = cli_main(["run", str(out), "--input", "{}", "--signal", "nope={}"])
     assert rc == 2
     assert "not in the pipeline's gates" in capsys.readouterr().err

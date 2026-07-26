@@ -298,7 +298,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         arch_note = (
             " * Architecture note: every external_call step in this workflow wraps a\n"
             " * deterministic API call from the `extracted/` modules. None of them call\n"
-            " * MCP tools at runtime — those calls were graduated into direct API calls\n"
+            " * MCP tools at runtime — those calls were compiled into direct API calls\n"
             " * during the rote emission step."
         )
     # The header f-string below is dedent()ed AFTER interpolation; match
@@ -558,7 +558,7 @@ def emit_extracted_module(node: Node) -> str:
             [
                 " *",
                 " * Replace this stub with the deterministic API call. Direct vendor SDKs",
-                " * are preferred over MCP wrappers — the rote graduator removes the MCP",
+                " * are preferred over MCP wrappers — the rote compiler removes the MCP",
                 " * layer at emit time, so production code calls Salesforce / HubSpot /",
                 " * ZoomInfo / etc. directly.",
             ]
@@ -922,7 +922,7 @@ client triggers the deterministic workflow instead of re-running
 the fuzzy skill:
 
 ```sh
-rote register <graduated-output-dir> \\
+rote register <compiled-output-dir> \\
     --runtime cloudflare \\
     --url https://{pipeline.name}.<your-subdomain>.workers.dev
 rote serve

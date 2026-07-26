@@ -9,7 +9,7 @@ tens of thousands of output tokens re-deriving the same HTML each run).
 
 Adapted from a real production skill (companies, people, channel IDs,
 and paths fictionalized). Its production agent runs averaged ~22 turns
-and ~1.6M cache-read tokens per run; the graduated pipeline replaces
+and ~1.6M cache-read tokens per run; the compiled pipeline replaces
 that with two parallel fetches, three schema-constrained judges, and a
 template render. **Roteness 0.75** — the remaining 25% is genuinely
 fuzzy work (freeform Slack prose → structured fields; reading email
@@ -29,7 +29,7 @@ per-turn transcript growth (~6k tokens) anchored the default.
   `mandatory: true` pure function (region rules + SKU threshold) that
   bounds what ever reaches the judges.
 - **External-dependency handling** — the source skill reads a separate
-  deal-scoring skill at runtime; the graduator turned that dangling
+  deal-scoring skill at runtime; the compiler turned that dangling
   reference into an optional `scoring_rubric` pipeline input instead of
   silently inlining a guess.
 - **Template render replacing LLM generation** — the HTML dashboard is
@@ -41,13 +41,13 @@ per-turn transcript growth (~6k tokens) anchored the default.
 examples/deal-monitor/
 ├── README.md              # this file
 ├── skill/SKILL.md         # input: the source skill
-└── expected/pipeline.yaml # the graduated IR (regression baseline)
+└── expected/pipeline.yaml # the compiled IR (regression baseline)
 ```
 
 ## Try it
 
 ```sh
-# Report what graduation produces (runs the real graduator agent):
+# Report what compilation produces (runs the real compiler agent):
 rote analyze examples/deal-monitor/skill
 
 # Emit runtime code from the committed IR (no agent, instant):

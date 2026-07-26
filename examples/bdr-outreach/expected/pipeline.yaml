@@ -1,8 +1,8 @@
-# BDR Outreach Campaign — Graduated Pipeline IR
+# BDR Outreach Campaign — Compiled Pipeline IR
 #
-# Hand-drafted ground truth for the rote graduator. Drives the IR schema
+# Hand-drafted ground truth for the rote compiler. Drives the IR schema
 # design (rote/ir.py) and serves as the regression baseline for the
-# graduator agent. Represents the "main path" of the BDR skill (full
+# compiler agent. Represents the "main path" of the BDR skill (full
 # campaign from brief to handoff). The conference-enrichment alternate
 # entry point is a separate pipeline and not modeled here.
 #

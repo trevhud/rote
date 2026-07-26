@@ -221,7 +221,7 @@ def emit_extracted_module(node: Node) -> str:
 
     Same scaffolding convention as the Cloudflare adapter: one module
     per node, throwing until the user fills it in with direct vendor
-    API calls. The graduation history (MCP origin) is documented in
+    API calls. The compilation history (MCP origin) is documented in
     JSDoc only — never in executable code.
     """
     fn_name = _to_camel_case(node.id)
@@ -252,7 +252,7 @@ def emit_extracted_module(node: Node) -> str:
             [
                 " *",
                 " * Replace this stub with the deterministic API call. Direct vendor SDKs",
-                " * are preferred over MCP wrappers — the rote graduator removes the MCP",
+                " * are preferred over MCP wrappers — the rote compiler removes the MCP",
                 " * layer at emit time, so production code calls the vendor APIs directly.",
             ]
         )
@@ -322,7 +322,7 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
         doc.append(f" * `extracted/{node.id}` throws until implemented against an")
         doc.append(" * agent harness.")
     else:
-        doc.append(" * Graduated from MCP tool call → deterministic API call. See")
+        doc.append(" * Compiled from MCP tool call → deterministic API call. See")
         doc.append(f" * `extracted/{node.id}` for the implementation.")
     if node.mandatory:
         doc.append(" *")
@@ -585,7 +585,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
             " * Architecture note: every step in this file wraps a deterministic\n"
             " * function from `extracted/` or a typed LLM signature from\n"
             " * `signatures/`. None of them call MCP tools at runtime — the MCP\n"
-            " * tool calls from the source skill were graduated into direct API\n"
+            " * tool calls from the source skill were compiled into direct API\n"
             " * calls during the rote emission step."
         )
     # The header f-string below is dedent()ed AFTER interpolation; a

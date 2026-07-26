@@ -1,8 +1,8 @@
 """Tests for SKILL.md section parsing and provenance hashing.
 
-Provenance is the foundation of incremental re-graduation: per-node
+Provenance is the foundation of incremental re-compilation: per-node
 ``source.section`` refs (agent-written) plus tool-computed section
-hashes let ``rote graduate --update`` re-derive only the nodes whose
+hashes let ``rote compile --update`` re-derive only the nodes whose
 source material actually changed. These tests pin the section grammar,
 the hash normalization, the sidecar shape — and the invariant that
 provenance never perturbs the pipeline identity hash.

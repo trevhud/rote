@@ -33,8 +33,51 @@ def test_no_args_prints_help_and_exits_zero(capsys: pytest.CaptureFixture[str]) 
     out = capsys.readouterr().out
     assert rc == 0
     assert "rote" in out
-    assert "graduate" in out  # subcommand should be in help
+    assert "compile" in out  # subcommand should be in help
     assert "emit" in out
+
+
+def test_help_does_not_advertise_the_retired_verb(capsys: pytest.CaptureFixture[str]) -> None:
+    """`graduate` still runs but must not be offered as a second spelling."""
+    rc = cli_main([])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "graduate" not in out.lower()
+
+
+def test_retired_graduate_alias_dispatches_to_compile(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`rote graduate` keeps working for scripts written against 0.10.x.
+
+    Asserted through the same "no such directory" error the real command
+    gives, which proves the alias reached `_cmd_compile`'s validation rather
+    than dying in argparse as an unknown subcommand (that would exit 2 with a
+    usage message instead).
+    """
+    missing = tmp_path / "nope"
+    rc = cli_main(["graduate", str(missing), "--out", str(tmp_path / "o")])
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "is now `compile`" in captured.err
+    assert str(missing) in captured.err
+
+
+def test_retired_alias_ignores_a_skill_directory_named_graduate(tmp_path: Path) -> None:
+    """Only the subcommand slot is rewritten, never a positional argument.
+
+    A skill directory called `graduate` is a plausible thing to have lying
+    around after the rename, and rewriting it would send the compiler at a
+    path the user never named.
+    """
+    from rote.cli import _resolve_retired_command
+
+    assert _resolve_retired_command(["compile", "./graduate", "--out", "o"]) == [
+        "compile",
+        "./graduate",
+        "--out",
+        "o",
+    ]
 
 
 def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
@@ -177,12 +220,12 @@ def test_emit_rejects_unknown_runtime(tmp_path: Path, capsys: pytest.CaptureFixt
     assert "nonexistent" in err or "invalid choice" in err.lower()
 
 
-def test_graduate_rejects_nonexistent_skill_dir(
+def test_compile_rejects_nonexistent_skill_dir(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(tmp_path / "nonexistent"),
             "--runtime",
             "temporal",
@@ -195,32 +238,32 @@ def test_graduate_rejects_nonexistent_skill_dir(
     assert "not a directory" in err
 
 
-def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch ``rote.cli.Graduator`` with a fake that writes the BDR IR.
+def _install_mock_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch ``rote.cli.Compiler`` with a fake that writes the BDR IR.
 
-    Shared by the graduate and analyze tests — the real agent loop never
+    Shared by the compile and analyze tests — the real agent loop never
     runs; the fake writes a copy of the BDR pipeline.yaml (known-valid,
     proven by the IR tests) into the output dir and returns a
-    GraduationResult wrapping the loaded IR.
+    CompilationResult wrapping the loaded IR.
 
-    When a live-progress sink was wired (``on_event``, as ``rote graduate``
+    When a live-progress sink was wired (``on_event``, as ``rote compile``
     always does), the fake fires a representative phase event and a
     token-carrying turn event through it before returning — enough to
     exercise the JSONL progress sink without a real agent. The returned
     metadata carries the same cumulative token totals a real driver stamps.
     """
-    from rote.graduator import GraduationResult
-    from rote.graduator.events import GraduationEvent
+    from rote.compiler import CompilationResult
+    from rote.compiler.events import CompilationEvent
     from rote.ir import load_pipeline
 
     real_pipeline = load_pipeline(BDR_PIPELINE_YAML)
 
-    class _MockGraduator:
+    class _MockCompiler:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             self.agent = agent
             self.on_event = kwargs.get("on_event")
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "pipeline.yaml").write_text(
@@ -230,12 +273,12 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
             on_event = self.on_event
             if callable(on_event):
                 on_event(
-                    GraduationEvent(
+                    CompilationEvent(
                         type="phase", ts=0.0, phase=1, phase_name="Intake", message="phase 1"
                     )
                 )
                 on_event(
-                    GraduationEvent(
+                    CompilationEvent(
                         type="turn",
                         ts=0.0,
                         turn=1,
@@ -243,14 +286,14 @@ def _install_mock_graduator(monkeypatch: pytest.MonkeyPatch) -> None:
                         message="turn 1: working",
                     )
                 )
-            return GraduationResult(
+            return CompilationResult(
                 pipeline=real_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
                 driver_metadata={"num_turns": 7, "input_tokens": 1000, "output_tokens": 500},
             )
 
-    monkeypatch.setattr("rote.cli.Graduator", _MockGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _MockCompiler)
 
 
 def test_analyze_rejects_nonexistent_skill_dir(
@@ -267,13 +310,13 @@ def test_analyze_reports_pipeline_shape_without_emitting(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`analyze` runs the graduator, prints a structural report, and emits
-    no runtime code. Without --out the graduated artifacts are discarded."""
+    """`analyze` runs the compiler, prints a structural report, and emits
+    no runtime code. Without --out the compiled artifacts are discarded."""
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     rc = cli_main(["analyze", str(skill_dir)])
     assert rc == 0
@@ -302,7 +345,7 @@ def test_analyze_json_mode_is_machine_readable(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     rc = cli_main(["analyze", str(skill_dir), "--json"])
     assert rc == 0
@@ -319,23 +362,23 @@ def test_analyze_out_keeps_pipeline_yaml(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """With --out, the graduated IR survives for a later `rote emit`."""
+    """With --out, the compiled IR survives for a later `rote emit`."""
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
     out_dir = tmp_path / "analysis"
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     rc = cli_main(["analyze", str(skill_dir), "--out", str(out_dir)])
     assert rc == 0
     assert (out_dir / "pipeline.yaml").is_file()
     out = capsys.readouterr().out
-    assert "graduated IR kept at" in out
+    assert "compiled IR kept at" in out
     assert "rote emit" in out
 
 
-def test_analyze_surfaces_graduator_error_with_exit_1(
+def test_analyze_surfaces_compiler_error_with_exit_1(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -344,29 +387,29 @@ def test_analyze_surfaces_graduator_error_with_exit_1(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    from rote.cli import GraduatorError
+    from rote.cli import CompilerError
 
-    class _ExplodingGraduator:
+    class _ExplodingCompiler:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
-            raise GraduatorError("simulated failure: no agent driver available")
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+            raise CompilerError("simulated failure: no agent driver available")
 
-    monkeypatch.setattr("rote.cli.Graduator", _ExplodingGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _ExplodingCompiler)
 
     rc = cli_main(["analyze", str(skill_dir)])
     assert rc == 1
     assert "simulated failure" in capsys.readouterr().err
 
 
-def test_graduate_happy_path_with_mocked_graduator(
+def test_compile_happy_path_with_mocked_compiler(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The CLI should run the graduator, emit the adapter output, and
-    print a clean summary. We mock ``Graduator`` so the real agent
+    """The CLI should run the compiler, emit the adapter output, and
+    print a clean summary. We mock ``Compiler`` so the real agent
     loop never runs.
     """
     skill_dir = tmp_path / "skill"
@@ -375,20 +418,20 @@ def test_graduate_happy_path_with_mocked_graduator(
 
     out_dir = tmp_path / "out"
 
-    # The fake graduator will be called by the CLI; have it write the
+    # The fake compiler will be called by the CLI; have it write the
     # BDR pipeline.yaml as a stand-in (we know it's valid because the
     # IR tests prove it loads). Then the real adapter runs against
     # that valid IR and emits real Temporal code.
-    from rote.graduator import GraduationResult
+    from rote.compiler import CompilationResult
     from rote.ir import load_pipeline
 
     real_pipeline = load_pipeline(BDR_PIPELINE_YAML)
 
-    class _MockGraduator:
+    class _MockCompiler:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             self.agent = agent
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             # Write a placeholder pipeline.yaml in the output dir so
             # downstream debugging is possible (mimics what a real run
             # produces). Use a copy of the BDR yaml for realism.
@@ -398,18 +441,18 @@ def test_graduate_happy_path_with_mocked_graduator(
                 BDR_PIPELINE_YAML.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            return GraduationResult(
+            return CompilationResult(
                 pipeline=real_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
                 driver_metadata={"tokens": 1234, "iterations": 7},
             )
 
-    monkeypatch.setattr("rote.cli.Graduator", _MockGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _MockCompiler)
 
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "temporal",
@@ -424,20 +467,20 @@ def test_graduate_happy_path_with_mocked_graduator(
     assert "mock" in captured  # driver name
     assert "tokens=1234" in captured
 
-    # Graduator output (just the pipeline.yaml the mock wrote)
-    assert (out_dir / "graduated" / "pipeline.yaml").exists()
+    # Compiler output (just the pipeline.yaml the mock wrote)
+    assert (out_dir / "compiled" / "pipeline.yaml").exists()
 
     # Emitted Temporal runtime code
     assert (out_dir / "runtime" / "temporal" / "workflow.py").exists()
     assert (out_dir / "runtime" / "temporal" / "activities.py").exists()
 
 
-def test_graduate_json_mode_is_machine_readable(
+def test_compile_json_mode_is_machine_readable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """`rote graduate --json` writes ONE JSON superset object to stdout; the
+    """`rote compile --json` writes ONE JSON superset object to stdout; the
     progress log and summary go to stderr so stdout stays parseable."""
     import json
 
@@ -445,12 +488,12 @@ def test_graduate_json_mode_is_machine_readable(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     out_dir = tmp_path / "out"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "dbos",
@@ -464,13 +507,13 @@ def test_graduate_json_mode_is_machine_readable(
 
     captured = capsys.readouterr()
     # The human summary went to stderr; stdout is the JSON object only.
-    assert "rote graduate: ✓" not in captured.out
-    assert "rote graduate: ✓" in captured.err
+    assert "rote compile: ✓" not in captured.out
+    assert "rote compile: ✓" in captured.err
     payload = json.loads(captured.out)
     assert payload["pipeline"]["name"] == "bdr-campaign"
     assert payload["runtime"] == "dbos"
     assert payload["out_dir"] == str(out_dir.resolve())
-    assert payload["graduated_dir"] == str((out_dir / "graduated").resolve())
+    assert payload["compiled_dir"] == str((out_dir / "compiled").resolve())
     assert payload["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
     assert payload["scorecard"] is None  # --no-eval
     assert payload["driver"] == "mock"
@@ -479,7 +522,7 @@ def test_graduate_json_mode_is_machine_readable(
     assert any("extracted/" in s for s in payload["unimplemented_stubs"])
 
 
-# ───────── graduate × rote-cloud login default ─────────
+# ───────── compile × rote-cloud login default ─────────
 
 
 def _cloud_logged_in() -> None:
@@ -510,25 +553,25 @@ def _fake_cloud_deploy(monkeypatch: pytest.MonkeyPatch, *, fail: bool = False) -
     return calls
 
 
-def _graduate(skill_dir: Path, out_dir: Path, *extra: str) -> int:
-    return cli_main(["graduate", str(skill_dir), "--out", str(out_dir), "--no-eval", *extra])
+def _compile(skill_dir: Path, out_dir: Path, *extra: str) -> int:
+    return cli_main(["compile", str(skill_dir), "--out", str(out_dir), "--no-eval", *extra])
 
 
-def test_graduate_logged_in_defaults_to_cloudflare_and_deploys(
+def test_compile_logged_in_defaults_to_cloudflare_and_deploys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    # --local keeps the graduation on this machine; logged in, it still
+    # --local keeps the compilation on this machine; logged in, it still
     # emits cloudflare and uploads (the local auto-deploy leg). The no-flag
-    # logged-in default now runs the whole graduation on rote cloud instead
-    # (see tests/test_cloud_graduate.py).
-    rc = _graduate(skill_dir, tmp_path / "out", "--local")
+    # logged-in default now runs the whole compilation on rote cloud instead
+    # (see tests/test_cloud_compile.py).
+    rc = _compile(skill_dir, tmp_path / "out", "--local")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "cloudflare" / "src" / "workflow.ts").exists()
     assert len(calls) == 1
@@ -536,79 +579,79 @@ def test_graduate_logged_in_defaults_to_cloudflare_and_deploys(
     assert "hosted on rote cloud: http://p" in capsys.readouterr().out
 
 
-def test_graduate_no_deploy_still_emits_cloudflare(
+def test_compile_no_deploy_still_emits_cloudflare(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
-    rc = _graduate(skill_dir, tmp_path / "out", "--no-deploy")
+    rc = _compile(skill_dir, tmp_path / "out", "--no-deploy")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "cloudflare").is_dir()
     assert calls == []
 
 
-def test_graduate_logged_out_falls_back_to_local_with_hint(
+def test_compile_logged_out_falls_back_to_local_with_hint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The silent local fallback: no prompt, dbos default, one tip line."""
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     calls = _fake_cloud_deploy(monkeypatch)
 
-    rc = _graduate(skill_dir, tmp_path / "out")
+    rc = _compile(skill_dir, tmp_path / "out")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "dbos" / "main.py").exists()
     assert calls == []
     assert "`rote login` makes rote cloud the default host" in capsys.readouterr().err
 
 
-def test_graduate_explicit_runtime_wins_over_login(
+def test_compile_explicit_runtime_wins_over_login(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     calls = _fake_cloud_deploy(monkeypatch)
 
     # An explicit non-cloudflare runtime is itself a local opt-out (no
     # --local needed): temporal isn't cloud-runnable, so the run stays local.
-    rc = _graduate(skill_dir, tmp_path / "out", "--runtime", "temporal")
+    rc = _compile(skill_dir, tmp_path / "out", "--runtime", "temporal")
     assert rc == 0
     assert (tmp_path / "out" / "runtime" / "temporal" / "workflow.py").exists()
     assert calls == []  # temporal isn't cloud-runnable; no upload attempted
 
 
-def test_graduate_deploy_failure_keeps_artifacts_and_exits_1(
+def test_compile_deploy_failure_keeps_artifacts_and_exits_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _cloud_logged_in()
     _fake_cloud_deploy(monkeypatch, fail=True)
 
     out_dir = tmp_path / "out"
-    rc = _graduate(skill_dir, out_dir, "--local")
+    rc = _compile(skill_dir, out_dir, "--local")
     assert rc == 1
     err = capsys.readouterr().err
     assert "deploy to rote cloud failed" in err
     assert "rote deploy" in err  # retry instructions
     # the paid-for artifacts survived the failed upload
-    assert (out_dir / "graduated" / "pipeline.yaml").exists()
+    assert (out_dir / "compiled" / "pipeline.yaml").exists()
     assert (out_dir / "runtime" / "cloudflare").is_dir()
 
 
-# ───────── graduate --progress-file (JSONL sink) ─────────
+# ───────── compile --progress-file (JSONL sink) ─────────
 
 
 def _patch_pricing(monkeypatch: pytest.MonkeyPatch, prices: tuple[float, float] | None) -> None:
@@ -641,7 +684,7 @@ def _read_ndjson(path: Path) -> list[dict[str, object]]:
     return objs
 
 
-def test_graduate_progress_file_writes_ndjson_with_cost_and_summary(
+def test_compile_progress_file_writes_ndjson_with_cost_and_summary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -651,14 +694,14 @@ def test_graduate_progress_file_writes_ndjson_with_cost_and_summary(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _patch_pricing(monkeypatch, prices=(3.0, 15.0))  # $3 / $15 per Mtok
 
     out_dir = tmp_path / "out"
     progress = tmp_path / "progress.ndjson"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "dbos",
@@ -694,25 +737,25 @@ def test_graduate_progress_file_writes_ndjson_with_cost_and_summary(
     assert summary["total_tokens"] == {"input": 1000, "output": 500}
     assert summary["cost_usd"] == pytest.approx(0.0105)
     assert any("extracted/" in s for s in summary["unimplemented_stubs"])  # type: ignore[union-attr]
-    assert summary["graduated_dir"] == str((out_dir / "graduated").resolve())
+    assert summary["compiled_dir"] == str((out_dir / "compiled").resolve())
     assert summary["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
 
 
-def test_graduate_writes_progress_sidecar_by_default(
+def test_compile_writes_progress_sidecar_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Without --progress-file the sink still runs, writing
     <out>/progress.jsonl, and the watch hint is printed first thing —
-    that's how a user observes a graduation an agent is driving."""
+    that's how a user observes a compilation an agent is driving."""
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     out_dir = tmp_path / "out"
     rc = cli_main(
-        ["graduate", str(skill_dir), "--runtime", "dbos", "--out", str(out_dir), "--no-eval"]
+        ["compile", str(skill_dir), "--runtime", "dbos", "--out", str(out_dir), "--no-eval"]
     )
     assert rc == 0
 
@@ -722,7 +765,7 @@ def test_graduate_writes_progress_sidecar_by_default(
     assert f"watch progress with: tail -f {sidecar}" in capsys.readouterr().err
 
 
-def test_graduate_progress_file_survives_offline_pricing(
+def test_compile_progress_file_survives_offline_pricing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -731,14 +774,14 @@ def test_graduate_progress_file_survives_offline_pricing(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _patch_pricing(monkeypatch, prices=None)  # fetch_catalog raises PricingError
 
     out_dir = tmp_path / "out"
     progress = tmp_path / "progress.ndjson"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "dbos",
@@ -760,7 +803,7 @@ def test_graduate_progress_file_survives_offline_pricing(
     assert turn["tokens"] == {"input": 1000, "output": 500}
 
 
-def test_graduate_progress_file_composes_with_json(
+def test_compile_progress_file_composes_with_json(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -773,14 +816,14 @@ def test_graduate_progress_file_composes_with_json(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _patch_pricing(monkeypatch, prices=(3.0, 15.0))
 
     out_dir = tmp_path / "out"
     progress = tmp_path / "progress.ndjson"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "dbos",
@@ -805,31 +848,31 @@ def test_graduate_progress_file_composes_with_json(
     assert objs[-1]["type"] == "summary"
 
 
-def test_graduate_surfaces_graduator_error_with_exit_1(
+def test_compile_surfaces_compiler_error_with_exit_1(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A GraduatorError from the orchestrator should print a clean
+    """A CompilerError from the orchestrator should print a clean
     error and exit 1, not crash."""
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    class _ExplodingGraduator:
+    class _ExplodingCompiler:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
-            raise GraduatorError("simulated failure: no agent driver available")
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+            raise CompilerError("simulated failure: no agent driver available")
 
-    from rote.cli import GraduatorError  # re-imported here for typing visibility
+    from rote.cli import CompilerError  # re-imported here for typing visibility
 
-    monkeypatch.setattr("rote.cli.Graduator", _ExplodingGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _ExplodingCompiler)
 
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill_dir),
             "--runtime",
             "temporal",
@@ -991,7 +1034,7 @@ def test_doctor_human_mode_renders_checklist_with_driver_reason(
     assert "✓ claude" in out
     assert "✗ codex" in out
     assert "codex not installed: brew install codex" in out  # reason shown inline
-    assert "ready to graduate" in out
+    assert "ready to compile" in out
     assert "only verified at run time" in out  # the CLI-subscription caveat
 
 
@@ -1061,29 +1104,29 @@ def test_subprocess_emit_bdr(python_executable: str, tmp_path: Path) -> None:
     assert (out_dir / "activities.py").exists()
 
 
-# ───────── graduate live-progress printer ─────────
+# ───────── compile live-progress printer ─────────
 
 
-def test_graduate_progress_printer_renders_expected_lines(
+def test_compile_progress_printer_renders_expected_lines(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from rote.cli import _graduate_progress_printer
-    from rote.graduator.events import GraduationEvent
+    from rote.cli import _compile_progress_printer
+    from rote.compiler.events import CompilationEvent
 
-    printer = _graduate_progress_printer()
+    printer = _compile_progress_printer()
     for event in [
-        GraduationEvent(type="log", ts=0.0, message="driver selected: api"),
-        GraduationEvent(type="phase", ts=0.0, phase=4, phase_name="LLM-Judge Extraction"),
-        GraduationEvent(type="turn", ts=0.0, turn=12, message="turn 12: thinking…"),
-        GraduationEvent(
+        CompilationEvent(type="log", ts=0.0, message="driver selected: api"),
+        CompilationEvent(type="phase", ts=0.0, phase=4, phase_name="LLM-Judge Extraction"),
+        CompilationEvent(type="turn", ts=0.0, turn=12, message="turn 12: thinking…"),
+        CompilationEvent(
             type="tool",
             ts=0.0,
             turn=12,
             tool_name="write_file",
             path="signatures/qualify.ts",
         ),
-        GraduationEvent(type="warning", ts=0.0, message="a warning"),
-        GraduationEvent(type="complete", ts=0.0, message="graduated via api; tokens in=1 out=2"),
+        CompilationEvent(type="warning", ts=0.0, message="a warning"),
+        CompilationEvent(type="complete", ts=0.0, message="compiled via api; tokens in=1 out=2"),
     ]:
         printer(event)
 
@@ -1091,26 +1134,26 @@ def test_graduate_progress_printer_renders_expected_lines(
     assert "[phase 4/7] LLM-Judge Extraction" in err
     assert "[turn 12] write_file signatures/qualify.ts" in err
     assert "warning: a warning" in err
-    assert "graduated via api; tokens in=1 out=2" in err
+    assert "compiled via api; tokens in=1 out=2" in err
     # Bare turn events are suppressed to keep the stream readable.
     assert "thinking" not in err
     # log lines print verbatim.
     assert "driver selected: api" in err
 
 
-def test_graduate_progress_printer_annotates_tool_lines_with_tokens(
+def test_compile_progress_printer_annotates_tool_lines_with_tokens(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A turn event's cumulative tokens ride onto the tool lines that follow
     it — the token figures live on turn events, but the tool lines are what
     the printer actually shows."""
-    from rote.cli import _graduate_progress_printer
-    from rote.graduator.events import GraduationEvent
+    from rote.cli import _compile_progress_printer
+    from rote.compiler.events import CompilationEvent
 
-    printer = _graduate_progress_printer()
+    printer = _compile_progress_printer()
     for event in [
-        GraduationEvent(type="turn", ts=0.0, turn=7, tokens={"input": 40234, "output": 8100}),
-        GraduationEvent(type="tool", ts=0.0, turn=7, tool_name="Write", path="signatures/foo.py"),
+        CompilationEvent(type="turn", ts=0.0, turn=7, tokens={"input": 40234, "output": 8100}),
+        CompilationEvent(type="tool", ts=0.0, turn=7, tool_name="Write", path="signatures/foo.py"),
     ]:
         printer(event)
 
@@ -1118,7 +1161,7 @@ def test_graduate_progress_printer_annotates_tool_lines_with_tokens(
     assert "[turn 7] Write signatures/foo.py (in 40.2k / out 8.1k tok)" in err
 
 
-# ───────── MCP requirements surfacing (analyze / graduate / emit) ─────────
+# ───────── MCP requirements surfacing (analyze / compile / emit) ─────────
 
 DEAL_MONITOR_PIPELINE_YAML = REPO_ROOT / "examples" / "deal-monitor" / "expected" / "pipeline.yaml"
 
@@ -1242,7 +1285,7 @@ def test_analyze_json_includes_empty_mcp_manifest_for_unbound_pipeline(
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
     rc = cli_main(["analyze", str(skill_dir), "--json"])
     assert rc == 0

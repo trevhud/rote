@@ -3,7 +3,7 @@
 Phase 1 (:mod:`rote.eval.estimate`) predicts; this module verifies.
 ``rote eval --run`` executes the source skill as raw agent
 instructions K times (via ``claude -p``, subscription-billed, same
-env rules as :class:`rote.graduator.drivers.claude.ClaudeDriver`) and
+env rules as :class:`rote.compiler.drivers.claude.ClaudeDriver`) and
 the emitted pipeline K times (python-adapter script or DBOS app), then
 reports measured wall clock, token usage, notional cost, and output
 agreement across trials.
@@ -37,12 +37,12 @@ from statistics import mean
 from typing import Any
 
 from rote._dbos import dbos_system_database_url as _dbos_system_database_url
-from rote.eval.pricing import PricingCatalog
-from rote.eval.priors import Priors
-from rote.graduator.drivers.claude import (
+from rote.compiler.drivers.claude import (
     DEFAULT_ALLOWED_TOOLS,
     build_subscription_env,
 )
+from rote.eval.pricing import PricingCatalog
+from rote.eval.priors import Priors
 from rote.ir import NodeKind, Pipeline
 
 RESULT_FILENAME = "result.json"
@@ -65,7 +65,7 @@ class EmpiricalError(RuntimeError):
 def mcp_servers_for_pipeline(pipeline: Pipeline) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Build the ``claude -p`` MCP server config from the pipeline's bindings.
 
-    The graduated pipeline's ``mcp:`` bindings name exactly the servers the
+    The compiled pipeline's ``mcp:`` bindings name exactly the servers the
     source skill uses, so wiring them into the skill trial makes the
     "before" measurement representative: the agent pulls real data over the
     same tools instead of erroring out or improvising. URL resolution is
@@ -687,7 +687,7 @@ def render_measured_markdown(result: EmpiricalResult, catalog: PricingCatalog) -
     """The scorecard's measured section, appended after the static one."""
     lines = [f"## Measured ({result.trials} trial{'s' if result.trials != 1 else ''} per side)", ""]
 
-    lines.append("| Metric | As agent instructions | As graduated pipeline |")
+    lines.append("| Metric | As agent instructions | As compiled pipeline |")
     lines.append("|---|---|---|")
     skill_ok = [r for r in result.skill_runs if r.succeeded]
     pipe_ok = [r for r in result.pipeline_runs if r.succeeded]

@@ -7,11 +7,11 @@ code.
 
 ## Most useful contributions, in order
 
-1. **Run `rote graduate` on a real skill of your own and report what
+1. **Run `rote compile` on a real skill of your own and report what
    happens.** The rubric was designed against one skill (the bundled
    BDR example). Every additional skill that passes through it is a
    stress test for both the classification rubric and the IR schema.
-   If the graduator makes a weird call, open an issue with (a) the
+   If the compiler makes a weird call, open an issue with (a) the
    source skill's `SKILL.md`, (b) the produced `pipeline.yaml`, and
    (c) what you expected instead. Snapshots are cheap and the
    fastest way to improve the rubric.
@@ -22,18 +22,18 @@ code.
    targets. Each new runtime that consumes the IR unchanged is more
    evidence the IR is genuinely runtime-agnostic; one that *can't* be
    expressed cleanly is a real signal to revisit the IR shape.
-3. **Add a graduator driver.** The Protocol lives in
-   [`src/rote/graduator/drivers/__init__.py`](src/rote/graduator/drivers/__init__.py).
+3. **Add a compiler driver.** The Protocol lives in
+   [`src/rote/compiler/drivers/__init__.py`](src/rote/compiler/drivers/__init__.py).
    `ClaudeDriver` (subprocess) and `AnthropicApiDriver` (in-process
    SDK) are both implemented. `CodexDriver` is a stub that just
    needs the subprocess invocation filled in. Aider, Gemini CLI,
    and Cursor Agent are reasonable third-party additions.
 4. **Improve the rubric.** Files under
-   [`skills/rote-graduate/references/`](skills/rote-graduate/references/)
-   are what the graduator agent actually reads. Small prose
+   [`skills/rote-compile/references/`](skills/rote-compile/references/)
+   are what the compiler agent actually reads. Small prose
    improvements often produce measurable differences in output
    quality. Every change is diffable and can be validated by
-   re-running the graduator against the BDR example.
+   re-running the compiler against the BDR example.
 
 ## Development setup
 
@@ -56,7 +56,7 @@ runtime extras: `temporalio`, `anthropic`, `dbos`, `fastmcp`,
 pytest tests/                                         # full suite
 pytest tests/test_ir.py                               # just the IR
 pytest tests/test_temporal_adapter.py                 # just the adapter
-pytest tests/test_graduator_bdr_regression.py         # BDR regression
+pytest tests/test_compiler_bdr_regression.py         # BDR regression
 ```
 
 The fast suite (what `pytest tests/` runs by default) finishes in
@@ -66,12 +66,12 @@ via `pytest tests/ -m slow` (they need Node/npm/tsc, and DBOS-TS needs
 Docker). The BDR regression tests skip gracefully if no snapshot
 exists under `examples/bdr-outreach/runs/`.
 
-## Running the real graduator
+## Running the real compiler
 
 ```sh
-rote graduate examples/bdr-outreach/skill \
+rote compile examples/bdr-outreach/skill \
   --runtime temporal \
-  --out /tmp/bdr-graduated
+  --out /tmp/bdr-compiled
 ```
 
 This spawns an agent (auto-detected: `claude` CLI → `codex` CLI →
@@ -81,8 +81,8 @@ with the default `claude` driver and Sonnet 4.6.
 To commit a fresh snapshot as the new regression baseline:
 
 ```sh
-cp -r /tmp/bdr-graduated/graduated examples/bdr-outreach/runs/$(date -u +%Y-%m-%d)
-pytest tests/test_graduator_bdr_regression.py
+cp -r /tmp/bdr-compiled/compiled examples/bdr-outreach/runs/$(date -u +%Y-%m-%d)
+pytest tests/test_compiler_bdr_regression.py
 ```
 
 If the regression test passes against the new snapshot, commit it.
@@ -138,7 +138,7 @@ needs:
      [`tests/test_temporal_e2e.py`](tests/test_temporal_e2e.py) for
      the pattern).
 4. A declaration in [`src/rote/cli.py`](src/rote/cli.py) adding the
-   new runtime to the `--runtime` choices on the `graduate` and
+   new runtime to the `--runtime` choices on the `compile` and
    `emit` subparsers (the list is derived from `ADAPTERS` so it
    updates automatically once the factory is registered).
 
@@ -149,16 +149,16 @@ adapter in an existing language is smaller. Route every emitted-file
 write through the `EmitWriter` in `_common.py` rather than bare
 `write_text` — it powers hash-guarded re-emission.
 
-## Adding a new graduator driver
+## Adding a new compiler driver
 
 Drivers are the thinnest layer. A new driver needs:
 
-1. A module under `src/rote/graduator/drivers/<name>.py` exposing a
-   class that implements the `GraduatorDriver` Protocol:
+1. A module under `src/rote/compiler/drivers/<name>.py` exposing a
+   class that implements the `CompilerDriver` Protocol:
    `name: str`, `is_available() -> (bool, str)`, `async run(
-   skill_dir, graduator_skill_dir, work_dir) -> DriverResult`.
+   skill_dir, compiler_skill_dir, work_dir) -> DriverResult`.
 2. A factory + registry entry in
-   [`src/rote/graduator/drivers/__init__.py`](src/rote/graduator/drivers/__init__.py).
+   [`src/rote/compiler/drivers/__init__.py`](src/rote/compiler/drivers/__init__.py).
 3. A CLI `--agent` entry in
    [`src/rote/cli.py`](src/rote/cli.py).
 4. Tests under `tests/test_<name>_driver.py`. For subprocess drivers,
@@ -186,10 +186,10 @@ mechanisms — the filesystem is the contract.
 
 - Describe what the change does and why in 2-3 sentences.
 - Include a note about how you verified it — usually "pytest tests/"
-  plus something specific to the change (e.g. "ran `rote graduate`
+  plus something specific to the change (e.g. "ran `rote compile`
   end-to-end on BDR").
 - New features land with matching tests.
-- If the change affects the graduator rubric or the IR schema, run
+- If the change affects the compiler rubric or the IR schema, run
   the BDR regression test and commit an updated snapshot if needed.
   Explain in the commit message whether the snapshot change is a
   *correction* (the previous snapshot was wrong) or a *drift* (the
@@ -204,14 +204,14 @@ tests/
 ├── test_ir.py                              IR Pydantic models + validators
 ├── test_<runtime>_adapter.py               IR → emitted code (unit, per runtime)
 ├── test_<runtime>_e2e.py                   emitted code on a real runtime (slow)
-├── test_graduator_drivers.py               Driver Protocol + registry
+├── test_compiler_drivers.py               Driver Protocol + registry
 ├── test_anthropic_driver.py                API driver tool dispatch
 ├── test_claude_driver.py                   Claude subprocess driver
-├── test_graduator.py                       Orchestrator
-├── test_graduate_update.py                 Incremental re-graduation
+├── test_compiler.py                       Orchestrator
+├── test_compile_update.py                 Incremental re-compilation
 ├── test_cli.py / test_eval_*.py            CLI subcommands + eval harness
 ├── test_serve_*.py                         rote serve (MCP trigger)
-└── test_graduator_bdr_regression.py        Real graduator output vs snapshot
+└── test_compiler_bdr_regression.py        Real compiler output vs snapshot
 ```
 
 Adapters (`temporal`, `cloudflare`, `dbos`, `dbos-ts`, `inngest`,

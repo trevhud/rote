@@ -498,7 +498,7 @@ def test_legacy_signature_path_fallback() -> None:
 
 def _assert_mcp_free(path: Path) -> None:
     """Walk executable statements; comments/docstrings may mention MCP to
-    explain the graduation history, but no identifier can reference it."""
+    explain the compilation history, but no identifier can reference it."""
     src = path.read_text(encoding="utf-8")
     tree = ast.parse(src)
 

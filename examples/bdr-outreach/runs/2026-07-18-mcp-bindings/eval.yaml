@@ -4,7 +4,7 @@ source_skill: examples/bdr-outreach/skill
 # Per-step agent-turn estimates for running the BDR skill as raw instructions.
 # "Agent turn" = one assistant message, usually one tool call.
 # Steps that repeat per item declare `iterations`; the loader multiplies.
-# Does NOT estimate the graduated pipeline cost — rote eval derives that from the IR.
+# Does NOT estimate the compiled pipeline cost — rote eval derives that from the IR.
 
 steps:
 
@@ -192,7 +192,7 @@ notes: >-
   loop's iteration overhead (3-7 × 2-4 turns) adds another 6-28 turns.
   Deterministic steps (taxonomy_lookup, build_contact_table, exclusion checks,
   pre_enrollment_report) collectively cost only 10-22 turns yet require the
-  most careful rubric-reading per run — these are the highest-value graduation
+  most careful rubric-reading per run — these are the highest-value compilation
   targets. HITL gates (contact_review_gate, manual_enrollment_handoff,
   conf_exclusion_review_gate) contribute zero agent turns. The conference path
   totals are independent of the main campaign path and are driven almost

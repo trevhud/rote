@@ -82,7 +82,7 @@ client triggers the deterministic workflow instead of re-running
 the fuzzy skill:
 
 ```sh
-rote register <graduated-output-dir> \
+rote register <compiled-output-dir> \
     --runtime cloudflare \
     --url https://bdr-campaign.<your-subdomain>.workers.dev
 rote serve

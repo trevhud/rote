@@ -11,10 +11,10 @@ during Phase 2 setup:
 * ``industries`` (fuzzyMatch=biotechnology) — biotech ID
 * ``departments`` (fuzzyMatch=medical) — Medical & Health ID
 
-# Graduated form
+# Compiled form
 
 The taxonomy IDs are stable — they do not change run-over-run. After
-graduation, this function calls the ZoomInfo Lookup REST endpoint
+compilation, this function calls the ZoomInfo Lookup REST endpoint
 directly and caches the result for 30 days (per the IR's ``cache:``
 config). No agent loop, no LLM, no MCP server in the path.
 

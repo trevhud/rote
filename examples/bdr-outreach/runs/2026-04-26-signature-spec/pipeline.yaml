@@ -1,6 +1,6 @@
-# BDR Outreach Campaign — Graduated Pipeline IR
+# BDR Outreach Campaign — Compiled Pipeline IR
 #
-# Produced by the rote graduator from examples/bdr-outreach/skill/SKILL.md.
+# Produced by the rote compiler from examples/bdr-outreach/skill/SKILL.md.
 # Two entry paths:
 #   (1) Standard campaign: taxonomy_lookup + target_research (parallel) →
 #       lead_generation_loop → build_contact_table → contact_review_gate →

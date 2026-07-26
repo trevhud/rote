@@ -1,4 +1,4 @@
-"""Tests for the pre-graduation baseline runner (rote.eval.baseline).
+"""Tests for the pre-compilation baseline runner (rote.eval.baseline).
 
 Nothing here spawns a real agent or contacts a real MCP server: the
 subprocess is mocked at ``subprocess.run`` (same style as the claude
@@ -553,15 +553,15 @@ def test_cli_baseline_interactive_decline_exits_cleanly(
     assert (tmp_path / "o" / "baseline" / "derived-input.json").is_file()
 
 
-# ───────── graduate --baseline integration ─────────
+# ───────── compile --baseline integration ─────────
 
 
-def test_graduate_baseline_runs_and_reports(
+def test_compile_baseline_runs_and_reports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    """--baseline: the raw skill runs before the graduator, its measured
+    """--baseline: the raw skill runs before the compiler, its measured
     runs land in the --json payload, and artifacts are on disk."""
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
     _isolate_mcp_stores(monkeypatch, tmp_path)
     skill = tmp_path / "skill"
@@ -570,7 +570,7 @@ def test_graduate_baseline_runs_and_reports(
     input_file = tmp_path / "input.json"
     input_file.write_text('{"a": 1}', encoding="utf-8")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _install_fake_claude(
         monkeypatch,
         [
@@ -584,7 +584,7 @@ def test_graduate_baseline_runs_and_reports(
     out = tmp_path / "out"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill),
             "--out",
             str(out),
@@ -602,17 +602,17 @@ def test_graduate_baseline_runs_and_reports(
     assert (out / "baseline" / "metrics.json").is_file()
 
 
-def test_graduate_without_baseline_prints_nudge(
+def test_compile_without_baseline_prints_nudge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: t\n---\n")
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
 
-    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out"), "--no-eval"])
+    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out"), "--no-eval"])
     assert rc == 0
     assert "--baseline" in capsys.readouterr().err
 
@@ -697,12 +697,12 @@ def test_load_observations_round_trips(
     assert load_observations(tmp_path / "nowhere") == []
 
 
-def test_graduate_baseline_cross_check_flags_unbound_tool(
+def test_compile_baseline_cross_check_flags_unbound_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     """BDR's expected IR has no mcp bindings, so an observed gmail call
     must surface as observed_only — the loud missed-requirement case."""
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
     _isolate_mcp_stores(monkeypatch, tmp_path)
     skill = tmp_path / "skill"
@@ -711,7 +711,7 @@ def test_graduate_baseline_cross_check_flags_unbound_tool(
     input_file = tmp_path / "input.json"
     input_file.write_text('{"a": 1}', encoding="utf-8")
 
-    _install_mock_graduator(monkeypatch)
+    _install_mock_compiler(monkeypatch)
     _install_fake_claude(
         monkeypatch,
         [
@@ -724,7 +724,7 @@ def test_graduate_baseline_cross_check_flags_unbound_tool(
 
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill),
             "--out",
             str(tmp_path / "out"),
@@ -744,12 +744,12 @@ def test_graduate_baseline_cross_check_flags_unbound_tool(
     assert "likely a missed requirement" in captured.err
 
 
-def test_graduate_cross_checks_prior_baseline_artifacts(
+def test_compile_cross_checks_prior_baseline_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     """A baseline run earlier into the same --out is picked up from disk —
-    no --baseline flag needed on the graduate call."""
-    from tests.test_cli import _install_mock_graduator
+    no --baseline flag needed on the compile call."""
+    from tests.test_cli import _install_mock_compiler
 
     _isolate_mcp_stores(monkeypatch, tmp_path)
     skill = tmp_path / "skill"
@@ -772,21 +772,21 @@ def test_graduate_cross_checks_prior_baseline_artifacts(
     assert cli_main(["baseline", str(skill), "--out", str(out), "--input", str(input_file)]) == 0
     capsys.readouterr()
 
-    # Step 2: graduate later, same out dir, no --baseline.
-    _install_mock_graduator(monkeypatch)
-    rc = cli_main(["graduate", str(skill), "--out", str(out), "--no-eval", "--json"])
+    # Step 2: compile later, same out dir, no --baseline.
+    _install_mock_compiler(monkeypatch)
+    rc = cli_main(["compile", str(skill), "--out", str(out), "--no-eval", "--json"])
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["mcp_cross_check"]["observed_only"][0]["server"] == "gmail"
 
 
-def test_graduate_enriches_contracts_from_baseline_observations(
+def test_compile_enriches_contracts_from_baseline_observations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
     """End-to-end: observed traffic types the matching node's contracts,
     the rewritten pipeline.yaml carries them, and the emitted stub
     documents them."""
-    from rote.graduator import GraduationResult
+    from rote.compiler import CompilationResult
     from rote.ir import load_pipeline
 
     _isolate_mcp_stores(monkeypatch, tmp_path)
@@ -794,24 +794,24 @@ def test_graduate_enriches_contracts_from_baseline_observations(
     dm_yaml = repo_root / "examples" / "deal-monitor" / "expected" / "pipeline.yaml"
     dm_pipeline = load_pipeline(dm_yaml)
 
-    class _DealMonitorGraduator:
+    class _DealMonitorCompiler:
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "pipeline.yaml").write_text(
                 dm_yaml.read_text(encoding="utf-8"), encoding="utf-8"
             )
-            return GraduationResult(
+            return CompilationResult(
                 pipeline=dm_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
                 driver_metadata={},
             )
 
-    monkeypatch.setattr("rote.cli.Graduator", _DealMonitorGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _DealMonitorCompiler)
 
     skill = tmp_path / "skill"
     skill.mkdir()
@@ -832,7 +832,7 @@ def test_graduate_enriches_contracts_from_baseline_observations(
     out = tmp_path / "out"
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill),
             "--out",
             str(out),
@@ -847,7 +847,7 @@ def test_graduate_enriches_contracts_from_baseline_observations(
     assert "typed 1 node contract(s)" in err
 
     # The rewritten IR is the source of truth for the contracts…
-    reloaded = load_pipeline(out / "graduated" / "pipeline.yaml")
+    reloaded = load_pipeline(out / "compiled" / "pipeline.yaml")
     node = reloaded.node_by_id("fetch_intake_messages")
     assert node.input_schema["required"] == ["channel"]
     assert node.output_schema["properties"]["messages"]["type"] == "array"
@@ -857,23 +857,23 @@ def test_graduate_enriches_contracts_from_baseline_observations(
     assert '"messages"' in stub
 
 
-def test_graduate_api_backend_enables_web_tools(
+def test_compile_api_backend_enables_web_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    """--backend api constructs the graduator with web research enabled."""
+    """--backend api constructs the compiler with web research enabled."""
     captured: dict[str, Any] = {}
 
-    from tests.test_cli import _install_mock_graduator
+    from tests.test_cli import _install_mock_compiler
 
-    _install_mock_graduator(monkeypatch)
-    original = __import__("rote.cli", fromlist=["Graduator"]).Graduator
+    _install_mock_compiler(monkeypatch)
+    original = __import__("rote.cli", fromlist=["Compiler"]).Compiler
 
-    class _CapturingGraduator(original):  # type: ignore[misc, valid-type]
+    class _CapturingCompiler(original):  # type: ignore[misc, valid-type]
         def __init__(self, **kwargs: Any) -> None:
             captured.update(kwargs)
             super().__init__(**kwargs)
 
-    monkeypatch.setattr("rote.cli.Graduator", _CapturingGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _CapturingCompiler)
 
     skill = tmp_path / "skill"
     skill.mkdir()
@@ -881,7 +881,7 @@ def test_graduate_api_backend_enables_web_tools(
 
     rc = cli_main(
         [
-            "graduate",
+            "compile",
             str(skill),
             "--out",
             str(tmp_path / "out"),
@@ -895,16 +895,16 @@ def test_graduate_api_backend_enables_web_tools(
     capsys.readouterr()
 
     captured.clear()
-    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out2"), "--no-eval"])
+    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out2"), "--no-eval"])
     assert rc == 0
     assert captured["driver_kwargs"] is None
 
 
-# ───────── Probe artifacts fed into the graduator ─────────
+# ───────── Probe artifacts fed into the compiler ─────────
 
 
 def test_materialize_probe_context_copies_artifacts(tmp_path: Path) -> None:
-    from rote.graduator import PROBE_CONTEXT_DIRNAME, Graduator
+    from rote.compiler import PROBE_CONTEXT_DIRNAME, Compiler
 
     probe = tmp_path / "baseline"
     probe.mkdir()
@@ -913,7 +913,7 @@ def test_materialize_probe_context_copies_artifacts(tmp_path: Path) -> None:
     work = tmp_path / "work"
     work.mkdir()
 
-    instructions = Graduator._materialize_probe_context(work, probe)
+    instructions = Compiler._materialize_probe_context(work, probe)
     assert instructions is not None
     assert "GROUND TRUTH" in instructions
     assert "mcp: binding" in instructions
@@ -923,23 +923,23 @@ def test_materialize_probe_context_copies_artifacts(tmp_path: Path) -> None:
 
 
 def test_materialize_probe_context_absent_artifacts_is_none(tmp_path: Path) -> None:
-    from rote.graduator import Graduator
+    from rote.compiler import Compiler
 
     work = tmp_path / "work"
     work.mkdir()
-    assert Graduator._materialize_probe_context(work, tmp_path / "nowhere") is None
+    assert Compiler._materialize_probe_context(work, tmp_path / "nowhere") is None
     assert not list(work.iterdir())  # no empty probe-context dir left behind
 
 
-def test_graduate_threads_probe_dir_to_driver_instructions(
+def test_compile_threads_probe_dir_to_driver_instructions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end through the real Graduator with a fake driver: probe
+    """End-to-end through the real Compiler with a fake driver: probe
     artifacts land in the work dir and the prompt instructions."""
     import asyncio
 
-    from rote.graduator import PROBE_CONTEXT_DIRNAME, Graduator
-    from rote.graduator.drivers import DriverResult
+    from rote.compiler import PROBE_CONTEXT_DIRNAME, Compiler
+    from rote.compiler.drivers import DriverResult
 
     repo_root = Path(__file__).resolve().parent.parent
     bdr_yaml = repo_root / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -963,7 +963,7 @@ def test_graduate_threads_probe_dir_to_driver_instructions(
         def is_available(self):  # noqa: ANN201
             return True, ""
 
-        async def run(self, *, skill_dir, graduator_skill_dir, work_dir, **kwargs):  # noqa: ANN001, ANN201
+        async def run(self, *, skill_dir, compiler_skill_dir, work_dir, **kwargs):  # noqa: ANN001, ANN201
             captured["extra_instructions"] = kwargs.get("extra_instructions")
             captured["probe_files"] = sorted(
                 p.name for p in (Path(work_dir) / PROBE_CONTEXT_DIRNAME).iterdir()
@@ -977,10 +977,10 @@ def test_graduate_threads_probe_dir_to_driver_instructions(
                 driver_name="fake",
             )
 
-    graduator = Graduator(agent="claude")
-    monkeypatch.setattr(graduator, "select_driver", lambda: _FakeDriver())
+    compiler = Compiler(agent="claude")
+    monkeypatch.setattr(compiler, "select_driver", lambda: _FakeDriver())
 
-    result = asyncio.run(graduator.graduate(skill, tmp_path / "out" / "graduated", probe_dir=probe))
+    result = asyncio.run(compiler.compile(skill, tmp_path / "out" / "compiled", probe_dir=probe))
     assert result.pipeline.name == "bdr-campaign"
     assert captured["probe_files"] == ["observed-tools.json"]
     assert "GROUND TRUTH" in captured["extra_instructions"]
@@ -1012,21 +1012,21 @@ def test_run_generated_tests_reports_pass_and_fail(tmp_path: Path) -> None:
     assert "failed" in str(result["summary"])
 
 
-def test_graduate_reports_generated_tests(
+def test_compile_reports_generated_tests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
 ) -> None:
-    """A graduation whose agent wrote tests gets them run and reported."""
-    from rote.graduator import GraduationResult
+    """A compilation whose agent wrote tests gets them run and reported."""
+    from rote.compiler import CompilationResult
     from rote.ir import load_pipeline
 
     repo_root = Path(__file__).resolve().parent.parent
     bdr_yaml = repo_root / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
 
-    class _TestWritingGraduator:
+    class _TestWritingCompiler:
         def __init__(self, **kwargs: Any) -> None:
             pass
 
-        async def graduate(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
             output_dir = Path(output_dir)
             (output_dir / "tests").mkdir(parents=True, exist_ok=True)
             (output_dir / "pipeline.yaml").write_text(
@@ -1035,19 +1035,19 @@ def test_graduate_reports_generated_tests(
             (output_dir / "tests" / "test_extracted.py").write_text(
                 "def test_fixture():\n    assert True\n"
             )
-            return GraduationResult(
+            return CompilationResult(
                 pipeline=load_pipeline(bdr_yaml),
                 output_dir=output_dir,
                 driver_name="mock",
                 driver_metadata={},
             )
 
-    monkeypatch.setattr("rote.cli.Graduator", _TestWritingGraduator)
+    monkeypatch.setattr("rote.cli.Compiler", _TestWritingCompiler)
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    rc = cli_main(["graduate", str(skill), "--out", str(tmp_path / "out"), "--no-eval", "--json"])
+    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out"), "--no-eval", "--json"])
     assert rc == 0
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

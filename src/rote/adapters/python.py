@@ -100,7 +100,7 @@ class PythonAdapterConfig:
     # loops. Exponential backoff doubles it per attempt; linear grows it
     # linearly; constant repeats it.
     retry_base_delay_seconds: float = 1.0
-    # Directory holding the graduation's pipeline.yaml. When its
+    # Directory holding the compilation's pipeline.yaml. When its
     # extracted/<module>.py exists (the agent's real, test-verified
     # implementation), emission uses that file verbatim instead of an
     # IR-derived NotImplementedError stub.
@@ -214,7 +214,7 @@ def _emit_node_pure_or_external(node: Node) -> str:
         f"def {node.id}(payload: dict) -> dict:\n"
         f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
-        f"    Graduated from MCP tool call → deterministic API call. See\n"
+        f"    Compiled from MCP tool call → deterministic API call. See\n"
         f"    ``extracted.{module_name}`` for the implementation.\n"
         f'    """\n'
         f"{_mandatory_comment(node)}"
@@ -389,7 +389,7 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
         Architecture note: every function in this file wraps a deterministic
         function from ``extracted/`` or a typed LLM signature from
         ``signatures/``. None of them call MCP tools at runtime — the MCP
-        tool calls from the source skill were graduated into direct API
+        tool calls from the source skill were compiled into direct API
         calls during the rote emission step.
         """
 

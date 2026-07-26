@@ -1,7 +1,7 @@
-"""Extracted deterministic functions for the graduated BDR pipeline.
+"""Extracted deterministic functions for the compiled BDR pipeline.
 
 Every function in this package was originally invoked as an MCP tool inside
-the bdr-outreach Claude skill's agent loop. Graduation extracts them into
+the bdr-outreach Claude skill's agent loop. Compilation extracts them into
 deterministic Python functions that call the underlying vendor APIs
 directly — no MCP runtime, no LLM, no agent overhead.
 

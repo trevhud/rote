@@ -83,10 +83,10 @@ That's it. No secrets to create, rotate, or leak.
 
 ## What the wheel ships
 
-The wheel force-includes the graduator skill bundle at
-`rote/skills/rote-graduate/` (configured in `pyproject.toml`), because
-`rote graduate` needs it at runtime.
-`_default_graduator_skill_dir()` resolves the packaged copy first and
+The wheel force-includes the compiler skill bundle at
+`rote/skills/rote-compile/` (configured in `pyproject.toml`), because
+`rote compile` needs it at runtime.
+`_default_compiler_skill_dir()` resolves the packaged copy first and
 falls back to the repo-root `skills/` layout for editable installs.
 If you move or rename the bundle, update the force-include mapping,
 the resolver, and the smoke test in the release workflow together —

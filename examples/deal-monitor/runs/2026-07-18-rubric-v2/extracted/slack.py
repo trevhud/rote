@@ -15,7 +15,7 @@ def fetch_slack_messages(channel_id: str = SLACK_CHANNEL_ID, limit: int = SLACK_
     Read the most recent messages from #deal-intake.
 
     Returns a list of raw Slack message dicts; callers pass to filter_and_extract_opps.
-    Graduated from: SKILL.md > Step 1: Pull #deal-intake Slack messages
+    Compiled from: SKILL.md > Step 1: Pull #deal-intake Slack messages
     """
     raise NotImplementedError(
         "Wire this to the slack MCP server: tool=slack_read_channel, "

@@ -15,7 +15,7 @@ body:
       label: Proposed solution
       description: >
         What you'd like to see. For a new runtime adapter or driver, see
-        the "Adding a new runtime adapter" / "Adding a new graduator
+        the "Adding a new runtime adapter" / "Adding a new compiler
         driver" sections in CONTRIBUTING.md.
     validations:
       required: false

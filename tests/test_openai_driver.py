@@ -29,8 +29,8 @@ from typing import Any
 
 import pytest
 
-from rote.graduator.drivers import DriverError
-from rote.graduator.drivers.openai_api import OpenAIApiDriver
+from rote.compiler.drivers import DriverError
+from rote.compiler.drivers.openai_api import OpenAIApiDriver
 
 # ───────── Fake OpenAI SDK ─────────
 
@@ -68,7 +68,7 @@ def fake_openai(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
     def _patch(responses: list[Any]) -> _FakeAsyncOpenAI:
         client = _FakeAsyncOpenAI(responses)
         monkeypatch.setattr(
-            "rote.graduator.drivers.openai_api.openai.AsyncOpenAI",
+            "rote.compiler.drivers.openai_api.openai.AsyncOpenAI",
             lambda *a, **k: client,
         )
         monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
@@ -143,16 +143,16 @@ def fake_skills(tmp_path: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )
 
-    graduator_dir = tmp_path / "fake-graduator-skill"
-    graduator_dir.mkdir()
-    (graduator_dir / "SKILL.md").write_text(
-        "# Fake rote-graduate skill\n\nDo the graduation thing.\n",
+    compiler_dir = tmp_path / "fake-compiler-skill"
+    compiler_dir.mkdir()
+    (compiler_dir / "SKILL.md").write_text(
+        "# Fake rote-compile skill\n\nDo the compilation thing.\n",
         encoding="utf-8",
     )
-    (graduator_dir / "references").mkdir()
+    (compiler_dir / "references").mkdir()
 
     work_dir = tmp_path / "work"
-    return skill_dir, graduator_dir, work_dir
+    return skill_dir, compiler_dir, work_dir
 
 
 def _write_pipeline_call(call_id: str, work_dir: Path) -> SimpleNamespace:
@@ -177,7 +177,7 @@ async def test_happy_path_read_then_write_then_stop(
 ) -> None:
     import json
 
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     skill_md_abs = (skill_dir / "SKILL.md").resolve()
 
@@ -201,7 +201,7 @@ async def test_happy_path_read_then_write_then_stop(
 
     driver = OpenAIApiDriver(model="openai/gpt-5.5")
     result = await driver.run(
-        skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
     )
 
     assert result.driver_name == "openai-api"
@@ -220,7 +220,7 @@ async def test_happy_path_read_then_write_then_stop(
     assert first["max_completion_tokens"] == driver.max_tokens_per_turn
     assert "max_tokens" not in first
     assert first["messages"][0]["role"] == "system"
-    assert "ROTE GRADUATE SKILL" in first["messages"][0]["content"]
+    assert "ROTE COMPILE SKILL" in first["messages"][0]["content"]
 
 
 # ───────── Live events ─────────
@@ -233,7 +233,7 @@ async def test_emits_turn_tool_and_phase_events(
 ) -> None:
     import json
 
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     progress_abs = (work_dir / "progress.ndjson").resolve()
     skill_md_abs = (skill_dir / "SKILL.md").resolve()
@@ -279,7 +279,7 @@ async def test_emits_turn_tool_and_phase_events(
     driver = OpenAIApiDriver(model="glm-5.2")
     await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )
@@ -311,7 +311,7 @@ async def test_assistant_with_content_and_tools_and_reasoning(
 ) -> None:
     """A turn with BOTH content and tool_calls dispatches the tools and
     replays a clean assistant message; reasoning fields are dropped."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     responses = [
@@ -328,7 +328,7 @@ async def test_assistant_with_content_and_tools_and_reasoning(
 
     driver = OpenAIApiDriver(model="moonshotai/kimi-k2.6")
     result = await driver.run(
-        skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
     )
     assert result.pipeline_yaml_path.is_file()
 
@@ -350,7 +350,7 @@ async def test_malformed_tool_arguments_do_not_crash_loop(
     fake_skills: tuple[Path, Path, Path],
     fake_openai,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     responses = [
@@ -364,7 +364,7 @@ async def test_malformed_tool_arguments_do_not_crash_loop(
 
     driver = OpenAIApiDriver(model="openai/gpt-5.5")
     result = await driver.run(
-        skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
     )
     assert result.pipeline_yaml_path.is_file()
 
@@ -381,7 +381,7 @@ async def test_path_jail_error_returned_to_model(
 ) -> None:
     import json
 
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     outside = tmp_path / "outside" / "evil.py"
 
@@ -401,7 +401,7 @@ async def test_path_jail_error_returned_to_model(
     client = fake_openai(responses)
 
     driver = OpenAIApiDriver(model="openai/gpt-5.5")
-    await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+    await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
 
     tool_msgs = [m for m in client.chat.completions.calls[1]["messages"] if m["role"] == "tool"]
     assert any("not within allowed write root" in m["content"] for m in tool_msgs)
@@ -418,7 +418,7 @@ async def test_max_iterations_exceeded_raises(
 ) -> None:
     import json
 
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     skill_md_abs = (skill_dir / "SKILL.md").resolve()
 
@@ -430,7 +430,7 @@ async def test_max_iterations_exceeded_raises(
 
     driver = OpenAIApiDriver(model="openai/gpt-5.5", max_iterations=3)
     with pytest.raises(DriverError, match="did not complete within 3 iterations"):
-        await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+        await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
 
 
 @pytest.mark.asyncio
@@ -438,13 +438,13 @@ async def test_finishes_without_pipeline_raises(
     fake_skills: tuple[Path, Path, Path],
     fake_openai,  # noqa: ANN001
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     fake_openai([_response(_message(content="I give up."))])
 
     driver = OpenAIApiDriver(model="openai/gpt-5.5")
     with pytest.raises(DriverError, match="did not produce"):
-        await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+        await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
 
 
 # ───────── is_available + client plumbing ─────────
@@ -475,7 +475,7 @@ def test_is_available_neither(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_is_available_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("rote.graduator.drivers.openai_api._OPENAI_AVAILABLE", False)
+    monkeypatch.setattr("rote.compiler.drivers.openai_api._OPENAI_AVAILABLE", False)
     available, reason = OpenAIApiDriver(model="x").is_available()
     assert available is False
     assert "rote[openai-api]" in reason
@@ -510,7 +510,7 @@ async def test_run_constructs_client_with_plumbed_kwargs(
     fake_skills: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -526,14 +526,14 @@ async def test_run_constructs_client_with_plumbed_kwargs(
         captured.update(kwargs)
         return client
 
-    monkeypatch.setattr("rote.graduator.drivers.openai_api.openai.AsyncOpenAI", _ctor)
+    monkeypatch.setattr("rote.compiler.drivers.openai_api.openai.AsyncOpenAI", _ctor)
 
     driver = OpenAIApiDriver(
         model="openai/gpt-5.5",
         base_url="https://gw.example/v1",
         default_headers={"cf-aig-authorization": "Bearer g"},
     )
-    await driver.run(skill_dir=skill_dir, graduator_skill_dir=graduator_dir, work_dir=work_dir)
+    await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
 
     assert captured["base_url"] == "https://gw.example/v1"
     assert captured["default_headers"] == {"cf-aig-authorization": "Bearer g"}
@@ -551,7 +551,7 @@ async def test_length_truncation_continues_and_warns(
     """A turn cut off at the output-token limit (finish_reason "length",
     no tool_calls) must continue rather than complete: warn, nudge, and
     finish normally on a later turn."""
-    skill_dir, graduator_dir, work_dir = fake_skills
+    skill_dir, compiler_dir, work_dir = fake_skills
     work_dir.mkdir()
 
     responses = [
@@ -568,7 +568,7 @@ async def test_length_truncation_continues_and_warns(
     driver = OpenAIApiDriver(model="openai/gpt-5.5")
     result = await driver.run(
         skill_dir=skill_dir,
-        graduator_skill_dir=graduator_dir,
+        compiler_skill_dir=compiler_dir,
         work_dir=work_dir,
         on_event=events.append,
     )
@@ -590,6 +590,6 @@ async def test_length_truncation_continues_and_warns(
 
 
 def test_default_max_tokens_per_turn_is_generous() -> None:
-    from rote.graduator.drivers.openai_api import DEFAULT_MAX_TOKENS_PER_TURN
+    from rote.compiler.drivers.openai_api import DEFAULT_MAX_TOKENS_PER_TURN
 
     assert DEFAULT_MAX_TOKENS_PER_TURN == 32768
