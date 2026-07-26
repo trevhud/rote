@@ -9,6 +9,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-07-26
+
 ### Added
 - **Park-on-auth for Cloudflare Workflows — every MCP-capable runtime
   now parks.** MCP-backed `step.do` calls wrap auth failures in
