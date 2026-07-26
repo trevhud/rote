@@ -2,11 +2,11 @@
   "version": 1,
   "files": {
     "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
-    "activities.py": "0b2d1cd337bacbf24a32ffbc02b1cfeb457811038ec4803a3d75971f9dc9a0f2",
+    "activities.py": "7f98817071f6d622d9577242ccfe5552a3612a71c8938228b356a6266d0075f8",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "dd77101a70f98e76ef4a2c0bec16063edd4d70a4b1eb20b2e32afe429d2e9ac4",
+    "signatures/_rote_inference.py": "7a2b0fe5e595c738551903ffa9827c12bea5e84c64cf1e0dcb22da18bf3aee3b",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",
     "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
-    "workflow.py": "2cd4301b0529d0f567b59420e3ec41f0e70c4707cff45aa915d4e6b45f5e0ab8"
+    "workflow.py": "6e3ea5c0adf5d0a85ffa1030c50a82f2a9f573a172d6b12d34c960c8d58c6730"
   }
 }

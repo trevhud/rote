@@ -62,24 +62,56 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-#: Every provider, in auto-detect order (cheapest to the user first).
+#: Every provider.
 PROVIDERS: tuple[str, ...] = ("claude-cli", "api", "rote-cloud")
+
+#: Auto-detect order for a **judge** — one structured call, no tools.
+#: A key serves it first because the CLI's per-call overhead (process
+#: spawn plus the agent harness) dominates a single request: measured
+#: 3.6–5.0s per call against ~1.3s through an SDK endpoint, for
+#: identical output. ``claude-cli`` still precedes ``rote-cloud`` so a
+#: subscriber with no API key runs their pipeline for free rather than
+#: falling off a cliff at the moment graduation is supposed to pay off.
+_JUDGE_ORDER: tuple[str, ...] = ("api", "claude-cli", "rote-cloud")
+
+#: Auto-detect order for an **agent loop** — the inverse, and for the
+#: same reason read the other way. A bounded multi-turn loop amortizes
+#: the harness cost over every iteration instead of paying it once per
+#: answer, and agent loops are the expensive part of a pipeline, so the
+#: subscription is where they belong when one is available.
+_AGENT_ORDER: tuple[str, ...] = ("claude-cli", "api", "rote-cloud")
 
 #: Wall-clock ceiling for one judge call. A judge that has not answered
 #: in five minutes is wedged, not slow; the durable runtime's own retry
 #: policy is the recovery path.
 _DEFAULT_TIMEOUT_S = 300.0
 
+#: Agent loops run many turns and may call slow tools, so they get a
+#: larger budget than a single judge call.
+_DEFAULT_AGENT_TIMEOUT_S = 1800.0
+
 #: Replaces Claude Code's default system prompt on the ``claude-cli``
-#: path. Without it every judge call re-sends the full coding-agent
+#: judge path. Without it every judge call re-sends the full coding-agent
 #: preamble — measured at ~37k cache-creation tokens and 11.5s versus
 #: ~740 tokens and 7.4s with this one line.
 _CLI_SYSTEM_PROMPT = (
     "You are a precise evaluator. Answer only by populating the "
     "structured output schema. Do not explain your process."
+)
+
+#: System prompt for an ``agent_loop``. Unlike the judge path this one
+#: keeps tools — that is the point — but it still replaces Claude Code's
+#: coding-agent preamble, because the agent is executing one pipeline
+#: step, not operating a developer's machine.
+_AGENT_SYSTEM_PROMPT = (
+    "You are executing one bounded step of an automated pipeline. Use the "
+    "tools you are given to accomplish the task, then report the result. "
+    "You are running unattended: never ask a question, never wait for "
+    "confirmation, and stop as soon as the task is done."
 )
 
 
@@ -153,9 +185,14 @@ def _cloud_credential() -> tuple[str, str] | None:
 
 
 def provider_availability(
-    provider: str, client: str, *, base_url: str | None = None
+    provider: str,
+    client: str,
+    *,
+    base_url: str | None = None,
+    workload: str = "judge",
+    local_tools: bool = False,
 ) -> tuple[bool, str]:
-    """``(available, reason)`` for one provider serving one judge.
+    """``(available, reason)`` for one provider serving one node.
 
     ``reason`` is the setup step when unavailable, so a failure can list
     what to do for every provider rather than naming one.
@@ -163,13 +200,23 @@ def provider_availability(
     if provider == "claude-cli":
         if client != "anthropic":
             return False, (
-                f"a Claude subscription cannot serve a {client!r}-client judge; "
+                f"a Claude subscription cannot serve a {client!r}-client {workload}; "
                 f"set an API key or use rote cloud"
+            )
+        if local_tools:
+            # `claude -p` reaches tools only over MCP, so an in-process
+            # Python callable (a loop_body sub-node) cannot be handed to
+            # it without standing up an MCP bridge. The SDK tool runner
+            # takes callables directly, so that lane serves these loops.
+            return False, (
+                "this agent loop drives loop_body sub-nodes as in-process "
+                "callables, which the CLI can only reach over MCP; the SDK "
+                "tool runner binds them directly"
             )
         if base_url:
             return False, (
-                "an explicit endpoint is configured for this judge "
-                "(base_url / ROTE_BASE_URL_<NODE_ID>), which the CLI cannot honor"
+                f"an explicit endpoint is configured for this {workload} "
+                f"(base_url / ROTE_BASE_URL_<NODE_ID>), which the CLI cannot honor"
             )
         if shutil.which("claude") is None:
             return (
@@ -192,13 +239,26 @@ def provider_availability(
     return False, f"unknown provider {provider!r}"
 
 
-def select_provider(node_id: str, client: str, *, base_url: str | None = None) -> str:
-    """The provider serving this judge: explicit choice, else auto-detect.
+def select_provider(
+    node_id: str,
+    client: str,
+    *,
+    base_url: str | None = None,
+    workload: str = "judge",
+    local_tools: bool = False,
+) -> str:
+    """The provider serving this node: explicit choice, else auto-detect.
 
-    An explicitly chosen provider that cannot serve the judge is an
-    error naming why — never a silent downgrade to a billing lane the
-    operator did not pick.
+    ``workload`` picks the auto-detect order — ``"judge"`` for a single
+    structured call, ``"agent"`` for a bounded multi-turn loop. They are
+    inverses of each other, and deliberately so: the CLI's harness
+    overhead is a tax on one answer and an amortized cost across twenty.
+
+    An explicitly chosen provider that cannot serve the node is an error
+    naming why — never a silent downgrade to a billing lane the operator
+    did not pick.
     """
+    order = _AGENT_ORDER if workload == "agent" else _JUDGE_ORDER
     chosen = os.environ.get(f"ROTE_INFERENCE_{node_id.upper()}") or os.environ.get("ROTE_INFERENCE")
     if chosen:
         chosen = chosen.strip()
@@ -207,20 +267,24 @@ def select_provider(node_id: str, client: str, *, base_url: str | None = None) -
                 f"unknown inference provider {chosen!r} for {node_id}: "
                 f"expected one of {', '.join(PROVIDERS)}"
             )
-        ok, reason = provider_availability(chosen, client, base_url=base_url)
+        ok, reason = provider_availability(
+            chosen, client, base_url=base_url, workload=workload, local_tools=local_tools
+        )
         if not ok:
             raise RuntimeError(f"inference provider {chosen!r} cannot serve {node_id}: {reason}")
         return chosen
 
     reasons = []
-    for provider in PROVIDERS:
-        ok, reason = provider_availability(provider, client, base_url=base_url)
+    for provider in order:
+        ok, reason = provider_availability(
+            provider, client, base_url=base_url, workload=workload, local_tools=local_tools
+        )
         if ok:
             return provider
         reasons.append(f"  {provider}: {reason}")
     raise RuntimeError(
-        f"no inference provider available for {node_id} — nothing can serve the "
-        f"judge:\n" + "\n".join(reasons)
+        f"no inference provider available for {node_id} — nothing can serve this "
+        f"{workload}:\n" + "\n".join(reasons)
     )
 
 
@@ -548,3 +612,273 @@ def call_judge(
         output_tokens=tokens_out,
     )
     return payload
+
+
+# ───────── agent loops ─────────
+
+
+def _mcp_config_for(tools: Sequence[str]) -> tuple[dict[str, Any], list[str]]:
+    """``(mcp-config servers, allowlisted tool ids)`` for an agent's tools.
+
+    An ``agent_loop`` declares bare tool names (``zoominfo_search_contacts``)
+    rather than a server binding — one loop may reach several servers, and
+    :class:`MCPBinding` is a single ``server``/``tool`` pair. So the names
+    are resolved the way ``rote run`` resolves a skill baseline's: wire
+    every registered server and let ``--allowedTools`` be the boundary.
+    Over-wiring is safe *because* the allowlist is the actual constraint;
+    the agent can only call what the IR declared.
+
+    Endpoint and credential resolution is delegated to the MCP helper
+    already emitted beside this one, so there is one definition of "where
+    does server X live and how do I authenticate to it" per app.
+    """
+    if not tools:
+        return {}, []
+    try:
+        from extracted import _rote_mcp  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover — emitted together or not at all
+        raise RuntimeError(
+            "this agent loop declares MCP tools but extracted/_rote_mcp.py is "
+            "missing; re-emit the pipeline"
+        ) from None
+
+    servers: dict[str, Any] = {}
+    for name, entry in sorted(_rote_mcp._registry_servers().items()):
+        try:
+            url = _rote_mcp.resolve_url(name, None)
+        except Exception:  # unresolvable server: skip, the allowlist still binds
+            continue
+        config: dict[str, Any] = {"type": "http", "url": url}
+        headers = entry.get("headers") if isinstance(entry, dict) else None
+        if headers:
+            config["headers"] = dict(headers)
+        servers[name] = config
+    # The IR names tools without servers, so allow each declared name on
+    # every wired server; a name no server provides simply never resolves.
+    allowed = [f"mcp__{server}__{tool}" for server in sorted(servers) for tool in sorted(tools)]
+    return servers, allowed
+
+
+def _agent_task_prompt(
+    *, description: str, task: str, termination: str | None, local_tool_names: Sequence[str]
+) -> str:
+    parts = [description.strip(), "", task.strip()]
+    if local_tool_names:
+        parts += ["", "Pipeline steps available to you as tools: " + ", ".join(local_tool_names)]
+    if termination:
+        parts += ["", f"Stop when: {termination}"]
+    parts += [
+        "",
+        "When you are done, state your final answer as the last message. "
+        "Do not ask follow-up questions — nobody is available to answer.",
+    ]
+    return "\n".join(parts)
+
+
+def _run_agent_via_cli(
+    *,
+    node_id: str,
+    model: str,
+    prompt: str,
+    tools: Sequence[str],
+    max_iterations: int,
+    timeout: float,
+) -> tuple[str, Any, Any, int]:
+    """A bounded agent loop on the Claude subscription.
+
+    Unlike the judge path this one *keeps* tools — that is the entire
+    point — but still replaces the coding-agent system prompt and ignores
+    the user's settings files, so the loop gets the pipeline's tools and
+    nothing else.
+    """
+    binary = shutil.which("claude")
+    if binary is None:  # pragma: no cover — select_provider checks first
+        raise RuntimeError("the `claude` CLI vanished between provider selection and the call")
+    servers, allowed = _mcp_config_for(tools)
+    command = [
+        binary,
+        "-p",
+        "--output-format",
+        "json",
+        "--model",
+        _cli_model(model),
+        "--system-prompt",
+        _AGENT_SYSTEM_PROMPT,
+        "--setting-sources",
+        "",
+        "--max-turns",
+        str(max_iterations),
+    ]
+    if allowed:
+        command += ["--allowedTools", ",".join(allowed)]
+        command += ["--mcp-config", json.dumps({"mcpServers": servers})]
+    else:
+        command.append("--tools")
+
+    try:
+        completed = subprocess.run(
+            command,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            env=build_subscription_env(),
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"claude -p agent loop for {node_id} exceeded {timeout:.0f}s") from None
+
+    try:
+        envelope = json.loads(completed.stdout)
+    except ValueError:
+        detail = (completed.stderr or completed.stdout or "").strip()[:400]
+        raise RuntimeError(
+            f"claude -p returned no JSON envelope for {node_id} "
+            f"(exit {completed.returncode}): {detail}"
+        ) from None
+    if envelope.get("is_error"):
+        reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
+        raise RuntimeError(f"claude -p agent loop failed for {node_id}: {str(reason)[:400]}")
+    usage = envelope.get("usage") or {}
+    return (
+        str(envelope.get("result") or ""),
+        usage.get("input_tokens"),
+        usage.get("output_tokens"),
+        int(envelope.get("num_turns") or 0),
+    )
+
+
+def _run_agent_via_sdk(
+    *,
+    node_id: str,
+    provider: str,
+    model: str,
+    base_url: str | None,
+    prompt: str,
+    local_tools: Mapping[str, Any],
+    tools: Sequence[str],
+    max_iterations: int,
+    timeout: float,
+) -> tuple[str, Any, Any, int]:
+    """A bounded agent loop on the vendor SDK's own tool runner.
+
+    ``anthropic.lib.tools`` ships a tool loop, so this needs no agent
+    framework and no dependency the emitted app does not already have for
+    its judges. ``@beta_tool`` derives each tool's JSON schema from the
+    Python signature of the pipeline step it wraps, which means the
+    agent's tool contract and the step's real contract cannot drift.
+    """
+    import anthropic
+    from anthropic.lib.tools import beta_tool
+
+    endpoint, token = _sdk_target(provider, "anthropic", base_url)
+    client = (
+        anthropic.Anthropic(base_url=endpoint, timeout=timeout)
+        if token is None
+        else anthropic.Anthropic(base_url=endpoint, auth_token=token, timeout=timeout)
+    )
+    # The tool's name is the sub-node's id and its schema is derived from
+    # the emitted step's own signature, so the contract the agent sees and
+    # the contract the step enforces are the same object — as rich as the
+    # IR's input_schema made that step, no richer and no staler.
+    bound = [beta_tool(name=name)(fn) for name, fn in local_tools.items()]
+    servers, _allowed = _mcp_config_for(tools)
+    mcp_servers = [
+        {"type": "url", "url": config["url"], "name": name} for name, config in servers.items()
+    ]
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 4096,
+        "tools": bound,
+        "max_iterations": max_iterations,
+        "system": _AGENT_SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if mcp_servers:
+        kwargs["mcp_servers"] = mcp_servers
+    try:
+        runner = client.beta.messages.tool_runner(**kwargs)
+        final = runner.until_done()
+    except anthropic.APIError as exc:
+        raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
+
+    text = "\n".join(
+        b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
+    )
+    usage = getattr(final, "usage", None)
+    return (
+        text,
+        getattr(usage, "input_tokens", None),
+        getattr(usage, "output_tokens", None),
+        max_iterations,
+    )
+
+
+def run_agent_loop(
+    *,
+    node_id: str,
+    description: str,
+    task: str,
+    model: str,
+    tools: Sequence[str] = (),
+    local_tools: Mapping[str, Any] | None = None,
+    max_iterations: int = 10,
+    termination: str | None = None,
+    base_url: str | None = None,
+) -> dict[str, Any]:
+    """Run one bounded, tool-restricted agent loop and return its result.
+
+    This is what an ``agent_loop`` node executes. It is a real loop on
+    both lanes — never a stub — because a pipeline that hands its one
+    genuinely agentic step back to the user has not graduated that step.
+
+    ``local_tools`` are the node's ``loop_body`` sub-nodes: already
+    emitted, already working pipeline steps, bound as callables so the
+    agent drives them per iteration exactly as the IR describes.
+    """
+    local_tools = dict(local_tools or {})
+    provider = select_provider(
+        node_id,
+        "anthropic",
+        base_url=base_url,
+        workload="agent",
+        local_tools=bool(local_tools),
+    )
+    timeout = float(os.environ.get("ROTE_AGENT_TIMEOUT") or _DEFAULT_AGENT_TIMEOUT_S)
+    prompt = _agent_task_prompt(
+        description=description,
+        task=task,
+        termination=termination,
+        local_tool_names=sorted(local_tools),
+    )
+
+    if provider == "claude-cli":
+        text, tokens_in, tokens_out, turns = _run_agent_via_cli(
+            node_id=node_id,
+            model=model,
+            prompt=prompt,
+            tools=tools,
+            max_iterations=max_iterations,
+            timeout=timeout,
+        )
+    else:
+        text, tokens_in, tokens_out, turns = _run_agent_via_sdk(
+            node_id=node_id,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            prompt=prompt,
+            local_tools=local_tools,
+            tools=tools,
+            max_iterations=max_iterations,
+            timeout=timeout,
+        )
+
+    _log_usage(
+        node_id=node_id,
+        provider=provider,
+        model=_cli_model(model) if provider == "claude-cli" else model,
+        input_tokens=tokens_in,
+        output_tokens=tokens_out,
+    )
+    return {"result": text, "provider": provider, "iterations": turns}

@@ -73,14 +73,40 @@ def _no_ambient_selection(monkeypatch: pytest.MonkeyPatch) -> None:
 # ───────── provider selection ─────────
 
 
-def test_subscription_is_preferred_when_the_cli_is_available(
+def test_workload_shape_decides_the_lane_not_just_price(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Auto-detect is ordered cheapest-to-the-user: a Claude subscription
-    the user already pays for beats a key that bills per token."""
+    """The orders are inverses, and that is the design.
+
+    A judge is one structured call, so the CLI's process spawn plus agent
+    harness is pure overhead (measured 3.6-5.0s vs ~1.3s) — a key serves
+    it. An agent loop amortizes that same overhead over every turn and is
+    the expensive part of a pipeline, so the subscription serves it.
+    """
     monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-whatever")
+    assert helper.select_provider("grade_essay", "anthropic") == "api"
+    assert helper.select_provider("research", "anthropic", workload="agent") == "claude-cli"
+
+
+def test_subscription_serves_judges_when_there_is_no_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cliff this whole feature exists to remove: a subscriber with no
+    API key must still be able to run what they graduated."""
+    monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
     assert helper.select_provider("grade_essay", "anthropic") == "claude-cli"
+
+
+def test_an_agent_loop_with_local_tools_cannot_use_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`claude -p` reaches tools only over MCP, so loop_body sub-nodes
+    bound as in-process callables push the loop to the SDK runner."""
+    monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-whatever")
+    provider = helper.select_provider("lead_gen", "anthropic", workload="agent", local_tools=True)
+    assert provider == "api"
 
 
 def test_api_wins_when_no_cli_is_installed(monkeypatch: pytest.MonkeyPatch) -> None:

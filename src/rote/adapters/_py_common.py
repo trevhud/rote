@@ -683,6 +683,68 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
     )
 
 
+#: Fallback iteration bound when the IR declares no ``termination``. An
+#: agent loop must always be bounded — an unbounded one in a durable
+#: workflow burns budget until a human notices.
+DEFAULT_AGENT_MAX_ITERATIONS = 10
+
+
+def agent_loop_call(
+    node: Node, *, default_model: str, indent: str = "    ", include_local_tools: bool = True
+) -> str:
+    """Emit the ``run_agent_loop(...)`` call for an ``agent_loop`` node.
+
+    This is what replaced the ``NotImplementedError`` stub. A pipeline
+    that hands its one genuinely agentic step back to the user has not
+    graduated that step, so the emitted code runs a real bounded loop:
+    the subscription CLI when one is available and the tools are MCP,
+    otherwise the vendor SDK's own tool runner.
+
+    ``loop_body`` sub-nodes are passed as ``local_tools`` — they are
+    already-emitted, already-working steps in the same module, so the
+    agent drives them per iteration exactly as the IR describes rather
+    than the adapter guessing an order for them.
+    """
+    max_iterations = (
+        node.termination.max_iterations
+        if node.termination is not None
+        else DEFAULT_AGENT_MAX_ITERATIONS
+    )
+    inner = indent + "    "
+    deep = inner + "    "
+    model_expr = f'os.environ.get("ROTE_MODEL_{node.id.upper()}", {json.dumps(default_model)})'
+    lines = [
+        f"{indent}from signatures._rote_inference import run_agent_loop",
+        "",
+        f"{indent}return run_agent_loop(",
+        f"{inner}node_id={json.dumps(node.id)},",
+        f"{inner}description={_chunked_str_literal(node.description, deep)},",
+        f"{inner}task=json.dumps(payload, default=str),",
+        f"{inner}model={model_expr},",
+    ]
+    if node.tools:
+        one_line = f"{inner}tools={_py_literal(list(node.tools))},"
+        if len(one_line) <= 98:
+            lines.append(one_line)
+        else:
+            # Emitted output is committed and ruff-linted at line-length
+            # 100, so a long tool list wraps rather than overflowing.
+            lines.append(f"{inner}tools=[")
+            lines.extend(f"{deep}{_py_literal(t)}," for t in node.tools)
+            lines.append(f"{inner}],")
+    if node.loop_body and include_local_tools:
+        lines.append(f"{inner}local_tools={{")
+        for sub in node.loop_body:
+            lines.append(f"{inner}    {json.dumps(sub)}: {sub},")
+        lines.append(f"{inner}}},")
+    lines.append(f"{inner}max_iterations={max_iterations},")
+    if node.termination is not None:
+        condition = _chunked_str_literal(node.termination.condition, deep)
+        lines.append(f"{inner}termination={condition},")
+    lines.append(f"{indent})")
+    return "\n".join(lines) + "\n"
+
+
 def inference_helper_source() -> str:
     """The source text emitted as ``signatures/_rote_inference.py``.
 
@@ -697,9 +759,8 @@ def inference_helper_source() -> str:
 
 def write_signature_package(
     writer: EmitWriter,
-    judges: list[Node],
+    pipeline: Pipeline,
     *,
-    pipeline_name: str,
     anthropic_default_model: str,
     openai_default_model: str,
     generated_by: str,
@@ -716,10 +777,15 @@ def write_signature_package(
     package would be a second implementation of the judge.
 
     Returns the manifest entries to merge into the adapter's ``written``
-    map. Empty when the pipeline has no spec-bearing judges.
+    map. Empty only when nothing in the pipeline needs inference — an
+    ``agent_loop`` pulls the helper in even with no judges, since the
+    loop runs through the same provider resolver.
     """
-    if not judges:
+    judges = spec_judges(pipeline)
+    agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
+    if not judges and not agent_loops:
         return {}
+    pipeline_name = pipeline.name
     written: dict[str, Path] = {
         "signatures/__init__": writer.write(
             "signatures",
@@ -802,8 +868,9 @@ def _extracted_layout(pipeline: Pipeline) -> dict[str, list[Node]]:
                 continue
             module_name, _ = _impl_path_parts(node.impl)
             modules.setdefault(module_name, []).append(node)
-        elif node.kind is NodeKind.AGENT_LOOP:
-            modules.setdefault(node.id, []).append(node)
+        # agent_loop nodes deliberately get no extracted/ module: since
+        # the inference helper runs them as real bounded loops, a stub
+        # would be dead code that only invites someone to fill it in.
     return modules
 
 
