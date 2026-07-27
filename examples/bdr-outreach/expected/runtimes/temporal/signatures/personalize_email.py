@@ -161,6 +161,21 @@ def _log_usage(response: Any) -> None:
         pass
 
 
+def _durable_error(exc: Exception) -> RuntimeError:
+    """Vendor SDK errors do not survive a durable step boundary.
+
+    Their classes take keyword-only ``response``/``body`` arguments, so a
+    runtime that persists a failed step by pickling the exception cannot
+    rebuild it — the real status and body would be replaced by a bare
+    ``TypeError``. Re-raise a plain exception carrying the detail.
+    """
+    status = getattr(exc, "status_code", None)
+    where = f" (HTTP {status})" if status is not None else ""
+    return RuntimeError(
+        f"{type(exc).__name__}{where} calling {MODEL} for personalize_email: {exc}"
+    )
+
+
 class PersonalizeEmail:
     """Typed LLM judge for personalize_email (Anthropic structured output)."""
 
@@ -170,24 +185,29 @@ class PersonalizeEmail:
         import anthropic
 
         client = anthropic.Anthropic(base_url=BASE_URL)
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            tools=[
-                {
-                    "name": "personalize_email",
-                    "description": TOOL_DESCRIPTION,
-                    "input_schema": OUTPUT_JSON_SCHEMA,
-                }
-            ],
-            tool_choice={"type": "tool", "name": "personalize_email"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": _interpolate(PROMPT, inputs.model_dump(by_alias=True)),
-                }
-            ],
-        )
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=4096,
+                tools=[
+                    {
+                        "name": "personalize_email",
+                        "description": TOOL_DESCRIPTION,
+                        "input_schema": OUTPUT_JSON_SCHEMA,
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "personalize_email"},
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _interpolate(
+                            PROMPT, inputs.model_dump(by_alias=True)
+                        ),
+                    }
+                ],
+            )
+        except anthropic.APIError as exc:
+            raise _durable_error(exc) from None
         _log_usage(response)
         for block in response.content:
             if block.type == "tool_use":

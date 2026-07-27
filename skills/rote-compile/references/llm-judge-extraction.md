@@ -253,13 +253,38 @@ signature_spec:
                                   # 'openai' this reaches any OpenAI-compatible
                                   # server (Ollama, vLLM, a gateway). Only set
                                   # it when the source skill names an endpoint.
-  temperature: 0.0                # optional
+  temperature: 0.0                # DO NOT SET — see below
 ```
 
 Emitted code layers runtime overrides on top of these defaults —
 `ROTE_MODEL_<NODE_ID>` and `ROTE_BASE_URL_<NODE_ID>` environment
 variables — so pick sensible defaults and let operators retarget a
 judge without re-compiling.
+
+### Never set `temperature`
+
+Leave `temperature` out of `signature_spec`. It reads like the
+obviously-right knob for a deterministic judge, and it is a trap:
+**current Anthropic models reject the parameter outright** with
+
+```
+400 invalid_request_error: `temperature` is not supported on this
+model. Remove it from your request.
+```
+
+A judge carrying `temperature: 0.0` is therefore dead on arrival
+against a current model — which is exactly where an operator's
+`ROTE_MODEL_<NODE_ID>` override points it. Found live: a graduated
+pipeline whose every judge call 400'd on the first real run.
+
+Determinism does not come from temperature anyway. It comes from the
+schema-locked decoding the adapters already emit — a forced tool call
+(Anthropic), `response_format: json_schema` (OpenAI / Workers AI). The
+output shape is pinned whatever the sampler does.
+
+If a source skill *explicitly* names a temperature, set it and know
+that emitted code turns it into a `ROTE_TEMPERATURE_<NODE_ID>`
+override whose empty value drops the parameter again.
 
 ### Deriving the JSON Schemas
 
@@ -293,6 +318,28 @@ For nested Pydantic models, hoist the inner model into a `$defs`
 entry and use `{"$ref": "#/$defs/InnerModelName"}` at the use site.
 This matches Pydantic's own emission shape and lets adapters resolve
 references with a single helper.
+
+#### A key that can be null is not a required string
+
+`required` in an *input* schema is a claim about the data a real
+upstream step will hand you, and it is the single easiest way to make
+a pipeline die on live data. A field that a tool returns as `null` —
+on drafts, on unpublished rows, on anything half-filled — must be
+either omitted from `required` or typed `{"anyOf": [{"type":
+"string"}, {"type": "null"}]}`. Emitted models make a non-required
+field `X | None = None`, so dropping it from `required` is enough.
+
+Presence is not non-nullness. An observed payload that always carries
+a `summary` key still tells you nothing about whether its value is
+ever `null`, and schema inference from observations records the key,
+not the nullability.
+
+Found live: a weekly-report pipeline judged nine posts one at a time;
+one of them had `summary: null`, the judge's input model required a
+string, and the whole workflow failed on that single element. When you
+have observed payloads (the baseline run's tool results), scan the
+values you actually saw — any `null` in a sample is proof the field
+belongs in the nullable set.
 
 ### Designing the prompt template
 

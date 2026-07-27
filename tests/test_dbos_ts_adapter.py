@@ -388,7 +388,12 @@ def test_openai_client_signature_module() -> None:
     src = emit_signature_module(judge, DbosTsAdapterConfig())
     assert 'from "openai"' in src
     assert '"json_schema"' in src
-    assert "temperature: 0.2" in src
+    # temperature is a runtime knob, never a baked constant — current
+    # Anthropic models 400 on the parameter, so an operator retargeting
+    # ROTE_MODEL_<ID> needs a way to drop it without re-emitting.
+    assert 'const TEMPERATURE = env.ROTE_TEMPERATURE_GRADE_ESSAY ?? "0.2";' in src
+    assert "...(TEMPERATURE.trim() ? { temperature: Number(TEMPERATURE) } : {})," in src
+    assert "temperature: 0.2" not in src
     src_main = emit_main(mini_pipeline(judge), DbosTsAdapterConfig())
     assert 'OPENAI_API_KEY: requireEnv("OPENAI_API_KEY")' in src_main
 

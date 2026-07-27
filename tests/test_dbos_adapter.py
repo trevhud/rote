@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import ast
 import copy
+import pickle
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -478,8 +481,112 @@ def test_openai_client_signature_module() -> None:
     src = emit_signature_module(judge, DbosAdapterConfig())
     assert "import openai" in src
     assert '"type": "json_schema"' in src
-    assert "temperature=0.2" in src
+    assert "**_sampling_kwargs()," in src
     assert "GradeEssayOutput.model_validate(json.loads(content))" in src
+    ast.parse(src)
+
+
+def _judge_with(**spec_extra: object) -> Node:
+    """A minimal llm_judge node whose signature_spec takes overrides."""
+    return Node(
+        id="grade_essay",
+        kind=NodeKind.LLM_JUDGE,
+        description="Grade an essay.",
+        signature_spec={
+            "input_schema": {
+                "type": "object",
+                "properties": {"essay": {"type": "string"}},
+                "required": ["essay"],
+            },
+            "output_schema": {
+                "type": "object",
+                "properties": {"grade": {"type": "integer"}},
+                "required": ["grade"],
+            },
+            "prompt": "Grade: {{ essay }}",
+            **spec_extra,
+        },
+    )
+
+
+def test_temperature_is_a_runtime_knob_not_a_baked_constant() -> None:
+    """Current Anthropic models reject ``temperature`` with a 400, so a
+    constant compiled into the judge breaks the moment ROTE_MODEL_<ID>
+    points at a newer model. Empty ROTE_TEMPERATURE_<ID> drops it."""
+    src = emit_signature_module(_judge_with(temperature=0.2), DbosAdapterConfig())
+    assert 'os.environ.get(\n    "ROTE_TEMPERATURE_GRADE_ESSAY", "0.2"\n)' in src
+    assert "def _sampling_kwargs() -> dict[str, Any]:" in src
+    assert "if not TEMPERATURE.strip():" in src
+    assert "**_sampling_kwargs()," in src
+    # …and never as a literal keyword argument to the SDK call.
+    assert "temperature=0.2" not in src
+    ast.parse(src)
+
+
+class _FakeAPIError(Exception):
+    """Shaped like the vendor SDKs' error classes: reconstructible only
+    with keyword-only ``response`` / ``body``, so pickle cannot rebuild it
+    from ``BaseException.__reduce__``'s ``(cls, args)``. Module-level so
+    it is picklable at all — the failure under test is on *load*."""
+
+    def __init__(self, message: str, *, response: object, body: object) -> None:
+        super().__init__(message)
+        self.response = response
+        self.body = body
+        self.status_code = 400
+
+
+def test_judge_translates_sdk_errors_so_they_survive_a_durable_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A durable runtime persists a failed step by pickling the exception,
+    and the vendor SDKs' error classes take keyword-only ``response`` /
+    ``body`` arguments — pickle cannot rebuild them. Raising one straight
+    out of a judge replaced a real 400 (rejecting ``temperature``) with a
+    bare ``TypeError`` at the fan-out join, hiding the cause entirely.
+    """
+
+    raised = _FakeAPIError("temperature is not supported on this model", response=object(), body={})
+    with pytest.raises(TypeError):  # the bug this translation exists to avoid
+        pickle.loads(pickle.dumps(raised))
+
+    fake = types.ModuleType("anthropic")
+    fake.APIError = _FakeAPIError  # type: ignore[attr-defined]
+    fake.Anthropic = lambda **_kwargs: types.SimpleNamespace(  # type: ignore[attr-defined]
+        messages=types.SimpleNamespace(create=_raise(raised))
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+    src = emit_signature_module(_judge_with(), DbosAdapterConfig())
+    namespace: dict[str, object] = {}
+    exec(compile(src, "grade_essay.py", "exec"), namespace)  # noqa: S102 — emitted code under test
+    judge = namespace["GradeEssay"]()  # type: ignore[operator]
+    inputs = namespace["GradeEssayInput"](essay="hi")  # type: ignore[operator]
+
+    with pytest.raises(RuntimeError) as excinfo:
+        judge.forward(inputs)
+
+    message = str(excinfo.value)
+    assert "APIError" in message
+    assert "HTTP 400" in message
+    assert "temperature is not supported" in message
+    # The whole point: this one crosses the boundary intact.
+    assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
+
+
+def _raise(exc: Exception):  # type: ignore[no-untyped-def]
+    def _call(**_kwargs: object) -> object:
+        raise exc
+
+    return _call
+
+
+def test_no_temperature_means_no_sampling_parameter_at_all() -> None:
+    """The default judge sends no sampling knob — the forced tool call
+    already pins the output shape."""
+    src = emit_signature_module(_judge_with(), DbosAdapterConfig())
+    assert "TEMPERATURE" not in src
+    assert "_sampling_kwargs" not in src
     ast.parse(src)
 
 
