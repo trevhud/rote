@@ -37,6 +37,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import os
 import re
 import sys
 from collections.abc import Callable, Sequence
@@ -48,6 +49,7 @@ from rote.adapters import ADAPTERS, get_adapter
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
+from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
 # ───────── Subcommand: emit ─────────
@@ -2246,6 +2248,25 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _export_inference_selection(flag_value: str | None) -> None:
+    """Publish the resolved judge provider into the environment.
+
+    ``ROTE_INFERENCE`` is the emitted app's own interface — a generated
+    pipeline reads it whether rote launched it or a user did — so the
+    CLI's job here is only to resolve the layered default and export it,
+    never to pass a provider through some private channel. Runners that
+    spawn a subprocess inherit it; the in-process ones read the same
+    ``os.environ``.
+
+    Nothing resolved means nothing exported: the app auto-detects.
+    """
+    from rote import config as rote_config
+
+    resolved = rote_config.resolve("inference", flag_value, layers=rote_config.load_layers())
+    if resolved.value is not None:
+        os.environ["ROTE_INFERENCE"] = resolved.value
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """One-off local execution of a skill or an emitted pipeline.
 
@@ -2320,6 +2341,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             elif run.output is not None:
                 print(json.dumps(run.output, indent=2))
             return 0 if run.succeeded else 1
+
+        _export_inference_selection(args.inference)
 
         pipeline: Pipeline | None = None
         if target.pipeline_yaml is not None:
@@ -2403,6 +2426,36 @@ def _cmd_run(args: argparse.Namespace) -> int:
         return 130
 
 
+def _refuse_local_only_inference() -> str | None:
+    """Refuse to deploy a pipeline configured to judge via ``claude -p``.
+
+    The refusal belongs here, not at emit time: the provider is
+    deliberately *not* in the IR, so an emitted artifact is supposed to
+    run on a subscription locally and on a key or the tenant account in
+    production, with no re-emit and no diff. Emit cannot know where the
+    directory is headed. Deploy can, and it is the last moment before a
+    personal Claude login would become a production dependency in a
+    container that has no ``claude`` binary anyway.
+    """
+    from rote import config as rote_config
+    from rote.inference import LOCAL_ONLY_PROVIDERS
+
+    try:
+        resolved = rote_config.resolve("inference", None, layers=rote_config.load_layers())
+    except rote_config.ConfigError as e:
+        return str(e)
+    if resolved.value not in LOCAL_ONLY_PROVIDERS:
+        return None
+    return (
+        f"inference is set to `{resolved.value}` ({resolved.source}), which only "
+        f"works on a machine with your Claude login — a deployed pipeline has no "
+        f"`claude` binary, and a personal subscription credential should not "
+        f"become a production dependency. Set `inference: api` or "
+        f"`inference: rote-cloud` (or ROTE_INFERENCE) before deploying; the "
+        f"emitted code itself needs no change."
+    )
+
+
 def _cmd_deploy(args: argparse.Namespace) -> int:
     """Deploy an emitted pipeline to its hosting target.
 
@@ -2431,6 +2484,9 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
             )
             return 2
         assert target.runtime is not None
+        if (refusal := _refuse_local_only_inference()) is not None:
+            print(f"error: {refusal}", file=sys.stderr)
+            return 2
         deploy_target = resolve_deploy_target(args.target, target.runtime)
 
         if deploy_target is None:
@@ -2640,6 +2696,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
         else (deploy, f"built-in default ({login_note})"),
         "agent": (resolved["agent"].value or "auto-detect", resolved["agent"].source),
         "model": (resolved["model"].value or "driver default", resolved["model"].source),
+        "inference": (
+            resolved["inference"].value or "auto-detect",
+            resolved["inference"].source,
+        ),
     }
 
     if args.json:
@@ -2651,6 +2711,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "deploy": deploy,
             "agent": resolved["agent"].value,
             "model": resolved["model"].value,
+            "inference": resolved["inference"].value,
         }
         payload = {
             "user_config": {
@@ -2798,6 +2859,9 @@ def _cmd_eval(args: argparse.Namespace) -> int:
     measured_json: dict[str, object] | None = None
     if args.run:
         try:
+            # Empirical trials execute real judges, so they are billed to
+            # a real lane; the same resolution `rote run` uses picks it.
+            _export_inference_selection(args.inference)
             measured_md, measured_json = _run_empirical(args, pipeline, pipeline_yaml, skill_dir)
         except Exception as e:
             print(f"error: empirical run failed: {e}", file=sys.stderr)
@@ -3267,6 +3331,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help="Skill runs: the agent model (default: the compiler's default Sonnet)",
+    )
+    run_p.add_argument(
+        "--inference",
+        default=None,
+        choices=INFERENCE_PROVIDERS,
+        help=(
+            "Pipeline runs: who serves (and pays for) the emitted judges — "
+            "claude-cli bills your Claude subscription, api bills your own "
+            "key, rote-cloud bills your rote tenant. Default: auto-detect, "
+            "cheapest to you first."
+        ),
     )
     run_p.add_argument(
         "--allow-writes",
@@ -3790,6 +3865,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "append a Measured section. Runs the emitted pipeline (fast, "
             "cheap) and the raw skill via `claude -p` (minutes per trial, "
             "billed to your Claude subscription). Requires --input."
+        ),
+    )
+    eval_cmd.add_argument(
+        "--inference",
+        default=None,
+        choices=INFERENCE_PROVIDERS,
+        help=(
+            "--run only: who serves (and pays for) the pipeline's judges. "
+            "Default: auto-detect, cheapest to you first. Recorded with the "
+            "measurement — the same token count costs differently per lane."
         ),
     )
     eval_cmd.add_argument(

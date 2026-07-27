@@ -41,9 +41,8 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
-)
-from rote.adapters._py_common import (
-    emit_signature_module as _shared_emit_signature_module,
+    agent_loop_call,
+    write_signature_package,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
@@ -186,43 +185,42 @@ def _emit_activity_for_llm_judge(node: Node, cfg: TemporalAdapterConfig) -> str:
 
 
 def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str:
-    """Emit a stub activity for an agent_loop node.
+    """Emit a real, bounded agent-loop activity.
 
-    Agent loops require an LLM agent runtime (e.g., the Anthropic SDK
-    with bounded iterations). The v0 adapter emits a stub that raises
-    NotImplementedError so the workflow at least imports cleanly. Real
-    implementations are a per-project decision and should call out to
-    whatever agent harness the project already uses.
+    Not a stub: the provider (Claude subscription / API key / rote cloud)
+    is resolved at runtime by ``signatures/_rote_inference.py``, the same
+    helper the judges use.
+
+    Unlike the DBOS and python adapters this one passes no
+    ``local_tools``. A Temporal ``loop_body`` sub-node is its own
+    ``@activity.defn`` coroutine — reaching into one from inside another
+    activity would bypass the scheduler that makes it retryable and
+    history-checkpointed, which is the whole reason to be on Temporal.
+    Those sub-nodes stay workflow-orchestrated; the agent drives its MCP
+    tools. Declared MCP tools work identically on every adapter.
     """
-    tools_doc = "\n".join(f"    #   - {t}" for t in (node.tools or []))
-    sub_nodes_doc = ""
-    if node.loop_body:
-        sub_nodes_doc = (
-            "    # Loop body sub-nodes (call these for each iteration):\n"
-            + "\n".join(f"    #   - {sn}" for sn in node.loop_body)
-            + "\n"
-        )
-
+    # run_agent_loop is synchronous (it spawns a subprocess, or blocks on
+    # the SDK's tool runner), so it goes to a worker thread — same reason
+    # and same shape as the spec-judge activities above.
+    inner = agent_loop_call(
+        node,
+        default_model=cfg.anthropic_default_model,
+        indent="        ",
+        include_local_tools=False,
+    )
     return (
-        textwrap.dedent(
-            f'''
-        @activity.defn(name="{node.id}")
-        async def {node.id}(payload: dict) -> dict:
-            """{safe_docstring_line(node.description)}
-
-            STUB — agent loops require an LLM agent runtime. Implement
-            this against the project's preferred agent harness (Anthropic
-            Agent SDK, OpenAI Agents SDK, LangGraph, etc.).
-            """
-            # Tools the agent should be allowed to call inside the loop:
-        '''
-        ).lstrip("\n")
-        + (tools_doc + "\n" if tools_doc else "")
-        + sub_nodes_doc
-        + (
-            f'    raise NotImplementedError("agent_loop activity {node.id!r}: '
-            'requires an agent runtime")\n'
-        )
+        f'\n@activity.defn(name="{node.id}")\n'
+        f"async def {node.id}(payload: dict) -> dict:\n"
+        f'    """{safe_docstring_line(node.description)}\n'
+        f"\n"
+        f"    Bounded agent loop. loop_body sub-nodes stay workflow-orchestrated\n"
+        f"    activities on this runtime; the agent drives its declared MCP tools.\n"
+        f'    """\n'
+        f"\n"
+        f"    def _run() -> dict:\n"
+        f"{inner}"
+        f"\n"
+        f"    return await asyncio.to_thread(_run)\n"
     )
 
 
@@ -237,6 +235,7 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
     has_spec_judges = any(
         n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None for n in pipeline.nodes
     )
+    has_agent_loops = any(n.kind is NodeKind.AGENT_LOOP for n in pipeline.nodes)
 
     preamble = textwrap.dedent(
         f'''
@@ -261,10 +260,17 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
         from temporalio import activity
         '''
     ).lstrip("\n")
-    if has_spec_judges:
+    if has_spec_judges or has_agent_loops:
         preamble = preamble.replace(
             "from typing import Any",
             "import asyncio\nfrom typing import Any",
+        )
+    if has_agent_loops:
+        # The agent-loop activity renders its task payload as JSON and
+        # reads a ROTE_MODEL_<NODE_ID> override.
+        preamble = preamble.replace(
+            "from typing import Any",
+            "import json\nimport os\nfrom typing import Any",
         )
     parts.append(preamble)
 
@@ -558,33 +564,20 @@ class TemporalAdapter:
             ),
         }
 
-        spec_judges = [
-            n
-            for n in pipeline.nodes
-            if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
-        ]
-        if spec_judges:
-            written["signatures/__init__"] = writer.write(
-                "signatures",
-                "__init__.py",
-                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
+        written.update(
+            write_signature_package(
+                writer,
+                pipeline,
+                anthropic_default_model=self.config.anthropic_default_model,
+                openai_default_model=self.config.openai_default_model,
+                generated_by="rote.adapters.temporal",
+                regen_command="rote emit --runtime temporal",
+                context_note=(
+                    "The non-determinism lives inside this module; the activity\n"
+                    "that calls it stays a retryable, history-checkpointed unit."
+                ),
             )
-            for node in spec_judges:
-                written[f"signatures/{node.id}"] = writer.write(
-                    "signatures",
-                    f"{node.id}.py",
-                    content=_shared_emit_signature_module(
-                        node,
-                        anthropic_default_model=self.config.anthropic_default_model,
-                        openai_default_model=self.config.openai_default_model,
-                        generated_by="rote.adapters.temporal",
-                        regen_command="rote emit --runtime temporal",
-                        context_note=(
-                            "The non-determinism lives inside this module; the activity\n"
-                            "that calls it stays a retryable, history-checkpointed unit."
-                        ),
-                    ),
-                )
+        )
 
         writer.finalize()
         return written

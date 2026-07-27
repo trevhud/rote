@@ -15,6 +15,8 @@ direct API calls during the rote emission step.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from typing import Any
 
 from temporalio import activity
@@ -36,21 +38,40 @@ def _serialize(obj: Any) -> Any:
         return {k: _serialize(v) for k, v in obj.items()}
     return obj
 
+
 @activity.defn(name="target_research")
 async def target_research(payload: dict) -> dict:
     """Run external research (Bright Data web search, ClinicalTrials.gov)
 
-    STUB — agent loops require an LLM agent runtime. Implement
-    this against the project's preferred agent harness (Anthropic
-    Agent SDK, OpenAI Agents SDK, LangGraph, etc.).
+    Bounded agent loop. loop_body sub-nodes stay workflow-orchestrated
+    activities on this runtime; the agent drives its declared MCP tools.
     """
-    # Tools the agent should be allowed to call inside the loop:
-    #   - bright_data_search
-    #   - bright_data_scrape
-    #   - clinical_trials_search
-    #   - airweave_search
-    #   - salesforce_query
-    raise NotImplementedError("agent_loop activity 'target_research': requires an agent runtime")
+
+    def _run() -> dict:
+        from signatures._rote_inference import run_agent_loop
+
+        return run_agent_loop(
+            node_id="target_research",
+            description=(
+                "Run external research (Bright Data web search, ClinicalTrials.gov)\nand "
+                "internal research (Airweave enterprise search, Salesforce account\nhisto"
+                "ry, internal publications) in parallel. Compile a short intel\nbrief cov"
+                "ering pipeline, RWE/HEOR signals, key programs/teams, prior\naccount int"
+                "eractions, and validated TA experience.\n"
+            ),
+            task=json.dumps(payload, default=str),
+            model=os.environ.get("ROTE_MODEL_TARGET_RESEARCH", "claude-sonnet-4-6"),
+            tools=[
+                "bright_data_search",
+                "bright_data_scrape",
+                "clinical_trials_search",
+                "airweave_search",
+                "salesforce_query",
+            ],
+            max_iterations=10,
+        )
+
+    return await asyncio.to_thread(_run)
 
 @activity.defn(name="taxonomy_lookup")
 async def taxonomy_lookup(payload: dict) -> dict:
@@ -63,21 +84,35 @@ async def taxonomy_lookup(payload: dict) -> dict:
     result = await resolve_taxonomy_ids(**payload)
     return _serialize(result)
 
+
 @activity.defn(name="lead_generation_loop")
 async def lead_generation_loop(payload: dict) -> dict:
     """Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo
 
-    STUB — agent loops require an LLM agent runtime. Implement
-    this against the project's preferred agent harness (Anthropic
-    Agent SDK, OpenAI Agents SDK, LangGraph, etc.).
+    Bounded agent loop. loop_body sub-nodes stay workflow-orchestrated
+    activities on this runtime; the agent drives its declared MCP tools.
     """
-    # Tools the agent should be allowed to call inside the loop:
-    #   - zoominfo_search_contacts
-    #   - zoominfo_search_companies
-    # Loop body sub-nodes (call these for each iteration):
-    #   - enrich_contact_batch
-    #   - vet_contact
-    raise NotImplementedError("agent_loop activity 'lead_generation_loop': requires an agent runtime")
+
+    def _run() -> dict:
+        from signatures._rote_inference import run_agent_loop
+
+        return run_agent_loop(
+            node_id="lead_generation_loop",
+            description=(
+                "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\ns"
+                "earches (ideal persona, manufacturer's internal team, TA broad net).\nEn"
+                "riches in batches of 10, vets each contact, backfills with new\ntargeted"
+                " searches when discards create gaps. Loop terminates when the\nvetted-co"
+                "ntact quota is met.\n"
+            ),
+            task=json.dumps(payload, default=str),
+            model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-4-6"),
+            tools=["zoominfo_search_contacts", "zoominfo_search_companies"],
+            max_iterations=10,
+            termination="vetted_count >= target_quota",
+        )
+
+    return await asyncio.to_thread(_run)
 
 @activity.defn(name="enrich_contact_batch")
 async def enrich_contact_batch(payload: dict) -> dict:

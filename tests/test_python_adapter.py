@@ -134,7 +134,6 @@ def test_emit_produces_expected_files(emit_result: dict[str, Path]) -> None:
         "extracted/brief",
         "extracted/profile",
         "extracted/report",
-        "extracted/research_loop",
         "signatures/grade",
     ):
         assert emit_result[key].exists(), f"missing {key}"
@@ -241,7 +240,7 @@ def test_stdlib_only_imports(main_src: str) -> None:
             roots.update(alias.name.split(".")[0] for alias in imp.names)
         elif imp.module is not None:
             roots.add(imp.module.split(".")[0])
-    assert roots == {"__future__", "json", "sys", "time", "concurrent", "typing"}
+    assert roots == {"__future__", "json", "os", "sys", "time", "concurrent", "typing"}
 
 
 def test_conditional_imports_dropped_when_unused() -> None:
@@ -466,17 +465,19 @@ def test_extracted_stubs_raise_not_implemented(emit_result: dict[str, Path]) -> 
     for label, path in emit_result.items():
         if not label.startswith("extracted/") or label.endswith("__init__"):
             continue
+        if label.endswith("_rote_mcp"):
+            continue  # the verbatim MCP client, not a scaffolded stub
         src = path.read_text(encoding="utf-8")
         assert "raise NotImplementedError(" in src, f"{label} lost its stub"
         assert "Auto-generated stubs by rote.adapters.python" in src
 
 
-def test_agent_loop_stub_documents_tools_and_loop_body(
-    emit_result: dict[str, Path],
-) -> None:
-    src = emit_result["extracted/research_loop"].read_text(encoding="utf-8")
-    assert "web_search" in src
-    assert "score_item" in src  # loop_body sub-node documented
+def test_agent_loop_emits_a_real_bounded_loop(main_src: str) -> None:
+    """Not a stub any more — see the DBOS adapter's twin of this test."""
+    assert "from signatures._rote_inference import run_agent_loop" in main_src
+    assert "raise NotImplementedError" not in main_src
+    assert 'node_id="research_loop",' in main_src
+    assert "max_iterations=" in main_src
 
 
 def test_legacy_signature_path_fallback() -> None:
@@ -494,6 +495,12 @@ def test_legacy_signature_path_fallback() -> None:
 
 
 # ───────── The MCP invariant ─────────
+
+
+#: The two verbatim shared helpers, exempt from the MCP-free scan below.
+#: Neither is code emitted *for a node*: one is the MCP client itself,
+#: the other reaches it only to wire an agent_loop's declared tools.
+_MCP_HELPER_FILES = {"_rote_mcp.py", "_rote_inference.py"}
 
 
 def _assert_mcp_free(path: Path) -> None:
@@ -524,10 +531,18 @@ def _assert_mcp_free(path: Path) -> None:
 
 def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None:
     """Architectural invariant: no MCP runtime references anywhere in the
-    emitted script — main.py, extracted stubs, or generated signatures."""
+    emitted script — main.py, extracted stubs, or generated signatures.
+
+    Two files are exempt and only these two: ``extracted/_rote_mcp.py``
+    *is* the MCP client, and ``signatures/_rote_inference.py`` reaches it
+    to wire an agent_loop's declared tools — which the IR defines as MCP
+    tool names, so a loop that declares them is asking for MCP by
+    construction. Both are verbatim shared helpers, not code emitted for
+    a node, and the invariant is about node code.
+    """
     checked = 0
     for path in emit_result.values():
-        if path.suffix == ".py":
+        if path.suffix == ".py" and path.name not in _MCP_HELPER_FILES:
             _assert_mcp_free(path)
             checked += 1
     assert checked >= 7  # main + __init__s + extracted + signatures

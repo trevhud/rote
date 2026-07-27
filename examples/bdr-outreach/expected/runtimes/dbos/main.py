@@ -73,15 +73,34 @@ def _serialize(obj: Any) -> Any:
 def target_research(payload: dict) -> dict:
     """Run external research (Bright Data web search, ClinicalTrials.gov)
 
-    Agent loop — bounded, tool-restricted. The stub in
-    ``extracted.target_research`` raises until implemented against an
-    agent harness.
+    Agent loop — bounded, tool-restricted, and real: the provider
+    (Claude subscription / API key / rote cloud) is resolved at
+    runtime by signatures/_rote_inference.py.
     """
     # IR timeout '5m': DBOS has no per-step timeout
     # primitive; enforce inside the implementation if required.
-    from extracted.target_research import target_research as _impl
+    from signatures._rote_inference import run_agent_loop
 
-    return _serialize(_impl(**payload))
+    return run_agent_loop(
+        node_id="target_research",
+        description=(
+            "Run external research (Bright Data web search, ClinicalTrials.gov)\nand inte"
+            "rnal research (Airweave enterprise search, Salesforce account\nhistory, inte"
+            "rnal publications) in parallel. Compile a short intel\nbrief covering pipeli"
+            "ne, RWE/HEOR signals, key programs/teams, prior\naccount interactions, and v"
+            "alidated TA experience.\n"
+        ),
+        task=json.dumps(payload, default=str),
+        model=os.environ.get("ROTE_MODEL_TARGET_RESEARCH", "claude-sonnet-4-6"),
+        tools=[
+            "bright_data_search",
+            "bright_data_scrape",
+            "clinical_trials_search",
+            "airweave_search",
+            "salesforce_query",
+        ],
+        max_iterations=10,
+    )
 
 
 @DBOS.step(name="taxonomy_lookup")
@@ -100,15 +119,33 @@ def taxonomy_lookup(payload: dict) -> dict:
 def lead_generation_loop(payload: dict) -> dict:
     """Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo
 
-    Agent loop — bounded, tool-restricted. The stub in
-    ``extracted.lead_generation_loop`` raises until implemented against an
-    agent harness.
+    Agent loop — bounded, tool-restricted, and real: the provider
+    (Claude subscription / API key / rote cloud) is resolved at
+    runtime by signatures/_rote_inference.py.
     """
     # IR timeout '15m': DBOS has no per-step timeout
     # primitive; enforce inside the implementation if required.
-    from extracted.lead_generation_loop import lead_generation_loop as _impl
+    from signatures._rote_inference import run_agent_loop
 
-    return _serialize(_impl(**payload))
+    return run_agent_loop(
+        node_id="lead_generation_loop",
+        description=(
+            "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\nsearc"
+            "hes (ideal persona, manufacturer's internal team, TA broad net).\nEnriches i"
+            "n batches of 10, vets each contact, backfills with new\ntargeted searches wh"
+            "en discards create gaps. Loop terminates when the\nvetted-contact quota is m"
+            "et.\n"
+        ),
+        task=json.dumps(payload, default=str),
+        model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-4-6"),
+        tools=["zoominfo_search_contacts", "zoominfo_search_companies"],
+        local_tools={
+            "enrich_contact_batch": enrich_contact_batch,
+            "vet_contact": vet_contact,
+        },
+        max_iterations=10,
+        termination="vetted_count >= target_quota",
+    )
 
 
 @DBOS.step(name="enrich_contact_batch", retries_allowed=True, max_attempts=6, backoff_rate=2.0)

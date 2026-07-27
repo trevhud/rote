@@ -306,3 +306,31 @@ def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.Mon
     assert sent["payload"]["module_js"] == "export class X {}"
     assert sent["payload"]["input_schema"] == {"examples": [{"word": "hi"}]}
     assert "pipeline_id" in report.detail
+
+
+def test_deploy_refuses_a_subscription_only_inference_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`claude-cli` judges work on a laptop and nowhere else: a deployed
+    container has no `claude` binary, and a personal Claude login should
+    never become a production dependency. Deploy is the last moment this
+    can be caught — the provider is deliberately not in the IR, so emit
+    cannot know where the directory is headed.
+    """
+    app = _emitted(tmp_path, "workflow.py", "activities.py")
+    monkeypatch.setenv("ROTE_INFERENCE", "claude-cli")
+    rc = cli_main(["deploy", str(app)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "claude-cli" in err
+    assert "inference: api" in err  # the fix is named
+    assert "needs no change" in err  # …and it is not a re-emit
+
+
+def test_deploy_proceeds_on_a_deployable_inference_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = _emitted(tmp_path, "workflow.py", "activities.py")
+    monkeypatch.setenv("ROTE_INFERENCE", "rote-cloud")
+    assert cli_main(["deploy", str(app)]) == 0
+    assert "no push-deploy target exists" in capsys.readouterr().out

@@ -86,9 +86,11 @@ from rote.adapters._py_common import (
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
+    agent_loop_call,
     fan_out_binding,
     resolve_extracted_source,
     serialize_helper,
+    write_signature_package,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
@@ -189,15 +191,21 @@ def _timeout_comment(node: Node) -> str:
 # ───────── signatures/<id>.py emission ─────────
 
 
+_DBOS_SIGNATURE_CONTEXT = (
+    "The non-determinism lives inside this module; the workflow step that\n"
+    "calls it stays a checkpointed, retryable unit."
+)
+
+
 def emit_signature_module(node: Node, cfg: DbosAdapterConfig) -> str:
     """Emit signatures/<node_id>.py for an llm_judge node with a spec.
 
     Delegates to the shared Python signature emitter
     (:func:`rote.adapters._py_common.emit_signature_module`) with this
     adapter's identity strings: generated Pydantic models from the
-    ``signature_spec`` JSON Schemas plus a typed judge class that calls
-    the vendor SDK with structured output. See the shared module for the
-    full emission contract.
+    ``signature_spec`` JSON Schemas plus a typed judge class that
+    delegates the vendor call to ``signatures/_rote_inference.py``. See
+    the shared module for the full emission contract.
     """
     return _shared_emit_signature_module(
         node,
@@ -205,10 +213,7 @@ def emit_signature_module(node: Node, cfg: DbosAdapterConfig) -> str:
         openai_default_model=cfg.openai_default_model,
         generated_by="rote.adapters.dbos",
         regen_command="rote emit --runtime dbos",
-        context_note=(
-            "The non-determinism lives inside this module; the workflow step that\n"
-            "calls it stays a checkpointed, retryable unit."
-        ),
+        context_note=_DBOS_SIGNATURE_CONTEXT,
     )
 
 
@@ -372,21 +377,31 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
     )
 
 
-def _emit_step_agent_loop(node: Node) -> str:
+def _agent_loops_need_mcp(pipeline: Pipeline) -> bool:
+    """True when an ``agent_loop`` declares tools.
+
+    ``Node.tools`` is documented as *MCP tool names*, so a loop that
+    declares any needs the MCP helper emitted beside it to resolve their
+    endpoints — even when no node carries an ``mcp:`` binding. Missing
+    this is a runtime failure inside the agent, not an emit-time one,
+    which is exactly the kind of gap worth closing at emit time.
+    """
+    return any(n.kind is NodeKind.AGENT_LOOP and n.tools for n in pipeline.nodes)
+
+
+def _emit_step_agent_loop(node: Node, cfg: DbosAdapterConfig) -> str:
     return (
         f"{_step_decorator(node)}\n"
         f"def {node.id}(payload: dict) -> dict:\n"
         f'    """{safe_docstring_line(node.description)}\n'
         f"\n"
-        f"    Agent loop — bounded, tool-restricted. The stub in\n"
-        f"    ``extracted.{node.id}`` raises until implemented against an\n"
-        f"    agent harness.\n"
+        f"    Agent loop — bounded, tool-restricted, and real: the provider\n"
+        f"    (Claude subscription / API key / rote cloud) is resolved at\n"
+        f"    runtime by signatures/_rote_inference.py.\n"
         f'    """\n'
         f"{_retry_on_comment(node)}"
         f"{_timeout_comment(node)}"
-        f"    from extracted.{node.id} import {node.id} as _impl\n"
-        f"\n"
-        f"    return _serialize(_impl(**payload))\n"
+        f"{agent_loop_call(node, default_model=cfg.anthropic_default_model)}"
     )
 
 
@@ -748,7 +763,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         elif node.kind is NodeKind.LLM_JUDGE:
             step_parts.append(_emit_step_llm_judge(node, cfg))
         elif node.kind is NodeKind.AGENT_LOOP:
-            step_parts.append(_emit_step_agent_loop(node))
+            step_parts.append(_emit_step_agent_loop(node, cfg))
 
     workflow_block = (
         f"\n\n@DBOS.workflow(name={json.dumps(workflow_name)})\n"
@@ -991,9 +1006,9 @@ class DbosAdapter:
         written["main"] = writer.write("main.py", content=self.emit_main(pipeline))
 
         extracted_modules = _extracted_layout(pipeline)
-        mcp_backed = self.config.external_backend == "mcp" and any(
-            n.mcp is not None for n in pipeline.nodes
-        )
+        mcp_backed = (
+            self.config.external_backend == "mcp" and any(n.mcp is not None for n in pipeline.nodes)
+        ) or _agent_loops_need_mcp(pipeline)
         if extracted_modules or mcp_backed:
             written["extracted/__init__"] = writer.write(
                 "extracted",
@@ -1020,23 +1035,17 @@ class DbosAdapter:
                 content=Path(_runtime_helper.__file__).read_text(encoding="utf-8"),
             )
 
-        spec_judges = [
-            n
-            for n in pipeline.nodes
-            if n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None
-        ]
-        if spec_judges:
-            written["signatures/__init__"] = writer.write(
-                "signatures",
-                "__init__.py",
-                content=f'"""Generated LLM signatures for {pipeline.name}."""\n',
+        written.update(
+            write_signature_package(
+                writer,
+                pipeline,
+                anthropic_default_model=self.config.anthropic_default_model,
+                openai_default_model=self.config.openai_default_model,
+                generated_by="rote.adapters.dbos",
+                regen_command="rote emit --runtime dbos",
+                context_note=_DBOS_SIGNATURE_CONTEXT,
             )
-            for node in spec_judges:
-                written[f"signatures/{node.id}"] = writer.write(
-                    "signatures",
-                    f"{node.id}.py",
-                    content=emit_signature_module(node, self.config),
-                )
+        )
 
         written["dbos-config"] = writer.write(
             "dbos-config.yaml", content=emit_dbos_config(pipeline)

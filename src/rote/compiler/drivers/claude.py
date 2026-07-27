@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
 from pathlib import Path
 from shutil import which
@@ -43,6 +42,14 @@ from rote.compiler.events import (
     emit_safely,
     relative_display_path,
 )
+
+# Imported, not defined here: emitted apps run the identical scrub
+# (their `claude-cli` judge provider spawns the same subprocess) and
+# cannot import rote, so the one definition lives in the stdlib-only
+# helper that ships into them verbatim. A second copy here is exactly
+# how the rule drifts back to API-key billing in one place and not the
+# other.
+from rote.inference import build_subscription_env
 
 # ───────── Defaults ─────────
 
@@ -100,28 +107,6 @@ up *current* vendor API docs instead of trusting training-data memory.
 Required for reliable ``--backend api`` output — SDK shapes drift faster
 than model knowledge — and off by default because ordinary compilation
 needs no network and shouldn't pay the latency."""
-
-
-def build_subscription_env() -> dict[str, str]:
-    """Child environment for a subscription-billed ``claude -p`` spawn.
-
-    Critical: scrub ``ANTHROPIC_API_KEY`` and ``ANTHROPIC_AUTH_TOKEN``.
-    In ``claude -p`` mode these env vars always win over an active
-    OAuth session, which defeats the whole point of the subscription
-    path. Callers who want API-key auth should use
-    ``AnthropicApiDriver`` instead — this helper is specifically about
-    reusing the user's Claude Max/Pro subscription.
-    """
-    env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
-    env.pop("ANTHROPIC_AUTH_TOKEN", None)
-    # Silence spinners in non-interactive output so stdout is just
-    # the JSON result and stderr is just the error text (if any).
-    env["CLAUDE_CODE_DISABLE_NONINTERACTIVE_ANIMATIONS"] = "1"
-    # CLAUDE_CODE_OAUTH_TOKEN, if set in the parent env, is
-    # preserved by env.copy() — this is the automation-friendly
-    # path for CI environments.
-    return env
 
 
 # ───────── stream-json parsing (pure, testable) ─────────

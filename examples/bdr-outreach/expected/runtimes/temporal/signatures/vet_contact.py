@@ -181,76 +181,21 @@ def _interpolate(template: str, variables: dict[str, Any]) -> str:
     return re.sub(r"\{\{\s*([\w.]+)\s*\}\}", _resolve, template)
 
 
-def _log_usage(response: Any) -> None:
-    """Append token usage as JSONL to $ROTE_USAGE_LOG, if set."""
-    path = os.environ.get("ROTE_USAGE_LOG")
-    if not path:
-        return
-    try:
-        usage = getattr(response, "usage", None)
-        record = {
-            "node": "vet_contact",
-            "model": MODEL,
-            "input_tokens": getattr(usage, "input_tokens", None),
-            "output_tokens": getattr(usage, "output_tokens", None),
-        }
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
-    except OSError:
-        pass
-
-
-def _durable_error(exc: Exception) -> RuntimeError:
-    """Vendor SDK errors do not survive a durable step boundary.
-
-    Their classes take keyword-only ``response``/``body`` arguments, so a
-    runtime that persists a failed step by pickling the exception cannot
-    rebuild it — the real status and body would be replaced by a bare
-    ``TypeError``. Re-raise a plain exception carrying the detail.
-    """
-    status = getattr(exc, "status_code", None)
-    where = f" (HTTP {status})" if status is not None else ""
-    return RuntimeError(
-        f"{type(exc).__name__}{where} calling {MODEL} for vet_contact: {exc}"
-    )
-
-
 class VetContact:
     """Typed LLM judge for vet_contact (Anthropic structured output)."""
 
     def forward(self, inputs: VetContactInput) -> VetContactOutput:
-        # Lazy import: the SDK is only needed at call time, and the
-        # module stays importable in environments without it.
-        import anthropic
+        # Which provider serves this call — and who is billed for it —
+        # is resolved at runtime; see signatures/_rote_inference.py.
+        from signatures._rote_inference import call_judge
 
-        client = anthropic.Anthropic(base_url=BASE_URL)
-        try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=4096,
-                tools=[
-                    {
-                        "name": "vet_contact",
-                        "description": TOOL_DESCRIPTION,
-                        "input_schema": OUTPUT_JSON_SCHEMA,
-                    }
-                ],
-                tool_choice={"type": "tool", "name": "vet_contact"},
-                messages=[
-                    {
-                        "role": "user",
-                        "content": _interpolate(
-                            PROMPT, inputs.model_dump(by_alias=True)
-                        ),
-                    }
-                ],
-            )
-        except anthropic.APIError as exc:
-            raise _durable_error(exc) from None
-        _log_usage(response)
-        for block in response.content:
-            if block.type == "tool_use":
-                return VetContactOutput.model_validate(block.input)
-        raise RuntimeError(
-            "LLM did not return a tool_use block for vet_contact"
+        payload = call_judge(
+            node_id="vet_contact",
+            client="anthropic",
+            model=MODEL,
+            base_url=BASE_URL,
+            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),
+            output_schema=OUTPUT_JSON_SCHEMA,
+            tool_description=TOOL_DESCRIPTION,
         )
+        return VetContactOutput.model_validate(payload)

@@ -4,16 +4,16 @@
     "README.md": "943d55a940389a66159d0080c33bc65d9d3a102dd48f275ad6bc94a63d6f1cfb",
     "dbos-config.yaml": "7abe9f42813bc9d95ce012147955d3e94bce482752ce53d58bf94b126220fd31",
     "extracted/__init__.py": "b45f4d98dce919704be69b3f087ab759257301612eab131e755bd473bb09723b",
-    "extracted/exclusion_checks.py": "2dd735f6721c186bef03fa6732b2704386a4756b1737561dd39c0e28660bad73",
-    "extracted/hubspot.py": "e960fe8c696c87d2de4875405a49dfd2eec8e44c1f395b0403c0a1c4b180718e",
-    "extracted/lead_generation_loop.py": "8855040e693627b32ffe9baa589011f2b1ea1d71c008754d75626875bdbdfcf5",
-    "extracted/report.py": "9126d28c0b34299b31f2c01511220019f3e466a5db948ba1e97f76e21e3b136e",
-    "extracted/target_research.py": "a9a38670c13ff45557e42884d2c7035dc93f1f7eff32d8dca7ce0fd05cd1fc8d",
-    "extracted/taxonomy.py": "e321b3e7948f53038ae8dd5bfa6a65672febea9f69f39b0db9800ebbfb17e9cb",
-    "extracted/zoominfo.py": "0f39628d4f9ef22939ee08b8359537e7880e3c227dc98a39c5cd70a578322d13",
-    "main.py": "6ec2beb6c08c052b02a11ae2e0196bfceb4a93fd9730146a6e4bb48be7bdb567",
+    "extracted/_rote_mcp.py": "0a2fbd1ffdee431c4690b9aca35a819e10791e61bf96a062aa42a2d3669f0845",
+    "extracted/exclusion_checks.py": "5587e746f47976085f93bfa2782f4a8dbec2d82dc42f27780e40fed071574dbb",
+    "extracted/hubspot.py": "2d1d050b3b1d5d4364a8c632bd8ad97e441ae080b4ea2cf7793280299f9f0a12",
+    "extracted/report.py": "e5d374b40fac4a6be9cd7a1c519848bfda18a094187ebb2297edd247df113707",
+    "extracted/taxonomy.py": "44b3bab5a9dde17f170b436157cc349e70a2388a065a4b413a1fe9bf453d437a",
+    "extracted/zoominfo.py": "9509863b14f2626fcd8154752c09e0bd7a5a4c6d5dc16071e33aac72eeb0b194",
+    "main.py": "c368a678c9e0d0566983b95c81f5decd86ae8b4b999af5819c8ab83676456274",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/personalize_email.py": "82d3c38c8d4a0bf1715060d367181ee363bc15770e743935ee24dab351b36fef",
-    "signatures/vet_contact.py": "1a914f108ab1f65669c2d069ad49eebfaffa1a97816c286d63430de79b31884f"
+    "signatures/_rote_inference.py": "7a2b0fe5e595c738551903ffa9827c12bea5e84c64cf1e0dcb22da18bf3aee3b",
+    "signatures/personalize_email.py": "e2d906e425fa1c230a49c42e9ffa6043737f5eefc82cbe506fd3ef2c58b30a83",
+    "signatures/vet_contact.py": "0d29c9dccf7f164fa54f0ecd26da60c714ac4f2c18bc4a0837dd60835ce6f80a"
   }
 }
