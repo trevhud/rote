@@ -96,39 +96,49 @@ def _check_call_signature(
 ) -> list[tuple[str, str]]:
     """Can ``fn(**payload)`` succeed? Returns ``(kind, message)`` pairs.
 
-    Adapters always call through ``**payload``, so this is keyword
-    dispatch: positional-only parameters are unreachable, required
-    parameters must be present, and unknown keys are a ``TypeError``
-    unless the function declares ``**kwargs``.
+    Adapters always call through ``**payload``, so this is pure keyword
+    dispatch. Three rules, each verified against the interpreter by
+    ``test_contracts.py``'s differential test rather than reasoned about:
+
+    * A **required** positional-only parameter can never be filled.
+    * A payload key *naming* a positional-only parameter is rejected —
+      even when that parameter has a default — UNLESS the function also
+      declares ``**kwargs``, in which case the key lands there and the
+      parameter quietly keeps its default.
+    * Everything else is ordinary: required parameters must be present,
+      and unknown keys need a ``**kwargs`` to land in.
     """
     findings: list[tuple[str, str]] = []
     a = fn.args
 
     # Defaults bind to the RIGHTMOST positional params (posonly + args).
     positional = list(a.posonlyargs) + list(a.args)
-    n_defaulted = len(a.defaults)
-    required_positional = {
-        p.arg for p in (positional[: len(positional) - n_defaulted] if n_defaulted else positional)
-    }
+    cut = len(positional) - len(a.defaults)
+    n_posonly = len(a.posonlyargs)
+
+    required_posonly = {p.arg for i, p in enumerate(positional[:cut]) if i < n_posonly}
+    required_named = {p.arg for i, p in enumerate(positional[:cut]) if i >= n_posonly}
     # kw_defaults is index-aligned with kwonlyargs; None means required.
-    required_positional |= {
-        p.arg for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is None
-    }
+    required_named |= {p.arg for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is None}
 
-    accepted = {p.arg for p in positional} | {p.arg for p in a.kwonlyargs}
+    posonly_names = {p.arg for p in a.posonlyargs}
+    # Only `args` and `kwonlyargs` are reachable by keyword.
+    accepted = {p.arg for p in a.args} | {p.arg for p in a.kwonlyargs}
 
-    posonly_needed = {p.arg for p in a.posonlyargs} & required_positional
-    if posonly_needed:
+    # A `**kwargs` gives a posonly-named key somewhere to land, so only the
+    # unfillable-required case survives it.
+    bad_posonly = required_posonly | ((posonly_names & payload_keys) if a.kwarg is None else set())
+    if bad_posonly:
         findings.append(
             (
                 "positional_only_param",
                 f"{fn.name}() declares positional-only parameter(s) "
-                f"[{', '.join(sorted(posonly_needed))}], which a `**payload` call "
+                f"[{', '.join(sorted(bad_posonly))}], which a `**payload` call "
                 f"can never fill — remove the `/` marker",
             )
         )
 
-    missing = required_positional - payload_keys - posonly_needed
+    missing = required_named - payload_keys
     if missing:
         findings.append(
             (
@@ -140,7 +150,8 @@ def _check_call_signature(
         )
 
     if a.kwarg is None:
-        unexpected = payload_keys - accepted
+        # posonly collisions are already reported above; don't double-count.
+        unexpected = payload_keys - accepted - posonly_names
         if unexpected:
             findings.append(
                 (

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rote.contracts import ContractFinding, check_contracts
 from rote.ir import Node, NodeKind, Pipeline
 
@@ -340,3 +342,152 @@ def test_healthy_snapshots_report_nothing() -> None:
     for run in clean:
         findings = check_contracts(load_pipeline(run / "pipeline.yaml"), run)
         assert findings == [], f"{run.name}: {[f.message for f in findings]}"
+
+
+# ───────── Differential: the checker vs the interpreter ─────────
+#
+# The signature rules are fiddly enough that reasoning about them is how
+# bugs get in — the first draft passed `def f(a=1, /)` with `{"a": 2}` as
+# clean, where CPython raises. So don't reason: build the function, call
+# it, and require the checker's verdict to match what actually happened.
+
+#: ``(source, payload)``. Every shape the emitted `func(**payload)` call
+#: site can meet, including the ones that only differ under `**kwargs`.
+_SIGNATURE_CASES: list[tuple[str, dict[str, int]]] = [
+    # Ordinary
+    ("def f(a, b): ...", {"a": 1, "b": 2}),
+    ("def f(a, b): ...", {"a": 1}),
+    ("def f(a): ...", {"a": 1, "b": 2}),
+    ("def f(): ...", {}),
+    ("def f(): ...", {"a": 1}),
+    # Defaults
+    ("def f(a, b=2): ...", {"a": 1}),
+    ("def f(a, b=2): ...", {"a": 1, "b": 3}),
+    ("def f(a=1, b=2): ...", {}),
+    # Keyword-only
+    ("def f(*, a): ...", {"a": 1}),
+    ("def f(*, a): ...", {}),
+    ("def f(*, a=1): ...", {}),
+    ("def f(a, *, b): ...", {"a": 1}),
+    ("def f(a, *, b): ...", {"a": 1, "b": 2}),
+    # Var-positional / var-keyword
+    ("def f(a, *args): ...", {"a": 1}),
+    ("def f(**kw): ...", {"a": 1, "b": 2}),
+    ("def f(a, **kw): ...", {"a": 1, "z": 9}),
+    ("def f(a, **kw): ...", {"z": 9}),
+    ("def f(*args, **kw): ...", {"a": 1}),
+    # Positional-only — the family that broke the first draft
+    ("def f(a, /): ...", {"a": 1}),
+    ("def f(a, /): ...", {}),
+    ("def f(a=1, /): ...", {}),
+    ("def f(a=1, /): ...", {"a": 2}),
+    ("def f(a, /, b): ...", {"a": 1, "b": 2}),
+    ("def f(a, /, b): ...", {"b": 2}),
+    ("def f(a, /, **kw): ...", {"a": 1}),
+    ("def f(a=1, /, **kw): ...", {"a": 2}),
+    ("def f(a, /, *, b): ...", {"b": 2}),
+]
+
+
+def _python_accepts(source: str, payload: dict[str, int]) -> bool:
+    namespace: dict[str, object] = {}
+    exec(source, namespace)  # noqa: S102 - fixed literals defined above
+    fn = namespace["f"]
+    assert callable(fn)
+    try:
+        fn(**payload)
+    except TypeError:
+        return False
+    return True
+
+
+def test_checker_verdict_matches_cpython_for_every_signature_shape() -> None:
+    import ast as _ast
+
+    from rote.contracts import _check_call_signature
+
+    disagreements: list[str] = []
+    for source, payload in _SIGNATURE_CASES:
+        node = _ast.parse(source).body[0]
+        assert isinstance(node, _ast.FunctionDef)
+        checker_says_ok = not _check_call_signature(node, set(payload))
+        python_says_ok = _python_accepts(source, payload)
+        if checker_says_ok != python_says_ok:
+            disagreements.append(
+                f"{source!r} with {payload!r}: "
+                f"checker_ok={checker_says_ok} cpython_ok={python_says_ok}"
+            )
+    assert not disagreements, "checker disagrees with CPython:\n  " + "\n  ".join(disagreements)
+
+
+def test_the_differential_cases_actually_cover_both_verdicts() -> None:
+    """A table where everything passes would prove nothing."""
+    accepted = [c for c in _SIGNATURE_CASES if _python_accepts(*c)]
+    rejected = [c for c in _SIGNATURE_CASES if not _python_accepts(*c)]
+    assert len(accepted) >= 10, "not enough passing shapes to catch over-reporting"
+    assert len(rejected) >= 10, "not enough failing shapes to catch under-reporting"
+
+
+# ───────── Empirical: the finding predicts a real failure ─────────
+
+
+def test_bdr_finding_reproduces_as_a_real_typeerror() -> None:
+    """Import the agent's actual module and make the call the adapter emits.
+
+    A structural finding is only worth acting on if the runtime really
+    fails. Both BDR breaks are checked against the real committed source
+    (stdlib-only imports, so this is safe to exec), reproducing the exact
+    `func(**payload)` that dbos / python / temporal all emit.
+    """
+    import importlib.util
+
+    run = REPO_ROOT / "examples" / "bdr-outreach" / "runs" / "2026-07-18-mcp-bindings"
+
+    def _load(rel: str, name: str) -> object:
+        spec = importlib.util.spec_from_file_location(name, run / rel)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    hubspot = _load("extracted/hubspot.py", "_bdr_hubspot")
+    exclusion = _load("extracted/exclusion_checks.py", "_bdr_exclusion")
+
+    # hubspot_create_list binds {campaign_name, contacts}; impl takes one.
+    with pytest.raises(TypeError, match="contacts"):
+        hubspot.create_campaign_list(  # type: ignore[attr-defined]
+            **{"campaign_name": "Orladeyo", "contacts": []}
+        )
+
+    # exclusion_check_dnc binds only {contacts}; impl also requires dnc_list_id.
+    with pytest.raises(TypeError, match="dnc_list_id"):
+        exclusion.check_do_not_contact(**{"contacts": []})  # type: ignore[attr-defined]
+
+
+# ───────── The premise the whole checker rests on ─────────
+
+
+def test_python_adapters_really_call_impls_with_double_star_payload() -> None:
+    """Every signature finding assumes the emitted call is
+    `func(**payload)` with the node's `inputs` as the keys. If an adapter
+    ever changes that convention, this checker silently starts lying —
+    so assert the convention itself."""
+    from rote.adapters import get_adapter
+    from rote.ir import load_pipeline
+
+    pipeline = load_pipeline(
+        REPO_ROOT / "examples" / "deal-monitor" / "runs" / "2026-07-18-rubric-v2" / "pipeline.yaml"
+    )
+    import tempfile
+
+    for runtime in ("dbos", "python", "temporal"):
+        with tempfile.TemporaryDirectory() as tmp:
+            written = get_adapter(runtime).emit(pipeline, tmp)
+            main = next(
+                path for label, path in written.items() if path.name in ("main.py", "activities.py")
+            )
+            source = main.read_text(encoding="utf-8")
+            assert "(**payload)" in source, (
+                f"{runtime} no longer calls impls with **payload — "
+                "rote.contracts._check_call_signature models the old convention"
+            )
