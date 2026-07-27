@@ -447,6 +447,42 @@ against both the stubs and whatever concrete type the user fills in
 later. Verified by `tests/test_cloudflare_e2e.py::test_emitted_typescript_compiles`
 — run it after touching the Cloudflare emitter's typing story.
 
+### A parallel wave is not automatically parallel in the emitted code
+
+`_execution_waves` says which nodes MAY run concurrently; each adapter
+decides whether to take it, and the two mistakes here are easy to
+reintroduce because neither fails a test that didn't exist yet.
+
+Cloudflare computed waves and then emitted every `step.do` sequentially
+— the concurrency survived only as a `// ─── Wave N ───` comment, on the
+runtime that is also the logged-in default. It now emits
+`await Promise.all([...])`, which is Cloudflare's documented primitive
+(the ✅ example in "Rules of Workflows"; their own visualizer has a
+`ParallelNode` for it; no documented per-instance cap on concurrent
+steps). Three rules to preserve:
+
+- **Never wrap the wave in an outer `step.do`.** That advice is specific
+  to `Promise.race`/`any`, where losing branches are discarded. Wrapping
+  burns a step, subjects the whole wave to the 1 MiB step-result cap, and
+  collapses per-node retry policies into one.
+- **`Promise.all`, not `allSettled`** — opposite of DBOS-TS, on purpose.
+  Reaching the rejection means that node already exhausted its own
+  retries, and every sibling's result is persisted under its own step
+  name, so a workflow retry replays survivors from cache. (DBOS-TS uses
+  `allSettled` for a different reason: a bare `Promise.all` can crash the
+  Node process on unhandled rejections.)
+- **HITL gates and MCP-parkable steps stay sequential.** Both suspend on
+  `waitForEvent`, whose behavior inside a promise combinator is
+  undocumented — and whose timeout *throws*, which would reject the whole
+  wave.
+
+Temporal had the mirror-image bug: `_emit_wave_call` emitted
+`retry_policy=`, but the `asyncio.gather` branch emitted only the
+timeout, so a node silently lost its declared retry budget the moment it
+gained a sibling in its wave — and parallel fetch waves are exactly where
+the flaky network calls live. If you add a parallel branch to any
+adapter, diff it against the single-node branch field by field.
+
 ### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
 
 Three traps hit while building the Inngest adapter, all verified
@@ -904,7 +940,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 722 tests (698 fast + 24 slow). Run with `pytest tests/` (fast
+- 1071 tests (1047 fast + 24 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

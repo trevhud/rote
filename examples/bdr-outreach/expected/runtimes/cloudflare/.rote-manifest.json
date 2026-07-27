@@ -19,7 +19,7 @@
     "src/index.ts": "e8160b22e60d5bf6bd17d1d2bad56bedddd36e71c6a66159c492e5184d781114",
     "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
     "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
-    "src/workflow.ts": "81fb6a187f093e6129bc55c37410ad09871183900191350535177a060aa751ea",
+    "src/workflow.ts": "06e6c0a44e86470282cfd5a62a2bb1af9119195a57f2decf59317334e397c0dd",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "f8b1bfc2997f33a242d4da7526a34943de9fd102c3406f78dca9cebe44523c15"
   }

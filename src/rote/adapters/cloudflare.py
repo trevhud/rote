@@ -259,6 +259,47 @@ def _emit_step_call_agent_loop(node: Node, cfg: CloudflareAdapterConfig) -> str:
     return _emit_step_call(node, cfg, pass_env=True)
 
 
+def _emit_parallel_step_calls(nodes: list[Node], cfg: CloudflareAdapterConfig) -> str:
+    """Emit one wave of independent nodes as a single ``Promise.all``.
+
+    A promise combinator over ``step.do`` is Cloudflare's documented
+    concurrency primitive for Workflows — the "Rules of Workflows" good
+    example is exactly this shape, and the platform's own visualizer has
+    a ``ParallelNode`` for it. There is no documented per-instance cap on
+    concurrent steps.
+
+    Deliberately NOT wrapped in an outer ``step.do``. That advice is
+    specific to ``Promise.race``/``any``, where losing branches are
+    discarded and their cached steps go unconsumed; wrapping a whole wave
+    would burn an extra step, subject the aggregate to the 1 MiB
+    step-result cap, and collapse per-node retry policies into one.
+
+    Fail-fast (``Promise.all``, not ``allSettled``) is the right semantic
+    for a DAG wave: reaching the rejection means that node already
+    exhausted its own retries, and every sibling's result is persisted
+    under its own step name — so a workflow retry replays the survivors
+    from cache instead of re-running them.
+    """
+    lines = ["        // Independent nodes — dispatched concurrently."]
+    lines.append("        const [")
+    for n in nodes:
+        lines.append(f"            {n.id}_result,")
+    lines.append("        ] = await Promise.all([")
+    for n in nodes:
+        pass_env = n.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
+        # Closing brace lines up with its `async () =>`, as in the
+        # single-node form (which passes its own call indent).
+        payload = payload_ts_literal(n, indent=" " * 16)
+        args = f"{payload}, this.env" if pass_env else payload
+        lines.append("            step.do(")
+        lines.append(f"                {json.dumps(n.id)},")
+        lines.append(f"                {_step_config_literal(n, cfg)},")
+        lines.append(f"                async () => {_to_camel_case(n.id)}({args}),")
+        lines.append("            ),")
+    lines.append("        ]);")
+    return "\n".join(lines) + "\n"
+
+
 def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
     assert node.signal is not None
     _validate_signal_name(node.signal, node.id)
@@ -393,25 +434,48 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     # used to reject inputs that reference a later wave at emit time.
     available: set[str] = set()
 
+    def _is_parkable(node: Node) -> bool:
+        # MCP-backed calls read credentials from env (Worker secrets + the
+        # KV token cache) and park the instance durably when the
+        # credential is missing or dead.
+        return (
+            node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL)
+            and node.mcp is not None
+            and cfg.external_backend == "mcp"
+        )
+
     for wave_idx, wave in enumerate(waves, start=1):
         body_lines.append(f"        // ─── Wave {wave_idx} ───")
-        for node in wave:
-            if node.kind is NodeKind.HITL_GATE:
-                body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
+
+        # A wave's members have no dependency on each other, so they may
+        # run in any order or concurrently. Two shapes stay sequential:
+        # gates and parkable steps both suspend on `waitForEvent`, whose
+        # behavior inside a promise combinator is undocumented — and
+        # whose timeout throw would reject the entire wave.
+        gates = [n for n in wave if n.kind is NodeKind.HITL_GATE]
+        parkable = [n for n in wave if _is_parkable(n)]
+        plain = [n for n in wave if n.kind is not NodeKind.HITL_GATE and not _is_parkable(n)]
+
+        for node in plain + parkable:
+            check_input_refs_available(node, available)
+
+        if len(plain) > 1:
+            body_lines.append(_emit_parallel_step_calls(plain, cfg).rstrip("\n"))
+        elif plain:
+            node = plain[0]
+            if node.kind is NodeKind.LLM_JUDGE:
+                body_lines.append(_emit_step_call_llm_judge(node, cfg).rstrip("\n"))
+            elif node.kind is NodeKind.AGENT_LOOP:
+                body_lines.append(_emit_step_call_agent_loop(node, cfg).rstrip("\n"))
             else:
-                check_input_refs_available(node, available)
-                if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL):
-                    # MCP-backed calls read credentials from env (Worker
-                    # secrets + the KV token cache) and park the instance
-                    # durably when the credential is missing or dead.
-                    if node.mcp is not None and cfg.external_backend == "mcp":
-                        body_lines.append(_emit_step_call_mcp_parkable(node, cfg).rstrip("\n"))
-                    else:
-                        body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
-                elif node.kind is NodeKind.LLM_JUDGE:
-                    body_lines.append(_emit_step_call_llm_judge(node, cfg).rstrip("\n"))
-                elif node.kind is NodeKind.AGENT_LOOP:
-                    body_lines.append(_emit_step_call_agent_loop(node, cfg).rstrip("\n"))
+                body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
+
+        for node in parkable:
+            body_lines.append(_emit_step_call_mcp_parkable(node, cfg).rstrip("\n"))
+
+        for node in gates:
+            body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
+
         body_lines.append("")
         available.update(n.id for n in wave)
 

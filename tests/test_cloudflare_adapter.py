@@ -35,7 +35,7 @@ from rote.adapters.cloudflare import (
     _to_camel_case,
     _validate_signal_name,
 )
-from rote.ir import LLMSignature, NodeKind, Pipeline
+from rote.ir import LLMSignature, Node, NodeKind, Pipeline, RetryPolicy
 from tests._helpers import assert_no_mcp_in_ts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -249,9 +249,11 @@ def test_workflow_has_step_do_for_every_non_hitl_node(
             continue
         if node.id in nested_ids:
             continue
-        assert f'step.do(\n            "{node.id}"' in src, (
-            f"Missing step.do call for node {node.id!r} in workflow.ts"
-        )
+        # Indentation differs between the sequential form (12) and the
+        # Promise.all wave form (16), so match on the name line alone.
+        assert (
+            f'step.do(\n{" " * 12}"{node.id}"' in src or f'step.do(\n{" " * 16}"{node.id}"' in src
+        ), f"Missing step.do call for node {node.id!r} in workflow.ts"
 
 
 def test_workflow_has_wait_for_event_for_every_hitl_gate(
@@ -523,7 +525,9 @@ def test_workflow_binds_pipeline_input(emit_result: dict[str, Path]) -> None:
 
 def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> None:
     src = emit_result["workflow"].read_text()
-    payload = "{\n                brief: pipelineInput,\n            }"
+    # BDR's two entry nodes share wave 1, so they emit inside a
+    # Promise.all — one level deeper than the sequential form.
+    payload = "{\n                    brief: pipelineInput,\n                }"
     assert f"targetResearch({payload}, this.env)" in src
     assert f"taxonomyLookup({payload})" in src
 
@@ -821,3 +825,100 @@ def test_emit_result_exposes_preserved_paths(
     assert second.preserved[rel] == target.with_name(target.name + ".new")
     # Backward-compat: it still behaves as the written mapping.
     assert second[label].name.endswith(".new")
+
+
+# ───────── Parallel waves ─────────
+#
+# The adapter computed execution waves and then emitted every step
+# sequentially, so a wave's concurrency existed only as a comment. These
+# pin the Promise.all form and — just as importantly — the two shapes
+# that must stay sequential.
+
+
+def _wave_pipeline(*nodes: Node) -> Pipeline:
+    """Every node an entry node with no edges — one single wave."""
+    return Pipeline(
+        name="wave",
+        input={"type": "In", "required": []},
+        nodes=list(nodes),
+        edges=[],
+        entry_nodes=[n.id for n in nodes],
+        exit_nodes=[n.id for n in nodes],
+    )
+
+
+def _plain(node_id: str) -> Node:
+    return Node(
+        id=node_id,
+        kind=NodeKind.EXTERNAL_CALL,
+        description=f"Fetch {node_id}.",
+        impl=f"extracted/{node_id}.py:{node_id}",
+    )
+
+
+def test_multi_node_wave_dispatches_concurrently() -> None:
+    src = CloudflareAdapter().emit_workflow(_wave_pipeline(_plain("a"), _plain("b"), _plain("c")))
+
+    assert "await Promise.all([" in src
+    # All three results destructured from the one combinator.
+    for nid in ("a", "b", "c"):
+        assert f"{nid}_result," in src
+        assert f'step.do(\n                "{nid}",' in src
+    # Exactly one combinator for the one wave.
+    assert src.count("Promise.all([") == 1
+    # Never wrapped in an outer step.do — that would burn a step, cap the
+    # wave at the 1 MiB step-result limit, and collapse per-node retries.
+    assert "step.do(\n            async () => Promise.all" not in src
+
+
+def test_single_node_wave_stays_sequential() -> None:
+    """One node is not a wave worth a combinator."""
+    src = CloudflareAdapter().emit_workflow(_wave_pipeline(_plain("only")))
+    assert "Promise.all" not in src
+    assert "const only_result = await step.do(" in src
+
+
+def test_hitl_gate_never_joins_a_parallel_wave() -> None:
+    """`waitForEvent` inside a promise combinator is undocumented, and its
+    timeout throw would reject the whole wave. Gates stay sequential even
+    when they share a wave with dispatchable nodes."""
+    gate = Node(
+        id="approve",
+        kind=NodeKind.HITL_GATE,
+        description="Human approval.",
+        signal="approved",
+    )
+    src = CloudflareAdapter().emit_workflow(_wave_pipeline(_plain("a"), _plain("b"), gate))
+
+    assert "await Promise.all([" in src
+    combinator = src[src.index("Promise.all([") : src.index("]);")]
+    assert "waitForEvent" not in combinator
+    assert "const approve_event = await step.waitForEvent" in src
+
+
+def test_mcp_parkable_node_never_joins_a_parallel_wave() -> None:
+    """The parkable retry loop suspends on waitForEvent too — same rule."""
+    parkable = Node(
+        id="search_docs",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="Search docs over MCP.",
+        mcp={"server": "docs", "tool": "search"},
+    )
+    src = CloudflareAdapter().emit_workflow(_wave_pipeline(_plain("a"), _plain("b"), parkable))
+
+    assert "await Promise.all([" in src
+    combinator = src[src.index("Promise.all([") : src.index("]);")]
+    assert "search_docs" not in combinator
+    assert "for (let search_docs_attempt = 0; ; search_docs_attempt++)" in src
+
+
+def test_parallel_wave_keeps_per_node_step_config() -> None:
+    """Concurrency must not flatten each node's own retry/timeout config."""
+    slow = _plain("slow")
+    slow.timeout = "9m"
+    flaky = _plain("flaky")
+    flaky.retry = RetryPolicy(max=4, backoff="exponential")
+    src = CloudflareAdapter().emit_workflow(_wave_pipeline(slow, flaky))
+
+    assert 'timeout: "9 minutes"' in src
+    assert "retries: { limit: 4," in src

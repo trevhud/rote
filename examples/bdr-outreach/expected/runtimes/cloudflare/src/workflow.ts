@@ -45,20 +45,26 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         const pipelineInput = event.payload;
 
         // ─── Wave 1 ───
-        const target_research_result = await step.do(
-            "target_research",
-            { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" },
-            async () => targetResearch({
-                brief: pipelineInput,
-            }, this.env),
-        );
-        const taxonomy_lookup_result = await step.do(
-            "taxonomy_lookup",
-            { timeout: "10 minutes" },
-            async () => taxonomyLookup({
-                brief: pipelineInput,
-            }),
-        );
+        // Independent nodes — dispatched concurrently.
+        const [
+            target_research_result,
+            taxonomy_lookup_result,
+        ] = await Promise.all([
+            step.do(
+                "target_research",
+                { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" },
+                async () => targetResearch({
+                    brief: pipelineInput,
+                }, this.env),
+            ),
+            step.do(
+                "taxonomy_lookup",
+                { timeout: "10 minutes" },
+                async () => taxonomyLookup({
+                    brief: pipelineInput,
+                }),
+            ),
+        ]);
 
         // ─── Wave 2 ───
         const lead_generation_loop_result = await step.do(

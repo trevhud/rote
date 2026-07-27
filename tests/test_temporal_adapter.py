@@ -457,3 +457,94 @@ def test_malicious_description_cannot_break_out_of_docstring() -> None:
     assert not calls, "os.system injected as executable code"
     # And the raw (unescaped) breakout sequence must be gone.
     assert '"""; import os' not in src
+
+
+# ───────── Retry policies survive parallelization ─────────
+
+
+def _two_node_wave_pipeline() -> Pipeline:
+    """Two entry nodes with no edge between them — one parallel wave."""
+    return Pipeline(
+        name="parallel",
+        input={"type": "In", "required": []},
+        nodes=[
+            Node(
+                id="fetch_a",
+                kind=NodeKind.EXTERNAL_CALL,
+                description="Fetch A.",
+                impl="extracted/a.py:fetch_a",
+                retry={"max": 5, "backoff": "exponential"},
+            ),
+            Node(
+                id="fetch_b",
+                kind=NodeKind.EXTERNAL_CALL,
+                description="Fetch B.",
+                impl="extracted/b.py:fetch_b",
+                retry={"max": 2, "backoff": "linear"},
+            ),
+        ],
+        edges=[],
+        entry_nodes=["fetch_a", "fetch_b"],
+        exit_nodes=["fetch_a", "fetch_b"],
+    )
+
+
+def test_parallel_wave_keeps_each_node_retry_policy() -> None:
+    """A node must not lose its declared retry budget just for having a
+    sibling in its wave. The gather branch once emitted only the timeout,
+    silently dropping retries from exactly the parallel fetch waves where
+    flaky network calls live."""
+    pipeline = _two_node_wave_pipeline()
+    src = TemporalAdapter().emit_workflow(pipeline)
+
+    assert "asyncio.gather(" in src, "expected the parallel branch"
+    # max=5 → maximum_attempts=6 (Temporal counts initial + retries)
+    assert "RetryPolicy(maximum_attempts=6, backoff_coefficient=2.0)" in src
+    assert "RetryPolicy(maximum_attempts=3, backoff_coefficient=1.0)" in src
+    ast.parse(src)
+
+
+def test_parallel_wave_omits_retry_policy_when_ir_declares_none() -> None:
+    """No retry in the IR means no retry_policy kwarg — not a default."""
+    pipeline = _two_node_wave_pipeline()
+    for node in pipeline.nodes:
+        node.retry = None
+    src = TemporalAdapter().emit_workflow(pipeline)
+
+    assert "asyncio.gather(" in src
+    assert "retry_policy=" not in src
+    ast.parse(src)
+
+
+# ───────── MCP-only external_call refusal ─────────
+
+
+def _mcp_only_pipeline() -> Pipeline:
+    """`impl` or `mcp` satisfies external_call in the IR — this is the
+    legal shape the temporal adapter cannot emit."""
+    return mini_pipeline(
+        Node(
+            id="search_docs",
+            kind=NodeKind.EXTERNAL_CALL,
+            description="Search the docs over MCP.",
+            mcp={"server": "docs", "tool": "search"},
+        )
+    )
+
+
+def test_refuses_mcp_only_node_with_actionable_error(tmp_path: Path) -> None:
+    """Valid IR the adapter can't serve must produce an explanatory
+    refusal, not a bare AssertionError from a type-narrowing assert."""
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="no MCP backend") as excinfo:
+        TemporalAdapter().emit(_mcp_only_pipeline(), out)
+    message = str(excinfo.value)
+    assert "search_docs" in message
+    assert "--runtime dbos" in message
+    # Refusal happens before any file is written — no partial output.
+    assert not out.exists()
+
+
+def test_emit_activities_also_refuses_mcp_only_node() -> None:
+    with pytest.raises(ValueError, match="no MCP backend"):
+        TemporalAdapter().emit_activities(_mcp_only_pipeline())

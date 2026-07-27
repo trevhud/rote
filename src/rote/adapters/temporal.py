@@ -35,6 +35,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    refuse_mcp_only_nodes,
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
@@ -105,6 +106,9 @@ def _retry_policy_args(node: Node) -> str:
 
 
 def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) -> str:
+    # Type narrowing only. An mcp-only external_call is valid IR but has
+    # no module to import here; emit_activities() already refused the
+    # whole pipeline with an actionable message before reaching this.
     assert node.impl is not None
     module_name, func_name = _impl_path_parts(node.impl)
 
@@ -225,8 +229,14 @@ def _emit_activity_for_agent_loop(node: Node, cfg: TemporalAdapterConfig) -> str
 
 
 def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) -> str:
-    """Render the activities.py source for a pipeline."""
+    """Render the activities.py source for a pipeline.
+
+    Raises ``ValueError`` if any ``external_call`` is bound to MCP with
+    no ``impl`` — this adapter has no MCP backend (see
+    :func:`refuse_mcp_only_nodes`).
+    """
     cfg = cfg or TemporalAdapterConfig()
+    refuse_mcp_only_nodes(pipeline, "temporal")
 
     parts: list[str] = []
 
@@ -437,10 +447,15 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
                     "                start_to_close_timeout="
                     f'timedelta(minutes=_parse_minutes("{timeout}")),\n'
                 )
+                # A node must not lose its declared retry budget just for
+                # having a sibling in its wave — parallel fetch waves are
+                # exactly where the flaky network calls live.
+                retry = _retry_policy_args(n)
+                retry_line = f"                retry_policy={retry},\n" if retry else ""
                 body_lines.append(
                     f"            workflow.execute_activity(\n"
                     f'                "{n.id}",\n'
-                    f"                {payload},\n" + timeout_line + "            ),"
+                    f"                {payload},\n" + timeout_line + retry_line + "            ),"
                 )
             body_lines.append("        )")
 
@@ -553,6 +568,9 @@ class TemporalAdapter:
         their activity imports; legacy ``signature: path:Class`` judges
         keep importing the user-maintained ``signatures_module``.
         """
+        # Refuse before touching the filesystem: no partial output.
+        refuse_mcp_only_nodes(pipeline, "temporal")
+
         writer = EmitWriter(output_dir)
 
         written = {

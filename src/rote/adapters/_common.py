@@ -16,7 +16,7 @@ import json
 import re
 from pathlib import Path
 
-from rote.ir import Node, Pipeline, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── Default LLM models ─────────
 #
@@ -420,3 +420,36 @@ def check_input_refs_available(node: Node, available: set[str]) -> None:
                 f"workflow (it runs in a later wave, or is a loop-body sub-node "
                 f"with no top-level result)."
             )
+
+
+# ───────── MCP-capability refusal ─────────
+
+
+def refuse_mcp_only_nodes(pipeline: Pipeline, adapter: str) -> None:
+    """Refuse pipelines an MCP-incapable adapter cannot emit, loudly and early.
+
+    ``ir.Node`` accepts ``impl`` *or* ``mcp`` on an ``external_call`` — a
+    node carrying only an ``mcp`` binding is perfectly valid IR. Adapters
+    with no MCP backend have no module to import for such a node, so they
+    must refuse it rather than emit a call to nothing.
+
+    Reported for the whole pipeline at once, before any file is written,
+    so the user fixes every offending node in one pass instead of
+    rediscovering them one re-emit at a time.
+    """
+    orphans = [
+        n.id
+        for n in pipeline.nodes
+        if n.kind is NodeKind.EXTERNAL_CALL and n.impl is None and n.mcp is not None
+    ]
+    if not orphans:
+        return
+    raise ValueError(
+        f"{adapter} adapter: pipeline {pipeline.name!r} contains external_call "
+        f"node(s) [{', '.join(orphans)}] bound to an MCP server with no `impl:` — "
+        f"the {adapter} adapter has no MCP backend, so there is nothing to call. "
+        f"Emit onto a runtime that speaks MCP "
+        f"(`--runtime dbos`, `--runtime dbos-ts`, `--runtime cloudflare`, "
+        f"`--runtime inngest`), or give each node an `impl:` pointing at an "
+        f"extracted module."
+    )
