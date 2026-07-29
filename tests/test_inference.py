@@ -375,7 +375,9 @@ def test_cli_transport_asks_for_schema_locked_output(
     # A gateway-qualified id means nothing to the CLI.
     assert command[command.index("--model") + 1] == "claude-sonnet-5"
     # A judge reasons and answers; it must not read files or run commands.
-    assert "--tools" in command
+    # The empty value is load-bearing: the flag is variadic, so a bare
+    # `--tools` makes the CLI exit 1 before it ever runs the judge.
+    assert command[command.index("--tools") + 1] == ""
     assert command[command.index("--setting-sources") + 1] == ""
 
 
@@ -501,3 +503,94 @@ def test_the_helper_imports_nothing_but_stdlib_at_module_level() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module is not None:
             roots.append(node.module.split(".")[0])
     assert set(roots) <= set(sys.stdlib_module_names) | {"__future__"}
+
+
+# ───────── CLI transport: agent loops ─────────
+
+
+def _agent_envelope(**overrides: Any) -> str:
+    envelope = {
+        "is_error": False,
+        "result": "Researched 3 accounts.",
+        "num_turns": 4,
+        "usage": {"input_tokens": 900, "output_tokens": 120},
+    }
+    envelope.update(overrides)
+    return json.dumps(envelope)
+
+
+def _capture_cli(monkeypatch: pytest.MonkeyPatch, envelope: str) -> dict[str, Any]:
+    monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
+    seen: dict[str, Any] = {}
+
+    def _run(command: list[str], **kwargs: Any) -> Any:
+        seen["command"] = command
+        seen["input"] = kwargs["input"]
+        return types.SimpleNamespace(stdout=envelope, stderr="", returncode=0)
+
+    monkeypatch.setattr(helper.subprocess, "run", _run)
+    return seen
+
+
+def test_agent_loop_cli_never_passes_a_bare_tools_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--tools`` is variadic, so a bare flag exits 1 before the loop runs.
+
+    This shipped broken and no test caught it: every emitted agent loop on
+    the subscription lane died with "option '--tools <tools...>' argument
+    missing" the moment no MCP server resolved — the common case on a
+    machine with no registry. Asserting the flag's *value* is the point;
+    asserting its presence is what let the bug through.
+    """
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda _tools: ({}, []))
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+
+    result = helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        tools=["bright_data_search"],
+        max_iterations=6,
+    )
+
+    assert result["result"] == "Researched 3 accounts."
+    command = seen["command"]
+    assert command[command.index("--tools") + 1] == ""
+    # No servers resolved means no allowlist and no mcp-config to pass.
+    assert "--allowedTools" not in command
+    assert "--mcp-config" not in command
+    # Bounded by the caller's cap, not the CLI's default.
+    assert command[command.index("--max-turns") + 1] == "6"
+
+
+def test_agent_loop_cli_wires_resolved_servers_and_allowlists_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With servers resolved, the allowlist — not the wiring — is the boundary.
+
+    Over-wiring is safe precisely because ``--allowedTools`` constrains
+    what the agent may call; the IR named the tools, so a server offering
+    anything else is unreachable.
+    """
+    servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
+    allowed = ["mcp__vendor__bright_data_search"]
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda _tools: (servers, allowed))
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+
+    helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        tools=["bright_data_search"],
+        max_iterations=6,
+    )
+
+    command = seen["command"]
+    assert command[command.index("--allowedTools") + 1] == "mcp__vendor__bright_data_search"
+    assert json.loads(command[command.index("--mcp-config") + 1]) == {"mcpServers": servers}
+    # The tool-free form must not also appear — it would contradict the
+    # allowlist and reload the default toolset.
+    assert "--tools" not in command

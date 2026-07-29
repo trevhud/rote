@@ -499,7 +499,15 @@ def _call_claude_cli(
         # A judge reasons over its prompt and answers; it must not read
         # files, run commands, or inherit the user's settings. Both flags
         # also cut the request from ~37k tokens to ~740.
+        #
+        # The empty VALUE is required, not decorative: the flag is
+        # declared variadic (`--tools <tools...>`), so a bare `--tools`
+        # is rejected outright — "error: option '--tools <tools...>'
+        # argument missing", exit 1, on every call. Verified against
+        # Claude Code 2.1.220; `--tools ""` still loads no tools (167
+        # input tokens on a one-line prompt).
         "--tools",
+        "",
         "--setting-sources",
         "",
     ]
@@ -713,7 +721,10 @@ def _run_agent_via_cli(
         command += ["--allowedTools", ",".join(allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
     else:
-        command.append("--tools")
+        # Empty VALUE, not a bare flag — see the judge path above. An
+        # agent loop reaches this branch whenever no MCP server resolves,
+        # which is the common case on a machine with no registry.
+        command += ["--tools", ""]
 
     try:
         completed = subprocess.run(

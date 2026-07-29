@@ -108,22 +108,45 @@ def _mock_output(node_id: str) -> dict:
 
 
 def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) -> None:
-    # Extracted modules (pure_function / external_call / agent_loop),
-    # grouped exactly the way the adapter grouped them.
+    # Extracted modules (pure_function / external_call), grouped exactly
+    # the way the adapter grouped them. Agent loops are NOT here —
+    # _extracted_layout skips them deliberately, because the adapter
+    # inlines run_agent_loop into main.py rather than scaffolding a stub.
     for module_name, nodes in _extracted_layout(pipeline).items():
         src = _RECORDER_PRELUDE.format(record_path=str(record_path))
         for node in nodes:
-            if node.kind is NodeKind.AGENT_LOOP:
-                func = node.id
-            else:
-                assert node.impl is not None
-                _, func = _impl_path_parts(node.impl)
+            assert node.impl is not None
+            _, func = _impl_path_parts(node.impl)
             src += (
                 f"\n\ndef {func}(**payload):\n"
                 f'    _record("{node.id}", payload)\n'
                 f"    return {_mock_output(node.id)!r}\n"
             )
         (out_dir / "extracted" / f"{module_name}.py").write_text(src, encoding="utf-8")
+
+    # Agent loops: the adapter emits `return run_agent_loop(...)` inline,
+    # so the seam is the inference helper, not an extracted module. Left
+    # unmocked, this test spends real subscription inference on two BDR
+    # loops and takes ~35s+ of the 60s budget to orchestrate nothing new
+    # — it is a durable-execution test, not an agent test. Appending the
+    # override works because Python binds the last definition to win.
+    loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
+    if loops:
+        helper = out_dir / "signatures" / "_rote_inference.py"
+        outputs = {node.id: _mock_output(node.id) for node in loops}
+        helper.write_text(
+            helper.read_text(encoding="utf-8")
+            + "\n\n"
+            + _RECORDER_PRELUDE.format(record_path=str(record_path))
+            + f"\n\n_LOOP_OUTPUTS = {outputs!r}\n\n\n"
+            "def run_agent_loop(*, node_id, task, **_kwargs):\n"
+            "    # `task` is the threaded payload, json-encoded by the\n"
+            "    # emitted step — decode it so the recorder sees the same\n"
+            "    # dict every other mocked node records.\n"
+            "    _record(node_id, json.loads(task))\n"
+            "    return _LOOP_OUTPUTS[node_id]\n",
+            encoding="utf-8",
+        )
 
     # Generated signature judges: keep the class/forward/model_dump shape
     # the emitted step calls, minus Pydantic validation and the LLM.
