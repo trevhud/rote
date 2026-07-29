@@ -3,7 +3,7 @@
  *
  * Pipeline: bdr-campaign v0.1.0
  * Source skill: ../skill
- * Pipeline hash: 68ef477f
+ * Pipeline hash: ada0f771
  *
  * DO NOT EDIT BY HAND. Re-run `rote emit --runtime dbos-ts` to regenerate.
  *
@@ -357,7 +357,7 @@ export const runPipeline = DBOS.registerWorkflow(
             "manual_enrollment_handoff": manual_enrollment_handoff_result as Record<string, unknown>,
         };
     },
-    { name: "BdrCampaign_68ef477f" },
+    { name: "BdrCampaign_ada0f771" },
 );
 
 // ───────── Entrypoint ─────────

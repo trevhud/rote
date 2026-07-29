@@ -1130,6 +1130,7 @@ export async function bindAgentTools(
     allowed: string[],
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
@@ -1145,9 +1146,15 @@ export async function bindAgentTools(
             continue;
         }
         for (const spec of specs) {
-            // First server to advertise a name wins; the allowlist cannot
-            // disambiguate two servers exporting the same tool name.
             if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // A tool the IR resolved to a server binds ONLY from that
+            // server: two servers exporting the same tool name is exactly
+            // the case an allowlist cannot disambiguate, and silently
+            // taking whichever answered first is how a loop ends up
+            // talking to the wrong endpoint. Unresolved tools keep the
+            // first-wins fallback — there is nothing better to go on.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,
@@ -1577,6 +1584,7 @@ export async function bindAgentTools(
     allowed: string[],
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
@@ -1593,6 +1601,10 @@ export async function bindAgentTools(
         }
         for (const spec of specs) {
             if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // Resolved tools bind only from their own server — see the
+            // Node helper's twin for why first-wins is not good enough.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,
@@ -2033,18 +2045,29 @@ def agent_tool_servers(pipeline: Pipeline) -> dict[str, str | None]:
     the emitted loop is handed the servers this pipeline is already known
     to talk to and searches them for the declared names.
 
-    That is a bridge, not the destination. Until the compiler resolves
-    tool → server at compile time, an agent loop's tools are invisible to
-    :attr:`Pipeline.required_mcp_servers` — so a pipeline whose only MCP
-    usage is a loop reports no required servers and the `rote mcp login`
-    advisories under-report. The runtime escape hatch is
-    ``ROTE_MCP_SERVERS``; on the Node runtimes the local registry is also
-    unioned in, matching what the Python runtime does.
+    Three sources, in descending order of authority:
+
+    1. A loop's own ``tool_servers`` — the IR resolved this tool to this
+       server (written by the compiler, or by ``rote compile`` from what
+       the baseline actually called). No URL travels with it, so the
+       endpoint still resolves from env/registry at run time.
+    2. Any node's ``mcp:`` binding, which carries a URL. A loop's bare
+       tools are searched here on the theory that a pipeline's loop
+       usually reaches the servers the rest of the pipeline already does.
+    3. At run time only: the local registry (Node runtimes) and
+       ``ROTE_MCP_SERVERS`` (everywhere), which overrides the lot.
+
+    (2) is a guess and (3) is an escape hatch; only (1) is knowledge, which
+    is why it also feeds :attr:`Pipeline.required_mcp_servers` and the
+    ``rote mcp login`` advisories.
     """
     servers: dict[str, str | None] = {}
     for node in pipeline.nodes:
         if node.mcp is not None and node.mcp.server not in servers:
             servers[node.mcp.server] = node.mcp.url
+    for node in pipeline.nodes:
+        for server in (node.tool_servers or {}).values():
+            servers.setdefault(server, None)
     return dict(sorted(servers.items()))
 
 
@@ -2114,6 +2137,8 @@ def emit_agent_loop_module(
     )
     tools = list(node.tools or [])
     servers = agent_tool_servers(pipeline) if tools else {}
+    pins = dict(sorted((node.tool_servers or {}).items()))
+    unresolved = [tool for tool in tools if tool not in pins]
     sub_nodes = [pipeline.node_by_id(sub) for sub in (node.loop_body or [])]
 
     doc = [
@@ -2161,8 +2186,23 @@ def emit_agent_loop_module(
                 "/** Servers searched for those tools, with the endpoints the IR recorded. */",
                 f"const SERVERS: string[] = {json.dumps(list(servers))};",
                 f"const SERVER_URLS: Record<string, string | null> = {json.dumps(servers)};",
+                "",
+                "/** Tools the IR resolved to a specific server — these bind from that",
+                " * server and no other, so two servers exporting one tool name cannot",
+                " * silently swap endpoints. Tools absent here fall back to first-wins",
+                " * across SERVERS. */",
+                f"const TOOL_SERVERS: Record<string, string> = {json.dumps(pins)};",
             ]
         )
+        if pins and unresolved:
+            consts.extend(
+                [
+                    "",
+                    "// Resolved from the IR: "
+                    + ", ".join(f"{tool} -> {server}" for tool, server in pins.items()),
+                    "// Still unresolved (searched across SERVERS): " + ", ".join(unresolved),
+                ]
+            )
         if not servers:
             # Say so in the emitted source rather than letting the loop
             # fail at runtime with "no server provides this tool" and no
@@ -2180,13 +2220,21 @@ def emit_agent_loop_module(
         # use: the workflow's Env is an interface, and an interface has no
         # implicit index signature to satisfy RoteMcpEnv or a string map.
         params = "    input: unknown,\n    env: unknown, // the workflow's Env; cast below"
-        bind_call = "await bindAgentTools(env as RoteMcpEnv, TOOLS, SERVERS, SERVER_URLS)"
+        bind_call = (
+            "await bindAgentTools(\n"
+            "        env as RoteMcpEnv,\n"
+            "        TOOLS,\n"
+            "        SERVERS,\n"
+            "        SERVER_URLS,\n"
+            "        TOOL_SERVERS,\n"
+            "    )"
+        )
         env_source = "env as Record<string, string | undefined>"
         if workers_ai_model is not None:
             imports.append('import { runWithTools } from "@cloudflare/ai-utils";')
     else:
         params = "    input: unknown,"
-        bind_call = "await bindAgentTools(TOOLS, SERVERS, SERVER_URLS)"
+        bind_call = "await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS)"
         env_source = "process.env"
 
     local_tools: list[str] = []

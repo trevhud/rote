@@ -7,6 +7,7 @@ import json
 from rote.eval.baseline import ObservedToolCall
 from rote.probe import (
     cross_check,
+    enrich_pipeline,
     infer_schema,
     infer_tool_schemas,
     parse_tool_result,
@@ -393,3 +394,132 @@ def test_emitted_stub_carries_observed_contract(tmp_path) -> None:
     # Unenriched stubs stay contract-free.
     gmail_src = written["extracted/gmail"].read_text(encoding="utf-8")
     assert "Input contract" not in gmail_src
+
+
+# ───────── Resolving an agent loop's bare tools ─────────
+
+
+def _loop_pipeline(tool_servers: dict[str, str] | None = None) -> object:
+    from rote.ir import Pipeline
+
+    node: dict[str, object] = {
+        "id": "research_loop",
+        "kind": "agent_loop",
+        "description": "Research the account.",
+        "tools": ["web_search", "lookup_account"],
+    }
+    if tool_servers:
+        node["tool_servers"] = tool_servers
+    return Pipeline.model_validate(
+        {
+            "name": "loop-probe",
+            "input": {"type": "In", "required": [], "optional": []},
+            "nodes": [node],
+            "edges": [],
+        }
+    )
+
+
+def test_observed_agent_tool_is_a_resolution_not_a_missed_requirement() -> None:
+    """A loop declares tools without servers. Observing one of them is the
+    ANSWER to that gap, not evidence the compiler missed a requirement —
+    reporting it as ``observed_only`` sent the user chasing a phantom.
+    """
+    result = cross_check(
+        _loop_pipeline(),
+        [
+            ObservedToolCall(server="brightdata", tool="web_search", input={}),
+            ObservedToolCall(server="brightdata", tool="web_search", input={}),
+            # A tool the pipeline never declared at all — still the loud case.
+            ObservedToolCall(server="salesforce", tool="get_account", input={}),
+        ],
+    )
+    assert result["resolved_agent_tools"] == [
+        {
+            "server": "brightdata",
+            "tool": "web_search",
+            "nodes": ["research_loop"],
+            "observed_calls": 2,
+        }
+    ]
+    assert result["observed_only"] == [
+        {"server": "salesforce", "tool": "get_account", "observed_calls": 1}
+    ]
+
+
+def test_already_resolved_agent_tool_is_confirmed_like_any_binding() -> None:
+    """Once ``tool_servers`` names the server, the pair is an ordinary
+    static binding and observing it confirms the binding."""
+    result = cross_check(
+        _loop_pipeline({"web_search": "brightdata"}),
+        [ObservedToolCall(server="brightdata", tool="web_search", input={})],
+    )
+    assert result["confirmed"] == [
+        {
+            "server": "brightdata",
+            "tool": "web_search",
+            "nodes": ["research_loop"],
+            "observed_calls": 1,
+        }
+    ]
+    assert result["resolved_agent_tools"] == []
+
+
+def test_enrich_pipeline_writes_observed_servers_into_tool_servers() -> None:
+    """This is the mechanism that makes a loop's MCP requirements real:
+    derived from what the skill actually called, not guessed."""
+    pipeline = _loop_pipeline()
+    assert pipeline.required_mcp_servers == {}
+
+    inferred = infer_tool_schemas(
+        [
+            ObservedToolCall(
+                server="brightdata", tool="web_search", input={"q": "x"}, result={"hits": 1}
+            ),
+            ObservedToolCall(
+                server="internal_crm",
+                tool="lookup_account",
+                input={"name": "acme"},
+                result={"id": "a1"},
+            ),
+        ]
+    )
+    enriched, ids = enrich_pipeline(pipeline, inferred)
+
+    assert ids == ["research_loop"]
+    assert enriched.node_by_id("research_loop").tool_servers == {
+        "web_search": "brightdata",
+        "lookup_account": "internal_crm",
+    }
+    # The whole point: the requirement is now visible to every advisory.
+    assert enriched.required_mcp_servers == {
+        "brightdata": ["research_loop"],
+        "internal_crm": ["research_loop"],
+    }
+    # The input pipeline is never mutated.
+    assert pipeline.node_by_id("research_loop").tool_servers is None
+
+
+def test_ambiguous_tool_is_left_unresolved_rather_than_guessed() -> None:
+    """One tool name served by two servers in a single trial: pinning either
+    would silently send the loop to the wrong endpoint, and the run-time
+    fallback still works. Admitting the gap is the safer answer."""
+    inferred = infer_tool_schemas(
+        [
+            ObservedToolCall(server="brightdata", tool="web_search", input={}, result={"a": 1}),
+            ObservedToolCall(server="other_vendor", tool="web_search", input={}, result={"a": 1}),
+        ]
+    )
+    enriched, ids = enrich_pipeline(_loop_pipeline(), inferred)
+    assert ids == []
+    assert enriched.node_by_id("research_loop").tool_servers is None
+
+
+def test_agent_authored_tool_servers_survive_enrichment() -> None:
+    """Same rule the schema fields follow: an authored value always wins
+    over inference, even when the observation disagrees."""
+    inferred = infer_tool_schemas(
+        [ObservedToolCall(server="other_vendor", tool="web_search", input={}, result={"a": 1})]
+    )
+    enriched, _ids = enrich_pipeline(_loop_pipeline({"web_search": "brightdata"}), inferred)
+    assert enriched.node_by_id("research_loop").tool_servers["web_search"] == "brightdata"

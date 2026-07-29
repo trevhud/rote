@@ -68,6 +68,7 @@ async def target_research(payload: dict) -> dict:
                 "airweave_search",
                 "salesforce_query",
             ],
+            tool_servers={"airweave_search": "airweave", "bright_data_scrape": "brightdata", "bright_data_search": "brightdata", "clinical_trials_search": "clinicaltrials", "salesforce_query": "salesforce"},
             max_iterations=10,
         )
 
@@ -108,6 +109,7 @@ async def lead_generation_loop(payload: dict) -> dict:
             task=json.dumps(payload, default=str),
             model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-4-6"),
             tools=["zoominfo_search_contacts", "zoominfo_search_companies"],
+            tool_servers={"zoominfo_search_companies": "zoominfo", "zoominfo_search_contacts": "zoominfo"},
             max_iterations=10,
             termination="vetted_count >= target_quota",
         )

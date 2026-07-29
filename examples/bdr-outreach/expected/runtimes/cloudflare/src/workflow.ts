@@ -3,7 +3,7 @@
          *
          * Pipeline: bdr-campaign v0.1.0
          * Source skill: ../skill
-         * Pipeline hash: 68ef477f
+         * Pipeline hash: ada0f771
          *
          * DO NOT EDIT BY HAND. Re-run `rote emit --runtime cloudflare` to regenerate.
          *
@@ -114,7 +114,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                 if (target_research_attempt % 2 === 1) {
                     await step.waitForEvent<any>(
                         `target_research auth wait ${target_research_attempt}`,
-                        { type: authEventType(err, "rote_auth_unknown"), timeout: "30 days" },
+                        { type: authEventType(err, "rote_auth_airweave"), timeout: "30 days" },
                     );
                 }
             }
@@ -159,7 +159,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                 if (lead_generation_loop_attempt % 2 === 1) {
                     await step.waitForEvent<any>(
                         `lead_generation_loop auth wait ${lead_generation_loop_attempt}`,
-                        { type: authEventType(err, "rote_auth_unknown"), timeout: "30 days" },
+                        { type: authEventType(err, "rote_auth_airweave"), timeout: "30 days" },
                     );
                 }
             }

@@ -270,3 +270,131 @@ def test_cloudflare_agent_loop_stays_out_of_parallel_waves(tmp_path: Path) -> No
     # gets the retry/park wrapper. Neither appears inside a Promise.all.
     assert "Promise.all" not in src
     assert "park on dead credentials" in src
+
+
+# ───────── Resolved tool → server ─────────
+
+
+def _resolved_pipeline() -> Pipeline:
+    """A loop whose tools resolve to two different servers, plus one that
+    resolves to neither — the partial-map case the IR allows."""
+    return Pipeline.model_validate(
+        {
+            "name": "resolved-loop",
+            "version": "0.1.0",
+            "source_skill": "tests/fixtures/resolved-loop",
+            "description": "A loop reaching two servers.",
+            "input": {"type": "Brief", "required": ["topic"], "optional": []},
+            "nodes": [
+                {
+                    "id": "research_loop",
+                    "kind": "agent_loop",
+                    "description": "Research across two vendors.",
+                    "tools": ["web_search", "lookup_account", "mystery_tool"],
+                    "tool_servers": {
+                        "web_search": "brightdata",
+                        "lookup_account": "internal_crm",
+                    },
+                    "inputs": {"topic": "pipeline.input.topic"},
+                }
+            ],
+            "edges": [],
+            "entry_nodes": ["research_loop"],
+            "exit_nodes": ["research_loop"],
+        }
+    )
+
+
+@pytest.mark.parametrize("runtime", sorted(ADAPTERS))
+def test_resolved_tools_bind_only_from_their_own_server(runtime: str, tmp_path: Path) -> None:
+    """The emitted map is what stops an endpoint swap.
+
+    Two servers exporting one tool name is precisely what an allowlist
+    cannot disambiguate, so a resolved tool must bind from its own server
+    and no other. Unresolved tools keep the first-wins fallback.
+    """
+    ADAPTERS[runtime]().emit(_resolved_pipeline(), tmp_path)
+    src = (tmp_path / "src" / "extracted" / "research_loop.ts").read_text(encoding="utf-8")
+    assert '"web_search": "brightdata"' in src
+    assert '"lookup_account": "internal_crm"' in src
+    assert "mystery_tool" not in src.split("TOOL_SERVERS")[1].split(";")[0]
+    assert "TOOL_SERVERS" in src.split("bindAgentTools(")[1].split(")")[0].replace("\n", "")
+    # Both halves of the partial map are reported in the emitted source, so
+    # an operator can see what still depends on run-time discovery.
+    assert "Still unresolved (searched across SERVERS): mystery_tool" in src
+
+
+def test_resolved_servers_become_pipeline_requirements() -> None:
+    """The advisory surfaces derive from required_mcp_servers, so resolving a
+    loop's tools is what makes `rote mcp login` mention them at all."""
+    required = _resolved_pipeline().required_mcp_servers
+    assert required == {
+        "brightdata": ["research_loop"],
+        "internal_crm": ["research_loop"],
+    }
+
+
+def test_unknown_tool_in_tool_servers_is_rejected() -> None:
+    """A key naming a tool the loop cannot call is a typo, not a harmless
+    extra — catching it here beats a silently unbound tool at run time."""
+    with pytest.raises(ValueError, match="absent from tools"):
+        Pipeline.model_validate(
+            {
+                "name": "typo",
+                "input": {"type": "In", "required": [], "optional": []},
+                "nodes": [
+                    {
+                        "id": "loop",
+                        "kind": "agent_loop",
+                        "description": "Typo in the map.",
+                        "tools": ["web_search"],
+                        "tool_servers": {"web_serach": "brightdata"},
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+
+def test_tool_servers_is_rejected_outside_agent_loops() -> None:
+    """It resolves ``tools``, which only an agent_loop has."""
+    with pytest.raises(ValueError, match="only allowed on agent_loop"):
+        Pipeline.model_validate(
+            {
+                "name": "misplaced",
+                "input": {"type": "In", "required": [], "optional": []},
+                "nodes": [
+                    {
+                        "id": "step",
+                        "kind": "pure_function",
+                        "description": "Not a loop.",
+                        "impl": "extracted/x.py:f",
+                        "tool_servers": {"web_search": "brightdata"},
+                    }
+                ],
+                "edges": [],
+            }
+        )
+
+
+def test_tool_servers_server_name_must_be_a_safe_identifier() -> None:
+    """The server name reaches emitted source as a literal and an env-var
+    lookup — same charset constraint its single-binding equivalent has
+    (invariant #7)."""
+    with pytest.raises(ValueError, match="must be an identifier"):
+        Pipeline.model_validate(
+            {
+                "name": "inject",
+                "input": {"type": "In", "required": [], "optional": []},
+                "nodes": [
+                    {
+                        "id": "loop",
+                        "kind": "agent_loop",
+                        "description": "Hostile server name.",
+                        "tools": ["web_search"],
+                        "tool_servers": {"web_search": 'x"; drop table'},
+                    }
+                ],
+                "edges": [],
+            }
+        )

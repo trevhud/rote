@@ -366,6 +366,7 @@ export async function bindAgentTools(
     allowed: string[],
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
@@ -381,9 +382,15 @@ export async function bindAgentTools(
             continue;
         }
         for (const spec of specs) {
-            // First server to advertise a name wins; the allowlist cannot
-            // disambiguate two servers exporting the same tool name.
             if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // A tool the IR resolved to a server binds ONLY from that
+            // server: two servers exporting the same tool name is exactly
+            // the case an allowlist cannot disambiguate, and silently
+            // taking whichever answered first is how a loop ends up
+            // talking to the wrong endpoint. Unresolved tools keep the
+            // first-wins fallback — there is nothing better to go on.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,

@@ -10,9 +10,9 @@
     "extracted/report.py": "e5d374b40fac4a6be9cd7a1c519848bfda18a094187ebb2297edd247df113707",
     "extracted/taxonomy.py": "44b3bab5a9dde17f170b436157cc349e70a2388a065a4b413a1fe9bf453d437a",
     "extracted/zoominfo.py": "9509863b14f2626fcd8154752c09e0bd7a5a4c6d5dc16071e33aac72eeb0b194",
-    "main.py": "c368a678c9e0d0566983b95c81f5decd86ae8b4b999af5819c8ab83676456274",
+    "main.py": "f6314ca406b2524c7abd79d98cf72a33e09c17b0e185a3489c27449e581b3d43",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "80015e6d0239723d50d4128af2f76cccdf9a84217c44d37ac097774a8772036d",
+    "signatures/_rote_inference.py": "52d800912b61bbead97a7a5cd609e032a3ddee5ba8c47613406ddd5957ecb97f",
     "signatures/personalize_email.py": "e2d906e425fa1c230a49c42e9ffa6043737f5eefc82cbe506fd3ef2c58b30a83",
     "signatures/vet_contact.py": "0d29c9dccf7f164fa54f0ecd26da60c714ac4f2c18bc4a0837dd60835ce6f80a"
   }

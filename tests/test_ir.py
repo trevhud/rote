@@ -685,8 +685,46 @@ def test_required_mcp_servers_derived_from_bindings() -> None:
     }
 
 
-def test_required_mcp_servers_empty_without_bindings() -> None:
-    """A pipeline with no mcp: bindings requires nothing (BDR expected IR)."""
+def test_required_mcp_servers_counts_agent_loop_tool_servers() -> None:
+    """BDR has no ``mcp:`` binding anywhere — its MCP usage is entirely in
+    two agent loops. Deriving requirements from ``mcp:`` alone therefore
+    reported ZERO servers for it, so nothing ever told the user to
+    authenticate. ``tool_servers`` is what closes that.
+    """
     from rote.ir import load_pipeline
 
-    assert load_pipeline(BDR_PIPELINE).required_mcp_servers == {}
+    required = load_pipeline(BDR_PIPELINE).required_mcp_servers
+    assert not any(n.mcp for n in load_pipeline(BDR_PIPELINE).nodes)
+    assert required == {
+        "airweave": ["target_research"],
+        "brightdata": ["target_research"],
+        "clinicaltrials": ["target_research"],
+        "salesforce": ["target_research"],
+        "zoominfo": ["lead_generation_loop"],
+    }
+
+
+def test_required_mcp_servers_empty_without_any_mcp_declaration() -> None:
+    """Neither a binding nor a resolved loop tool → nothing required.
+
+    An unresolved loop tool contributes nothing on purpose: there is no
+    server name to report, and inventing one would be worse than the gap.
+    """
+    from rote.ir import Pipeline
+
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "bare",
+            "input": {"type": "In", "required": [], "optional": []},
+            "nodes": [
+                {
+                    "id": "loop",
+                    "kind": "agent_loop",
+                    "description": "Bare tools, no resolution.",
+                    "tools": ["web_search"],
+                }
+            ],
+            "edges": [],
+        }
+    )
+    assert pipeline.required_mcp_servers == {}

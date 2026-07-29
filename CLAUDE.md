@@ -352,32 +352,46 @@ is `number | null` — the Workers AI lane returns null because
 `maxIterations` made every loop look saturated. (The Python
 `_run_agent_via_sdk` still has this defect; separate fix.)
 
-### An agent_loop's tools have no server, and Workers has no registry
+### An agent_loop's tools carry no server — `tool_servers` supplies it
 
-`Node.tools` are bare names (`zoominfo_search_contacts`) with no server —
-one loop may reach several, and an `MCPBinding` is a single server/tool
-pair. Python resolves this at run time by wiring *every* registered server
-and letting the allowlist be the boundary (`_mcp_config_for`), which works
-because there is a registry file on disk. **Workers has no registry**:
-`resolveUrl(env, server, …)` reads env bindings, so the server name must be
-known at emit time.
+`Node.tools` are bare names (`zoominfo_search_contacts`): one loop may
+reach several servers, and an `MCPBinding` is a single server/tool pair.
+That gap was not cosmetic. `Pipeline.required_mcp_servers` derives from
+server *names*, so a pipeline whose only MCP usage is an agent loop
+reported **zero** required servers — `analyze`/`emit`/`compile` and the
+`rote mcp login` advisories all said there was nothing to authenticate.
+BDR is exactly that shape, so the flagship example demonstrated the bug.
 
-Until the compiler resolves tool → server at compile time, the emitted TS
-loop searches the servers the pipeline already talks to
-(`_ts_common.agent_tool_servers`, derived from other nodes' `mcp:`
-bindings), unioned at run time with the local registry on the Node
-runtimes, and overridable everywhere by `ROTE_MCP_SERVERS`. When nothing
-resolves — BDR's exact shape — the emitted module says so in a comment
-rather than failing later with a bare "no server provides this tool".
+`Node.tool_servers` (tool name → server, agent_loop only, keys validated
+⊆ `tools`) closes it. Three things now depend on it:
 
-Two consequences to keep in mind:
+- **The advisories are correct.** `required_mcp_servers` counts both
+  declarations — a node's `mcp:` binding and a loop's `tool_servers`. BDR
+  reports five servers instead of none.
+- **A resolved tool binds from its own server and no other.** Two servers
+  exporting one tool name is precisely what an allowlist cannot
+  disambiguate; first-wins discovery would pick whichever answered first.
+  Python narrows its `--allowedTools` cross product the same way.
+- **Workers works at all.** There is no registry in workerd —
+  `resolveUrl(env, server, …)` reads env bindings — so the server name
+  *must* be known at emit time.
 
-- **The advisory surfaces under-report.** `Pipeline.required_mcp_servers`
-  walks `n.mcp` only, so a pipeline whose only MCP usage is an agent loop
-  reports *zero* required servers — `analyze`/`emit`/`compile` and the
-  `rote mcp login` recommendations all say there is nothing to
-  authenticate. That is a wrong answer, not a missing feature; fixing it
-  means server-qualifying `tools:` in the IR.
+Three sources feed the emitted loop, in descending authority: the IR's
+`tool_servers` (knowledge), other nodes' `mcp:` bindings (a guess — the
+loop probably reaches the servers the rest of the pipeline does), and at
+run time the local registry plus `ROTE_MCP_SERVERS` (the escape hatch).
+Only the first is trustworthy, which is why only it feeds the advisories.
+A partial map is valid and an unresolved tool still works via discovery;
+the emitted module names what it could not resolve rather than failing
+later with a bare "no server provides this tool".
+
+Two behaviors to preserve:
+
+- **Nothing guesses.** `rote.probe.enrich_pipeline` writes `tool_servers`
+  from what the baseline actually *called* (`cross_check`'s
+  `resolved_agent_tools`), and leaves a tool served by two servers in one
+  trial unresolved — pinning either would silently send the loop to the
+  wrong endpoint. An authored value always beats inference.
 - **Discovery is best-effort, binding is not.** A server that is down may
   not be one this loop needed, so it is recorded and skipped; a declared
   tool no reachable server provides is fatal. When an auth failure
@@ -1027,7 +1041,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1100 tests (1074 fast + 26 slow). Run with `pytest tests/` (fast
+- 1146 tests (1119 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

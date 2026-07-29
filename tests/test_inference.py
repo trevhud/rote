@@ -543,7 +543,7 @@ def test_agent_loop_cli_never_passes_a_bare_tools_flag(
     machine with no registry. Asserting the flag's *value* is the point;
     asserting its presence is what let the bug through.
     """
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda _tools: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     result = helper.run_agent_loop(
@@ -576,7 +576,7 @@ def test_agent_loop_cli_wires_resolved_servers_and_allowlists_tools(
     """
     servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
     allowed = ["mcp__vendor__bright_data_search"]
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda _tools: (servers, allowed))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     helper.run_agent_loop(
@@ -594,3 +594,42 @@ def test_agent_loop_cli_wires_resolved_servers_and_allowlists_tools(
     # The tool-free form must not also appear — it would contradict the
     # allowlist and reload the default toolset.
     assert "--tools" not in command
+
+
+def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A tool resolved to one server must not be allowlisted on the others.
+
+    Without the narrowing the allowlist is a full cross product: mostly
+    phantom entries, and a real hazard when two servers export the same
+    tool name — the agent may then call whichever it likes, which is the
+    endpoint-swap this field exists to prevent.
+    """
+    registry = {
+        "brightdata": {"url": "https://bd.example/mcp"},
+        "internal": {"url": "https://int.example/mcp"},
+    }
+
+    class _FakeMcp:
+        @staticmethod
+        def _registry_servers() -> dict[str, dict[str, str]]:
+            return registry
+
+        @staticmethod
+        def resolve_url(name: str, _pipeline_url: None) -> str:
+            return registry[name]["url"]
+
+    monkeypatch.setitem(sys.modules, "extracted", types.SimpleNamespace(_rote_mcp=_FakeMcp))
+    monkeypatch.setitem(sys.modules, "extracted._rote_mcp", _FakeMcp)
+
+    tools = ["web_search", "lookup_account"]
+    servers, allowed = helper._mcp_config_for(
+        tools, {"web_search": "brightdata", "lookup_account": "internal"}
+    )
+
+    assert set(servers) == {"brightdata", "internal"}
+    assert allowed == ["mcp__brightdata__web_search", "mcp__internal__lookup_account"]
+
+    # Unresolved names still reach every wired server: there is nothing
+    # better to go on, and a name no server provides never resolves anyway.
+    _servers, unpinned = helper._mcp_config_for(tools, None)
+    assert len(unpinned) == 4

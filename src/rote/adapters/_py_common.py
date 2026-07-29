@@ -731,6 +731,9 @@ def agent_loop_call(
             lines.append(f"{inner}tools=[")
             lines.extend(f"{deep}{_py_literal(t)}," for t in node.tools)
             lines.append(f"{inner}],")
+    if node.tool_servers:
+        # Resolved tool → server pins narrow the allowlist to real pairs.
+        lines.append(f"{inner}tool_servers={_py_literal(dict(sorted(node.tool_servers.items())))},")
     if node.loop_body and include_local_tools:
         lines.append(f"{inner}local_tools={{")
         for sub in node.loop_body:

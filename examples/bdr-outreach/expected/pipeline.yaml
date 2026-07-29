@@ -135,6 +135,12 @@ nodes:
       - clinical_trials_search
       - airweave_search
       - salesforce_query
+    tool_servers:
+      bright_data_search: brightdata
+      bright_data_scrape: brightdata
+      clinical_trials_search: clinicaltrials
+      airweave_search: airweave
+      salesforce_query: salesforce
     timeout: 5m
     retry:
       max: 2
@@ -184,6 +190,9 @@ nodes:
     tools:
       - zoominfo_search_contacts
       - zoominfo_search_companies
+    tool_servers:
+      zoominfo_search_contacts: zoominfo
+      zoominfo_search_companies: zoominfo
     loop_body:
       - enrich_contact_batch
       - vet_contact

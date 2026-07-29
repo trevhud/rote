@@ -336,6 +336,9 @@ the loop.
   tools:
     - zoominfo_search_contacts
     - zoominfo_search_companies
+  tool_servers:
+    zoominfo_search_contacts: zoominfo
+    zoominfo_search_companies: zoominfo
   loop_body:
     - enrich_contact_batch
     - vet_contact
@@ -344,6 +347,16 @@ the loop.
     max_iterations: 10
   timeout: 15m
 ```
+
+**Note on `tool_servers`:** map every tool you can to the MCP server
+that provides it. `tools` names tools without a server, and that gap is
+not cosmetic — the pipeline's MCP requirements are derived from server
+names, so a pipeline whose only MCP usage is an agent loop reports *no
+required servers at all* and the user is never told to authenticate.
+Fill in the entries you're confident about and omit the rest; a partial
+map is valid, and an unmapped tool is resolved at run time (more
+fragile, and impossible on Cloudflare, which has no local registry).
+Every key must also appear in `tools`.
 
 **Note on `loop_body`:** sub-nodes listed here must also exist as
 top-level nodes in the `nodes:` list. They're referenced from the

@@ -18,14 +18,15 @@ import { vetContact } from "../signatures/vet_contact";
 /** Tools the IR declared for this loop — the allowlist IS the boundary. */
 const TOOLS: string[] = ["zoominfo_search_contacts", "zoominfo_search_companies"];
 
-// NOTE: no MCP server could be resolved at emit time — this loop's
-// tools are bare names and no node in the pipeline carries an `mcp:`
-// binding to search. The Node runtimes fall back to every server in
-// the local rote registry; set ROTE_MCP_SERVERS to name them
-// explicitly (required on Cloudflare, which has no registry).
 /** Servers searched for those tools, with the endpoints the IR recorded. */
-const SERVERS: string[] = [];
-const SERVER_URLS: Record<string, string | null> = {};
+const SERVERS: string[] = ["airweave", "brightdata", "clinicaltrials", "salesforce", "zoominfo"];
+const SERVER_URLS: Record<string, string | null> = {"airweave": null, "brightdata": null, "clinicaltrials": null, "salesforce": null, "zoominfo": null};
+
+/** Tools the IR resolved to a specific server — these bind from that
+ * server and no other, so two servers exporting one tool name cannot
+ * silently swap endpoints. Tools absent here fall back to first-wins
+ * across SERVERS. */
+const TOOL_SERVERS: Record<string, string> = {"zoominfo_search_companies": "zoominfo", "zoominfo_search_contacts": "zoominfo"};
 
 function requireEnv(name: string): string {
     const value = process.env[name];
@@ -39,7 +40,7 @@ export async function leadGenerationLoop(
     input: unknown,
 ): Promise<{ result: string; provider: string; iterations: number | null }> {
     const vars = process.env;
-    const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS);
+    const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
     // loop_body sub-nodes: real pipeline steps, driven per iteration.
     tools.push(
         {

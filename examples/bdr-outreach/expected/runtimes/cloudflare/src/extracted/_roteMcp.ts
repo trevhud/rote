@@ -323,6 +323,7 @@ export async function bindAgentTools(
     allowed: string[],
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
@@ -339,6 +340,10 @@ export async function bindAgentTools(
         }
         for (const spec of specs) {
             if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // Resolved tools bind only from their own server — see the
+            // Node helper's twin for why first-wins is not good enough.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,
