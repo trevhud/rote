@@ -25,15 +25,30 @@ _BLOCK_COMMENT = re.compile(r"/\*[\s\S]*?\*/")
 _LINE_COMMENT = re.compile(r"//[^\n]*")
 
 
-def assert_no_mcp_in_ts(emit_result: dict[str, Path], *, min_files: int) -> None:
+def assert_no_mcp_in_ts(
+    emit_result: dict[str, Path], *, min_files: int, expected: set[str] | None = None
+) -> None:
     """Assert no emitted .ts file references MCP in executable code.
+
+    ``expected`` names the labels that legitimately DO — the MCP helper
+    itself, and any agent_loop module, whose ``tools:`` are MCP tool
+    names by the IR's own definition. Naming them (rather than skipping
+    every file that happens to mention MCP) keeps the scan a real
+    constraint: an unexpected MCP reference still fails, and an expected
+    site that stops referencing MCP fails too.
 
     ``min_files`` guards against the scan silently checking nothing
     (e.g. a refactor that changes emitted file suffixes).
     """
+    expected = expected or set()
     checked = 0
     for label, path in emit_result.items():
         if not str(path).endswith(".ts"):
+            continue
+        if label in expected:
+            assert "mcp" in path.read_text(encoding="utf-8").lower(), (
+                f"{label} was declared an expected MCP site but references no MCP"
+            )
             continue
         src = path.read_text(encoding="utf-8")
         cleaned = _BLOCK_COMMENT.sub(" ", src)

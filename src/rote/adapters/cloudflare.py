@@ -50,8 +50,14 @@ from rote.adapters._common import (
     ir_duration_to_human as _ir_duration_to_cf,
 )
 from rote.adapters._ts_common import (
+    AI_UTILS_NPM_VERSION,
+    ANTHROPIC_SDK_NPM_VERSION,
     MCP_SDK_NPM_VERSION,
+    ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
+    WORKERS_AI_AGENT_MODEL,
+    agent_tool_servers,
+    emit_agent_loop_module,
     emit_ts_signature_module,
     emit_workers_mcp_call_module,
     llm_clients,
@@ -174,7 +180,9 @@ def auth_event_type(server: str) -> str:
     return f"rote_auth_{server}"
 
 
-def _emit_step_call_mcp_parkable(node: Node, cfg: CloudflareAdapterConfig) -> str:
+def _emit_step_call_mcp_parkable(
+    node: Node, cfg: CloudflareAdapterConfig, *, pipeline: Pipeline
+) -> str:
     """MCP-backed dispatch: auth failures park the instance durably.
 
     Three Cloudflare specifics shape this loop: ``NonRetryableError``
@@ -187,16 +195,34 @@ def _emit_step_call_mcp_parkable(node: Node, cfg: CloudflareAdapterConfig) -> st
     per-instance, so `rote mcp release` can blast every non-terminal
     instance without a race.
     """
-    assert node.mcp is not None
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
     payload = payload_ts_literal(node, indent=" " * 24)
-    event_type = auth_event_type(node.mcp.server)
     nid = node.id
+    if node.mcp is not None:
+        # One binding, one server: the release event is known at emit time.
+        event_expr = json.dumps(auth_event_type(node.mcp.server))
+        release_hint = (
+            f"        // `rote mcp release {node.mcp.server}` "
+            f"(after re-provisioning secrets)\n"
+            f"        // sends the {auth_event_type(node.mcp.server)!r} event to every "
+            f"non-terminal instance.\n"
+        )
+    else:
+        # An agent loop reaches whatever servers provide its tools, and
+        # ROTE_MCP_SERVERS can add more at run time — so the release event
+        # is derived from the failure itself rather than baked in.
+        servers = sorted(agent_tool_servers(pipeline))
+        fallback = auth_event_type(servers[0]) if servers else "rote_auth_unknown"
+        event_expr = f"authEventType(err, {json.dumps(fallback)})"
+        release_hint = (
+            "        // Agent loop: the parked server names itself in the auth error,\n"
+            "        // so `rote mcp release <server>` releases the right instances.\n"
+        )
+    label = "agent loop" if node.mcp is None else "MCP-backed"
     return (
-        f"        // ─── {nid} (MCP-backed): park on dead credentials ───\n"
-        f"        // `rote mcp release {node.mcp.server}` (after re-provisioning secrets)\n"
-        f"        // sends the {event_type!r} event to every non-terminal instance.\n"
+        f"        // ─── {nid} ({label}): park on dead credentials ───\n"
+        f"{release_hint}"
         f"        let {nid}_result!: Record<string, unknown>;\n"
         f"        for (let {nid}_attempt = 0; ; {nid}_attempt++) {{\n"
         f"            try {{\n"
@@ -227,7 +253,7 @@ def _emit_step_call_mcp_parkable(node: Node, cfg: CloudflareAdapterConfig) -> st
         f"                if ({nid}_attempt % 2 === 1) {{\n"
         f"                    await step.waitForEvent<any>(\n"
         f"                        `{nid} auth wait ${{{nid}_attempt}}`,\n"
-        f'                        {{ type: {json.dumps(event_type)}, timeout: "30 days" }},\n'
+        f'                        {{ type: {event_expr}, timeout: "30 days" }},\n'
         f"                    );\n"
         f"                }}\n"
         f"            }}\n"
@@ -243,6 +269,21 @@ function stepNeedsAuth(err: unknown): boolean {
     if (isRoteMcpAuthNeeded(err)) return true;
     const msg = err instanceof Error ? err.message : String(err);
     return msg.includes("needs (re)authentication");
+}
+
+/** Which server's release event unparks this failure.
+ *
+ * A step bound to one MCP server knows its event at emit time; an agent
+ * loop may reach several (and ROTE_MCP_SERVERS can add more at run time),
+ * so the server is read back off the error. The name survives the
+ * NonRetryableError re-throw because RoteMcpAuthNeeded puts it in the
+ * message — own properties do not reliably cross a step boundary. */
+function authEventType(err: unknown, fallback: string): string {
+    const direct = (err as { server?: unknown })?.server;
+    if (typeof direct === "string" && direct.length > 0) return `rote_auth_${direct}`;
+    const msg = err instanceof Error ? err.message : String(err);
+    const match = /MCP server '([A-Za-z0-9_-]+)'/.exec(msg);
+    return match ? `rote_auth_${match[1]}` : fallback;
 }
 """
 
@@ -325,6 +366,9 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     pipeline_h = _pipeline_hash(pipeline)
     waves = _execution_waves(pipeline)
     mcp_backed = bool(mcp_backed_nodes(pipeline, cfg.external_backend))
+    # Anything that can park on an auth failure needs the helpers and the
+    # NonRetryableError import — an agent loop's tools are MCP tools.
+    parks_on_auth = mcp_backed or any(n.tools for n in pipeline.nodes_by_kind(NodeKind.AGENT_LOOP))
 
     if mcp_backed:
         arch_note = (
@@ -347,7 +391,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     arch_note = textwrap.indent(arch_note, " " * 8)
 
     park_import = (
-        '\nimport { NonRetryableError } from "cloudflare:workflows";' if mcp_backed else ""
+        '\nimport { NonRetryableError } from "cloudflare:workflows";' if parks_on_auth else ""
     )
 
     header = textwrap.dedent(
@@ -374,7 +418,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     )
 
     imports = module_imports(pipeline)
-    if mcp_backed:
+    if parks_on_auth:
         imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
 
     # The Env interface carries only the credentials the pipeline's judges
@@ -389,6 +433,10 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         env_field_lines.append("    OPENAI_API_KEY: string;")
     if "workers-ai" in clients:
         env_field_lines.append("    AI: Ai;")
+    elif pipeline.nodes_by_kind(NodeKind.AGENT_LOOP):
+        # Optional: an agent loop offers the Workers AI lane but never
+        # requires it — the operator may pay through any other lane.
+        env_field_lines.append("    AI?: Ai;")
     for server in sorted(
         {n.mcp.server for n in mcp_backed_nodes(pipeline, cfg.external_backend) if n.mcp}
     ):
@@ -438,6 +486,10 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         # MCP-backed calls read credentials from env (Worker secrets + the
         # KV token cache) and park the instance durably when the
         # credential is missing or dead.
+        if node.kind is NodeKind.AGENT_LOOP:
+            # Its tools are MCP tools; bindAgentTools and every tool call
+            # inside the loop raise the same auth signal.
+            return bool(node.tools)
         return (
             node.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL)
             and node.mcp is not None
@@ -471,7 +523,9 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
                 body_lines.append(_emit_step_call_pure_or_external(node, cfg).rstrip("\n"))
 
         for node in parkable:
-            body_lines.append(_emit_step_call_mcp_parkable(node, cfg).rstrip("\n"))
+            body_lines.append(
+                _emit_step_call_mcp_parkable(node, cfg, pipeline=pipeline).rstrip("\n")
+            )
 
         for node in gates:
             body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
@@ -497,7 +551,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         f"}}\n"
     )
 
-    helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if mcp_backed else ""
+    helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if parks_on_auth else ""
 
     return header + imports + "\n" + env_block + helper_block + class_block
 
@@ -702,8 +756,11 @@ def emit_wrangler(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
             }
         ],
     }
-    # Workers AI judges need the AI binding (inference auth + gateway routing).
-    if "workers-ai" in llm_clients(pipeline):
+    # Workers AI judges need the AI binding (inference auth + gateway
+    # routing). An agent loop gets it too: the binding is what makes
+    # "run this on my own Cloudflare account" available at all, and it
+    # bills nothing until a run actually selects that lane.
+    if "workers-ai" in llm_clients(pipeline) or pipeline.nodes_by_kind(NodeKind.AGENT_LOOP):
         obj["ai"] = {"binding": "AI"}
     # MCP-backed nodes cache refreshed/rotated OAuth tokens in KV so every
     # isolate sees the latest credentials. Create the namespace with
@@ -723,7 +780,9 @@ def emit_wrangler(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     )
 
 
-def emit_package_json(pipeline: Pipeline, *, with_mcp: bool = False) -> str:
+def emit_package_json(
+    pipeline: Pipeline, *, with_mcp: bool = False, with_agent_loops: bool = False
+) -> str:
     obj = {
         "name": pipeline.name,
         "version": pipeline.version,
@@ -735,10 +794,15 @@ def emit_package_json(pipeline: Pipeline, *, with_mcp: bool = False) -> str:
             "typecheck": "tsc --noEmit",
         },
         "dependencies": {
-            "@anthropic-ai/sdk": "^0.91.0",
+            # The agent loop needs beta.messages.toolRunner, which the
+            # older judge-era pin predates.
+            "@anthropic-ai/sdk": ANTHROPIC_SDK_NPM_VERSION,
             "openai": "^6.0.0",
             "zod": "^4.0.0",
             **({"@modelcontextprotocol/sdk": MCP_SDK_NPM_VERSION} if with_mcp else {}),
+            # Cloudflare's embedded function-calling toolkit — the
+            # workers-ai lane's tool runner.
+            **({"@cloudflare/ai-utils": AI_UTILS_NPM_VERSION} if with_agent_loops else {}),
         },
         "devDependencies": {
             "@cloudflare/workers-types": "^5.20260710.1",
@@ -1078,6 +1142,37 @@ class CloudflareAdapter:
     def __init__(self, config: CloudflareAdapterConfig | None = None) -> None:
         self.config = config or CloudflareAdapterConfig()
 
+    def _emit_agent_loop(self, node: Node, pipeline: Pipeline) -> str:
+        """One agent_loop node's module, in the Workers calling convention.
+
+        A sub-node takes ``env`` exactly when its own emitted module does
+        — judges (credentials) and MCP-backed calls (secrets + the KV
+        token cache). A plain extracted stub stays one-argument, so this
+        mirrors the predicate the workflow's own step calls use.
+
+        The cast is written as ``Parameters<typeof fn>[1]`` rather than a
+        named type: a judge's env parameter is an inline object type
+        listing exactly the variables that judge reads, so deriving the
+        cast from the function keeps it correct when the judge's
+        overrides change — and it needs no import from workflow.ts.
+        """
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+
+        def env_arg(sub: Node) -> str | None:
+            if sub.kind is not NodeKind.LLM_JUDGE and sub.id not in mcp_ids:
+                return None
+            return f"env as Parameters<typeof {_to_camel_case(sub.id)}>[1]"
+
+        return emit_agent_loop_module(
+            node,
+            pipeline,
+            default_model=self.config.anthropic_default_model,
+            generated_by="rote.adapters.cloudflare",
+            workers=True,
+            sub_node_env_arg=env_arg,
+            workers_ai_model=WORKERS_AI_AGENT_MODEL,
+        )
+
     def emit_workflow(self, pipeline: Pipeline) -> str:
         return emit_workflow(pipeline, self.config)
 
@@ -1095,10 +1190,18 @@ class CloudflareAdapter:
         written["index"] = writer.write("src", "index.ts", content=self.emit_index(pipeline))
 
         mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+        agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
-            if node.kind is NodeKind.LLM_JUDGE:
+            if node.kind is NodeKind.AGENT_LOOP:
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=self._emit_agent_loop(node, pipeline),
+                )
+            elif node.kind is NodeKind.LLM_JUDGE:
                 written[f"signatures/{node.id}"] = writer.write(
                     "src",
                     "signatures",
@@ -1121,16 +1224,27 @@ class CloudflareAdapter:
                     f"{node.id}.ts",
                     content=emit_extracted_module(node),
                 )
-        if mcp_ids:
+        # An agent_loop that declares tools needs the MCP helper beside it
+        # even when no node carries an `mcp:` binding — Node.tools are MCP
+        # tool names.
+        needs_mcp = bool(mcp_ids) or any(n.tools for n in agent_loops)
+        if needs_mcp:
             written["extracted/_roteMcp"] = writer.write(
                 "src", "extracted", "_roteMcp.ts", content=ROTE_MCP_WORKERS_HELPER_TS
+            )
+        if agent_loops:
+            written["signatures/_roteInference"] = writer.write(
+                "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
 
         written["wrangler"] = writer.write(
             "wrangler.jsonc", content=emit_wrangler(pipeline, self.config)
         )
         written["package.json"] = writer.write(
-            "package.json", content=emit_package_json(pipeline, with_mcp=bool(mcp_ids))
+            "package.json",
+            content=emit_package_json(
+                pipeline, with_mcp=needs_mcp, with_agent_loops=bool(agent_loops)
+            ),
         )
         written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
         written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))

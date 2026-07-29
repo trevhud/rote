@@ -14,5 +14,8 @@
       "binding": "PIPELINE",
       "class_name": "BdrCampaignWorkflow"
     }
-  ]
+  ],
+  "ai": {
+    "binding": "AI"
+  }
 }

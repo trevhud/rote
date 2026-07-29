@@ -26,7 +26,12 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from rote.adapters._common import EmitWriter, _to_pascal_case, safe_docstring_line
+from rote.adapters._common import (
+    DEFAULT_AGENT_MAX_ITERATIONS,
+    EmitWriter,
+    _to_pascal_case,
+    safe_docstring_line,
+)
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── impl / signature path references ─────────
@@ -681,12 +686,6 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"        )\n"
         f"        return {pascal}Output.model_validate(payload)\n"
     )
-
-
-#: Fallback iteration bound when the IR declares no ``termination``. An
-#: agent loop must always be bounded — an unbounded one in a durable
-#: workflow burns budget until a human notices.
-DEFAULT_AGENT_MAX_ITERATIONS = 10
 
 
 def agent_loop_call(

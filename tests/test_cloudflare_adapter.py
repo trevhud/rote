@@ -249,10 +249,13 @@ def test_workflow_has_step_do_for_every_non_hitl_node(
             continue
         if node.id in nested_ids:
             continue
-        # Indentation differs between the sequential form (12) and the
-        # Promise.all wave form (16), so match on the name line alone.
+        # Indentation differs by dispatch form: sequential (12), inside a
+        # Promise.all wave (16), and inside a park-on-auth retry loop
+        # (20, where the step name is a ternary on the attempt counter).
         assert (
-            f'step.do(\n{" " * 12}"{node.id}"' in src or f'step.do(\n{" " * 16}"{node.id}"' in src
+            f'step.do(\n{" " * 12}"{node.id}"' in src
+            or f'step.do(\n{" " * 16}"{node.id}"' in src
+            or f'? "{node.id}"' in src
         ), f"Missing step.do call for node {node.id!r} in workflow.ts"
 
 
@@ -284,7 +287,21 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
     compilation history; executable code may not. Scan logic is shared —
     see tests/_helpers.py.
     """
-    assert_no_mcp_in_ts(emit_result, min_files=13)
+    # BDR's two agent loops declare MCP tools, so their modules and the
+    # helper that binds them are the pipeline's legitimate MCP sites.
+    assert_no_mcp_in_ts(
+        emit_result,
+        min_files=13,
+        expected={
+            "extracted/_roteMcp",
+            "extracted/target_research",
+            "extracted/lead_generation_loop",
+            # The workflow imports isRoteMcpAuthNeeded to decide whether a
+            # failed step should park — Cloudflare has no should-retry
+            # predicate, so the check lives at the call site.
+            "workflow",
+        },
+    )
 
 
 def test_signature_module_imports_zod_and_anthropic(
@@ -433,13 +450,27 @@ def test_extracted_stub_throws_not_implemented(
     assert "stub not implemented" in src
 
 
-def test_agent_loop_stub_documents_tools(emit_result: dict[str, Path]) -> None:
-    src = emit_result["extracted/lead_generation_loop"].read_text()
-    assert "agent_loop" in src
-    assert "Tools the agent should be allowed to call" in src
+def test_agent_loop_module_runs_a_real_bounded_loop(emit_result: dict[str, Path]) -> None:
+    """Not a stub: the emitted module binds the IR's tools and runs the loop.
+
+    A pipeline that hands its one genuinely agentic step back to the user
+    has not graduated that step, so this asserts the whole contract —
+    bounded iterations, the declared allowlist, the loop_body sub-nodes
+    bound as callables, and the provider left to run time.
+    """
+    src = emit_result["extracted/lead_generation_loop"].read_text(encoding="utf-8")
+    assert "runAgentLoop({" in src
+    assert "requires an agent runtime" not in src
+    # The allowlist IS the boundary — the IR's tool names reach the call.
     assert "zoominfo_search_contacts" in src
-    assert "Loop body sub-nodes" in src
+    assert "bindAgentTools(" in src
+    # Bounded, always: an unbounded loop in a durable workflow burns
+    # budget until a human notices.
+    assert "maxIterations:" in src
+    # loop_body sub-nodes are bound as callables, not re-derived.
     assert "enrich_contact_batch" in src
+    # The provider is resolved at run time and never baked into emitted code.
+    assert "_roteInference" in src
 
 
 def test_wrangler_config_registers_workflow(
@@ -525,11 +556,16 @@ def test_workflow_binds_pipeline_input(emit_result: dict[str, Path]) -> None:
 
 def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> None:
     src = emit_result["workflow"].read_text()
-    # BDR's two entry nodes share wave 1, so they emit inside a
-    # Promise.all — one level deeper than the sequential form.
-    payload = "{\n                    brief: pipelineInput,\n                }"
-    assert f"targetResearch({payload}, this.env)" in src
-    assert f"taxonomyLookup({payload})" in src
+    # BDR's two entry nodes share wave 1 but dispatch differently.
+    # target_research is an agent loop with MCP tools, so it parks on auth
+    # — and a parkable step stays OUT of the Promise.all wave (waitForEvent
+    # inside a promise combinator is undocumented, and its timeout throws,
+    # which would reject the whole wave). That leaves taxonomy_lookup alone
+    # in the wave, so it emits in the sequential form.
+    sequential = "{\n                brief: pipelineInput,\n            }"
+    parkable = "{\n                            brief: pipelineInput,\n                        }"
+    assert f"targetResearch({parkable}, this.env)" in src
+    assert f"taxonomyLookup({sequential})" in src
 
 
 def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path]) -> None:
@@ -607,8 +643,14 @@ def test_extracted_stub_return_type_is_never(
     `unknown` isn't structurally serializable.)"""
     src = emit_result["extracted/hubspot_upsert"].read_text()
     assert "Promise<never> {" in src
+    # An agent_loop module is NOT a stub — it returns the loop's real
+    # result. Its return type is an anonymous object type rather than an
+    # interface, which is what keeps the workflow's
+    # `as Record<string, unknown>` casts compiling (TypeScript grants
+    # implicit index signatures to the former only).
     loop_src = emit_result["extracted/lead_generation_loop"].read_text()
-    assert "Promise<never> {" in loop_src
+    assert "Promise<never> {" not in loop_src
+    assert "iterations: number | null }> {" in loop_src
 
 
 # ───────── Custom config ─────────
@@ -775,7 +817,10 @@ def test_manifest_node_ids_match_emitted_modules(
     for sub in ("signatures", "extracted"):
         d = out / "src" / sub
         if d.exists():
-            on_disk.update(p.stem for p in d.glob("*.ts"))
+            # `_`-prefixed modules are shared runtime helpers (_roteMcp,
+            # _roteInference), not nodes — they carry no node id and must
+            # not reach the manifest.
+            on_disk.update(p.stem for p in d.glob("*.ts") if not p.stem.startswith("_"))
 
     manifest = json.loads((out / "manifest.json").read_text())
     assert set(manifest["node_ids"]) == on_disk

@@ -53,9 +53,9 @@ function requireEnv(name: string): string {
 /**
  * Run external research (Bright Data web search, ClinicalTrials.gov)
  *
- * Agent loop — bounded, tool-restricted. The stub in
- * `extracted/target_research` throws until implemented against an
- * agent harness.
+ * Agent loop — bounded, tool-restricted, and real: which lane
+ * pays for the inference is resolved at run time by
+ * `signatures/_roteInference`.
  */
 export const targetResearchStep = DBOS.registerStep(
     async (payload: Record<string, unknown>) => targetResearch(payload),
@@ -76,9 +76,9 @@ export const taxonomyLookupStep = DBOS.registerStep(
 /**
  * Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo
  *
- * Agent loop — bounded, tool-restricted. The stub in
- * `extracted/lead_generation_loop` throws until implemented against an
- * agent harness.
+ * Agent loop — bounded, tool-restricted, and real: which lane
+ * pays for the inference is resolved at run time by
+ * `signatures/_roteInference`.
  */
 export const leadGenerationLoopStep = DBOS.registerStep(
     async (payload: Record<string, unknown>) => leadGenerationLoop(payload),

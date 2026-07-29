@@ -33,9 +33,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from rote.adapters._common import _to_camel_case, _to_pascal_case, safe_block_comment_line
+from rote.adapters._common import (
+    DEFAULT_AGENT_MAX_ITERATIONS,
+    _to_camel_case,
+    _to_pascal_case,
+    safe_block_comment_line,
+)
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── JSON Schema → Zod ─────────
@@ -1075,6 +1081,97 @@ export async function listMcpTools(
     });
 }
 
+/** A tool bound to a callable — structurally a BoundTool for the agent loop. */
+export interface BoundMcpTool {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    run: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+}
+
+/**
+ * Candidate servers for tool discovery: every server the pipeline knows
+ * about, plus every server registered locally.
+ *
+ * Over-wiring is safe *because* the declared tool list is the real
+ * constraint — the agent can only call what the IR named. ROTE_MCP_SERVERS
+ * replaces the whole list when an operator needs to point a loop somewhere
+ * the pipeline never mentioned.
+ */
+function agentServerNames(declared: string[]): string[] {
+    const override = process.env.ROTE_MCP_SERVERS;
+    if (override) {
+        return override
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+    }
+    const names = new Set(declared);
+    for (const name of Object.keys(registryServers())) names.add(name);
+    return [...names].sort();
+}
+
+/**
+ * Bind the tools an agent_loop declared to callables the loop can invoke.
+ *
+ * The IR names tools without servers (one loop may reach several, and an
+ * MCPBinding is a single server/tool pair), so discovery walks every
+ * candidate server and keeps what matches the declared names.
+ *
+ * Discovery is best-effort per server: a server that is down or
+ * unauthenticated is not necessarily one this loop needed, so it is
+ * recorded rather than thrown. A declared tool that no reachable server
+ * provides IS fatal — and when an auth failure is the plausible reason,
+ * that failure is rethrown so the workflow parks durably and
+ * `rote mcp login` can release it, rather than dying with a misleading
+ * "no server provides this tool".
+ */
+export async function bindAgentTools(
+    allowed: string[],
+    declaredServers: string[],
+    serverUrls: Record<string, string | null> = {},
+): Promise<BoundMcpTool[]> {
+    const wanted = new Set(allowed);
+    const bound = new Map<string, BoundMcpTool>();
+    const failures: unknown[] = [];
+
+    for (const server of agentServerNames(declaredServers)) {
+        const url = serverUrls[server] ?? null;
+        let specs: McpToolSpec[];
+        try {
+            specs = await listMcpTools(server, url);
+        } catch (err) {
+            failures.push(err);
+            continue;
+        }
+        for (const spec of specs) {
+            // First server to advertise a name wins; the allowlist cannot
+            // disambiguate two servers exporting the same tool name.
+            if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            bound.set(spec.name, {
+                name: spec.name,
+                description: spec.description,
+                parameters: spec.inputSchema,
+                run: (args) => callMcpTool(server, url, spec.name, args),
+            });
+        }
+    }
+
+    const missing = allowed.filter((name) => !bound.has(name));
+    if (missing.length > 0) {
+        const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
+        if (authFailure) throw authFailure;
+        const detail = failures
+            .map((err) => (err instanceof Error ? err.message : String(err)))
+            .join("; ");
+        throw new Error(
+            `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
+                (detail ? ` (unreachable: ${detail})` : ""),
+        );
+    }
+    return [...bound.values()];
+}
+
 function isUnauthorized(err: unknown): boolean {
     return err instanceof StreamableHTTPError
         ? err.code === 401
@@ -1436,6 +1533,88 @@ export async function listMcpTools(
             }) as Record<string, unknown>,
         }));
     });
+}
+
+/** A tool bound to a callable — structurally a BoundTool for the agent loop. */
+export interface BoundMcpTool {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    run: (args: Record<string, unknown>) => Promise<JsonObject>;
+}
+
+/**
+ * Candidate servers for tool discovery.
+ *
+ * Unlike the Node runtimes there is no registry file to enumerate here —
+ * a Worker's servers are whatever the pipeline declared at emit time,
+ * with their credentials provisioned as secrets under those names. The
+ * ROTE_MCP_SERVERS variable replaces the list wholesale when an operator
+ * needs to point a loop somewhere the pipeline never mentioned.
+ */
+function agentServerNames(env: RoteMcpEnv, declared: string[]): string[] {
+    const override = env.ROTE_MCP_SERVERS;
+    if (typeof override === "string" && override.length > 0) {
+        return override
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+    }
+    return [...new Set(declared)].sort();
+}
+
+/**
+ * Bind the tools an agent_loop declared to callables the loop can invoke.
+ *
+ * Same contract as the Node helper's: discovery is best-effort per server
+ * (a server that is down may not be one this loop needed), a declared tool
+ * no reachable server provides is fatal, and an auth failure that plausibly
+ * explains the gap is rethrown so the Workflow parks on it instead of
+ * failing with a misleading "no server provides this tool".
+ */
+export async function bindAgentTools(
+    env: RoteMcpEnv,
+    allowed: string[],
+    declaredServers: string[],
+    serverUrls: Record<string, string | null> = {},
+): Promise<BoundMcpTool[]> {
+    const wanted = new Set(allowed);
+    const bound = new Map<string, BoundMcpTool>();
+    const failures: unknown[] = [];
+
+    for (const server of agentServerNames(env, declaredServers)) {
+        const url = serverUrls[server] ?? null;
+        let specs: McpToolSpec[];
+        try {
+            specs = await listMcpTools(env, server, url);
+        } catch (err) {
+            failures.push(err);
+            continue;
+        }
+        for (const spec of specs) {
+            if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            bound.set(spec.name, {
+                name: spec.name,
+                description: spec.description,
+                parameters: spec.inputSchema,
+                run: (args) => callMcpTool(env, server, url, spec.name, args),
+            });
+        }
+    }
+
+    const missing = allowed.filter((name) => !bound.has(name));
+    if (missing.length > 0) {
+        const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
+        if (authFailure) throw authFailure;
+        const detail = failures
+            .map((err) => (err instanceof Error ? err.message : String(err)))
+            .join("; ");
+        throw new Error(
+            `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
+                (detail ? ` (unreachable: ${detail})` : ""),
+        );
+    }
+    return [...bound.values()];
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {
@@ -1841,3 +2020,264 @@ export async function runAgentLoop(opts: {
     );
 }
 """
+
+
+# ───────── extracted/<id>.ts emission for agent_loop nodes ─────────
+
+
+def agent_tool_servers(pipeline: Pipeline) -> dict[str, str | None]:
+    """Candidate MCP servers for agent_loop tool discovery: name → recorded URL.
+
+    ``Node.tools`` names tools without a server (one loop may reach
+    several, and an :class:`MCPBinding` is a single server/tool pair), so
+    the emitted loop is handed the servers this pipeline is already known
+    to talk to and searches them for the declared names.
+
+    That is a bridge, not the destination. Until the compiler resolves
+    tool → server at compile time, an agent loop's tools are invisible to
+    :attr:`Pipeline.required_mcp_servers` — so a pipeline whose only MCP
+    usage is a loop reports no required servers and the `rote mcp login`
+    advisories under-report. The runtime escape hatch is
+    ``ROTE_MCP_SERVERS``; on the Node runtimes the local registry is also
+    unioned in, matching what the Python runtime does.
+    """
+    servers: dict[str, str | None] = {}
+    for node in pipeline.nodes:
+        if node.mcp is not None and node.mcp.server not in servers:
+            servers[node.mcp.server] = node.mcp.url
+    return dict(sorted(servers.items()))
+
+
+#: Permissive argument schema for a loop_body sub-node with no declared
+#: ``input_schema``. TypeScript cannot derive a schema from a function
+#: signature the way Python's ``@beta_tool`` does, so the honest fallback
+#: is "an object" — the sub-node still validates its own payload.
+_OPEN_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "additionalProperties": True}
+
+
+def _local_tool_literal(
+    sub: Node, call_expr: str, indent: str, *, ts_type: str = "BoundTool"
+) -> list[str]:
+    schema = sub.input_schema or _OPEN_TOOL_SCHEMA
+    desc = sub.description.strip() or f"Run the {sub.id} step."
+    return [
+        f"{indent}{{",
+        f"{indent}    name: {json.dumps(sub.id)},",
+        f"{indent}    description: {json.dumps(desc)},",
+        f"{indent}    parameters: {json.dumps(schema)},",
+        f"{indent}    run: async (args) => {call_expr},",
+        f"{indent}}},",
+    ]
+
+
+def emit_agent_loop_module(
+    node: Node,
+    pipeline: Pipeline,
+    *,
+    default_model: str,
+    generated_by: str,
+    workers: bool,
+    sub_node_env_arg: Callable[[Node], str | None] | None = None,
+    helpers: Sequence[str] = (),
+    workers_ai_model: str | None = None,
+) -> str:
+    """Emit ``src/extracted/<id>.ts`` as a REAL bounded agent loop.
+
+    This is what replaced the ``throw new Error("… implement me")`` stub.
+    A pipeline that hands its one genuinely agentic step back to the user
+    has not graduated that step, so the emitted module runs the loop: MCP
+    tools bound through the runtime's own MCP helper, ``loop_body``
+    sub-nodes bound as callables (already-emitted, already-working steps,
+    so the agent drives them per iteration exactly as the IR describes),
+    and the inference lane resolved at runtime by ``_roteInference.ts``.
+
+    ``sub_node_env_arg`` lets each adapter supply its own calling
+    convention for those sub-nodes — a judge takes an env object on the
+    Node runtimes and ``env`` on Workers — because the adapter owns that
+    convention and the module shape is all that is shared. ``helpers``
+    carries any function those call expressions depend on (the Node
+    runtimes' ``requireEnv``), since this module cannot import from the
+    workflow file that normally defines them.
+
+    ``workers_ai_model`` opts the module into the Cloudflare lane: the
+    binding and its runner are passed IN, so the inference helper itself
+    stays free of any Cloudflare import and the Node runtimes can compile
+    it without ``@cloudflare/ai-utils`` on their dependency list.
+    """
+    assert node.kind is NodeKind.AGENT_LOOP
+    fn_name = _to_camel_case(node.id)
+    model_var, base_var = override_env_vars(node.id)
+    max_iterations = (
+        node.termination.max_iterations
+        if node.termination is not None
+        else DEFAULT_AGENT_MAX_ITERATIONS
+    )
+    tools = list(node.tools or [])
+    servers = agent_tool_servers(pipeline) if tools else {}
+    sub_nodes = [pipeline.node_by_id(sub) for sub in (node.loop_body or [])]
+
+    doc = [
+        "/**",
+        f" * Agent loop: {node.id}",
+        " *",
+        f" * {safe_block_comment_line(node.description, fallback=node.id)}",
+        " *",
+        f" * Auto-generated by {generated_by}. Bounded at {max_iterations} iteration(s)",
+        " * and restricted to the tools below — the agent sees nothing else. Which",
+        " * lane pays for the inference (your Anthropic key, your Cloudflare account,",
+        " * or rote cloud) is resolved at runtime by signatures/_roteInference.ts;",
+        f" * {model_var} / {base_var} override the model and endpoint.",
+    ]
+    if node.mandatory:
+        doc.extend(
+            [
+                " *",
+                " * MANDATORY: this node was marked mandatory in the source skill.",
+                " * The workflow always calls it; do not make it conditional.",
+            ]
+        )
+    doc.append(" */")
+
+    inference_names = ["runAgentLoop", "type BoundTool"]
+    if workers and workers_ai_model is not None:
+        inference_names.append("type WorkersAiLane")
+    imports = [f'import {{ {", ".join(inference_names)} }} from "../signatures/_roteInference";']
+    if tools:
+        mcp_types = ", type RoteMcpEnv" if workers else ""
+        imports.append(f'import {{ bindAgentTools{mcp_types} }} from "./_roteMcp";')
+    for sub in sub_nodes:
+        sub_fn = _to_camel_case(sub.id)
+        where = "../signatures" if sub.kind is NodeKind.LLM_JUDGE else "."
+        imports.append(f'import {{ {sub_fn} }} from "{where}/{sub.id}";')
+
+    consts: list[str] = []
+    if tools:
+        consts.extend(
+            [
+                "",
+                "/** Tools the IR declared for this loop — the allowlist IS the boundary. */",
+                f"const TOOLS: string[] = {json.dumps(tools)};",
+                "",
+                "/** Servers searched for those tools, with the endpoints the IR recorded. */",
+                f"const SERVERS: string[] = {json.dumps(list(servers))};",
+                f"const SERVER_URLS: Record<string, string | null> = {json.dumps(servers)};",
+            ]
+        )
+        if not servers:
+            # Say so in the emitted source rather than letting the loop
+            # fail at runtime with "no server provides this tool" and no
+            # hint about why nothing was searched.
+            consts[-3:-3] = [
+                "// NOTE: no MCP server could be resolved at emit time — this loop's",
+                "// tools are bare names and no node in the pipeline carries an `mcp:`",
+                "// binding to search. The Node runtimes fall back to every server in",
+                "// the local rote registry; set ROTE_MCP_SERVERS to name them",
+                "// explicitly (required on Cloudflare, which has no registry).",
+            ]
+
+    if workers:
+        # `unknown` + casts, the same convention the Workers MCP modules
+        # use: the workflow's Env is an interface, and an interface has no
+        # implicit index signature to satisfy RoteMcpEnv or a string map.
+        params = "    input: unknown,\n    env: unknown, // the workflow's Env; cast below"
+        bind_call = "await bindAgentTools(env as RoteMcpEnv, TOOLS, SERVERS, SERVER_URLS)"
+        env_source = "env as Record<string, string | undefined>"
+        if workers_ai_model is not None:
+            imports.append('import { runWithTools } from "@cloudflare/ai-utils";')
+    else:
+        params = "    input: unknown,"
+        bind_call = "await bindAgentTools(TOOLS, SERVERS, SERVER_URLS)"
+        env_source = "process.env"
+
+    local_tools: list[str] = []
+    for sub in sub_nodes:
+        sub_fn = _to_camel_case(sub.id)
+        extra = sub_node_env_arg(sub) if sub_node_env_arg is not None else None
+        call = f"{sub_fn}(args)" if extra is None else f"{sub_fn}(args, {extra})"
+        local_tools.extend(_local_tool_literal(sub, call, "        "))
+
+    # The return type is an anonymous object type, never an interface:
+    # TypeScript grants implicit index signatures to the former only, and
+    # the workflow's data-flow references cast node results to
+    # Record<string, unknown> (see ref_to_ts_expr).
+    body = [
+        "",
+        f"export async function {fn_name}(",
+        params,
+        "): Promise<{ result: string; provider: string; iterations: number | null }> {",
+        f"    const vars = {env_source};",
+    ]
+    if tools:
+        body.append(f"    const tools: BoundTool[] = {bind_call};")
+    else:
+        body.append("    const tools: BoundTool[] = [];")
+    if workers_ai_model is not None:
+        # Offered, never forced: the lane is only *selected* when the
+        # operator pins ROTE_INFERENCE=workers-ai or has no other lane, so
+        # binding `ai` in wrangler.jsonc costs nothing until it is used.
+        body.extend(
+            [
+                "    const ai = (env as { AI?: unknown }).AI;",
+                "    const workersAi: WorkersAiLane | null = ai",
+                "        ? {",
+                "              binding: ai,",
+                "              model: vars.ROTE_WORKERS_AI_MODEL ?? "
+                f"{json.dumps(workers_ai_model)},",
+                '              runWithTools: runWithTools as WorkersAiLane["runWithTools"],',
+                "          }",
+                "        : null;",
+            ]
+        )
+    if local_tools:
+        body.append("    // loop_body sub-nodes: real pipeline steps, driven per iteration.")
+        body.append("    tools.push(")
+        body.extend(local_tools)
+        body.append("    );")
+    body.extend(
+        [
+            "    return runAgentLoop({",
+            f"        nodeId: {json.dumps(node.id)},",
+            f"        description: {json.dumps(node.description)},",
+            "        task: input,",
+            f"        model: vars.{model_var} ?? {json.dumps(default_model)},",
+            "        tools,",
+            f"        maxIterations: {max_iterations},",
+        ]
+    )
+    if node.termination is not None:
+        body.append(f"        termination: {json.dumps(node.termination.condition)},")
+    body.extend(
+        [
+            f"        baseUrl: vars.{base_var} ?? null,",
+            "        env: vars,",
+            *(["        workersAi,"] if workers_ai_model is not None else []),
+            "    });",
+            "}",
+            "",
+        ]
+    )
+    helper_block = ["", *(h.rstrip("\n") for h in helpers)] if helpers else []
+    return "\n".join(doc + [""] + imports + consts + helper_block + body)
+
+
+def emit_node_agent_loop_module(
+    node: Node, pipeline: Pipeline, *, default_model: str, generated_by: str
+) -> str:
+    """An agent_loop module for the Node-process runtimes (DBOS-TS, Inngest).
+
+    Both call their steps identically — a judge sub-node takes the same
+    explicit env object the workflow's own judge steps build, so
+    ``requireEnv`` rides along (the agent module cannot import it from the
+    workflow file). Shared rather than copied: two runtimes that emitted
+    *different* agent loops would be two implementations of the loop.
+    """
+    sub_kinds = {pipeline.node_by_id(sub).kind for sub in (node.loop_body or [])}
+    return emit_agent_loop_module(
+        node,
+        pipeline,
+        default_model=default_model,
+        generated_by=generated_by,
+        workers=False,
+        sub_node_env_arg=lambda sub: judge_env_arg(sub) if sub.kind is NodeKind.LLM_JUDGE else None,
+        helpers=[REQUIRE_ENV_HELPER] if NodeKind.LLM_JUDGE in sub_kinds else [],
+    )

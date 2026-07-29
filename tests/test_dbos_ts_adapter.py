@@ -292,7 +292,17 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
     compilation history; executable code may not. Scan logic is shared —
     see tests/_helpers.py.
     """
-    assert_no_mcp_in_ts(emit_result, min_files=13)
+    # BDR's two agent loops declare MCP tools, so their modules and the
+    # helper that binds them are the pipeline's legitimate MCP sites.
+    assert_no_mcp_in_ts(
+        emit_result,
+        min_files=13,
+        expected={
+            "extracted/_roteMcp",
+            "extracted/target_research",
+            "extracted/lead_generation_loop",
+        },
+    )
 
 
 # ───────── Extracted stub conventions ─────────
@@ -305,13 +315,27 @@ def test_extracted_stubs_throw_not_implemented(emit_result: dict[str, Path]) -> 
     assert "Promise<never>" in src
 
 
-def test_agent_loop_stub_documents_tools(emit_result: dict[str, Path]) -> None:
+def test_agent_loop_module_runs_a_real_bounded_loop(emit_result: dict[str, Path]) -> None:
+    """Not a stub: the emitted module binds the IR's tools and runs the loop.
+
+    A pipeline that hands its one genuinely agentic step back to the user
+    has not graduated that step, so this asserts the whole contract —
+    bounded iterations, the declared allowlist, the loop_body sub-nodes
+    bound as callables, and the provider left to run time.
+    """
     src = emit_result["extracted/lead_generation_loop"].read_text(encoding="utf-8")
-    assert "agent_loop" in src
-    assert "Tools the agent should be allowed to call" in src
+    assert "runAgentLoop({" in src
+    assert "requires an agent runtime" not in src
+    # The allowlist IS the boundary — the IR's tool names reach the call.
     assert "zoominfo_search_contacts" in src
-    assert "Loop body sub-nodes" in src
+    assert "bindAgentTools(" in src
+    # Bounded, always: an unbounded loop in a durable workflow burns
+    # budget until a human notices.
+    assert "maxIterations:" in src
+    # loop_body sub-nodes are bound as callables, not re-derived.
     assert "enrich_contact_batch" in src
+    # The provider is resolved at run time and never baked into emitted code.
+    assert "_roteInference" in src
 
 
 # ───────── Generated signature modules ─────────
