@@ -13,6 +13,7 @@ Two flavors:
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -1291,3 +1292,61 @@ def test_analyze_json_includes_empty_mcp_manifest_for_unbound_pipeline(
     assert rc == 0
     report = json.loads(capsys.readouterr().out)
     assert report["mcp_servers"] == []
+
+
+# ───────── Contract findings surface through the CLI ─────────
+
+
+def test_emit_reports_contract_breaks_in_json(python_executable: str, tmp_path: Path) -> None:
+    """`rote emit` re-checks the IR against the modules beside the
+    pipeline.yaml, because that is where the fix-and-re-emit loop runs.
+
+    The newest committed BDR compile carries two real breaks (see
+    tests/test_contracts.py), so this doubles as proof the findings reach
+    the machine-readable surface rather than only the human one.
+    """
+    result = subprocess.run(
+        [
+            python_executable,
+            "-m",
+            "rote.cli",
+            "emit",
+            str(REPO_ROOT / "examples/bdr-outreach/runs/2026-07-18-mcp-bindings/pipeline.yaml"),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "emitted"),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    findings = payload["contract_findings"]
+    assert {f["node"] for f in findings} == {"hubspot_create_list", "exclusion_check_dnc"}
+    assert all(f["severity"] == "error" for f in findings)
+
+
+def test_emit_stays_silent_on_a_clean_pipeline(python_executable: str, tmp_path: Path) -> None:
+    """A checker that reports on healthy compilations gets ignored."""
+    result = subprocess.run(
+        [
+            python_executable,
+            "-m",
+            "rote.cli",
+            "emit",
+            str(REPO_ROOT / "examples/ops-report/runs/2026-07-18-rubric-v2/pipeline.yaml"),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "emitted"),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["contract_findings"] == []

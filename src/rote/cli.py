@@ -49,6 +49,7 @@ from rote.adapters import ADAPTERS, get_adapter
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
+from rote.contracts import check_contracts
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
@@ -181,6 +182,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     mcp_servers = _mcp_requirements(pipeline)
 
+    # The IR's `impl` refs point at modules beside the pipeline.yaml, which
+    # is exactly what was just sourced into the runtime dir — so this is
+    # also the fix-and-re-emit loop's checkpoint. Free, and it needs no
+    # runtime; reported, never fatal (the emitted dir is still useful).
+    contract_findings = check_contracts(pipeline, pipeline_path.parent)
+
     if args.json:
         import json
 
@@ -192,12 +199,16 @@ def _cmd_emit(args: argparse.Namespace) -> int:
             "preserved_new_files": _preserved_new_files(written),
             "unimplemented_stubs": _unimplemented_stubs(written),
             "mcp_servers": mcp_servers,
+            "contract_findings": [f.as_dict() for f in contract_findings],
         }
         print(json.dumps(payload, indent=2))
         return 0
 
     print(f"rote: emitted {pipeline.name} v{pipeline.version} → {out_dir}")
     _print_written(written)
+    for finding in contract_findings:
+        label = "ERROR" if finding.severity == "error" else "warning"
+        print(f"  contract: {label} {finding.node_id}: {finding.message}")
     if mcp_servers:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}")
@@ -754,6 +765,26 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         for line in _mcp_recommendation_lines(mcp_servers):
             print(line, file=summary_stream)
 
+    # ── Static contract check ── `impl: extracted/x.py:f` is a promise the
+    # IR makes and nothing verified: emitted steps call `f(**payload)` and
+    # the first anyone hears of a missing symbol or a parameter mismatch is
+    # a TypeError in a background job. Decidable by parsing, so it costs
+    # nothing and needs no runtime. Reported, never fatal — the artifacts
+    # are still the valuable, fixable output of a real-money run.
+    contract_findings = check_contracts(pipeline, compiled_dir)
+    for finding in contract_findings:
+        label = "ERROR" if finding.severity == "error" else "warning"
+        print(
+            f"  contract: {label} {finding.node_id}: {finding.message}",
+            file=summary_stream,
+        )
+    if any(f.severity == "error" for f in contract_findings):
+        print(
+            f"  contract: fix the above in {compiled_dir}, then re-run "
+            f"`rote emit {compiled_dir / 'pipeline.yaml'}`",
+            file=summary_stream,
+        )
+
     # ── Static vs observed cross-check ── runs whenever baseline
     # observations exist for this out dir (from --baseline just now, or a
     # prior `rote baseline --out` here). observed_only entries are the
@@ -864,6 +895,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             payload["mcp_cross_check"] = cross
         if verification is not None:
             payload["generated_tests"] = verification
+        payload["contract_findings"] = [f.as_dict() for f in contract_findings]
         if deploy_entry is not None:
             payload["deploy"] = deploy_entry
         print(json.dumps(payload, indent=2))
@@ -893,6 +925,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "runtime_dir": str(runtime_dir.resolve()),
                 "unimplemented_stubs": _unimplemented_stubs(written),
                 "mcp_servers": analysis["mcp_servers"],
+                "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
                 "total_tokens": total_tokens,
             }
         )
@@ -1903,10 +1936,18 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         report = _build_analysis(
             result.pipeline, result.driver_name, result.driver_metadata, skill_path
         )
+        # The compiled artifacts exist here even when they're about to be
+        # discarded, so the contract check costs nothing and is exactly the
+        # kind of thing a dry run should surface before you pay for `compile`.
+        contract_findings = check_contracts(result.pipeline, compiled_dir)
+        report["contract_findings"] = [f.as_dict() for f in contract_findings]
         if args.json:
             print(json.dumps(report, indent=2))
         else:
             print(_render_analysis_text(report))
+            for finding in contract_findings:
+                label = "ERROR" if finding.severity == "error" else "warning"
+                print(f"  contract: {label} {finding.node_id}: {finding.message}")
             if args.out:
                 print()
                 print(f"  compiled IR kept at: {compiled_dir / 'pipeline.yaml'}")
