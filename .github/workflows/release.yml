@@ -125,3 +125,31 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Release pages are indexed individually and feed the repo sidebar;
+      # the CHANGELOG alone is invisible to anyone who does not open the
+      # file. Notes come from the tag's CHANGELOG section so the two never
+      # diverge; a tag without a section fails loudly rather than shipping
+      # an empty page.
+      - name: Create GitHub release from the CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$(awk -v ver="$version" \
+            '$0 ~ "^## \\[?"ver {flag=1;next} /^## /{flag=0} flag' CHANGELOG.md)"
+          if [ -z "$notes" ]; then
+            echo "No CHANGELOG.md section found for $version" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes"
