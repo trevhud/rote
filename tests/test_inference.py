@@ -633,3 +633,120 @@ def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPa
     # better to go on, and a name no server provides never resolves anyway.
     _servers, unpinned = helper._mcp_config_for(tools, None)
     assert len(unpinned) == 4
+
+
+# ───────── The overhead-control flags, on BOTH CLI paths ─────────
+#
+# `claude -p` defaults to shipping Claude Code's entire coding-agent
+# system prompt: ~37k cache-creation tokens and 11.5s for a one-sentence
+# judge. `--system-prompt <one line>` + `--tools ""` + `--setting-sources
+# ""` bring the identical call to ~740 tokens and ~3.5s.
+#
+# A mutation sweep found `--system-prompt` untested on BOTH paths and
+# `--setting-sources` / `is_error` untested on the agent-loop path — the
+# same asymmetry that let the bare `--tools` flag ship broken, since the
+# agent-loop CLI path had no coverage at all.
+
+
+def _cli_flag(command: list[str], flag: str) -> str:
+    assert flag in command, f"{flag} missing from the invocation"
+    return command[command.index(flag) + 1]
+
+
+def test_judge_cli_replaces_the_default_coding_agent_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A judge must carry its own short system prompt.
+
+    Asserting presence would pass with an empty value; asserting the
+    exact text would break on any wording change. The load-bearing
+    property is that it is *short and custom* — dropping the flag is
+    what restores the 37k-token default.
+    """
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    seen = _capture_cli(monkeypatch, _cli_envelope(structured_output={"grade": 9}))
+
+    helper.call_judge(
+        node_id="grade_essay",
+        client="anthropic",
+        prompt="Grade it.",
+        output_schema={"type": "object", "properties": {"grade": {"type": "integer"}}},
+        model="claude-sonnet-4-6",
+    )
+
+    prompt = _cli_flag(seen["command"], "--system-prompt")
+    assert prompt.strip(), "an empty system prompt restores Claude Code's default"
+    assert len(prompt) < 400, (
+        f"the judge system prompt is {len(prompt)} chars — it is meant to be a "
+        f"one-liner; the whole point of the flag is not shipping a large prompt"
+    )
+
+
+def test_agent_loop_cli_replaces_the_default_coding_agent_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract on the agent-loop path, which had no coverage of it."""
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+
+    helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        tools=["bright_data_search"],
+        max_iterations=6,
+    )
+
+    prompt = _cli_flag(seen["command"], "--system-prompt")
+    assert prompt.strip(), "an empty system prompt restores Claude Code's default"
+    assert len(prompt) < 400
+
+
+def test_agent_loop_cli_does_not_inherit_user_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--setting-sources ""` on the agent loop, as on the judge.
+
+    Without it the loop picks up whatever hooks, MCP servers and
+    permissions the *developer's* machine has configured — so an emitted
+    pipeline behaves differently per laptop, which is the opposite of
+    what compiling a skill is for.
+    """
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+
+    helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        tools=["bright_data_search"],
+        max_iterations=6,
+    )
+
+    assert _cli_flag(seen["command"], "--setting-sources") == ""
+
+
+def test_agent_loop_cli_surfaces_the_envelopes_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed agent loop must not read as a success.
+
+    `claude -p` reports API failures *inside a zero exit* — `is_error`
+    in the envelope — so returncode alone calls a dead loop a win and
+    the workflow proceeds on a garbage result. Covered on the judge
+    path; this is the loop half.
+    """
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    _capture_cli(monkeypatch, _agent_envelope(is_error=True, result="rate limited"))
+
+    with pytest.raises(RuntimeError, match="rate limited"):
+        helper.run_agent_loop(
+            node_id="target_research",
+            description="Research the account.",
+            task='{"account": "acme"}',
+            model="claude-sonnet-4-6",
+            tools=["bright_data_search"],
+            max_iterations=6,
+        )

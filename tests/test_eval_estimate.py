@@ -19,7 +19,7 @@ from rote.eval.estimate import (
 from rote.eval.priors import Priors
 from rote.eval.sidecar import EvalEstimates, StepEstimate, TurnRange
 from rote.eval.tokens import HeuristicTokenCounter
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import Node, NodeKind, Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -312,19 +312,53 @@ def test_external_call_payload_sums_footprint(bdr_pipeline: Pipeline) -> None:
     assert payload == n_external * priors.tokens_per_external_call_result
 
 
-def test_per_tool_override_changes_payload(bdr_pipeline: Pipeline) -> None:
-    """A pinned per-tool payload beats the default constant for that tool."""
+def test_per_tool_override_changes_payload() -> None:
+    """A pinned per-tool payload beats the default constant for that tool.
+
+    Built on a purpose-made fixture rather than the BDR example. This
+    test previously took its mcp-bound node from BDR and skipped when
+    there wasn't one — and there never was: BDR's five required MCP
+    servers all come from its two agent loops' `tool_servers`, while its
+    four external_call nodes carry no `mcp:` binding at all. So it
+    silently never ran. A test whose subject is an example's incidental
+    shape is a test that can quietly stop testing.
+    """
     from rote.eval.estimate import external_call_payload_tokens
 
-    external = [n for n in bdr_pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL and n.mcp]
-    if not external:
-        pytest.skip("BDR fixture has no MCP-bound external_call to override")
-    tool = external[0].mcp.tool
-    base = external_call_payload_tokens(bdr_pipeline, Priors())
-    bumped = external_call_payload_tokens(
-        bdr_pipeline, Priors(payload_tokens_per_tool={tool: 99_000.0})
+    pinned = Node(
+        id="fetch_pinned",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="d",
+        impl="m.py:fetch",
+        mcp={"server": "slack", "tool": "slack_get_messages"},
     )
-    assert bumped > base
+    unpinned = Node(
+        id="fetch_other",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="d",
+        impl="m.py:other",
+        mcp={"server": "gmail", "tool": "gmail_search"},
+    )
+    pipeline = Pipeline(
+        name="payloads",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[pinned, unpinned],
+        edges=[{"from": "fetch_pinned", "to": "fetch_other"}],
+        entry_nodes=["fetch_pinned"],
+        exit_nodes=["fetch_other"],
+    )
+
+    priors = Priors()
+    default_each = priors.tokens_per_external_call_result
+    assert external_call_payload_tokens(pipeline, priors) == 2 * default_each
+
+    bumped = external_call_payload_tokens(
+        pipeline, Priors(payload_tokens_per_tool={"slack_get_messages": 99_000.0})
+    )
+    # Exactly one node is pinned: the other keeps the default. Asserting
+    # `bumped > base` alone would also pass if the override leaked onto
+    # every external_call.
+    assert bumped == 99_000.0 + default_each
 
 
 def test_priors_from_overrides_scalars_and_per_tool() -> None:
