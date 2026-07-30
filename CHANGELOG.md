@@ -9,6 +9,81 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-30
+
+### Added
+- **`agent_loop` is a real node kind on the TypeScript runtimes.** It was
+  a stub on all three — `throw new Error("requires an agent runtime —
+  implement me")`. A pipeline that hands its one genuinely agentic step
+  back to the user has not graduated that step, so Cloudflare, DBOS-TS
+  and Inngest now emit the loop: MCP tools bound through whichever MCP
+  helper that runtime already emits, `loop_body` sub-nodes bound as
+  callables (they are working steps, so the agent drives them per
+  iteration exactly as the IR describes), and both handed to
+  `runAgentLoop` in a verbatim `signatures/_roteInference.ts`. Three
+  inference lanes and deliberately no `claude-cli` one: workerd cannot
+  spawn a subprocess, and a lane that worked on two of three TypeScript
+  runtimes would be a portability trap.
+- **The `workers-ai` lane (Cloudflare only).** An operator can run the
+  loop on their own Cloudflare account with no external API key. The `AI`
+  binding and its `runWithTools` runner are injected at the call site,
+  which keeps `_roteInference.ts` free of any Cloudflare import — the
+  Node runtimes compile it without `@cloudflare/ai-utils` on their
+  dependency list. Offered, never forced: the binding costs nothing until
+  a run selects the lane.
+- **`Node.tool_servers` — an agent loop's tools now know their server.**
+  `tools` names tools without a server, and `required_mcp_servers`
+  derives from server *names*, so a pipeline whose only MCP usage was a
+  loop reported **zero** required servers: `analyze`, `emit`, `compile`
+  and the `rote mcp login` advisories all said there was nothing to
+  authenticate. BDR is exactly that shape, so the flagship example
+  demonstrated the bug; it reports five servers now. Additive — partial
+  maps are valid and an unmapped tool still resolves at run time, so no
+  existing pipeline changes meaning. A resolved tool also binds from its
+  own server and no other, because two servers exporting one tool name is
+  precisely what an allowlist cannot disambiguate.
+- **`rote.probe` resolves those servers from evidence.** `cross_check`
+  gained `resolved_agent_tools`: an observed tool that a loop declared
+  bare is the *answer* to the gap, not a missed requirement, so it no
+  longer reads as "the compiler missed this". `enrich_pipeline` writes the
+  server back into `tool_servers`, leaving a tool served by two servers in
+  one trial unresolved rather than guessing. An authored value always
+  beats inference.
+
+### Fixed
+- **The subscription lane was dead on arrival.** Both `claude -p` call
+  sites passed a bare `--tools`, but the flag is variadic — Claude Code
+  2.1.220 rejects it with `option '--tools <tools...>' argument missing`,
+  exit 1, before running anything. That is every judge *and* every agent
+  loop on the lane that exists so a laptop run costs nothing extra.
+  `--tools ""` still loads no tools (167 input tokens on a one-line
+  prompt, so the low-overhead path is intact). Shipped in 0.11.0; no test
+  caught it because the assertion checked the flag's presence, not its
+  value, and `run_agent_loop`'s CLI path had no coverage at all.
+- **Python's `--allowedTools` stopped being a cross product.** It was
+  allowlisting every declared tool on every wired server — mostly phantom
+  pairs, and a real hazard when two servers export the same tool name.
+- **Two DBOS e2e suites were spending real subscription inference to test
+  nothing.** Their overlay mocked agent loops by writing an `extracted/`
+  module, but `_extracted_layout` deliberately skips agent loops (the
+  adapter inlines `run_agent_loop`), so that branch was unreachable and
+  BDR's two loops ran for real — about 35s of a 60s budget, orchestrating
+  nothing the tests asserted. Both now pass in under 9s.
+
+### Changed
+- **Invariant #3 now names both places the IR declares MCP:** a node's
+  `mcp:` binding and an `agent_loop`'s `tools:`. The Python runtimes have
+  behaved this way since 0.11.0, so this is the documentation catching up.
+  The MCP-free scan *names* its legitimate sites rather than skipping any
+  file that mentions MCP, so an unexpected reference still fails and an
+  expected site that stops referencing MCP fails too.
+- **A Cloudflare agent loop is parkable, and therefore sequential.** Its
+  tools are MCP tools, so it parks on auth like any bound step; parkable
+  steps stay out of `Promise.all` because `waitForEvent` inside a promise
+  combinator is undocumented and its timeout *throws*, which would reject
+  every sibling. A real throughput cost on the slowest node kind, taken
+  so park-on-auth holds on the default runtime.
+
 ## [0.11.0] - 2026-07-26
 
 ### Added
