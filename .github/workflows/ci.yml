@@ -67,9 +67,9 @@ jobs:
 
   e2e:
     # Pure-Python slow e2e tests (no Node/Docker toolchain): they spawn a
-    # real FastMCP server / DBOS SQLite app and run emitted code end to end,
-    # so the empirical proof is automated on every PR — not just `-m slow`
-    # locally. The TS/Docker e2e suites stay opt-in (they need Node/Docker).
+    # real FastMCP server / DBOS SQLite app and run emitted code end to
+    # end, so the empirical proof is automated on every PR — not just
+    # `-m slow` locally.
     name: Python e2e (slow)
     runs-on: ubuntu-latest
     steps:
@@ -82,5 +82,93 @@ jobs:
       - name: Install package with dev extras
         run: python -m pip install -e ".[dev]"
 
-      - name: MCP backend e2e (live mock MCP server + DBOS SQLite)
-        run: pytest tests/test_mcp_e2e.py -m slow -v
+      # Every slow suite that needs no external toolchain. Previously
+      # only test_mcp_e2e ran here, which left the DBOS Python runtime,
+      # park-on-auth, the OAuth flow and the MCP-trigger server proven
+      # only on a maintainer's laptop.
+      - name: Python e2e (MCP backend, DBOS, park-on-auth, OAuth, serve)
+        run: |
+          pytest -m slow -v \
+            tests/test_mcp_e2e.py \
+            tests/test_mcp_park_e2e.py \
+            tests/test_mcp_oauth_e2e.py \
+            tests/test_dbos_e2e.py \
+            tests/test_dbos_serve_e2e.py \
+            tests/test_eval_empirical_dbos.py \
+            tests/test_serve_server.py
+
+  ts-e2e:
+    # The TypeScript runtimes' live suites. These were opt-in on the
+    # assumption that a runner lacks the toolchain — ubuntu-latest ships
+    # Node and npm, so the only real cost is time. Worth it: the emitted
+    # TS is three of the six supported runtimes, and a fan_out regression
+    # that only these suites catch would otherwise reach main unnoticed.
+    name: TypeScript e2e (slow)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      # Each suite npm-installs into its own emitted directory, so there
+      # is no lockfile for setup-node to key a cache on; cache the npm
+      # download cache itself instead.
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-e2e-${{ runner.os }}-${{ hashFiles('src/rote/adapters/_ts_common.py') }}
+          restore-keys: npm-e2e-${{ runner.os }}-
+
+      - name: Cloudflare / Inngest / agent-loop / MCP e2e
+        run: |
+          pytest -m slow -v \
+            tests/test_cloudflare_e2e.py \
+            tests/test_inngest_e2e.py \
+            tests/test_ts_agent_loop_e2e.py \
+            tests/test_mcp_ts_e2e.py \
+            tests/test_mcp_park_cf_e2e.py \
+            tests/test_mcp_park_inngest_e2e.py
+
+  dbos-ts-e2e:
+    # Split from ts-e2e because these two also need Docker: the DBOS
+    # TypeScript SDK is Postgres-only (no SQLite parity with DBOS
+    # Python), and the suite starts a throwaway container when no
+    # reachable Postgres is configured.
+    name: DBOS-TS e2e (slow, Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install package with dev extras
+        run: python -m pip install -e ".[dev]"
+
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-dbosts-${{ runner.os }}-${{ hashFiles('src/rote/adapters/_ts_common.py') }}
+          restore-keys: npm-dbosts-${{ runner.os }}-
+
+      - name: DBOS TypeScript e2e (live runtime against Docker Postgres)
+        run: |
+          pytest -m slow -v \
+            tests/test_dbos_ts_e2e.py \
+            tests/test_mcp_park_ts_e2e.py
