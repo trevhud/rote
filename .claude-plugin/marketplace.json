@@ -10,7 +10,7 @@
       "name": "rote",
       "source": "./plugin",
       "description": "Compile an Anthropic-style skill into a deterministic pipeline (Temporal, Cloudflare Workflows, or DBOS) from inside Claude Code, then trigger the deployed workflows over MCP.",
-      "version": "0.12.0"
+      "version": "0.12.1"
     }
   ]
 }
