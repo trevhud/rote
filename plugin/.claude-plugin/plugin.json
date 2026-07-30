@@ -1,7 +1,7 @@
 {
   "name": "rote",
   "displayName": "Rote",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Compile fuzzy AI skills into deterministic workflows: /rote:compile compiles a SKILL.md into a runnable pipeline (Temporal, Cloudflare Workflows, or DBOS); /rote:serve exposes compiled pipelines as MCP tools.",
   "author": {
     "name": "Trevor Hudson",
