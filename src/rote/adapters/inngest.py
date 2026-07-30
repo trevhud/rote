@@ -109,10 +109,13 @@ from rote.adapters._common import (
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
+    ANTHROPIC_SDK_NPM_VERSION,
     MCP_SDK_NPM_VERSION,
     REQUIRE_ENV_HELPER,
+    ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
     emit_mcp_call_module,
+    emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
     judge_env_arg,
@@ -775,7 +778,9 @@ def emit_index(pipeline: Pipeline, cfg: InngestAdapterConfig) -> str:
 # ───────── package / tsconfig / README emission ─────────
 
 
-def emit_package_json(pipeline: Pipeline, *, with_mcp: bool = False) -> str:
+def emit_package_json(
+    pipeline: Pipeline, *, with_mcp: bool = False, with_agent_loops: bool = False
+) -> str:
     """Emit package.json with the current SDK majors (verified on npm).
 
     CommonJS (no ``"type": "module"``): the inngest package ships dual
@@ -788,8 +793,10 @@ def emit_package_json(pipeline: Pipeline, *, with_mcp: bool = False) -> str:
         "zod": "^4.4.3",
     }
     clients = llm_clients(pipeline)
-    if "anthropic" in clients:
-        dependencies["@anthropic-ai/sdk"] = "^0.110.0"
+    # An agent loop runs on the Anthropic SDK's own tool runner whether or
+    # not the pipeline has an anthropic judge.
+    if "anthropic" in clients or with_agent_loops:
+        dependencies["@anthropic-ai/sdk"] = ANTHROPIC_SDK_NPM_VERSION
     if "openai" in clients:
         dependencies["openai"] = "^6.45.0"
     if with_mcp:
@@ -1031,6 +1038,14 @@ class InngestAdapter:
     def __init__(self, config: InngestAdapterConfig | None = None) -> None:
         self.config = config or InngestAdapterConfig()
 
+    def _emit_agent_loop(self, node: Node, pipeline: Pipeline) -> str:
+        return emit_node_agent_loop_module(
+            node,
+            pipeline,
+            default_model=self.config.anthropic_default_model,
+            generated_by=_GENERATED_BY,
+        )
+
     def emit_pipeline_ts(self, pipeline: Pipeline) -> str:
         return emit_pipeline_ts(pipeline, self.config)
 
@@ -1050,10 +1065,18 @@ class InngestAdapter:
         )
 
         mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+        agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
                 continue
-            if node.kind is NodeKind.LLM_JUDGE:
+            if node.kind is NodeKind.AGENT_LOOP:
+                written[f"extracted/{node.id}"] = writer.write(
+                    "src",
+                    "extracted",
+                    f"{node.id}.ts",
+                    content=self._emit_agent_loop(node, pipeline),
+                )
+            elif node.kind is NodeKind.LLM_JUDGE:
                 written[f"signatures/{node.id}"] = writer.write(
                     "src",
                     "signatures",
@@ -1074,13 +1097,24 @@ class InngestAdapter:
                     f"{node.id}.ts",
                     content=emit_extracted_module(node),
                 )
-        if mcp_ids:
+        # An agent_loop that declares tools needs the MCP helper beside it
+        # even when no node carries an `mcp:` binding — Node.tools are MCP
+        # tool names.
+        needs_mcp = bool(mcp_ids) or any(n.tools for n in agent_loops)
+        if needs_mcp:
             written["extracted/_roteMcp"] = writer.write(
                 "src", "extracted", "_roteMcp.ts", content=ROTE_MCP_HELPER_TS
             )
+        if agent_loops:
+            written["signatures/_roteInference"] = writer.write(
+                "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
+            )
 
         written["package.json"] = writer.write(
-            "package.json", content=emit_package_json(pipeline, with_mcp=bool(mcp_ids))
+            "package.json",
+            content=emit_package_json(
+                pipeline, with_mcp=needs_mcp, with_agent_loops=bool(agent_loops)
+            ),
         )
         written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_node_tsconfig())
         written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))

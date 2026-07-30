@@ -332,6 +332,91 @@ bites hardest on the fan_out enqueue path, where the failure is
 observed in a *different* process from where it was raised — any
 durability boundary is also an error-fidelity boundary.
 
+### The TS tool runner's `done()` deadlocks; use `runUntilDone()`
+
+`client.beta.messages.toolRunner(...)` returns an async iterator plus two
+ways to wait on it, and they are not interchangeable. `done()` *observes*
+a loop somebody else drives — its own docs say it "works even if the async
+iterator hasn't yet started, and will wait for an instance to start" — so
+a single-consumer caller that never iterates hangs forever, silently, with
+no output and no error. `runUntilDone()` consumes the iterator itself.
+The Python twin's `until_done()` has no such split, which is exactly why
+this is easy to port wrong. Found by running it (rc=124, zero output);
+tsc and the SDK's types are both happy with the deadlocking version.
+
+Related, same file: report the turns that actually ran, not the cap.
+`AgentResult.iterations` counts assistant messages
+(`runner.params.messages.filter(m => m.role === "assistant").length`) and
+is `number | null` — the Workers AI lane returns null because
+`runWithTools` genuinely does not report it. Echoing back
+`maxIterations` made every loop look saturated. (The Python
+`_run_agent_via_sdk` still has this defect; separate fix.)
+
+### An agent_loop's tools carry no server — `tool_servers` supplies it
+
+`Node.tools` are bare names (`zoominfo_search_contacts`): one loop may
+reach several servers, and an `MCPBinding` is a single server/tool pair.
+That gap was not cosmetic. `Pipeline.required_mcp_servers` derives from
+server *names*, so a pipeline whose only MCP usage is an agent loop
+reported **zero** required servers — `analyze`/`emit`/`compile` and the
+`rote mcp login` advisories all said there was nothing to authenticate.
+BDR is exactly that shape, so the flagship example demonstrated the bug.
+
+`Node.tool_servers` (tool name → server, agent_loop only, keys validated
+⊆ `tools`) closes it. Three things now depend on it:
+
+- **The advisories are correct.** `required_mcp_servers` counts both
+  declarations — a node's `mcp:` binding and a loop's `tool_servers`. BDR
+  reports five servers instead of none.
+- **A resolved tool binds from its own server and no other.** Two servers
+  exporting one tool name is precisely what an allowlist cannot
+  disambiguate; first-wins discovery would pick whichever answered first.
+  Python narrows its `--allowedTools` cross product the same way.
+- **Workers works at all.** There is no registry in workerd —
+  `resolveUrl(env, server, …)` reads env bindings — so the server name
+  *must* be known at emit time.
+
+Three sources feed the emitted loop, in descending authority: the IR's
+`tool_servers` (knowledge), other nodes' `mcp:` bindings (a guess — the
+loop probably reaches the servers the rest of the pipeline does), and at
+run time the local registry plus `ROTE_MCP_SERVERS` (the escape hatch).
+Only the first is trustworthy, which is why only it feeds the advisories.
+A partial map is valid and an unresolved tool still works via discovery;
+the emitted module names what it could not resolve rather than failing
+later with a bare "no server provides this tool".
+
+Two behaviors to preserve:
+
+- **Nothing guesses.** `rote.probe.enrich_pipeline` writes `tool_servers`
+  from what the baseline actually *called* (`cross_check`'s
+  `resolved_agent_tools`), and leaves a tool served by two servers in one
+  trial unresolved — pinning either would silently send the loop to the
+  wrong endpoint. An authored value always beats inference.
+- **Discovery is best-effort, binding is not.** A server that is down may
+  not be one this loop needed, so it is recorded and skipped; a declared
+  tool no reachable server provides is fatal. When an auth failure
+  plausibly explains the gap, that failure is rethrown so the workflow
+  parks and `rote mcp login` releases it, instead of dying with a
+  misleading "unknown tool".
+
+### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
+
+Its tools are MCP tools, so `bindAgentTools` and every in-loop tool call
+raise the same auth signal a bound step does — an agent loop therefore
+gets the park-on-auth wrapper on Cloudflare (invariant #3's park-on-auth
+would otherwise not hold on the logged-in default runtime). Two specifics:
+
+- The release event is derived from the failure at run time
+  (`authEventType(err, fallback)` parses the server out of the message)
+  because one loop may reach several servers and `ROTE_MCP_SERVERS` can
+  add more. Own properties do not reliably survive the `NonRetryableError`
+  re-throw; the message does.
+- Parkable steps stay OUT of `Promise.all` (see the parallel-wave gotcha),
+  so an agent loop no longer runs concurrently with its wave siblings.
+  That is a real throughput cost on the slowest node kind, accepted
+  because `waitForEvent` inside a promise combinator is undocumented and
+  its timeout *throws*, which would reject every sibling.
+
 ### Emitted judges do not contain the vendor call
 
 A judge module holds its Pydantic models, prompt, schema and operator
@@ -589,11 +674,18 @@ If a change of yours would violate any of them, stop and reconsider.
    the IR.
 2. **Drivers contract on the filesystem only.** `work_dir/pipeline.yaml`
    is the deliverable. No stdout parsing, no side channels.
-3. **Emitted code touches MCP only through an explicit `mcp:`
-   binding.** Nodes without a binding never reference MCP in any
-   adapter or language (enforced by AST/text tests); nodes with one
-   emit a working, *never-interactive* client call — auth problems
-   raise/park, they never open a browser from workflow code.
+3. **Emitted code touches MCP only where the IR declares it.** There
+   are exactly two declarations, and no third: a node's `mcp:` binding,
+   and an `agent_loop`'s `tools:` (which the IR documents as MCP tool
+   names — a loop that declares any pulls in the MCP helper even when
+   no node in the pipeline carries a binding). Everything else never
+   references MCP in any adapter or language, enforced by AST/text
+   tests that **name** the legitimate sites rather than skipping files
+   that happen to mention MCP — so an unexpected reference still fails,
+   and an expected site that stops referencing MCP fails too
+   (`tests/_helpers.py::assert_no_mcp_in_ts`'s `expected=`). Both
+   declarations emit a working, *never-interactive* client call — auth
+   problems raise/park, they never open a browser from workflow code.
 4. **Mandatory nodes cannot become conditional.** The IR validator
    rejects `mandatory: true` on `agent_loop` nodes, and the
    Temporal adapter emits mandatory nodes as unconditional
@@ -729,6 +821,15 @@ Don't waste time debugging stubs. These are intentional.
 
 **Working end-to-end:**
 
+- `agent_loop` on ALL runtimes. Python got the real loop first; the
+  three TypeScript runtimes now emit one too — MCP tools bound through
+  whichever MCP helper that runtime already emits, `loop_body` sub-nodes
+  bound as callables, and the whole thing handed to `runAgentLoop` in
+  the verbatim `signatures/_roteInference.ts`
+  (`rote.adapters._ts_common.ROTE_INFERENCE_HELPER_TS`). Proven live in
+  `tests/test_ts_agent_loop_e2e.py`: real fastmcp server, real emitted
+  module compiled by the emitted toolchain, real Anthropic SDK tool
+  runner against a local Messages endpoint.
 - IR load + validate
 - `rote emit` (IR → runtime code; DBOS default), with hash-guarded
   re-emission: every adapter writes through
@@ -940,7 +1041,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1100 tests (1076 fast + 24 slow). Run with `pytest tests/` (fast
+- 1146 tests (1119 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

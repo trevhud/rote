@@ -135,6 +135,13 @@ def _write_test_overlay(out_dir: Path) -> None:
         if not d.exists():
             continue
         for f in d.glob("*.ts"):
+            # `_`-prefixed modules are shared runtime helpers (_roteMcp,
+            # _roteInference), not nodes: they have no node id and no
+            # per-node export to stand in for. Overwriting one produced
+            # `export async function (` and a build failure with no
+            # obvious connection to the overlay.
+            if f.stem.startswith("_"):
+                continue
             node_id = f.stem
             fn = _to_camel_case(node_id)
             f.write_text(

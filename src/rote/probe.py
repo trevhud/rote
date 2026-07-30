@@ -193,6 +193,11 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
       the baseline task didn't take, or a write tool the read-only gate
       held back), so it's a note, not an alarm.
     * ``confirmed`` — bound and observed; the binding is evidenced.
+    * ``resolved_agent_tools`` — an ``agent_loop`` declared this tool
+      without a server, and the baseline observed which server serves it.
+      Not a disagreement at all: it is evidence that turns a bare tool
+      name into a real requirement, which is why ``enrich_pipeline``
+      writes it back into ``tool_servers``.
     * ``output_mismatch`` — an mcp-bound node declares ``output`` keys
       the observed tool result cannot provide. The default backend emits
       a *bare* tool call, so post-processing folded into the node
@@ -206,9 +211,19 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
     this module import-light (it must not pull the IR at import time).
     """
     static: dict[tuple[str, str], list[str]] = {}
+    # An agent_loop declares tools too. A resolved one is an ordinary
+    # static binding; an unresolved one is declared-but-serverless, which
+    # must not read as "the compiler missed this".
+    declared_bare: dict[str, list[str]] = {}
     for node in pipeline.nodes:
         if node.mcp is not None:
             static.setdefault((node.mcp.server, node.mcp.tool), []).append(node.id)
+        resolved = node.tool_servers or {}
+        for tool in node.tools or ():
+            if tool in resolved:
+                static.setdefault((resolved[tool], tool), []).append(node.id)
+            else:
+                declared_bare.setdefault(tool, []).append(node.id)
 
     observed_counts: dict[tuple[str, str], int] = {}
     for o in observations:
@@ -224,10 +239,24 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
         for (server, tool), count in sorted(observed_counts.items())
         if (server, tool) in static
     ]
+    # An observation of a tool an agent_loop declared but could not resolve
+    # is not a missed requirement — it is the ANSWER to the unresolved one.
+    # Surfacing it separately is what lets `rote compile` write the server
+    # back into the IR instead of nagging about a tool it already knows.
+    resolved_agent_tools = [
+        {
+            "server": server,
+            "tool": tool,
+            "nodes": sorted(declared_bare[tool]),
+            "observed_calls": count,
+        }
+        for (server, tool), count in sorted(observed_counts.items())
+        if (server, tool) not in static and tool in declared_bare
+    ]
     observed_only = [
         {"server": server, "tool": tool, "observed_calls": count}
         for (server, tool), count in sorted(observed_counts.items())
-        if (server, tool) not in static
+        if (server, tool) not in static and tool not in declared_bare
     ]
     static_only = [
         {"server": server, "tool": tool, "nodes": sorted(nodes)}
@@ -270,6 +299,7 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
         "static_only": static_only,
         "confirmed": confirmed,
         "output_mismatch": output_mismatch,
+        "resolved_agent_tools": resolved_agent_tools,
     }
 
 
@@ -315,22 +345,41 @@ def enrich_pipeline(pipeline: Any, inferred: list[InferredToolSchema]) -> tuple[
     gains ``input_schema``/``output_schema`` inferred from the real
     payloads — but only where the field is currently unset: an
     agent-authored (or user-edited) contract always wins over inference.
+
+    An ``agent_loop`` gains ``tool_servers`` entries for the bare tool
+    names the baseline resolved. That is the mechanism that makes a loop's
+    MCP requirements visible to :attr:`~rote.ir.Pipeline.required_mcp_servers`
+    — derived from what the skill actually called, not guessed from the
+    servers other nodes happen to use. A tool served by two different
+    servers in one trial is left unresolved: guessing would silently pin
+    the loop to the wrong endpoint, and the run-time fallback still works.
+
     Returns ``(new_pipeline, enriched_node_ids)``; the input pipeline is
     not mutated.
     """
     by_tool = {(s.server, s.tool): s for s in inferred}
+    servers_by_tool: dict[str, set[str]] = {}
+    for observed in inferred:
+        servers_by_tool.setdefault(observed.tool, set()).add(observed.server)
     enriched_ids: list[str] = []
     new_nodes = []
     for node in pipeline.nodes:
-        schema = by_tool.get((node.mcp.server, node.mcp.tool)) if node.mcp else None
-        if schema is None:
-            new_nodes.append(node)
-            continue
         updates: dict[str, Any] = {}
-        if node.input_schema is None and schema.input_schema:
-            updates["input_schema"] = schema.input_schema
-        if node.output_schema is None and schema.output_schema:
-            updates["output_schema"] = schema.output_schema
+
+        resolved = dict(node.tool_servers or {})
+        for tool in node.tools or ():
+            candidates = servers_by_tool.get(tool, set())
+            if tool not in resolved and len(candidates) == 1:
+                resolved[tool] = next(iter(candidates))
+        if resolved != (node.tool_servers or {}):
+            updates["tool_servers"] = resolved
+
+        schema = by_tool.get((node.mcp.server, node.mcp.tool)) if node.mcp else None
+        if schema is not None:
+            if node.input_schema is None and schema.input_schema:
+                updates["input_schema"] = schema.input_schema
+            if node.output_schema is None and schema.output_schema:
+                updates["output_schema"] = schema.output_schema
         if not updates:
             new_nodes.append(node)
             continue

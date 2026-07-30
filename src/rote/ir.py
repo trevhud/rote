@@ -462,6 +462,24 @@ class Node(BaseModel):
                 raise ValueError(f"tool name {tool!r} must contain only letters, digits, and _./-")
         return v
 
+    @field_validator("tool_servers")
+    @classmethod
+    def _validate_tool_servers(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        """Keys are tool names, values are server names — and BOTH reach
+        emitted source: the server becomes a `ROTE_MCP_<SERVER>_URL` lookup
+        and a literal in the emitted tool map. Same charsets their
+        single-binding equivalents already enforce (invariant #7)."""
+        if v is None:
+            return None
+        for tool, server in v.items():
+            if not _MCP_TOOL_RE.fullmatch(tool):
+                raise ValueError(
+                    f"tool_servers key {tool!r} must contain only letters, digits, and _./-"
+                )
+            if not _IDENTIFIER_RE.fullmatch(server):
+                raise ValueError(f"tool_servers[{tool!r}] server {server!r} must be an identifier")
+        return v
+
     @field_validator("constants")
     @classmethod
     def _validate_constants(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -585,6 +603,19 @@ class Node(BaseModel):
         default=None,
         description="MCP tool names the agent can call inside the loop",
     )
+    tool_servers: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "agent_loop only: tool name → the MCP server that provides it. "
+            "``tools`` names tools WITHOUT a server (one loop may reach several, "
+            "and an MCPBinding is a single server/tool pair), which leaves the "
+            "pipeline's MCP requirements incomplete: a loop-only pipeline would "
+            "report no required servers at all. This closes that gap. Keys must "
+            "appear in ``tools``; a tool omitted here is still resolved at run "
+            "time (the local registry, or ROTE_MCP_SERVERS), so the field is "
+            "additive and partial maps are valid."
+        ),
+    )
     loop_body: list[str] | None = Field(
         default=None,
         description="IDs of nodes invoked from inside each loop iteration",
@@ -638,6 +669,21 @@ class Node(BaseModel):
         # node reaches a vendor). Reject it elsewhere so the field can't drift.
         if self.mcp is not None and kind is not NodeKind.EXTERNAL_CALL:
             raise ValueError(f"Node {self.id!r}: mcp is only allowed on external_call nodes")
+
+        # tool_servers resolves `tools`, so it is meaningless without them —
+        # and a key naming a tool the loop cannot call is a typo, not a
+        # harmless extra. Catching it here beats a silently unbound tool.
+        if self.tool_servers:
+            if kind is not NodeKind.AGENT_LOOP:
+                raise ValueError(
+                    f"Node {self.id!r}: tool_servers is only allowed on agent_loop nodes"
+                )
+            unknown = sorted(set(self.tool_servers) - set(self.tools or ()))
+            if unknown:
+                raise ValueError(
+                    f"Node {self.id!r}: tool_servers names tool(s) absent from tools: "
+                    f"{', '.join(unknown)}"
+                )
 
         return self
 
@@ -845,14 +891,28 @@ class Pipeline(BaseModel):
         Derived, not stored — the requirements manifest is a property the
         DAG already has, so persisting it would only let it drift. Includes
         loop-body sub-nodes: a binding anywhere in the pipeline means the
-        server must be reachable (and authenticated) at run time. Empty for
-        pipelines with no ``mcp:`` bindings.
+        server must be reachable (and authenticated) at run time.
+
+        Two kinds of requirement count, because the IR declares MCP in two
+        places: a node's ``mcp:`` binding, and an ``agent_loop``'s
+        ``tool_servers``. Counting only the former made a pipeline whose
+        only MCP usage is a loop report *zero* required servers — so
+        ``analyze``/``emit``/``compile`` and the ``rote mcp login``
+        recommendations all said there was nothing to authenticate, which
+        is a wrong answer rather than a missing feature.
+
+        A loop's tools with no resolved server contribute nothing here:
+        there is no server name to report, and inventing one would be
+        worse than admitting the gap (the emitted module says so at the
+        call site instead).
         """
         by_server: dict[str, list[str]] = {}
         for n in self.nodes:
             if n.mcp is not None:
                 by_server.setdefault(n.mcp.server, []).append(n.id)
-        return {server: sorted(ids) for server, ids in sorted(by_server.items())}
+            for server in sorted(set((n.tool_servers or {}).values())):
+                by_server.setdefault(server, []).append(n.id)
+        return {server: sorted(set(ids)) for server, ids in sorted(by_server.items())}
 
 
 def load_pipeline(path: str | Path) -> Pipeline:

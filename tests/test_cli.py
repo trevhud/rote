@@ -239,7 +239,43 @@ def test_compile_rejects_nonexistent_skill_dir(
     assert "not a directory" in err
 
 
-def _install_mock_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
+_MCP_FREE_PIPELINE = """\
+name: mcp-free
+version: 0.1.0
+source_skill: tests/fixtures/mcp-free
+description: A pipeline that needs no MCP server at all.
+input:
+  type: In
+  required: [topic]
+  optional: []
+nodes:
+  - id: normalize
+    kind: pure_function
+    description: Normalize the topic.
+    impl: extracted/brief.py:normalize
+    inputs:
+      topic: pipeline.input.topic
+edges: []
+entry_nodes: [normalize]
+exit_nodes: [normalize]
+"""
+
+
+def _write_mcp_free_pipeline(tmp_path: Path) -> Path:
+    """A pipeline with no MCP requirement of ANY kind.
+
+    BDR used to serve this role, but its agent loops now resolve their
+    tools to servers — so BDR requires five. Reusing it here would have
+    quietly re-asserted the bug this field exists to fix.
+    """
+    path = tmp_path / "mcp-free.yaml"
+    path.write_text(_MCP_FREE_PIPELINE, encoding="utf-8")
+    return path
+
+
+def _install_mock_compiler(
+    monkeypatch: pytest.MonkeyPatch, pipeline_yaml: Path | None = None
+) -> None:
     """Patch ``rote.cli.Compiler`` with a fake that writes the BDR IR.
 
     Shared by the compile and analyze tests — the real agent loop never
@@ -257,7 +293,7 @@ def _install_mock_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
     from rote.compiler.events import CompilationEvent
     from rote.ir import load_pipeline
 
-    real_pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    real_pipeline = load_pipeline(pipeline_yaml or BDR_PIPELINE_YAML)
 
     class _MockCompiler:
         def __init__(self, agent: str | None = None, **kwargs: object) -> None:
@@ -1209,7 +1245,7 @@ def test_mcp_requirements_classify_registered_and_unregistered(
 def test_mcp_requirements_empty_pipeline_skips_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No mcp: bindings → empty manifest, registry never consulted."""
+    """No MCP requirement of any kind → empty manifest, registry unread."""
     from rote.cli import _mcp_requirements
     from rote.ir import load_pipeline
 
@@ -1217,7 +1253,7 @@ def test_mcp_requirements_empty_pipeline_skips_registry(
         "rote.mcp.load_registry",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("registry read")),
     )
-    assert _mcp_requirements(load_pipeline(BDR_PIPELINE_YAML)) == []
+    assert _mcp_requirements(load_pipeline(_write_mcp_free_pipeline(tmp_path))) == []
 
 
 def test_emit_surfaces_mcp_requirements_with_login_nudge(
@@ -1278,15 +1314,15 @@ def test_emit_json_includes_mcp_servers(
 def test_analyze_json_includes_empty_mcp_manifest_for_unbound_pipeline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """BDR's expected IR has no mcp: bindings → manifest present but empty,
-    so agents can distinguish 'no requirements' from 'field missing'."""
+    """A pipeline needing no MCP server → manifest present but empty, so
+    agents can distinguish 'no requirements' from 'field missing'."""
     import json
 
     skill_dir = tmp_path / "skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
 
-    _install_mock_compiler(monkeypatch)
+    _install_mock_compiler(monkeypatch, _write_mcp_free_pipeline(tmp_path))
 
     rc = cli_main(["analyze", str(skill_dir), "--json"])
     assert rc == 0

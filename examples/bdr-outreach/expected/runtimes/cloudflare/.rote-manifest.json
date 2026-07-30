@@ -3,8 +3,9 @@
   "files": {
     ".dev.vars.example": "68dd53a52244fb35cb167367375ab89c80f39c7551d210c6344e91d13b095482",
     "README.md": "93168a30a0dafca306569c71251701ba5a0baa8cabd21371eacc2a22c4c01f9a",
-    "manifest.json": "4f76886dd91b7793136d95d6b58e3bf77359fdeb27fe00faa30f9b7463851ffd",
-    "package.json": "e97cddea1c3b455ca3f76ea1081501edab31e3f2baaa421433df9570222d39c1",
+    "manifest.json": "69178fcb36ea158a0dc8e8bf1f349c410373feb9275bb35522aa01068f38ad6e",
+    "package.json": "1055e525175d1e4595fd53f2e5f20fa04dc98105b5d7a723400f7aabead0e8c7",
+    "src/extracted/_roteMcp.ts": "c6d2347d37a1834816c93a339136c89167b5101415f10ee132bbaed66b74febe",
     "src/extracted/create_sales_template.ts": "3cc119c280cf14814d5d9c76f9a319aab18326c2e3f649e0e16d9fa3d9a77165",
     "src/extracted/enrich_contact_batch.ts": "56f45452dae0a936ed37f2c53bbf581090858cc667fc106d4be863d520568d61",
     "src/extracted/exclusion_check_dnc.ts": "e474b9dafabf21d4618d5ff790f354aad4ea76a879b05300eec422db623cc0d6",
@@ -12,15 +13,16 @@
     "src/extracted/exclusion_check_sequence.ts": "ace01d2ccc0ef5a952ec693bc5f41224a543f8b9d98dc9e33975d7fa38d0f556",
     "src/extracted/hubspot_create_list.ts": "68c9ab8dfe163ae4230780ef825f18c7099d0bc3e0cd0dd0e561b97e65bcd664",
     "src/extracted/hubspot_upsert.ts": "645c38f37b674c6006b19b65c412760a49cccba72dcb4b40999d3382df1b27b8",
-    "src/extracted/lead_generation_loop.ts": "48b846ca36916ce548f0fb29c08c6daf19b97eb90f04146ce94bff569ada4a28",
+    "src/extracted/lead_generation_loop.ts": "34e5f839628a5400de0305792c33edd7d90d7e644510e9dc75f420355d8a84d6",
     "src/extracted/pre_enrollment_report.ts": "5bbca1cd08c545e0f6f38b74a407cf28e7d2c99bc761d54b10ee30ff247169f3",
-    "src/extracted/target_research.ts": "4a1b65e738826327ba9b57016e5e91c324130a33fc796a268bee7e3204112d8a",
+    "src/extracted/target_research.ts": "8f3ca28a818c2298cb6a8d0ac55c541fcbffdb6827276c1ad17816c224a4123d",
     "src/extracted/taxonomy_lookup.ts": "93df9ea640b1758a7dd7919264569a4f704cf78109919212dbd1f929e252cda3",
     "src/index.ts": "e8160b22e60d5bf6bd17d1d2bad56bedddd36e71c6a66159c492e5184d781114",
+    "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
     "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
-    "src/workflow.ts": "06e6c0a44e86470282cfd5a62a2bb1af9119195a57f2decf59317334e397c0dd",
+    "src/workflow.ts": "61bd7c4f10725c883d1ff2c155ec254c1f6ed3405ec68995b182fca2f62f3888",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
-    "wrangler.jsonc": "f8b1bfc2997f33a242d4da7526a34943de9fd102c3406f78dca9cebe44523c15"
+    "wrangler.jsonc": "fa4f9733ea58ffeaa4e9ab94812ccd7b89f361ca4b7e68929fe8c1cd8b8f2ca2"
   }
 }

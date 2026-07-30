@@ -2,7 +2,7 @@
 
 Pipeline: bdr-campaign v0.1.0
 Source skill: ../skill
-Pipeline hash: 68ef477f
+Pipeline hash: ada0f771
 
 DO NOT EDIT BY HAND. Re-run ``rote emit`` to regenerate.
 
@@ -39,7 +39,7 @@ def _parse_minutes(s: str) -> float:
     return float(s)
 
 
-@workflow.defn(name="BdrCampaign_68ef477f")
+@workflow.defn(name="BdrCampaign_ada0f771")
 class BdrCampaignWorkflow:
     """Compiled workflow for bdr-campaign."""
 

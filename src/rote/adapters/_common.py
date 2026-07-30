@@ -453,3 +453,14 @@ def refuse_mcp_only_nodes(pipeline: Pipeline, adapter: str) -> None:
         f"`--runtime inngest`), or give each node an `impl:` pointing at an "
         f"extracted module."
     )
+
+
+#: Fallback iteration bound when an ``agent_loop`` declares no
+#: ``termination``. An agent loop must always be bounded — an unbounded
+#: one in a durable workflow burns budget until a human notices.
+#:
+#: Lives here rather than beside either language's emitter because it is
+#: an IR policy, not a language detail: a loop compiled to Python and the
+#: same loop compiled to TypeScript must agree on how many turns "no
+#: declared bound" means.
+DEFAULT_AGENT_MAX_ITERATIONS = 10

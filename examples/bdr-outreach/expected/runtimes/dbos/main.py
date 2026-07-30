@@ -2,7 +2,7 @@
 
 Pipeline: bdr-campaign v0.1.0
 Source skill: ../skill
-Pipeline hash: 68ef477f
+Pipeline hash: ada0f771
 
 DO NOT EDIT BY HAND. Re-run ``rote emit --runtime dbos`` to regenerate.
 
@@ -99,6 +99,7 @@ def target_research(payload: dict) -> dict:
             "airweave_search",
             "salesforce_query",
         ],
+        tool_servers={"airweave_search": "airweave", "bright_data_scrape": "brightdata", "bright_data_search": "brightdata", "clinical_trials_search": "clinicaltrials", "salesforce_query": "salesforce"},
         max_iterations=10,
     )
 
@@ -139,6 +140,7 @@ def lead_generation_loop(payload: dict) -> dict:
         task=json.dumps(payload, default=str),
         model=os.environ.get("ROTE_MODEL_LEAD_GENERATION_LOOP", "claude-sonnet-4-6"),
         tools=["zoominfo_search_contacts", "zoominfo_search_companies"],
+        tool_servers={"zoominfo_search_companies": "zoominfo", "zoominfo_search_contacts": "zoominfo"},
         local_tools={
             "enrich_contact_batch": enrich_contact_batch,
             "vet_contact": vet_contact,
@@ -282,7 +284,7 @@ def pre_enrollment_report(payload: dict) -> dict:
     return _serialize(generate_pre_enrollment_report(**payload))
 
 
-@DBOS.workflow(name="BdrCampaign_68ef477f")
+@DBOS.workflow(name="BdrCampaign_ada0f771")
 def run_pipeline(pipeline_input: dict) -> dict:
     """End-to-end BDR outreach campaign workflow for pharma/biotech research"""
 

@@ -499,7 +499,15 @@ def _call_claude_cli(
         # A judge reasons over its prompt and answers; it must not read
         # files, run commands, or inherit the user's settings. Both flags
         # also cut the request from ~37k tokens to ~740.
+        #
+        # The empty VALUE is required, not decorative: the flag is
+        # declared variadic (`--tools <tools...>`), so a bare `--tools`
+        # is rejected outright — "error: option '--tools <tools...>'
+        # argument missing", exit 1, on every call. Verified against
+        # Claude Code 2.1.220; `--tools ""` still loads no tools (167
+        # input tokens on a one-line prompt).
         "--tools",
+        "",
         "--setting-sources",
         "",
     ]
@@ -617,7 +625,9 @@ def call_judge(
 # ───────── agent loops ─────────
 
 
-def _mcp_config_for(tools: Sequence[str]) -> tuple[dict[str, Any], list[str]]:
+def _mcp_config_for(
+    tools: Sequence[str], tool_servers: Mapping[str, str] | None = None
+) -> tuple[dict[str, Any], list[str]]:
     """``(mcp-config servers, allowlisted tool ids)`` for an agent's tools.
 
     An ``agent_loop`` declares bare tool names (``zoominfo_search_contacts``)
@@ -627,6 +637,12 @@ def _mcp_config_for(tools: Sequence[str]) -> tuple[dict[str, Any], list[str]]:
     every registered server and let ``--allowedTools`` be the boundary.
     Over-wiring is safe *because* the allowlist is the actual constraint;
     the agent can only call what the IR declared.
+
+    ``tool_servers`` narrows that: a tool the IR resolved to a server is
+    allowlisted on THAT server only. Without it the allowlist is a full
+    cross product, which allowlists every tool on every server — mostly
+    phantom entries, and a real hazard when two servers export the same
+    tool name and the agent may pick either.
 
     Endpoint and credential resolution is delegated to the MCP helper
     already emitted beside this one, so there is one definition of "where
@@ -653,9 +669,15 @@ def _mcp_config_for(tools: Sequence[str]) -> tuple[dict[str, Any], list[str]]:
         if headers:
             config["headers"] = dict(headers)
         servers[name] = config
-    # The IR names tools without servers, so allow each declared name on
-    # every wired server; a name no server provides simply never resolves.
-    allowed = [f"mcp__{server}__{tool}" for server in sorted(servers) for tool in sorted(tools)]
+    pins = dict(tool_servers or {})
+    allowed = [
+        f"mcp__{server}__{tool}"
+        for server in sorted(servers)
+        for tool in sorted(tools)
+        # Resolved: this server only. Unresolved: every wired server, since
+        # a name no server provides simply never resolves anyway.
+        if pins.get(tool, server) == server
+    ]
     return servers, allowed
 
 
@@ -681,6 +703,7 @@ def _run_agent_via_cli(
     model: str,
     prompt: str,
     tools: Sequence[str],
+    tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
 ) -> tuple[str, Any, Any, int]:
@@ -694,7 +717,7 @@ def _run_agent_via_cli(
     binary = shutil.which("claude")
     if binary is None:  # pragma: no cover — select_provider checks first
         raise RuntimeError("the `claude` CLI vanished between provider selection and the call")
-    servers, allowed = _mcp_config_for(tools)
+    servers, allowed = _mcp_config_for(tools, tool_servers)
     command = [
         binary,
         "-p",
@@ -713,7 +736,10 @@ def _run_agent_via_cli(
         command += ["--allowedTools", ",".join(allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
     else:
-        command.append("--tools")
+        # Empty VALUE, not a bare flag — see the judge path above. An
+        # agent loop reaches this branch whenever no MCP server resolves,
+        # which is the common case on a machine with no registry.
+        command += ["--tools", ""]
 
     try:
         completed = subprocess.run(
@@ -756,6 +782,7 @@ def _run_agent_via_sdk(
     prompt: str,
     local_tools: Mapping[str, Any],
     tools: Sequence[str],
+    tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
 ) -> tuple[str, Any, Any, int]:
@@ -781,7 +808,7 @@ def _run_agent_via_sdk(
     # the contract the step enforces are the same object — as rich as the
     # IR's input_schema made that step, no richer and no staler.
     bound = [beta_tool(name=name)(fn) for name, fn in local_tools.items()]
-    servers, _allowed = _mcp_config_for(tools)
+    servers, _allowed = _mcp_config_for(tools, tool_servers)
     mcp_servers = [
         {"type": "url", "url": config["url"], "name": name} for name, config in servers.items()
     ]
@@ -821,6 +848,7 @@ def run_agent_loop(
     task: str,
     model: str,
     tools: Sequence[str] = (),
+    tool_servers: Mapping[str, str] | None = None,
     local_tools: Mapping[str, Any] | None = None,
     max_iterations: int = 10,
     termination: str | None = None,
@@ -858,6 +886,7 @@ def run_agent_loop(
             model=model,
             prompt=prompt,
             tools=tools,
+            tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
         )
@@ -870,6 +899,7 @@ def run_agent_loop(
             prompt=prompt,
             local_tools=local_tools,
             tools=tools,
+            tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
         )

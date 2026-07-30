@@ -3,7 +3,7 @@
   "adapter": "cloudflare",
   "name": "bdr-campaign",
   "version": "0.1.0",
-  "pipeline_hash": "68ef477f",
+  "pipeline_hash": "ada0f771",
   "class_name": "BdrCampaignWorkflow",
   "node_ids": [
     "vet_contact",

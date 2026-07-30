@@ -33,9 +33,15 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from rote.adapters._common import _to_camel_case, _to_pascal_case, safe_block_comment_line
+from rote.adapters._common import (
+    DEFAULT_AGENT_MAX_ITERATIONS,
+    _to_camel_case,
+    _to_pascal_case,
+    safe_block_comment_line,
+)
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── JSON Schema → Zod ─────────
@@ -966,16 +972,18 @@ export async function freshHeaders(
 }
 
 /**
- * Call one tool on an MCP server, authenticated from the rote credential
- * store. On a 401 (revoked/expired-early token) the call refreshes once
- * and retries with a fresh transport.
+ * Run `fn` against a connected, authenticated MCP session.
+ *
+ * Every operation shares one auth story: try with current credentials,
+ * and on a 401 (revoked or expired-early token) refresh once and retry
+ * on a fresh transport. Anything a refresh cannot fix becomes
+ * RoteMcpAuthNeeded so the workflow parks instead of failing.
  */
-export async function callMcpTool(
+async function withMcpSession<T>(
     server: string,
     pipelineUrl: string | null,
-    tool: string,
-    args: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+    fn: (client: Client) => Promise<T>,
+): Promise<T> {
     const url = resolveUrl(server, pipelineUrl);
 
     const attempt = async (headers: Record<string, string> | null) => {
@@ -985,28 +993,14 @@ export async function callMcpTool(
         });
         try {
             await client.connect(transport);
-            const result = await client.callTool({ name: tool, arguments: args });
-            if (result.isError) {
-                throw new Error(
-                    `MCP tool '${tool}' on '${server}' returned an error: ` +
-                        JSON.stringify(result.content),
-                );
-            }
-            if (result.structuredContent) {
-                return result.structuredContent as Record<string, unknown>;
-            }
-            const text = (result.content as Array<{ type: string; text?: string }>).find(
-                (block) => block.type === "text",
-            )?.text;
-            return (text ? JSON.parse(text) : {}) as Record<string, unknown>;
+            return await fn(client);
         } finally {
             await client.close().catch(() => undefined);
         }
     };
 
-    const headers = await freshHeaders(server);
     try {
-        return await attempt(headers);
+        return await attempt(await freshHeaders(server));
     } catch (err) {
         if (!isUnauthorized(err)) throw err;
         if (!readTokenDoc(server)?.tokens?.refresh_token) {
@@ -1024,6 +1018,165 @@ export async function callMcpTool(
             throw retryErr;
         }
     }
+}
+
+/**
+ * Call one tool on an MCP server, authenticated from the rote credential
+ * store. On a 401 (revoked/expired-early token) the call refreshes once
+ * and retries with a fresh transport.
+ */
+export async function callMcpTool(
+    server: string,
+    pipelineUrl: string | null,
+    tool: string,
+    args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+    return withMcpSession(server, pipelineUrl, async (client) => {
+        const result = await client.callTool({ name: tool, arguments: args });
+        if (result.isError) {
+            throw new Error(
+                `MCP tool '${tool}' on '${server}' returned an error: ` +
+                    JSON.stringify(result.content),
+            );
+        }
+        if (result.structuredContent) {
+            return result.structuredContent as Record<string, unknown>;
+        }
+        const text = (result.content as Array<{ type: string; text?: string }>).find(
+            (block) => block.type === "text",
+        )?.text;
+        return (text ? JSON.parse(text) : {}) as Record<string, unknown>;
+    });
+}
+
+/** One tool as the server advertises it. */
+export interface McpToolSpec {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+}
+
+/**
+ * Every tool `server` advertises, with the JSON Schema it declares.
+ *
+ * An agent_loop names bare tools; the schema the model needs to call one
+ * correctly lives on the server, not in the IR. Fetching it here means
+ * the agent's tool contract is always the server's current contract —
+ * it cannot go stale the way a schema copied into the pipeline would.
+ */
+export async function listMcpTools(
+    server: string,
+    pipelineUrl: string | null,
+): Promise<McpToolSpec[]> {
+    return withMcpSession(server, pipelineUrl, async (client) => {
+        const { tools } = await client.listTools();
+        return tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+            inputSchema: (tool.inputSchema ?? {
+                type: "object",
+                properties: {},
+            }) as Record<string, unknown>,
+        }));
+    });
+}
+
+/** A tool bound to a callable — structurally a BoundTool for the agent loop. */
+export interface BoundMcpTool {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    run: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+}
+
+/**
+ * Candidate servers for tool discovery: every server the pipeline knows
+ * about, plus every server registered locally.
+ *
+ * Over-wiring is safe *because* the declared tool list is the real
+ * constraint — the agent can only call what the IR named. ROTE_MCP_SERVERS
+ * replaces the whole list when an operator needs to point a loop somewhere
+ * the pipeline never mentioned.
+ */
+function agentServerNames(declared: string[]): string[] {
+    const override = process.env.ROTE_MCP_SERVERS;
+    if (override) {
+        return override
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+    }
+    const names = new Set(declared);
+    for (const name of Object.keys(registryServers())) names.add(name);
+    return [...names].sort();
+}
+
+/**
+ * Bind the tools an agent_loop declared to callables the loop can invoke.
+ *
+ * The IR names tools without servers (one loop may reach several, and an
+ * MCPBinding is a single server/tool pair), so discovery walks every
+ * candidate server and keeps what matches the declared names.
+ *
+ * Discovery is best-effort per server: a server that is down or
+ * unauthenticated is not necessarily one this loop needed, so it is
+ * recorded rather than thrown. A declared tool that no reachable server
+ * provides IS fatal — and when an auth failure is the plausible reason,
+ * that failure is rethrown so the workflow parks durably and
+ * `rote mcp login` can release it, rather than dying with a misleading
+ * "no server provides this tool".
+ */
+export async function bindAgentTools(
+    allowed: string[],
+    declaredServers: string[],
+    serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
+): Promise<BoundMcpTool[]> {
+    const wanted = new Set(allowed);
+    const bound = new Map<string, BoundMcpTool>();
+    const failures: unknown[] = [];
+
+    for (const server of agentServerNames(declaredServers)) {
+        const url = serverUrls[server] ?? null;
+        let specs: McpToolSpec[];
+        try {
+            specs = await listMcpTools(server, url);
+        } catch (err) {
+            failures.push(err);
+            continue;
+        }
+        for (const spec of specs) {
+            if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // A tool the IR resolved to a server binds ONLY from that
+            // server: two servers exporting the same tool name is exactly
+            // the case an allowlist cannot disambiguate, and silently
+            // taking whichever answered first is how a loop ends up
+            // talking to the wrong endpoint. Unresolved tools keep the
+            // first-wins fallback — there is nothing better to go on.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
+            bound.set(spec.name, {
+                name: spec.name,
+                description: spec.description,
+                parameters: spec.inputSchema,
+                run: (args) => callMcpTool(server, url, spec.name, args),
+            });
+        }
+    }
+
+    const missing = allowed.filter((name) => !bound.has(name));
+    if (missing.length > 0) {
+        const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
+        if (authFailure) throw authFailure;
+        const detail = failures
+            .map((err) => (err instanceof Error ? err.message : String(err)))
+            .join("; ");
+        throw new Error(
+            `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
+                (detail ? ` (unreachable: ${detail})` : ""),
+        );
+    }
+    return [...bound.values()];
 }
 
 function isUnauthorized(err: unknown): boolean {
@@ -1282,16 +1435,18 @@ async function accessToken(
 }
 
 /**
- * Call one tool on an MCP server, authenticated from provisioned Worker
- * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
+ * Run `fn` against a connected, authenticated MCP session.
+ *
+ * Every operation shares one auth story: try with the cached token, and
+ * on a 401 refresh once and retry on a fresh transport. Anything a
+ * refresh cannot fix becomes RoteMcpAuthNeeded so the instance parks.
  */
-export async function callMcpTool(
+async function withMcpSession<T>(
     env: RoteMcpEnv,
     server: string,
     pipelineUrl: string | null,
-    tool: string,
-    args: Record<string, unknown>,
-): Promise<JsonObject> {
+    fn: (client: Client) => Promise<T>,
+): Promise<T> {
     const url = resolveUrl(env, server, pipelineUrl);
 
     const attempt = async (token: string) => {
@@ -1301,20 +1456,7 @@ export async function callMcpTool(
         });
         try {
             await client.connect(transport);
-            const result = await client.callTool({ name: tool, arguments: args });
-            if (result.isError) {
-                throw new Error(
-                    `MCP tool '${tool}' on '${server}' returned an error: ` +
-                        JSON.stringify(result.content),
-                );
-            }
-            if (result.structuredContent) {
-                return result.structuredContent as JsonObject;
-            }
-            const text = (result.content as Array<{ type: string; text?: string }>).find(
-                (block) => block.type === "text",
-            )?.text;
-            return (text ? JSON.parse(text) : {}) as JsonObject;
+            return await fn(client);
         } finally {
             await client.close().catch(() => undefined);
         }
@@ -1336,6 +1478,155 @@ export async function callMcpTool(
             throw retryErr;
         }
     }
+}
+
+/**
+ * Call one tool on an MCP server, authenticated from provisioned Worker
+ * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
+ */
+export async function callMcpTool(
+    env: RoteMcpEnv,
+    server: string,
+    pipelineUrl: string | null,
+    tool: string,
+    args: Record<string, unknown>,
+): Promise<JsonObject> {
+    return withMcpSession(env, server, pipelineUrl, async (client) => {
+        const result = await client.callTool({ name: tool, arguments: args });
+        if (result.isError) {
+            throw new Error(
+                `MCP tool '${tool}' on '${server}' returned an error: ` +
+                    JSON.stringify(result.content),
+            );
+        }
+        if (result.structuredContent) {
+            return result.structuredContent as JsonObject;
+        }
+        const text = (result.content as Array<{ type: string; text?: string }>).find(
+            (block) => block.type === "text",
+        )?.text;
+        return (text ? JSON.parse(text) : {}) as JsonObject;
+    });
+}
+
+/** One tool as the server advertises it. */
+export interface McpToolSpec {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+}
+
+/**
+ * Every tool `server` advertises, with the JSON Schema it declares.
+ *
+ * An agent_loop names bare tools; the schema the model needs to call one
+ * correctly lives on the server, not in the IR. Fetching it here means
+ * the agent's tool contract is always the server's current contract —
+ * it cannot go stale the way a schema copied into the pipeline would.
+ */
+export async function listMcpTools(
+    env: RoteMcpEnv,
+    server: string,
+    pipelineUrl: string | null,
+): Promise<McpToolSpec[]> {
+    return withMcpSession(env, server, pipelineUrl, async (client) => {
+        const { tools } = await client.listTools();
+        return tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+            inputSchema: (tool.inputSchema ?? {
+                type: "object",
+                properties: {},
+            }) as Record<string, unknown>,
+        }));
+    });
+}
+
+/** A tool bound to a callable — structurally a BoundTool for the agent loop. */
+export interface BoundMcpTool {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    run: (args: Record<string, unknown>) => Promise<JsonObject>;
+}
+
+/**
+ * Candidate servers for tool discovery.
+ *
+ * Unlike the Node runtimes there is no registry file to enumerate here —
+ * a Worker's servers are whatever the pipeline declared at emit time,
+ * with their credentials provisioned as secrets under those names. The
+ * ROTE_MCP_SERVERS variable replaces the list wholesale when an operator
+ * needs to point a loop somewhere the pipeline never mentioned.
+ */
+function agentServerNames(env: RoteMcpEnv, declared: string[]): string[] {
+    const override = env.ROTE_MCP_SERVERS;
+    if (typeof override === "string" && override.length > 0) {
+        return override
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+    }
+    return [...new Set(declared)].sort();
+}
+
+/**
+ * Bind the tools an agent_loop declared to callables the loop can invoke.
+ *
+ * Same contract as the Node helper's: discovery is best-effort per server
+ * (a server that is down may not be one this loop needed), a declared tool
+ * no reachable server provides is fatal, and an auth failure that plausibly
+ * explains the gap is rethrown so the Workflow parks on it instead of
+ * failing with a misleading "no server provides this tool".
+ */
+export async function bindAgentTools(
+    env: RoteMcpEnv,
+    allowed: string[],
+    declaredServers: string[],
+    serverUrls: Record<string, string | null> = {},
+    toolServers: Record<string, string> = {},
+): Promise<BoundMcpTool[]> {
+    const wanted = new Set(allowed);
+    const bound = new Map<string, BoundMcpTool>();
+    const failures: unknown[] = [];
+
+    for (const server of agentServerNames(env, declaredServers)) {
+        const url = serverUrls[server] ?? null;
+        let specs: McpToolSpec[];
+        try {
+            specs = await listMcpTools(env, server, url);
+        } catch (err) {
+            failures.push(err);
+            continue;
+        }
+        for (const spec of specs) {
+            if (!wanted.has(spec.name) || bound.has(spec.name)) continue;
+            // Resolved tools bind only from their own server — see the
+            // Node helper's twin for why first-wins is not good enough.
+            const pinned = toolServers[spec.name];
+            if (pinned !== undefined && pinned !== server) continue;
+            bound.set(spec.name, {
+                name: spec.name,
+                description: spec.description,
+                parameters: spec.inputSchema,
+                run: (args) => callMcpTool(env, server, url, spec.name, args),
+            });
+        }
+    }
+
+    const missing = allowed.filter((name) => !bound.has(name));
+    if (missing.length > 0) {
+        const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
+        if (authFailure) throw authFailure;
+        const detail = failures
+            .map((err) => (err instanceof Error ? err.message : String(err)))
+            .join("; ");
+        throw new Error(
+            `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
+                (detail ? ` (unreachable: ${detail})` : ""),
+        );
+    }
+    return [...bound.values()];
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {
@@ -1407,3 +1698,634 @@ def emit_workers_mcp_call_module(node: Node, *, generated_by: str) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+# ───────── signatures/_roteInference.ts (agent loops) ─────────
+
+#: The default Workers AI model for an agent loop. Tool-capable and the
+#: same family the workers-ai *judge* lane already defaults to, so an
+#: operator who picks the Cloudflare lane gets one model story.
+WORKERS_AI_AGENT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+#: The Anthropic TypeScript SDK version the agent loop needs.
+#: ``beta.messages.toolRunner`` plus the ``BetaRunnableTool`` shape used
+#: below; older pins (0.91 / 0.110) predate it.
+ANTHROPIC_SDK_NPM_VERSION = "^0.115.0"
+
+#: Cloudflare's embedded function-calling toolkit — the workers-ai lane.
+AI_UTILS_NPM_VERSION = "^1.0.1"
+
+#: Source of ``src/signatures/_roteInference.ts`` — the TypeScript twin
+#: of :mod:`rote.inference._runtime_helper`. Emitted verbatim, same
+#: contract as ``_roteMcp.ts``: never hand-edit the emitted copy, fix
+#: this constant and re-emit.
+ROTE_INFERENCE_HELPER_TS = """/**
+ * Agent-loop runtime (generated by rote — do not edit; the source of
+ * truth is rote.adapters._ts_common.ROTE_INFERENCE_HELPER_TS).
+ *
+ * The TypeScript twin of rote.inference._runtime_helper: it decides who
+ * pays for an agent_loop's inference, then runs the bounded loop.
+ * Three lanes, in the order they are preferred:
+ *
+ *   api         the operator's own ANTHROPIC_API_KEY. ROTE_BASE_URL_<ID>
+ *               points it at an AI Gateway or any compatible endpoint.
+ *   workers-ai  the operator's own Cloudflare account, through the AI
+ *               binding — no external key and no external bill. Only
+ *               the Cloudflare runtime supplies this lane.
+ *   rote-cloud  a rote tenant token, billed to the rote account.
+ *
+ * ROTE_INFERENCE pins one lane explicitly and fails loudly if that lane
+ * is unavailable, so "use my own infrastructure" is a decision the
+ * operator can actually enforce rather than a preference the resolver
+ * may quietly override.
+ *
+ * There is deliberately no claude-cli lane. workerd cannot spawn a
+ * subprocess, and a lane that worked on two of the three TypeScript
+ * runtimes would be a portability trap — the subscription lane lives on
+ * the Python runtimes, where it always works.
+ *
+ * This module never imports MCP. Tools arrive already bound: the call
+ * site resolves them through whichever MCP helper its own runtime
+ * emits, so an auth failure inside a tool is an ordinary throw that
+ * propagates out of the loop and parks the workflow exactly as it does
+ * for a plain MCP-backed step.
+ */
+
+import Anthropic from "@anthropic-ai/sdk";
+
+/** A tool the agent may call, in the one currency all lanes accept. */
+export interface BoundTool {
+    name: string;
+    description: string;
+    /** JSON Schema for the arguments — from the MCP server or the IR. */
+    parameters: Record<string, unknown>;
+    run: (args: Record<string, unknown>) => Promise<unknown>;
+}
+
+/**
+ * The Cloudflare lane, injected by the call site.
+ *
+ * Passing the binding AND the runner keeps this module free of any
+ * Cloudflare import, so the Node runtimes can typecheck and bundle it
+ * without @cloudflare/ai-utils on their dependency list.
+ */
+export interface WorkersAiLane {
+    binding: unknown;
+    model: string;
+    runWithTools: (
+        ai: unknown,
+        model: string,
+        input: { messages: Array<{ role: string; content: string }>; tools: unknown[] },
+        config?: { maxRecursiveToolRuns?: number; strictValidation?: boolean },
+    ) => Promise<unknown>;
+}
+
+export type AgentEnv = Record<string, string | undefined>;
+
+export type Provider = "api" | "workers-ai" | "rote-cloud";
+
+const PROVIDERS: Provider[] = ["api", "workers-ai", "rote-cloud"];
+
+export interface AgentResult {
+    result: string;
+    provider: Provider;
+    /**
+     * Turns actually run, or null when the lane does not report it.
+     * Workers AI's runWithTools returns only the final text, so null
+     * there is the honest answer — better than echoing back the cap and
+     * making every loop look like it saturated.
+     */
+    iterations: number | null;
+}
+
+const SYSTEM_PROMPT =
+    "You are a step inside a compiled pipeline. Use the tools you have been " +
+    "given to complete the task, then state the final answer plainly. Be " +
+    "concise and do not ask questions — nobody is available to answer them.";
+
+/** Why a lane is unusable, or null when it is ready. */
+function laneBlocker(
+    provider: Provider,
+    env: AgentEnv,
+    workersAi: WorkersAiLane | null,
+): string | null {
+    if (provider === "api") {
+        return env.ANTHROPIC_API_KEY ? null : "ANTHROPIC_API_KEY is not set";
+    }
+    if (provider === "workers-ai") {
+        return workersAi
+            ? null
+            : "this runtime has no Workers AI binding (Cloudflare only)";
+    }
+    return env.ROTE_CLOUD_TOKEN
+        ? null
+        : "ROTE_CLOUD_TOKEN is not set — run `rote login`";
+}
+
+function selectProvider(
+    nodeId: string,
+    env: AgentEnv,
+    workersAi: WorkersAiLane | null,
+): Provider {
+    const pinned = env.ROTE_INFERENCE as Provider | undefined;
+    if (pinned) {
+        if (!PROVIDERS.includes(pinned)) {
+            throw new Error(
+                `ROTE_INFERENCE=${pinned} is not a lane this runtime has; ` +
+                    `expected one of: ${PROVIDERS.join(", ")}`,
+            );
+        }
+        const blocker = laneBlocker(pinned, env, workersAi);
+        if (blocker) {
+            throw new Error(
+                `ROTE_INFERENCE pins the '${pinned}' lane for ${nodeId}, but ${blocker}`,
+            );
+        }
+        return pinned;
+    }
+    for (const provider of PROVIDERS) {
+        if (!laneBlocker(provider, env, workersAi)) return provider;
+    }
+    throw new Error(
+        `no inference lane is available for agent_loop ${nodeId}: set ` +
+            `ANTHROPIC_API_KEY, bind Workers AI, or run \\`rote login\\` for ` +
+            `the rote cloud lane`,
+    );
+}
+
+/** The task the agent is being asked to do, as one prompt. */
+function taskPrompt(
+    description: string,
+    task: unknown,
+    termination: string | null,
+): string {
+    const parts = [description.trim(), "", JSON.stringify(task, null, 2)];
+    if (termination) parts.push("", `Stop when: ${termination}`);
+    return parts.join("\\n");
+}
+
+/** Endpoint + credential for the SDK lanes. */
+function sdkTarget(
+    provider: Provider,
+    env: AgentEnv,
+    baseUrl: string | null,
+): { baseURL: string | undefined; apiKey: string; authToken: string | null } {
+    if (provider === "rote-cloud") {
+        const root = (env.ROTE_CLOUD_URL ?? "https://app.roteskills.com").replace(
+            /\\/+$/,
+            "",
+        );
+        return {
+            baseURL: `${root}/v1/inference/anthropic`,
+            // The tenant token is the credential; an ambient ANTHROPIC_API_KEY
+            // must not ride along to a third-party endpoint.
+            apiKey: "",
+            authToken: env.ROTE_CLOUD_TOKEN ?? "",
+        };
+    }
+    return {
+        baseURL: baseUrl ?? undefined,
+        apiKey: env.ANTHROPIC_API_KEY ?? "",
+        authToken: null,
+    };
+}
+
+async function runViaAnthropic(
+    nodeId: string,
+    provider: Provider,
+    model: string,
+    prompt: string,
+    tools: BoundTool[],
+    maxIterations: number,
+    env: AgentEnv,
+    baseUrl: string | null,
+): Promise<AgentResult> {
+    const target = sdkTarget(provider, env, baseUrl);
+    const client = new Anthropic({
+        baseURL: target.baseURL,
+        apiKey: target.apiKey,
+        ...(target.authToken ? { authToken: target.authToken } : {}),
+    });
+
+    // A runnable tool is just the wire tool plus run/parse — raw JSON
+    // Schema, no Zod conversion, so an MCP server's advertised schema
+    // reaches the model exactly as the server wrote it.
+    const runnable = tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.parameters as { type: "object"; [k: string]: unknown },
+        run: async (args: Record<string, unknown>) => {
+            const result = await tool.run(args);
+            return typeof result === "string" ? result : JSON.stringify(result);
+        },
+        parse: (content: unknown) => content as Record<string, unknown>,
+    }));
+
+    const runner = client.beta.messages.toolRunner({
+        model,
+        max_tokens: 4096,
+        system: SYSTEM_PROMPT,
+        tools: runnable,
+        max_iterations: maxIterations,
+        messages: [{ role: "user", content: prompt }],
+    });
+    // runUntilDone(), never done(): done() waits for the async iterator to
+    // finish but does not start it, so a caller that never iterates hangs
+    // forever. runUntilDone() consumes the iterator itself.
+    const final = await runner.runUntilDone();
+
+    const text = final.content
+        .filter((block) => block.type === "text")
+        .map((block) => (block as { text: string }).text)
+        .join("\\n");
+    if (!text) {
+        throw new Error(
+            `agent_loop ${nodeId} finished without a text answer (stop reason: ` +
+                `${final.stop_reason ?? "unknown"})`,
+        );
+    }
+    // Iterations ACTUALLY run, not the cap. The runner accumulates the
+    // conversation in its params, so one assistant message is one turn —
+    // reporting the ceiling here would make every loop look saturated.
+    const iterations = runner.params.messages.filter((m) => m.role === "assistant").length;
+    return { result: text, provider, iterations };
+}
+
+async function runViaWorkersAi(
+    nodeId: string,
+    lane: WorkersAiLane,
+    prompt: string,
+    tools: BoundTool[],
+    maxIterations: number,
+): Promise<AgentResult> {
+    const output = (await lane.runWithTools(
+        lane.binding,
+        lane.model,
+        {
+            messages: [
+                { role: "system", content: SYSTEM_PROMPT },
+                { role: "user", content: prompt },
+            ],
+            tools: tools.map((tool) => ({
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.parameters,
+                function: async (args: Record<string, unknown>) => {
+                    const result = await tool.run(args);
+                    return typeof result === "string" ? result : JSON.stringify(result);
+                },
+            })),
+        },
+        { maxRecursiveToolRuns: maxIterations, strictValidation: true },
+    )) as { response?: string };
+
+    const text = output?.response;
+    if (!text) {
+        throw new Error(`agent_loop ${nodeId} returned no response from Workers AI`);
+    }
+    return { result: text, provider: "workers-ai", iterations: null };
+}
+
+/**
+ * Run one bounded, tool-restricted agent loop and return its result.
+ *
+ * This is what an agent_loop node executes. It is a real loop on every
+ * lane, never a stub — a pipeline that hands its one genuinely agentic
+ * step back to the user has not compiled that step.
+ */
+export async function runAgentLoop(opts: {
+    nodeId: string;
+    description: string;
+    task: unknown;
+    model: string;
+    tools: BoundTool[];
+    maxIterations: number;
+    termination?: string | null;
+    baseUrl?: string | null;
+    env: AgentEnv;
+    workersAi?: WorkersAiLane | null;
+}): Promise<AgentResult> {
+    const workersAi = opts.workersAi ?? null;
+    const provider = selectProvider(opts.nodeId, opts.env, workersAi);
+    const prompt = taskPrompt(opts.description, opts.task, opts.termination ?? null);
+
+    if (provider === "workers-ai") {
+        // Non-null by construction: selectProvider only returns this lane
+        // when laneBlocker found the binding present.
+        return runViaWorkersAi(
+            opts.nodeId,
+            workersAi as WorkersAiLane,
+            prompt,
+            opts.tools,
+            opts.maxIterations,
+        );
+    }
+    return runViaAnthropic(
+        opts.nodeId,
+        provider,
+        opts.model,
+        prompt,
+        opts.tools,
+        opts.maxIterations,
+        opts.env,
+        opts.baseUrl ?? null,
+    );
+}
+"""
+
+
+# ───────── extracted/<id>.ts emission for agent_loop nodes ─────────
+
+
+def agent_tool_servers(pipeline: Pipeline) -> dict[str, str | None]:
+    """Candidate MCP servers for agent_loop tool discovery: name → recorded URL.
+
+    ``Node.tools`` names tools without a server (one loop may reach
+    several, and an :class:`MCPBinding` is a single server/tool pair), so
+    the emitted loop is handed the servers this pipeline is already known
+    to talk to and searches them for the declared names.
+
+    Three sources, in descending order of authority:
+
+    1. A loop's own ``tool_servers`` — the IR resolved this tool to this
+       server (written by the compiler, or by ``rote compile`` from what
+       the baseline actually called). No URL travels with it, so the
+       endpoint still resolves from env/registry at run time.
+    2. Any node's ``mcp:`` binding, which carries a URL. A loop's bare
+       tools are searched here on the theory that a pipeline's loop
+       usually reaches the servers the rest of the pipeline already does.
+    3. At run time only: the local registry (Node runtimes) and
+       ``ROTE_MCP_SERVERS`` (everywhere), which overrides the lot.
+
+    (2) is a guess and (3) is an escape hatch; only (1) is knowledge, which
+    is why it also feeds :attr:`Pipeline.required_mcp_servers` and the
+    ``rote mcp login`` advisories.
+    """
+    servers: dict[str, str | None] = {}
+    for node in pipeline.nodes:
+        if node.mcp is not None and node.mcp.server not in servers:
+            servers[node.mcp.server] = node.mcp.url
+    for node in pipeline.nodes:
+        for server in (node.tool_servers or {}).values():
+            servers.setdefault(server, None)
+    return dict(sorted(servers.items()))
+
+
+#: Permissive argument schema for a loop_body sub-node with no declared
+#: ``input_schema``. TypeScript cannot derive a schema from a function
+#: signature the way Python's ``@beta_tool`` does, so the honest fallback
+#: is "an object" — the sub-node still validates its own payload.
+_OPEN_TOOL_SCHEMA: dict[str, Any] = {"type": "object", "additionalProperties": True}
+
+
+def _local_tool_literal(
+    sub: Node, call_expr: str, indent: str, *, ts_type: str = "BoundTool"
+) -> list[str]:
+    schema = sub.input_schema or _OPEN_TOOL_SCHEMA
+    desc = sub.description.strip() or f"Run the {sub.id} step."
+    return [
+        f"{indent}{{",
+        f"{indent}    name: {json.dumps(sub.id)},",
+        f"{indent}    description: {json.dumps(desc)},",
+        f"{indent}    parameters: {json.dumps(schema)},",
+        f"{indent}    run: async (args) => {call_expr},",
+        f"{indent}}},",
+    ]
+
+
+def emit_agent_loop_module(
+    node: Node,
+    pipeline: Pipeline,
+    *,
+    default_model: str,
+    generated_by: str,
+    workers: bool,
+    sub_node_env_arg: Callable[[Node], str | None] | None = None,
+    helpers: Sequence[str] = (),
+    workers_ai_model: str | None = None,
+) -> str:
+    """Emit ``src/extracted/<id>.ts`` as a REAL bounded agent loop.
+
+    This is what replaced the ``throw new Error("… implement me")`` stub.
+    A pipeline that hands its one genuinely agentic step back to the user
+    has not graduated that step, so the emitted module runs the loop: MCP
+    tools bound through the runtime's own MCP helper, ``loop_body``
+    sub-nodes bound as callables (already-emitted, already-working steps,
+    so the agent drives them per iteration exactly as the IR describes),
+    and the inference lane resolved at runtime by ``_roteInference.ts``.
+
+    ``sub_node_env_arg`` lets each adapter supply its own calling
+    convention for those sub-nodes — a judge takes an env object on the
+    Node runtimes and ``env`` on Workers — because the adapter owns that
+    convention and the module shape is all that is shared. ``helpers``
+    carries any function those call expressions depend on (the Node
+    runtimes' ``requireEnv``), since this module cannot import from the
+    workflow file that normally defines them.
+
+    ``workers_ai_model`` opts the module into the Cloudflare lane: the
+    binding and its runner are passed IN, so the inference helper itself
+    stays free of any Cloudflare import and the Node runtimes can compile
+    it without ``@cloudflare/ai-utils`` on their dependency list.
+    """
+    assert node.kind is NodeKind.AGENT_LOOP
+    fn_name = _to_camel_case(node.id)
+    model_var, base_var = override_env_vars(node.id)
+    max_iterations = (
+        node.termination.max_iterations
+        if node.termination is not None
+        else DEFAULT_AGENT_MAX_ITERATIONS
+    )
+    tools = list(node.tools or [])
+    servers = agent_tool_servers(pipeline) if tools else {}
+    pins = dict(sorted((node.tool_servers or {}).items()))
+    unresolved = [tool for tool in tools if tool not in pins]
+    sub_nodes = [pipeline.node_by_id(sub) for sub in (node.loop_body or [])]
+
+    doc = [
+        "/**",
+        f" * Agent loop: {node.id}",
+        " *",
+        f" * {safe_block_comment_line(node.description, fallback=node.id)}",
+        " *",
+        f" * Auto-generated by {generated_by}. Bounded at {max_iterations} iteration(s)",
+        " * and restricted to the tools below — the agent sees nothing else. Which",
+        " * lane pays for the inference (your Anthropic key, your Cloudflare account,",
+        " * or rote cloud) is resolved at runtime by signatures/_roteInference.ts;",
+        f" * {model_var} / {base_var} override the model and endpoint.",
+    ]
+    if node.mandatory:
+        doc.extend(
+            [
+                " *",
+                " * MANDATORY: this node was marked mandatory in the source skill.",
+                " * The workflow always calls it; do not make it conditional.",
+            ]
+        )
+    doc.append(" */")
+
+    inference_names = ["runAgentLoop", "type BoundTool"]
+    if workers and workers_ai_model is not None:
+        inference_names.append("type WorkersAiLane")
+    imports = [f'import {{ {", ".join(inference_names)} }} from "../signatures/_roteInference";']
+    if tools:
+        mcp_types = ", type RoteMcpEnv" if workers else ""
+        imports.append(f'import {{ bindAgentTools{mcp_types} }} from "./_roteMcp";')
+    for sub in sub_nodes:
+        sub_fn = _to_camel_case(sub.id)
+        where = "../signatures" if sub.kind is NodeKind.LLM_JUDGE else "."
+        imports.append(f'import {{ {sub_fn} }} from "{where}/{sub.id}";')
+
+    consts: list[str] = []
+    if tools:
+        consts.extend(
+            [
+                "",
+                "/** Tools the IR declared for this loop — the allowlist IS the boundary. */",
+                f"const TOOLS: string[] = {json.dumps(tools)};",
+                "",
+                "/** Servers searched for those tools, with the endpoints the IR recorded. */",
+                f"const SERVERS: string[] = {json.dumps(list(servers))};",
+                f"const SERVER_URLS: Record<string, string | null> = {json.dumps(servers)};",
+                "",
+                "/** Tools the IR resolved to a specific server — these bind from that",
+                " * server and no other, so two servers exporting one tool name cannot",
+                " * silently swap endpoints. Tools absent here fall back to first-wins",
+                " * across SERVERS. */",
+                f"const TOOL_SERVERS: Record<string, string> = {json.dumps(pins)};",
+            ]
+        )
+        if pins and unresolved:
+            consts.extend(
+                [
+                    "",
+                    "// Resolved from the IR: "
+                    + ", ".join(f"{tool} -> {server}" for tool, server in pins.items()),
+                    "// Still unresolved (searched across SERVERS): " + ", ".join(unresolved),
+                ]
+            )
+        if not servers:
+            # Say so in the emitted source rather than letting the loop
+            # fail at runtime with "no server provides this tool" and no
+            # hint about why nothing was searched.
+            consts[-3:-3] = [
+                "// NOTE: no MCP server could be resolved at emit time — this loop's",
+                "// tools are bare names and no node in the pipeline carries an `mcp:`",
+                "// binding to search. The Node runtimes fall back to every server in",
+                "// the local rote registry; set ROTE_MCP_SERVERS to name them",
+                "// explicitly (required on Cloudflare, which has no registry).",
+            ]
+
+    if workers:
+        # `unknown` + casts, the same convention the Workers MCP modules
+        # use: the workflow's Env is an interface, and an interface has no
+        # implicit index signature to satisfy RoteMcpEnv or a string map.
+        params = "    input: unknown,\n    env: unknown, // the workflow's Env; cast below"
+        bind_call = (
+            "await bindAgentTools(\n"
+            "        env as RoteMcpEnv,\n"
+            "        TOOLS,\n"
+            "        SERVERS,\n"
+            "        SERVER_URLS,\n"
+            "        TOOL_SERVERS,\n"
+            "    )"
+        )
+        env_source = "env as Record<string, string | undefined>"
+        if workers_ai_model is not None:
+            imports.append('import { runWithTools } from "@cloudflare/ai-utils";')
+    else:
+        params = "    input: unknown,"
+        bind_call = "await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS)"
+        env_source = "process.env"
+
+    local_tools: list[str] = []
+    for sub in sub_nodes:
+        sub_fn = _to_camel_case(sub.id)
+        extra = sub_node_env_arg(sub) if sub_node_env_arg is not None else None
+        call = f"{sub_fn}(args)" if extra is None else f"{sub_fn}(args, {extra})"
+        local_tools.extend(_local_tool_literal(sub, call, "        "))
+
+    # The return type is an anonymous object type, never an interface:
+    # TypeScript grants implicit index signatures to the former only, and
+    # the workflow's data-flow references cast node results to
+    # Record<string, unknown> (see ref_to_ts_expr).
+    body = [
+        "",
+        f"export async function {fn_name}(",
+        params,
+        "): Promise<{ result: string; provider: string; iterations: number | null }> {",
+        f"    const vars = {env_source};",
+    ]
+    if tools:
+        body.append(f"    const tools: BoundTool[] = {bind_call};")
+    else:
+        body.append("    const tools: BoundTool[] = [];")
+    if workers_ai_model is not None:
+        # Offered, never forced: the lane is only *selected* when the
+        # operator pins ROTE_INFERENCE=workers-ai or has no other lane, so
+        # binding `ai` in wrangler.jsonc costs nothing until it is used.
+        body.extend(
+            [
+                "    const ai = (env as { AI?: unknown }).AI;",
+                "    const workersAi: WorkersAiLane | null = ai",
+                "        ? {",
+                "              binding: ai,",
+                "              model: vars.ROTE_WORKERS_AI_MODEL ?? "
+                f"{json.dumps(workers_ai_model)},",
+                '              runWithTools: runWithTools as WorkersAiLane["runWithTools"],',
+                "          }",
+                "        : null;",
+            ]
+        )
+    if local_tools:
+        body.append("    // loop_body sub-nodes: real pipeline steps, driven per iteration.")
+        body.append("    tools.push(")
+        body.extend(local_tools)
+        body.append("    );")
+    body.extend(
+        [
+            "    return runAgentLoop({",
+            f"        nodeId: {json.dumps(node.id)},",
+            f"        description: {json.dumps(node.description)},",
+            "        task: input,",
+            f"        model: vars.{model_var} ?? {json.dumps(default_model)},",
+            "        tools,",
+            f"        maxIterations: {max_iterations},",
+        ]
+    )
+    if node.termination is not None:
+        body.append(f"        termination: {json.dumps(node.termination.condition)},")
+    body.extend(
+        [
+            f"        baseUrl: vars.{base_var} ?? null,",
+            "        env: vars,",
+            *(["        workersAi,"] if workers_ai_model is not None else []),
+            "    });",
+            "}",
+            "",
+        ]
+    )
+    helper_block = ["", *(h.rstrip("\n") for h in helpers)] if helpers else []
+    return "\n".join(doc + [""] + imports + consts + helper_block + body)
+
+
+def emit_node_agent_loop_module(
+    node: Node, pipeline: Pipeline, *, default_model: str, generated_by: str
+) -> str:
+    """An agent_loop module for the Node-process runtimes (DBOS-TS, Inngest).
+
+    Both call their steps identically — a judge sub-node takes the same
+    explicit env object the workflow's own judge steps build, so
+    ``requireEnv`` rides along (the agent module cannot import it from the
+    workflow file). Shared rather than copied: two runtimes that emitted
+    *different* agent loops would be two implementations of the loop.
+    """
+    sub_kinds = {pipeline.node_by_id(sub).kind for sub in (node.loop_body or [])}
+    return emit_agent_loop_module(
+        node,
+        pipeline,
+        default_model=default_model,
+        generated_by=generated_by,
+        workers=False,
+        sub_node_env_arg=lambda sub: judge_env_arg(sub) if sub.kind is NodeKind.LLM_JUDGE else None,
+        helpers=[REQUIRE_ENV_HELPER] if NodeKind.LLM_JUDGE in sub_kinds else [],
+    )

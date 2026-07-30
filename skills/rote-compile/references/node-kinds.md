@@ -170,6 +170,13 @@ Both the number of iterations and the specific queries vary per campaign.
 tools the agent may call). `loop_body` is optional and lists the IDs of
 sub-nodes the loop invokes each iteration.
 
+**Also set `tool_servers`** — tool name → the MCP server providing it —
+for every tool whose server you can identify from the skill (the same
+evidence that gives an `external_call` its `mcp.server`). Without it the
+tool is a bare name: the pipeline under-reports its MCP requirements, the
+user is never prompted to authenticate, and the emitted loop has to guess
+which server to search. A partial map is fine; guessing is not.
+
 **Common mistake:** leaving things as `agent_loop` when they could be
 crystallized. Most skills over-use this kind on their first pass because
 "the LLM was doing it" is the easiest classification. Fight the urge —

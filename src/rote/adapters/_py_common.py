@@ -26,7 +26,12 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from rote.adapters._common import EmitWriter, _to_pascal_case, safe_docstring_line
+from rote.adapters._common import (
+    DEFAULT_AGENT_MAX_ITERATIONS,
+    EmitWriter,
+    _to_pascal_case,
+    safe_docstring_line,
+)
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
 
 # ───────── impl / signature path references ─────────
@@ -683,12 +688,6 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
     )
 
 
-#: Fallback iteration bound when the IR declares no ``termination``. An
-#: agent loop must always be bounded — an unbounded one in a durable
-#: workflow burns budget until a human notices.
-DEFAULT_AGENT_MAX_ITERATIONS = 10
-
-
 def agent_loop_call(
     node: Node, *, default_model: str, indent: str = "    ", include_local_tools: bool = True
 ) -> str:
@@ -732,6 +731,9 @@ def agent_loop_call(
             lines.append(f"{inner}tools=[")
             lines.extend(f"{deep}{_py_literal(t)}," for t in node.tools)
             lines.append(f"{inner}],")
+    if node.tool_servers:
+        # Resolved tool → server pins narrow the allowlist to real pairs.
+        lines.append(f"{inner}tool_servers={_py_literal(dict(sorted(node.tool_servers.items())))},")
     if node.loop_body and include_local_tools:
         lines.append(f"{inner}local_tools={{")
         for sub in node.loop_body:

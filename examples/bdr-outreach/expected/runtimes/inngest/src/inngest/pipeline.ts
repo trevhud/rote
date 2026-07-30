@@ -3,7 +3,7 @@
  *
  * Pipeline: bdr-campaign v0.1.0
  * Source skill: ../skill
- * Pipeline hash: 68ef477f
+ * Pipeline hash: ada0f771
  *
  * DO NOT EDIT BY HAND. Re-run `rote emit --runtime inngest` to regenerate.
  *
@@ -47,7 +47,7 @@ function requireEnv(name: string): string {
  */
 export const runPipeline = inngest.createFunction(
     {
-        id: "bdr-campaign-68ef477f",
+        id: "bdr-campaign-ada0f771",
         // Inngest v4 retries are function-level: every step gets this
         // budget (managed exponential backoff + jitter). Set to the max
         // across the IR's per-node retry policies; per-node deltas are
