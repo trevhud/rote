@@ -138,7 +138,11 @@ extend-exclude = ["examples"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.pytest.ini_options]
-addopts = "-m 'not slow'"
+# -rs: always print the REASON for every skip. A conditional skip whose
+# condition silently becomes permanent is invisible behind a bare
+# "1 skipped" count — that is how `test_per_tool_override_changes_payload`
+# went from a real test to dead weight without anyone noticing.
+addopts = "-m 'not slow' -rs"
 markers = [
     "slow: tests that need an external toolchain (Node/npm/tsc) or take >5s. Run with `pytest -m slow` to include.",
 ]

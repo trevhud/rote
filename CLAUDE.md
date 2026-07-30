@@ -834,13 +834,38 @@ already worked, proving it recognizes correct behavior rather than just
 matching new strings.
 
 A periodic mutation sweep is the systematic version, and it works well
-here because emission is pure template substitution — mutate an adapter,
+here because emission is pure template substitution — mutate a module,
 run `pytest tests/`, and any mutation that survives is an untested
-behavior. The sweep that produced the table above ran 18 mutations
-(retry policy, timeouts, step naming, payload threading, MCP allowlist
-narrowing, the `ANTHROPIC_API_KEY` scrub, invariant #4 and #7) and
-caught 15. Watch for **equivalent mutants** — the fan_out tier ordering
-in `fan_out_element_param` survives because it is provably unobservable,
+behavior. Two sweeps so far, 35 mutations, 26 caught on the first pass:
+
+- **Adapters** (18): retry policy, timeouts, step naming, payload
+  threading, MCP allowlist narrowing, the `ANTHROPIC_API_KEY` scrub,
+  invariants #4 and #7. Gaps found: per-node `timeout:` was ignorable on
+  both temporal and cloudflare gates with nothing failing.
+- **Drivers / inference / MCP / probe** (17): the flags that keep
+  `claude -p` cheap, `is_error` inside a zero exit, fastmcp's
+  `result.data`, probe's never-guess rule, and the cost-critical driver
+  defaults.
+
+Two lessons from the second sweep worth keeping:
+
+- **The agent-loop CLI path is the weak twin.** `_runtime_helper` carries
+  two copies of the `claude -p` flag block (judge, agent loop), and
+  mutations died on the judge copy while surviving on the loop copy —
+  `--setting-sources` and `is_error` were covered on one and not the
+  other, and `--system-prompt` on neither. That asymmetry is exactly how
+  the bare `--tools` bug shipped. When you touch one copy, test both.
+- **A symbolic assertion cannot pin a constant.**
+  `args[args.index("--model") + 1] == DEFAULT_MODEL` verifies the flag is
+  wired up and says nothing about the constant, because both sides move
+  together. `DEFAULT_MODEL` could be flipped to Opus (~5x cost) and
+  `DEFAULT_MAX_TURNS` halved (the original `error_max_turns` failure)
+  with the suite fully green. `tests/test_cost_defaults.py` pins the
+  *property* — not-Opus, `>= 60` — so a legitimate model bump passes and
+  the expensive regression fails.
+
+Watch for **equivalent mutants** — the fan_out tier ordering in
+`fan_out_element_param` survives because it is provably unobservable,
 not because it is untested; that one is commented in place.
 
 ---
@@ -1139,7 +1164,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1189 tests (1162 fast + 27 slow). Run with `pytest tests/` (fast
+- 1197 tests (1170 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS
