@@ -798,6 +798,51 @@ If a change of yours would violate any of them, stop and reconsider.
 
 ---
 
+## Tests vs. evals: the dividing line is inference
+
+**Anything that does not require inference is a test.** Automated, run
+on every push, and kept fast.
+
+**Anything that costs tokens is an eval.** Run deliberately and
+periodically — `rote eval --run`, the compiler against a real skill,
+a live gateway judge. Never wired into CI.
+
+This is not a style preference. A token-spending check in an automated
+suite bills someone on every push, gets slower as it grows, and fails
+for reasons that have nothing to do with the change under test. Both
+halves of the split are enforced, not just documented:
+
+- `tests/conftest.py::_no_inference_in_tests` scrubs every vendor
+  credential from the environment and makes a bare-name `shutil.which`
+  lookup of `claude` / `codex` return None. The second half is the one
+  that matters: `claude -p` authenticates from an OAuth session, so
+  having no API key is *not* protection — not finding the binary is.
+  Two DBOS e2e suites burned real subscription inference on every run
+  until it was caught by wall-clock timing.
+- `tests/test_no_inference_in_tests.py` verifies the guard itself,
+  because its failure mode is silent spending that no other assertion
+  would notice.
+- Only *bare-name* lookups are blocked, so a test that writes a fake
+  `claude` stub and passes its absolute path still works — a guard that
+  forced tests to route around it would soon be disabled.
+
+Consequences worth keeping in mind:
+
+- **An e2e test is still a test.** The TypeScript suites run real
+  `npm install`, real `wrangler dev`, a real Inngest dev server and a
+  real Postgres — no inference, so they are automated (see the
+  `TypeScript e2e` / `DBOS-TS e2e` CI jobs). `@pytest.mark.slow` says
+  what *toolchain* a suite needs, never whether it should run.
+- **Emitted judges and agent loops get stubbed, not called.** The live
+  suites point `ROTE_BASE_URL_<NODE_ID>` at a local Messages stub and
+  set a fake key. That is what makes it possible to prove the agent-loop
+  machinery end to end without paying per run.
+- **Speed is a feature of the test half only.** The fast suite is ~18s;
+  keep it there. Evals are allowed to be slow and expensive because
+  nothing blocks on them.
+
+---
+
 ## Testing discipline: make assertions capable of failing
 
 Five real defects in this repo shipped past a green suite because a
@@ -1164,7 +1209,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1197 tests (1170 fast + 27 slow). Run with `pytest tests/` (fast
+- 1202 tests (1175 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS
