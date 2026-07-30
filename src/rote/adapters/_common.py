@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
@@ -305,12 +306,20 @@ def ir_duration_to_human(s: str) -> str:
     Cloudflare's step config accepts directly. Strings that don't match
     the IR shorthand pattern are passed through unchanged (they're
     assumed to already be in an acceptable form).
+
+    A value of exactly 1 is singularized ('1 hour', not '1 hours').
+    Cloudflare's ``WorkflowDuration`` accepts either spelling, so this
+    is legibility rather than correctness — but emitted code is read by
+    humans, and '1 hours' in a reviewed artifact looks like a bug.
     """
     s = s.strip()
     m = _IR_DURATION_RE.fullmatch(s)
     if not m:
         return s
-    return f"{m.group(1)} {_UNIT_TO_HUMAN[m.group(2)]}"
+    value, unit = m.group(1), _UNIT_TO_HUMAN[m.group(2)]
+    if float(value) == 1:
+        unit = unit.removesuffix("s")
+    return f"{value} {unit}"
 
 
 _UNIT_TO_SECONDS = {
@@ -420,6 +429,72 @@ def check_input_refs_available(node: Node, available: set[str]) -> None:
                 f"workflow (it runs in a later wave, or is a loop-body sub-node "
                 f"with no top-level result)."
             )
+
+
+def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
+    """Which ``inputs`` param carries the list a ``fan_out`` node fans over.
+
+    Every other input is shared verbatim by all invocations. Which param
+    is the list, in precedence order:
+
+    1. the param bound to the source of an incoming ``fan_out: true``
+       edge (the IR's explicit marker);
+    2. else the param bound to a node with any incoming edge — inputs
+       may also reference nodes *without* an edge (shared context, e.g.
+       BDR's ``intel``), which is what makes "the only node-bound
+       param" too naive;
+    3. else the only node-bound param.
+
+    Ambiguity after all three is an emit-time error, never a guess:
+    dispatching over the wrong list would silently judge the wrong
+    things.
+
+    This lives in the language-neutral common module because the answer
+    is a property of the IR, not of the target language — every adapter
+    must fan over the *same* input or the same pipeline would mean
+    different things on different runtimes.
+    """
+    if not node.inputs:
+        raise ValueError(f"fan_out node {node.id!r} has no inputs: nothing to fan over")
+    node_bound = {
+        param: parsed.node_id
+        for param, ref in node.inputs.items()
+        if (parsed := parse_input_ref(ref)).node_id is not None
+    }
+    edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
+    fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
+
+    # The tiers are tried narrowest-first, but the ORDER is provably
+    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
+    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
+    # singles out exactly one param. If the broader tier singles one out,
+    # it is necessarily the same one. (Mutation testing flags swapping
+    # these as a surviving mutant — it is equivalent, not a test gap.)
+    # The tiers still earn their place: they express which signal the
+    # author gave, and tier 2 is what handles a marker pointing at a node
+    # no input references.
+    for sources in (fan_edge_sources, edge_sources):
+        matching = sorted(p for p, src in node_bound.items() if src in sources)
+        if len(matching) == 1:
+            return matching[0]
+    if len(node_bound) != 1:
+        raise ValueError(
+            f"fan_out node {node.id!r}: cannot identify the element param — "
+            f"node-bound inputs {sorted(node_bound)} and incoming edges "
+            f"{sorted(edge_sources)} don't single one out; mark the list edge "
+            f"with `fan_out: true`"
+        )
+    return next(iter(node_bound))
+
+
+def fan_out_nodes(wave: Sequence[Node]) -> tuple[list[Node], list[Node]]:
+    """Split a wave into ``(fan_out_nodes, plain_nodes)``, order preserved.
+
+    A ``fan_out`` node dispatches once per element of its bound list, so
+    it never shares the single/parallel payload shapes an adapter emits
+    for plain nodes.
+    """
+    return [n for n in wave if n.fan_out], [n for n in wave if not n.fan_out]
 
 
 # ───────── MCP-capability refusal ─────────

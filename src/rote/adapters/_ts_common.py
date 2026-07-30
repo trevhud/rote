@@ -40,6 +40,7 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     _to_camel_case,
     _to_pascal_case,
+    fan_out_element_param,
     safe_block_comment_line,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
@@ -591,6 +592,67 @@ def payload_ts_literal(node: Node, indent: str) -> str:
         lines.append(f"{inner}{key}: {ref_to_ts_expr(ref)},")
     lines.append(indent + "}")
     return "\n".join(lines)
+
+
+FAN_OUT_LIST_HELPER_TS = """\
+/** The list a fan_out node dispatches over.
+ *
+ * A bare `.map()` on a missing key fails with "Cannot read properties
+ * of undefined (reading 'map')", which names neither the node nor the
+ * reference — in generated code that is close to undebuggable, and the
+ * cause is almost always an upstream node that didn't return the key
+ * the IR says it does. One call turns that into an actionable message.
+ * Found by running it: the first live fan_out run hit exactly this. */
+function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
+    if (!Array.isArray(value)) {
+        const got = value === null ? "null" : typeof value;
+        throw new Error(
+            `fan_out node '${nodeId}' expected an array from '${ref}', got ${got}. ` +
+                `The upstream node must return that key as a list.`,
+        );
+    }
+    return value;
+}
+"""
+
+
+def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tuple[str, str]:
+    """``(payload_literal, list_expr)`` for a ``fan_out`` node in TypeScript.
+
+    The payload is a one-line object binding the element param to the
+    loop variable ``_item`` and every other input to its shared
+    expression — the TS rendering of
+    :func:`rote.adapters._common.fan_out_element_param`, which decides
+    *which* input is the list.
+
+    The list expression goes through ``fanOutList``
+    (:data:`FAN_OUT_LIST_HELPER_TS`), which both narrows the type — node
+    results are ``Record<string, unknown>`` or ``never``, so neither
+    ``.map`` nor ``for…of`` compiles against them — and reports a
+    missing upstream key by node id instead of as a bare TypeError.
+
+    ``indent`` is the column the ``fanOutList(`` token sits at. The call
+    wraps against it instead of running to ~180 characters on one line —
+    emitted code is meant to be read and reviewed.
+    """
+    element_param = fan_out_element_param(node, pipeline)
+    entries = []
+    for param, input_ref in node.inputs.items() if node.inputs else []:
+        key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
+        value = "_item" if param == element_param else ref_to_ts_expr(input_ref)
+        entries.append(f"{key}: {value}")
+    payload = "{ " + ", ".join(entries) + " }"
+    assert node.inputs is not None
+    ref = node.inputs[element_param]
+    inner = indent + "    "
+    list_expr = (
+        "fanOutList(\n"
+        f"{inner}{ref_to_ts_expr(ref)},\n"
+        f"{inner}{json.dumps(node.id)},\n"
+        f"{inner}{json.dumps(ref)},\n"
+        f"{indent})"
+    )
+    return payload, list_expr
 
 
 # ───────── Pipeline queries ─────────

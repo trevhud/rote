@@ -29,6 +29,8 @@ from temporalio.client import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import UnsandboxedWorkflowRunner, Worker
 
+from tests._helpers import FAN_OUT_ELEMENTS, fan_out_element
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_EXAMPLE_PKG_ROOT = REPO_ROOT / "examples" / "bdr-outreach"
 
@@ -46,10 +48,15 @@ BDR_EXAMPLE_PKG_ROOT = REPO_ROOT / "examples" / "bdr-outreach"
 # not just that the orchestration completes.
 
 CAPTURED_PAYLOADS: dict[str, dict] = {}
+#: Every (node, payload) in call order. CAPTURED_PAYLOADS is keyed by
+#: node so it keeps only the last call — structurally unable to see a
+#: fan_out node's N invocations.
+CAPTURE_LOG: list[tuple[str, dict]] = []
 
 
 def _capture(name: str, payload: dict) -> None:
     CAPTURED_PAYLOADS[name] = payload
+    CAPTURE_LOG.append((name, payload))
 
 
 @activity.defn(name="target_research")
@@ -132,11 +139,17 @@ async def mock_exclusion_check_recent(payload: dict) -> dict:
 
 @activity.defn(name="exclusion_check_sequence")
 async def mock_exclusion_check_sequence(payload: dict) -> dict:
-    return {"passed": [], "excluded": []}
+    # Non-empty: personalize_email fans over this list, and an empty
+    # one makes the fan a correct no-op that no assertion can catch.
+    return {
+        "passed": [fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)],
+        "excluded": [],
+    }
 
 
 @activity.defn(name="personalize_email")
 async def mock_personalize_email(payload: dict) -> dict:
+    _capture("personalize_email", payload)
     return {"opening_line": "Hi there,", "ta_callout": "rare disease"}
 
 
@@ -219,6 +232,7 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
        right payloads to the mocked activities along the way.
     """
     CAPTURED_PAYLOADS.clear()
+    CAPTURE_LOG.clear()
 
     # A complete brief matching the pipeline's input contract. Values
     # reuse the fictionalized examples already present in the IR's
@@ -301,5 +315,21 @@ async def test_bdr_workflow_runs_to_completion(bdr_workflow_class) -> None:  # n
     # pipeline input field + two different upstream nodes.
     report_payload = CAPTURED_PAYLOADS["pre_enrollment_report"]
     assert report_payload["campaign_name"] == brief["drug_brand"]
-    assert report_payload["passed_contacts"] == []
+    assert report_payload["passed_contacts"] == [
+        fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)
+    ]
     assert report_payload["template_ids"] == ["t1", "t2"]
+
+    # ─── fan_out: personalize_email ran once per surviving contact ───
+    # CAPTURED_PAYLOADS is keyed by node, so it can only ever show one
+    # invocation; the ordered log is what makes a fan observable.
+    fan_calls = [p for (n, p) in CAPTURE_LOG if n == "personalize_email"]
+    assert len(fan_calls) == FAN_OUT_ELEMENTS, (
+        f"personalize_email is a fan_out node over "
+        f"exclusion_check_sequence.passed; expected {FAN_OUT_ELEMENTS} "
+        f"activity executions, got {len(fan_calls)}"
+    )
+    # Each invocation got ONE contact, not the whole list, and the
+    # non-fanned inputs are shared verbatim across all of them.
+    assert sorted(c["contact"]["fanElement"] for c in fan_calls) == list(range(FAN_OUT_ELEMENTS))
+    assert {c["campaign_type"] for c in fan_calls} == {brief["campaign_type"]}

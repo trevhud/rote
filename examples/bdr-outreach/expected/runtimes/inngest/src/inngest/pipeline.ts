@@ -42,6 +42,25 @@ function requireEnv(name: string): string {
     return value;
 }
 
+/** The list a fan_out node dispatches over.
+ *
+ * A bare `.map()` on a missing key fails with "Cannot read properties
+ * of undefined (reading 'map')", which names neither the node nor the
+ * reference — in generated code that is close to undebuggable, and the
+ * cause is almost always an upstream node that didn't return the key
+ * the IR says it does. One call turns that into an actionable message.
+ * Found by running it: the first live fan_out run hit exactly this. */
+function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
+    if (!Array.isArray(value)) {
+        const got = value === null ? "null" : typeof value;
+        throw new Error(
+            `fan_out node '${nodeId}' expected an array from '${ref}', got ${got}. ` +
+                `The upstream node must return that key as a list.`,
+        );
+    }
+    return value;
+}
+
 /**
  * End-to-end BDR outreach campaign workflow for pharma/biotech research
  */
@@ -137,15 +156,22 @@ export const runPipeline = inngest.createFunction(
             }));
 
         // ─── Wave 9 ───
-        const personalize_email_result = await step.run("personalize_email", async () => personalizeEmail({
-                contact: (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
-                intel: target_research_result,
-                campaign_type: pipelineInput["campaign_type"],
-            }, {
+        // fan_out: personalize_email runs once per element of the bound list,
+        // each as its own durable step (ids are index-suffixed to stay
+        // unique within the run).
+        const personalize_email_result = await Promise.all(
+            fanOutList(
+                (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
+                "personalize_email",
+                "exclusion_check_sequence.output.passed",
+            ).map((_item, _index) =>
+                step.run(`personalize_email[${_index}]`, async () => personalizeEmail({ contact: _item, intel: target_research_result, campaign_type: pipelineInput["campaign_type"] }, {
         ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
         ROTE_MODEL_PERSONALIZE_EMAIL: process.env.ROTE_MODEL_PERSONALIZE_EMAIL,
         ROTE_BASE_URL_PERSONALIZE_EMAIL: process.env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
-    }));
+    })),
+            ),
+        );
 
         // ─── Wave 10 ───
         // IR retry policy: max 3 (exponential). Inngest v4

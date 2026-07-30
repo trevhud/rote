@@ -596,6 +596,52 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    register it — the e2e sends an explicit `PUT` to the app's serve
    handler to force registration. See `tests/test_inngest_e2e.py`.
 
+### A fan_out element's step name must carry its index
+
+Cloudflare and Inngest key a durable step by its **name**, so a fan_out
+node emits `` `<id>[${_index}]` ``, not `"<id>"`. Reusing one name for
+every element is the nastiest failure shape available here: Cloudflare
+returns element 0's *cached* result for all N elements, so the run
+succeeds, the output has the right length, and every entry is
+identical — no error, anywhere. Inngest's memoization collapses the fan
+to a single execution the same way (its e2e asserts
+`count == FAN_OUT_ELEMENTS` for fan_out nodes and `== 1` for the rest,
+which is what catches it). DBOS is the exception on purpose: both its
+Python and TS SDKs identify a step by execution order, so repeated
+calls to one registered step are already distinct — no suffix needed,
+and adding one would be meaningless rather than harmful.
+
+Second, on Cloudflare only: a **parkable** fan_out node (MCP-bound)
+runs its elements *sequentially*, not in `Promise.all`, for the same
+reason a parkable step leaves its parallel wave — `waitForEvent` inside
+a promise combinator is undocumented and its timeout *throws*, which
+would reject every other element.
+
+### An undefined fanned list must name the node, on every runtime
+
+Emitted code routes the fanned list through a guard — `fanOutList` in
+TS, `_fan_out_list` in Python — that throws naming the node id and the
+IR reference. Without it the failure is `Cannot read properties of
+undefined (reading 'map')` (TS) or `'NoneType' object is not iterable`
+(Python): no node, no reference, inside generated code the user never
+wrote. Found by running it — the first live fan_out run on Cloudflare
+died exactly that way, and the cause is almost always an upstream node
+that didn't return the key the IR says it does.
+
+Both guards are emitted only when the pipeline has a fan_out node, and
+they are *behavioral* emitted code like `_serialize`: if they drift, the
+same broken pipeline reports differently per target. Diagnostics are
+part of the emitted contract — a guard on one runtime and not another is
+its own parity gap.
+
+Related trap in the **tests**: a live e2e's mocks must return the fanned
+key as a non-empty list. Three TS e2e suites had `exclusion_check_sequence`
+returning `passed: []`, which made BDR's fan a correct no-op — the node
+never ran and every assertion still passed. `tests/_helpers.py`'s
+`fan_out_source_keys` now derives those mock values from the IR using the
+adapters' own resolution, so a mock cannot disagree with the emitted code
+about which input is the list.
+
 ### Eval pricing: no hardcoded prices, and two traps found empirically
 
 `rote.eval.pricing` fetches current models + official prices at eval
@@ -752,6 +798,53 @@ If a change of yours would violate any of them, stop and reconsider.
 
 ---
 
+## Testing discipline: make assertions capable of failing
+
+Five real defects in this repo shipped past a green suite because a
+test observed something *adjacent* to the behavior. This is the single
+most common failure mode here, so it gets its own section.
+
+| Defect | What the test checked | What it should have checked |
+| --- | --- | --- |
+| bare `--tools` killed the whole subscription lane | `"--tools" in command` | the flag's **value** |
+| DBOS e2e mocked agent loops via an unreachable branch | that the overlay file was written | that the mock was actually *called* |
+| BDR's fan was a no-op in 4 live e2e suites | that the workflow completed | that the fanned node ran **N** times |
+| per-node `timeout:` ignored (temporal, cloudflare gates) | that *a* timeout was emitted | that the **declared** one was, and the default was not |
+| `1h` emitted as `"1 hours"` | nothing — no per-node timeout test existed | — |
+
+Three habits that catch these:
+
+- **Assert the value, not the presence.** A flag, key, or node id
+  appearing in the output says nothing about what it was set to.
+- **Give a negative half.** Pair "the declared value is present" with
+  "the default is absent" — otherwise emitting both still passes.
+- **Make fixtures non-degenerate.** An empty list makes a fan, a loop,
+  or a retry a *correct* no-op that no assertion can catch. Fixture
+  collections that drive iteration count carry >1 element
+  (`tests/_helpers.py::FAN_OUT_ELEMENTS`), and their values are derived
+  from the IR (`fan_out_source_keys`) so a mock cannot disagree with the
+  emitted code about which input is which.
+
+**Verify a new test by breaking the code.** Not by inspection — apply
+the regression the test is meant to catch and confirm it fails. Any
+test written for a bug fix should be run against the *unfixed* code
+once. When the fix spans runtimes, check the split: the fan_out parity
+suite fails on the five broken runtimes and passes on `dbos`, which
+already worked, proving it recognizes correct behavior rather than just
+matching new strings.
+
+A periodic mutation sweep is the systematic version, and it works well
+here because emission is pure template substitution — mutate an adapter,
+run `pytest tests/`, and any mutation that survives is an untested
+behavior. The sweep that produced the table above ran 18 mutations
+(retry policy, timeouts, step naming, payload threading, MCP allowlist
+narrowing, the `ANTHROPIC_API_KEY` scrub, invariant #4 and #7) and
+caught 15. Watch for **equivalent mutants** — the fan_out tier ordering
+in `fan_out_element_param` survives because it is provably unobservable,
+not because it is untested; that one is commented in place.
+
+---
+
 ## Workflow expectations
 
 ### Running tests
@@ -810,16 +903,21 @@ Don't waste time debugging stubs. These are intentional.
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
   code; the compiler produces scaffolding, not production code
-- `fan_out` nodes receive the whole upstream list in one invocation on
-  every adapter EXCEPT DBOS, which dispatches one enqueued durable step
-  per element (element param resolved by
-  `rote.adapters._py_common.fan_out_binding` — fan_out edge marker >
-  incoming-edge source > only node-bound param; ambiguity is an
-  emit-time error). Per-element dispatch on the other adapters is the
-  remaining enhancement — until then their judge signatures must accept
-  the batch
-
 **Working end-to-end:**
+
+- `fan_out` on ALL SIX runtimes: a node marked `fan_out: true` is
+  invoked once per element of its bound list, and the result binds as a
+  list in input order. Which input is the list is resolved by
+  `rote.adapters._common.fan_out_element_param` (fan_out edge marker >
+  incoming-edge source > only node-bound param; ambiguity is an
+  emit-time error, never a guess) — it lives in the *language-neutral*
+  common module on purpose: two adapters disagreeing about which input
+  is the list would make one pipeline mean two different things. Per
+  runtime: DBOS enqueues one durable step per element; python uses
+  `pool.map`; temporal `asyncio.gather` over one activity execution
+  each; Cloudflare and Inngest `Promise.all` over per-element steps;
+  DBOS-TS `Promise.allSettled` + `unwrap`. See the fan_out gotchas
+  below for the two traps.
 
 - `agent_loop` on ALL runtimes. Python got the real loop first; the
   three TypeScript runtimes now emit one too — MCP tools bound through
@@ -1041,7 +1139,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1146 tests (1119 fast + 27 slow). Run with `pytest tests/` (fast
+- 1189 tests (1162 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

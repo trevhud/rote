@@ -378,9 +378,8 @@ plain-Python subprocess); those need a Node toolchain / Docker, so they
 run locally with `pytest tests/ -m slow`, not in CI.
 
 Known gaps: the extracted modules are `NotImplementedError` stubs
-you fill in with real API-client code, a Restate adapter is planned, and
-`fan_out` nodes currently receive the whole upstream list in one
-invocation (per-element dispatch is a planned enhancement). Published on
+you fill in with real API-client code, and a Restate adapter is planned.
+Published on
 PyPI as [`rote-cli`](https://pypi.org/project/rote-cli/) via tag-driven
 Trusted Publishing ([docs/releasing.md](docs/releasing.md)).
 
@@ -461,9 +460,7 @@ In rough priority order:
    Cloudflare; a separate node makes the short-circuit uniform.
 3. **More example skills**: BDR is one shape; research-heavy,
    retrieval-heavy, and code-review skills stress the IR differently.
-4. **`fan_out` per-element dispatch**: currently the whole upstream list
-   arrives in one invocation.
-5. **The compiler compiling itself**: `rote-compile` is a SKILL.md;
+4. **The compiler compiling itself**: `rote-compile` is a SKILL.md;
    pointing `rote compile` at it should crystallize its rubric-grade
    pieces and leave only the genuinely fuzzy judgments in the loop.
 

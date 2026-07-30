@@ -88,6 +88,7 @@ from rote.adapters._py_common import (
     _signature_path_parts,
     agent_loop_call,
     fan_out_binding,
+    fan_out_list_helper,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -521,7 +522,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
 
         for node in fan_out_nodes:
-            element_param, list_expr, scalars = fan_out_binding(node, pipeline)
+            element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
             payload_items = "".join(
                 f', "{param}": {expr}' for param, expr in sorted(scalars.items())
             )
@@ -659,6 +660,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         "Steps return JSON-serializable payloads so workflow state stays\n"
         "    portable across the system database."
     )
+
+    if any(n.fan_out for n in pipeline.nodes):
+        header += "\n\n" + fan_out_list_helper()
 
     if mcp_backed:
         header += "\n\n" + textwrap.dedent(
