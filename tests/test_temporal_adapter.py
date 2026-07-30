@@ -24,6 +24,7 @@ from rote.adapters.temporal import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
+    emit_workflow,
 )
 from rote.ir import Node, NodeKind, Pipeline
 from tests._helpers import mini_pipeline
@@ -548,3 +549,51 @@ def test_refuses_mcp_only_node_with_actionable_error(tmp_path: Path) -> None:
 def test_emit_activities_also_refuses_mcp_only_node() -> None:
     with pytest.raises(ValueError, match="no MCP backend"):
         TemporalAdapter().emit_activities(_mcp_only_pipeline())
+
+
+def test_per_node_timeout_reaches_the_activity_call() -> None:
+    """A node's declared `timeout:` must beat the adapter default.
+
+    Found by mutation testing: making `_activity_timeout` return the
+    default unconditionally left the entire suite green. A pipeline that
+    declares a 30-second budget for a fast step and gets the 5-minute
+    default instead hangs five times too long on a wedged call, with
+    nothing in the emitted code hinting why.
+
+    Both halves matter — asserting only that "30s" appears would still
+    pass if the adapter emitted it for every node.
+    """
+    pinned = Node(
+        id="fast_step",
+        kind=NodeKind.PURE_FUNCTION,
+        description="d",
+        impl="m.py:fast",
+        timeout="30s",
+    )
+    defaulted = Node(
+        id="slow_step",
+        kind=NodeKind.PURE_FUNCTION,
+        description="d",
+        impl="m.py:slow",
+    )
+    pipeline = Pipeline(
+        name="timeouts",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[pinned, defaulted],
+        edges=[{"from": "fast_step", "to": "slow_step"}],
+        entry_nodes=["fast_step"],
+        exit_nodes=["slow_step"],
+    )
+    cfg = TemporalAdapterConfig(default_activity_timeout="5m")
+    src = emit_workflow(pipeline, cfg)
+
+    fast_call = src[src.index('"fast_step"') : src.index('"slow_step"')]
+    slow_call = src[src.index('"slow_step"') :]
+    assert '_parse_minutes("30s")' in fast_call, (
+        "a node's declared timeout must reach its execute_activity call"
+    )
+    assert '_parse_minutes("5m")' in slow_call, (
+        "a node without a timeout must fall back to the adapter default"
+    )
+    # The pinned node must NOT also carry the default.
+    assert '_parse_minutes("5m")' not in fast_call

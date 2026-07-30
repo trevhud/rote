@@ -28,7 +28,7 @@ from rote.adapters.dbos_ts import emit_main as emit_dbos_ts
 from rote.adapters.inngest import emit_pipeline_ts as emit_inngest
 from rote.adapters.python import emit_main as emit_python
 from rote.adapters.temporal import emit_workflow as emit_temporal
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline
+from rote.ir import Edge, LLMSignature, Node, NodeKind, Pipeline
 
 # ───────── Fixture: list-producer → fan_out judge ─────────
 #
@@ -276,3 +276,56 @@ def test_ambiguous_fan_out_is_an_emit_time_error() -> None:
     )
     with pytest.raises(ValueError, match="cannot identify the element param"):
         fan_out_element_param(pipeline.nodes[2], pipeline)
+
+
+def test_the_fan_out_edge_marker_beats_a_plain_edge() -> None:
+    """Two edge-fed inputs, one edge marked `fan_out: true` — the marker wins.
+
+    The precedence tiers only differ when more than one node-bound input
+    is edge-fed, so a single-edge fixture exercises tier 1 and tier 2
+    identically and cannot tell them apart. Found by mutation testing:
+    swapping the tier order left the whole suite green, because nothing
+    covered the case the ordering exists for.
+
+    Getting this wrong fans over the wrong upstream list, which judges
+    the wrong things silently rather than failing.
+    """
+    from rote.adapters._common import fan_out_element_param
+
+    judge = Node(
+        id="j",
+        kind=NodeKind.LLM_JUDGE,
+        description="d",
+        signature_spec=_SPEC,
+        fan_out=True,
+        inputs={"post": "posts.output.items", "brief": "briefs.output.items"},
+    )
+    pipeline = Pipeline(
+        name="two-edges",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[
+            Node(id="posts", kind=NodeKind.PURE_FUNCTION, description="d", impl="m.py:posts"),
+            Node(id="briefs", kind=NodeKind.PURE_FUNCTION, description="d", impl="m.py:briefs"),
+            judge,
+        ],
+        # BOTH feed the judge; only `posts` is marked as the fanned list.
+        edges=[
+            {"from": "posts", "to": "j", "fan_out": True},
+            {"from": "briefs", "to": "j"},
+        ],
+        entry_nodes=["posts", "briefs"],
+        exit_nodes=["j"],
+    )
+    assert fan_out_element_param(judge, pipeline) == "post"
+
+    # And symmetrically, so the test cannot pass by dict/sort order:
+    # move the marker to the other edge and the answer must follow it.
+    flipped = pipeline.model_copy(
+        update={
+            "edges": [
+                Edge.model_validate({"from": "posts", "to": "j"}),
+                Edge.model_validate({"from": "briefs", "to": "j", "fan_out": True}),
+            ]
+        }
+    )
+    assert fan_out_element_param(judge, flipped) == "brief"

@@ -34,6 +34,7 @@ from rote.adapters.cloudflare import (
     _pipeline_hash,
     _to_camel_case,
     _validate_signal_name,
+    emit_workflow,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, RetryPolicy
 from tests._helpers import assert_no_mcp_in_ts
@@ -84,6 +85,11 @@ def test_ir_duration_to_cf_conversion() -> None:
     assert _ir_duration_to_cf("7d") == "7 days"
     assert _ir_duration_to_cf("2h") == "2 hours"
     assert _ir_duration_to_cf("250ms") == "250 milliseconds"
+    # Exactly 1 singularizes — emitted code is read by humans, and
+    # "1 hours" in a reviewed artifact reads as a bug.
+    assert _ir_duration_to_cf("1h") == "1 hour"
+    assert _ir_duration_to_cf("1d") == "1 day"
+    assert _ir_duration_to_cf("1s") == "1 second"
     # Already human-readable: pass-through.
     assert _ir_duration_to_cf("10 minutes") == "10 minutes"
 
@@ -975,3 +981,46 @@ def test_parallel_wave_keeps_per_node_step_config() -> None:
 
     assert 'timeout: "9 minutes"' in src
     assert "retries: { limit: 4," in src
+
+
+def test_hitl_gate_uses_its_declared_timeout_not_the_default() -> None:
+    """A gate's `timeout:` must reach its `waitForEvent` config.
+
+    Found by mutation testing: hardcoding the adapter default left the
+    suite green. This one is worse than it looks on Cloudflare, because
+    `waitForEvent` THROWS on timeout rather than returning — a gate that
+    silently inherits a 7-day default instead of its declared 1-hour
+    budget turns a fast-fail approval window into a week-long hang, and
+    the reverse turns a legitimate week-long wait into a failed run.
+
+    Asserting only that the pinned value appears would still pass if the
+    adapter emitted it for every gate, so both gates are checked.
+    """
+    pinned = Node(
+        id="quick_gate",
+        kind=NodeKind.HITL_GATE,
+        description="d",
+        signal="quick_approved",
+        timeout="1h",
+    )
+    defaulted = Node(
+        id="slow_gate",
+        kind=NodeKind.HITL_GATE,
+        description="d",
+        signal="slow_approved",
+    )
+    pipeline = Pipeline(
+        name="gates",
+        input={"type": "In", "required": [], "optional": []},
+        nodes=[pinned, defaulted],
+        edges=[{"from": "quick_gate", "to": "slow_gate"}],
+        entry_nodes=["quick_gate"],
+        exit_nodes=["slow_gate"],
+    )
+    src = emit_workflow(pipeline, CloudflareAdapterConfig(default_hitl_timeout="7d"))
+
+    quick = src[src.index('"quick_gate"') : src.index('"slow_gate"')]
+    slow = src[src.index('"slow_gate"') :]
+    assert '"1 hour"' in quick, "a gate's declared timeout must reach waitForEvent"
+    assert '"7 days"' in slow, "a gate without a timeout falls back to the default"
+    assert '"7 days"' not in quick

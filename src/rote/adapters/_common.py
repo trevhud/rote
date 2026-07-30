@@ -306,12 +306,20 @@ def ir_duration_to_human(s: str) -> str:
     Cloudflare's step config accepts directly. Strings that don't match
     the IR shorthand pattern are passed through unchanged (they're
     assumed to already be in an acceptable form).
+
+    A value of exactly 1 is singularized ('1 hour', not '1 hours').
+    Cloudflare's ``WorkflowDuration`` accepts either spelling, so this
+    is legibility rather than correctness — but emitted code is read by
+    humans, and '1 hours' in a reviewed artifact looks like a bug.
     """
     s = s.strip()
     m = _IR_DURATION_RE.fullmatch(s)
     if not m:
         return s
-    return f"{m.group(1)} {_UNIT_TO_HUMAN[m.group(2)]}"
+    value, unit = m.group(1), _UNIT_TO_HUMAN[m.group(2)]
+    if float(value) == 1:
+        unit = unit.removesuffix("s")
+    return f"{value} {unit}"
 
 
 _UNIT_TO_SECONDS = {
@@ -456,6 +464,15 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
     edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
     fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
 
+    # The tiers are tried narrowest-first, but the ORDER is provably
+    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
+    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
+    # singles out exactly one param. If the broader tier singles one out,
+    # it is necessarily the same one. (Mutation testing flags swapping
+    # these as a surviving mutant — it is equivalent, not a test gap.)
+    # The tiers still earn their place: they express which signal the
+    # author gave, and tier 2 is what handles a marker pointing at a node
+    # no input references.
     for sources in (fan_edge_sources, edge_sources):
         matching = sorted(p for p, src in node_bound.items() if src in sources)
         if len(matching) == 1:

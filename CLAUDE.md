@@ -798,6 +798,53 @@ If a change of yours would violate any of them, stop and reconsider.
 
 ---
 
+## Testing discipline: make assertions capable of failing
+
+Five real defects in this repo shipped past a green suite because a
+test observed something *adjacent* to the behavior. This is the single
+most common failure mode here, so it gets its own section.
+
+| Defect | What the test checked | What it should have checked |
+| --- | --- | --- |
+| bare `--tools` killed the whole subscription lane | `"--tools" in command` | the flag's **value** |
+| DBOS e2e mocked agent loops via an unreachable branch | that the overlay file was written | that the mock was actually *called* |
+| BDR's fan was a no-op in 4 live e2e suites | that the workflow completed | that the fanned node ran **N** times |
+| per-node `timeout:` ignored (temporal, cloudflare gates) | that *a* timeout was emitted | that the **declared** one was, and the default was not |
+| `1h` emitted as `"1 hours"` | nothing — no per-node timeout test existed | — |
+
+Three habits that catch these:
+
+- **Assert the value, not the presence.** A flag, key, or node id
+  appearing in the output says nothing about what it was set to.
+- **Give a negative half.** Pair "the declared value is present" with
+  "the default is absent" — otherwise emitting both still passes.
+- **Make fixtures non-degenerate.** An empty list makes a fan, a loop,
+  or a retry a *correct* no-op that no assertion can catch. Fixture
+  collections that drive iteration count carry >1 element
+  (`tests/_helpers.py::FAN_OUT_ELEMENTS`), and their values are derived
+  from the IR (`fan_out_source_keys`) so a mock cannot disagree with the
+  emitted code about which input is which.
+
+**Verify a new test by breaking the code.** Not by inspection — apply
+the regression the test is meant to catch and confirm it fails. Any
+test written for a bug fix should be run against the *unfixed* code
+once. When the fix spans runtimes, check the split: the fan_out parity
+suite fails on the five broken runtimes and passes on `dbos`, which
+already worked, proving it recognizes correct behavior rather than just
+matching new strings.
+
+A periodic mutation sweep is the systematic version, and it works well
+here because emission is pure template substitution — mutate an adapter,
+run `pytest tests/`, and any mutation that survives is an untested
+behavior. The sweep that produced the table above ran 18 mutations
+(retry policy, timeouts, step naming, payload threading, MCP allowlist
+narrowing, the `ANTHROPIC_API_KEY` scrub, invariant #4 and #7) and
+caught 15. Watch for **equivalent mutants** — the fan_out tier ordering
+in `fan_out_element_param` survives because it is provably unobservable,
+not because it is untested; that one is commented in place.
+
+---
+
 ## Workflow expectations
 
 ### Running tests
@@ -1092,7 +1139,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1187 tests (1160 fast + 27 slow). Run with `pytest tests/` (fast
+- 1189 tests (1162 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS
