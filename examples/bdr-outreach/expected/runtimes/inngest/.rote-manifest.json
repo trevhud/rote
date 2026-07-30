@@ -17,7 +17,7 @@
     "src/extracted/taxonomy_lookup.ts": "2957ddacc25475f96a63e3e6fecc779f81a8a8b987093464a4edd0e01e0ec6a5",
     "src/index.ts": "e362bc56c1ea4d3d48f0efd9befb08b713d969cce7061b43b224f9f91d035dc1",
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
-    "src/inngest/pipeline.ts": "b1f1afe4a8a13d626546c727cac1995fd4e0063fd2486881fc07663e7b64d927",
+    "src/inngest/pipeline.ts": "8cacdf7ce70a9374a56eed8024c4c3944d2d869c3b732e7c4864e948e43d3ef4",
     "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "259ed4f1c775666e7668fe7600edead3f346f0348f1e54eb5a85e0aaea5c8a57",
     "src/signatures/vet_contact.ts": "23bbeba6416117887c2afbc8e70c584f57150dbad8c612b8f6c35a9fa32429b2",

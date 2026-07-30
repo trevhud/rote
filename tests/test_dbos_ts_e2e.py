@@ -48,6 +48,7 @@ import pytest
 from rote.adapters._common import _execution_waves, _to_camel_case
 from rote.adapters.dbos_ts import DbosTsAdapter
 from rote.ir import NodeKind, Pipeline
+from tests._helpers import FAN_OUT_ELEMENTS, fan_out_element, fan_out_source_keys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -147,8 +148,17 @@ _MOCK_OUTPUTS: dict[str, dict] = {
 }
 
 
-def _mock_output(node_id: str) -> dict:
-    return _MOCK_OUTPUTS.get(node_id, {"mocked": True, "node": node_id})
+def _mock_output(node_id: str, pipeline: Pipeline) -> dict:
+    """The canned output for a node, with any fanned list filled in.
+
+    A node feeding a fan_out node MUST return that list non-empty:
+    the hardcoded `passed: []` below made BDR's fan dispatch zero
+    times, so personalize_email silently never ran and the live
+    tests still passed.
+    """
+    out = dict(_MOCK_OUTPUTS.get(node_id, {"mocked": True, "node": node_id}))
+    out.update(fan_out_source_keys(pipeline).get(node_id, {}))
+    return out
 
 
 _MOCK_MODULE = """\
@@ -241,7 +251,7 @@ def _write_test_overlay(out_dir: Path, pipeline: Pipeline) -> None:
             fn=_to_camel_case(node.id),
             extra=extra,
             node_id=json.dumps(node.id),
-            output=json.dumps(_mock_output(node.id)),
+            output=json.dumps(_mock_output(node.id, pipeline)),
         )
         (out_dir / "src" / sub / f"{node.id}.ts").write_text(src, encoding="utf-8")
     (out_dir / "src" / "e2e.ts").write_text(_DRIVER_TS, encoding="utf-8")
@@ -518,7 +528,7 @@ def test_workflow_executes_through_hitl_gates(
     # The fan-in loop consumed both wave-1 results plus an input field.
     loop_payload = payloads["lead_generation_loop"]
     assert loop_payload["brief"] == brief
-    assert loop_payload["taxonomy"] == _mock_output("taxonomy_lookup")
+    assert loop_payload["taxonomy"] == _mock_output("taxonomy_lookup", bdr_pipeline)
     assert loop_payload["target_quota"] == brief["target_quota"]
 
     # The first HITL gate's resume payload flowed into hubspot_upsert via
@@ -529,11 +539,30 @@ def test_workflow_executes_through_hitl_gates(
     # `contacts: hubspot_upsert.output.upserted`.
     assert payloads["exclusion_check_dnc"] == {"contacts": [{"vid": "hs-1"}]}
 
+    # ── fan_out: personalize_email ran once per surviving contact ──
+    # `payloads` is keyed by node so it keeps only the last record; count
+    # the raw records instead, and check each invocation got exactly ONE
+    # element rather than the whole list.
+    fan_records = [r for r in _recorded(record_path) if r["node"] == "personalize_email"]
+    assert len(fan_records) == FAN_OUT_ELEMENTS, (
+        f"fan_out node personalize_email must run once per element of "
+        f"exclusion_check_sequence.passed; ran {len(fan_records)} time(s)"
+    )
+    assert sorted(
+        (r["payload"]["contact"] for r in fan_records), key=lambda c: c["fanElement"]
+    ) == [fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)], (
+        "each fan_out invocation must receive one element, not the batch"
+    )
+
     # The report node received a fan-in of upstream results:
     # pipeline input field + two different upstream nodes.
     report_payload = payloads["pre_enrollment_report"]
     assert report_payload["campaign_name"] == brief["drug_brand"]
-    assert report_payload["passed_contacts"] == []
+    # exclusion_check_sequence.passed is the list personalize_email
+    # fans over, so the mock returns it non-empty (see _mock_output).
+    assert report_payload["passed_contacts"] == [
+        fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)
+    ]
     assert report_payload["template_ids"] == ["t1", "t2"]
 
     # ── Durability: the gates were checkpointed recv steps in the system

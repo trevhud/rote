@@ -74,3 +74,47 @@ def mini_pipeline(node: Node) -> Pipeline:
         entry_nodes=[node.id],
         exit_nodes=[node.id],
     )
+
+
+# ───────── fan_out mock support (live e2e) ─────────
+#
+# Every live e2e replaces node implementations with recording mocks. A
+# fan_out node dispatches once per element of an upstream list, so the
+# mock standing in for that upstream node has to return a real list —
+# otherwise the fan either dispatches zero times (empty list, node
+# silently never runs) or trips the fanOutList guard (missing key).
+#
+# Derived from the IR rather than hardcoded per suite: the three TS e2e
+# files had already encoded `exclusion_check_sequence` returning
+# `passed: []`, which made the BDR fan a no-op that no assertion caught.
+
+#: Elements per fanned list in mocked runs. Must exceed 1, or
+#: per-element dispatch is indistinguishable from batch dispatch.
+FAN_OUT_ELEMENTS = 3
+
+
+def fan_out_element(index: int) -> dict[str, int]:
+    """One canned element of a mocked fanned list."""
+    return {"fanElement": index}
+
+
+def fan_out_source_keys(pipeline: Pipeline) -> dict[str, dict[str, list[dict[str, int]]]]:
+    """``{upstream_node: {field: [element, ...]}}`` for every fan_out node.
+
+    Uses the adapters' own element-param resolution, so a mock can never
+    disagree with the emitted code about which input is the fanned list.
+    """
+    from rote.adapters._common import fan_out_element_param
+    from rote.ir import parse_input_ref
+
+    extra: dict[str, dict[str, list[dict[str, int]]]] = {}
+    for node in pipeline.nodes:
+        if not node.fan_out or not node.inputs:
+            continue
+        parsed = parse_input_ref(node.inputs[fan_out_element_param(node, pipeline)])
+        if parsed.node_id is None or parsed.field is None:
+            continue
+        extra.setdefault(parsed.node_id, {})[parsed.field] = [
+            fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)
+        ]
+    return extra

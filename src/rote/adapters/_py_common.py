@@ -30,6 +30,7 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     EmitWriter,
     _to_pascal_case,
+    fan_out_element_param,
     safe_docstring_line,
 )
 from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
@@ -93,52 +94,65 @@ def _payload_literal(node: Node, indent: str) -> str:
     return "\n".join(lines)
 
 
-def fan_out_binding(node: Node, pipeline: Pipeline) -> tuple[str, str, dict[str, str]]:
+_FAN_OUT_LIST_HELPER_PY = '''\
+def _fan_out_list(value: object, node_id: str, ref: str) -> list:
+    """The list a fan_out node dispatches over.
+
+    Iterating a missing key raises "'NoneType' object is not iterable",
+    which names neither the node nor the reference — in generated code
+    that is close to undebuggable, and the cause is almost always an
+    upstream node that didn't return the key the IR says it does. The
+    TypeScript runtimes emit the same guard (`fanOutList`), so a missing
+    key reports identically on every target.
+    """
+    if not isinstance(value, list):
+        raise TypeError(
+            f"fan_out node {node_id!r} expected a list from {ref!r}, got "
+            f"{type(value).__name__}. The upstream node must return that "
+            f"key as a list."
+        )
+    return value
+'''
+
+
+def fan_out_list_helper() -> str:
+    """The ``_fan_out_list`` guard emitted into Python runtimes that fan out.
+
+    Behavioral emitted code, like ``_serialize``: if the runtimes' guards
+    drift, the same broken pipeline reports differently per target.
+    """
+    return _FAN_OUT_LIST_HELPER_PY
+
+
+def fan_out_binding(
+    node: Node, pipeline: Pipeline, indent: str = ""
+) -> tuple[str, str, dict[str, str]]:
     """``(element_param, list_expr, scalar_exprs)`` for a ``fan_out`` node.
 
-    The element parameter is the one bound to the upstream *list* the
-    node fans over (ir-schema.md); every other input is shared verbatim
-    by all invocations. Which param that is, in precedence order:
+    The Python rendering of :func:`fan_out_element_param` — which input
+    is the list is a language-neutral property of the IR, so it is
+    resolved there and only the expressions are built here.
 
-    1. the param bound to the source of an incoming ``fan_out: true``
-       edge (the IR's explicit marker);
-    2. else the param bound to a node with any incoming edge — inputs
-       may also reference nodes *without* an edge (shared context, e.g.
-       BDR's ``intel``), which is what makes "the only node-bound
-       param" too naive;
-    3. else the only node-bound param.
-
-    Ambiguity after all three is an emit-time error, never a guess:
-    dispatching over the wrong list would silently judge the wrong
-    things.
+    ``indent`` is the column the ``_fan_out_list(`` token sits at; the
+    guard call wraps against it rather than running long on one line.
     """
-    if not node.inputs:
-        raise ValueError(f"fan_out node {node.id!r} has no inputs: nothing to fan over")
-    node_bound = {
-        param: parsed.node_id
-        for param, ref in node.inputs.items()
-        if (parsed := parse_input_ref(ref)).node_id is not None
-    }
-    edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
-    fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
-
-    for sources in (fan_edge_sources, edge_sources):
-        matching = sorted(p for p, src in node_bound.items() if src in sources)
-        if len(matching) == 1:
-            element_param = matching[0]
-            break
-    else:
-        if len(node_bound) != 1:
-            raise ValueError(
-                f"fan_out node {node.id!r}: cannot identify the element param — "
-                f"node-bound inputs {sorted(node_bound)} and incoming edges "
-                f"{sorted(edge_sources)} don't single one out; mark the list edge "
-                f"with `fan_out: true`"
-            )
-        element_param = next(iter(node_bound))
-
+    element_param = fan_out_element_param(node, pipeline)
+    # Narrowing only: fan_out_element_param raises on a node with no
+    # inputs, so reaching here means there is something to fan over.
+    assert node.inputs is not None
     scalars = {p: _ref_to_python_expr(r) for p, r in node.inputs.items() if p != element_param}
-    return element_param, _ref_to_python_expr(node.inputs[element_param]), scalars
+    ref = node.inputs[element_param]
+    inner = indent + "    "
+    # json.dumps, not !r: emitted Python uses double quotes throughout
+    # (the repo's ruff-format style), same as _py_literal.
+    list_expr = (
+        "_fan_out_list(\n"
+        f"{inner}{_ref_to_python_expr(ref)},\n"
+        f"{inner}{json.dumps(node.id)},\n"
+        f"{inner}{json.dumps(ref)},\n"
+        f"{indent})"
+    )
+    return element_param, list_expr, scalars
 
 
 # ───────── JSON Schema → Pydantic source ─────────

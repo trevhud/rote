@@ -35,6 +35,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    fan_out_nodes,
     refuse_mcp_only_nodes,
     safe_docstring_line,
 )
@@ -43,6 +44,8 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    fan_out_binding,
+    fan_out_list_helper,
     write_signature_package,
 )
 from rote.ir import Node, NodeKind, Pipeline
@@ -358,39 +361,73 @@ def _emit_signal_handlers(pipeline: Pipeline) -> str:
     return init_block + "\n".join(handler_blocks)
 
 
-def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
-    """Emit a multi-line call to ``workflow.execute_activity`` for one node.
+def _execute_activity_expr(
+    node: Node, cfg: TemporalAdapterConfig, payload: str, indent: str
+) -> str:
+    """The ``workflow.execute_activity(...)`` expression for one node.
 
-    Produces something like::
+    The first line carries no indentation (the caller prefixes it with
+    an assignment or a comma-separated position); continuation lines and
+    the closing paren are indented against ``indent``.
 
-        foo_result = await workflow.execute_activity(
-            "foo",
-            {
-                "brief": pipeline_input,
-                "intel": target_research_result,
-            },
-            start_to_close_timeout=timedelta(minutes=...),
-            retry_policy=RetryPolicy(...),
-        )
+    This is the single renderer behind all three dispatch shapes —
+    lone node, parallel wave, and fan_out. It exists because the wave
+    and single-node branches were once separate copies, and the wave
+    copy quietly omitted ``retry_policy``: a node lost its declared
+    retry budget merely by gaining a sibling, in exactly the parallel
+    fetch waves where flaky network calls live. One renderer means a
+    new field cannot be added to one shape and forgotten in the others.
     """
+    inner = indent + "    "
+    timeout = _activity_timeout(node, cfg.default_activity_timeout)
+    lines = [
+        "workflow.execute_activity(",
+        f'{inner}"{node.id}",',
+        f"{inner}{payload},",
+        f'{inner}start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),',
+    ]
+    retry = _retry_policy_args(node)
+    if retry:
+        lines.append(f"{inner}retry_policy={retry},")
+    lines.append(f"{indent})")
+    return "\n".join(lines)
+
+
+def _emit_wave_call(node: Node, cfg: TemporalAdapterConfig) -> str:
+    """Emit an awaited activity execution for a node alone in its wave."""
     if node.kind is NodeKind.HITL_GATE:
         # HITL gates are not activities — they're handled separately.
         return ""
-
-    timeout = _activity_timeout(node, cfg.default_activity_timeout)
-    retry = _retry_policy_args(node)
     payload = _payload_literal(node, indent=" " * 12)
+    expr = _execute_activity_expr(node, cfg, payload, indent=" " * 8)
+    return f"        {node.id}_result = await {expr}\n"
 
-    lines = [
-        f"        {node.id}_result = await workflow.execute_activity(",
-        f'            "{node.id}",',
-        f"            {payload},",
-        f'            start_to_close_timeout=timedelta(minutes=_parse_minutes("{timeout}")),',
-    ]
-    if retry:
-        lines.append(f"            retry_policy={retry},")
-    lines.append("        )")
-    return "\n".join(lines) + "\n"
+
+def _emit_fan_out_call(node: Node, pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
+    """Emit a ``fan_out`` node as one activity execution per element.
+
+    ``asyncio.gather`` preserves argument order, so ``<id>_result[i]``
+    corresponds to element ``i`` of the bound list — the same ordering
+    guarantee the other adapters give.
+    """
+    element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 20)
+    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    payload = f'{{"{element_param}": _item{shared}}}'
+    expr = _execute_activity_expr(node, cfg, payload, indent=" " * 20)
+    return "\n".join(
+        [
+            f"        # fan_out: {node.id} runs once per element of the bound",
+            "        # list, each as its own activity execution.",
+            f"        {node.id}_result = list(",
+            "            await asyncio.gather(",
+            "                *(",
+            f"                    {expr}",
+            f"                    for _item in {list_expr}",
+            "                )",
+            "            )",
+            "        )",
+        ]
+    )
 
 
 def _emit_hitl_block(node: Node) -> str:
@@ -432,32 +469,26 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
         body_lines.append("")
         body_lines.append(f"        # ─── Wave {wave_idx} ───")
 
-        if len(non_hitl) == 1:
-            body_lines.append(_emit_wave_call(non_hitl[0], cfg).rstrip("\n"))
-        elif len(non_hitl) > 1:
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/parallel payload shapes below.
+        fanned, plain = fan_out_nodes(non_hitl)
+
+        if len(plain) == 1:
+            body_lines.append(_emit_wave_call(plain[0], cfg).rstrip("\n"))
+        elif len(plain) > 1:
             # Parallel via asyncio.gather
             body_lines.append("        (")
-            for n in non_hitl:
+            for n in plain:
                 body_lines.append(f"            {n.id}_result,")
             body_lines.append("        ) = await asyncio.gather(")
-            for n in non_hitl:
-                timeout = _activity_timeout(n, cfg.default_activity_timeout)
+            for n in plain:
                 payload = _payload_literal(n, indent=" " * 16)
-                timeout_line = (
-                    "                start_to_close_timeout="
-                    f'timedelta(minutes=_parse_minutes("{timeout}")),\n'
-                )
-                # A node must not lose its declared retry budget just for
-                # having a sibling in its wave — parallel fetch waves are
-                # exactly where the flaky network calls live.
-                retry = _retry_policy_args(n)
-                retry_line = f"                retry_policy={retry},\n" if retry else ""
-                body_lines.append(
-                    f"            workflow.execute_activity(\n"
-                    f'                "{n.id}",\n'
-                    f"                {payload},\n" + timeout_line + retry_line + "            ),"
-                )
+                expr = _execute_activity_expr(n, cfg, payload, indent=" " * 12)
+                body_lines.append(f"            {expr},")
             body_lines.append("        )")
+
+        for n in fanned:
+            body_lines.append(_emit_fan_out_call(n, pipeline, cfg))
 
         for h in hitl:
             body_lines.append(_emit_hitl_block(h).rstrip("\n"))
@@ -527,7 +558,16 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
                     return float(s[:-1]) * 60 * 24
                 return float(s)
 
+            '''
+        ).lstrip("\n")
+    )
 
+    if any(n.fan_out for n in pipeline.nodes):
+        parts.append("\n" + fan_out_list_helper() + "\n")
+
+    parts.append(
+        textwrap.dedent(
+            f'''
             @workflow.defn(name="{versioned_workflow_name}")
             class {class_name}:
                 """Compiled workflow for {pipeline.name}."""

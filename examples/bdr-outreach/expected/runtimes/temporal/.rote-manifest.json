@@ -7,6 +7,6 @@
     "signatures/_rote_inference.py": "52d800912b61bbead97a7a5cd609e032a3ddee5ba8c47613406ddd5957ecb97f",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",
     "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
-    "workflow.py": "ebdc5361368968b498e43f1fafd3b06c2dcade0a4803fee13ffabf5e5eb02ab3"
+    "workflow.py": "56ca1bfcf70e13f54a432175c160a9a14c884f76f2b9ea78f1ee3a8345c1c457"
   }
 }

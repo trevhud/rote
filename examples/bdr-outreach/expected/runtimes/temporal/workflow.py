@@ -39,6 +39,24 @@ def _parse_minutes(s: str) -> float:
     return float(s)
 
 
+def _fan_out_list(value: object, node_id: str, ref: str) -> list:
+    """The list a fan_out node dispatches over.
+
+    Iterating a missing key raises "'NoneType' object is not iterable",
+    which names neither the node nor the reference — in generated code
+    that is close to undebuggable, and the cause is almost always an
+    upstream node that didn't return the key the IR says it does. The
+    TypeScript runtimes emit the same guard (`fanOutList`), so a missing
+    key reports identically on every target.
+    """
+    if not isinstance(value, list):
+        raise TypeError(
+            f"fan_out node {node_id!r} expected a list from {ref!r}, got "
+            f"{type(value).__name__}. The upstream node must return that "
+            f"key as a list."
+        )
+    return value
+
 @workflow.defn(name="BdrCampaign_ada0f771")
 class BdrCampaignWorkflow:
     """Compiled workflow for bdr-campaign."""
@@ -154,14 +172,23 @@ class BdrCampaignWorkflow:
         )
 
         # ─── Wave 9 ───
-        personalize_email_result = await workflow.execute_activity(
-            "personalize_email",
-            {
-                "contact": exclusion_check_sequence_result["passed"],
-                "intel": target_research_result,
-                "campaign_type": pipeline_input["campaign_type"],
-            },
-            start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+        # fan_out: personalize_email runs once per element of the bound
+        # list, each as its own activity execution.
+        personalize_email_result = list(
+            await asyncio.gather(
+                *(
+                    workflow.execute_activity(
+                        "personalize_email",
+                        {"contact": _item, "campaign_type": pipeline_input["campaign_type"], "intel": target_research_result},
+                        start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
+                    )
+                    for _item in _fan_out_list(
+                        exclusion_check_sequence_result["passed"],
+                        "personalize_email",
+                        "exclusion_check_sequence.output.passed",
+                    )
+                )
+            )
         )
 
         # ─── Wave 10 ───

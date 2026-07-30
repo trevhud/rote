@@ -16,7 +16,7 @@
     "src/extracted/pre_enrollment_report.ts": "900e205e7ab818c5059db4fa5e9b669ce355f59ca4be364a1cedb90d5ed27dae",
     "src/extracted/target_research.ts": "007cbf0cee3c1fc5f30554c107120c21dbb235ae654474a1b008d8b6e74e8599",
     "src/extracted/taxonomy_lookup.ts": "2957ddacc25475f96a63e3e6fecc779f81a8a8b987093464a4edd0e01e0ec6a5",
-    "src/main.ts": "4e33346d0bd0bc664308e44e32b07a79c68f0735aa92977febf1cb9992c11239",
+    "src/main.ts": "062450041e627884edcb769bf3536bc2a970afbceb7530f882ada90c911a5d21",
     "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "cff8a6f39d10141d1318ec0ddf169f52cc2b8a85b140e579064278b414b2d9d1",
     "src/signatures/vet_contact.ts": "a91199a2ed230c33027b6c212a748ac7b8327ffd4ec68508aa4873e1ef56b28a",

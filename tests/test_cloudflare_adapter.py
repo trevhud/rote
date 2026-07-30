@@ -249,6 +249,14 @@ def test_workflow_has_step_do_for_every_non_hitl_node(
             continue
         if node.id in nested_ids:
             continue
+        if node.fan_out:
+            # One step per element, so the name is an indexed template
+            # literal rather than a constant — asserting the constant
+            # form here would silently accept a batch dispatch.
+            assert f"`{node.id}[${{_index}}]`" in src, (
+                f"Missing per-element step.do call for fan_out node {node.id!r}"
+            )
+            continue
         # Indentation differs by dispatch form: sequential (12), inside a
         # Promise.all wave (16), and inside a park-on-auth retry loop
         # (20, where the step name is a ternary on the attempt counter).

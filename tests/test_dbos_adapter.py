@@ -765,7 +765,15 @@ def test_fan_out_node_dispatches_per_element() -> None:
     assert '{"post": _item, "brief": pipeline_input["brief"]}' in src, (
         "element param bound per item, scalars shared"
     )
-    assert 'for _item in filter_posts_result["published_posts"]' in src
+    # The bound list goes through the _fan_out_list guard, which names
+    # the node and the IR reference when an upstream key is missing.
+    assert (
+        "for _item in _fan_out_list(\n"
+        '            filter_posts_result["published_posts"],\n'
+        '            "judge_content",\n'
+        '            "filter_posts.output.published_posts",\n'
+        "        )"
+    ) in src
     assert "judge_content_handles = [queue.enqueue(judge_content, _p)" in src
     assert "judge_content_result = [_h.get_result() for _h in judge_content_handles]" in src
     # The whole-list single-call shape must be gone.
@@ -805,7 +813,13 @@ def test_fan_out_binding_edge_disambiguates_multiple_node_refs() -> None:
     )
     element_param, list_expr, scalars = fan_out_binding(judge, pipeline)
     assert element_param == "contact"
-    assert list_expr == 'passed_contacts_result["passed"]'
+    assert list_expr == (
+        "_fan_out_list(\n"
+        '    passed_contacts_result["passed"],\n'
+        '    "personalize",\n'
+        '    "passed_contacts.output.passed",\n'
+        ")"
+    )
     assert scalars == {
         "intel": "research_result",
         "campaign": 'pipeline_input["campaign"]',

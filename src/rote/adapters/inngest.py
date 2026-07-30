@@ -106,10 +106,12 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_camel_case,
     check_input_refs_available,
+    fan_out_nodes,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
     ANTHROPIC_SDK_NPM_VERSION,
+    FAN_OUT_LIST_HELPER_TS,
     MCP_SDK_NPM_VERSION,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
@@ -118,6 +120,7 @@ from rote.adapters._ts_common import (
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    fan_out_ts_binding,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
@@ -419,18 +422,36 @@ def _is_mcp_backed(node: Node, cfg: InngestAdapterConfig) -> bool:
     )
 
 
-def _step_call_expr(node: Node, payload_indent: str) -> str:
-    """The ``step.run("<id>", async () => fn(payload))`` expression, unterminated."""
+def _step_call_expr(
+    node: Node,
+    payload_indent: str,
+    *,
+    payload: str | None = None,
+    step_id_expr: str | None = None,
+) -> str:
+    """The ``step.run("<id>", async () => fn(payload))`` expression, unterminated.
+
+    ``payload`` and ``step_id_expr`` are overridden by the fan_out path,
+    which binds one element per call and needs a per-element step id.
+    """
     fn_name = _to_camel_case(node.id)
-    payload = payload_ts_literal(node, indent=payload_indent)
+    if payload is None:
+        payload = payload_ts_literal(node, indent=payload_indent)
     if node.kind is NodeKind.LLM_JUDGE:
         call = f"{fn_name}({payload}, {judge_env_arg(node)})"
     else:
         call = f"{fn_name}({payload})"
-    return f"step.run({json.dumps(node.id)}, async () => {call})"
+    return f"step.run({step_id_expr or json.dumps(node.id)}, async () => {call})"
 
 
-def _parkable_call_expr(node: Node, pipeline: Pipeline, payload_indent: str) -> str:
+def _parkable_call_expr(
+    node: Node,
+    pipeline: Pipeline,
+    payload_indent: str,
+    *,
+    payload: str | None = None,
+    step_id_expr: str | None = None,
+) -> str:
     """The ``runParkable(step, ...)`` expression for an MCP-backed node.
 
     Auth failures suspend the run on the pipeline's ``rote.auth.<server>``
@@ -438,12 +459,44 @@ def _parkable_call_expr(node: Node, pipeline: Pipeline, payload_indent: str) -> 
     """
     assert node.mcp is not None
     fn_name = _to_camel_case(node.id)
-    payload = payload_ts_literal(node, indent=payload_indent)
+    if payload is None:
+        payload = payload_ts_literal(node, indent=payload_indent)
     release_event = auth_event_name(pipeline, node.mcp.server)
     return (
-        f"runParkable(step, {json.dumps(node.id)}, {json.dumps(release_event)}, "
+        f"runParkable(step, {step_id_expr or json.dumps(node.id)}, "
+        f"{json.dumps(release_event)}, "
         f"{json.dumps(node.mcp.server)}, async () => {fn_name}({payload}))"
     )
+
+
+def _fan_out_lines(node: Node, pipeline: Pipeline, cfg: InngestAdapterConfig) -> list[str]:
+    """Emit a ``fan_out`` node as one durable step per element.
+
+    Step ids are index-suffixed because Inngest requires them unique
+    within a run — reusing one id for every element would collapse the
+    whole fan into a single memoized step.
+
+    ``.map`` preserves order, so ``<id>_result[i]`` corresponds to
+    element ``i`` of the bound list.
+    """
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    step_id_expr = f"`{node.id}[${{_index}}]`"
+    if _is_mcp_backed(node, cfg):
+        expr = _parkable_call_expr(
+            node, pipeline, " " * 16, payload=payload, step_id_expr=step_id_expr
+        )
+    else:
+        expr = _step_call_expr(node, " " * 16, payload=payload, step_id_expr=step_id_expr)
+    return [
+        f"        // fan_out: {node.id} runs once per element of the bound list,",
+        "        // each as its own durable step (ids are index-suffixed to stay",
+        "        // unique within the run).",
+        f"        const {node.id}_result = await Promise.all(",
+        f"            {list_expr}.map((_item, _index) =>",
+        f"                {expr},",
+        "            ),",
+        "        );",
+    ]
 
 
 _RUN_PARKABLE_HELPER = """\
@@ -590,6 +643,10 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
 
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/parallel payload shapes below.
+        fanned, non_hitl = fan_out_nodes(non_hitl)
+
         if len(non_hitl) == 1:
             node = non_hitl[0]
             comment = _node_policy_comment(node, fn_retries, indent=" " * 8)
@@ -621,6 +678,12 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
                     expr = _step_call_expr(node, payload_indent=" " * 16)
                 lines.append(f"            {expr},")
             lines.append("        ]);")
+
+        for node in fanned:
+            comment = _node_policy_comment(node, fn_retries, indent=" " * 8)
+            if comment:
+                lines.append(comment.rstrip("\n"))
+            lines.extend(_fan_out_lines(node, pipeline, cfg))
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -734,6 +797,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(helper_block.strip("\n"))
     if mcp_backed:
         sections.append(_RUN_PARKABLE_HELPER.rstrip("\n"))
+    if any(n.fan_out for n in pipeline.nodes):
+        sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
     sections.append(function_block)
     return "\n\n".join(sections)
 

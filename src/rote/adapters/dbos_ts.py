@@ -96,10 +96,12 @@ from rote.adapters._common import (
     _to_camel_case,
     _to_pascal_case,
     check_input_refs_available,
+    fan_out_nodes,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
     ANTHROPIC_SDK_NPM_VERSION,
+    FAN_OUT_LIST_HELPER_TS,
     MCP_SDK_NPM_VERSION,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
@@ -108,6 +110,7 @@ from rote.adapters._ts_common import (
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    fan_out_ts_binding,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
@@ -377,6 +380,38 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
     )
 
 
+def _emit_fan_out(node: Node, pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> list[str]:
+    """Emit a ``fan_out`` node as one durable step per element.
+
+    Unlike Cloudflare and Inngest, DBOS identifies a step by its
+    execution order within the workflow rather than by a caller-supplied
+    name, so calling the same registered step function once per element
+    needs no index-suffixed id — the elements simply become consecutive
+    durable steps.
+
+    ``Promise.allSettled`` for the same reason the parallel-wave branch
+    uses it: a bare ``Promise.all`` can crash the Node process on
+    unhandled rejections. ``allSettled`` and ``map`` both preserve
+    order, so ``<id>_result[i]`` is element ``i``.
+    """
+    fn_name = _to_camel_case(node.id)
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    call = f"{fn_name}Step({payload})"
+    if _is_mcp_backed(node, cfg):
+        assert node.mcp is not None
+        # Each element parks independently; one release signal wakes the
+        # workflow and runWithAuthPark retries the element that parked.
+        call = f"runWithAuthPark(() => {call}, {json.dumps(node.mcp.server)})"
+    return [
+        f"        // fan_out: {node.id} runs once per element of the bound list,",
+        "        // each as its own durable step.",
+        f"        const {node.id}_settled = await Promise.allSettled(",
+        f"            {list_expr}.map((_item) => {call}),",
+        "        );",
+        f"        const {node.id}_result = {node.id}_settled.map(unwrap);",
+    ]
+
+
 def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[str, bool]:
     """Render the workflow function body; returns (body, uses_unwrap)."""
     waves = _execution_waves(pipeline)
@@ -398,6 +433,12 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
+
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/parallel payload shapes below.
+        fanned, non_hitl = fan_out_nodes(non_hitl)
+        if fanned:
+            uses_unwrap = True
 
         if len(non_hitl) == 1:
             node = non_hitl[0]
@@ -467,6 +508,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                     lines.append("        }")
                 else:
                     lines.append(f"        const {node.id}_result = unwrap({node.id}_settled);")
+
+        for node in fanned:
+            lines.extend(_emit_fan_out(node, pipeline, cfg))
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
@@ -646,6 +690,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
 
     body, uses_unwrap = _emit_workflow_body(pipeline, cfg)
     unwrap_block = f"\n{_UNWRAP_HELPER.rstrip(chr(10))}\n" if uses_unwrap else ""
+    if any(n.fan_out for n in pipeline.nodes):
+        unwrap_block += f"\n{FAN_OUT_LIST_HELPER_TS.rstrip(chr(10))}\n"
 
     workflow_block = (
         "// ───────── Workflow ─────────\n"

@@ -42,6 +42,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_camel_case,
     check_input_refs_available,
+    fan_out_nodes,
     pipeline_identity,
     safe_block_comment_line,
     workflow_class_name,
@@ -52,6 +53,7 @@ from rote.adapters._common import (
 from rote.adapters._ts_common import (
     AI_UTILS_NPM_VERSION,
     ANTHROPIC_SDK_NPM_VERSION,
+    FAN_OUT_LIST_HELPER_TS,
     MCP_SDK_NPM_VERSION,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
@@ -60,6 +62,7 @@ from rote.adapters._ts_common import (
     emit_agent_loop_module,
     emit_ts_signature_module,
     emit_workers_mcp_call_module,
+    fan_out_ts_binding,
     llm_clients,
     mcp_backed_nodes,
     module_imports,
@@ -181,7 +184,12 @@ def auth_event_type(server: str) -> str:
 
 
 def _emit_step_call_mcp_parkable(
-    node: Node, cfg: CloudflareAdapterConfig, *, pipeline: Pipeline
+    node: Node,
+    cfg: CloudflareAdapterConfig,
+    *,
+    pipeline: Pipeline,
+    payload: str | None = None,
+    name_suffix: str = "",
 ) -> str:
     """MCP-backed dispatch: auth failures park the instance durably.
 
@@ -194,10 +202,15 @@ def _emit_step_call_mcp_parkable(
     behavior; and events sent before the wait starts are buffered
     per-instance, so `rote mcp release` can blast every non-terminal
     instance without a race.
+
+    ``payload`` and ``name_suffix`` are supplied by the fan_out path:
+    one element per call, and a step-name fragment (``[${_index}]``)
+    that keeps each element's step name unique within the instance.
     """
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
-    payload = payload_ts_literal(node, indent=" " * 24)
+    if payload is None:
+        payload = payload_ts_literal(node, indent=" " * 24)
     nid = node.id
     if node.mcp is not None:
         # One binding, one server: the release event is known at emit time.
@@ -220,6 +233,10 @@ def _emit_step_call_mcp_parkable(
             "        // so `rote mcp release <server>` releases the right instances.\n"
         )
     label = "agent loop" if node.mcp is None else "MCP-backed"
+    # A fan_out element's step names carry its index; every step name
+    # must be unique within an instance or the elements collapse onto
+    # one cached step.
+    first_name = f"`{nid}{name_suffix}`" if name_suffix else json.dumps(nid)
     return (
         f"        // ─── {nid} ({label}): park on dead credentials ───\n"
         f"{release_hint}"
@@ -228,8 +245,8 @@ def _emit_step_call_mcp_parkable(
         f"            try {{\n"
         f"                {nid}_result = (await step.do(\n"
         f"                    {nid}_attempt === 0\n"
-        f"                        ? {json.dumps(nid)}\n"
-        f"                        : `{nid} (auth retry ${{{nid}_attempt}})`,\n"
+        f"                        ? {first_name}\n"
+        f"                        : `{nid}{name_suffix} (auth retry ${{{nid}_attempt}})`,\n"
         f"                    {config},\n"
         f"                    async () => {{\n"
         f"                        try {{\n"
@@ -252,7 +269,7 @@ def _emit_step_call_mcp_parkable(
         f"                // consecutive failure. Fresh step names per attempt.\n"
         f"                if ({nid}_attempt % 2 === 1) {{\n"
         f"                    await step.waitForEvent<any>(\n"
-        f"                        `{nid} auth wait ${{{nid}_attempt}}`,\n"
+        f"                        `{nid}{name_suffix} auth wait ${{{nid}_attempt}}`,\n"
         f'                        {{ type: {event_expr}, timeout: "30 days" }},\n'
         f"                    );\n"
         f"                }}\n"
@@ -339,6 +356,67 @@ def _emit_parallel_step_calls(nodes: list[Node], cfg: CloudflareAdapterConfig) -
         lines.append("            ),")
     lines.append("        ]);")
     return "\n".join(lines) + "\n"
+
+
+def _emit_fan_out_parallel(node: Node, cfg: CloudflareAdapterConfig, *, pipeline: Pipeline) -> str:
+    """Emit a plain ``fan_out`` node as one ``step.do`` per element.
+
+    Same ``Promise.all`` reasoning as a parallel wave: it is
+    Cloudflare's documented concurrency primitive, each element persists
+    under its own step name, and a rejection means that element already
+    exhausted its own retries.
+
+    Step names are index-suffixed. Cloudflare caches a step's result by
+    name, so reusing one name for every element would return the first
+    element's result for all of them — the failure would look like a
+    correct run with suspiciously uniform output.
+    """
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    pass_env = node.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
+    args = f"{payload}, this.env" if pass_env else payload
+    return "\n".join(
+        [
+            f"        // fan_out: {node.id} runs once per element of the bound list,",
+            "        // each as its own durable step (names are index-suffixed —",
+            "        // Cloudflare caches step results by name).",
+            f"        const {node.id}_result = await Promise.all(",
+            f"            {list_expr}.map((_item, _index) =>",
+            "                step.do(",
+            f"                    `{node.id}[${{_index}}]`,",
+            f"                    {_step_config_literal(node, cfg)},",
+            f"                    async () => {_to_camel_case(node.id)}({args}),",
+            "                ),",
+            "            ),",
+            "        );",
+        ]
+    )
+
+
+def _emit_fan_out_parkable(node: Node, cfg: CloudflareAdapterConfig, *, pipeline: Pipeline) -> str:
+    """Emit a parkable ``fan_out`` node: one element per iteration.
+
+    Sequential, for the same reason a parkable step leaves its parallel
+    wave — it can suspend on ``waitForEvent``, whose behavior inside a
+    promise combinator is undocumented and whose timeout *throws*, which
+    would reject every other element.
+    """
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 8)
+    inner = _emit_step_call_mcp_parkable(
+        node, cfg, pipeline=pipeline, payload=payload, name_suffix="[${_index}]"
+    )
+    return "\n".join(
+        [
+            f"        // fan_out: {node.id} runs once per element of the bound list.",
+            "        // Parkable steps stay sequential — a waitForEvent inside a",
+            "        // promise combinator would reject every sibling on timeout.",
+            f"        const {node.id}_results: Record<string, unknown>[] = [];",
+            f"        for (const [_index, _item] of {list_expr}.entries()) {{",
+            textwrap.indent(inner.rstrip("\n"), "    "),
+            f"            {node.id}_results.push({node.id}_result);",
+            "        }",
+            f"        const {node.id}_result = {node.id}_results;",
+        ]
+    )
 
 
 def _emit_hitl_gate(node: Node, cfg: CloudflareAdapterConfig) -> str:
@@ -508,7 +586,14 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         parkable = [n for n in wave if _is_parkable(n)]
         plain = [n for n in wave if n.kind is not NodeKind.HITL_GATE and not _is_parkable(n)]
 
-        for node in plain + parkable:
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/parallel payload shapes below, but
+        # they keep the parkable/plain split (a parkable fan_out runs its
+        # elements sequentially, for the same waitForEvent reason).
+        fanned_parkable, parkable = fan_out_nodes(parkable)
+        fanned_plain, plain = fan_out_nodes(plain)
+
+        for node in plain + parkable + fanned_plain + fanned_parkable:
             check_input_refs_available(node, available)
 
         if len(plain) > 1:
@@ -526,6 +611,12 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
             body_lines.append(
                 _emit_step_call_mcp_parkable(node, cfg, pipeline=pipeline).rstrip("\n")
             )
+
+        for node in fanned_plain:
+            body_lines.append(_emit_fan_out_parallel(node, cfg, pipeline=pipeline))
+
+        for node in fanned_parkable:
+            body_lines.append(_emit_fan_out_parkable(node, cfg, pipeline=pipeline))
 
         for node in gates:
             body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
@@ -552,6 +643,8 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     )
 
     helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if parks_on_auth else ""
+    if any(n.fan_out for n in pipeline.nodes):
+        helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
 
     return header + imports + "\n" + env_block + helper_block + class_block
 

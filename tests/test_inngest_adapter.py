@@ -237,6 +237,14 @@ def test_step_run_for_every_non_hitl_top_level_node(
     for node in bdr_pipeline.nodes:
         if node.kind is NodeKind.HITL_GATE or node.id in nested_ids:
             continue
+        if node.fan_out:
+            # One step per element, so the id is an indexed template
+            # literal rather than a constant — asserting the constant
+            # form here would silently accept a batch dispatch.
+            assert f"step.run(`{node.id}[${{_index}}]`" in pipeline_src, (
+                f"Missing per-element step.run call for fan_out node {node.id!r}"
+            )
+            continue
         assert f'step.run("{node.id}"' in pipeline_src, (
             f"Missing step.run call for node {node.id!r} in pipeline.ts"
         )

@@ -225,6 +225,25 @@ function unwrap<T>(settled: PromiseSettledResult<T>): T {
     return settled.value;
 }
 
+/** The list a fan_out node dispatches over.
+ *
+ * A bare `.map()` on a missing key fails with "Cannot read properties
+ * of undefined (reading 'map')", which names neither the node nor the
+ * reference — in generated code that is close to undebuggable, and the
+ * cause is almost always an upstream node that didn't return the key
+ * the IR says it does. One call turns that into an actionable message.
+ * Found by running it: the first live fan_out run hit exactly this. */
+function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
+    if (!Array.isArray(value)) {
+        const got = value === null ? "null" : typeof value;
+        throw new Error(
+            `fan_out node '${nodeId}' expected an array from '${ref}', got ${got}. ` +
+                `The upstream node must return that key as a list.`,
+        );
+    }
+    return value;
+}
+
 /**
  * End-to-end BDR outreach campaign workflow for pharma/biotech research
  */
@@ -310,13 +329,16 @@ export const runPipeline = DBOS.registerWorkflow(
         );
 
         // ─── Wave 9 ───
-        const personalize_email_result = await personalizeEmailStep(
-            {
-                contact: (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
-                intel: target_research_result,
-                campaign_type: pipelineInput["campaign_type"],
-            },
+        // fan_out: personalize_email runs once per element of the bound list,
+        // each as its own durable step.
+        const personalize_email_settled = await Promise.allSettled(
+            fanOutList(
+                (exclusion_check_sequence_result as Record<string, unknown>)["passed"],
+                "personalize_email",
+                "exclusion_check_sequence.output.passed",
+            ).map((_item) => personalizeEmailStep({ contact: _item, intel: target_research_result, campaign_type: pipelineInput["campaign_type"] })),
         );
+        const personalize_email_result = personalize_email_settled.map(unwrap);
 
         // ─── Wave 10 ───
         const create_sales_template_result = await createSalesTemplateStep(

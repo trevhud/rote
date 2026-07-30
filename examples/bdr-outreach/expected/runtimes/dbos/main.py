@@ -69,6 +69,25 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
+def _fan_out_list(value: object, node_id: str, ref: str) -> list:
+    """The list a fan_out node dispatches over.
+
+    Iterating a missing key raises "'NoneType' object is not iterable",
+    which names neither the node nor the reference — in generated code
+    that is close to undebuggable, and the cause is almost always an
+    upstream node that didn't return the key the IR says it does. The
+    TypeScript runtimes emit the same guard (`fanOutList`), so a missing
+    key reports identically on every target.
+    """
+    if not isinstance(value, list):
+        raise TypeError(
+            f"fan_out node {node_id!r} expected a list from {ref!r}, got "
+            f"{type(value).__name__}. The upstream node must return that "
+            f"key as a list."
+        )
+    return value
+
+
 @DBOS.step(name="target_research", retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def target_research(payload: dict) -> dict:
     """Run external research (Bright Data web search, ClinicalTrials.gov)
@@ -373,7 +392,11 @@ def run_pipeline(pipeline_input: dict) -> dict:
     # list, each as its own enqueued durable step.
     personalize_email_payloads = [
         {"contact": _item, "campaign_type": pipeline_input["campaign_type"], "intel": target_research_result}
-        for _item in exclusion_check_sequence_result["passed"]
+        for _item in _fan_out_list(
+            exclusion_check_sequence_result["passed"],
+            "personalize_email",
+            "exclusion_check_sequence.output.passed",
+        )
     ]
     personalize_email_handles = [queue.enqueue(personalize_email, _p) for _p in personalize_email_payloads]
     personalize_email_result = [_h.get_result() for _h in personalize_email_handles]

@@ -36,8 +36,9 @@ from urllib.request import Request, urlopen
 
 import pytest
 
+from rote.adapters._common import fan_out_element_param
 from rote.adapters.cloudflare import CloudflareAdapter
-from rote.ir import Pipeline
+from rote.ir import Pipeline, parse_input_ref
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -118,7 +119,35 @@ def _to_camel_case(s: str) -> str:
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
 
 
-def _write_test_overlay(out_dir: Path) -> None:
+#: How many elements each fan_out node's upstream list carries in the
+#: mocked run. More than one, or per-element dispatch is
+#: indistinguishable from batch dispatch.
+FAN_OUT_ELEMENTS = 3
+
+
+def _fan_out_source_keys(pipeline: Pipeline) -> dict[str, dict[str, list[dict]]]:
+    """``{upstream_node: {field: [element, ...]}}`` for every fan_out node.
+
+    A generic echo mock returns only ``{mocked, node, received}``, so the
+    key a fan_out node fans over comes back ``undefined`` and the run
+    dies on it. Derive the (node, field) pairs from the IR — the same
+    resolution the adapters use — and give each one a real list.
+    """
+    extra: dict[str, dict[str, list[dict]]] = {}
+    for node in pipeline.nodes:
+        if not node.fan_out or not node.inputs:
+            continue
+        param = fan_out_element_param(node, pipeline)
+        parsed = parse_input_ref(node.inputs[param])
+        if parsed.node_id is None or parsed.field is None:
+            continue
+        extra.setdefault(parsed.node_id, {})[parsed.field] = [
+            {"fanElement": i} for i in range(FAN_OUT_ELEMENTS)
+        ]
+    return extra
+
+
+def _write_test_overlay(out_dir: Path, pipeline: Pipeline) -> None:
     """Replace stubs with echo mocks.
 
     The emitted ``extracted/*.ts`` and ``signatures/*.ts`` modules all
@@ -128,7 +157,12 @@ def _write_test_overlay(out_dir: Path) -> None:
     progress through its waves. The mock echoes the input it received
     (``received``) so the test can assert that data-flow threading
     delivered real payloads between steps.
+
+    Nodes feeding a fan_out node additionally return that node's list
+    key, so the fan dispatches for real instead of tripping the
+    ``fanOutList`` guard.
     """
+    fan_keys = _fan_out_source_keys(pipeline)
     src = out_dir / "src"
     for sub in ("extracted", "signatures"):
         d = src / sub
@@ -144,12 +178,16 @@ def _write_test_overlay(out_dir: Path) -> None:
                 continue
             node_id = f.stem
             fn = _to_camel_case(node_id)
+            extra = "".join(
+                f", {json.dumps(field)}: {json.dumps(value)}"
+                for field, value in sorted(fan_keys.get(node_id, {}).items())
+            )
             f.write_text(
                 f"export async function {fn}("
                 f"input?: unknown, _env?: unknown"
                 f"): Promise<Record<string, unknown>> {{\n"
                 f"  return {{ mocked: true, node: {json.dumps(node_id)}, "
-                f"received: input ?? null }};\n"
+                f"received: input ?? null{extra} }};\n"
                 f"}}\n",
                 encoding="utf-8",
             )
@@ -241,7 +279,7 @@ def wrangler_dev_session(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPa
 
     out = tmp_path_factory.mktemp("cf-workflow-e2e")
     CloudflareAdapter().emit(bdr_pipeline, out)
-    _write_test_overlay(out)
+    _write_test_overlay(out, bdr_pipeline)
 
     npm_proc = subprocess.run(
         ["npm", "install", "--no-audit", "--no-fund"],
@@ -447,7 +485,17 @@ def test_workflow_executes_through_hitl_gates(
     # A whole-output binding: create_sales_template received
     # personalize_email's full step result.
     sales_template_received = _step_output(final, "create_sales_template")["received"]
-    assert sales_template_received["personalizations"]["node"] == "personalize_email"
+    personalizations = sales_template_received["personalizations"]
+    assert isinstance(personalizations, list), (
+        f"personalize_email is a fan_out node, so downstream must receive one "
+        f"result per element; got {type(personalizations).__name__}"
+    )
+    assert len(personalizations) == FAN_OUT_ELEMENTS
+    assert all(p["node"] == "personalize_email" for p in personalizations)
+    # Each invocation got ONE element, not the whole list.
+    assert [p["received"]["contact"] for p in personalizations] == [
+        {"fanElement": i} for i in range(FAN_OUT_ELEMENTS)
+    ]
     assert sales_template_received["campaign_name"] == brief["drug_brand"]
 
     # Pipeline input field selection at the end of the chain.

@@ -65,6 +65,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_pascal_case,
     check_input_refs_available,
+    fan_out_nodes,
     refuse_mcp_only_nodes,
     safe_docstring_line,
 )
@@ -74,6 +75,8 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    fan_out_binding,
+    fan_out_list_helper,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -288,11 +291,41 @@ def _emit_node_agent_loop(node: Node, cfg: PythonAdapterConfig) -> str:
 
 
 def _has_parallel_wave(pipeline: Pipeline) -> bool:
-    return any(len(wave) > 1 for wave in _execution_waves(pipeline))
+    """Whether main.py needs ``ThreadPoolExecutor``.
+
+    Two independent reasons: a wave with more than one node, or any
+    ``fan_out`` node (whose per-element calls run on a pool even when it
+    is alone in its wave).
+    """
+    waves = _execution_waves(pipeline)
+    return any(len(wave) > 1 for wave in waves) or any(n.fan_out for w in waves for n in w)
 
 
 def _has_retry(pipeline: Pipeline) -> bool:
     return any(n.retry and n.retry.max > 0 for n in pipeline.nodes)
+
+
+def _emit_fan_out_call(node: Node, pipeline: Pipeline) -> str:
+    """Emit a ``fan_out`` node as one call per element of its bound list.
+
+    ``pool.map`` rather than ``submit``/``result``: it preserves input
+    order, so ``<id>_result[i]`` corresponds to element ``i`` — a
+    guarantee downstream nodes rely on when they zip a fanned result
+    back against the list it came from.
+    """
+    element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
+    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    return "\n".join(
+        [
+            f"    # fan_out: {node.id} runs once per element of the bound list.",
+            f"    {node.id}_payloads = [",
+            f'        {{"{element_param}": _item{shared}}}',
+            f"        for _item in {list_expr}",
+            "    ]",
+            "    with ThreadPoolExecutor() as pool:",
+            f"        {node.id}_result = list(pool.map({node.id}, {node.id}_payloads))",
+        ]
+    )
 
 
 def _emit_pipeline_body(pipeline: Pipeline) -> str:
@@ -310,8 +343,12 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
 
-        if len(wave) == 1:
-            node = wave[0]
+        # fan_out nodes dispatch once per element of their bound list —
+        # they never share the single/parallel payload shapes below.
+        fanned, plain = fan_out_nodes(wave)
+
+        if len(plain) == 1:
+            node = plain[0]
             payload = _payload_literal(node, indent=" " * 8)
             if payload == "{}":
                 lines.append(f"    {node.id}_result = {node.id}({{}})")
@@ -319,11 +356,11 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
                 lines.append(f"    {node.id}_result = {node.id}(")
                 lines.append(f"        {payload}")
                 lines.append("    )")
-        else:
+        elif len(plain) > 1:
             lines.append("    # Independent nodes: run concurrently on a thread pool and")
             lines.append("    # join before the next wave starts.")
             lines.append("    with ThreadPoolExecutor() as pool:")
-            for node in wave:
+            for node in plain:
                 payload = _payload_literal(node, indent=" " * 12)
                 if payload == "{}":
                     lines.append(f"        {node.id}_future = pool.submit({node.id}, {{}})")
@@ -332,8 +369,11 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
                     lines.append(f"            {node.id},")
                     lines.append(f"            {payload},")
                     lines.append("        )")
-            for node in wave:
+            for node in plain:
                 lines.append(f"        {node.id}_result = {node.id}_future.result()")
+
+        for node in fanned:
+            lines.append(_emit_fan_out_call(node, pipeline))
 
         available.update(n.id for n in wave)
 
@@ -421,6 +461,8 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
         "Node functions return JSON-serializable payloads so the final\n"
         "    result prints cleanly and pastes into other systems."
     )
+    if any(n.fan_out for n in pipeline.nodes):
+        serialize_block += "\n\n" + fan_out_list_helper()
 
     node_parts: list[str] = []
     for node in pipeline.nodes:

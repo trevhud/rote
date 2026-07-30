@@ -21,7 +21,7 @@
     "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
     "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
-    "src/workflow.ts": "61bd7c4f10725c883d1ff2c155ec254c1f6ed3405ec68995b182fca2f62f3888",
+    "src/workflow.ts": "9f6d4139495d9e19423f8eb03e7cbf98f4578115ad1a04baf9de359e716191c7",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "fa4f9733ea58ffeaa4e9ab94812ccd7b89f361ca4b7e68929fe8c1cd8b8f2ca2"
   }
