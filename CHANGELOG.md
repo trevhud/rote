@@ -9,6 +9,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-07-30
+
+### Changed
+- Metadata-only release. PyPI now carries the rewritten project
+  description, the roteskills.com homepage and changelog URLs, the
+  richer keyword set, `Development Status :: 4 - Beta`, the
+  `Environment :: Console`, AI-topic and `Typing :: Typed`
+  classifiers, an author email, and the `py.typed` marker added in
+  0.12.0's README and discovery work (#72, #74). No code changes.
+
 ## [0.12.0] - 2026-07-30
 
 ### Added
