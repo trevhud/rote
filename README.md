@@ -1,20 +1,23 @@
 # rote
 
-**Compile fuzzy AI skills into deterministic, reliable workflows.**
+**Compile AI agent skills into cheap, fast, deterministic pipelines that
+run without an LLM in the loop.**
 
 [![CI](https://github.com/trevhud/rote/actions/workflows/ci.yml/badge.svg)](https://github.com/trevhud/rote/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rote-cli.svg)](https://pypi.org/project/rote-cli/)
+[![Downloads](https://img.shields.io/pypi/dm/rote-cli.svg)](https://pypi.org/project/rote-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/rote-cli.svg)](https://pypi.org/project/rote-cli/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-`rote` is a CLI that takes an Anthropic-style Skill (a `SKILL.md` plus
-`references/`) and turns it into a runnable background pipeline in one
-shot. An LLM agent (itself defined as a skill) reads the source skill,
-applies a structured compilation rubric, and emits a runtime-agnostic
-intermediate representation (`pipeline.yaml`), extracted Python modules
-for the deterministic parts, typed signature stubs for the LLM-judge
-parts, and runnable code for the durable execution engine of your
-choice.
+**Your Claude skill works. Running it a thousand times does not.**
+
+`rote` is an open source CLI that compiles a proven Claude skill or
+agent skill (a `SKILL.md` plus `references/`) into a typed,
+deterministic pipeline. It moves the fixed logic and tool orchestration
+into reviewable code, and calls a model only for the steps that
+genuinely need judgment. A 10 to 20 minute agent loop becomes a
+background workflow that costs a fraction of the tokens and can be
+regression tested.
 
 ```sh
 pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
@@ -22,9 +25,9 @@ pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
 # `rote compile` runs an LLM agent, so it needs a driver: Claude Code
 # (`claude`) or Codex (`codex`) installed and authed, or ANTHROPIC_API_KEY
 # for the in-process `api` driver. The BDR run below takes ~13 min and
-# ~$0.70 with Sonnet. (`rote emit` needs no LLM — see below.)
+# ~$0.70 with Sonnet. (`rote emit` needs no LLM; see below.)
 
-# Default target is DBOS — durable execution as a plain Python library,
+# Default target is DBOS: durable execution as a plain Python library,
 # no orchestrator to run, SQLite for dev / Postgres for prod:
 rote compile ./examples/bdr-outreach/skill --out ./compiled/
 
@@ -33,22 +36,24 @@ rote compile ./examples/bdr-outreach/skill --runtime temporal   --out ./compiled
 rote compile ./examples/bdr-outreach/skill --runtime cloudflare --out ./compiled/
 ```
 
-The name comes from *rote learning* — doing something so many times, so
+The name comes from *rote learning*: doing something so many times, so
 reliably, that it becomes mechanical. That's what compilation does to a
-skill: a fuzzy 10–20 minute agent loop becomes a deterministic pipeline
-that runs in the background, costs a fraction of the tokens, and can be
-regression-tested.
+skill.
 
 ---
 
 ## Why
 
-Fuzzy AI skills work, but in production they're slow (a 10–20 minute
-agent loop is unacceptable as a background job), expensive (multi-agent
-loops use ~15× the tokens of a single chat, mostly re-deriving
-procedures the author already wrote down), and non-deterministic (a
-"MANDATORY" check enforced only by prose can be silently skipped, and
-there's no way to regression-test a behavior the LLM has to remember).
+Agent skills work, but repeating them in production is expensive, slow,
+and non-deterministic. Token cost is what bites first: every run
+re-reads the skill text, the tool schemas, and a growing transcript to
+re-derive a procedure the author already wrote down. The two production
+skills adapted into `examples/` averaged ~0.9M and ~1.6M cache-read
+tokens *per run* before compilation, for work that is mostly arithmetic
+and fixed API calls. Latency is next (a 10 to 20 minute agent loop is
+unacceptable as a background job), then determinism: a "MANDATORY"
+check enforced only by prose can be silently skipped, and there's no
+way to regression-test a behavior the LLM has to remember.
 
 The fix is to separate the parts of a skill that are *actually* fuzzy
 from the deterministic procedures wearing fuzzy clothing. Move the
@@ -57,30 +62,46 @@ genuinely unbounded (parsing, classifying, drafting), and wrap the whole
 thing in a durable execution engine with explicit human-in-the-loop
 gates. That compilation step is what `rote` automates.
 
+| | Run the skill as an agent, every time | Compile it with `rote` |
+| --- | --- | --- |
+| Tokens per run | Full agent loop | Only the judgment steps |
+| Latency | 10 to 20 minutes | Background, seconds to minutes |
+| Reproducibility | Prose `MANDATORY` can be silently skipped | Deterministic nodes always run |
+| Testing | No per-step regression tests | Typed nodes, per-step tests, eval seeds |
+| Failure recovery | Restart the loop | Durable retries and resume |
+| Human approval | Ad hoc | Explicit HITL gates that suspend and resume |
+
 There's third-party data for what this buys. ["Compiled AI: Deterministic
 Code Generation for LLM-Based Workflow Automation"](https://arxiv.org/abs/2604.05150)
 (Trooskens et al., Apr 2026) measured compiling LLM workflows into
 deterministic code: **57× fewer tokens** at 1,000 transactions, **450×
 lower** median latency, **100% reproducibility** (vs. 95% for direct
 inference at temperature 0), and ~**40× lower TCO** at a million
-transactions a month. The multiples grow with volume — once a workflow
+transactions a month. The multiples grow with volume. Once a workflow
 is proven, every run through an agent loop pays LLM prices for work code
 does for free.
 
 A distinction worth being precise about: durable-execution vendors make
 fuzzy agents *durable* (wrap the loop in retries and state so it survives
-crashes — still fuzzy inside). `rote` *removes* the fuzzy loop. The two
+crashes, still fuzzy inside). `rote` *removes* the fuzzy loop. The two
 compose: Temporal, Cloudflare Workflows, and the rest are `rote`'s
 compile targets, not its rivals.
 
 **When not to use `rote`:** exploratory and one-off work should stay an
-agent loop — flexibility is the whole point there, and there's nothing
+agent loop. Flexibility is the whole point there, and there's nothing
 proven to compile yet. `rote` is for the skill you've run twenty times
 and want to run a thousand more, unattended.
 
 ---
 
 ## How it works
+
+One `rote compile` run does the whole thing. An LLM agent (itself
+defined as a skill) reads the source skill, applies a structured
+compilation rubric, and emits a runtime-agnostic intermediate
+representation (`pipeline.yaml`), extracted Python modules for the
+deterministic parts, typed signature stubs for the LLM-judge parts, and
+runnable code for the durable execution engine of your choice.
 
 `rote` is a three-layer system; each layer has one job and contracts on
 a small interface.
@@ -102,18 +123,18 @@ a small interface.
                                    execution engine.
 ```
 
-1. **The compiler agent** (`skills/rote-compile/`) — a regular
+1. **The compiler agent** (`skills/rote-compile/`): a regular
    Anthropic Skill (`SKILL.md` + four reference files). This is the
    *brain*; it runs inside any Skills-compatible surface, and you don't
    need `rote` to use it.
-2. **The IR** (`src/rote/ir.py`) — Pydantic models for the five node
+2. **The IR** (`src/rote/ir.py`): Pydantic models for the five node
    kinds plus edges, retries, HITL gates, and metadata. The IR is the
    source of truth; everything downstream is template substitution.
-3. **Runtime adapters** (`src/rote/adapters/`) — pluggable modules that
+3. **Runtime adapters** (`src/rote/adapters/`): pluggable modules that
    consume an IR and emit runnable code for one engine.
 
 The compiler's job ends when it has produced a valid `pipeline.yaml`.
-Code emission is *deterministic Python* — never agent-driven — so the
+Code emission is *deterministic Python*, never agent-driven, so the
 same IR always produces byte-identical output.
 
 ---
@@ -143,10 +164,18 @@ Prefer a terminal? The same thing is one `uvx` command:
 uvx --from rote-cli rote compile ./my-skill --runtime dbos --out ./compiled
 ```
 
+**Hosted platform:** [roteskills.com](https://roteskills.com) is the
+project site (concepts, benchmarks methodology, worked examples).
+[app.roteskills.com](https://app.roteskills.com) is Rote Cloud, a
+managed path for teams that would rather not operate a runtime: run
+`rote login` and `rote compile` then runs server-side, streams progress
+back, auto-deploys, and downloads the artifacts locally. Everything in
+this README still works logged out.
+
 > **Naming note:** the `rote` package on PyPI is an unrelated
 > memoization library that also installs `import rote`, so the two can't
 > share an environment. This project's distribution is `rote-cli` while
-> the CLI command and import name stay `rote` — hence
+> the CLI command and import name stay `rote`, hence
 > `uvx --from rote-cli rote ...`. See [docs/releasing.md](docs/releasing.md).
 
 ### Run on the bundled example
@@ -161,8 +190,8 @@ rote compile examples/bdr-outreach/skill --out /tmp/bdr-compiled
 
 On that skill the compiler produces a 22-node IR that's **78.9%
 codifiable** (15 of 19 non-gate nodes), extracts 5 Python modules and 2
-typed judge signatures, and flags 4 mandatory nodes and 3 HITL gates —
-in ~13 minutes for ~$0.70 (Sonnet via Claude Code). Along the way it
+typed judge signatures, and flags 4 mandatory nodes and 3 HITL gates,
+all in ~13 minutes for ~$0.70 (Sonnet via Claude Code). Along the way it
 independently lifts the three MANDATORY exclusion checks out of prose,
 pulls four batch-size constants out of prompt text, and models a
 parallel entry path the hand-written baseline missed.
@@ -175,21 +204,22 @@ emitted code + a README on how to run, signal gates, and deploy).
 
 ### Other commands
 
-- **`rote emit <pipeline.yaml> --out <dir>`** — run just the adapter step
-  on an existing IR (no LLM, no cost). The cheap inner loop while iterating on
-  adapters or IR shapes. Re-emitting is safe: a `.rote-manifest.json`
+- **`rote emit <pipeline.yaml> --out <dir>`**: run just the adapter step
+  on an existing IR. LLM-free, so no cost and no driver needed, which
+  makes it the cheap inner loop while iterating on adapters or IR
+  shapes. Re-emitting is safe: a `.rote-manifest.json`
   tracks what `rote` wrote, and files you've edited are left untouched
   (the fresh version lands as `<name>.new`).
-- **`rote compile --update`** — re-compile incrementally when the skill
+- **`rote compile --update`**: re-compile incrementally when the skill
   changes. `rote` diffs the skill against the previous run's
   `provenance.json` and re-derives only the nodes whose source sections
   changed; unchanged nodes keep their ids (so in-flight durable workflows
   aren't orphaned) and implemented stubs are kept. No change → no agent run.
-- **`rote run <path>`** — one-off local execution of either side. A
+- **`rote run <path>`**: one-off local execution of either side. A
   skill directory runs as an agent via `claude -p` (your registered MCP
   servers injected, read-only tool gate unless `--allow-writes`); an
-  emitted runtime directory — or a `compile --out` directory — runs
-  the pipeline itself — all six runtimes (`python`/`dbos`/`temporal`
+  emitted runtime directory, or a `compile --out` directory, runs
+  the pipeline itself on any of the six runtimes (`python`/`dbos`/`temporal`
   in-process or on a managed local dev server, `cloudflare` under
   `wrangler dev`, `inngest` against a managed `inngest-cli dev`,
   `dbos-ts` against your Postgres or a throwaway Docker one). HITL
@@ -198,18 +228,18 @@ emitted code + a README on how to run, signal gates, and deploy).
   Temporal Web UI URL and inngest runs print the dev-server dashboard,
   both live for the duration of the run. Output JSON on stdout, status
   on stderr, so it pipes.
-- **`rote deploy <path>`** — push an emitted pipeline where it runs:
+- **`rote deploy <path>`**: push an emitted pipeline where it runs:
   `cloudflare` wraps `npx wrangler deploy` (with `--dry-run`), `dbos` /
-  `dbos-ts` wrap `npx dbos-cloud app deploy` — the vendor CLI owns auth
+  `dbos-ts` wrap `npx dbos-cloud app deploy`, and the vendor CLI owns auth
   and output; rote adds detection and preflights (including surfacing
   *which* account your wrangler session belongs to before uploading).
   Runtimes with no push model (temporal, inngest, python) print honest
   hosting guidance with doc links instead of a fake action.
   `--target rote-cloud` bundles a cloudflare-emitted app (esbuild via
-  npx) and uploads it to a hosted rote-cloud instance — with a stored
-  `rote login`, no flags or env vars needed (`--url`/`--token` and
+  npx) and uploads it to a hosted rote-cloud instance. With a stored
+  `rote login`, no flags or env vars are needed (`--url`/`--token` and
   `$ROTE_CLOUD_URL`/`$ROTE_CLOUD_TOKEN` still override).
-- **`rote login`** — connect the CLI to a rote-cloud account via the
+- **`rote login`**: connect the CLI to a rote-cloud account via the
   OAuth device flow: your browser opens with a one-time code pre-filled
   (over SSH, `--device` prints the code + URL instead), you click
   Approve, and the CLI stores a tenant API key at
@@ -226,27 +256,27 @@ emitted code + a README on how to run, signal gates, and deploy).
   even where config says otherwise. Logged out, everything works
   locally exactly as before. `rote whoami` shows the account (verified
   live); `rote logout` revokes the key server-side and clears the store.
-- **`rote init`** — one-time interactive onboarding: pick where
-  compiled pipelines run (rote cloud — with login offered inline — or
+- **`rote init`**: one-time interactive onboarding: pick where
+  compiled pipelines run (rote cloud, with login offered inline, or
   a local runtime, with a one-line pitch for each), which compiler
   driver does the work (availability probed live), and optionally a
   model. Answers are saved to `~/.config/rote/config.yaml`
   (`--project` writes a `./rote.yaml` that overrides it per-repo) and
   every later command reads them. It's the only interactive command
-  besides login — CI never hits a prompt.
-- **`rote config`** — print every configurable default with its
+  besides login; CI never hits a prompt.
+- **`rote config`**: print every configurable default with its
   effective value *and the layer that set it*. Resolution everywhere is
   `flag > ROTE_* env (ROTE_RUNTIME, ROTE_DEPLOY, ROTE_AGENT,
   ROTE_MODEL) > project rote.yaml > user config > built-in`. Config
   files are strict: a typo'd key or value is a loud error, never a
   silent fallback. `--json` for automation.
-- **`rote eval <compiled>`** — render the before/after scorecard (wall
+- **`rote eval <compiled>`**: render the before/after scorecard (wall
   clock, cost across the current model lineup at live prices, and how
   much of the run is still LLM-decided). `rote compile` writes this to
   `compiled/scorecard.md` automatically. Add `--run` to *measure*
   instead of estimate: it executes both sides for real and appends
   measured cost, turns, and output agreement across trials.
-- **Per-node inference** — emitted judges read `ROTE_MODEL_<ID>` and
+- **Per-node inference**: emitted judges read `ROTE_MODEL_<ID>` and
   `ROTE_BASE_URL_<ID>` at runtime, so you can swap the model or point at
   any OpenAI-compatible endpoint (Ollama, vLLM, a gateway) without
   re-emitting.
@@ -276,7 +306,7 @@ way, prefer the more deterministic kind.
 ## Runtimes
 
 Pick with `--runtime`; the same IR drives all of them. Under
-`--backend api`, none of the emitted code references MCP — the
+`--backend api`, none of the emitted code references MCP: the
 crystallization step replaces tool calls with direct vendor API calls.
 Under the default `--backend mcp`, tool-using nodes emit a working MCP
 client call (with durable park-on-auth on every MCP-capable runtime);
@@ -284,7 +314,7 @@ see [`docs/mcp-client.md`](docs/mcp-client.md).
 
 | Runtime | `--runtime` | Language | Shape | Notes |
 | --- | --- | --- | --- | --- |
-| **DBOS** (default) | `dbos` | Python | `main.py` — `@DBOS.workflow` + `@DBOS.step` per node | No orchestrator to deploy; SQLite (dev) / Postgres (prod) |
+| **DBOS** (default) | `dbos` | Python | `main.py` with `@DBOS.workflow` + `@DBOS.step` per node | No orchestrator to deploy; SQLite (dev) / Postgres (prod) |
 | Temporal | `temporal` | Python | `workflow.py` + `activities.py` | Signal handlers for HITL gates |
 | Plain Python | `python` | Python | single `main.py` script | Max legibility, stdlib only; refuses HITL-gate pipelines |
 | Cloudflare Workflows | `cloudflare` | TypeScript | `WorkflowEntrypoint` + `wrangler.jsonc` | `wrangler deploy`-ready |
@@ -295,7 +325,7 @@ see [`docs/mcp-client.md`](docs/mcp-client.md).
 
 ## Drivers
 
-`rote` ships three interchangeable compiler drivers — pick whichever
+`rote` ships three interchangeable compiler drivers. Pick whichever
 matches your auth. The same `pipeline.yaml` comes out either way.
 
 | Driver | Backend | Auth | Install |
@@ -306,8 +336,8 @@ matches your auth. The same `pipeline.yaml` comes out either way.
 
 The `claude` driver scrubs `ANTHROPIC_API_KEY` from the subprocess so a
 subscription login wins, and limits the agent to read/write/glob/grep
-tools. The default model is **Sonnet** rather than Opus — the task is
-structured-rubric-following, not deep reasoning, and Sonnet brings
+tools. The default model is **Sonnet** rather than Opus, because the
+task is structured-rubric-following, not deep reasoning; Sonnet brings
 per-run cost from ~$3.50 to ~$0.70. Override with `--model` for skills
 where Opus earns its cost. Full design record, including the auth gotcha:
 [docs/agent-runtime.md](docs/agent-runtime.md).
@@ -354,6 +384,14 @@ invocation (per-element dispatch is a planned enhancement). Published on
 PyPI as [`rote-cli`](https://pypi.org/project/rote-cli/) via tag-driven
 Trusted Publishing ([docs/releasing.md](docs/releasing.md)).
 
+On the numbers: static scorecard estimates, observed production-agent
+baselines, and independent research are three different kinds of
+evidence, and mixing them produces marketing rather than benchmarks.
+They're kept separate, with the assumptions written out, at
+[roteskills.com/benchmarks](https://roteskills.com/benchmarks). To
+measure your own workflow instead of reading someone else's, use
+`rote eval --run`.
+
 ---
 
 ## Repository layout
@@ -371,7 +409,8 @@ rote/
 ├── examples/
 │   ├── bdr-outreach/      canonical: all 5 node kinds · IR baseline · run snapshots
 │   ├── ops-report/        100% roteness: zero LLM nodes + a HITL gate
-│   └── deal-monitor/      data-heavy: parallel waves · fan-out judges · template render
+│   ├── deal-monitor/      data-heavy: parallel waves · fan-out judges · template render
+│   └── invoice-push/      agent-loop archetype: bounded browser loop · turn-dominated cost
 └── tests/                 fast + slow suites (pytest -m slow)
 ```
 
@@ -379,30 +418,34 @@ rote/
 
 ## Documentation
 
-- [`AGENTS.md`](AGENTS.md) — operating manual for a coding agent *driving*
+- [`AGENTS.md`](AGENTS.md): operating manual for a coding agent *driving*
   `rote` as an installed tool (invocation contract, the slow/costs-money
   `compile` flow, auth, failure recovery, the stub-filling job, `--json`)
-- [`docs/agent-runtime.md`](docs/agent-runtime.md) — design record for the
+- [`docs/agent-runtime.md`](docs/agent-runtime.md): design record for the
   driver abstraction (the `claude -p` env gotcha; the non-use of
   `claude-agent-sdk`)
-- [`docs/mcp-client.md`](docs/mcp-client.md) — the OAuth MCP client
+- [`docs/mcp-client.md`](docs/mcp-client.md): the OAuth MCP client
   emitted code uses under `--backend mcp`: endpoint/credential
   resolution and durable park-on-auth across every MCP-capable runtime
-- [`docs/mcp-trigger.md`](docs/mcp-trigger.md) — `rote register` +
+- [`docs/mcp-trigger.md`](docs/mcp-trigger.md): `rote register` +
   `rote serve`: compiled pipelines as MCP tools (FastMCP 3.x)
-- [`docs/releasing.md`](docs/releasing.md) — tag-driven PyPI Trusted
+- [`docs/releasing.md`](docs/releasing.md): tag-driven PyPI Trusted
   Publishing
-- [`skills/rote-compile/`](skills/rote-compile/) — the compiler's
+- [`skills/rote-compile/`](skills/rote-compile/): the compiler's
   `SKILL.md` and its four rubric files (node kinds, crystallization
   heuristics, IR schema, LLM-judge extraction)
-- [`examples/bdr-outreach/`](examples/bdr-outreach/) — the canonical
+- [`examples/bdr-outreach/`](examples/bdr-outreach/): the canonical
   skill, its ground-truth IR, and snapshotted real compiler runs
-- [`examples/ops-report/`](examples/ops-report/) — the 100%-roteness
+- [`examples/ops-report/`](examples/ops-report/): the 100%-roteness
   archetype: every step deterministic, one durable HITL gate, zero LLM
   nodes after compilation
-- [`examples/deal-monitor/`](examples/deal-monitor/) — the data-heavy
+- [`examples/deal-monitor/`](examples/deal-monitor/): the data-heavy
   archetype: parallel entry waves, fan-out judges, and a template render
   replacing per-run LLM-generated HTML
+- [`examples/invoice-push/`](examples/invoice-push/): the `agent_loop`
+  archetype: a bounded browser-automation loop stays one agent node
+  while the date math, filtering, and reporting around it compile to
+  code, plus the measured runs that forced the loop-aware cost model
 
 ---
 
@@ -410,26 +453,68 @@ rote/
 
 In rough priority order:
 
-1. **Re-compile BDR end-to-end with `signature_spec`** — the bundled IR
+1. **Re-compile BDR end-to-end with `signature_spec`**: the bundled IR
    was hand-extended with structured schemas; the rubric now teaches the
    field, but no real run has produced one yet.
-2. **Pre-filter as a `pure_function` node** — today hard thresholds are
+2. **Pre-filter as a `pure_function` node**: today hard thresholds are
    lifted into a judge's `forward()`, which works for Temporal but not
    Cloudflare; a separate node makes the short-circuit uniform.
-3. **More example skills** — BDR is one shape; research-heavy,
+3. **More example skills**: BDR is one shape; research-heavy,
    retrieval-heavy, and code-review skills stress the IR differently.
-4. **`fan_out` per-element dispatch** — currently the whole upstream list
+4. **`fan_out` per-element dispatch**: currently the whole upstream list
    arrives in one invocation.
-5. **The compiler compiling itself** — `rote-compile` is a SKILL.md;
+5. **The compiler compiling itself**: `rote-compile` is a SKILL.md;
    pointing `rote compile` at it should crystallize its rubric-grade
    pieces and leave only the genuinely fuzzy judgments in the loop.
+
+---
+
+## FAQ
+
+### What is rote?
+
+`rote` is an open source CLI, Apache-2.0 licensed and published as
+[`rote-cli`](https://pypi.org/project/rote-cli/) on PyPI, that compiles
+a proven AI agent skill into a typed, deterministic pipeline. It reads
+an Anthropic-style `SKILL.md`, classifies each step, moves fixed logic
+and tool orchestration into reviewable code, and calls a model only for
+the steps that genuinely require judgment.
+
+### How does rote reduce AI agent token costs?
+
+It removes model calls rather than making them cheaper. A repeating
+agent spends tokens re-reading instructions, tool schemas, and history
+to re-derive a procedure it already established. `rote` compiles that
+procedure into code, so a repeated run pays only for the steps still
+classified as needing judgment.
+
+### When should I compile a skill instead of leaving it as an agent?
+
+Keep one-off exploration in an agent, which is what agents are good at.
+Compile a skill once the procedure is proven, repeats often, and needs
+lower cost, faster execution, regression tests, explicit approvals, or
+reliable retries.
+
+### Does rote replace my agent framework or MCP?
+
+No. A compiled workflow can still call authenticated MCP servers and
+retain bounded agent loops. `rote` decides which parts of a process
+should stop being inference; your runtime and your integrations stay
+where they are.
+
+### Where does the compiled workflow run?
+
+Anywhere you already run durable work. `rote` emits DBOS, Temporal,
+Cloudflare Workflows, plain Python, DBOS TypeScript, and Inngest.
+[Rote Cloud](https://app.roteskills.com) is an optional managed path for
+teams that would rather not operate the runtime themselves.
 
 ---
 
 ## Contributing
 
 The most useful contribution right now is to **run `rote compile` on a
-real skill of your own and report what happens** — the rubric was
+real skill of your own and report what happens**. The rubric was
 designed against one skill and needs more. Adding a runtime adapter or a
 compiler driver, or improving the rubric, are all good next steps. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, the test layout, and

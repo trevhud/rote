@@ -17,6 +17,11 @@
     "temporal",
     "cloudflare",
     "dbos",
-    "mcp"
+    "mcp",
+    "claude",
+    "claude-code",
+    "agent-skills",
+    "token-cost",
+    "deterministic"
   ]
 }

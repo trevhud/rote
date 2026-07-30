@@ -1,0 +1,53 @@
+cff-version: 1.2.0
+message: "If you use rote in your work, please cite it as below."
+title: rote
+abstract: >-
+  An open source CLI that compiles a proven AI agent skill (an
+  Anthropic-style SKILL.md plus references) into a typed, deterministic
+  pipeline. Fixed logic and tool orchestration move into reviewable
+  code, and a model is called only for the steps that genuinely require
+  judgment. Emits runnable code for DBOS, Temporal, Cloudflare
+  Workflows, plain Python, DBOS TypeScript, and Inngest.
+type: software
+authors:
+  - family-names: Hudson
+    given-names: Trevor
+repository-code: "https://github.com/trevhud/rote"
+url: "https://roteskills.com"
+license: Apache-2.0
+version: 0.12.0
+keywords:
+  - agent-skills
+  - claude-skills
+  - deterministic
+  - workflow-compilation
+  - durable-execution
+  - token-cost
+references:
+  - type: article
+    title: >-
+      Compiled AI: Deterministic Code Generation for LLM-Based Workflow
+      Automation
+    authors:
+      - family-names: Trooskens
+        given-names: Geert
+      - family-names: Karlsberg
+        given-names: Aaron
+      - family-names: Sharma
+        given-names: Anmol
+      - family-names: De Brouwer
+        given-names: Lamara
+      - family-names: Van Puyvelde
+        given-names: Max
+      - family-names: Young
+        given-names: Matthew
+      - family-names: Thickstun
+        given-names: John
+      - family-names: Alterovitz
+        given-names: Gil
+      - family-names: De Brouwer
+        given-names: Walter A.
+    year: 2026
+    month: 4
+    url: "https://arxiv.org/abs/2604.05150"
+    notes: "arXiv:2604.05150"

@@ -273,12 +273,12 @@ model. Remove it from your request.
 ```
 
 A judge carrying `temperature: 0.0` is therefore dead on arrival
-against a current model — which is exactly where an operator's
-`ROTE_MODEL_<NODE_ID>` override points it. Found live: a graduated
+against a current model, which is exactly where an operator's
+`ROTE_MODEL_<NODE_ID>` override points it. Found live: a compiled
 pipeline whose every judge call 400'd on the first real run.
 
 Determinism does not come from temperature anyway. It comes from the
-schema-locked decoding the adapters already emit — a forced tool call
+schema-locked decoding the adapters already emit: a forced tool call
 (Anthropic), `response_format: json_schema` (OpenAI / Workers AI). The
 output shape is pinned whatever the sampler does.
 
