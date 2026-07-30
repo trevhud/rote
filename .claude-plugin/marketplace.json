@@ -4,7 +4,7 @@
     "name": "Trevor Hudson",
     "email": "trevhud@gmail.com"
   },
-  "description": "Compile fuzzy AI skills into deterministic, reliable workflows",
+  "description": "Compile AI agent skills into cheap, fast, deterministic pipelines that run without an LLM in the loop",
   "plugins": [
     {
       "name": "rote",
