@@ -58,6 +58,34 @@ def estimates():  # type: ignore[no-untyped-def]
     return pipeline, pe, se
 
 
+def test_agent_cost_is_the_cache_aware_sum(estimates) -> None:  # type: ignore[no-untyped-def]
+    """Pin the dollars, not just the ordering.
+
+    The comparison test below measures this function against *itself*,
+    so it stays green when every rate is wrong by the same factor — a
+    1000x unit slip, or the cache rates dropped for the plain input
+    price. Both survived a mutation sweep. The four rates in `_price()`
+    are distinct on purpose (12.5 write / 1.0 read / 50.0 output / 10.0
+    input); only the correct pairing reproduces these numbers.
+    """
+    _, _, se = estimates
+    cost = agent_run_cost_usd(se, _price())
+    for bound in ("low", "high"):
+        expected = (
+            getattr(se.fresh_input_tokens, bound) * 12.5
+            + getattr(se.cached_read_tokens, bound) * 1.0
+            + getattr(se.output_tokens, bound) * 50.0
+        ) / 1_000_000
+        assert getattr(cost, bound) == pytest.approx(expected)
+    # A model with no cache pricing bills both halves at plain input.
+    plain = agent_run_cost_usd(se, _price(cache_read_per_mtok=None, cache_write_per_mtok=None))
+    expected_plain = (
+        (se.fresh_input_tokens.high + se.cached_read_tokens.high) * 10.0
+        + se.output_tokens.high * 50.0
+    ) / 1_000_000
+    assert plain.high == pytest.approx(expected_plain)
+
+
 def test_agent_cost_is_cache_aware(estimates) -> None:  # type: ignore[no-untyped-def]
     _, _, se = estimates
     with_cache = agent_run_cost_usd(se, _price())
