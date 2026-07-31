@@ -449,6 +449,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     if args.cloud:
         use_cloud = True
     elif args.local or args.no_deploy or cloud_cred is None:
+        # `args.no_deploy` here is redundant but deliberate: it already
+        # forced `deploy_rv.value == "none"` above (it is that resolve's
+        # flag argument), so `config_prefers_local` covers it. Dropping
+        # it is an equivalent mutation — unobservable, not untested — and
+        # it stays because this is where a reader looks to learn what
+        # keeps a run local.
         use_cloud = False
     else:
         use_cloud = not config_prefers_local

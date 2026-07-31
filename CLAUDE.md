@@ -881,7 +881,7 @@ matching new strings.
 A periodic mutation sweep is the systematic version, and it works well
 here because emission is pure template substitution — mutate a module,
 run `pytest tests/`, and any mutation that survives is an untested
-behavior. Two sweeps so far, 35 mutations, 26 caught on the first pass:
+behavior. Three sweeps so far, 64 mutations, 48 caught on the first pass:
 
 - **Adapters** (18): retry policy, timeouts, step naming, payload
   threading, MCP allowlist narrowing, the `ANTHROPIC_API_KEY` scrub,
@@ -891,6 +891,12 @@ behavior. Two sweeps so far, 35 mutations, 26 caught on the first pass:
   `claude -p` cheap, `is_error` inside a zero exit, fastmcp's
   `result.data`, probe's never-guess rule, and the cost-critical driver
   defaults.
+- **`rote.eval` / `rote.config` / `rote.cli`** (29): dollar arithmetic,
+  tier detection, the read-only MCP gate, the four-layer config
+  precedence, and the login-aware compile default. Config precedence and
+  pricing tier detection were already airtight — every mutation died.
+  Six gaps found, all in the two places where a wrong number or a wrong
+  exit code looks like success (see below).
 
 Two lessons from the second sweep worth keeping:
 
@@ -909,9 +915,35 @@ Two lessons from the second sweep worth keeping:
   *property* — not-Opus, `>= 60` — so a legitimate model bump passes and
   the expensive regression fails.
 
+Three more from the third sweep:
+
+- **A self-comparison is the same tautology in disguise.**
+  `pipeline_cost_usd` had `cost.high == pytest.approx(expected_high)`
+  recomputed from the fixture rates and killed every mutation.
+  `agent_run_cost_usd` was only ever compared against *itself*
+  (`with_cache.mid < without_cache.mid`) — an ordering that holds under
+  any transformation applied to both sides, so the divisor could become
+  1e3 instead of 1e6, or the cache-write premium could vanish, with the
+  suite green. Cost numbers are what a user makes a spending decision
+  on; assert the dollars.
+- **Asserting the loop bound leaves the per-call figures unpinned.** The
+  `agent_loop` estimate asserted `calls.high` and nothing else, so both
+  the token and the wall-time lines could drop
+  `agent_loop_turns_per_iteration` (a 3x understatement) undetected —
+  in the turn-dominated regime the loop-aware model exists to capture.
+- **Strictness is a property of a layer, not of one command.** Four
+  commands call `load_layers()`; only `rote config` asserted exit 2, so
+  compile's handler could `return 0` — reporting success while doing
+  nothing. The replacement test parametrizes over all four, and the
+  next command to read config fails there instead of shipping a silent
+  fallback.
+
 Watch for **equivalent mutants** — the fan_out tier ordering in
-`fan_out_element_param` survives because it is provably unobservable,
-not because it is untested; that one is commented in place.
+`fan_out_element_param`, and `args.no_deploy` in `_cmd_compile`'s
+cloud-vs-local branch, both survive because they are provably
+unobservable, not because they are untested. Both are commented in
+place; confirm the claim empirically before writing one off, since
+"probably equivalent" is exactly what a real gap looks like.
 
 ---
 
@@ -1209,7 +1241,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1202 tests (1175 fast + 27 slow). Run with `pytest tests/` (fast
+- 1214 tests (1187 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

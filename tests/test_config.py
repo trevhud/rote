@@ -97,6 +97,21 @@ def test_empty_file_is_fine(tmp_path: Path) -> None:
     assert load_config_file(path) == {}
 
 
+@pytest.mark.parametrize("blank", ["", '""', "'  '", "\n"])
+def test_a_blank_value_is_rejected_for_a_free_form_key(tmp_path: Path, blank: str) -> None:
+    """`model` takes any string, so the enum check cannot catch a blank.
+
+    A key with `valid_choices()` rejects "" incidentally (it isn't in
+    the choices), which is why dropping the emptiness check survived a
+    mutation sweep — `model` is the only key where it is load-bearing,
+    and a blank one would reach the driver as a model name.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(f"model: {blank}\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="must be a non-empty string"):
+        load_config_file(path)
+
+
 def test_write_config_round_trips(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     write_config(path, {"runtime": "temporal", "deploy": "none", "agent": "codex"})
@@ -203,6 +218,42 @@ def test_config_bad_file_exits_2(
     rc = cli_main(["config"])
     assert rc == 2
     assert "must be a non-empty string" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["config", "emit", "analyze", "compile"])
+def test_every_config_reading_command_exits_2_on_a_bad_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+) -> None:
+    """Strictness is a property of the config layer, not of one command.
+
+    `rote config` was the only command asserting exit 2; flipping
+    compile's handler to `return 0` — reporting success while doing
+    nothing — survived a mutation sweep. Every command that calls
+    `load_layers()` owns this contract, so cover them together and let a
+    new one fail here rather than shipping a silent fallback.
+    """
+    from tests.conftest import BDR_PIPELINE_YAML
+
+    bad = tmp_path / "config.yaml"
+    bad.write_text("runtime: clouflare\n", encoding="utf-8")
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(bad))
+
+    skill_dir = _skill(tmp_path)
+    argv = {
+        "config": ["config"],
+        "emit": ["emit", str(BDR_PIPELINE_YAML), "--out", str(tmp_path / "out")],
+        "analyze": ["analyze", str(skill_dir)],
+        "compile": ["compile", str(skill_dir), "--out", str(tmp_path / "out"), "--no-eval"],
+    }[command]
+
+    assert cli_main(argv) == 2
+    err = capsys.readouterr().err
+    assert "expected one of" in err and "clouflare" in err
+    # The run stopped at the config, before any work: nothing emitted.
+    assert not (tmp_path / "out").exists()
 
 
 # ───────── compile/emit honor the config ─────────

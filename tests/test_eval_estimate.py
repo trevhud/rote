@@ -134,6 +134,49 @@ def test_unbounded_agent_loop_gets_prior_default_and_note(
     assert node_est.note is not None and "no termination config" in node_est.note
 
 
+def test_agent_loop_per_call_cost_scales_with_turns_per_iteration(
+    counter: HeuristicTokenCounter,
+) -> None:
+    """One loop iteration is several agent turns, and every per-call
+    figure must carry that factor.
+
+    This is the turn-dominated cost regime the loop-aware model exists
+    for: `agent_loop_turns_per_iteration` defaults to 3, so dropping it
+    understates a loop's tokens and wall time threefold. Asserting
+    `calls` alone leaves all three derived numbers unpinned — a mutation
+    sweep dropped the factor from both the token and the seconds line
+    with the suite green.
+    """
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "loop-only",
+            "input": {"type": "In"},
+            "nodes": [
+                {
+                    "id": "explore",
+                    "kind": "agent_loop",
+                    "description": "bounded exploration",
+                    "tools": ["search"],
+                    "termination": {"max_iterations": 4, "condition": "nothing left to search"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    priors = Priors()
+    turns = priors.agent_loop_turns_per_iteration
+    assert turns > 1, "a degenerate 1.0 would make this test unable to fail"
+
+    (node_est,) = estimate_pipeline(pipeline, counter, priors).nodes
+    assert node_est.calls.high == 4  # the declared bound, not the prior default
+    assert node_est.note is None
+    assert node_est.llm_input_tokens_per_call == round(turns * priors.transcript_growth_per_turn)
+    assert node_est.llm_output_tokens_per_call == round(turns * priors.output_tokens_per_turn)
+    assert node_est.wall_seconds_per_call == pytest.approx(turns * priors.seconds_per_turn)
+    # …and the per-call figures compound over the iteration bound.
+    assert node_est.wall_seconds.high == pytest.approx(4 * turns * priors.seconds_per_turn)
+
+
 def test_judge_tokens_scale_with_prompt_and_fields(counter: HeuristicTokenCounter) -> None:
     def judge_pipeline(prompt: str, out_fields: dict[str, object]) -> Pipeline:
         return Pipeline.model_validate(
