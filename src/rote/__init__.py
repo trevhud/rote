@@ -1,3 +1,3 @@
 """rote — compile fuzzy AI skills into deterministic workflows."""
 
-__version__ = "0.12.1"
+__version__ = "0.13.0"

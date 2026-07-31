@@ -9,6 +9,75 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-31
+
+### Added
+- **`fan_out` dispatches per element on all six runtimes.** A node marked
+  `fan_out: true` is invoked once per element of its bound list, and the
+  result binds as a list in input order. This worked on DBOS only; the
+  other five handed the whole upstream list to a single invocation, which
+  meant a judge signature had to accept the batch and the "one call per
+  element" the IR describes was a fiction everywhere else. Per runtime:
+  DBOS enqueues one durable step per element, python uses `pool.map`,
+  Temporal `asyncio.gather` over one activity execution each, Cloudflare
+  and Inngest `Promise.all` over per-element steps, DBOS-TS
+  `Promise.allSettled` + unwrap.
+
+  Which input is the fanned list is resolved by
+  `rote.adapters._common.fan_out_element_param` — fan_out edge marker >
+  incoming-edge source > only node-bound param, with ambiguity an
+  emit-time error rather than a guess. It lives in the language-neutral
+  common module on purpose: two adapters disagreeing about which input is
+  the list would make one `pipeline.yaml` mean two different things.
+
+  Two traps worth knowing if you read the emitted code. Cloudflare and
+  Inngest key a durable step by its *name*, so each element emits
+  `` `<id>[${_index}]` ``; reusing one name made Cloudflare return element
+  0's cached result for all N, so the run succeeded, the output had the
+  right length, and every entry was identical. And a parkable (MCP-bound)
+  fan_out node on Cloudflare runs its elements sequentially, because
+  `waitForEvent` inside a promise combinator is undocumented and its
+  timeout throws.
+- **An undefined fanned list names the node that expected it.** Emitted
+  code routes the list through a guard (`fanOutList` in TypeScript,
+  `_fan_out_list` in Python) that throws with the node id and the IR
+  reference. Without it the failure was `Cannot read properties of
+  undefined (reading 'map')` inside generated code the user never wrote —
+  found by running it, on the first live fan_out run. The cause is almost
+  always an upstream node that didn't return the key the IR says it does.
+
+### Changed
+- **Every slow end-to-end suite now runs in CI.** Three of twenty-seven
+  did; Cloudflare, DBOS-TS and Inngest had no automated coverage at all,
+  on the reasoning that they need a Node or Docker toolchain that CI
+  doesn't have. `ubuntu-latest` ships both, and the premise had never
+  been checked. All seven jobs — lint/types/sanity, three Python
+  versions, and the Python, TypeScript and DBOS-TS e2e suites — are now
+  required status checks.
+- **A test can no longer spend inference tokens.** Anything that doesn't
+  require inference is a test: automated and fast. Anything that costs
+  tokens is an eval: run deliberately, never in CI. That split is now
+  enforced rather than trusted — the suite scrubs vendor credentials and
+  makes a bare-name lookup of `claude` / `codex` fail. The second half is
+  the one that matters, because `claude -p` authenticates from an OAuth
+  session, so having no API key was never protection. Two DBOS suites had
+  been quietly burning real subscription inference on every run.
+
+### Fixed
+- **Fifteen test gaps found by mutation testing**, across three sweeps
+  and 64 mutations. These are defects in the suite's ability to detect
+  regressions, not in shipped behavior — but each one is a real
+  regression that could have shipped green. The most consequential:
+  per-node `timeout:` was ignorable on Temporal and Cloudflare gates;
+  `DEFAULT_MODEL` could be flipped to Opus (~5x cost) and
+  `DEFAULT_MAX_TURNS` halved with nothing failing; the agent-side cost
+  estimate could be off by 1000x because it was only ever compared
+  against itself; an `agent_loop` could understate its tokens and wall
+  time threefold; and `rote compile` could report success while doing
+  nothing when handed a bad config.
+- `1h` in a per-node `timeout:` rendered as `"1 hours"` in emitted
+  comments and docstrings.
+
 ## [0.12.1] - 2026-07-30
 
 ### Changed
@@ -542,7 +611,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/trevhud/rote/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/trevhud/rote/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/trevhud/rote/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/trevhud/rote/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/trevhud/rote/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/trevhud/rote/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/trevhud/rote/compare/v0.6.0...v0.7.0
