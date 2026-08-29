@@ -452,17 +452,17 @@ rote/
 
 In rough priority order:
 
-1. **Re-compile BDR end-to-end with `signature_spec`**: the bundled IR
-   was hand-extended with structured schemas; the rubric now teaches the
-   field, but no real run has produced one yet.
-2. **Pre-filter as a `pure_function` node**: today hard thresholds are
-   lifted into a judge's `forward()`, which works for Temporal but not
-   Cloudflare; a separate node makes the short-circuit uniform.
-3. **More example skills**: BDR is one shape; research-heavy,
-   retrieval-heavy, and code-review skills stress the IR differently.
-4. **The compiler compiling itself**: `rote-compile` is a SKILL.md;
+1. **Pre-filter as a `pure_function` node**: today hard thresholds are
+   lifted into a judge's `forward()`, which works for the Python
+   runtimes but not the TypeScript ones; a separate node makes the
+   short-circuit uniform across all six.
+2. **The compiler compiling itself**: `rote-compile` is a SKILL.md;
    pointing `rote compile` at it should crystallize its rubric-grade
    pieces and leave only the genuinely fuzzy judgments in the loop.
+3. **More example skills**: four archetypes are covered today (BDR
+   outreach, 100%-roteness, data-heavy, agent-loop). Research-heavy,
+   retrieval-heavy, and code-review skills each stress the IR in ways
+   none of those four do.
 
 ---
 
