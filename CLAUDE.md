@@ -501,11 +501,16 @@ the code (`tests/test_claude_driver.py`, `tests/test_cli.py`,
   real figure sat one key away. It is also authoritative: the CLI knows
   the per-model split and the exact cache rates, so it outranks anything
   rote prices locally.
-- **An unpriceable run reports no cost, not a wrong one.**
-  `reference_prices` covers every model but carries only the
-  input/output pair, so cache rates exist solely for the tier
-  representatives in `prices` (hence `PricingCatalog.model_price_for`).
-  When a run touched the cache and the rates are unknown, `_cost_usd`
+- **Cache rates span the whole fetch.** models.dev publishes them per
+  model and `_parse_models_dev` already read them, but `build_catalog`
+  kept only the three tier representatives'. The compiler's default
+  model is not one, so a default compilation had nothing to price its
+  cache with. `PricingCatalog.rates_for` is the accessor that covers
+  every model; `model_price_for` stays narrow. An older on-disk cache
+  has no such key and degrades to "no published rate" rather than
+  reading as free.
+- **An unpriceable run reports no cost, not a wrong one.** When a run
+  touched the cache and the rates are genuinely unknown, `_cost_usd`
   returns `None`. Billing cache reads at the plain input rate would
   overstate them roughly tenfold.
 
@@ -1279,7 +1284,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1222 tests (1195 fast + 27 slow). Run with `pytest tests/` (fast
+- 1228 tests (1201 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS

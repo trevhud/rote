@@ -23,13 +23,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   every run while the authoritative number sat one key away. It is now
   read, and it outranks any cost priced locally, because the CLI knows
   the per-model split and the exact cache rates that applied.
-- **A run that cannot be priced honestly now reports no cost.**
-  `reference_prices` covers every model but carries only the
-  input/output pair, so cache rates exist solely for the tier
-  representatives (new `PricingCatalog.model_price_for`). When a run
-  touched the cache and its cache rates are unknown, the cost field is
-  omitted rather than filled with a figure that would overstate cache
-  reads roughly tenfold.
+- **Cache rates are carried for every fetched model, not just the three
+  tier representatives.** models.dev publishes them per model and the
+  parser already read them; `build_catalog` then discarded all but the
+  representatives'. The compiler's own default model is not one, so a
+  default compilation had no priceable cache rate at all. New
+  `PricingCatalog.rates_for` spans the whole fetch; an on-disk cache
+  written before this still loads, degrading to "no published rate".
+- **A run that still cannot be priced honestly reports no cost.** When a
+  run touched the cache and its cache rates are genuinely unknown, the
+  cost field is omitted rather than filled with a figure that would
+  overstate cache reads roughly tenfold.
 
 ### Changed
 - The README roadmap dropped two items that had already shipped: real

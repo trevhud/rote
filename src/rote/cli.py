@@ -353,10 +353,11 @@ class _JsonlProgressSink:
         or an unpriced model yields ``None``, and cost enrichment is then
         silently skipped rather than failing the run.
 
-        Cache rates come from the full :class:`ModelPrice` when the
-        catalog has one, and stay ``None`` otherwise. Keeping them
-        distinct from zero is the point: a run billed at the wrong cache
-        rate is worse than a run with no reported cost.
+        Cache rates come from :meth:`PricingCatalog.rates_for`, which
+        spans the whole fetch rather than the three tier representatives.
+        A model whose fetch published no cache rate keeps ``None`` there,
+        which is deliberately distinct from zero: a run billed at the
+        wrong cache rate is worse than a run with no reported cost.
         """
         from rote.eval.pricing import PricingError, fetch_catalog
 
@@ -364,18 +365,15 @@ class _JsonlProgressSink:
             catalog = fetch_catalog(provider="anthropic")
         except PricingError:
             return None
-        full = catalog.model_price_for(model_id)
-        if full is not None:
-            return _Rates(
-                input_per_mtok=full.input_per_mtok,
-                output_per_mtok=full.output_per_mtok,
-                cache_read_per_mtok=full.cache_read_per_mtok,
-                cache_write_per_mtok=full.cache_write_per_mtok,
-            )
-        pair = catalog.price_for(model_id)
-        if pair is None:
+        rates = catalog.rates_for(model_id)
+        if rates is None:
             return None
-        return _Rates(input_per_mtok=pair[0], output_per_mtok=pair[1])
+        return _Rates(
+            input_per_mtok=rates[0],
+            output_per_mtok=rates[1],
+            cache_read_per_mtok=rates[2],
+            cache_write_per_mtok=rates[3],
+        )
 
     def _cost_usd(self, tokens: dict[str, int]) -> float | None:
         """Price the four token buckets, or return ``None`` honestly.

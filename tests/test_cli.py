@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from rote.cli import _JsonlProgressSink as _SinkForCapture
 from rote.cli import main as cli_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1524,3 +1525,72 @@ def test_token_note_reports_the_whole_input_volume() -> None:
 
     # An uncached run keeps the plain rendering, with no cache clause.
     assert _format_token_note({"input": 1000, "output": 500}) == " (in 1.0k / out 500 tok)"
+
+
+#: The real ``_resolve_prices``, captured at import time.
+#:
+#: ``conftest`` replaces this attribute for every test so no unit test
+#: reaches the network, and every pricing test re-stubs the same seam.
+#: The consequence is that the function's own body never runs, so it
+#: could drop the cache rates entirely with the suite fully green (a
+#: mutation confirmed exactly that). Grabbing the underlying function at
+#: module import, before any fixture applies, is what lets the mapping
+#: itself be tested.
+_REAL_RESOLVE_PRICES = _SinkForCapture.__dict__["_resolve_prices"].__func__
+
+
+def _lineup_with_cache_rates() -> dict[str, object]:
+    def _m(inp: float, out: float, released: str, cr: float, cw: float) -> dict[str, object]:
+        return {
+            "name": "",
+            "cost": {"input": inp, "output": out, "cache_read": cr, "cache_write": cw},
+            "release_date": released,
+        }
+
+    return {
+        "anthropic": {
+            "models": {
+                "claude-fable-5": _m(10, 50, "2026-06-09", 1, 12.5),
+                "claude-sonnet-5": _m(2, 10, "2026-06-30", 0.2, 2.5),
+                "claude-haiku-4-5": _m(1, 5, "2025-10-15", 0.1, 1.25),
+                # Not a tier representative: the case that was unpriceable.
+                "claude-sonnet-4-6": _m(3, 15, "2026-02-17", 0.3, 3.75),
+            }
+        }
+    }
+
+
+def test_resolve_prices_carries_every_rate_off_the_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All four rates must survive the catalog-to-sink mapping.
+
+    Exercises the real ``_resolve_prices`` by patching ``fetch_catalog``
+    rather than the method, because patching the method is precisely what
+    hid this code path from the suite.
+    """
+    from rote.eval.pricing import build_catalog
+
+    catalog = build_catalog(_lineup_with_cache_rates(), None, provider="anthropic", fetched_at="t")
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda provider: catalog)
+
+    rates = _REAL_RESOLVE_PRICES("claude-sonnet-4-6")
+    assert rates is not None
+    assert rates.input_per_mtok == 3.0
+    assert rates.output_per_mtok == 15.0
+    assert rates.cache_read_per_mtok == 0.3
+    assert rates.cache_write_per_mtok == 3.75
+
+    # An unknown model resolves to nothing rather than raising.
+    assert _REAL_RESOLVE_PRICES("not-a-model") is None
+
+
+def test_resolve_prices_survives_an_offline_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed price fetch skips cost enrichment; it never sinks a run."""
+    from rote.eval.pricing import PricingError
+
+    def _down(provider: str) -> object:
+        raise PricingError("offline")
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", _down)
+    assert _REAL_RESOLVE_PRICES("claude-sonnet-4-6") is None
