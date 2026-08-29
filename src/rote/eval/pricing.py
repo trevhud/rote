@@ -102,6 +102,16 @@ class PricingCatalog:
 
     prices: tuple[ModelPrice, ...]
     reference_prices: dict[str, tuple[float, float]] = field(default_factory=dict)
+    reference_cache_rates: dict[str, tuple[float | None, float | None]] = field(
+        default_factory=dict
+    )
+    """Normalized id -> ``(cache_read, cache_write)`` USD per Mtok.
+
+    Separate from ``reference_prices`` so that map's ``(input, output)``
+    contract stays put. A model absent here, or present with ``None``
+    entries, has no published cache rate; that is distinct from zero and
+    callers must not bill it as free.
+    """
 
     def by_provider(self, provider: str) -> list[ModelPrice]:
         return [p for p in self.prices if p.provider == provider]
@@ -109,6 +119,39 @@ class PricingCatalog:
     def price_for(self, model_id: str) -> tuple[float, float] | None:
         """(input, output) USD per Mtok for any fetched model, else None."""
         return self.reference_prices.get(_normalize_model_id(model_id))
+
+    def model_price_for(self, model_id: str) -> ModelPrice | None:
+        """The full :class:`ModelPrice` for a tier representative, or None.
+
+        Only answers for models in ``prices``. To price an arbitrary
+        model's prompt-cached run, use :meth:`rates_for` instead, which
+        covers the whole fetch.
+        """
+        target = _normalize_model_id(model_id)
+        for price in self.prices:
+            if _normalize_model_id(price.model_id) == target:
+                return price
+        return None
+
+    def rates_for(self, model_id: str) -> tuple[float, float, float | None, float | None] | None:
+        """``(input, output, cache_read, cache_write)`` per Mtok, or None.
+
+        The accessor for pricing a prompt-cached run. It spans every
+        fetched model, not just the three tier representatives, which
+        matters because the compiler's default model is not one of them:
+        without this, a default compilation had no priceable cache rates
+        at all.
+
+        The two cache entries stay ``None`` when the fetch published none
+        for that model, so a caller can tell "no published rate" from
+        "free".
+        """
+        key = _normalize_model_id(model_id)
+        pair = self.reference_prices.get(key)
+        if pair is None:
+            return None
+        cache_read, cache_write = self.reference_cache_rates.get(key, (None, None))
+        return pair[0], pair[1], cache_read, cache_write
 
     def sample(self, provider: str = "anthropic") -> list[ModelPrice]:
         """The scorecard's model sampling: one model per tier, newest
@@ -384,7 +427,15 @@ def build_catalog(
     reference = {
         _normalize_model_id(m.model_id): (m.input_per_mtok, m.output_per_mtok) for m in raw_models
     }
-    return PricingCatalog(prices=tuple(prices), reference_prices=reference)
+    reference_cache = {
+        _normalize_model_id(m.model_id): (m.cache_read_per_mtok, m.cache_write_per_mtok)
+        for m in raw_models
+    }
+    return PricingCatalog(
+        prices=tuple(prices),
+        reference_prices=reference,
+        reference_cache_rates=reference_cache,
+    )
 
 
 # ───────── Disk cache + entry point ─────────
@@ -407,9 +458,25 @@ def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog |
         reference = {
             str(k): (float(v[0]), float(v[1])) for k, v in raw.get("reference_prices", {}).items()
         }
+
+        def _opt(value: object) -> float | None:
+            return float(value) if isinstance(value, int | float) else None
+
+        # A cache written before cache rates were carried simply has no
+        # such key. Its models then read as "no published rate", which is
+        # the same conservative answer an unpriced model gets, so an old
+        # file degrades rather than crashing or billing cache as free.
+        reference_cache = {
+            str(k): (_opt(v[0]), _opt(v[1]))
+            for k, v in raw.get("reference_cache_rates", {}).items()
+        }
         if not prices:
             return None
-        return PricingCatalog(prices=prices, reference_prices=reference)
+        return PricingCatalog(
+            prices=prices,
+            reference_prices=reference,
+            reference_cache_rates=reference_cache,
+        )
     except Exception:
         return None  # any unreadable/stale/foreign cache means refetch
 
@@ -420,6 +487,7 @@ def _store_cache(path: Path, catalog: PricingCatalog, provider: str) -> None:
         "provider": provider,
         "prices": [asdict(p) | {"tier": p.tier.value} for p in catalog.prices],
         "reference_prices": {k: list(v) for k, v in catalog.reference_prices.items()},
+        "reference_cache_rates": {k: list(v) for k, v in catalog.reference_cache_rates.items()},
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

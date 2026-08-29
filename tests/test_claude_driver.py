@@ -246,7 +246,7 @@ async def test_happy_path_args_env_and_metadata(
         _assistant_line(text="Reading the rubric."),
         _result_line(
             result="Compiled successfully.",
-            cost_usd=0.42,
+            total_cost_usd=0.42,
             duration_ms=58000,
             num_turns=18,
             session_id="sess-abc-123",
@@ -379,7 +379,7 @@ async def test_no_events_when_on_event_none_still_parses_metadata(
     fake_claude_subprocess(
         stdout_text=_stream(
             _assistant_line(text="working"),
-            _result_line(result="ok", num_turns=5, cost_usd=0.1),
+            _result_line(result="ok", num_turns=5, total_cost_usd=0.1),
         ),
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
     )
@@ -423,8 +423,8 @@ def test_map_stream_line_tool_only_turn_reports_thinking() -> None:
 
 def test_map_stream_line_accumulates_cumulative_tokens() -> None:
     """Per-message ``usage`` is summed into a running total, and each turn
-    event carries the cumulative ``{"input", "output"}`` figures."""
-    totals: dict[str, int] = {"input": 0, "output": 0}
+    event carries the cumulative per-bucket figures."""
+    totals: dict[str, int] = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
 
     events1, turn1, _ = _map_stream_line(
         _assistant_line(text="one", usage={"input_tokens": 100, "output_tokens": 20}),
@@ -432,7 +432,12 @@ def test_map_stream_line_accumulates_cumulative_tokens() -> None:
         None,
         totals,
     )
-    assert events1[0].tokens == {"input": 100, "output": 20}
+    assert events1[0].tokens == {
+        "input": 100,
+        "output": 20,
+        "cache_write": 0,
+        "cache_read": 0,
+    }
 
     events2, _turn2, _ = _map_stream_line(
         _assistant_line(text="two", usage={"input_tokens": 250, "output_tokens": 30}),
@@ -440,17 +445,18 @@ def test_map_stream_line_accumulates_cumulative_tokens() -> None:
         None,
         totals,
     )
-    # Cumulative across turns — not just this message's usage.
-    assert events2[0].tokens == {"input": 350, "output": 50}
-    assert totals == {"input": 350, "output": 50}
+    # Cumulative across turns, not just this message's usage.
+    expected = {"input": 350, "output": 50, "cache_write": 0, "cache_read": 0}
+    assert events2[0].tokens == expected
+    assert totals == expected
 
 
 def test_map_stream_line_missing_usage_keeps_prior_total() -> None:
     """A message without ``usage`` leaves the running total unchanged; the
     turn event still reports the cumulative figure carried so far."""
-    totals = {"input": 40, "output": 5}
+    totals = {"input": 40, "output": 5, "cache_write": 7, "cache_read": 9}
     events, _turn, _ = _map_stream_line(_assistant_line(text="no usage"), 3, None, totals)
-    assert events[0].tokens == {"input": 40, "output": 5}
+    assert events[0].tokens == {"input": 40, "output": 5, "cache_write": 7, "cache_read": 9}
 
 
 def test_map_stream_line_result_line_yields_no_events_but_returns_obj() -> None:
@@ -543,7 +549,13 @@ async def test_missing_result_object_returns_minimal_metadata(
 
     driver = ClaudeDriver()
     result = await driver.run(skill_dir, compiler_dir, work_dir)
-    assert result.metadata == {"driver": "claude", "input_tokens": 0, "output_tokens": 0}
+    assert result.metadata == {
+        "driver": "claude",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -634,3 +646,123 @@ def test_other_drivers_swallow_web_tools_kwarg() -> None:
 
     CodexDriver(web_tools=True)
     AnthropicApiDriver(web_tools=True)
+
+
+# ───────── Prompt-cache accounting ─────────
+
+
+def test_cache_buckets_are_counted_not_dropped() -> None:
+    """A prompt-cached message's input lands in the cache buckets.
+
+    ``claude -p`` always runs prompt-cached, so ``input_tokens`` holds
+    only the few tokens that were neither written to nor read from the
+    cache. The usage dict below is the shape a real CLI call returns: a
+    one-word reply reported ``input_tokens: 3`` beside
+    ``cache_creation_input_tokens: 122956``.
+
+    Summing the plain pair alone reports that run as 3 input tokens, and
+    every cost derived from it is wrong by the same factor.
+    """
+    totals: dict[str, int] = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+    events, _turn, _ = _map_stream_line(
+        _assistant_line(
+            text="ok",
+            usage={
+                "input_tokens": 3,
+                "cache_creation_input_tokens": 122956,
+                "cache_read_input_tokens": 41000,
+                "output_tokens": 2,
+            },
+        ),
+        0,
+        None,
+        totals,
+    )
+    assert events[0].tokens == {
+        "input": 3,
+        "output": 2,
+        "cache_write": 122956,
+        "cache_read": 41000,
+    }
+    # The negative half: the plain field must not absorb the cache volume
+    # either, or the buckets become unpriceable at their own rates.
+    assert totals["input"] == 3
+
+
+@pytest.mark.asyncio
+async def test_metadata_carries_cache_buckets(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """The cache buckets survive all the way into driver metadata.
+
+    The accumulator counting them is not enough; ``_parse_metadata`` has
+    to forward them, since that dict is what the CLI prices and prints.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(
+                text="one",
+                usage={
+                    "input_tokens": 3,
+                    "cache_creation_input_tokens": 100_000,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 20,
+                },
+            ),
+            _assistant_line(
+                text="two",
+                usage={
+                    "input_tokens": 4,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 100_000,
+                    "output_tokens": 30,
+                },
+            ),
+            _result_line(result="done", num_turns=2),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+
+    driver = ClaudeDriver()
+    result = await driver.run(skill_dir, compiler_dir, work_dir)
+    assert result.metadata["input_tokens"] == 7
+    assert result.metadata["output_tokens"] == 50
+    assert result.metadata["cache_write_tokens"] == 100_000
+    assert result.metadata["cache_read_tokens"] == 100_000
+
+
+@pytest.mark.asyncio
+async def test_cost_reads_total_cost_usd_and_ignores_an_invented_key(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """The envelope's cost key is ``total_cost_usd``.
+
+    There is no ``cost_usd`` key in a real ``claude -p`` result line, so
+    reading that name returned ``None`` on every run. Both halves matter:
+    the real key must be read, and a payload carrying only the invented
+    name must not satisfy the assertion, or a revert would pass.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(text="working"),
+            _result_line(result="ok", total_cost_usd=0.7378),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+    assert result.metadata["cost_usd"] == 0.7378
+
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(text="working"),
+            _result_line(result="ok", cost_usd=0.7378),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+    assert result.metadata["cost_usd"] is None

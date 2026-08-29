@@ -9,6 +9,39 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **A compilation's reported tokens and cost ignored prompt caching.**
+  `claude -p` always runs prompt-cached, so `input_tokens` holds only the
+  handful of tokens that were neither written to nor read from the cache.
+  The driver summed that field alone, and the CLI priced the result: a
+  22-minute, 62-turn compilation was reported as `tokens in=113 out=1919;
+  cost $0.029`. All four token buckets are now counted, and every display
+  adds cache writes and reads into the input figure it shows.
+- **The agent runtime's own billed cost was discarded.** The driver read
+  `result["cost_usd"]`, a key the `claude -p` result envelope does not
+  have. The field is `total_cost_usd`, so the read returned `None` on
+  every run while the authoritative number sat one key away. It is now
+  read, and it outranks any cost priced locally, because the CLI knows
+  the per-model split and the exact cache rates that applied.
+- **Cache rates are carried for every fetched model, not just the three
+  tier representatives.** models.dev publishes them per model and the
+  parser already read them; `build_catalog` then discarded all but the
+  representatives'. The compiler's own default model is not one, so a
+  default compilation had no priceable cache rate at all. New
+  `PricingCatalog.rates_for` spans the whole fetch; an on-disk cache
+  written before this still loads, degrading to "no published rate".
+- **A run that still cannot be priced honestly reports no cost.** When a
+  run touched the cache and its cache rates are genuinely unknown, the
+  cost field is omitted rather than filled with a figure that would
+  overstate cache reads roughly tenfold.
+
+### Changed
+- The README roadmap dropped two items that had already shipped: real
+  compiler runs have produced `signature_spec` since April, and the
+  ops-report, deal-monitor, and invoice-push archetypes have existed
+  alongside BDR for some time.
+
+
 ## [0.13.0] - 2026-07-31
 
 ### Added

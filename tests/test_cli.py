@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from rote.cli import _JsonlProgressSink as _SinkForCapture
 from rote.cli import main as cli_main
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -691,19 +692,40 @@ def test_compile_deploy_failure_keeps_artifacts_and_exits_1(
 # ───────── compile --progress-file (JSONL sink) ─────────
 
 
-def _patch_pricing(monkeypatch: pytest.MonkeyPatch, prices: tuple[float, float] | None) -> None:
+def _patch_pricing(
+    monkeypatch: pytest.MonkeyPatch,
+    prices: tuple[float, float] | None,
+    cache_read_per_mtok: float | None = None,
+    cache_write_per_mtok: float | None = None,
+) -> None:
     """Patch the sink's price resolution so it runs hermetically.
 
     ``prices`` = ``(input_per_mtok, output_per_mtok)`` is what the sink
-    resolves; ``None`` is the offline path — the sink must then omit
+    resolves; ``None`` is the offline path, where the sink must omit
     ``cost_usd`` and keep going. Patches ``_resolve_prices`` (not
     ``fetch_catalog``) because the suite-wide conftest fixture already
     stubs ``_resolve_prices`` to None; a test overriding pricing must
     patch the same seam to win.
+
+    The cache rates default to ``None`` because that is the common real
+    case: ``reference_prices`` covers every model but carries only the
+    input/output pair, so only a tier representative has cache rates.
     """
+    from rote.cli import _Rates
+
+    rates = (
+        None
+        if prices is None
+        else _Rates(
+            input_per_mtok=prices[0],
+            output_per_mtok=prices[1],
+            cache_read_per_mtok=cache_read_per_mtok,
+            cache_write_per_mtok=cache_write_per_mtok,
+        )
+    )
     monkeypatch.setattr(
         "rote.cli._JsonlProgressSink._resolve_prices",
-        staticmethod(lambda _model_id: prices),
+        staticmethod(lambda _model_id: rates),
     )
 
 
@@ -771,7 +793,12 @@ def test_compile_progress_file_writes_ndjson_with_cost_and_summary(
     assert summary["nodes"] == 13
     assert isinstance(summary["node_kinds"], dict)
     assert summary["node_kinds"]["hitl_gate"] >= 1
-    assert summary["total_tokens"] == {"input": 1000, "output": 500}
+    assert summary["total_tokens"] == {
+        "input": 1000,
+        "output": 500,
+        "cache_write": 0,
+        "cache_read": 0,
+    }
     assert summary["cost_usd"] == pytest.approx(0.0105)
     assert any("extracted/" in s for s in summary["unimplemented_stubs"])  # type: ignore[union-attr]
     assert summary["compiled_dir"] == str((out_dir / "compiled").resolve())
@@ -1386,3 +1413,184 @@ def test_emit_stays_silent_on_a_clean_pipeline(python_executable: str, tmp_path:
     )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["contract_findings"] == []
+
+
+# ───────── Prompt-cache cost accounting ─────────
+
+
+def _sink(tmp_path: Path, rates: object) -> object:
+    """A progress sink with its price resolution pinned to ``rates``."""
+    from rote.cli import _JsonlProgressSink
+
+    sink = _JsonlProgressSink.__new__(_JsonlProgressSink)
+    sink._path = tmp_path / "p.ndjson"  # type: ignore[attr-defined]
+    sink._model_id = "claude-sonnet-4-6"  # type: ignore[attr-defined]
+    sink._prices = rates  # type: ignore[attr-defined]
+    sink._file = None  # type: ignore[attr-defined]
+    return sink
+
+
+def test_cache_buckets_are_billed_at_their_own_rates(tmp_path: Path) -> None:
+    """Each bucket bills at its own published rate.
+
+    The rates are deliberately far apart so no two can be swapped without
+    moving the total: a cache read is a tenth of plain input and a cache
+    write is 1.25x it, so charging either at the input rate is visible.
+    """
+    from rote.cli import _Rates
+
+    sink = _sink(
+        tmp_path,
+        _Rates(
+            input_per_mtok=3.0,
+            output_per_mtok=15.0,
+            cache_read_per_mtok=0.3,
+            cache_write_per_mtok=3.75,
+        ),
+    )
+    tokens = {"input": 1000, "output": 500, "cache_write": 200_000, "cache_read": 800_000}
+    expected = 1000 / 1e6 * 3.0 + 500 / 1e6 * 15.0 + 200_000 / 1e6 * 3.75 + 800_000 / 1e6 * 0.3
+    assert sink._cost_usd(tokens) == pytest.approx(expected)  # type: ignore[attr-defined]
+
+    # The negative half: pricing the plain pair alone is what shipped, and
+    # it is ~90x lower on this input. Pin that it is NOT what comes back.
+    plain_only = 1000 / 1e6 * 3.0 + 500 / 1e6 * 15.0
+    assert sink._cost_usd(tokens) != pytest.approx(plain_only)  # type: ignore[attr-defined]
+
+
+def test_a_cached_run_with_unknown_cache_rates_reports_no_cost(tmp_path: Path) -> None:
+    """No figure beats a wrong figure.
+
+    Most models sit in ``reference_prices``, which carries no cache rates.
+    Billing their cache buckets at the plain input rate would overstate
+    reads roughly tenfold; dropping the buckets understates the run by
+    orders of magnitude. Both are worse than declining to answer.
+    """
+    from rote.cli import _Rates
+
+    sink = _sink(tmp_path, _Rates(input_per_mtok=3.0, output_per_mtok=15.0))
+    assert sink._cost_usd({"input": 10, "output": 5, "cache_read": 900_000}) is None  # type: ignore[attr-defined]
+    assert sink._cost_usd({"input": 10, "output": 5, "cache_write": 900_000}) is None  # type: ignore[attr-defined]
+    # A run that genuinely touched no cache is still priceable, so the
+    # rule cannot be satisfied by returning None unconditionally.
+    assert sink._cost_usd({"input": 1000, "output": 500}) == pytest.approx(0.0105)  # type: ignore[attr-defined]
+
+
+def test_the_runtimes_own_billed_cost_wins_over_the_priced_estimate(tmp_path: Path) -> None:
+    """``total_cost_usd`` from the agent runtime outranks a local estimate.
+
+    It knows the per-model split and the exact cache rates that applied.
+    """
+    from rote.cli import _Rates
+
+    path = tmp_path / "p.ndjson"
+    from rote.cli import _JsonlProgressSink
+
+    sink = _JsonlProgressSink.__new__(_JsonlProgressSink)
+    sink._path = path  # type: ignore[attr-defined]
+    sink._model_id = "m"  # type: ignore[attr-defined]
+    sink._prices = _Rates(input_per_mtok=3.0, output_per_mtok=15.0)  # type: ignore[attr-defined]
+    sink._file = path.open("w", encoding="utf-8")  # type: ignore[attr-defined]
+
+    digest = {"type": "summary", "total_tokens": {"input": 1000, "output": 500}}
+    sink.write_summary(dict(digest), reported_cost=2.71)  # type: ignore[attr-defined]
+    sink.close()  # type: ignore[attr-defined]
+    written = json.loads(path.read_text(encoding="utf-8").strip())
+    assert written["cost_usd"] == 2.71
+
+    # Without one, the local estimate is still used, so the preference is
+    # a real branch rather than the estimate having been removed.
+    sink2 = _sink(tmp_path, _Rates(input_per_mtok=3.0, output_per_mtok=15.0))
+    sink2._file = (tmp_path / "q.ndjson").open("w", encoding="utf-8")  # type: ignore[attr-defined]
+    sink2.write_summary(dict(digest))  # type: ignore[attr-defined]
+    sink2.close()  # type: ignore[attr-defined]
+    fallback = json.loads((tmp_path / "q.ndjson").read_text(encoding="utf-8").strip())
+    assert fallback["cost_usd"] == pytest.approx(0.0105)
+
+
+def test_token_note_reports_the_whole_input_volume() -> None:
+    """The ``in`` figure includes cache writes and reads.
+
+    Reporting the plain field alone announced a fully prompt-cached
+    compilation as ``in 113`` when it had moved six figures of input.
+    """
+    from rote.cli import _format_token_note
+
+    note = _format_token_note(
+        {"input": 113, "output": 1919, "cache_write": 122_956, "cache_read": 41_000}
+    )
+    assert "in 164.1k" in note
+    assert "164.0k cached" in note
+    assert "113" not in note
+
+    # An uncached run keeps the plain rendering, with no cache clause.
+    assert _format_token_note({"input": 1000, "output": 500}) == " (in 1.0k / out 500 tok)"
+
+
+#: The real ``_resolve_prices``, captured at import time.
+#:
+#: ``conftest`` replaces this attribute for every test so no unit test
+#: reaches the network, and every pricing test re-stubs the same seam.
+#: The consequence is that the function's own body never runs, so it
+#: could drop the cache rates entirely with the suite fully green (a
+#: mutation confirmed exactly that). Grabbing the underlying function at
+#: module import, before any fixture applies, is what lets the mapping
+#: itself be tested.
+_REAL_RESOLVE_PRICES = _SinkForCapture.__dict__["_resolve_prices"].__func__
+
+
+def _lineup_with_cache_rates() -> dict[str, object]:
+    def _m(inp: float, out: float, released: str, cr: float, cw: float) -> dict[str, object]:
+        return {
+            "name": "",
+            "cost": {"input": inp, "output": out, "cache_read": cr, "cache_write": cw},
+            "release_date": released,
+        }
+
+    return {
+        "anthropic": {
+            "models": {
+                "claude-fable-5": _m(10, 50, "2026-06-09", 1, 12.5),
+                "claude-sonnet-5": _m(2, 10, "2026-06-30", 0.2, 2.5),
+                "claude-haiku-4-5": _m(1, 5, "2025-10-15", 0.1, 1.25),
+                # Not a tier representative: the case that was unpriceable.
+                "claude-sonnet-4-6": _m(3, 15, "2026-02-17", 0.3, 3.75),
+            }
+        }
+    }
+
+
+def test_resolve_prices_carries_every_rate_off_the_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All four rates must survive the catalog-to-sink mapping.
+
+    Exercises the real ``_resolve_prices`` by patching ``fetch_catalog``
+    rather than the method, because patching the method is precisely what
+    hid this code path from the suite.
+    """
+    from rote.eval.pricing import build_catalog
+
+    catalog = build_catalog(_lineup_with_cache_rates(), None, provider="anthropic", fetched_at="t")
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda provider: catalog)
+
+    rates = _REAL_RESOLVE_PRICES("claude-sonnet-4-6")
+    assert rates is not None
+    assert rates.input_per_mtok == 3.0
+    assert rates.output_per_mtok == 15.0
+    assert rates.cache_read_per_mtok == 0.3
+    assert rates.cache_write_per_mtok == 3.75
+
+    # An unknown model resolves to nothing rather than raising.
+    assert _REAL_RESOLVE_PRICES("not-a-model") is None
+
+
+def test_resolve_prices_survives_an_offline_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed price fetch skips cost enrichment; it never sinks a run."""
+    from rote.eval.pricing import PricingError
+
+    def _down(provider: str) -> object:
+        raise PricingError("offline")
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", _down)
+    assert _REAL_RESOLVE_PRICES("claude-sonnet-4-6") is None

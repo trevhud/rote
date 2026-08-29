@@ -214,3 +214,87 @@ def test_openrouter_outage_is_not_fatal(tmp_path: Path, monkeypatch: pytest.Monk
     catalog = fetch_catalog(provider="anthropic", cache_path=tmp_path / "pricing.json")
     flagship = catalog.sample("anthropic")[0]
     assert "cross-checked" not in flagship.source  # no false claim of verification
+
+
+# ───────── Cache rates span the whole fetch ─────────
+
+
+def test_rates_for_covers_models_that_are_not_tier_representatives() -> None:
+    """Cache rates must be available for any fetched model.
+
+    ``prices`` holds three tier representatives; the compiler's default
+    model is not one of them. When cache rates lived only on those three,
+    a default compilation had no priceable cache rate at all, so every
+    prompt-cached run came back unpriceable.
+    """
+    lineup = _models_dev(
+        {
+            "claude-fable-5": _model(10, 50, "2026-06-09", cache_read=1, cache_write=12.5),
+            "claude-sonnet-5": _model(2, 10, "2026-06-30", cache_read=0.2, cache_write=2.5),
+            "claude-haiku-4-5": _model(1, 5, "2025-10-15", cache_read=0.1, cache_write=1.25),
+            # Not a tier representative, and it publishes cache rates.
+            "claude-sonnet-4-6": _model(3, 15, "2026-02-17", cache_read=0.3, cache_write=3.75),
+        }
+    )
+    catalog = build_catalog(lineup, None, provider="anthropic", fetched_at="t")
+
+    # It is genuinely not a representative, so this is not a tautology.
+    assert "claude-sonnet-4-6" not in {p.model_id for p in catalog.prices}
+    assert catalog.model_price_for("claude-sonnet-4-6") is None
+
+    assert catalog.rates_for("claude-sonnet-4-6") == (3.0, 15.0, 0.3, 3.75)
+    assert catalog.rates_for("not-a-model") is None
+
+
+def test_an_unpublished_cache_rate_stays_none_rather_than_zero() -> None:
+    """No published rate is not the same fact as a free one.
+
+    A caller that saw ``0.0`` here would bill a cached run's largest
+    bucket at nothing, which is the same understatement this whole change
+    exists to remove.
+    """
+    lineup = _models_dev(
+        {
+            "claude-fable-5": _model(10, 50, "2026-06-09", cache_read=1, cache_write=12.5),
+            "claude-sonnet-5": _model(2, 10, "2026-06-30"),
+            "claude-haiku-4-5": _model(1, 5, "2025-10-15"),
+        }
+    )
+    catalog = build_catalog(lineup, None, provider="anthropic", fetched_at="t")
+    assert catalog.rates_for("claude-sonnet-5") == (2.0, 10.0, None, None)
+
+
+def test_a_cache_file_written_before_cache_rates_still_loads(tmp_path: Path) -> None:
+    """An older on-disk cache has no ``reference_cache_rates`` key.
+
+    It must degrade to "no published rate" rather than raising or, worse,
+    reading as free. The catalog is still usable for input/output pricing.
+    """
+    from rote.eval.pricing import _load_cache, _store_cache
+
+    cache = tmp_path / "pricing.json"
+    catalog = build_catalog(LINEUP, None, provider="anthropic", fetched_at="t")
+    _store_cache(cache, catalog, "anthropic")
+
+    payload = json.loads(cache.read_text(encoding="utf-8"))
+    assert "reference_cache_rates" in payload, "new writes must carry the key"
+    del payload["reference_cache_rates"]
+    cache.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = _load_cache(cache, ttl_seconds=10_000, provider="anthropic")
+    assert loaded is not None
+    assert loaded.rates_for("claude-fable-5") == (10.0, 50.0, None, None)
+
+
+def test_cache_rates_survive_the_on_disk_round_trip(tmp_path: Path) -> None:
+    """A fresh cache must not silently drop the rates it just gained."""
+    from rote.eval.pricing import _load_cache, _store_cache
+
+    cache = tmp_path / "pricing.json"
+    catalog = build_catalog(LINEUP, None, provider="anthropic", fetched_at="t")
+    _store_cache(cache, catalog, "anthropic")
+
+    loaded = _load_cache(cache, ttl_seconds=10_000, provider="anthropic")
+    assert loaded is not None
+    assert loaded.rates_for("claude-fable-5") == (10.0, 50.0, 1.0, 12.5)
+    assert loaded.rates_for("claude-sonnet-4-6") == (3.0, 15.0, None, None)

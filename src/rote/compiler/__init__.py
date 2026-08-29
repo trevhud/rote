@@ -421,13 +421,21 @@ class Compiler:
         Reads whatever the driver reported: the api driver stamps
         ``input_tokens`` / ``output_tokens``; the subprocess drivers stamp
         ``cost_usd`` / ``num_turns``. Absent fields are simply omitted.
+
+        ``in=`` is the whole input volume, cache writes and cache reads
+        included. A prompt-cached driver puts almost nothing in the plain
+        ``input_tokens`` field, so reporting that alone announced a
+        22-minute compilation as ``in=113``.
         """
         meta = result.metadata
         parts = [f"compiled via {result.driver_name}"]
         in_tok = meta.get("input_tokens")
         out_tok = meta.get("output_tokens")
-        if in_tok is not None or out_tok is not None:
-            parts.append(f"tokens in={in_tok or 0} out={out_tok or 0}")
+        cached = int(meta.get("cache_write_tokens") or 0) + int(meta.get("cache_read_tokens") or 0)
+        if in_tok is not None or out_tok is not None or cached:
+            total_in = int(in_tok or 0) + cached
+            cached_note = f" ({cached} cached)" if cached else ""
+            parts.append(f"tokens in={total_in}{cached_note} out={out_tok or 0}")
         if meta.get("num_turns") is not None:
             parts.append(f"turns={meta['num_turns']}")
         if meta.get("cost_usd") is not None:

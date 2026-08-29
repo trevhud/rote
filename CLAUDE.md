@@ -475,6 +475,49 @@ removing any of them silently restores the overhead. Also: the CLI
 reports API failures *inside a zero exit* (`is_error: true` in the
 envelope), so returncode alone calls a failed judge a success.
 
+### A prompt-cached run reports almost nothing in `input_tokens`
+
+`claude -p` always runs prompt-cached, so `input_tokens` holds only the
+few tokens that were neither written to nor read from the cache. A
+measured one-word reply reported `input_tokens: 3` beside
+`cache_creation_input_tokens: 122956`, and `total_cost_usd: 0.7378`.
+
+The compiler driver summed the plain pair only, with a docstring
+explaining that cache fields were dropped "to match the api driver". That
+reasoning is the bug: the api driver sends no `cache_control` at all, so
+two fields are complete for it and catastrophically incomplete here.
+Compiling the rote-compile skill against itself reported a 22-minute,
+62-turn run as `tokens in=113 out=1919; cost $0.029`.
+
+Three things now hold, each with a regression test verified by breaking
+the code (`tests/test_claude_driver.py`, `tests/test_cli.py`,
+`tests/test_compiler.py`):
+
+- **All four buckets are counted.** `_usage_delta` returns
+  `{input, output, cache_write, cache_read}`, and every display adds the
+  cache buckets into the reported input rather than hiding them.
+- **The cost key is `total_cost_usd`.** There is no `cost_usd` key in the
+  result envelope, so the old read returned `None` on every run while the
+  real figure sat one key away. It is also authoritative: the CLI knows
+  the per-model split and the exact cache rates, so it outranks anything
+  rote prices locally.
+- **Cache rates span the whole fetch.** models.dev publishes them per
+  model and `_parse_models_dev` already read them, but `build_catalog`
+  kept only the three tier representatives'. The compiler's default
+  model is not one, so a default compilation had nothing to price its
+  cache with. `PricingCatalog.rates_for` is the accessor that covers
+  every model; `model_price_for` stays narrow. An older on-disk cache
+  has no such key and degrades to "no published rate" rather than
+  reading as free.
+- **An unpriceable run reports no cost, not a wrong one.** When a run
+  touched the cache and the rates are genuinely unknown, `_cost_usd`
+  returns `None`. Billing cache reads at the plain input rate would
+  overstate them roughly tenfold.
+
+The general lesson, and it generalizes past this file: a usage number is
+only as complete as the fields you chose to read, and a field you never
+read fails silently and looks like a small number.
+
 ### Sonnet is the default, not Opus
 
 Both `ClaudeDriver` and `AnthropicApiDriver` default to
@@ -1241,7 +1284,7 @@ Don't waste time debugging stubs. These are intentional.
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
   measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
-- 1214 tests (1187 fast + 27 slow). Run with `pytest tests/` (fast
+- 1228 tests (1201 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
   MCP-over-stdio); the TS ones require a Node toolchain, DBOS-TS
