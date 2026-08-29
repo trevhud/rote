@@ -127,25 +127,45 @@ def _stream_text_snippet(content: list[Any]) -> str:
     return "thinking…"
 
 
-def _usage_delta(message: object) -> tuple[int, int]:
-    """``(input_tokens, output_tokens)`` from a stream-json ``message.usage``.
+#: The four token buckets a run accumulates. ``cache_write`` /
+#: ``cache_read`` carry nearly all of a ``claude -p`` run's input
+#: volume; see :func:`_usage_delta`.
+_EMPTY_TOTALS: dict[str, int] = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+
+
+def _usage_delta(message: object) -> dict[str, int]:
+    """Per-bucket token usage from a stream-json ``message.usage``.
 
     Claude Code stamps each ``assistant`` message with the token usage of
     that single model response. Missing / non-integer fields count as 0 so
-    a malformed line never poisons the running total. Cache-token fields
-    are intentionally ignored to match the api driver, which sums only the
-    ``input_tokens`` / ``output_tokens`` totals.
+    a malformed line never poisons the running total.
+
+    All four buckets are captured, and the two cache buckets are the
+    point. ``claude -p`` always runs prompt-cached, so ``input_tokens``
+    holds only the handful of tokens that were neither written to nor read
+    from the cache: a measured one-word reply reported ``input_tokens: 3``
+    beside ``cache_creation_input_tokens: 122956``. Summing the plain
+    fields alone therefore undercounts a real compilation by orders of
+    magnitude, and anything priced from that total is wrong by the same
+    factor. The api driver can sum two fields because it sends no
+    ``cache_control`` at all; copying its policy here was the bug.
     """
+    empty = dict(_EMPTY_TOTALS)
     if not isinstance(message, dict):
-        return 0, 0
+        return empty
     usage = message.get("usage")
     if not isinstance(usage, dict):
-        return 0, 0
+        return empty
 
     def _int(value: object) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
-    return _int(usage.get("input_tokens")), _int(usage.get("output_tokens"))
+    return {
+        "input": _int(usage.get("input_tokens")),
+        "output": _int(usage.get("output_tokens")),
+        "cache_write": _int(usage.get("cache_creation_input_tokens")),
+        "cache_read": _int(usage.get("cache_read_input_tokens")),
+    }
 
 
 def _map_stream_line(
@@ -195,10 +215,9 @@ def _map_stream_line(
         content = []
 
     if totals is None:
-        totals = {"input": 0, "output": 0}
-    delta_in, delta_out = _usage_delta(message)
-    totals["input"] += delta_in
-    totals["output"] += delta_out
+        totals = dict(_EMPTY_TOTALS)
+    for bucket, delta in _usage_delta(message).items():
+        totals[bucket] = totals.get(bucket, 0) + delta
 
     turn += 1
     events: list[CompilationEvent] = [
@@ -474,7 +493,7 @@ class ClaudeDriver(CompilerDriver):
 
         result_obj: dict[str, Any] | None = None
         turn = 0
-        totals: dict[str, int] = {"input": 0, "output": 0}
+        totals: dict[str, int] = dict(_EMPTY_TOTALS)
 
         async def read_stdout() -> None:
             nonlocal result_obj, turn
@@ -501,27 +520,37 @@ class ClaudeDriver(CompilerDriver):
         """Turn the stream-json ``result`` object into driver metadata.
 
         The final ``{"type": "result", ...}`` line of the stream carries
-        the same run summary the old ``--output-format json`` mode
-        returned as its whole payload: ``cost_usd``, ``duration_ms``,
+        the run summary: ``total_cost_usd``, ``duration_ms``,
         ``num_turns``, ``session_id``. We keep those numeric/id fields and
-        drop the (potentially large) ``result`` text. ``input_tokens`` /
-        ``output_tokens`` come from the streamed-usage ``totals`` and
-        mirror the api driver's final metadata, so a consumer can price a
-        subscription run the same way it prices an api one.
+        drop the (potentially large) ``result`` text.
+
+        **The cost field is ``total_cost_usd``, and it is authoritative.**
+        There is no ``cost_usd`` key in the envelope, so reading that name
+        yielded ``None`` on every run while a real figure sat one key
+        away. A measured trivial call reported ``$0.7378``. It is also
+        better than anything priced here: the CLI knows the per-model
+        split and the cache-write/cache-read rates that applied, and it
+        reports them for a subscription run where rote cannot.
+
+        The four token buckets come from the streamed usage. ``cache_write``
+        and ``cache_read`` are not optional detail. See
+        :func:`_usage_delta`, where they carry nearly all of the input.
 
         A missing result object — the stream ended without a summary line
         — degrades to the driver name plus the token totals, same shape
         an unparseable payload produces.
         """
-        metadata = {
+        metadata: dict[str, Any] = {
             "driver": self.name,
-            "input_tokens": totals["input"],
-            "output_tokens": totals["output"],
+            "input_tokens": totals.get("input", 0),
+            "output_tokens": totals.get("output", 0),
+            "cache_write_tokens": totals.get("cache_write", 0),
+            "cache_read_tokens": totals.get("cache_read", 0),
         }
         if not isinstance(result, dict):
             return metadata
         metadata.update(
-            cost_usd=result.get("cost_usd"),
+            cost_usd=result.get("total_cost_usd"),
             duration_ms=result.get("duration_ms"),
             num_turns=result.get("num_turns"),
             session_id=result.get("session_id"),

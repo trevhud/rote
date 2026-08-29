@@ -520,3 +520,44 @@ def test_default_compiler_skill_dir_finds_bundled_skill() -> None:
     compiler = Compiler()
     assert compiler.compiler_skill_dir == BUNDLED_COMPILER_SKILL
     assert (compiler.compiler_skill_dir / "SKILL.md").is_file()
+
+
+def test_completion_message_reports_the_whole_input_volume() -> None:
+    """The one-line summary must not report a cached run as ~0 input.
+
+    This line is what a human sees at the end of a compilation. With a
+    prompt-cached driver the plain ``input_tokens`` field holds almost
+    nothing, so printing it alone announced a 22-minute, 62-turn run as
+    ``tokens in=113``.
+    """
+    result = DriverResult(
+        driver_name="claude",
+        pipeline_yaml_path=Path("pipeline.yaml"),
+        work_dir=Path("."),
+        metadata={
+            "input_tokens": 113,
+            "output_tokens": 1919,
+            "cache_write_tokens": 122_956,
+            "cache_read_tokens": 41_000,
+            "num_turns": 62,
+            "cost_usd": 2.71,
+        },
+    )
+    message = Compiler._completion_message(result)
+    assert "in=164069" in message
+    assert "(163956 cached)" in message
+    assert "in=113" not in message
+    assert "turns=62" in message
+    assert "cost=$2.71" in message
+
+    # An uncached driver keeps the plain rendering and grows no cache clause.
+    plain = Compiler._completion_message(
+        DriverResult(
+            driver_name="api",
+            pipeline_yaml_path=Path("pipeline.yaml"),
+            work_dir=Path("."),
+            metadata={"input_tokens": 1000, "output_tokens": 500},
+        )
+    )
+    assert "tokens in=1000 out=500" in plain
+    assert "cached" not in plain

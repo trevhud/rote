@@ -226,11 +226,17 @@ _COMPILE_TOTAL_PHASES = 7
 
 
 def _format_token_note(tokens: dict[str, int] | None) -> str:
-    """Compact ``(in 40.2k / out 8.1k tok)`` annotation, or ``""``.
+    """Compact ``(in 40.2k / out 8.1k tok, 39.9k cached)`` annotation.
 
-    Counts ≥1000 are abbreviated to one decimal of ``k``; smaller ones
+    Counts >=1000 are abbreviated to one decimal of ``k``; smaller ones
     print raw. Empty string when there's nothing to show, so callers can
     append it unconditionally.
+
+    The ``in`` figure is the run's whole input volume: plain input plus
+    cache writes plus cache reads. Reporting only the plain field made a
+    fully prompt-cached compilation read as ``in 113`` when it had in
+    fact moved six figures of input, so the cached share is broken out
+    rather than dropped.
     """
     if not tokens:
         return ""
@@ -238,7 +244,12 @@ def _format_token_note(tokens: dict[str, int] | None) -> str:
     def _h(n: int) -> str:
         return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
-    return f" (in {_h(tokens.get('input', 0))} / out {_h(tokens.get('output', 0))} tok)"
+    cached = tokens.get("cache_write", 0) + tokens.get("cache_read", 0)
+    total_in = tokens.get("input", 0) + cached
+    note = f" (in {_h(total_in)} / out {_h(tokens.get('output', 0))} tok"
+    if cached:
+        note += f", {_h(cached)} cached"
+    return note + ")"
 
 
 def _compile_progress_printer() -> Callable[[CompilationEvent], None]:
@@ -281,6 +292,22 @@ def _compile_progress_printer() -> Callable[[CompilationEvent], None]:
     return printer
 
 
+@dataclasses.dataclass(frozen=True)
+class _Rates:
+    """Per-Mtok USD rates for one model, cache buckets included.
+
+    ``cache_read_per_mtok`` / ``cache_write_per_mtok`` are ``None`` when
+    the catalog does not publish them for this model. That is a distinct
+    state from zero, and :meth:`_JsonlProgressSink._cost_usd` treats it as
+    "cannot price this run" rather than "these tokens were free".
+    """
+
+    input_per_mtok: float
+    output_per_mtok: float
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
+
+
 class _JsonlProgressSink:
     """Append-per-event JSONL progress sink for ``rote compile``.
 
@@ -319,12 +346,17 @@ class _JsonlProgressSink:
             self._file = None
 
     @staticmethod
-    def _resolve_prices(model_id: str) -> tuple[float, float] | None:
-        """``(input, output)`` USD/Mtok for ``model_id``, or ``None``.
+    def _resolve_prices(model_id: str) -> _Rates | None:
+        """Per-Mtok rates for ``model_id``, or ``None``.
 
         One live catalog fetch at construction. Offline (``PricingError``)
-        or an unpriced model yields ``None`` — cost enrichment is then
+        or an unpriced model yields ``None``, and cost enrichment is then
         silently skipped rather than failing the run.
+
+        Cache rates come from the full :class:`ModelPrice` when the
+        catalog has one, and stay ``None`` otherwise. Keeping them
+        distinct from zero is the point: a run billed at the wrong cache
+        rate is worse than a run with no reported cost.
         """
         from rote.eval.pricing import PricingError, fetch_catalog
 
@@ -332,15 +364,48 @@ class _JsonlProgressSink:
             catalog = fetch_catalog(provider="anthropic")
         except PricingError:
             return None
-        return catalog.price_for(model_id)
+        full = catalog.model_price_for(model_id)
+        if full is not None:
+            return _Rates(
+                input_per_mtok=full.input_per_mtok,
+                output_per_mtok=full.output_per_mtok,
+                cache_read_per_mtok=full.cache_read_per_mtok,
+                cache_write_per_mtok=full.cache_write_per_mtok,
+            )
+        pair = catalog.price_for(model_id)
+        if pair is None:
+            return None
+        return _Rates(input_per_mtok=pair[0], output_per_mtok=pair[1])
 
     def _cost_usd(self, tokens: dict[str, int]) -> float | None:
-        if self._prices is None:
+        """Price the four token buckets, or return ``None`` honestly.
+
+        A ``claude -p`` run is prompt-cached, so ``cache_write`` and
+        ``cache_read`` carry nearly all of its input volume. Pricing only
+        the plain input/output pair reported a 22-minute, 62-turn
+        compilation at $0.029.
+
+        When a run used the cache but the catalog has no cache rates for
+        the model, this returns ``None`` rather than a number. Falling
+        back to the plain input rate would overstate cache reads roughly
+        tenfold, and dropping the buckets understates the run by orders of
+        magnitude. No figure beats a wrong figure, and the claude lane
+        reports an authoritative ``total_cost_usd`` regardless.
+        """
+        rates = self._prices
+        if rates is None:
             return None
-        input_per_mtok, output_per_mtok = self._prices
+        cache_write = tokens.get("cache_write", 0)
+        cache_read = tokens.get("cache_read", 0)
+        if (cache_write and rates.cache_write_per_mtok is None) or (
+            cache_read and rates.cache_read_per_mtok is None
+        ):
+            return None
         cost = (
-            tokens.get("input", 0) / 1e6 * input_per_mtok
-            + tokens.get("output", 0) / 1e6 * output_per_mtok
+            tokens.get("input", 0) / 1e6 * rates.input_per_mtok
+            + tokens.get("output", 0) / 1e6 * rates.output_per_mtok
+            + cache_write / 1e6 * (rates.cache_write_per_mtok or 0.0)
+            + cache_read / 1e6 * (rates.cache_read_per_mtok or 0.0)
         )
         return round(cost, 6)
 
@@ -366,18 +431,26 @@ class _JsonlProgressSink:
             # A progress-file bug must never sink a paid run.
             pass
 
-    def write_summary(self, summary: dict[str, Any]) -> None:
+    def write_summary(self, summary: dict[str, Any], reported_cost: float | None = None) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
         Prices the run's ``total_tokens`` into a ``cost_usd`` field the
         same way per-event lines are priced. Never raises.
+
+        ``reported_cost`` is what the agent runtime itself billed
+        (``total_cost_usd`` from ``claude -p``). It wins when present,
+        because it knows the per-model split and the exact cache rates
+        that applied, which a catalog lookup here can only approximate.
         """
         try:
-            total = summary.get("total_tokens")
-            if isinstance(total, dict):
-                cost = self._cost_usd(total)
-                if cost is not None:
-                    summary = {**summary, "cost_usd": cost}
+            if reported_cost is not None:
+                summary = {**summary, "cost_usd": reported_cost}
+            else:
+                total = summary.get("total_tokens")
+                if isinstance(total, dict):
+                    cost = self._cost_usd(total)
+                    if cost is not None:
+                        summary = {**summary, "cost_usd": cost}
             self._write(summary)
         except Exception:
             pass
@@ -920,6 +993,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         total_tokens = {
             "input": int(meta.get("input_tokens") or 0),
             "output": int(meta.get("output_tokens") or 0),
+            "cache_write": int(meta.get("cache_write_tokens") or 0),
+            "cache_read": int(meta.get("cache_read_tokens") or 0),
         }
         progress_sink.write_summary(
             {
@@ -933,7 +1008,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "mcp_servers": analysis["mcp_servers"],
                 "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
                 "total_tokens": total_tokens,
-            }
+            },
+            reported_cost=meta.get("cost_usd"),
         )
         progress_sink.close()
     return exit_code

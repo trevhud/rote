@@ -110,6 +110,22 @@ class PricingCatalog:
         """(input, output) USD per Mtok for any fetched model, else None."""
         return self.reference_prices.get(_normalize_model_id(model_id))
 
+    def model_price_for(self, model_id: str) -> ModelPrice | None:
+        """The full :class:`ModelPrice`, including cache rates, or None.
+
+        Narrower than :meth:`price_for` on purpose. ``reference_prices``
+        covers every fetched model but carries only the input/output pair,
+        so a caller pricing a prompt-cached run needs this instead. It can
+        only answer for models in ``prices`` (the tier representatives);
+        a caller that gets ``None`` here knows the cache rates are
+        genuinely unknown rather than zero.
+        """
+        target = _normalize_model_id(model_id)
+        for price in self.prices:
+            if _normalize_model_id(price.model_id) == target:
+                return price
+        return None
+
     def sample(self, provider: str = "anthropic") -> list[ModelPrice]:
         """The scorecard's model sampling: one model per tier, newest
         lineup, for the given provider. Ordered flagship → small."""
