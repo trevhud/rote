@@ -22,10 +22,15 @@ everything here imports it lazily and fails with that hint, matching
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
+
+#: A single wedged tools/call must become a reportable tool failure, never
+#: a frozen compile.
+CALL_TIMEOUT_SECONDS = 180.0
 
 MCP_TOOL_PREFIX = "mcp__"
 
@@ -190,7 +195,14 @@ class LiveMcpTools:
             client, bare_name = self._tools[tool_name]
         except KeyError:
             raise ValueError(f"Unknown MCP tool: {tool_name}") from None
-        result = await client.call_tool(bare_name, args or {})
+        try:
+            result = await asyncio.wait_for(
+                client.call_tool(bare_name, args or {}), timeout=CALL_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            raise RuntimeError(
+                f"MCP tool {tool_name} timed out after {CALL_TIMEOUT_SECONDS:.0f}s"
+            ) from None
         return result_text(result)
 
 
