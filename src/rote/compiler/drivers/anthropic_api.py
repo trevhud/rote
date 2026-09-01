@@ -47,7 +47,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
-from rote.compiler.drivers._heartbeat import await_with_heartbeat
 from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     anthropic_tool_schemas,
@@ -64,6 +63,7 @@ from rote.compiler.drivers._fs_tools import (
 from rote.compiler.drivers._fs_tools import (
     handle_write_file as _handle_write_file,
 )
+from rote.compiler.drivers._heartbeat import await_with_heartbeat
 from rote.compiler.events import (
     CompilationEvent,
     EventCallback,

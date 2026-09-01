@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, TypeVar
+from collections.abc import Awaitable
+from typing import TypeVar
 
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
 
@@ -24,7 +25,7 @@ HEARTBEAT_SECONDS = 120.0
 
 
 async def await_with_heartbeat(
-    pending: "asyncio.Future[T] | Any",
+    pending: Awaitable[T],
     on_event: EventCallback | None,
     label: str,
     interval: float = HEARTBEAT_SECONDS,
