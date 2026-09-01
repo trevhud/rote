@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.compiler.drivers._heartbeat import await_with_heartbeat
 from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     build_system_prompt,
@@ -322,14 +323,18 @@ class OpenAIApiDriver(CompilerDriver):
         for iteration in range(1, self.max_iterations + 1):
             completed_iterations = iteration
 
-            response = await client.chat.completions.create(
-                model=self.model,
-                max_completion_tokens=self.max_tokens_per_turn,
-                messages=messages,
-                # The shared builder returns plain dicts (wire-shape-neutral,
-                # shared with the Anthropic driver); the SDK validates them
-                # at runtime. Cast past the SDK's TypedDict union.
-                tools=cast("Any", tool_schemas),
+            response = await await_with_heartbeat(
+                client.chat.completions.create(
+                    model=self.model,
+                    max_completion_tokens=self.max_tokens_per_turn,
+                    messages=messages,
+                    # The shared builder returns plain dicts (wire-shape-neutral,
+                    # shared with the Anthropic driver); the SDK validates them
+                    # at runtime. Cast past the SDK's TypedDict union.
+                    tools=cast("Any", tool_schemas),
+                ),
+                on_event,
+                f"the model (turn {iteration})",
             )
 
             usage = getattr(response, "usage", None)
