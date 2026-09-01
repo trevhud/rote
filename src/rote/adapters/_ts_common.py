@@ -1888,7 +1888,15 @@ const AUTH_PREFIX = "ROTE_MCP_AUTH_NEEDED:";
 function translate(err: unknown, server: string): unknown {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.startsWith(AUTH_PREFIX)) {
-        const reason = msg.slice(AUTH_PREFIX.length).trim();
+        let reason = msg.slice(AUTH_PREFIX.length).trim();
+        // The proxy's detail leads with the server name (its parse token);
+        // RoteMcpAuthNeeded's own message already names the server, so drop
+        // the leading token rather than saying it twice.
+        if (reason === server) {
+            reason = "";
+        } else if (reason.startsWith(`${server} `)) {
+            reason = reason.slice(server.length + 1).trim();
+        }
         return new RoteMcpAuthNeeded(
             server,
             reason || "the platform reports the connection needs re-authorization",

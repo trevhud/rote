@@ -311,6 +311,10 @@ def test_cloudflare_binding_mode_signs_every_proxy_call(tmp_path: Path) -> None:
     assert "env.ROTE_RUN_ID" in helper  # optional — only sent when present
     # A missing injected var throws a config error naming the variable.
     assert "`the ${name} variable is not set" in helper
+    # The proxy's detail leads with the server name (its parse token) —
+    # translate() strips it so the parked-error reason doesn't repeat it.
+    assert "reason.startsWith(`${server} `)" in helper
+    assert "reason.slice(server.length + 1)" in helper
     # is_error maps to the same thrown-error path as the direct helper's
     # result.isError; string content is JSON-parsed like text blocks.
     assert "if (result.is_error)" in helper
