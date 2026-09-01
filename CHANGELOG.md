@@ -9,6 +9,40 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **The api and openai-api compiler drivers can call MCP tools live.**
+  A new driver kwarg `mcp_servers` (each entry `{"name", "url",
+  "headers"}`, streamable HTTP only) connects at agent start and exposes
+  each server's tools to the compiler agent as `mcp__<server>__<tool>` —
+  gated to tools whose server declares `readOnlyHint`, the same
+  predicate `rote baseline` already applies, now shared in
+  `rote.mcp.live_tools` so the two gates cannot drift. Connections stay
+  open across the agent loop; a server that cannot be reached is a
+  warning event, never a failed compile, and a tool failure returns to
+  the model as an error tool result. When `rote compile` runs one of
+  these drivers and no servers were passed, the local registry's
+  authenticated servers are wired in automatically (static headers
+  verbatim, logged-in servers via a freshly refreshed token;
+  unauthenticated servers are skipped with a printed reason).
+- **Binding-backed Workers MCP helper.**
+  `get_adapter("cloudflare").emit(pipeline, out_dir, mcp_client="binding")`
+  (also available as a factory option, `get_adapter("cloudflare",
+  mcp_client="binding")`) emits a `_roteMcp.ts` variant with the same
+  exported surface as the direct helper, implemented over a
+  platform-provisioned `ROTE_MCP` RPC service binding: no per-server
+  secrets, no `ROTE_MCP_TOKENS` KV namespace, no OAuth refresh, and no
+  MCP SDK dependency. The generated Env interface declares the one
+  `ROTE_MCP` binding instead of the per-server secret surface. An error
+  whose message starts with `ROTE_MCP_AUTH_NEEDED:` — the platform
+  proxy's contract — is rethrown as `RoteMcpAuthNeeded`, so the
+  park-on-auth loop, the `rote_auth_<server>` event names, and agent
+  loops are unchanged. The default (`"direct"`) emission is untouched.
+- **`manifest.json` carries the pipeline's required MCP servers.** A new
+  `mcp_servers` key (server name → sorted bound node ids, from
+  `Pipeline.required_mcp_servers`) is always present in the Cloudflare
+  manifest — `{}` when the pipeline makes no MCP calls — so the cloud
+  runner can provision connections without re-deriving them from the IR.
+
 ### Fixed
 - **Pinned `fastmcp` below 4.** The declaration was `fastmcp>=3.4.2` with
   no upper bound, so CI resolved to `fastmcp` 4.0.2 (published
