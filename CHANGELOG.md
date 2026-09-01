@@ -10,6 +10,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Heartbeat events while awaiting a model request.** The api and
+  openai-api drivers emit a `log` event every 120 seconds while an LLM
+  request is pending, so a hosted hang detector can tell a slow or
+  retrying request from a wedged job.
 - **The api and openai-api compiler drivers can call MCP tools live.**
   A new driver kwarg `mcp_servers` (each entry `{"name", "url",
   "headers"}`, streamable HTTP only) connects at agent start and exposes
