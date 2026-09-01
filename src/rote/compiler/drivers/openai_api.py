@@ -127,6 +127,7 @@ class OpenAIApiDriver(CompilerDriver):
         max_tokens_per_turn: int = DEFAULT_MAX_TOKENS_PER_TURN,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         """
         Parameters
@@ -150,12 +151,21 @@ class OpenAIApiDriver(CompilerDriver):
             the gateway's ``cf-aig-authorization`` / ``Authorization``
             token here; when either is present the driver runs in gateway
             mode and needs no ``OPENAI_API_KEY`` (see :meth:`is_available`).
+        mcp_servers
+            Live MCP servers whose read-only tools are exposed to the
+            compiler agent as ``mcp__<server>__<tool>`` tools — each
+            entry ``{"name": str, "url": str, "headers": dict[str, str]
+            | None}`` (streamable HTTP only). Requires the ``mcp`` extra
+            (``pip install 'rote-cli[mcp]'``). Only tools whose server
+            declares ``readOnlyHint`` are exposed; a server that cannot
+            be reached is skipped with a warning event, never an error.
         """
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
         self.base_url = base_url
         self.default_headers = default_headers
+        self.mcp_servers = mcp_servers
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble ``AsyncOpenAI(...)`` kwargs.
@@ -223,6 +233,58 @@ class OpenAIApiDriver(CompilerDriver):
             )
         skill_md_text = skill_md.read_text(encoding="utf-8")
 
+        # Live MCP tools stay connected across the whole agent loop —
+        # reconnecting per call would redo the HTTP handshake (and lose
+        # any server-side session state) on every tool invocation.
+        live = self._live_mcp_tools(on_event)
+        if live is not None:
+            try:
+                await live.__aenter__()
+            except RuntimeError as e:
+                # The mcp extra is missing but mcp_servers were requested:
+                # compiling without the requested tools would be a silently
+                # wrong run, not a degraded one.
+                raise DriverError(str(e)) from e
+        try:
+            return await self._run_agent(
+                skill_dir=skill_dir,
+                compiler_skill_dir=compiler_skill_dir,
+                work_dir=work_dir,
+                skill_md_text=skill_md_text,
+                extra_instructions=extra_instructions,
+                on_event=on_event,
+                live=live,
+            )
+        finally:
+            if live is not None:
+                await live.__aexit__(None, None, None)
+
+    def _live_mcp_tools(self, on_event: EventCallback | None) -> Any:
+        """A connected-tools manager for this run, or ``None`` without servers."""
+        if not self.mcp_servers:
+            return None
+        from rote.mcp.live_tools import LiveMcpTools
+
+        def _warn(message: str) -> None:
+            emit_safely(
+                on_event,
+                CompilationEvent(type="warning", ts=time.time(), message=message),
+            )
+
+        return LiveMcpTools(self.mcp_servers, on_warning=_warn)
+
+    async def _run_agent(
+        self,
+        *,
+        skill_dir: Path,
+        compiler_skill_dir: Path,
+        work_dir: Path,
+        skill_md_text: str,
+        extra_instructions: str | None,
+        on_event: EventCallback | None,
+        live: Any,
+    ) -> DriverResult:
+        """The tool-use loop body, bracketed by ``run``'s MCP lifecycle."""
         read_roots = [skill_dir, compiler_skill_dir]
         write_root = work_dir
 
@@ -230,6 +292,8 @@ class OpenAIApiDriver(CompilerDriver):
 
         client = openai.AsyncOpenAI(**self._client_kwargs())
         tool_schemas = openai_tool_schemas()
+        if live is not None:
+            tool_schemas = tool_schemas + live.openai_tool_schemas()
 
         task_prompt = (
             f"Compile the skill at {skill_dir}. "
@@ -383,18 +447,27 @@ class OpenAIApiDriver(CompilerDriver):
                 else:
                     typed_args = cast("dict[str, Any]", args)
                     try:
-                        result_text = dispatch_tool(tool_name, typed_args, read_roots, write_root)
-                        if tool_name == "write_file":
-                            # The agent announces phase transitions by
-                            # writing progress.ndjson; intercept that write
-                            # and turn the new lines into phase events.
-                            emitted_phases = emit_progress_phases(
-                                typed_args["path"],
-                                typed_args["content"],
-                                work_dir,
-                                on_event,
-                                emitted_phases,
+                        if live is not None and live.owns(tool_name):
+                            # An exposed MCP tool: dispatch to its server
+                            # and hand the result back as text. Failures
+                            # fall to the error branch below — reported to
+                            # the model, never allowed to crash the compile.
+                            result_text = await live.call(tool_name, typed_args)
+                        else:
+                            result_text = dispatch_tool(
+                                tool_name, typed_args, read_roots, write_root
                             )
+                            if tool_name == "write_file":
+                                # The agent announces phase transitions by
+                                # writing progress.ndjson; intercept that write
+                                # and turn the new lines into phase events.
+                                emitted_phases = emit_progress_phases(
+                                    typed_args["path"],
+                                    typed_args["content"],
+                                    work_dir,
+                                    on_event,
+                                    emitted_phases,
+                                )
                     except Exception as e:
                         result_text = f"Error: {type(e).__name__}: {e}"
 

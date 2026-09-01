@@ -196,6 +196,7 @@ async def read_only_allowlist(
     surface these as non-blocking recommendations.
     """
     from rote.mcp._runtime_helper import RoteMcpAuthNeeded, mcp_client
+    from rote.mcp.live_tools import mcp_tool_id, read_only_tools
 
     allowed: list[str] = []
     skipped: dict[str, str] = {}
@@ -210,18 +211,16 @@ async def read_only_allowlist(
         except Exception as e:  # noqa: BLE001 — a dead server must not sink the baseline
             skipped[server] = f"unreachable ({type(e).__name__}: {e})"
             continue
-        read_only = [
-            t.name
-            for t in tools
-            if t.annotations is not None and t.annotations.readOnlyHint is True
-        ]
+        # The one readOnlyHint predicate, shared with the in-process
+        # compiler drivers so the two gates cannot drift.
+        read_only = [t.name for t in read_only_tools(tools)]
         if not read_only:
             skipped[server] = (
                 f"no tools declare readOnlyHint ({len(tools)} tools total) — "
                 "pass --allow-writes to wire this server"
             )
             continue
-        allowed.extend(f"mcp__{server}__{name}" for name in sorted(read_only))
+        allowed.extend(mcp_tool_id(server, name) for name in sorted(read_only))
     return allowed, skipped
 
 
