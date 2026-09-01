@@ -263,3 +263,109 @@ def test_cloudflare_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
     assert "NonRetryableError" not in src
     assert "rote_auth_" not in src
     assert "stepNeedsAuth" not in src
+
+
+# ───────── Binding-backed Workers MCP helper (mcp_client="binding") ─────────
+#
+# `emit(..., mcp_client="binding")` swaps the direct helper (per-server
+# secrets + OAuth refresh + KV token cache) for a variant that delegates
+# every MCP operation to a platform-provisioned ROTE_MCP service binding.
+# The exported surface — and the workflow's park-on-auth machinery — stay
+# identical; only the provisioning surface changes.
+
+
+def test_cloudflare_binding_mode_delegates_to_the_service_binding(tmp_path: Path) -> None:
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "env.ROTE_MCP.call(server, tool, args)" in helper
+    assert "env.ROTE_MCP.listTools(server)" in helper
+    # The platform proxy's auth contract, translated back into the same
+    # error the park loop already detects by name.
+    assert '"ROTE_MCP_AUTH_NEEDED:"' in helper
+    assert "class RoteMcpAuthNeeded extends Error" in helper
+    assert 'e.name === "RoteMcpAuthNeeded"' in helper
+    # No token machinery in this variant: no OAuth grant, no KV cache,
+    # no MCP SDK client.
+    assert "grant_type" not in helper
+    assert "refreshAccessToken" not in helper
+    assert "KVNamespace" not in helper
+    assert "@modelcontextprotocol" not in helper
+    # The emitted node module is unchanged — same import, same call shape.
+    bound = (tmp_path / "src" / "extracted" / "pull_data.ts").read_text(encoding="utf-8")
+    assert 'import { callMcpTool, type RoteMcpEnv } from "./_roteMcp";' in bound
+    assert "callMcpTool(env" in bound
+
+
+def test_cloudflare_binding_mode_env_and_config_surfaces(tmp_path: Path) -> None:
+    """Binding mode swaps the provisioning surface: Env declares the one
+    ROTE_MCP binding instead of per-server secrets + the KV cache, wrangler
+    provisions no KV namespace, .dev.vars declares no MCP secrets, and the
+    MCP SDK leaves package.json."""
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
+    workflow = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert "ROTE_MCP: RoteMcpBinding;" in workflow
+    assert "type RoteMcpBinding" in workflow  # imported from the helper
+    assert "ROTE_MCP_VENDOR_REFRESH_TOKEN" not in workflow
+    assert "ROTE_MCP_TOKENS" not in workflow
+    wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert "kv_namespaces" not in wrangler
+    dev_vars = (tmp_path / ".dev.vars.example").read_text(encoding="utf-8")
+    assert "ROTE_MCP_VENDOR" not in dev_vars
+    package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
+    assert "@modelcontextprotocol/sdk" not in package["dependencies"]
+    # The manifest's requirements key is mode-independent.
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["mcp_servers"] == {"vendor": ["pull_data"]}
+
+
+def test_cloudflare_binding_mode_keeps_the_park_loop(tmp_path: Path) -> None:
+    """Parkable steps, auth_event_type names, and the NonRetryableError
+    opt-out are identical in both client modes — only the helper changed."""
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
+    src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
+    assert "isRoteMcpAuthNeeded" in src
+    assert 'type: "rote_auth_vendor", timeout: "30 days"' in src
+    assert "function stepNeedsAuth" in src
+
+
+def test_cloudflare_binding_mode_binds_agent_tools_through_the_proxy(
+    bdr_pipeline: Pipeline, tmp_path: Path
+) -> None:
+    """BDR's agent loops declare MCP tools without any `mcp:`-bound node —
+    binding mode still emits the helper, and the loops import the same
+    bindAgentTools surface (now backed by ROTE_MCP.listTools)."""
+    get_adapter("cloudflare").emit(bdr_pipeline, tmp_path, mcp_client="binding")
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "bindAgentTools" in helper
+    assert "env.ROTE_MCP.listTools(server)" in helper
+    loop = (tmp_path / "src" / "extracted" / "lead_generation_loop.ts").read_text(
+        encoding="utf-8"
+    )
+    assert 'import { bindAgentTools, type RoteMcpEnv } from "./_roteMcp";' in loop
+    workflow = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
+    assert "ROTE_MCP: RoteMcpBinding;" in workflow
+
+
+def test_cloudflare_binding_mode_via_factory_option(tmp_path: Path) -> None:
+    get_adapter("cloudflare", mcp_client="binding").emit(_bound_pipeline(), tmp_path)
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "env.ROTE_MCP.call" in helper
+
+
+def test_cloudflare_default_mode_is_direct(tmp_path: Path) -> None:
+    """Without the kwarg the existing behavior holds — the negative half,
+    so binding mode can't silently become the default."""
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path)
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert "refreshAccessToken" in helper
+    assert "env.ROTE_MCP.call" not in helper
+    wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
+    assert '"binding": "ROTE_MCP_TOKENS"' in wrangler
+
+
+def test_cloudflare_rejects_unknown_mcp_client(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mcp_client"):
+        get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="proxy")
+    with pytest.raises(ValueError, match="mcp_client"):
+        get_adapter("cloudflare", mcp_client="proxy")
