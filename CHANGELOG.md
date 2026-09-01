@@ -16,14 +16,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   retrying request from a wedged job.
 - **The api and openai-api compiler drivers can call MCP tools live.**
   A new driver kwarg `mcp_servers` (each entry `{"name", "url",
-  "headers"}`, streamable HTTP only) connects at agent start and exposes
-  each server's tools to the compiler agent as `mcp__<server>__<tool>` —
+  "headers"}`, streamable HTTP only) lists each server's tools at agent
+  start and exposes them to the compiler agent as `mcp__<server>__<tool>` —
   gated to tools whose server declares `readOnlyHint`, the same
   predicate `rote baseline` already applies, now shared in
-  `rote.mcp.live_tools` so the two gates cannot drift. Connections stay
-  open across the agent loop; a server that cannot be reached is a
-  warning event, never a failed compile, and a tool failure returns to
-  the model as an error tool result. When `rote compile` runs one of
+  `rote.mcp.live_tools` so the two gates cannot drift. Every tool call
+  opens a fresh connection — long-lived streamable-HTTP sessions
+  combined with the vendor SDK deterministically froze the asyncio loop
+  under the hosted container runtime, and per-call connects also pick up
+  rotated tokens naturally. A server that cannot be reached is a warning
+  event, never a failed compile, and a tool failure returns to the model
+  as an error tool result. When `rote compile` runs one of
   these drivers and no servers were passed, the local registry's
   authenticated servers are wired in automatically (static headers
   verbatim, logged-in servers via a freshly refreshed token;

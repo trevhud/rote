@@ -9,8 +9,8 @@ tools. Everything protocol-neutral lives here:
   drift;
 - the ``mcp__<server>__<tool>`` naming convention (:func:`mcp_tool_id`),
   the same ids ``claude -p`` uses for MCP tools;
-- :class:`LiveMcpTools`, the connection manager that keeps one client
-  per server open across the agent loop and dispatches tool calls;
+- :class:`LiveMcpTools`, the tool manager that lists each server's
+  tools once at startup and opens a fresh connection per tool call;
 - :func:`registry_server_specs`, the CLI's resolution of the local
   registry (``rote mcp add`` / ``rote mcp login``) into driver specs —
   the compile-time analog of the baseline's registry wiring.
@@ -23,7 +23,6 @@ everything here imports it lazily and fails with that hint, matching
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -73,9 +72,14 @@ class LiveMcpTools:
 
     ``servers`` entries are plain dicts — ``{"name": str, "url": str,
     "headers": dict[str, str] | None}`` (streamable HTTP only). Use as
-    an async context manager: connections open on entry and stay open
-    across the agent loop (one client per server, entered on an
-    ``AsyncExitStack``), and close together on exit.
+    an async context manager: entry connects to each server once to
+    list its tools and closes that session immediately; every later
+    :meth:`call` opens a fresh connection for that one tools/call.
+    Nothing is held open between calls — long-lived streamable-HTTP
+    sessions combined with the vendor SDK deterministically froze the
+    asyncio loop under the hosted container runtime (found empirically),
+    and a per-call connect costs ~100ms against multi-second LLM turns
+    while picking up rotated tokens naturally.
 
     A server that fails to connect, fails to list tools, or declares no
     read-only tools is reported through ``on_warning`` and skipped — it
@@ -92,9 +96,9 @@ class LiveMcpTools:
     ) -> None:
         self._servers = list(servers)
         self._on_warning = on_warning
-        self._stack: contextlib.AsyncExitStack | None = None
-        #: prefixed tool id → (connected client, bare tool name)
-        self._tools: dict[str, tuple[Any, str]] = {}
+        #: prefixed tool id → (server spec, bare tool name); the spec is
+        #: kept so :meth:`call` can open a fresh client per invocation.
+        self._tools: dict[str, tuple[dict[str, Any], str]] = {}
         #: wire-shape-neutral defs, same tuple layout as the drivers'
         #: ``_fs_tools._TOOL_DEFS``: (name, description, json-schema).
         self._defs: list[tuple[str, str, dict[str, Any]]] = []
@@ -103,32 +107,37 @@ class LiveMcpTools:
         if self._on_warning is not None:
             self._on_warning(message)
 
+    @staticmethod
+    def _client(spec: Mapping[str, Any]) -> Any:
+        """A new fastmcp client for one server spec (not yet connected).
+
+        Any: the two constructor forms infer different Client type
+        parameters; callers only use the shared surface.
+        """
+        import fastmcp
+        from fastmcp.client.transports import StreamableHttpTransport
+
+        url = str(spec["url"])
+        headers = spec.get("headers") or None
+        if headers:
+            return fastmcp.Client(StreamableHttpTransport(url, headers=dict(headers)))
+        return fastmcp.Client(url)
+
     async def __aenter__(self) -> LiveMcpTools:
         try:
-            import fastmcp
-            from fastmcp.client.transports import StreamableHttpTransport
+            import fastmcp  # noqa: F401
         except ImportError as e:
             raise RuntimeError(
                 "live MCP tools require the fastmcp client — "
                 "install it with: pip install 'rote-cli[mcp]'"
             ) from e
 
-        self._stack = contextlib.AsyncExitStack()
-        await self._stack.__aenter__()
         for spec in self._servers:
             name = str(spec["name"])
-            url = str(spec["url"])
-            headers = spec.get("headers") or None
-            # Any: the two constructor forms infer different Client type
-            # parameters; the manager only uses the shared surface.
-            client: Any
-            if headers:
-                client = fastmcp.Client(StreamableHttpTransport(url, headers=dict(headers)))
-            else:
-                client = fastmcp.Client(url)
             try:
-                await self._stack.enter_async_context(client)
-                tools = await client.list_tools()
+                client = self._client(spec)
+                async with client:
+                    tools = await client.list_tools()
             except Exception as e:  # noqa: BLE001 — a dead server must not sink the compile
                 self._warn(
                     f"MCP server {name!r} unavailable "
@@ -147,7 +156,7 @@ class LiveMcpTools:
                 if prefixed in self._tools:
                     continue
                 schema = tool.inputSchema or {"type": "object", "properties": {}}
-                self._tools[prefixed] = (client, tool.name)
+                self._tools[prefixed] = (dict(spec), tool.name)
                 self._defs.append(
                     (
                         prefixed,
@@ -158,9 +167,8 @@ class LiveMcpTools:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        if self._stack is not None:
-            await self._stack.__aexit__(exc_type, exc, tb)
-            self._stack = None
+        """Nothing to release — no session outlives the call that opened it."""
+        return None
 
     def owns(self, tool_name: str) -> bool:
         """True when ``tool_name`` is one of this manager's exposed tools."""
@@ -184,21 +192,23 @@ class LiveMcpTools:
         ]
 
     async def call(self, tool_name: str, args: dict[str, Any] | None) -> str:
-        """Invoke one exposed tool and return its result as text.
+        """Invoke one exposed tool over a fresh connection, result as text.
 
         Raises on any failure (unknown tool, tool error, transport
-        error) — the driver catches and reports it back to the model as
-        an error tool result rather than crashing the loop, exactly like
-        the filesystem tools.
+        error, timeout) — the driver catches and reports it back to the
+        model as an error tool result rather than crashing the loop,
+        exactly like the filesystem tools.
         """
         try:
-            client, bare_name = self._tools[tool_name]
+            spec, bare_name = self._tools[tool_name]
         except KeyError:
             raise ValueError(f"Unknown MCP tool: {tool_name}") from None
+        client = self._client(spec)
         try:
-            result = await asyncio.wait_for(
-                client.call_tool(bare_name, args or {}), timeout=CALL_TIMEOUT_SECONDS
-            )
+            async with client:
+                result = await asyncio.wait_for(
+                    client.call_tool(bare_name, args or {}), timeout=CALL_TIMEOUT_SECONDS
+                )
         except TimeoutError:
             raise RuntimeError(
                 f"MCP tool {tool_name} timed out after {CALL_TIMEOUT_SECONDS:.0f}s"

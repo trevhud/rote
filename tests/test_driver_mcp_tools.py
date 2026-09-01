@@ -3,11 +3,12 @@
 Two layers:
 
 * ``rote.mcp.live_tools`` unit behavior — the shared readOnlyHint gate,
-  tool ids, result flattening, the connection manager (fastmcp's
-  ``Client`` mocked; no network), and the CLI's registry resolution.
+  tool ids, result flattening, the connect-per-call tool manager
+  (fastmcp's ``Client`` mocked; no network), and the CLI's registry
+  resolution.
 * Driver integration — the api / openai-api drivers expose only
   read-only tools (adapted to each wire shape with the server's input
-  schema passed through), dispatch calls through the open connection,
+  schema passed through), dispatch each call over a fresh connection,
   report tool failures as error tool results, warn and continue when a
   server is unreachable, and fail loudly when the ``mcp`` extra is
   missing but servers were requested.
@@ -79,11 +80,11 @@ class _FakeMcpClient:
 
     def __init__(
         self,
-        tools: list[SimpleNamespace],
+        tools: list[SimpleNamespace] | None = None,
         results: dict[str, Any] | None = None,
         fail_connect: bool = False,
     ) -> None:
-        self._tools = tools
+        self._tools = tools or []
         self._results = results or {}
         self._fail_connect = fail_connect
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -110,7 +111,12 @@ class _FakeMcpClient:
 
 @pytest.fixture
 def fake_fastmcp(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
-    """Patch ``fastmcp.Client`` to hand out fakes in construction order."""
+    """Patch ``fastmcp.Client`` to hand out fakes in construction order.
+
+    Connect-per-call means one fake per CONNECTION: the startup listing
+    consumes one client per server, and every subsequent tool call
+    consumes another.
+    """
 
     def _patch(clients: list[_FakeMcpClient]) -> list[_FakeMcpClient]:
         remaining = list(clients)
@@ -199,6 +205,8 @@ async def test_live_tools_expose_only_read_only_with_schema_passthrough(
     fake_fastmcp([client])
 
     async with LiveMcpTools(_wordbank_servers()) as live:
+        # The listing session was closed at startup, not held open.
+        assert client.closed is True
         anthropic_schemas = live.anthropic_tool_schemas()
         openai_schemas = live.openai_tool_schemas()
         assert live.owns("mcp__wordbank__lookup")
@@ -224,14 +232,39 @@ async def test_live_tools_expose_only_read_only_with_schema_passthrough(
             },
         }
     ]
-    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_live_tools_open_a_fresh_connection_per_call(
+    fake_fastmcp,  # noqa: ANN001
+) -> None:
+    """Nothing is held open between calls: the startup listing session
+    closes immediately, and each call() gets its own client, closed after
+    the one tools/call — long-lived sessions froze the loop under the
+    hosted container runtime."""
+    lister = _FakeMcpClient([_tool("lookup", True)])
+    call_one = _FakeMcpClient(results={"lookup": _text_result("one")})
+    call_two = _FakeMcpClient(results={"lookup": _text_result("two")})
+    fake_fastmcp([lister, call_one, call_two])
+
+    async with LiveMcpTools(_wordbank_servers()) as live:
+        assert lister.closed is True
+        assert await live.call("mcp__wordbank__lookup", {"q": "a"}) == "one"
+        assert call_one.closed is True
+        assert await live.call("mcp__wordbank__lookup", {"q": "b"}) == "two"
+        assert call_two.closed is True
+
+    assert call_one.calls == [("lookup", {"q": "a"})]
+    assert call_two.calls == [("lookup", {"q": "b"})]
+    # The listing client never served a tools/call.
+    assert lister.calls == []
 
 
 @pytest.mark.asyncio
 async def test_live_tools_unreachable_server_warns_and_continues(
     fake_fastmcp,  # noqa: ANN001
 ) -> None:
-    dead = _FakeMcpClient([], fail_connect=True)
+    dead = _FakeMcpClient(fail_connect=True)
     alive = _FakeMcpClient([_tool("lookup", True)])
     fake_fastmcp([dead, alive])
 
@@ -378,14 +411,14 @@ async def test_anthropic_driver_exposes_and_dispatches_mcp_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    mcp = _FakeMcpClient(
+    lister = _FakeMcpClient(
         [
             _tool("lookup", True, schema=_lookup_schema(), description="Look up a word."),
             _tool("delete_word", False),
-        ],
-        results={"lookup": _text_result("definition: by memory")},
+        ]
     )
-    fake_fastmcp([mcp])
+    caller = _FakeMcpClient(results={"lookup": _text_result("definition: by memory")})
+    fake_fastmcp([lister, caller])
 
     responses = [
         _msg(
@@ -431,13 +464,16 @@ async def test_anthropic_driver_exposes_and_dispatches_mcp_tools(
 
     # The call was dispatched with the model's args; the text came back
     # as a non-error tool result.
-    assert mcp.calls == [("lookup", {"word": "rote"})]
+    assert caller.calls == [("lookup", {"word": "rote"})]
     tool_results = client.messages.calls[1]["messages"][-1]["content"]
     assert tool_results[0]["content"] == "definition: by memory"
     assert tool_results[0]["is_error"] is False
 
-    # The connection was held open across the loop and closed afterward.
-    assert mcp.closed is True
+    # Connect-per-call: the listing session closed at startup, the call's
+    # own session closed after the dispatch, and the two never mix.
+    assert lister.closed is True
+    assert caller.closed is True
+    assert lister.calls == []
 
 
 @pytest.mark.asyncio
@@ -447,11 +483,9 @@ async def test_anthropic_driver_reports_mcp_failure_as_tool_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    mcp = _FakeMcpClient(
-        [_tool("lookup", True)],
-        results={"lookup": RuntimeError("server exploded")},
-    )
-    fake_fastmcp([mcp])
+    lister = _FakeMcpClient([_tool("lookup", True)])
+    caller = _FakeMcpClient(results={"lookup": RuntimeError("server exploded")})
+    fake_fastmcp([lister, caller])
 
     responses = [
         _msg([_tool_use("t1", "mcp__wordbank__lookup", {"q": "x"})], stop_reason="tool_use"),
@@ -485,6 +519,8 @@ async def test_anthropic_driver_reports_mcp_failure_as_tool_error(
     tool_results = client.messages.calls[1]["messages"][-1]["content"]
     assert tool_results[0]["is_error"] is True
     assert "server exploded" in tool_results[0]["content"]
+    # Even a failed call's connection is closed.
+    assert caller.closed is True
 
 
 @pytest.mark.asyncio
@@ -494,7 +530,7 @@ async def test_anthropic_driver_warns_and_continues_without_dead_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    fake_fastmcp([_FakeMcpClient([], fail_connect=True)])
+    fake_fastmcp([_FakeMcpClient(fail_connect=True)])
 
     responses = [
         _msg(
@@ -554,13 +590,13 @@ async def test_anthropic_driver_stringifies_structured_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    mcp = _FakeMcpClient(
-        [_tool("lookup", True)],
+    lister = _FakeMcpClient([_tool("lookup", True)])
+    caller = _FakeMcpClient(
         results={
             "lookup": SimpleNamespace(structured_content={"definition": "by memory"}, content=[])
-        },
+        }
     )
-    fake_fastmcp([mcp])
+    fake_fastmcp([lister, caller])
 
     responses = [
         _msg([_tool_use("t1", "mcp__wordbank__lookup", {"q": "x"})], stop_reason="tool_use"),
@@ -601,14 +637,14 @@ async def test_openai_driver_exposes_and_dispatches_mcp_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    mcp = _FakeMcpClient(
+    lister = _FakeMcpClient(
         [
             _tool("lookup", True, schema=_lookup_schema(), description="Look up a word."),
             _tool("delete_word", False),
-        ],
-        results={"lookup": _text_result("definition: by memory")},
+        ]
     )
-    fake_fastmcp([mcp])
+    caller = _FakeMcpClient(results={"lookup": _text_result("definition: by memory")})
+    fake_fastmcp([lister, caller])
 
     responses = [
         _response(
@@ -654,12 +690,14 @@ async def test_openai_driver_exposes_and_dispatches_mcp_tools(
     assert spec["type"] == "function"
     assert spec["function"]["parameters"] == _lookup_schema()
 
-    # Dispatch + text result as a role:tool message.
-    assert mcp.calls == [("lookup", {"word": "rote"})]
+    # Dispatch + text result as a role:tool message, over a fresh
+    # connection that closed after the one call.
+    assert caller.calls == [("lookup", {"word": "rote"})]
     tool_msgs = [m for m in client.chat.completions.calls[1]["messages"] if m["role"] == "tool"]
     assert tool_msgs[0]["tool_call_id"] == "c1"
     assert tool_msgs[0]["content"] == "definition: by memory"
-    assert mcp.closed is True
+    assert lister.closed is True
+    assert caller.closed is True
 
 
 @pytest.mark.asyncio
@@ -669,11 +707,9 @@ async def test_openai_driver_reports_mcp_failure_as_tool_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     skill_dir, compiler_dir, work_dir = fake_skills
-    mcp = _FakeMcpClient(
-        [_tool("lookup", True)],
-        results={"lookup": RuntimeError("server exploded")},
-    )
-    fake_fastmcp([mcp])
+    lister = _FakeMcpClient([_tool("lookup", True)])
+    caller = _FakeMcpClient(results={"lookup": RuntimeError("server exploded")})
+    fake_fastmcp([lister, caller])
 
     responses = [
         _response(_message(tool_calls=[_tool_call("c1", "mcp__wordbank__lookup", json.dumps({}))])),

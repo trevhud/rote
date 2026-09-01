@@ -277,9 +277,10 @@ class AnthropicApiDriver(CompilerDriver):
             )
         skill_md_text = skill_md.read_text(encoding="utf-8")
 
-        # Live MCP tools stay connected across the whole agent loop —
-        # reconnecting per call would redo the HTTP handshake (and lose
-        # any server-side session state) on every tool invocation.
+        # Live MCP tools list servers once here; each tool call then
+        # opens a fresh connection — long-lived streamable-HTTP sessions
+        # deterministically froze the asyncio loop under the hosted
+        # container runtime (see rote.mcp.live_tools).
         live = self._live_mcp_tools(on_event)
         if live is not None:
             try:
