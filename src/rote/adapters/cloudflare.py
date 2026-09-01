@@ -545,6 +545,14 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
                 "    // Platform-managed MCP proxy — an RPC service binding the host provisions."
             )
             env_field_lines.append("    ROTE_MCP: RoteMcpBinding;")
+            env_field_lines.append(
+                "    // Caller identity for the proxy, injected by the platform dispatcher;"
+            )
+            env_field_lines.append("    // ROTE_MCP_SIG signs the (tenant, pipeline, run) triple.")
+            env_field_lines.append("    ROTE_TENANT_ID: string;")
+            env_field_lines.append("    ROTE_PIPELINE: string;")
+            env_field_lines.append("    ROTE_RUN_ID: string;")
+            env_field_lines.append("    ROTE_MCP_SIG: string;")
     else:
         for server in sorted(
             {n.mcp.server for n in mcp_backed_nodes(pipeline, cfg.external_backend) if n.mcp}

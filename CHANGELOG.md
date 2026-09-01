@@ -31,8 +31,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   exported surface as the direct helper, implemented over a
   platform-provisioned `ROTE_MCP` RPC service binding: no per-server
   secrets, no `ROTE_MCP_TOKENS` KV namespace, no OAuth refresh, and no
-  MCP SDK dependency. The generated Env interface declares the one
-  `ROTE_MCP` binding instead of the per-server secret surface. An error
+  MCP SDK dependency. Every proxy call carries a signed caller-auth
+  object (`{tenant_id, pipeline, run_id?, sig}`) built from the
+  dispatcher-injected `ROTE_TENANT_ID` / `ROTE_PIPELINE` / `ROTE_RUN_ID`
+  / `ROTE_MCP_SIG` variables, so tenant isolates cannot impersonate each
+  other; a missing `ROTE_MCP_SIG` is a config error naming it. The
+  generated Env interface declares the one `ROTE_MCP` binding plus those
+  four variables instead of the per-server secret surface. An error
   whose message starts with `ROTE_MCP_AUTH_NEEDED:` — the platform
   proxy's contract — is rethrown as `RoteMcpAuthNeeded`, so the
   park-on-auth loop, the `rote_auth_<server>` event names, and agent

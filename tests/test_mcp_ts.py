@@ -277,8 +277,8 @@ def test_cloudflare_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
 def test_cloudflare_binding_mode_delegates_to_the_service_binding(tmp_path: Path) -> None:
     get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
     helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
-    assert "env.ROTE_MCP.call(server, tool, args)" in helper
-    assert "env.ROTE_MCP.listTools(server)" in helper
+    assert "env.ROTE_MCP.call(auth, server, tool, args)" in helper
+    assert "env.ROTE_MCP.listTools(auth, server)" in helper
     # The platform proxy's auth contract, translated back into the same
     # error the park loop already detects by name.
     assert '"ROTE_MCP_AUTH_NEEDED:"' in helper
@@ -296,6 +296,31 @@ def test_cloudflare_binding_mode_delegates_to_the_service_binding(tmp_path: Path
     assert "callMcpTool(env" in bound
 
 
+def test_cloudflare_binding_mode_signs_every_proxy_call(tmp_path: Path) -> None:
+    """The proxy's caller-auth contract: every call carries {tenant_id,
+    pipeline, run_id?, sig} built from dispatcher-injected env vars, a
+    missing ROTE_MCP_SIG is a config error naming it, and the proxy's
+    reply shapes (is_error, snake_case input_schema) are normalized to
+    the direct helper's behavior."""
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    # The auth object and its env sources.
+    assert 'tenant_id: requireVar(env, "ROTE_TENANT_ID")' in helper
+    assert 'pipeline: requireVar(env, "ROTE_PIPELINE")' in helper
+    assert 'requireVar(env, "ROTE_MCP_SIG")' in helper
+    assert "env.ROTE_RUN_ID" in helper  # optional — only sent when present
+    # A missing injected var throws a config error naming the variable.
+    assert "`the ${name} variable is not set" in helper
+    # is_error maps to the same thrown-error path as the direct helper's
+    # result.isError; string content is JSON-parsed like text blocks.
+    assert "if (result.is_error)" in helper
+    assert "returned an error" in helper
+    assert "JSON.parse(content)" in helper
+    # listTools' snake_case wire shape is normalized into McpToolSpec.
+    assert "tool.input_schema" in helper
+    assert 'tool.description ?? ""' in helper
+
+
 def test_cloudflare_binding_mode_env_and_config_surfaces(tmp_path: Path) -> None:
     """Binding mode swaps the provisioning surface: Env declares the one
     ROTE_MCP binding instead of per-server secrets + the KV cache, wrangler
@@ -305,6 +330,11 @@ def test_cloudflare_binding_mode_env_and_config_surfaces(tmp_path: Path) -> None
     workflow = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert "ROTE_MCP: RoteMcpBinding;" in workflow
     assert "type RoteMcpBinding" in workflow  # imported from the helper
+    # The dispatcher-injected caller identity is part of the declared Env.
+    assert "ROTE_TENANT_ID: string;" in workflow
+    assert "ROTE_PIPELINE: string;" in workflow
+    assert "ROTE_RUN_ID: string;" in workflow
+    assert "ROTE_MCP_SIG: string;" in workflow
     assert "ROTE_MCP_VENDOR_REFRESH_TOKEN" not in workflow
     assert "ROTE_MCP_TOKENS" not in workflow
     wrangler = (tmp_path / "wrangler.jsonc").read_text(encoding="utf-8")
@@ -338,10 +368,8 @@ def test_cloudflare_binding_mode_binds_agent_tools_through_the_proxy(
     get_adapter("cloudflare").emit(bdr_pipeline, tmp_path, mcp_client="binding")
     helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
     assert "bindAgentTools" in helper
-    assert "env.ROTE_MCP.listTools(server)" in helper
-    loop = (tmp_path / "src" / "extracted" / "lead_generation_loop.ts").read_text(
-        encoding="utf-8"
-    )
+    assert "env.ROTE_MCP.listTools(auth, server)" in helper
+    loop = (tmp_path / "src" / "extracted" / "lead_generation_loop.ts").read_text(encoding="utf-8")
     assert 'import { bindAgentTools, type RoteMcpEnv } from "./_roteMcp";' in loop
     workflow = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert "ROTE_MCP: RoteMcpBinding;" in workflow
