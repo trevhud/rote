@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -306,7 +307,16 @@ class OpenAIApiDriver(CompilerDriver):
         work_dir: Path,
         extra_instructions: str | None = None,
         on_event: EventCallback | None = None,
+        repair: Callable[[Path], str | None] | None = None,
     ) -> DriverResult:
+        """Run the compiler agent (see :class:`CompilerDriver`).
+
+        ``repair`` is the orchestrator's validation callback: called with
+        the produced pipeline.yaml at each natural stop; a returned string
+        is appended to the SAME conversation as one user turn and the
+        loop continues, ``None`` accepts the deliverable. Passed only by
+        orchestrators that saw it in this signature.
+        """
         if not _OPENAI_AVAILABLE:
             raise DriverError("openai package is not installed. Run: pip install rote[openai-api]")
 
@@ -345,6 +355,7 @@ class OpenAIApiDriver(CompilerDriver):
                 extra_instructions=extra_instructions,
                 on_event=on_event,
                 live=live,
+                repair=repair,
             )
         finally:
             if live is not None:
@@ -374,6 +385,7 @@ class OpenAIApiDriver(CompilerDriver):
         extra_instructions: str | None,
         on_event: EventCallback | None,
         live: Any,
+        repair: Callable[[Path], str | None] | None,
     ) -> DriverResult:
         """The tool-use loop body, bracketed by ``run``'s MCP lifecycle."""
         read_roots = [skill_dir, compiler_skill_dir]
@@ -516,6 +528,18 @@ class OpenAIApiDriver(CompilerDriver):
             if not tool_calls:
                 # A natural stop (finish_reason "stop", no tool calls) → done.
                 last_text = content or last_text
+                natural_stop_pipeline = work_dir / "pipeline.yaml"
+                if repair is not None and natural_stop_pipeline.is_file():
+                    # Let the orchestrator's validator bounce the
+                    # deliverable back into the SAME conversation —
+                    # pydantic errors the model can trivially fix must
+                    # not fail a paid run one-shot. Repair turns spend
+                    # the same iteration budget, so the loop stays
+                    # bounded.
+                    repair_instruction = repair(natural_stop_pipeline)
+                    if repair_instruction is not None:
+                        messages.append({"role": "user", "content": repair_instruction})
+                        continue
                 break
 
             for tc in tool_calls:

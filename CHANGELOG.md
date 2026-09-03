@@ -10,6 +10,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Invalid agent-authored pipelines are repaired, not failed one-shot.**
+  When the driver's produced pipeline.yaml fails IR validation, the
+  Compiler resumes the same agent conversation with one user turn
+  carrying the verbatim pydantic errors and a change-only-what-the-
+  errors-name instruction, then re-validates — up to two repair attempts
+  (each surfaced as a warning event) before failing with the last error
+  exactly as before. Drivers that can resume their conversation take an
+  optional `repair` callback (api and openai-api do); subprocess drivers
+  keep the one-shot behavior. Seen twice in real compiles: `.ts` module
+  refs in `impl:` and dict-typed node input/output entries — both
+  trivially fixable by the model that wrote them.
 - **Heartbeat events while awaiting a model request.** The api and
   openai-api drivers emit a `log` event every 120 seconds while an LLM
   request is pending, so a hosted hang detector can tell a slow or

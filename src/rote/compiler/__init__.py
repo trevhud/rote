@@ -21,11 +21,13 @@ compiler's only output is the validated IR + the stub files;
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shutil
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,6 +54,11 @@ from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_proven
 #: Work-dir directory the baseline's probe artifacts are materialized
 #: into for the agent (mirrors update-context's convention).
 PROBE_CONTEXT_DIRNAME = "probe-context"
+
+#: How many times an invalid pipeline.yaml is bounced back to the agent
+#: for repair before the run fails with the last validation error. Caps
+#: the token cost of the repair loop.
+MAX_VALIDATION_REPAIRS = 2
 
 
 class CompilerError(RuntimeError):
@@ -327,6 +334,14 @@ class Compiler:
             run_kwargs: dict[str, Any] = {}
             if instructions:
                 run_kwargs["extra_instructions"] = "\n\n".join(instructions)
+            # Validation-repair pass: an invalid pipeline.yaml is bounced
+            # back into the SAME agent conversation with the verbatim
+            # pydantic errors instead of failing the paid run one-shot.
+            # Only drivers whose run() declares the ``repair`` parameter
+            # can resume a conversation (the in-process api / openai-api
+            # drivers); subprocess drivers keep today's one-shot behavior.
+            if "repair" in inspect.signature(driver.run).parameters:
+                run_kwargs["repair"] = self._validation_repairer()
 
             try:
                 result = await driver.run(
@@ -413,6 +428,46 @@ class Compiler:
                 driver_name=result.driver_name,
                 driver_metadata=result.metadata,
             )
+
+    def _validation_repairer(self) -> Callable[[Path], str | None]:
+        """A repair callback for drivers that can resume their conversation.
+
+        The driver calls it with the produced pipeline.yaml path at each
+        natural stop. A ``None`` return accepts the deliverable; a string
+        is appended to the agent's conversation as one user turn and the
+        loop continues. Invalid yaml is bounced back with the verbatim
+        pydantic error text (seen in real compiles: ``.ts`` module refs
+        in ``impl:``, dict-typed input/output entries — both trivially
+        fixable by the model that wrote them) up to
+        :data:`MAX_VALIDATION_REPAIRS` times; after that the callback
+        accepts the file as-is, and the orchestrator's own validation
+        fails the run with the last error exactly as before.
+        """
+        attempts = 0
+
+        def _repair(pipeline_yaml_path: Path) -> str | None:
+            nonlocal attempts
+            try:
+                load_pipeline(pipeline_yaml_path)
+                return None
+            except Exception as e:
+                error_text = str(e)
+            if attempts >= MAX_VALIDATION_REPAIRS:
+                return None
+            attempts += 1
+            self._emit(
+                "warning",
+                f"pipeline.yaml failed validation; asking the compiler to "
+                f"repair (attempt {attempts})",
+            )
+            return (
+                f"The pipeline.yaml you wrote fails IR validation. Fix "
+                f"{pipeline_yaml_path} so it validates; change only what "
+                f"the errors name, then end your turn.\n\n"
+                f"Validation errors:\n{error_text}"
+            )
+
+        return _repair
 
     @staticmethod
     def _completion_message(result: DriverResult) -> str:

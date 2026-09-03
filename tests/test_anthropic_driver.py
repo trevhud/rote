@@ -948,3 +948,68 @@ async def test_requests_are_streamed(
         assert "stream" not in call
         assert call["model"]
         assert call["max_tokens"]
+
+
+# ───────── Validation-repair continuation ─────────
+
+
+@pytest.mark.asyncio
+async def test_repair_callback_resumes_the_same_conversation(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """When the orchestrator's validator bounces pipeline.yaml, the
+    instruction is appended as a user turn in the SAME conversation and
+    the loop continues; a None from the validator accepts the file."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        # Turn 1: writes a broken pipeline, then stops.
+        _msg(
+            [
+                _tool_use(
+                    "w1",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": "name: broken\n"},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("Done.")], stop_reason="end_turn"),
+        # Resumed turns: the agent repairs the file and stops again.
+        _msg(
+            [
+                _tool_use(
+                    "w2",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("Fixed.")], stop_reason="end_turn"),
+    ]
+    client = fake_anthropic(responses)
+
+    seen: list[str] = []
+
+    def _repair(path: Path) -> str | None:
+        seen.append(path.read_text(encoding="utf-8"))
+        if len(seen) == 1:
+            return "fix pipeline.yaml so it validates; change only what the errors name"
+        return None
+
+    result = await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir, repair=_repair)
+
+    assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
+    assert result.metadata["iterations"] == 4
+    # Bounced once (saw the broken file), accepted once (saw the fix).
+    assert len(seen) == 2
+    assert seen[0] == "name: broken\n"
+    assert seen[1] == VALID_PIPELINE_YAML
+    # The instruction rode the SAME conversation as a user turn.
+    turn3_messages = client.messages.calls[2]["messages"]
+    assert turn3_messages[-1]["role"] == "user"
+    assert "fix pipeline.yaml" in turn3_messages[-1]["content"]

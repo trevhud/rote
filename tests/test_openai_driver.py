@@ -707,3 +707,67 @@ async def test_streaming_accumulator_round_trips_tool_and_text_turns() -> None:
     assert choice.message.tool_calls is None
     assert choice.finish_reason == "stop"
     assert assembled.usage.prompt_tokens == 100  # the builder's default rode the final chunk
+
+
+# ───────── Validation-repair continuation ─────────
+
+
+@pytest.mark.asyncio
+async def test_repair_callback_resumes_the_same_conversation(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """Same contract as the anthropic driver: a bounced pipeline.yaml
+    resumes the conversation with the instruction as one user turn."""
+    import json as _json
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        _response(
+            _message(
+                tool_calls=[
+                    _tool_call(
+                        "w1",
+                        "write_file",
+                        _json.dumps({"path": str(pipeline_yaml_abs), "content": "name: broken\n"}),
+                    )
+                ]
+            )
+        ),
+        _response(_message(content="Done."), finish_reason="stop"),
+        _response(
+            _message(
+                tool_calls=[
+                    _tool_call(
+                        "w2",
+                        "write_file",
+                        _json.dumps(
+                            {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML}
+                        ),
+                    )
+                ]
+            )
+        ),
+        _response(_message(content="Fixed."), finish_reason="stop"),
+    ]
+    client = fake_openai(responses)
+
+    seen: list[str] = []
+
+    def _repair(path: Path) -> str | None:
+        seen.append(path.read_text(encoding="utf-8"))
+        if len(seen) == 1:
+            return "fix pipeline.yaml so it validates; change only what the errors name"
+        return None
+
+    driver = OpenAIApiDriver(model="openai/gpt-5.5")
+    result = await driver.run(skill_dir, compiler_dir, work_dir, repair=_repair)
+
+    assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
+    assert len(seen) == 2
+    turn3_messages = client.chat.completions.calls[2]["messages"]
+    assert turn3_messages[-1]["role"] == "user"
+    assert "fix pipeline.yaml" in turn3_messages[-1]["content"]
