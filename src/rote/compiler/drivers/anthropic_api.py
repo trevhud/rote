@@ -156,6 +156,32 @@ def _assistant_snippet(content: list[Any]) -> str:
     return "thinking…"
 
 
+async def _streamed_message(client: Any, request_kwargs: dict[str, Any]) -> Any:
+    """One streamed Messages request, returned in ``messages.create()`` shape.
+
+    Streaming is load-bearing, not a nicety: a multi-minute non-streaming
+    generation sends no bytes until it finishes, and intermediaries time
+    the silent connection out — the 32k thinking-friendly turn cap made
+    single turns long enough to die (a real compile's pipeline-authoring
+    turn sat 720s "waiting on the model" and failed with
+    APIConnectionError, and the SDK's retries hit the same wall).
+    Streaming keeps bytes flowing for the whole generation.
+
+    Timeout semantics, verified against anthropic 0.116 / httpx: the
+    client ``timeout`` becomes an httpx read timeout, which on a stream
+    bounds the gap between received chunks — NOT the total generation —
+    so a slow-but-alive turn survives while a stalled stream still
+    times out.
+    """
+    async with client.messages.stream(**request_kwargs) as stream:
+        # Drain the events; get_final_message() then hands back the
+        # accumulated Message — identical shape to messages.create(),
+        # so content/stop_reason/usage handling downstream is untouched.
+        async for _ in stream:
+            pass
+        return await stream.get_final_message()
+
+
 # ───────── The driver ─────────
 
 
@@ -366,17 +392,24 @@ class AnthropicApiDriver(CompilerDriver):
         for iteration in range(1, self.max_iterations + 1):
             completed_iterations = iteration
 
+            # Streamed, never create(): long turns die on silent
+            # connections (see _streamed_message). The heartbeat around
+            # the whole stream consumption now only fires when the
+            # stream itself stalls >120s — the new hang signal, not a
+            # healthy slow turn.
             response = await await_with_heartbeat(
-                client.messages.create(
-                    model=self.model,
-                    max_tokens=self.max_tokens_per_turn,
-                    system=system_prompt,
-                    # The shared builder returns plain dicts (wire-shape-
-                    # neutral, shared with the OpenAI driver); the SDK
-                    # validates them at runtime. Cast past the SDK's
-                    # TypedDict union.
-                    tools=cast("Any", tool_schemas),
-                    messages=messages,
+                _streamed_message(
+                    client,
+                    {
+                        "model": self.model,
+                        "max_tokens": self.max_tokens_per_turn,
+                        "system": system_prompt,
+                        # The shared builder returns plain dicts
+                        # (wire-shape-neutral, shared with the OpenAI
+                        # driver); the SDK validates them at runtime.
+                        "tools": tool_schemas,
+                        "messages": messages,
+                    },
                 ),
                 on_event,
                 f"the model (turn {iteration})",

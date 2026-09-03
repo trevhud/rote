@@ -35,6 +35,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
@@ -113,6 +114,94 @@ def _assistant_snippet(content: str | None) -> str:
     """
     text = (content or "").strip()
     return text[:TURN_SNIPPET_CHARS] if text else "thinking…"
+
+
+async def _accumulate_stream(chunks: Any) -> Any:
+    """Assemble streamed chunks into the non-streaming response shape.
+
+    The loop body reads ``choices[0].message.content`` / ``.tool_calls``,
+    ``choices[0].finish_reason``, and ``usage`` — this returns exactly
+    that duck-typed shape, so switching the wire to streaming changes
+    nothing downstream. tool_call deltas are keyed by ``index`` with
+    id/name/arguments concatenated as they arrive; ``usage`` rides on
+    the final chunk when ``stream_options.include_usage`` is set.
+    """
+    content_parts: list[str] = []
+    content_seen = False
+    tool_deltas: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    usage: Any = None
+    saw_choice = False
+    async for chunk in chunks:
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        saw_choice = True
+        choice = choices[0]
+        if getattr(choice, "finish_reason", None) is not None:
+            finish_reason = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        text = getattr(delta, "content", None)
+        if text is not None:
+            content_seen = True
+            content_parts.append(text)
+        for tc in getattr(delta, "tool_calls", None) or []:
+            entry = tool_deltas.setdefault(tc.index, {"id": None, "name": "", "arguments": ""})
+            if getattr(tc, "id", None):
+                entry["id"] = tc.id
+            fn = getattr(tc, "function", None)
+            if fn is not None:
+                if getattr(fn, "name", None):
+                    entry["name"] += fn.name
+                if getattr(fn, "arguments", None):
+                    entry["arguments"] += fn.arguments
+    if not saw_choice:
+        # No chunk ever carried a choice — the same wire-contract
+        # violation the non-streaming path reported as "no choices".
+        return SimpleNamespace(choices=[], usage=usage)
+    assembled_tool_calls = [
+        SimpleNamespace(
+            id=entry["id"],
+            type="function",
+            function=SimpleNamespace(name=entry["name"], arguments=entry["arguments"]),
+        )
+        for _, entry in sorted(tool_deltas.items())
+    ]
+    message = SimpleNamespace(
+        content="".join(content_parts) if content_seen else None,
+        tool_calls=assembled_tool_calls or None,
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+        usage=usage,
+    )
+
+
+async def _streamed_completion(client: Any, request_kwargs: dict[str, Any]) -> Any:
+    """One streamed chat completion, returned in the non-streaming shape.
+
+    Streaming is load-bearing, not a nicety: a multi-minute non-streaming
+    generation sends no bytes until it finishes, and intermediaries time
+    the silent connection out — the 32k turn cap made single turns long
+    enough to die with APIConnectionError, with SDK retries hitting the
+    same wall. Streaming keeps bytes flowing for the whole generation.
+
+    Timeout semantics, verified against openai 2.45 / httpx: the client
+    ``timeout`` becomes an httpx read timeout, which on a stream bounds
+    the gap between received chunks — NOT the total generation — so a
+    slow-but-alive turn survives while a stalled stream still times out.
+    """
+    stream = await client.chat.completions.create(
+        stream=True,
+        stream_options={"include_usage": True},
+        **request_kwargs,
+    )
+    return await _accumulate_stream(stream)
 
 
 # ───────── The driver ─────────
@@ -324,15 +413,22 @@ class OpenAIApiDriver(CompilerDriver):
         for iteration in range(1, self.max_iterations + 1):
             completed_iterations = iteration
 
+            # Streamed, never bare create(): long turns die on silent
+            # connections (see _streamed_completion). The heartbeat now
+            # only fires when the stream itself stalls >120s — the new
+            # hang signal, not a healthy slow turn.
             response = await await_with_heartbeat(
-                client.chat.completions.create(
-                    model=self.model,
-                    max_completion_tokens=self.max_tokens_per_turn,
-                    messages=messages,
-                    # The shared builder returns plain dicts (wire-shape-neutral,
-                    # shared with the Anthropic driver); the SDK validates them
-                    # at runtime. Cast past the SDK's TypedDict union.
-                    tools=cast("Any", tool_schemas),
+                _streamed_completion(
+                    client,
+                    {
+                        "model": self.model,
+                        "max_completion_tokens": self.max_tokens_per_turn,
+                        "messages": messages,
+                        # The shared builder returns plain dicts
+                        # (wire-shape-neutral, shared with the Anthropic
+                        # driver); the SDK validates them at runtime.
+                        "tools": tool_schemas,
+                    },
                 ),
                 on_event,
                 f"the model (turn {iteration})",

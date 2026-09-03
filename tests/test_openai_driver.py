@@ -35,7 +35,77 @@ from rote.compiler.drivers.openai_api import OpenAIApiDriver
 # ───────── Fake OpenAI SDK ─────────
 
 
+def _chunk(choices: list[Any] | None = None, usage: Any = None) -> SimpleNamespace:
+    return SimpleNamespace(choices=choices or [], usage=usage)
+
+
+def _delta_choice(
+    content: str | None = None,
+    tool_calls: list[Any] | None = None,
+    finish_reason: str | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        delta=SimpleNamespace(content=content, tool_calls=tool_calls),
+        finish_reason=finish_reason,
+    )
+
+
+async def _chunk_stream(response: Any):  # noqa: ANN201 — async generator of chunks
+    """Split a canned full response into streaming chunks.
+
+    Text and tool-call arguments are split mid-string on purpose, so the
+    driver's accumulator is exercised on every canned turn — a fake that
+    yielded one whole chunk could hide broken concatenation.
+    """
+    choice = response.choices[0]
+    message = choice.message
+    content = getattr(message, "content", None)
+    if content:
+        mid = max(1, len(content) // 2)
+        yield _chunk([_delta_choice(content=content[:mid])])
+        if content[mid:]:
+            yield _chunk([_delta_choice(content=content[mid:])])
+    for index, tc in enumerate(getattr(message, "tool_calls", None) or []):
+        args = tc.function.arguments or ""
+        mid = len(args) // 2
+        yield _chunk(
+            [
+                _delta_choice(
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=index,
+                            id=tc.id,
+                            function=SimpleNamespace(name=tc.function.name, arguments=args[:mid]),
+                        )
+                    ]
+                )
+            ]
+        )
+        yield _chunk(
+            [
+                _delta_choice(
+                    tool_calls=[
+                        SimpleNamespace(
+                            index=index,
+                            id=None,
+                            function=SimpleNamespace(name=None, arguments=args[mid:]),
+                        )
+                    ]
+                )
+            ]
+        )
+    yield _chunk([_delta_choice(finish_reason=getattr(choice, "finish_reason", None))])
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        yield _chunk(usage=usage)
+
+
 class _FakeChatCompletions:
+    """The driver streams every request (a non-streaming multi-minute
+    generation sends no bytes and gets its connection timed out), so the
+    fake asserts the streaming kwargs and serves each canned response as
+    a chunk stream — exercising the driver's accumulator on every turn."""
+
     def __init__(self, responses: list[Any]) -> None:
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
@@ -46,9 +116,14 @@ class _FakeChatCompletions:
             # Deep-ish copy: the driver mutates its local messages list.
             snapshot["messages"] = [dict(m) for m in snapshot["messages"]]
         self.calls.append(snapshot)
+        assert kwargs.get("stream") is True, (
+            "the driver must stream chat completions — non-streaming long "
+            "turns die on silent connections"
+        )
+        assert kwargs.get("stream_options") == {"include_usage": True}
         if not self._responses:
             raise RuntimeError("FakeChatCompletions out of canned responses; too few turns")
-        return self._responses.pop(0)
+        return _chunk_stream(self._responses.pop(0))
 
 
 class _FakeChat:
@@ -593,3 +668,42 @@ def test_default_max_tokens_per_turn_is_generous() -> None:
     from rote.compiler.drivers.openai_api import DEFAULT_MAX_TOKENS_PER_TURN
 
     assert DEFAULT_MAX_TOKENS_PER_TURN == 32768
+
+
+# ───────── Streaming accumulator ─────────
+
+
+@pytest.mark.asyncio
+async def test_streaming_accumulator_round_trips_tool_and_text_turns() -> None:
+    """A tool-use turn and a text turn assemble into exactly the shape
+    the non-streaming path returned — content, tool_calls (id/name with
+    arguments concatenated across chunks), finish_reason, and usage — so
+    the loop body is untouched by the wire change. Streaming is what
+    keeps long turns alive: a multi-minute non-streaming generation
+    sends no bytes and dies on an intermediary timeout."""
+    from rote.compiler.drivers.openai_api import _accumulate_stream
+
+    tool_response = _response(
+        _message(tool_calls=[_tool_call("c1", "write_file", '{"path": "/tmp/x", "content": "y"}')]),
+        prompt_tokens=11,
+        completion_tokens=7,
+        finish_reason="tool_calls",
+    )
+    assembled = await _accumulate_stream(_chunk_stream(tool_response))
+    [choice] = assembled.choices
+    assert choice.finish_reason == "tool_calls"
+    assert choice.message.content is None
+    [tc] = choice.message.tool_calls
+    assert (tc.id, tc.type, tc.function.name) == ("c1", "function", "write_file")
+    # Arguments arrived split across two chunks and were concatenated.
+    assert tc.function.arguments == '{"path": "/tmp/x", "content": "y"}'
+    assert (assembled.usage.prompt_tokens, assembled.usage.completion_tokens) == (11, 7)
+
+    text_response = _response(_message(content="All done here."), finish_reason="stop")
+    assembled = await _accumulate_stream(_chunk_stream(text_response))
+    [choice] = assembled.choices
+    # Content arrived split across two chunks and was concatenated.
+    assert choice.message.content == "All done here."
+    assert choice.message.tool_calls is None
+    assert choice.finish_reason == "stop"
+    assert assembled.usage.prompt_tokens == 100  # the builder's default rode the final chunk

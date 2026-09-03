@@ -56,6 +56,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- **Long compiler turns no longer die on silent connections.** The api
+  and openai-api drivers stream every model request (`messages.stream()`
+  / `stream=True` with usage included) and assemble the final message
+  into the exact shape the loop already handled. A multi-minute
+  non-streaming generation sends no bytes until it finishes, so
+  intermediaries timed the connection out and the SDK's retries hit the
+  same wall — a real compile's pipeline-authoring turn sat 720 seconds
+  and failed with APIConnectionError; the 32k thinking-friendly turn cap
+  is what made single turns long enough to die. The client timeout now
+  bounds the gap between streamed chunks (httpx read-timeout semantics),
+  not the total generation, and the 120s heartbeat fires only when a
+  stream actually stalls.
 - **Pinned `fastmcp` below 4.** The declaration was `fastmcp>=3.4.2` with
   no upper bound, so CI resolved to `fastmcp` 4.0.2 (published
   2026-09-02) and `mcp` 2.x on every fresh install while local
@@ -65,9 +77,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runtime e2e reports `Method not found`. The pin restores a trustworthy
   signal; migrating to the 4.x / 2.x line is separate work, and MCP SDK
   v2 also renames `Tool.inputSchema` to `Tool.input_schema`.
-
-
-### Fixed
 - **A compilation's reported tokens and cost ignored prompt caching.**
   `claude -p` always runs prompt-cached, so `input_tokens` holds only the
   handful of tokens that were neither written to nor read from the cache.
