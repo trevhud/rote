@@ -507,9 +507,7 @@ def test_workflow_executes_through_hitl_gates(
 
 
 @pytest.fixture(scope="module")
-def binding_emitted_dir(
-    bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
-) -> Path:
+def binding_emitted_dir(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Emit BDR in binding mode + run npm install once per module.
 
     BDR exercises the whole binding surface at once: agent loops binding
