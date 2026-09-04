@@ -783,18 +783,22 @@ async def test_openai_driver_reports_mcp_failure_as_tool_error(
 # ───────── A wedged server must not freeze the compile ─────────
 
 
-async def _blackhole(reader: Any, writer: Any) -> None:
-    """Accept the connection, read the request, answer nothing. Ever.
+async def _blackhole(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Accept the connection and answer nothing until the client disconnects.
 
     A server that is reachable but wedged. It raises nothing, so no
     ``except`` clause can rescue a caller that waits on it; only a
     timeout can.
     """
     try:
-        await reader.read(65536)
-        await asyncio.sleep(3600)
-    except Exception:  # noqa: BLE001 - test scaffolding
-        pass
+        while await reader.read(65536):
+            pass
+    finally:
+        # Server.close() closes only the listener. Python 3.12+ waits
+        # for accepted connections in wait_closed(), so leaving this
+        # writer open deadlocks cleanup after the client's timeout.
+        writer.close()
+        await writer.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -826,7 +830,8 @@ async def test_a_wedged_server_is_bounded_at_startup(
             await tools.__aenter__()
     finally:
         server.close()
-        await server.wait_closed()
+        async with asyncio.timeout(1.0):
+            await server.wait_closed()
 
     assert any("wedged" in w and "unavailable" in w for w in warnings), warnings
     # And it degraded rather than exposing a half-built tool.
@@ -855,4 +860,5 @@ async def test_a_wedged_server_is_bounded_on_call(monkeypatch: pytest.MonkeyPatc
                 await tools.call("mcp__wedged__lookup", {})
     finally:
         server.close()
-        await server.wait_closed()
+        async with asyncio.timeout(1.0):
+            await server.wait_closed()

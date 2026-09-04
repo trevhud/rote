@@ -34,10 +34,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `rote.mcp.live_tools` so the two gates cannot drift. Every tool call
   opens a fresh connection — long-lived streamable-HTTP sessions
   combined with the vendor SDK deterministically froze the asyncio loop
-  under the hosted container runtime, and per-call connects also pick up
-  rotated tokens naturally. A server that cannot be reached is a warning
-  event, never a failed compile, and a tool failure returns to the model
-  as an error tool result. When `rote compile` runs one of
+  under the hosted container runtime. Credentials are resolved once
+  before compilation and reused for every call. A server that cannot be
+  reached is a warning event, never a failed compile, and a tool failure
+  returns to the model as an error tool result. When `rote compile` runs one of
   these drivers and no servers were passed, the local registry's
   authenticated servers are wired in automatically (static headers
   verbatim, logged-in servers via a freshly refreshed token;
