@@ -42,6 +42,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   authenticated servers are wired in automatically (static headers
   verbatim, logged-in servers via a freshly refreshed token;
   unauthenticated servers are skipped with a printed reason).
+- **A wedged MCP server can no longer freeze a compile.** The 180s bound
+  wrapped only `call_tool`, leaving the initialize handshake unbounded,
+  and since every call opens a fresh connection that handshake runs on
+  every call. Startup tool-listing had no bound at all. A server that
+  accepts the socket and never answers raises nothing, so the
+  "unavailable, continuing without it" path could not fire and the
+  compile hung with no warning. Both connects are now inside the bound.
+
 - **Binding-backed Workers MCP helper.**
   `get_adapter("cloudflare").emit(pipeline, out_dir, mcp_client="binding")`
   (also available as a factory option, `get_adapter("cloudflare",

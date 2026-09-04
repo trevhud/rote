@@ -28,7 +28,10 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 #: A single wedged tools/call must become a reportable tool failure, never
-#: a frozen compile.
+#: a frozen compile. The bound covers the whole exchange, connect
+#: included: every call opens a fresh connection, and a server that
+#: accepts the socket without completing the MCP initialize handshake
+#: raises nothing for an ``except`` to catch.
 CALL_TIMEOUT_SECONDS = 180.0
 
 MCP_TOOL_PREFIX = "mcp__"
@@ -151,8 +154,13 @@ class LiveMcpTools:
             name = str(spec["name"])
             try:
                 client = self._client(spec)
-                async with client:
-                    tools = await client.list_tools()
+                # The connect is inside the bound, not outside it. A server
+                # that accepts the socket and never finishes the initialize
+                # handshake raises nothing, so without this the listing waits
+                # forever and the "unavailable" warning below is unreachable.
+                async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+                    async with client:
+                        tools = await client.list_tools()
             except Exception as e:  # noqa: BLE001 — a dead server must not sink the compile
                 self._warn(
                     f"MCP server {name!r} unavailable "
@@ -220,10 +228,13 @@ class LiveMcpTools:
             raise ValueError(f"Unknown MCP tool: {tool_name}") from None
         client = self._client(spec)
         try:
-            async with client:
-                result = await asyncio.wait_for(
-                    client.call_tool(bare_name, args or {}), timeout=CALL_TIMEOUT_SECONDS
-                )
+            # The bound covers the connect too. Since every call opens a
+            # fresh connection, wrapping only ``call_tool`` left the
+            # initialize handshake unbounded, and a wedged server froze the
+            # compile the timeout exists to prevent.
+            async with asyncio.timeout(CALL_TIMEOUT_SECONDS):
+                async with client:
+                    result = await client.call_tool(bare_name, args or {})
         except TimeoutError:
             raise RuntimeError(
                 f"MCP tool {tool_name} timed out after {CALL_TIMEOUT_SECONDS:.0f}s"

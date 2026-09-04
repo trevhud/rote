@@ -19,6 +19,7 @@ the canned-response shape cannot drift between suites.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -30,6 +31,7 @@ import pytest
 from rote.compiler.drivers import DriverError
 from rote.compiler.drivers.anthropic_api import AnthropicApiDriver
 from rote.compiler.drivers.openai_api import OpenAIApiDriver
+from rote.mcp import live_tools
 from rote.mcp.live_tools import (
     LiveMcpTools,
     mcp_tool_id,
@@ -776,3 +778,81 @@ async def test_openai_driver_reports_mcp_failure_as_tool_error(
 
     tool_msgs = [m for m in client.chat.completions.calls[1]["messages"] if m["role"] == "tool"]
     assert "server exploded" in tool_msgs[0]["content"]
+
+
+# ───────── A wedged server must not freeze the compile ─────────
+
+
+async def _blackhole(reader: Any, writer: Any) -> None:
+    """Accept the connection, read the request, answer nothing. Ever.
+
+    A server that is reachable but wedged. It raises nothing, so no
+    ``except`` clause can rescue a caller that waits on it; only a
+    timeout can.
+    """
+    try:
+        await reader.read(65536)
+        await asyncio.sleep(3600)
+    except Exception:  # noqa: BLE001 - test scaffolding
+        pass
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_server_is_bounded_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listing a wedged server's tools must time out, not hang.
+
+    The "unavailable, continuing without it" path keys off an exception,
+    and a server that accepts the socket without completing the
+    initialize handshake never raises one. Before the bound covered the
+    connect, this call blocked indefinitely and no warning was emitted:
+    a compile that never returns, on the hosted runtime this feature
+    targets.
+    """
+    monkeypatch.setattr(live_tools, "CALL_TIMEOUT_SECONDS", 0.5)
+    server = await asyncio.start_server(_blackhole, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    warnings: list[str] = []
+    tools = LiveMcpTools(
+        [{"name": "wedged", "url": f"http://127.0.0.1:{port}/mcp", "headers": {}}],
+        on_warning=warnings.append,
+    )
+    try:
+        # The outer bound is generous relative to the inner one, so this
+        # fails loudly if the inner bound is the thing that regressed.
+        async with asyncio.timeout(10.0):
+            await tools.__aenter__()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert any("wedged" in w and "unavailable" in w for w in warnings), warnings
+    # And it degraded rather than exposing a half-built tool.
+    assert tools.anthropic_tool_schemas() == []
+
+
+@pytest.mark.asyncio
+async def test_a_wedged_server_is_bounded_on_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The documented call bound must cover the connect it now performs.
+
+    Every call opens a fresh connection, so wrapping only ``call_tool``
+    left the handshake unbounded and the 180s promise was unreachable.
+    """
+    monkeypatch.setattr(live_tools, "CALL_TIMEOUT_SECONDS", 0.5)
+    server = await asyncio.start_server(_blackhole, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    tools = LiveMcpTools([], on_warning=lambda _m: None)
+    tools._tools["mcp__wedged__lookup"] = (
+        {"name": "wedged", "url": f"http://127.0.0.1:{port}/mcp", "headers": {}},
+        "lookup",
+    )
+    try:
+        async with asyncio.timeout(10.0):
+            with pytest.raises(RuntimeError, match="timed out"):
+                await tools.call("mcp__wedged__lookup", {})
+    finally:
+        server.close()
+        await server.wait_closed()
