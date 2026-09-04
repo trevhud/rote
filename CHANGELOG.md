@@ -67,6 +67,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- **The readOnlyHint gate no longer trips fastmcp 4's deprecation
+  warning.** MCP SDK v2 renamed `ToolAnnotations.readOnlyHint` to
+  `read_only_hint`, and reading the camelCase alias fires
+  FastMCPDeprecationWarning (it surfaced as stderr noise in prod error
+  mail). The shared predicate now reads snake_case first and falls back
+  to camelCase, clean under both fastmcp 3.4 and 4.x.
 - **Long compiler turns no longer die on silent connections.** The api
   and openai-api drivers stream every model request (`messages.stream()`
   / `stream=True` with usage included) and assemble the final message
