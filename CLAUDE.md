@@ -496,11 +496,17 @@ the code (`tests/test_claude_driver.py`, `tests/test_cli.py`,
 - **All four buckets are counted.** `_usage_delta` returns
   `{input, output, cache_write, cache_read}`, and every display adds the
   cache buckets into the reported input rather than hiding them.
+  Claude repeats input/cache usage across content blocks sharing one
+  `message.id`; count each ID once. Assistant `output_tokens` is a
+  placeholder: show output as pending until final `modelUsage` (whole
+  query, including subagents) or `usage` (main loop) arrives. Recovery
+  without final usage retains input/cache and marks output incomplete.
 - **The cost key is `total_cost_usd`.** There is no `cost_usd` key in the
   result envelope, so the old read returned `None` on every run while the
-  real figure sat one key away. It is also authoritative: the CLI knows
-  the per-model split and the exact cache rates, so it outranks anything
-  rote prices locally.
+  estimate sat one key away. Prefer the CLI's whole-query estimate to
+  rote's single-model estimate; neither is authoritative billing data.
+  When changing this logic, consult the
+  [SDK cost-tracking contract](https://code.claude.com/docs/en/agent-sdk/cost-tracking).
 - **Cache rates span the whole fetch.** models.dev publishes them per
   model and `_parse_models_dev` already read them, but `build_catalog`
   kept only the three tier representatives'. The compiler's default

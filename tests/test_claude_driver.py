@@ -47,6 +47,7 @@ def _assistant_line(
     text: str | None = None,
     tools: list[tuple[str, dict[str, Any]]] | None = None,
     usage: dict[str, int] | None = None,
+    message_id: str | None = None,
 ) -> str:
     """A ``{"type":"assistant"}`` NDJSON line with text + tool_use blocks.
 
@@ -59,6 +60,8 @@ def _assistant_line(
     for name, inp in tools or []:
         content.append({"type": "tool_use", "name": name, "input": inp})
     message: dict[str, Any] = {"content": content}
+    if message_id is not None:
+        message["id"] = message_id
     if usage is not None:
         message["usage"] = usage
     return json.dumps({"type": "assistant", "message": message})
@@ -280,11 +283,9 @@ async def test_happy_path_args_env_and_metadata(
     assert "--append-system-prompt" in args
     assert args.count("--add-dir") == 3
     assert DEFAULT_ALLOWED_TOOLS in args
-    # stream-json + verbose, not the old plain json
     assert args[args.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in args
     assert str(DEFAULT_MAX_TURNS) in args
-    # The stream-line limit is passed so large tool_use lines don't overrun
     assert recorder.calls[0]["kwargs"].get("limit")
 
     env = recorder.calls[0]["env"]
@@ -292,6 +293,72 @@ async def test_happy_path_args_env_and_metadata(
     assert "ANTHROPIC_AUTH_TOKEN" not in env
     assert env.get("CLAUDE_CODE_DISABLE_NONINTERACTIVE_ANIMATIONS") == "1"
     assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat01-should-pass-through"
+
+
+def test_model_usage_includes_all_models_and_overrides_main_loop_usage() -> None:
+    result = {
+        "usage": {"input_tokens": 1, "output_tokens": 2},
+        "modelUsage": {
+            "main": {
+                "inputTokens": 11,
+                "outputTokens": 22,
+                "cacheCreationInputTokens": 33,
+                "cacheReadInputTokens": 44,
+            },
+            "child": {
+                "inputTokens": 100,
+                "outputTokens": 200,
+                "cacheCreationInputTokens": 300,
+                "cacheReadInputTokens": 400,
+            },
+        },
+        "num_turns": 9,
+        "total_cost_usd": 1.23,
+    }
+    metadata = ClaudeDriver()._parse_metadata(result, {"input": 999, "output": 999})
+    assert metadata["input_tokens"] == 111
+    assert metadata["output_tokens"] == 222
+    assert metadata["cache_write_tokens"] == 333
+    assert metadata["cache_read_tokens"] == 444
+    assert metadata["usage_source"] == "modelUsage"
+    assert metadata["usage_complete"] is True
+    assert metadata["num_turns"] == 9  # provider count, not progress response count
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"usage": {}},
+        {"usage": {"input_tokens": 1, "output_tokens": None}},
+        {"usage": {"input_tokens": 1, "output_tokens": True}},
+        {"modelUsage": {"main": {"inputTokens": 1}}},
+        {"modelUsage": {"main": None}},
+        {"modelUsage": {"main": {"outputTokens": 10}, "child": {}}},
+    ],
+)
+def test_missing_final_output_is_incomplete_not_zero(result: dict[str, Any]) -> None:
+    metadata = ClaudeDriver()._parse_metadata(result, {"input": 3, "cache_write": 61263})
+    assert metadata["usage_complete"] is False
+    assert metadata["output_tokens"] is None
+    assert metadata["input_tokens"] == 3
+    assert metadata["cache_write_tokens"] == 61263
+
+
+def test_zero_final_usage_is_not_replaced_with_stream_totals() -> None:
+    metadata = ClaudeDriver()._parse_metadata(
+        {
+            "usage": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            }
+        },
+        {"input": 999, "output": 999, "cache_write": 999, "cache_read": 999},
+    )
+    assert metadata["input_tokens"] == metadata["output_tokens"] == 0
+    assert metadata["cache_write_tokens"] == metadata["cache_read_tokens"] == 0
+    assert metadata["usage_complete"] is True
 
 
 @pytest.mark.asyncio
@@ -434,7 +501,6 @@ def test_map_stream_line_accumulates_cumulative_tokens() -> None:
     )
     assert events1[0].tokens == {
         "input": 100,
-        "output": 20,
         "cache_write": 0,
         "cache_read": 0,
     }
@@ -446,9 +512,9 @@ def test_map_stream_line_accumulates_cumulative_tokens() -> None:
         totals,
     )
     # Cumulative across turns, not just this message's usage.
-    expected = {"input": 350, "output": 50, "cache_write": 0, "cache_read": 0}
+    expected = {"input": 350, "cache_write": 0, "cache_read": 0}
     assert events2[0].tokens == expected
-    assert totals == expected
+    assert totals == {**expected, "output": 0}
 
 
 def test_map_stream_line_missing_usage_keeps_prior_total() -> None:
@@ -456,7 +522,8 @@ def test_map_stream_line_missing_usage_keeps_prior_total() -> None:
     turn event still reports the cumulative figure carried so far."""
     totals = {"input": 40, "output": 5, "cache_write": 7, "cache_read": 9}
     events, _turn, _ = _map_stream_line(_assistant_line(text="no usage"), 3, None, totals)
-    assert events[0].tokens == {"input": 40, "output": 5, "cache_write": 7, "cache_read": 9}
+    assert events[0].tokens == {"input": 40, "cache_write": 7, "cache_read": 9}
+    assert events[0].usage_complete is False
 
 
 def test_map_stream_line_result_line_yields_no_events_but_returns_obj() -> None:
@@ -552,9 +619,11 @@ async def test_missing_result_object_returns_minimal_metadata(
     assert result.metadata == {
         "driver": "claude",
         "input_tokens": 0,
-        "output_tokens": 0,
+        "output_tokens": None,
         "cache_write_tokens": 0,
         "cache_read_tokens": 0,
+        "usage_source": "stream",
+        "usage_complete": False,
     }
 
 
@@ -578,7 +647,8 @@ async def test_metadata_carries_cumulative_stream_tokens(
     driver = ClaudeDriver()
     result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["input_tokens"] == 350
-    assert result.metadata["output_tokens"] == 50
+    assert result.metadata["output_tokens"] is None
+    assert result.metadata["usage_complete"] is False
     assert result.metadata["num_turns"] == 2
 
 
@@ -651,6 +721,83 @@ def test_other_drivers_swallow_web_tools_kwarg() -> None:
 # ───────── Prompt-cache accounting ─────────
 
 
+@pytest.mark.asyncio
+async def test_split_assistant_blocks_count_one_response_but_keep_each_tool(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,
+) -> None:
+    """Parallel tool blocks share the response ID and its input/cache usage.
+
+    Claude's documented stream contract matches the live self-compile's
+    repeated 3 input / 61263 cache-write snapshots. These are separate
+    blocks from one response, not additional model requests.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    usage = {
+        "input_tokens": 3,
+        "output_tokens": 7,
+        "cache_creation_input_tokens": 61263,
+        "cache_read_input_tokens": 0,
+    }
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(text="Reading the skill.", usage=usage, message_id="msg_one"),
+            _assistant_line(
+                tools=[("Read", {"file_path": "SKILL.md"})], usage=usage, message_id="msg_one"
+            ),
+            _assistant_line(
+                tools=[("Read", {"file_path": "references/a.md"})],
+                usage=usage,
+                message_id="msg_one",
+            ),
+            _assistant_line(text="Next response", usage=usage, message_id="msg_two"),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    events: list[CompilationEvent] = []
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir, on_event=events.append)
+    assert result.metadata["input_tokens"] == 6
+    assert result.metadata["cache_write_tokens"] == 122526
+    assert [event.turn for event in events if event.type == "turn"] == [1, 2]
+    assert [(event.tool_name, event.turn) for event in events if event.type == "tool"] == [
+        ("Read", 1),
+        ("Read", 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_final_result_usage_replaces_stream_placeholders(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,
+) -> None:
+    """The result carries final output usage, even on error results."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    fake_claude_subprocess(
+        stdout_text=_stream(
+            _assistant_line(usage={"input_tokens": 3, "output_tokens": 7}, message_id="msg_one"),
+            _result_line(
+                subtype="error_max_turns",
+                num_turns=9,
+                total_cost_usd=0.42,
+                usage={
+                    "input_tokens": 11,
+                    "output_tokens": 2345,
+                    "cache_creation_input_tokens": 61263,
+                    "cache_read_input_tokens": 98765,
+                },
+            ),
+        ),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+    assert result.metadata["input_tokens"] == 11
+    assert result.metadata["output_tokens"] == 2345
+    assert result.metadata["cache_write_tokens"] == 61263
+    assert result.metadata["cache_read_tokens"] == 98765
+    assert result.metadata["num_turns"] == 9
+    assert result.metadata["cost_usd"] == 0.42
+
+
 def test_cache_buckets_are_counted_not_dropped() -> None:
     """A prompt-cached message's input lands in the cache buckets.
 
@@ -680,7 +827,6 @@ def test_cache_buckets_are_counted_not_dropped() -> None:
     )
     assert events[0].tokens == {
         "input": 3,
-        "output": 2,
         "cache_write": 122956,
         "cache_read": 41000,
     }
@@ -728,7 +874,8 @@ async def test_metadata_carries_cache_buckets(
     driver = ClaudeDriver()
     result = await driver.run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["input_tokens"] == 7
-    assert result.metadata["output_tokens"] == 50
+    assert result.metadata["output_tokens"] is None
+    assert result.metadata["usage_complete"] is False
     assert result.metadata["cache_write_tokens"] == 100_000
     assert result.metadata["cache_read_tokens"] == 100_000
 

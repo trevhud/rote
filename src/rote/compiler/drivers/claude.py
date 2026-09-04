@@ -136,9 +136,10 @@ _EMPTY_TOTALS: dict[str, int] = {"input": 0, "output": 0, "cache_write": 0, "cac
 def _usage_delta(message: object) -> dict[str, int]:
     """Per-bucket token usage from a stream-json ``message.usage``.
 
-    Claude Code stamps each ``assistant`` message with the token usage of
-    that single model response. Missing / non-integer fields count as 0 so
-    a malformed line never poisons the running total.
+    Claude Code repeats input/cache usage on each content block of one
+    response; callers deduplicate by message.id. Per-block output usage
+    is provisional, so only final result usage may supply output totals.
+    Missing / non-integer fields count as 0, matching the existing decoder.
 
     All four buckets are captured, and the two cache buckets are the
     point. ``claude -p`` always runs prompt-cached, so ``input_tokens``
@@ -173,27 +174,27 @@ def _map_stream_line(
     turn: int,
     work_dir: Path | None = None,
     totals: dict[str, int] | None = None,
+    message_turns: dict[str, int] | None = None,
 ) -> tuple[list[CompilationEvent], int, dict[str, Any] | None]:
     """Map one stream-json NDJSON line to progress events.
 
-    Pure and side-effect-free so it can be unit-tested against canned
-    lines. Returns ``(events, new_turn, parsed_obj)``:
+    Returns ``(events, new_turn, parsed_obj)`` while updating the caller's
+    token totals and response-ID map:
 
-    * ``events`` — a ``turn`` event for an ``assistant`` message (with a
+    * ``events`` — a ``turn`` event for a new assistant response ID (with a
       text snippet and cumulative ``tokens``), plus one ``tool`` event per
       ``tool_use`` block in it.
-    * ``new_turn`` — ``turn`` + 1 for an assistant message (each is one
-      run turn), otherwise unchanged.
+    * ``new_turn`` — increments per distinct response, not per content
+      block. The provider's final ``num_turns`` remains separate metadata.
     * ``parsed_obj`` — the decoded dict (or ``None`` for a non-JSON line),
       so the caller can pick out the final ``result`` object for metadata
       without parsing the line a second time.
 
-    ``totals`` is the caller's running ``{"input", "output"}`` token
-    tally, mutated in place across lines so every ``turn`` event carries
-    *cumulative* usage — the stream-json ``usage`` is per-message, so the
-    driver accumulates it exactly the way the api driver does. When
-    omitted (pure-function callers) a fresh tally is used, so a single
-    line still reports its own usage.
+    Stream events carry deduplicated input/cache totals only. Output is
+    pending until the final result, because assistant output_tokens is a
+    message-start placeholder. All tool blocks still emit events, even
+    when their response was already counted. Older ID-less records retain
+    the existing per-record behavior; completed result usage supersedes it.
 
     Phase events are deliberately NOT produced here — a
     :class:`~rote.compiler.events.ProgressFileWatcher` owns those for
@@ -216,19 +217,34 @@ def _map_stream_line(
 
     if totals is None:
         totals = dict(_EMPTY_TOTALS)
-    for bucket, delta in _usage_delta(message).items():
-        totals[bucket] = totals.get(bucket, 0) + delta
-
-    turn += 1
-    events: list[CompilationEvent] = [
-        CompilationEvent(
-            type="turn",
-            ts=time.time(),
-            turn=turn,
-            tokens=dict(totals),
-            message=f"turn {turn}: {_stream_text_snippet(content)}",
+    message_id = message.get("id") if isinstance(message, dict) else None
+    known_turn = (
+        message_turns.get(message_id)
+        if message_turns is not None and isinstance(message_id, str)
+        else None
+    )
+    events: list[CompilationEvent] = []
+    if known_turn is None:
+        # Claude emits multiple content blocks with the same response ID and
+        # usage. Only the first contributes input/cache tokens and a new turn.
+        # Per-block output_tokens is a message-start placeholder, not usage.
+        for bucket, delta in _usage_delta(message).items():
+            if bucket != "output":
+                totals[bucket] = totals.get(bucket, 0) + delta
+        turn += 1
+        known_turn = turn
+        if message_turns is not None and isinstance(message_id, str) and message_id:
+            message_turns[message_id] = turn
+        events.append(
+            CompilationEvent(
+                type="turn",
+                ts=time.time(),
+                turn=turn,
+                tokens={key: value for key, value in totals.items() if key != "output"},
+                usage_complete=False,
+                message=f"turn {turn}: {_stream_text_snippet(content)}",
+            )
         )
-    ]
     for block in content:
         if not isinstance(block, dict) or block.get("type") != "tool_use":
             continue
@@ -243,7 +259,7 @@ def _map_stream_line(
             CompilationEvent(
                 type="tool",
                 ts=time.time(),
-                turn=turn,
+                turn=known_turn,
                 tool_name=tool_name,
                 path=rel,
                 message=f"{tool_name} {rel}".rstrip() if rel else tool_name,
@@ -484,9 +500,8 @@ class ClaudeDriver(CompilerDriver):
         stderr is drained concurrently (a full pipe would otherwise
         deadlock the child). Returns the final ``result`` object (for
         metadata), the decoded stderr text (for error details), and the
-        cumulative ``{"input", "output"}`` token tally accumulated across
-        the assistant messages (per-message usage summed the way the api
-        driver sums it).
+        deduplicated input/cache tally. Output is supplied by the final
+        result rather than the assistant records' placeholders.
         """
         assert proc.stdout is not None
         assert proc.stderr is not None
@@ -494,6 +509,7 @@ class ClaudeDriver(CompilerDriver):
         result_obj: dict[str, Any] | None = None
         turn = 0
         totals: dict[str, int] = dict(_EMPTY_TOTALS)
+        message_turns: dict[str, int] = {}
 
         async def read_stdout() -> None:
             nonlocal result_obj, turn
@@ -501,7 +517,7 @@ class ClaudeDriver(CompilerDriver):
                 line = raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
-                events, turn, obj = _map_stream_line(line, turn, work_dir, totals)
+                events, turn, obj = _map_stream_line(line, turn, work_dir, totals, message_turns)
                 for event in events:
                     emit_safely(on_event, event)
                 if isinstance(obj, dict) and obj.get("type") == "result":
@@ -524,28 +540,56 @@ class ClaudeDriver(CompilerDriver):
         ``num_turns``, ``session_id``. We keep those numeric/id fields and
         drop the (potentially large) ``result`` text.
 
-        **The cost field is ``total_cost_usd``, and it is authoritative.**
-        There is no ``cost_usd`` key in the envelope, so reading that name
-        yielded ``None`` on every run while a real figure sat one key
-        away. A measured trivial call reported ``$0.7378``. It is also
-        better than anything priced here: the CLI knows the per-model
-        split and the cache-write/cache-read rates that applied, and it
-        reports them for a subscription run where rote cannot.
+        ``total_cost_usd`` is the CLI's estimate, not billing data. Prefer
+        it to rote's estimate because it accounts for multiple models.
+        Token totals prefer result.modelUsage (including subagents), then
+        result.usage (main loop). A missing result preserves the existing
+        artifact-recovery path with input/cache totals, but output is null
+        and usage_complete is false. Never report placeholders as usage.
 
-        The four token buckets come from the streamed usage. ``cache_write``
-        and ``cache_read`` are not optional detail. See
-        :func:`_usage_delta`, where they carry nearly all of the input.
-
-        A missing result object — the stream ended without a summary line
-        — degrades to the driver name plus the token totals, same shape
-        an unparseable payload produces.
+        Contract: https://code.claude.com/docs/en/agent-sdk/cost-tracking
         """
+
+        def valid_output(value: object) -> bool:
+            return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+        usage_source = "stream"
+        if isinstance(result, dict):
+            model_usage = result.get("modelUsage")
+            if isinstance(model_usage, dict) and model_usage:
+                # Whole-query counts include subagents; result.usage only
+                # covers the main agent loop. Both are SDK-documented fields.
+                final_totals = dict(_EMPTY_TOTALS)
+                complete = True
+                for usage in model_usage.values():
+                    if not isinstance(usage, dict) or not valid_output(usage.get("outputTokens")):
+                        complete = False
+                        break
+                    for bucket, field in (
+                        ("input", "inputTokens"),
+                        ("output", "outputTokens"),
+                        ("cache_write", "cacheCreationInputTokens"),
+                        ("cache_read", "cacheReadInputTokens"),
+                    ):
+                        value = usage.get(field)
+                        if isinstance(value, int) and not isinstance(value, bool):
+                            final_totals[bucket] += value
+                if complete:
+                    totals = final_totals
+                    usage_source = "modelUsage"
+            elif isinstance(result.get("usage"), dict) and valid_output(
+                result["usage"].get("output_tokens")
+            ):
+                totals = _usage_delta({"usage": result["usage"]})
+                usage_source = "usage"
         metadata: dict[str, Any] = {
             "driver": self.name,
             "input_tokens": totals.get("input", 0),
-            "output_tokens": totals.get("output", 0),
+            "output_tokens": totals.get("output", 0) if usage_source != "stream" else None,
             "cache_write_tokens": totals.get("cache_write", 0),
             "cache_read_tokens": totals.get("cache_read", 0),
+            "usage_source": usage_source,
+            "usage_complete": usage_source != "stream",
         }
         if not isinstance(result, dict):
             return metadata

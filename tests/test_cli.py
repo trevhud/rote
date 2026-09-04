@@ -275,7 +275,10 @@ def _write_mcp_free_pipeline(tmp_path: Path) -> Path:
 
 
 def _install_mock_compiler(
-    monkeypatch: pytest.MonkeyPatch, pipeline_yaml: Path | None = None
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline_yaml: Path | None = None,
+    *,
+    driver_metadata: dict[str, object] | None = None,
 ) -> None:
     """Patch ``rote.cli.Compiler`` with a fake that writes the BDR IR.
 
@@ -328,7 +331,11 @@ def _install_mock_compiler(
                 pipeline=real_pipeline,
                 output_dir=output_dir,
                 driver_name="mock",
-                driver_metadata={"num_turns": 7, "input_tokens": 1000, "output_tokens": 500},
+                driver_metadata=(
+                    driver_metadata
+                    if driver_metadata is not None
+                    else {"num_turns": 7, "input_tokens": 1000, "output_tokens": 500}
+                ),
             )
 
     monkeypatch.setattr("rote.cli.Compiler", _MockCompiler)
@@ -803,6 +810,40 @@ def test_compile_progress_file_writes_ndjson_with_cost_and_summary(
     assert any("extracted/" in s for s in summary["unimplemented_stubs"])  # type: ignore[union-attr]
     assert summary["compiled_dir"] == str((out_dir / "compiled").resolve())
     assert summary["runtime_dir"] == str((out_dir / "runtime" / "dbos").resolve())
+
+
+def test_compile_incomplete_usage_keeps_null_output_in_final_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    _install_mock_compiler(
+        monkeypatch,
+        driver_metadata={
+            "input_tokens": 3,
+            "output_tokens": None,
+            "cache_write_tokens": 61263,
+            "cache_read_tokens": 0,
+            "usage_complete": False,
+        },
+    )
+    _patch_pricing(monkeypatch, prices=(3.0, 15.0), cache_write_per_mtok=3.75)
+    output = tmp_path / "output"
+    assert (
+        cli_main(["compile", str(skill), "--out", str(output), "--runtime", "dbos", "--no-eval"])
+        == 0
+    )
+    summary = _read_ndjson(output / "progress.jsonl")[-1]
+    assert summary["total_tokens"] == {
+        "input": 3,
+        "output": None,
+        "cache_write": 61263,
+        "cache_read": 0,
+    }
+    assert summary["usage_complete"] is False
+    assert "cost_usd" not in summary
 
 
 def test_compile_writes_progress_sidecar_by_default(
@@ -1525,6 +1566,28 @@ def test_token_note_reports_the_whole_input_volume() -> None:
 
     # An uncached run keeps the plain rendering, with no cache clause.
     assert _format_token_note({"input": 1000, "output": 500}) == " (in 1.0k / out 500 tok)"
+
+
+def test_pending_output_is_not_displayed_or_priced_as_zero(tmp_path: Path) -> None:
+    from rote.cli import _format_token_note, _Rates
+    from rote.compiler.events import CompilationEvent
+
+    tokens = {"input": 3, "cache_write": 61263, "cache_read": 0}
+    assert "out pending" in _format_token_note(tokens)
+    sink = _sink(
+        tmp_path,
+        _Rates(
+            input_per_mtok=3, output_per_mtok=15, cache_write_per_mtok=3.75, cache_read_per_mtok=0.3
+        ),
+    )
+    path = tmp_path / "p.ndjson"
+    sink._file = path.open("w", encoding="utf-8")
+    sink.emit(CompilationEvent(type="turn", ts=0, turn=1, tokens=tokens, usage_complete=False))
+    sink.close()
+    event = json.loads(path.read_text().splitlines()[0])
+    assert event["usage_complete"] is False
+    assert "output" not in event["tokens"]
+    assert "cost_usd" not in event
 
 
 #: The real ``_resolve_prices``, captured at import time.
