@@ -75,6 +75,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- **CLI cloud uploads preserve required MCP servers.** `rote deploy`
+  now forwards the emitted manifest's server map, so the platform can
+  authorize the pipeline's MCP calls. Binding-mode run IDs are optional
+  attribution data; generated types and comments match the proxy's
+  tenant-and-pipeline signature contract.
+- **Cloud uploads can bundle packages with a legacy entry point.**
+  esbuild's neutral platform has no default package entry fields.
+  Explicit `module,main` resolution lets generated agent loops bundle
+  `@cloudflare/ai-utils` while preserving Worker export conditions.
 - **The readOnlyHint gate no longer trips fastmcp 4's deprecation
   warning.** MCP SDK v2 renamed `ToolAnnotations.readOnlyHint` to
   `read_only_hint`, and reading the camelCase alias fires

@@ -337,7 +337,8 @@ def test_cloudflare_binding_mode_env_and_config_surfaces(tmp_path: Path) -> None
     # The dispatcher-injected caller identity is part of the declared Env.
     assert "ROTE_TENANT_ID: string;" in workflow
     assert "ROTE_PIPELINE: string;" in workflow
-    assert "ROTE_RUN_ID: string;" in workflow
+    assert "ROTE_RUN_ID?: string;" in workflow
+    assert "ROTE_RUN_ID: string;" not in workflow
     assert "ROTE_MCP_SIG: string;" in workflow
     assert "ROTE_MCP_VENDOR_REFRESH_TOKEN" not in workflow
     assert "ROTE_MCP_TOKENS" not in workflow
