@@ -259,7 +259,10 @@ def test_bundle_installs_npm_deps_first(tmp_path: Path, monkeypatch: pytest.Monk
     assert installed == [tmp_path]
 
 
-def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("mcp_servers", [None, {}, {"vendor": ["lookup_word"]}])
+def test_rote_cloud_upload_payload_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mcp_servers: dict[str, list[str]] | None
+) -> None:
     import rote.deploy_rote_cloud as rc
 
     (tmp_path / "manifest.json").write_text(
@@ -271,6 +274,7 @@ def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.Mon
                 "class_name": "WordLookupWorkflow",
                 "node_ids": ["lookup_word"],
                 "input_schema": {},
+                **({"mcp_servers": mcp_servers} if mcp_servers is not None else {}),
             }
         ),
         encoding="utf-8",
@@ -305,6 +309,7 @@ def test_rote_cloud_upload_payload_shape(tmp_path: Path, monkeypatch: pytest.Mon
     assert sent["payload"]["class_name"] == "WordLookupWorkflow"
     assert sent["payload"]["module_js"] == "export class X {}"
     assert sent["payload"]["input_schema"] == {"examples": [{"word": "hi"}]}
+    assert sent["payload"]["mcp_servers"] == mcp_servers
     assert "pipeline_id" in report.detail
 
 

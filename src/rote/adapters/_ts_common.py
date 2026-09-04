@@ -1818,7 +1818,7 @@ export interface McpToolSpec {
     inputSchema: Record<string, unknown>;
 }
 
-/** Caller identity the proxy verifies — ROTE_MCP_SIG signs the triple. */
+/** ROTE_MCP_SIG authenticates tenant + pipeline; run_id is attribution. */
 export interface RoteMcpAuth {
     tenant_id: string;
     pipeline: string;

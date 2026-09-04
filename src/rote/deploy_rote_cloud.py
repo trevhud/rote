@@ -9,14 +9,14 @@ bearer token.
 
 The endpoint contract (mirrors the platform's ``DeployPayload``):
 ``name`` + ``class_name`` + ``module_js`` required; ``version``,
-``pipeline_hash``, ``node_ids``, ``input_schema`` ride along. The
+``pipeline_hash``, ``node_ids``, ``input_schema``, ``mcp_servers`` ride along. The
 platform stores the module in R2 keyed by tenant and registers the
 pipeline row — the same code path its own in-cloud compilation deploy
 uses.
 
-Bundling matches the platform's reference client exactly: esbuild,
-``--format=esm --platform=neutral`` with worker-first conditions and
-``cloudflare:workers`` / ``node:*`` externals. esbuild is invoked via
+Bundling uses esbuild's neutral ESM target with worker-first export
+conditions, explicit ``module,main`` package entry fields, and
+``cloudflare:*`` / ``node:*`` externals. esbuild is invoked via
 ``npx`` so the only requirement is a Node toolchain — no Python-side
 JS dependency.
 """
@@ -45,6 +45,9 @@ BUNDLE_ARGS = [
     "--format=esm",
     "--platform=neutral",
     "--conditions=worker,browser,import",
+    # Neutral has no default entry fields; packages without exports
+    # (including @cloudflare/ai-utils) still need their module/main entry.
+    "--main-fields=module,main",
     "--external:cloudflare:*",
     "--external:node:*",
     "--target=es2022",
@@ -93,7 +96,7 @@ def bundle_workflow(app_dir: Path) -> str:
 
     The app's npm dependencies must be present first: the platform's
     Worker Loader executes the bundle stand-alone, so judge deps (zod,
-    vendor SDKs) get inlined — only ``cloudflare:workers``/``node:*``
+    vendor SDKs) get inlined — only ``cloudflare:*``/``node:*``
     stay external. A freshly emitted app (the compile auto-deploy
     path) has no ``node_modules`` yet, so install idempotently here.
     """
@@ -145,6 +148,7 @@ def deploy_rote_cloud(
         "class_name": manifest["class_name"],
         "node_ids": manifest.get("node_ids", []),
         "input_schema": input_schema,
+        "mcp_servers": manifest.get("mcp_servers"),
         "module_js": module_js,
     }
     print(

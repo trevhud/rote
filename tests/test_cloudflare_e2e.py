@@ -30,7 +30,9 @@ import shutil
 import socket
 import subprocess
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -553,3 +555,42 @@ def test_binding_mode_typescript_compiles(binding_emitted_dir: Path) -> None:
             f"tsc --noEmit reported errors in binding-mode emitted code:\n"
             f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
         )
+
+
+def test_binding_mode_upload_preserves_mcp_requirements(binding_emitted_dir: Path) -> None:
+    """Real emit → esbuild → HTTP upload preserves the platform's server allowlist."""
+    from rote.deploy_rote_cloud import deploy_rote_cloud
+    from rote.runners import RunTarget
+
+    manifest = json.loads((binding_emitted_dir / "manifest.json").read_text())
+    assert manifest["mcp_servers"]  # An empty manifest cannot expose a dropped allowlist.
+    received: list[dict[str, object]] = []
+
+    class Receiver(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok": true}')
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Receiver) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            report = deploy_rote_cloud(
+                RunTarget(kind="pipeline", path=binding_emitted_dir, runtime="cloudflare"),
+                url=f"http://127.0.0.1:{server.server_port}",
+                token="local-contract-test",
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+    assert report.ok
+    assert len(received) == 1
+    assert received[0]["mcp_servers"] == manifest["mcp_servers"]
+    assert received[0]["class_name"] == manifest["class_name"]
+    assert "ROTE_MCP" in str(received[0]["module_js"])
