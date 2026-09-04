@@ -96,8 +96,14 @@ class LiveMcpTools:
     Nothing is held open between calls — long-lived streamable-HTTP
     sessions combined with the vendor SDK deterministically froze the
     asyncio loop under the hosted container runtime (found empirically),
-    and a per-call connect costs ~100ms against multi-second LLM turns
-    while picking up rotated tokens naturally.
+    and a per-call connect costs ~100ms against multi-second LLM turns.
+
+    Note that a fresh connection does NOT mean a fresh credential.
+    :func:`registry_server_specs` resolves each bearer token once, before
+    the run, and every later call rebuilds a client from that same spec.
+    A server issuing short-lived tokens will therefore start returning
+    401s partway through a long compile, surfaced to the model as tool
+    errors. Re-resolving headers per call is the fix if that shows up.
 
     A server that fails to connect, fails to list tools, or declares no
     read-only tools is reported through ``on_warning`` and skipped — it

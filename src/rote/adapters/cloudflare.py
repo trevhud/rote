@@ -1391,7 +1391,9 @@ class CloudflareAdapter:
                     "extracted",
                     f"{node.id}.ts",
                     content=emit_workers_mcp_call_module(
-                        node, generated_by="rote.adapters.cloudflare"
+                        node,
+                        generated_by="rote.adapters.cloudflare",
+                        mcp_client=cfg.mcp_client,
                     ),
                 )
             else:

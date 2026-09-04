@@ -401,3 +401,52 @@ def test_cloudflare_rejects_unknown_mcp_client(tmp_path: Path) -> None:
         get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="proxy")
     with pytest.raises(ValueError, match="mcp_client"):
         get_adapter("cloudflare", mcp_client="proxy")
+
+
+def test_binding_mode_emit_wires_the_mode_into_the_node_module(tmp_path: Path) -> None:
+    """The adapter must pass its mode down to the node-module emitter.
+
+    Deliberately goes through `emit(...)` rather than calling the emitter
+    directly: the unit-level test below passes even when the adapter
+    forgets to forward `mcp_client`, which is exactly the wiring bug that
+    leaves an operator reading the wrong provisioning instructions.
+    """
+    get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path, mcp_client="binding")
+    modules = list((tmp_path / "src" / "extracted").glob("*.ts"))
+    headers = [m.read_text(encoding="utf-8") for m in modules]
+    mcp_headers = [h for h in headers if "MCP-backed" in h]
+    assert mcp_headers, "expected at least one MCP-backed node module"
+    for src in mcp_headers:
+        assert "ROTE_MCP service" in src
+        assert "rote mcp export" not in src
+
+
+def test_binding_mode_node_module_does_not_advertise_worker_secrets() -> None:
+    """The emitted node module must name the mechanism it was built for.
+
+    Binding mode reads no per-server secrets, so telling the operator to
+    run `rote mcp export <server>` sends them to provision secrets this
+    build will never read. This header is the file someone opens when a
+    call fails, which is exactly when a wrong instruction costs the most.
+    """
+    from rote.adapters._ts_common import emit_workers_mcp_call_module
+    from rote.ir import MCPBinding, Node, NodeKind
+
+    node = Node(
+        id="fetch_thing",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="Fetch a thing.",
+        impl="extracted/fetch.py:fetch",
+        mcp=MCPBinding(server="vendorapi", tool="get_thing"),
+    )
+
+    binding_src = emit_workers_mcp_call_module(node, generated_by="test", mcp_client="binding")
+    assert "ROTE_MCP service" in binding_src
+    assert "rote mcp export" not in binding_src
+    assert "Worker secrets" not in binding_src
+
+    # The negative half: direct mode still says what it has always said,
+    # so this cannot be satisfied by deleting the sentence outright.
+    direct_src = emit_workers_mcp_call_module(node, generated_by="test", mcp_client="direct")
+    assert "rote mcp export vendorapi" in direct_src
+    assert "ROTE_MCP service" not in direct_src
