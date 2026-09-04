@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "skill_md_sha256": "bdf4c3e392610128c6b6b1527a745576e382e5d0b19c1ddf10d2bb898eba5b61",
+  "sections": {
+    "": "a40b85103de65e6942ebe5c49139d2b6ef1625bc2f4c19120ead33e416925a88",
+    "Invariants": "6921967631d806021f4b87af5b5c73cc5af31d421274f96c529d3104bdeedbd3",
+    "Phase 1: Intake": "a7ddd62fc7270db2b9973a3484932df02f11ae7d2ca78b46e0dfe57325765f09",
+    "Phase 2: Node Classification": "5eb4649678f37da0bea8725207fc65d1990d95d37132294fbe671d377a768412",
+    "Phase 3: Codification Scan": "01d2f82a8cdb8000a0c4771579658480d2aa0743e92e9273ea9126116f06d0a2",
+    "Phase 4: LLM-Judge Extraction": "83cd6c780d986c1e5d6bad333cb1a964b0daca4d28818ddb0977dfad648936bd",
+    "Phase 5: IR Assembly": "e8986c33ed706a169c0c94d708892db6634d54589ad4ac876c4b9896bf3c540e",
+    "Phase 6: Adapter Invocation": "dc5547215b68e07e75dbbaec27353850d82237157dc08226259649bb0bd66b5f",
+    "Phase 7: Compilation Report": "d7db2cbcb56e1d6f773650a31d428e6d670344a9fbcfd14a69343765b3736d07",
+    "Phase Routing": "9ceb9d5ee59256cdc2f8c7cfcc9a126a51c7f04cd8d543b76865d2163cf9725c",
+    "Pipeline": "2fe018b01d066727510005eb01d2e09107e6f2b9f6c7c312326855e3c85d7263",
+    "Related Concepts": "8e2bce65431f3e20f9cc82ad04ff84858da6f714720a1d9d4df99eebdd353a3b",
+    "Skill Compilation": "d53b1946b771378f7be6647b09ca832026db73f0f01e73e470d6d1a246f89889"
+  },
+  "nodes": {
+    "assemble_ir": {
+      "section": "Phase 5: IR Assembly",
+      "content_hash": "e8986c33ed706a169c0c94d708892db6634d54589ad4ac876c4b9896bf3c540e"
+    },
+    "classify_step": {
+      "section": "Phase 2: Node Classification",
+      "content_hash": "5eb4649678f37da0bea8725207fc65d1990d95d37132294fbe671d377a768412"
+    },
+    "codification_scan": {
+      "section": "Phase 3: Codification Scan",
+      "content_hash": "01d2f82a8cdb8000a0c4771579658480d2aa0743e92e9273ea9126116f06d0a2"
+    },
+    "design_signatures": {
+      "section": "Phase 4: LLM-Judge Extraction",
+      "content_hash": "83cd6c780d986c1e5d6bad333cb1a964b0daca4d28818ddb0977dfad648936bd"
+    },
+    "detect_entry_point": {
+      "section": "Phase Routing",
+      "content_hash": "9ceb9d5ee59256cdc2f8c7cfcc9a126a51c7f04cd8d543b76865d2163cf9725c"
+    },
+    "estimate_eval_turns": {
+      "section": "Phase 5: IR Assembly",
+      "content_hash": "e8986c33ed706a169c0c94d708892db6634d54589ad4ac876c4b9896bf3c540e"
+    },
+    "identify_steps": {
+      "section": "Phase 2: Node Classification",
+      "content_hash": "5eb4649678f37da0bea8725207fc65d1990d95d37132294fbe671d377a768412"
+    },
+    "invoke_adapter": {
+      "section": "Phase 6: Adapter Invocation",
+      "content_hash": "dc5547215b68e07e75dbbaec27353850d82237157dc08226259649bb0bd66b5f"
+    },
+    "read_skill_bundle": {
+      "section": "Phase 1: Intake",
+      "content_hash": "a7ddd62fc7270db2b9973a3484932df02f11ae7d2ca78b46e0dfe57325765f09"
+    },
+    "validate_ir": {
+      "section": "Phase 6: Adapter Invocation",
+      "content_hash": "dc5547215b68e07e75dbbaec27353850d82237157dc08226259649bb0bd66b5f"
+    },
+    "write_compile_report": {
+      "section": "Phase 7: Compilation Report",
+      "content_hash": "d7db2cbcb56e1d6f773650a31d428e6d670344a9fbcfd14a69343765b3736d07"
+    },
+    "write_eval_sidecar": {
+      "section": "Phase 5: IR Assembly",
+      "content_hash": "e8986c33ed706a169c0c94d708892db6634d54589ad4ac876c4b9896bf3c540e"
+    }
+  }
+}

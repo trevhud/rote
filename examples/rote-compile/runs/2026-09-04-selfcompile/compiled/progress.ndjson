@@ -1,0 +1,7 @@
+{"phase": 1, "name": "Intake"}
+{"phase": 2, "name": "Node Classification"}
+{"phase": 3, "name": "Codification Scan"}
+{"phase": 4, "name": "LLM-Judge Extraction"}
+{"phase": 5, "name": "IR Assembly"}
+{"phase": 6, "name": "Adapter Invocation"}
+{"phase": 7, "name": "Compilation Report"}

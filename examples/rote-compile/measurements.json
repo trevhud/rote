@@ -1,0 +1,55 @@
+{
+  "date": "2026-09-04",
+  "compiler_version": "0.14.0.dev0",
+  "compiler_commit": "04cfa95c04bd2642b4acbd79d3bea8321013a76c",
+  "source_skill": "skills/rote-compile",
+  "source_skill_sha256": "bdf4c3e392610128c6b6b1527a745576e382e5d0b19c1ddf10d2bb898eba5b61",
+  "driver": "claude",
+  "model": "claude-sonnet-4-6",
+  "requested_runtime": "dbos",
+  "status": "runtime_emission_failed",
+  "ir_validated": true,
+  "whole_pipeline_executed": false,
+  "progress_event_span_seconds": 1313.5852258205414,
+  "cli_cost_estimate_usd": 3.58193715,
+  "provider_reported_turns": 46,
+  "node_kinds": {
+    "pure_function": 4,
+    "external_call": 2,
+    "llm_judge": 3,
+    "agent_loop": 3
+  },
+  "transcript_audit": {
+    "method": "Group assistant records by message.id, verify identical finalized usage within each group, and count each response once.",
+    "assistant_records": 77,
+    "responses": 30,
+    "tool_events": 44,
+    "usage_scope": "recorded main-agent responses; auxiliary-model totals unavailable",
+    "input_tokens": 32,
+    "cache_write_tokens": 226483,
+    "cache_read_tokens": 3270597,
+    "output_tokens": 71693,
+    "whole_query_usage_complete": false
+  },
+  "fixed_parser_replay": {
+    "verified": true,
+    "response_events": 30,
+    "tool_events": 44,
+    "live_input_and_cache_match_transcript": true,
+    "live_output_marked_pending": true
+  },
+  "separate_live_parser_probe": {
+    "verified_against_raw_result_model_usage": true,
+    "input_tokens": 1248,
+    "output_tokens": 13,
+    "cache_write_tokens": 0,
+    "cache_read_tokens": 0,
+    "cli_cost_estimate_usd": 0.002065
+  },
+  "limitations": [
+    "Original progress token counts are invalid because repeated blocks were counted and output counts were provisional.",
+    "Emission failed before stdout JSON and the terminal telemetry summary were written.",
+    "The CLI cost is an estimate, not a billing record.",
+    "Only machine-specific home paths were normalized in the published snapshot; generated behavior and recorded counters are unchanged."
+  ]
+}
