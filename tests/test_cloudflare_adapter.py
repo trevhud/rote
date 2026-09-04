@@ -854,6 +854,37 @@ def test_manifest_input_schema_is_pipeline_input_schema(
     assert manifest["input_schema"].get("properties")
 
 
+def test_manifest_carries_required_mcp_servers(bdr_pipeline: Pipeline) -> None:
+    """The manifest's mcp_servers key IS Pipeline.required_mcp_servers —
+    the cloud runner provisions connections from it instead of re-deriving
+    them from the IR. Always present, in both MCP client modes."""
+    from rote.adapters.cloudflare import emit_manifest
+
+    manifest = json.loads(emit_manifest(bdr_pipeline))
+    assert manifest["mcp_servers"] == bdr_pipeline.required_mcp_servers
+    # BDR's agent loops resolve real servers via tool_servers, so the
+    # fixture is non-degenerate for this assertion.
+    assert manifest["mcp_servers"]
+
+
+def test_manifest_mcp_servers_is_empty_object_without_bindings() -> None:
+    from rote.adapters.cloudflare import emit_manifest
+    from rote.ir import Node, NodeKind, Pipeline, PipelineInput
+
+    pipeline = Pipeline(
+        name="no-mcp",
+        input=PipelineInput(type="X"),
+        nodes=[
+            Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
+        ],
+        edges=[],
+        entry_nodes=["only"],
+        exit_nodes=["only"],
+    )
+    manifest = json.loads(emit_manifest(pipeline))
+    assert manifest["mcp_servers"] == {}
+
+
 def test_manifest_written_at_output_root(
     adapter: CloudflareAdapter, bdr_pipeline: Pipeline, tmp_path: Path
 ) -> None:

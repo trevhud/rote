@@ -9,7 +9,90 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Invalid agent-authored pipelines are repaired, not failed one-shot.**
+  When the driver's produced pipeline.yaml fails IR validation, the
+  Compiler resumes the same agent conversation with one user turn
+  carrying the verbatim pydantic errors and a change-only-what-the-
+  errors-name instruction, then re-validates — up to two repair attempts
+  (each surfaced as a warning event) before failing with the last error
+  exactly as before. Drivers that can resume their conversation take an
+  optional `repair` callback (api and openai-api do); subprocess drivers
+  keep the one-shot behavior. Seen twice in real compiles: `.ts` module
+  refs in `impl:` and dict-typed node input/output entries — both
+  trivially fixable by the model that wrote them.
+- **Heartbeat events while awaiting a model request.** The api and
+  openai-api drivers emit a `log` event every 120 seconds while an LLM
+  request is pending, so a hosted hang detector can tell a slow or
+  retrying request from a wedged job.
+- **The api and openai-api compiler drivers can call MCP tools live.**
+  A new driver kwarg `mcp_servers` (each entry `{"name", "url",
+  "headers"}`, streamable HTTP only) lists each server's tools at agent
+  start and exposes them to the compiler agent as `mcp__<server>__<tool>` —
+  gated to tools whose server declares `readOnlyHint`, the same
+  predicate `rote baseline` already applies, now shared in
+  `rote.mcp.live_tools` so the two gates cannot drift. Every tool call
+  opens a fresh connection — long-lived streamable-HTTP sessions
+  combined with the vendor SDK deterministically froze the asyncio loop
+  under the hosted container runtime. Credentials are resolved once
+  before compilation and reused for every call. A server that cannot be
+  reached is a warning event, never a failed compile, and a tool failure
+  returns to the model as an error tool result. When `rote compile` runs one of
+  these drivers and no servers were passed, the local registry's
+  authenticated servers are wired in automatically (static headers
+  verbatim, logged-in servers via a freshly refreshed token;
+  unauthenticated servers are skipped with a printed reason).
+- **A wedged MCP server can no longer freeze a compile.** The 180s bound
+  wrapped only `call_tool`, leaving the initialize handshake unbounded,
+  and since every call opens a fresh connection that handshake runs on
+  every call. Startup tool-listing had no bound at all. A server that
+  accepts the socket and never answers raises nothing, so the
+  "unavailable, continuing without it" path could not fire and the
+  compile hung with no warning. Both connects are now inside the bound.
+
+- **Binding-backed Workers MCP helper.**
+  `get_adapter("cloudflare").emit(pipeline, out_dir, mcp_client="binding")`
+  (also available as a factory option, `get_adapter("cloudflare",
+  mcp_client="binding")`) emits a `_roteMcp.ts` variant with the same
+  exported surface as the direct helper, implemented over a
+  platform-provisioned `ROTE_MCP` RPC service binding: no per-server
+  secrets, no `ROTE_MCP_TOKENS` KV namespace, no OAuth refresh, and no
+  MCP SDK dependency. Every proxy call carries a signed caller-auth
+  object (`{tenant_id, pipeline, run_id?, sig}`) built from the
+  dispatcher-injected `ROTE_TENANT_ID` / `ROTE_PIPELINE` / `ROTE_RUN_ID`
+  / `ROTE_MCP_SIG` variables, so tenant isolates cannot impersonate each
+  other; a missing `ROTE_MCP_SIG` is a config error naming it. The
+  generated Env interface declares the one `ROTE_MCP` binding plus those
+  four variables instead of the per-server secret surface. An error
+  whose message starts with `ROTE_MCP_AUTH_NEEDED:` — the platform
+  proxy's contract — is rethrown as `RoteMcpAuthNeeded`, so the
+  park-on-auth loop, the `rote_auth_<server>` event names, and agent
+  loops are unchanged. The default (`"direct"`) emission is untouched.
+- **`manifest.json` carries the pipeline's required MCP servers.** A new
+  `mcp_servers` key (server name → sorted bound node ids, from
+  `Pipeline.required_mcp_servers`) is always present in the Cloudflare
+  manifest — `{}` when the pipeline makes no MCP calls — so the cloud
+  runner can provision connections without re-deriving them from the IR.
+
 ### Fixed
+- **The readOnlyHint gate no longer trips fastmcp 4's deprecation
+  warning.** MCP SDK v2 renamed `ToolAnnotations.readOnlyHint` to
+  `read_only_hint`, and reading the camelCase alias fires
+  FastMCPDeprecationWarning (it surfaced as stderr noise in prod error
+  mail). The shared predicate now reads snake_case first and falls back
+  to camelCase, clean under both fastmcp 3.4 and 4.x.
+- **Long compiler turns no longer die on silent connections.** The api
+  and openai-api drivers stream every model request (`messages.stream()`
+  / `stream=True` with usage included) and assemble the final message
+  into the exact shape the loop already handled. A multi-minute
+  non-streaming generation sends no bytes until it finishes, so
+  intermediaries timed the connection out and the SDK's retries hit the
+  same wall — a real compile's pipeline-authoring turn sat 720 seconds
+  and failed with APIConnectionError; the 32k thinking-friendly turn cap
+  is what made single turns long enough to die. The client timeout now
+  bounds the gap between streamed chunks (httpx read-timeout semantics),
+  not the total generation, and the 120s heartbeat fires only when a
+  stream actually stalls.
 - **Pinned `fastmcp` below 4.** The declaration was `fastmcp>=3.4.2` with
   no upper bound, so CI resolved to `fastmcp` 4.0.2 (published
   2026-09-02) and `mcp` 2.x on every fresh install while local
@@ -19,9 +102,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runtime e2e reports `Method not found`. The pin restores a trustworthy
   signal; migrating to the 4.x / 2.x line is separate work, and MCP SDK
   v2 also renames `Tool.inputSchema` to `Tool.input_schema`.
-
-
-### Fixed
 - **A compilation's reported tokens and cost ignored prompt caching.**
   `claude -p` always runs prompt-cached, so `input_tokens` holds only the
   handful of tokens that were neither written to nor read from the cache.

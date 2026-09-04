@@ -501,3 +501,55 @@ def test_workflow_executes_through_hitl_gates(
     # Pipeline input field selection at the end of the chain.
     report_received = _step_output(final, "pre_enrollment_report")["received"]
     assert report_received["campaign_name"] == brief["drug_brand"]
+
+
+# ───────── Binding-mode emit (mcp_client="binding") ─────────
+
+
+@pytest.fixture(scope="module")
+def binding_emitted_dir(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Emit BDR in binding mode + run npm install once per module.
+
+    BDR exercises the whole binding surface at once: agent loops binding
+    tools through ROTE_MCP.listTools, the park-on-auth wrappers, and the
+    ROTE_MCP Env declaration.
+    """
+    if not _node_available():
+        pytest.skip("Node / npm not available — skipping cloudflare e2e tests")
+
+    out = tmp_path_factory.mktemp("cf-binding-e2e")
+    CloudflareAdapter().emit(bdr_pipeline, out, mcp_client="binding")
+
+    proc = subprocess.run(
+        ["npm", "install", "--no-audit", "--no-fund"],
+        cwd=out,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        env={**os.environ, "npm_config_progress": "false"},
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"npm install failed in {out}:\n--- stdout ---\n{proc.stdout}\n"
+            f"--- stderr ---\n{proc.stderr}"
+        )
+    return out
+
+
+def test_binding_mode_typescript_compiles(binding_emitted_dir: Path) -> None:
+    """`tsc --noEmit` over a binding-mode emit: the platform-proxy helper,
+    the ROTE_MCP Env surface, and the agent loops all typecheck — without
+    the MCP SDK on the dependency list."""
+    assert not (binding_emitted_dir / "node_modules" / "@modelcontextprotocol").exists()
+    proc = subprocess.run(
+        ["npx", "--no-install", "tsc", "--noEmit"],
+        cwd=binding_emitted_dir,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if proc.returncode != 0:
+        pytest.fail(
+            f"tsc --noEmit reported errors in binding-mode emitted code:\n"
+            f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+        )

@@ -103,5 +103,22 @@
     "title": "CampaignBrief",
     "type": "object"
   },
+  "mcp_servers": {
+    "airweave": [
+      "target_research"
+    ],
+    "brightdata": [
+      "target_research"
+    ],
+    "clinicaltrials": [
+      "target_research"
+    ],
+    "salesforce": [
+      "target_research"
+    ],
+    "zoominfo": [
+      "lead_generation_loop"
+    ]
+  },
   "entry": "src/workflow.ts"
 }

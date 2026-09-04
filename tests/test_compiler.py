@@ -136,6 +136,49 @@ nodes:
 """
 
 
+class _RepairableDriver(CompilerDriver):
+    """A fake in-process driver: accepts the orchestrator's ``repair``
+    callback and mimics the real loop — write pipeline.yaml, stop
+    naturally, hand the deliverable to the validator, and rewrite the
+    file (next canned version) each time the validator bounces it."""
+
+    name = "repairable"
+
+    def __init__(self, yaml_versions: list[str]) -> None:
+        self._versions = list(yaml_versions)
+        self.repair_instructions: list[str] = []
+
+    def is_available(self) -> tuple[bool, str]:
+        return (True, "")
+
+    async def run(
+        self,
+        skill_dir: Path,
+        compiler_skill_dir: Path,
+        work_dir: Path,
+        extra_instructions: str | None = None,
+        on_event: object = None,
+        repair: object = None,
+    ) -> DriverResult:
+        pipeline_yaml = work_dir / "pipeline.yaml"
+        pipeline_yaml.write_text(self._versions.pop(0), encoding="utf-8")
+        while repair is not None:
+            instruction = repair(pipeline_yaml)  # type: ignore[operator]
+            if instruction is None:
+                break
+            self.repair_instructions.append(instruction)
+            # "Fix" the file the way the resumed agent would; with no
+            # versions left the file simply stays as it is.
+            if self._versions:
+                pipeline_yaml.write_text(self._versions.pop(0), encoding="utf-8")
+        return DriverResult(
+            pipeline_yaml_path=pipeline_yaml,
+            work_dir=work_dir,
+            driver_name=self.name,
+            metadata={},
+        )
+
+
 # ───────── Skill bundle fixture ─────────
 
 
@@ -561,3 +604,80 @@ def test_completion_message_reports_the_whole_input_volume() -> None:
     )
     assert "tokens in=1000 out=500" in plain
     assert "cached" not in plain
+
+
+# ───────── Validation-repair pass ─────────
+
+
+@pytest.mark.asyncio
+async def test_validation_failure_triggers_a_repair_round(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """An invalid pipeline.yaml is bounced back into the same agent
+    conversation with the verbatim pydantic errors, and the repaired
+    file compiles — instead of failing the paid run one-shot. Seen twice
+    in real compiles (.ts module refs in impl:, dict-typed input/output
+    entries), both trivially fixable by the model that wrote them."""
+    output_dir = tmp_path / "output"
+    events: list[object] = []
+    driver = _RepairableDriver([INVALID_YAML, VALID_YAML])
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, output_dir)
+
+    assert result.pipeline.name == "fake-pipeline"
+    # Exactly one repair instruction, carrying the verbatim pydantic
+    # error text plus the change-only-what-the-errors-name instruction.
+    [instruction] = driver.repair_instructions
+    assert "bogus_kind" in instruction
+    assert "change only what the errors name" in instruction
+    # The attempt was surfaced on the event feed as a warning.
+    warnings = [e for e in events if getattr(e, "type", None) == "warning"]
+    assert len(warnings) == 1
+    assert "asking the compiler to repair (attempt 1)" in warnings[0].message  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_repair_gives_up_after_two_attempts_with_the_last_error(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """A pipeline that stays invalid is bounced exactly twice, then the
+    run fails with the validation error exactly as it did before the
+    repair pass existed."""
+    output_dir = tmp_path / "output"
+    events: list[object] = []
+    driver = _RepairableDriver([INVALID_YAML])  # never gets fixed
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    with pytest.raises(CompilerError, match="produced an invalid"):
+        await compiler.compile(fake_skill_dir, output_dir)
+
+    assert len(driver.repair_instructions) == 2
+    warnings = [e for e in events if getattr(e, "type", None) == "warning"]
+    messages = [w.message for w in warnings]  # type: ignore[attr-defined]
+    assert any("(attempt 1)" in m for m in messages)
+    assert any("(attempt 2)" in m for m in messages)
+    assert not any("(attempt 3)" in m for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_repair_callback_not_passed_to_drivers_without_the_parameter(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """_FakeDriver's run() has no ``repair`` parameter — the orchestrator
+    must keep today's one-shot behavior for it (subprocess drivers are in
+    the same position), not crash on an unexpected kwarg."""
+    output_dir = tmp_path / "output"
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=INVALID_YAML)  # type: ignore[method-assign]
+
+    with pytest.raises(CompilerError, match="produced an invalid"):
+        await compiler.compile(fake_skill_dir, output_dir)

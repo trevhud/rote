@@ -126,6 +126,15 @@ class CompilerDriver(Protocol):
             events via :func:`~rote.compiler.events.emit_safely` so a
             raising sink can't kill the run.
 
+        Drivers that can resume their conversation may additionally
+        accept a keyword-only ``repair`` callback (the in-process
+        drivers do): it is called with the produced ``pipeline.yaml``
+        path at each natural stop — a returned string is appended to
+        the agent's conversation as one user turn and the loop
+        continues; ``None`` accepts the deliverable. The orchestrator
+        passes it only to drivers whose ``run`` signature declares it,
+        so drivers that predate the parameter keep working.
+
         Returns
         -------
         DriverResult

@@ -460,6 +460,49 @@ class _JsonlProgressSink:
             self._file = None
 
 
+def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None:
+    """Registry-backed MCP server specs for the in-process drivers.
+
+    The api / openai-api drivers run the compiler agent in-process and
+    can expose the local registry's read-only MCP tools to it — the
+    compile-time analog of the baseline's registry wiring. The
+    subprocess drivers (claude / codex) don't take the kwarg, so
+    resolution only happens when the run will actually use an in-process
+    driver. Never fatal: a missing ``mcp`` extra or an unauthenticated
+    server prints a note to stderr and is skipped.
+    """
+    name = agent
+    if name is None:
+        from rote.compiler.drivers import auto_detect
+
+        probe = auto_detect()
+        name = probe.name if probe is not None else None
+    if name not in ("api", "openai-api"):
+        return None
+
+    from rote.mcp import load_registry
+
+    if not load_registry().servers:
+        return None
+    try:
+        import fastmcp  # noqa: F401
+    except ImportError:
+        print(
+            "rote compile: mcp — registered servers not wired into the "
+            "compiler (install the extra: pip install 'rote-cli[mcp]')",
+            file=sys.stderr,
+        )
+        return None
+
+    from rote.mcp.live_tools import registry_server_specs
+
+    def _skip(server: str, reason: str) -> None:
+        print(f"rote compile: mcp — skipping server {server!r}: {reason}", file=sys.stderr)
+
+    specs = asyncio.run(registry_server_specs(on_skip=_skip))
+    return specs or None
+
+
 def _cmd_compile(args: argparse.Namespace) -> int:
     """Run the full one-shot compilation flow.
 
@@ -688,9 +731,20 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # grants the agent web research tools (ClaudeDriver appends
     # WebSearch/WebFetch; other drivers swallow the flag until they grow
     # an equivalent).
-    driver_kwargs = {"web_tools": True} if args.backend == "api" else None
+    driver_kwargs: dict[str, Any] = {}
+    if args.backend == "api":
+        driver_kwargs["web_tools"] = True
+    # In-process drivers (api / openai-api) can call MCP tools live during
+    # the compilation; wire in the local registry's authenticated servers
+    # the same way the baseline does. Read-only tools only.
+    mcp_specs = _live_mcp_specs_for_driver(args.agent)
+    if mcp_specs:
+        driver_kwargs["mcp_servers"] = mcp_specs
     compiler = Compiler(
-        agent=args.agent, model=args.model, on_event=_on_event, driver_kwargs=driver_kwargs
+        agent=args.agent,
+        model=args.model,
+        on_event=_on_event,
+        driver_kwargs=driver_kwargs or None,
     )
 
     try:

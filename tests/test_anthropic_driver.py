@@ -39,12 +39,46 @@ from rote.compiler.events import CompilationEvent
 # ───────── Fake Anthropic SDK ─────────
 
 
+class _FakeMessageStream:
+    """The object yielded by ``async with messages.stream(...)``."""
+
+    def __init__(self, message: Any) -> None:
+        self._message = message
+        self.drained = False
+
+    def __aiter__(self) -> _FakeMessageStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        # The driver only drains events; the final message carries all.
+        self.drained = True
+        raise StopAsyncIteration
+
+    async def get_final_message(self) -> Any:
+        assert self.drained, "the driver must drain the stream before get_final_message()"
+        return self._message
+
+
+class _FakeStreamManager:
+    def __init__(self, message: Any) -> None:
+        self.stream = _FakeMessageStream(message)
+
+    async def __aenter__(self) -> _FakeMessageStream:
+        return self.stream
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+
 class _FakeMessages:
     """Stand-in for ``client.messages``.
 
-    The driver calls ``await client.messages.create(**kwargs)``. We
-    return canned responses in order, recording each call's kwargs so
-    tests can introspect.
+    The driver streams every request (``client.messages.stream(...)`` —
+    a non-streaming multi-minute generation sends no bytes and gets its
+    connection timed out), so the fake serves canned final messages
+    through a fake stream manager, recording each call's kwargs.
+    ``create()`` raises so a regression back to non-streaming cannot
+    pass a single test.
 
     Note: ``messages`` is captured by snapshot (a shallow copy of the
     list) because the driver mutates its local ``messages`` list
@@ -58,13 +92,19 @@ class _FakeMessages:
         self.calls: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "the driver must use messages.stream(), not messages.create() — "
+            "non-streaming long turns die on silent connections"
+        )
+
+    def stream(self, **kwargs: Any) -> _FakeStreamManager:
         snapshot = dict(kwargs)
         if "messages" in snapshot:
             snapshot["messages"] = list(snapshot["messages"])
         self.calls.append(snapshot)
         if not self._responses:
             raise RuntimeError("FakeMessages out of canned responses; test set up too few turns")
-        return self._responses.pop(0)
+        return _FakeStreamManager(self._responses.pop(0))
 
 
 class _FakeAsyncAnthropic:
@@ -849,3 +889,127 @@ async def test_null_content_turn_continues_and_warns(
     assert turn2_messages[-1]["role"] == "user"
     assert "no visible output" in turn2_messages[-1]["content"]
     assert all(m.get("content") for m in turn2_messages)
+
+
+# ───────── Streaming wire shape ─────────
+
+
+@pytest.mark.asyncio
+async def test_requests_are_streamed(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """Every model request goes through messages.stream(), and a tool-use
+    turn and a text turn both round-trip through the SDK's streaming
+    accumulator into the exact shape the loop already handles.
+
+    Streaming is load-bearing: a multi-minute non-streaming generation
+    sends no bytes until it finishes, so intermediaries time the silent
+    connection out — a real compile's pipeline-authoring turn sat 720s
+    and failed with APIConnectionError. The fake's create() raises, so a
+    regression back to non-streaming cannot pass this suite.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        # Turn 1: a tool-use turn.
+        _msg(
+            [
+                _tool_use(
+                    "w",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+            input_tokens=200,
+            output_tokens=40,
+        ),
+        # Turn 2: a text turn ends the loop.
+        _msg([_text("Done.")], stop_reason="end_turn", input_tokens=100, output_tokens=20),
+    ]
+    client = fake_anthropic(responses)
+
+    result = await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir)
+
+    # Tool-use turn round-tripped (the file was written from the tool
+    # call), the text turn ended the loop, and usage accumulated.
+    assert result.pipeline_yaml_path.is_file()
+    assert result.metadata["iterations"] == 2
+    assert result.metadata["input_tokens"] == 300
+    assert result.metadata["output_tokens"] == 60
+
+    # Both requests went out via stream() with the create() args intact
+    # and no stray stream= kwarg (the SDK's stream() rejects one).
+    assert len(client.messages.calls) == 2
+    for call in client.messages.calls:
+        assert "stream" not in call
+        assert call["model"]
+        assert call["max_tokens"]
+
+
+# ───────── Validation-repair continuation ─────────
+
+
+@pytest.mark.asyncio
+async def test_repair_callback_resumes_the_same_conversation(
+    fake_skills: tuple[Path, Path, Path],
+    fake_anthropic,  # noqa: ANN001
+) -> None:
+    """When the orchestrator's validator bounces pipeline.yaml, the
+    instruction is appended as a user turn in the SAME conversation and
+    the loop continues; a None from the validator accepts the file."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    pipeline_yaml_abs = (work_dir / "pipeline.yaml").resolve()
+
+    responses = [
+        # Turn 1: writes a broken pipeline, then stops.
+        _msg(
+            [
+                _tool_use(
+                    "w1",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": "name: broken\n"},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("Done.")], stop_reason="end_turn"),
+        # Resumed turns: the agent repairs the file and stops again.
+        _msg(
+            [
+                _tool_use(
+                    "w2",
+                    "write_file",
+                    {"path": str(pipeline_yaml_abs), "content": VALID_PIPELINE_YAML},
+                )
+            ],
+            stop_reason="tool_use",
+        ),
+        _msg([_text("Fixed.")], stop_reason="end_turn"),
+    ]
+    client = fake_anthropic(responses)
+
+    seen: list[str] = []
+
+    def _repair(path: Path) -> str | None:
+        seen.append(path.read_text(encoding="utf-8"))
+        if len(seen) == 1:
+            return "fix pipeline.yaml so it validates; change only what the errors name"
+        return None
+
+    result = await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir, repair=_repair)
+
+    assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
+    assert result.metadata["iterations"] == 4
+    # Bounced once (saw the broken file), accepted once (saw the fix).
+    assert len(seen) == 2
+    assert seen[0] == "name: broken\n"
+    assert seen[1] == VALID_PIPELINE_YAML
+    # The instruction rode the SAME conversation as a user turn.
+    turn3_messages = client.messages.calls[2]["messages"]
+    assert turn3_messages[-1]["role"] == "user"
+    assert "fix pipeline.yaml" in turn3_messages[-1]["content"]

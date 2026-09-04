@@ -34,7 +34,9 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
@@ -45,6 +47,7 @@ from rote.compiler.drivers._fs_tools import (
     emit_progress_phases,
     openai_tool_schemas,
 )
+from rote.compiler.drivers._heartbeat import await_with_heartbeat
 from rote.compiler.events import (
     CompilationEvent,
     EventCallback,
@@ -114,6 +117,94 @@ def _assistant_snippet(content: str | None) -> str:
     return text[:TURN_SNIPPET_CHARS] if text else "thinking…"
 
 
+async def _accumulate_stream(chunks: Any) -> Any:
+    """Assemble streamed chunks into the non-streaming response shape.
+
+    The loop body reads ``choices[0].message.content`` / ``.tool_calls``,
+    ``choices[0].finish_reason``, and ``usage`` — this returns exactly
+    that duck-typed shape, so switching the wire to streaming changes
+    nothing downstream. tool_call deltas are keyed by ``index`` with
+    id/name/arguments concatenated as they arrive; ``usage`` rides on
+    the final chunk when ``stream_options.include_usage`` is set.
+    """
+    content_parts: list[str] = []
+    content_seen = False
+    tool_deltas: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    usage: Any = None
+    saw_choice = False
+    async for chunk in chunks:
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        saw_choice = True
+        choice = choices[0]
+        if getattr(choice, "finish_reason", None) is not None:
+            finish_reason = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        text = getattr(delta, "content", None)
+        if text is not None:
+            content_seen = True
+            content_parts.append(text)
+        for tc in getattr(delta, "tool_calls", None) or []:
+            entry = tool_deltas.setdefault(tc.index, {"id": None, "name": "", "arguments": ""})
+            if getattr(tc, "id", None):
+                entry["id"] = tc.id
+            fn = getattr(tc, "function", None)
+            if fn is not None:
+                if getattr(fn, "name", None):
+                    entry["name"] += fn.name
+                if getattr(fn, "arguments", None):
+                    entry["arguments"] += fn.arguments
+    if not saw_choice:
+        # No chunk ever carried a choice — the same wire-contract
+        # violation the non-streaming path reported as "no choices".
+        return SimpleNamespace(choices=[], usage=usage)
+    assembled_tool_calls = [
+        SimpleNamespace(
+            id=entry["id"],
+            type="function",
+            function=SimpleNamespace(name=entry["name"], arguments=entry["arguments"]),
+        )
+        for _, entry in sorted(tool_deltas.items())
+    ]
+    message = SimpleNamespace(
+        content="".join(content_parts) if content_seen else None,
+        tool_calls=assembled_tool_calls or None,
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+        usage=usage,
+    )
+
+
+async def _streamed_completion(client: Any, request_kwargs: dict[str, Any]) -> Any:
+    """One streamed chat completion, returned in the non-streaming shape.
+
+    Streaming is load-bearing, not a nicety: a multi-minute non-streaming
+    generation sends no bytes until it finishes, and intermediaries time
+    the silent connection out — the 32k turn cap made single turns long
+    enough to die with APIConnectionError, with SDK retries hitting the
+    same wall. Streaming keeps bytes flowing for the whole generation.
+
+    Timeout semantics, verified against openai 2.45 / httpx: the client
+    ``timeout`` becomes an httpx read timeout, which on a stream bounds
+    the gap between received chunks — NOT the total generation — so a
+    slow-but-alive turn survives while a stalled stream still times out.
+    """
+    stream = await client.chat.completions.create(
+        stream=True,
+        stream_options={"include_usage": True},
+        **request_kwargs,
+    )
+    return await _accumulate_stream(stream)
+
+
 # ───────── The driver ─────────
 
 
@@ -127,6 +218,7 @@ class OpenAIApiDriver(CompilerDriver):
         max_tokens_per_turn: int = DEFAULT_MAX_TOKENS_PER_TURN,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
+        mcp_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         """
         Parameters
@@ -150,12 +242,21 @@ class OpenAIApiDriver(CompilerDriver):
             the gateway's ``cf-aig-authorization`` / ``Authorization``
             token here; when either is present the driver runs in gateway
             mode and needs no ``OPENAI_API_KEY`` (see :meth:`is_available`).
+        mcp_servers
+            Live MCP servers whose read-only tools are exposed to the
+            compiler agent as ``mcp__<server>__<tool>`` tools — each
+            entry ``{"name": str, "url": str, "headers": dict[str, str]
+            | None}`` (streamable HTTP only). Requires the ``mcp`` extra
+            (``pip install 'rote-cli[mcp]'``). Only tools whose server
+            declares ``readOnlyHint`` are exposed; a server that cannot
+            be reached is skipped with a warning event, never an error.
         """
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
         self.base_url = base_url
         self.default_headers = default_headers
+        self.mcp_servers = mcp_servers
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble ``AsyncOpenAI(...)`` kwargs.
@@ -206,7 +307,16 @@ class OpenAIApiDriver(CompilerDriver):
         work_dir: Path,
         extra_instructions: str | None = None,
         on_event: EventCallback | None = None,
+        repair: Callable[[Path], str | None] | None = None,
     ) -> DriverResult:
+        """Run the compiler agent (see :class:`CompilerDriver`).
+
+        ``repair`` is the orchestrator's validation callback: called with
+        the produced pipeline.yaml at each natural stop; a returned string
+        is appended to the SAME conversation as one user turn and the
+        loop continues, ``None`` accepts the deliverable. Passed only by
+        orchestrators that saw it in this signature.
+        """
         if not _OPENAI_AVAILABLE:
             raise DriverError("openai package is not installed. Run: pip install rote[openai-api]")
 
@@ -223,6 +333,61 @@ class OpenAIApiDriver(CompilerDriver):
             )
         skill_md_text = skill_md.read_text(encoding="utf-8")
 
+        # Live MCP tools list servers once here; each tool call then
+        # opens a fresh connection — long-lived streamable-HTTP sessions
+        # deterministically froze the asyncio loop under the hosted
+        # container runtime (see rote.mcp.live_tools).
+        live = self._live_mcp_tools(on_event)
+        if live is not None:
+            try:
+                await live.__aenter__()
+            except RuntimeError as e:
+                # The mcp extra is missing but mcp_servers were requested:
+                # compiling without the requested tools would be a silently
+                # wrong run, not a degraded one.
+                raise DriverError(str(e)) from e
+        try:
+            return await self._run_agent(
+                skill_dir=skill_dir,
+                compiler_skill_dir=compiler_skill_dir,
+                work_dir=work_dir,
+                skill_md_text=skill_md_text,
+                extra_instructions=extra_instructions,
+                on_event=on_event,
+                live=live,
+                repair=repair,
+            )
+        finally:
+            if live is not None:
+                await live.__aexit__(None, None, None)
+
+    def _live_mcp_tools(self, on_event: EventCallback | None) -> Any:
+        """A connected-tools manager for this run, or ``None`` without servers."""
+        if not self.mcp_servers:
+            return None
+        from rote.mcp.live_tools import LiveMcpTools
+
+        def _warn(message: str) -> None:
+            emit_safely(
+                on_event,
+                CompilationEvent(type="warning", ts=time.time(), message=message),
+            )
+
+        return LiveMcpTools(self.mcp_servers, on_warning=_warn)
+
+    async def _run_agent(
+        self,
+        *,
+        skill_dir: Path,
+        compiler_skill_dir: Path,
+        work_dir: Path,
+        skill_md_text: str,
+        extra_instructions: str | None,
+        on_event: EventCallback | None,
+        live: Any,
+        repair: Callable[[Path], str | None] | None,
+    ) -> DriverResult:
+        """The tool-use loop body, bracketed by ``run``'s MCP lifecycle."""
         read_roots = [skill_dir, compiler_skill_dir]
         write_root = work_dir
 
@@ -230,6 +395,8 @@ class OpenAIApiDriver(CompilerDriver):
 
         client = openai.AsyncOpenAI(**self._client_kwargs())
         tool_schemas = openai_tool_schemas()
+        if live is not None:
+            tool_schemas = tool_schemas + live.openai_tool_schemas()
 
         task_prompt = (
             f"Compile the skill at {skill_dir}. "
@@ -258,14 +425,25 @@ class OpenAIApiDriver(CompilerDriver):
         for iteration in range(1, self.max_iterations + 1):
             completed_iterations = iteration
 
-            response = await client.chat.completions.create(
-                model=self.model,
-                max_completion_tokens=self.max_tokens_per_turn,
-                messages=messages,
-                # The shared builder returns plain dicts (wire-shape-neutral,
-                # shared with the Anthropic driver); the SDK validates them
-                # at runtime. Cast past the SDK's TypedDict union.
-                tools=cast("Any", tool_schemas),
+            # Streamed, never bare create(): long turns die on silent
+            # connections (see _streamed_completion). The heartbeat now
+            # only fires when the stream itself stalls >120s — the new
+            # hang signal, not a healthy slow turn.
+            response = await await_with_heartbeat(
+                _streamed_completion(
+                    client,
+                    {
+                        "model": self.model,
+                        "max_completion_tokens": self.max_tokens_per_turn,
+                        "messages": messages,
+                        # The shared builder returns plain dicts
+                        # (wire-shape-neutral, shared with the Anthropic
+                        # driver); the SDK validates them at runtime.
+                        "tools": tool_schemas,
+                    },
+                ),
+                on_event,
+                f"the model (turn {iteration})",
             )
 
             usage = getattr(response, "usage", None)
@@ -350,6 +528,18 @@ class OpenAIApiDriver(CompilerDriver):
             if not tool_calls:
                 # A natural stop (finish_reason "stop", no tool calls) → done.
                 last_text = content or last_text
+                natural_stop_pipeline = work_dir / "pipeline.yaml"
+                if repair is not None and natural_stop_pipeline.is_file():
+                    # Let the orchestrator's validator bounce the
+                    # deliverable back into the SAME conversation —
+                    # pydantic errors the model can trivially fix must
+                    # not fail a paid run one-shot. Repair turns spend
+                    # the same iteration budget, so the loop stays
+                    # bounded.
+                    repair_instruction = repair(natural_stop_pipeline)
+                    if repair_instruction is not None:
+                        messages.append({"role": "user", "content": repair_instruction})
+                        continue
                 break
 
             for tc in tool_calls:
@@ -383,18 +573,27 @@ class OpenAIApiDriver(CompilerDriver):
                 else:
                     typed_args = cast("dict[str, Any]", args)
                     try:
-                        result_text = dispatch_tool(tool_name, typed_args, read_roots, write_root)
-                        if tool_name == "write_file":
-                            # The agent announces phase transitions by
-                            # writing progress.ndjson; intercept that write
-                            # and turn the new lines into phase events.
-                            emitted_phases = emit_progress_phases(
-                                typed_args["path"],
-                                typed_args["content"],
-                                work_dir,
-                                on_event,
-                                emitted_phases,
+                        if live is not None and live.owns(tool_name):
+                            # An exposed MCP tool: dispatch to its server
+                            # and hand the result back as text. Failures
+                            # fall to the error branch below — reported to
+                            # the model, never allowed to crash the compile.
+                            result_text = await live.call(tool_name, typed_args)
+                        else:
+                            result_text = dispatch_tool(
+                                tool_name, typed_args, read_roots, write_root
                             )
+                            if tool_name == "write_file":
+                                # The agent announces phase transitions by
+                                # writing progress.ndjson; intercept that write
+                                # and turn the new lines into phase events.
+                                emitted_phases = emit_progress_phases(
+                                    typed_args["path"],
+                                    typed_args["content"],
+                                    work_dir,
+                                    on_event,
+                                    emitted_phases,
+                                )
                     except Exception as e:
                         result_text = f"Error: {type(e).__name__}: {e}"
 

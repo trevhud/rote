@@ -45,7 +45,7 @@ BUNDLE_ARGS = [
     "--format=esm",
     "--platform=neutral",
     "--conditions=worker,browser,import",
-    "--external:cloudflare:workers",
+    "--external:cloudflare:*",
     "--external:node:*",
     "--target=es2022",
 ]

@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import re
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -56,6 +56,7 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_SDK_NPM_VERSION,
     ROTE_INFERENCE_HELPER_TS,
+    ROTE_MCP_BINDING_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
@@ -90,6 +91,12 @@ class CloudflareAdapterConfig:
     """"mcp" (default): external_call nodes with an ``mcp:`` binding emit a
     working call authenticated from provisioned Worker secrets
     (`rote mcp export`) with KV-cached tokens. "api": direct-SDK stubs."""
+    mcp_client: Literal["direct", "binding"] = "direct"
+    """"direct" (default): emitted MCP code carries its own OAuth refresh —
+    per-server Worker secrets plus the ROTE_MCP_TOKENS KV cache. "binding":
+    the emitted helper delegates every MCP operation to a
+    platform-provisioned ``ROTE_MCP`` service binding — no secrets, no
+    token store, no MCP SDK dependency."""
     # Defaults use IR shorthand (5m / 7d) so they round-trip through
     # ``_ir_duration_to_cf`` without re-conversion.
     default_step_timeout: str = "10m"
@@ -448,7 +455,16 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     # NonRetryableError import — an agent loop's tools are MCP tools.
     parks_on_auth = mcp_backed or any(n.tools for n in pipeline.nodes_by_kind(NodeKind.AGENT_LOOP))
 
-    if mcp_backed:
+    if mcp_backed and cfg.mcp_client == "binding":
+        arch_note = (
+            " * Architecture note: deterministic steps wrap functions from the\n"
+            " * `extracted/` modules; MCP-backed steps call the tool the source\n"
+            " * skill used through the platform's `ROTE_MCP` service binding,\n"
+            " * which owns endpoints and credentials. When the platform reports\n"
+            " * a dead connection the instance parks durably on a\n"
+            " * `rote_auth_<server>` event until it is re-authorized."
+        )
+    elif mcp_backed:
         arch_note = (
             " * Architecture note: deterministic steps wrap functions from the\n"
             " * `extracted/` modules; MCP-backed steps call the tool the source\n"
@@ -497,7 +513,13 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
 
     imports = module_imports(pipeline)
     if parks_on_auth:
-        imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
+        if cfg.mcp_client == "binding":
+            # The Env interface names the platform proxy's structural type.
+            imports += (
+                '\nimport { isRoteMcpAuthNeeded, type RoteMcpBinding } from "./extracted/_roteMcp";'
+            )
+        else:
+            imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
 
     # The Env interface carries only the credentials the pipeline's judges
     # actually use: an API key per SDK client, and the Workers AI binding
@@ -515,23 +537,40 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         # Optional: an agent loop offers the Workers AI lane but never
         # requires it — the operator may pay through any other lane.
         env_field_lines.append("    AI?: Ai;")
-    for server in sorted(
-        {n.mcp.server for n in mcp_backed_nodes(pipeline, cfg.external_backend) if n.mcp}
-    ):
-        upper = server.upper()
-        env_field_lines.append(
-            f"    // MCP server {server!r} — provisioned by `rote mcp export {server}`."
-        )
-        env_field_lines.append(f"    ROTE_MCP_{upper}_REFRESH_TOKEN: string;")
-        env_field_lines.append(f"    ROTE_MCP_{upper}_CLIENT_ID: string;")
-        env_field_lines.append(f"    ROTE_MCP_{upper}_CLIENT_SECRET?: string;")
-        env_field_lines.append(f"    ROTE_MCP_{upper}_TOKEN_ENDPOINT: string;")
-        env_field_lines.append(f"    ROTE_MCP_{upper}_URL?: string;")
-    if mcp_backed_nodes(pipeline, cfg.external_backend):
-        env_field_lines.append(
-            "    // Rotated-token cache: npx wrangler kv namespace create rote-mcp-tokens"
-        )
-        env_field_lines.append("    ROTE_MCP_TOKENS?: KVNamespace;")
+    if cfg.mcp_client == "binding":
+        # Platform-managed MCP: one RPC service binding replaces the whole
+        # per-server secret surface and the KV token cache.
+        if parks_on_auth:
+            env_field_lines.append(
+                "    // Platform-managed MCP proxy — an RPC service binding the host provisions."
+            )
+            env_field_lines.append("    ROTE_MCP: RoteMcpBinding;")
+            env_field_lines.append(
+                "    // Caller identity for the proxy, injected by the platform dispatcher;"
+            )
+            env_field_lines.append("    // ROTE_MCP_SIG signs the (tenant, pipeline, run) triple.")
+            env_field_lines.append("    ROTE_TENANT_ID: string;")
+            env_field_lines.append("    ROTE_PIPELINE: string;")
+            env_field_lines.append("    ROTE_RUN_ID: string;")
+            env_field_lines.append("    ROTE_MCP_SIG: string;")
+    else:
+        for server in sorted(
+            {n.mcp.server for n in mcp_backed_nodes(pipeline, cfg.external_backend) if n.mcp}
+        ):
+            upper = server.upper()
+            env_field_lines.append(
+                f"    // MCP server {server!r} — provisioned by `rote mcp export {server}`."
+            )
+            env_field_lines.append(f"    ROTE_MCP_{upper}_REFRESH_TOKEN: string;")
+            env_field_lines.append(f"    ROTE_MCP_{upper}_CLIENT_ID: string;")
+            env_field_lines.append(f"    ROTE_MCP_{upper}_CLIENT_SECRET?: string;")
+            env_field_lines.append(f"    ROTE_MCP_{upper}_TOKEN_ENDPOINT: string;")
+            env_field_lines.append(f"    ROTE_MCP_{upper}_URL?: string;")
+        if mcp_backed_nodes(pipeline, cfg.external_backend):
+            env_field_lines.append(
+                "    // Rotated-token cache: npx wrangler kv namespace create rote-mcp-tokens"
+            )
+            env_field_lines.append("    ROTE_MCP_TOKENS?: KVNamespace;")
     env_field_lines.append(f"    {cfg.workflow_binding}: Workflow<Params>;")
     env_fields = "\n".join(env_field_lines)
     env_block = (
@@ -858,7 +897,9 @@ def emit_wrangler(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     # MCP-backed nodes cache refreshed/rotated OAuth tokens in KV so every
     # isolate sees the latest credentials. Create the namespace with
     # `npx wrangler kv namespace create rote-mcp-tokens` and paste its id.
-    if mcp_backed_nodes(pipeline, cfg.external_backend):
+    # Binding mode has no token cache to provision — the platform's
+    # ROTE_MCP service binding owns credentials.
+    if cfg.mcp_client != "binding" and mcp_backed_nodes(pipeline, cfg.external_backend):
         obj["kv_namespaces"] = [
             {
                 "binding": "ROTE_MCP_TOKENS",
@@ -969,13 +1010,18 @@ def emit_dev_vars_example(pipeline: Pipeline, cfg: CloudflareAdapterConfig | Non
         "# For a manual deploy, set each with `npx wrangler secret put <NAME>`.",
     ]
     lines.extend(f"{name}=" for name in _secret_names(pipeline))
-    mcp_servers = sorted(
-        {
-            n.mcp.server
-            for n in mcp_backed_nodes(pipeline, (cfg or CloudflareAdapterConfig()).external_backend)
-            if n.mcp
-        }
-    )
+    resolved_cfg = cfg or CloudflareAdapterConfig()
+    if resolved_cfg.mcp_client == "binding":
+        # Platform-managed MCP: no per-server secrets exist to declare.
+        mcp_servers: list[str] = []
+    else:
+        mcp_servers = sorted(
+            {
+                n.mcp.server
+                for n in mcp_backed_nodes(pipeline, resolved_cfg.external_backend)
+                if n.mcp
+            }
+        )
     for server in mcp_servers:
         lines.append("#")
         lines.append(f"# MCP server {server!r} — fill from: rote mcp export {server}")
@@ -1022,7 +1068,20 @@ def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
             if n.mcp is not None
         }
     )
-    if mcp_servers:
+    if mcp_servers and cfg.mcp_client == "binding":
+        example_event = auth_event_type(mcp_servers[0])
+        mcp_note = f"""
+## MCP-backed steps: platform-managed connections
+
+Some `external_call` steps call MCP tools through the platform's
+`ROTE_MCP` service binding — the hosting platform owns endpoints,
+credentials, and token refresh, so this build carries no MCP secrets
+of its own. If a connection is missing or revoked at run time, the
+instance does **not** fail — it parks durably on a `{example_event}`
+event until the connection is re-authorized on the platform, which
+then releases every parked instance.
+"""
+    elif mcp_servers:
         example_server = mcp_servers[0]
         example_event = auth_event_type(example_server)
         export_lines = "\n".join(
@@ -1191,6 +1250,10 @@ def emit_manifest(pipeline: Pipeline) -> str:
     * ``input_schema`` — the pipeline input's JSON Schema (empty object
       when the pipeline declares only field names), the shape the cloud's
       ``/v1/pipelines`` endpoint expects.
+    * ``mcp_servers`` — :attr:`rote.ir.Pipeline.required_mcp_servers`
+      (server name → sorted ids of the nodes bound to it). Always
+      present, in both MCP client modes; ``{}`` when the pipeline makes
+      no MCP calls.
     * ``entry`` — the bundler entry point, always ``src/workflow.ts``.
     """
     identity = pipeline_identity(pipeline)
@@ -1203,6 +1266,7 @@ def emit_manifest(pipeline: Pipeline) -> str:
         "class_name": identity["class_name"],
         "node_ids": _manifest_node_ids(pipeline),
         "input_schema": pipeline.input.input_schema or {},
+        "mcp_servers": pipeline.required_mcp_servers,
         "entry": "src/workflow.ts",
     }
     return json.dumps(obj, indent=2) + "\n"
@@ -1235,7 +1299,7 @@ class CloudflareAdapter:
     def __init__(self, config: CloudflareAdapterConfig | None = None) -> None:
         self.config = config or CloudflareAdapterConfig()
 
-    def _emit_agent_loop(self, node: Node, pipeline: Pipeline) -> str:
+    def _emit_agent_loop(self, node: Node, pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
         """One agent_loop node's module, in the Workers calling convention.
 
         A sub-node takes ``env`` exactly when its own emitted module does
@@ -1249,7 +1313,7 @@ class CloudflareAdapter:
         cast from the function keeps it correct when the judge's
         overrides change — and it needs no import from workflow.ts.
         """
-        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, cfg.external_backend)}
 
         def env_arg(sub: Node) -> str | None:
             if sub.kind is not NodeKind.LLM_JUDGE and sub.id not in mcp_ids:
@@ -1259,7 +1323,7 @@ class CloudflareAdapter:
         return emit_agent_loop_module(
             node,
             pipeline,
-            default_model=self.config.anthropic_default_model,
+            default_model=cfg.anthropic_default_model,
             generated_by="rote.adapters.cloudflare",
             workers=True,
             sub_node_env_arg=env_arg,
@@ -1272,17 +1336,37 @@ class CloudflareAdapter:
     def emit_index(self, pipeline: Pipeline) -> str:
         return emit_index(pipeline, self.config)
 
-    def emit(self, pipeline: Pipeline, output_dir: str | Path) -> EmitResult:
+    def emit(
+        self,
+        pipeline: Pipeline,
+        output_dir: str | Path,
+        mcp_client: Literal["direct", "binding"] | None = None,
+    ) -> EmitResult:
+        """Emit the pipeline into ``output_dir``.
+
+        ``mcp_client`` overrides the config's MCP client mode for this
+        emission: ``"direct"`` (the default) emits self-contained OAuth
+        refresh over provisioned Worker secrets + the ROTE_MCP_TOKENS KV
+        cache; ``"binding"`` emits the helper variant that delegates
+        every MCP operation to a platform-provisioned ``ROTE_MCP``
+        service binding (no secrets, no KV, no MCP SDK dependency).
+        """
+        if mcp_client is None:
+            cfg = self.config
+        elif mcp_client in ("direct", "binding"):
+            cfg = replace(self.config, mcp_client=mcp_client)
+        else:
+            raise ValueError(f"mcp_client must be 'direct' or 'binding', got {mcp_client!r}")
         writer = EmitWriter(output_dir)
 
         written: dict[str, Path] = {}
 
         written["workflow"] = writer.write(
-            "src", "workflow.ts", content=self.emit_workflow(pipeline)
+            "src", "workflow.ts", content=emit_workflow(pipeline, cfg)
         )
-        written["index"] = writer.write("src", "index.ts", content=self.emit_index(pipeline))
+        written["index"] = writer.write("src", "index.ts", content=emit_index(pipeline, cfg))
 
-        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, cfg.external_backend)}
         agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:
@@ -1292,14 +1376,14 @@ class CloudflareAdapter:
                     "src",
                     "extracted",
                     f"{node.id}.ts",
-                    content=self._emit_agent_loop(node, pipeline),
+                    content=self._emit_agent_loop(node, pipeline, cfg),
                 )
             elif node.kind is NodeKind.LLM_JUDGE:
                 written[f"signatures/{node.id}"] = writer.write(
                     "src",
                     "signatures",
                     f"{node.id}.ts",
-                    content=emit_signature_module(node, self.config),
+                    content=emit_signature_module(node, cfg),
                 )
             elif node.id in mcp_ids:
                 written[f"extracted/{node.id}"] = writer.write(
@@ -1307,7 +1391,9 @@ class CloudflareAdapter:
                     "extracted",
                     f"{node.id}.ts",
                     content=emit_workers_mcp_call_module(
-                        node, generated_by="rote.adapters.cloudflare"
+                        node,
+                        generated_by="rote.adapters.cloudflare",
+                        mcp_client=cfg.mcp_client,
                     ),
                 )
             else:
@@ -1322,27 +1408,34 @@ class CloudflareAdapter:
         # tool names.
         needs_mcp = bool(mcp_ids) or any(n.tools for n in agent_loops)
         if needs_mcp:
+            helper_src = (
+                ROTE_MCP_BINDING_HELPER_TS
+                if cfg.mcp_client == "binding"
+                else ROTE_MCP_WORKERS_HELPER_TS
+            )
             written["extracted/_roteMcp"] = writer.write(
-                "src", "extracted", "_roteMcp.ts", content=ROTE_MCP_WORKERS_HELPER_TS
+                "src", "extracted", "_roteMcp.ts", content=helper_src
             )
         if agent_loops:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
 
-        written["wrangler"] = writer.write(
-            "wrangler.jsonc", content=emit_wrangler(pipeline, self.config)
-        )
+        written["wrangler"] = writer.write("wrangler.jsonc", content=emit_wrangler(pipeline, cfg))
         written["package.json"] = writer.write(
             "package.json",
             content=emit_package_json(
-                pipeline, with_mcp=needs_mcp, with_agent_loops=bool(agent_loops)
+                pipeline,
+                # The binding variant delegates to the platform's RPC stub
+                # and never imports the MCP SDK.
+                with_mcp=needs_mcp and cfg.mcp_client != "binding",
+                with_agent_loops=bool(agent_loops),
             ),
         )
         written["tsconfig.json"] = writer.write("tsconfig.json", content=emit_tsconfig())
-        written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))
+        written["README"] = writer.write("README.md", content=emit_readme(pipeline, cfg))
         written[".dev.vars.example"] = writer.write(
-            ".dev.vars.example", content=emit_dev_vars_example(pipeline, self.config)
+            ".dev.vars.example", content=emit_dev_vars_example(pipeline, cfg)
         )
         # Machine-readable deploy descriptor at the output root — the cloud
         # runner reads this instead of scraping identity out of the TS.

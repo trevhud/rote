@@ -56,9 +56,17 @@ def _cloudflare_adapter_factory(**options: Any) -> Adapter:
     from rote.adapters.cloudflare import CloudflareAdapter, CloudflareAdapterConfig
 
     backend = _validated_backend(options)
-    if backend is None:
+    mcp_client = options.get("mcp_client")
+    if mcp_client not in (None, "direct", "binding"):
+        raise ValueError(f"mcp_client must be 'direct' or 'binding', got {mcp_client!r}")
+    if backend is None and mcp_client is None:
         return CloudflareAdapter()
-    return CloudflareAdapter(CloudflareAdapterConfig(external_backend=backend))
+    return CloudflareAdapter(
+        CloudflareAdapterConfig(
+            external_backend=backend or "mcp",
+            mcp_client=mcp_client or "direct",
+        )
+    )
 
 
 def _source_dir(options: dict[str, Any]) -> Path | None:
