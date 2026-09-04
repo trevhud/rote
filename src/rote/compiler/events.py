@@ -79,6 +79,8 @@ class CompilationEvent:
     #: File path, relative to the work dir when the emitter can manage it.
     path: str | None = None
     message: str = ""
+    #: False when output usage is pending; missing buckets are not zero.
+    usage_complete: bool | None = None
 
 
 EventCallback = Callable[[CompilationEvent], None]

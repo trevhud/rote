@@ -490,7 +490,8 @@ class Compiler:
         if in_tok is not None or out_tok is not None or cached:
             total_in = int(in_tok or 0) + cached
             cached_note = f" ({cached} cached)" if cached else ""
-            parts.append(f"tokens in={total_in}{cached_note} out={out_tok or 0}")
+            output = "pending" if meta.get("usage_complete") is False else str(out_tok or 0)
+            parts.append(f"tokens in={total_in}{cached_note} out={output}")
         if meta.get("num_turns") is not None:
             parts.append(f"turns={meta['num_turns']}")
         if meta.get("cost_usd") is not None:

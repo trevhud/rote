@@ -606,6 +606,18 @@ def test_completion_message_reports_the_whole_input_volume() -> None:
     assert "cached" not in plain
 
 
+def test_completion_message_keeps_unknown_output_pending() -> None:
+    result = DriverResult(
+        driver_name="claude",
+        pipeline_yaml_path=Path("pipeline.yaml"),
+        work_dir=Path("."),
+        metadata={"input_tokens": 3, "output_tokens": None, "usage_complete": False},
+    )
+    message = Compiler._completion_message(result)
+    assert "out=pending" in message
+    assert "out=0" not in message
+
+
 # ───────── Validation-repair pass ─────────
 
 

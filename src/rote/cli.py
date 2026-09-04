@@ -246,7 +246,8 @@ def _format_token_note(tokens: dict[str, int] | None) -> str:
 
     cached = tokens.get("cache_write", 0) + tokens.get("cache_read", 0)
     total_in = tokens.get("input", 0) + cached
-    note = f" (in {_h(total_in)} / out {_h(tokens.get('output', 0))} tok"
+    output = _h(tokens["output"]) if "output" in tokens else "pending"
+    note = f" (in {_h(total_in)} / out {output} tok"
     if cached:
         note += f", {_h(cached)} cached"
     return note + ")"
@@ -388,10 +389,10 @@ class _JsonlProgressSink:
         back to the plain input rate would overstate cache reads roughly
         tenfold, and dropping the buckets understates the run by orders of
         magnitude. No figure beats a wrong figure, and the claude lane
-        reports an authoritative ``total_cost_usd`` regardless.
+        reports its own whole-query ``total_cost_usd`` estimate.
         """
         rates = self._prices
-        if rates is None:
+        if rates is None or tokens.get("output") is None:
             return None
         cache_write = tokens.get("cache_write", 0)
         cache_read = tokens.get("cache_read", 0)
@@ -420,7 +421,7 @@ class _JsonlProgressSink:
         """Serialize one event as an NDJSON line (never raises)."""
         try:
             obj = {k: v for k, v in dataclasses.asdict(event).items() if v is not None}
-            if event.tokens:
+            if event.tokens and event.usage_complete is not False:
                 cost = self._cost_usd(event.tokens)
                 if cost is not None:
                     obj["cost_usd"] = cost
@@ -435,10 +436,10 @@ class _JsonlProgressSink:
         Prices the run's ``total_tokens`` into a ``cost_usd`` field the
         same way per-event lines are priced. Never raises.
 
-        ``reported_cost`` is what the agent runtime itself billed
-        (``total_cost_usd`` from ``claude -p``). It wins when present,
-        because it knows the per-model split and the exact cache rates
-        that applied, which a catalog lookup here can only approximate.
+        ``reported_cost`` is the agent runtime's whole-query estimate
+        (e.g. from ``claude -p``), not authoritative billing data. It wins
+        when present because it includes the per-model usage split that
+        this single-model catalog estimate cannot represent.
         """
         try:
             if reported_cost is not None:
@@ -1074,7 +1075,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         meta = result.driver_metadata
         total_tokens = {
             "input": int(meta.get("input_tokens") or 0),
-            "output": int(meta.get("output_tokens") or 0),
+            "output": (
+                None if meta.get("usage_complete") is False else int(meta.get("output_tokens") or 0)
+            ),
             "cache_write": int(meta.get("cache_write_tokens") or 0),
             "cache_read": int(meta.get("cache_read_tokens") or 0),
         }
@@ -1090,6 +1093,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "mcp_servers": analysis["mcp_servers"],
                 "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
                 "total_tokens": total_tokens,
+                "usage_complete": meta.get("usage_complete", True),
             },
             reported_cost=meta.get("cost_usd"),
         )

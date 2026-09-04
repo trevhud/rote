@@ -80,6 +80,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- Claude compiler progress counts each response ID once, retaining every
+  tool event without multiplying cached input across content blocks.
+  Live output reads "pending" and live USD is omitted until final usage
+  arrives. Final token totals use the CLI's modelUsage/usage fields;
+  interrupted streams retain input/cache totals with output null and
+  usage_complete false. The CLI's total_cost_usd remains a cost estimate,
+  not a billing record.
 - **CLI cloud uploads preserve required MCP servers.** `rote deploy`
   now forwards the emitted manifest's server map, so the platform can
   authorize the pipeline's MCP calls. Binding-mode run IDs are optional
@@ -123,12 +130,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   22-minute, 62-turn compilation was reported as `tokens in=113 out=1919;
   cost $0.029`. All four token buckets are now counted, and every display
   adds cache writes and reads into the input figure it shows.
-- **The agent runtime's own billed cost was discarded.** The driver read
+- **The agent runtime's own estimated cost was discarded.** The driver read
   `result["cost_usd"]`, a key the `claude -p` result envelope does not
   have. The field is `total_cost_usd`, so the read returned `None` on
-  every run while the authoritative number sat one key away. It is now
-  read, and it outranks any cost priced locally, because the CLI knows
-  the per-model split and the exact cache rates that applied.
+  every run while the estimate sat one key away. It is now read and
+  preferred to rote's single-model estimate because it includes the
+  per-model usage split. Neither estimate is a billing record.
 - **Cache rates are carried for every fetched model, not just the three
   tier representatives.** models.dev publishes them per model and the
   parser already read them; `build_catalog` then discarded all but the
