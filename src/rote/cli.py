@@ -503,6 +503,22 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     return specs or None
 
 
+def _no_mcp_driver(agent: str | None) -> str:
+    """Resolve and pin a driver whose live MCP tools we can actually disable."""
+    if agent is None:
+        from rote.compiler.drivers import auto_detect
+
+        driver = auto_detect()
+        agent = driver.name if driver is not None else None
+    if agent not in ("api", "openai-api"):
+        raise ValueError(
+            "--no-mcp requires an api or openai-api compiler driver "
+            f"(selected: {agent or 'none'}); subprocess drivers manage their own MCP "
+            "configuration. Select --agent api or --agent openai-api."
+        )
+    return agent
+
+
 def _cmd_compile(args: argparse.Namespace) -> int:
     """Run the full one-shot compilation flow.
 
@@ -583,6 +599,17 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
     # Local path: fold the config-resolved agent/model into args now.
     args.agent, args.model = agent_rv.value, model_rv.value
+    if args.no_mcp:
+        try:
+            if args.baseline:
+                raise ValueError(
+                    "--no-mcp cannot be combined with --baseline: the raw skill baseline "
+                    "uses its own MCP tools. Run the baseline separately."
+                )
+            args.agent = _no_mcp_driver(args.agent)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
     if cloud_cred is not None and config_prefers_local and not args.local and not args.no_deploy:
         # A config file (not a per-run flag/env) opted out of the cloud
         # default — say why once, the way the logged-out path hints login.
@@ -737,9 +764,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # In-process drivers (api / openai-api) can call MCP tools live during
     # the compilation; wire in the local registry's authenticated servers
     # the same way the baseline does. Read-only tools only.
-    mcp_specs = _live_mcp_specs_for_driver(args.agent)
-    if mcp_specs:
-        driver_kwargs["mcp_servers"] = mcp_specs
+    if args.no_mcp:
+        driver_kwargs["mcp_servers"] = []
+    else:
+        mcp_specs = _live_mcp_specs_for_driver(args.agent)
+        if mcp_specs:
+            driver_kwargs["mcp_servers"] = mcp_specs
     compiler = Compiler(
         agent=args.agent,
         model=args.model,
@@ -1089,6 +1119,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--baseline-input", args.baseline_input is not None),
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
+        ("--no-mcp", args.no_mcp),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2049,7 +2080,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    compiler = Compiler(agent=agent, model=model)
+    if args.no_mcp:
+        try:
+            agent = _no_mcp_driver(agent)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+    compiler = Compiler(
+        agent=agent,
+        model=model,
+        driver_kwargs={"mcp_servers": []} if args.no_mcp else None,
+    )
 
     out_ctx: Any = (
         nullcontext(str(args.out))
@@ -3458,6 +3499,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     compile_p.set_defaults(func=_cmd_compile)
+    compile_p.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help=(
+            "Disable live MCP discovery and calls during local api/openai-api "
+            "compilation. Does not change emitted MCP bindings. Cannot be used "
+            "with --baseline or cloud compilation."
+        ),
+    )
 
     # rote run
     run_p = subparsers.add_parser(
@@ -3928,6 +3978,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the analysis report as JSON instead of text.",
     )
     analyze.set_defaults(func=_cmd_analyze)
+    analyze.add_argument(
+        "--no-mcp",
+        action="store_true",
+        help=(
+            "Explicitly disable live MCP tools for api/openai-api analysis. "
+            "Does not change the pipeline's emitted MCP bindings."
+        ),
+    )
 
     # rote doctor
     doctor = subparsers.add_parser(

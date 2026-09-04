@@ -202,6 +202,20 @@ override with `--agent`. The output directory splits into `compiled/`
 and a `compile-report.md`) and `runtime/<runtime>/` (the adapter's
 emitted code + a README on how to run, signal gates, and deploy).
 
+Local `api` and `openai-api` compilation automatically discovers your
+registered, authenticated MCP servers and exposes their read-only tools.
+Pass `--no-mcp` to skip that discovery and compile without live MCP calls:
+
+```sh
+rote compile examples/bdr-outreach/skill --local --agent api --no-mcp --out /tmp/bdr-compiled
+```
+
+This leaves the emitted pipeline's MCP bindings intact. The flag also works
+with `rote analyze` and with an API driver selected through config or
+auto-detection. It rejects cloud compilation, subprocess drivers, and
+`--baseline`, whose raw skill run uses its own MCP tools. API drivers bill
+through your API credentials.
+
 ### Other commands
 
 - **`rote emit <pipeline.yaml> --out <dir>`**: run just the adapter step
