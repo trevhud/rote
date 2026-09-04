@@ -10,6 +10,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- `rote compile --no-mcp` skips live MCP discovery and calls for local
+  `api` and `openai-api` compilation. `rote analyze` accepts the same
+  opt-out. Emitted MCP bindings and default discovery behavior stay
+  unchanged; cloud compilation, subprocess drivers, and `--baseline`
+  reject the flag with an actionable error.
 - **Invalid agent-authored pipelines are repaired, not failed one-shot.**
   When the driver's produced pipeline.yaml fails IR validation, the
   Compiler resumes the same agent conversation with one user turn
