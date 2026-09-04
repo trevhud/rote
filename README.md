@@ -201,6 +201,10 @@ override with `--agent`. The output directory splits into `compiled/`
 (the agent's `pipeline.yaml`, `extracted/`, `signatures/`, eval seeds,
 and a `compile-report.md`) and `runtime/<runtime>/` (the adapter's
 emitted code + a README on how to run, signal gates, and deploy).
+`compiled/compile-metrics.json` preserves final token counts, session ID,
+and the driver's cost estimate before emission starts, so an adapter
+failure does not lose the paid run's metrics. Missing final output stays
+null with `usage_complete: false`; unchanged updates retain prior metrics.
 
 Local `api` and `openai-api` compilation automatically discovers your
 registered, authenticated MCP servers and exposes their read-only tools.

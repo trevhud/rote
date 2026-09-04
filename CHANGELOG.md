@@ -80,6 +80,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- Final compiler metrics now survive runtime-emission failures in
+  `compiled/compile-metrics.json`. The atomic sidecar contains allowlisted
+  numeric/identifier fields, preserves incomplete usage, labels cost as an
+  estimate, and excludes prompts, credentials, and driver error prose.
 - Claude compiler progress counts each response ID once, retaining every
   tool event without multiplying cached input across content blocks.
   Live output reads "pending" and live USD is omitted until final usage

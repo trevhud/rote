@@ -22,6 +22,8 @@ compiler's only output is the validated IR + the stub files;
 from __future__ import annotations
 
 import inspect
+import json
+import math
 import os
 import re
 import shutil
@@ -60,6 +62,8 @@ PROBE_CONTEXT_DIRNAME = "probe-context"
 #: the token cost of the repair loop.
 MAX_VALIDATION_REPAIRS = 2
 
+COMPILE_METRICS_FILENAME = "compile-metrics.json"
+
 
 class CompilerError(RuntimeError):
     """High-level compiler failure.
@@ -77,6 +81,73 @@ class CompilationResult:
     output_dir: Path
     driver_name: str
     driver_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
+    """Persist bounded metrics before adapters can fail; never copy driver prose."""
+    metadata: dict[str, Any] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_write_tokens",
+        "cache_read_tokens",
+        "num_turns",
+        "iterations",
+        "duration_ms",
+        "duration_api_ms",
+    ):
+        if key not in result.metadata:
+            continue
+        value = result.metadata[key]
+        if value is None or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
+            metadata[key] = value
+    session_id = result.metadata.get("session_id")
+    if isinstance(session_id, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", session_id
+    ):
+        metadata["session_id"] = session_id
+    source = result.metadata.get("usage_source")
+    if source in ("stream", "usage", "modelUsage"):
+        metadata["usage_source"] = source
+    complete = result.metadata.get("usage_complete")
+    if isinstance(complete, bool):
+        metadata["usage_complete"] = complete
+    cost = result.metadata.get("cost_usd")
+    if (
+        isinstance(cost, (int, float))
+        and not isinstance(cost, bool)
+        and math.isfinite(cost)
+        and cost >= 0
+    ):
+        metadata["cost_usd"] = cost
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "driver": result.driver_name,
+        "metadata": metadata,
+    }
+    if "cost_usd" in metadata:
+        payload["cost_basis"] = "driver_estimate"
+
+    # Replace atomically: a partial write must not destroy the previous run's
+    # metrics. Temporary files are private, and contain only the allowlist.
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_dir,
+            prefix=f".{COMPILE_METRICS_FILENAME}.",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output_dir / COMPILE_METRICS_FILENAME)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _default_compiler_skill_dir() -> Path:
@@ -392,6 +463,8 @@ class Compiler:
                 self._merge_work_dir_to_output(result.work_dir, output_dir)
             else:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
+
+            _write_compile_metrics(result, output_dir)
 
             # The agent records source_skill relative to its own temp
             # work dir, which is deleted the moment this context manager

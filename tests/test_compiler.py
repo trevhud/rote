@@ -21,6 +21,7 @@ Coverage:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -199,6 +200,118 @@ def fake_compiler_skill_dir(tmp_path: Path) -> Path:
 
 
 # ───────── Happy path ─────────
+
+
+def test_compile_metrics_survive_adapter_failure(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.cli import main
+
+    metadata = {
+        "input_tokens": 32,
+        "output_tokens": 71693,
+        "cache_write_tokens": 226483,
+        "cache_read_tokens": 3270597,
+        "num_turns": 46,
+        "duration_ms": 1300000,
+        "cost_usd": 3.58193715,
+        "session_id": "c8ea2107-428e-4400-8485-47367615eeec",
+        "usage_source": "modelUsage",
+        "usage_complete": True,
+    }
+    driver = _FakeDriver(VALID_YAML, metadata=metadata)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+
+    class FailingAdapter:
+        def emit(self, *args, **kwargs):
+            raise ValueError("schema collision after successful compilation")
+
+    monkeypatch.setattr("rote.cli.get_adapter", lambda *args, **kwargs: FailingAdapter())
+    output = tmp_path / "compiled-run"
+    with pytest.raises(ValueError, match="schema collision"):
+        main(
+            [
+                "compile",
+                str(fake_skill_dir),
+                "--local",
+                "--runtime",
+                "dbos",
+                "--no-eval",
+                "--out",
+                str(output),
+            ]
+        )
+    metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
+    assert metrics == {
+        "schema_version": 1,
+        "driver": "fake",
+        "metadata": metadata,
+        "cost_basis": "driver_estimate",
+    }
+    assert (output / "compiled" / "pipeline.yaml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_compile_metrics_exclude_prose_and_preserve_incomplete_usage(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _FakeDriver(
+        VALID_YAML,
+        metadata={
+            "input_tokens": 3,
+            "output_tokens": None,
+            "cache_read_tokens": 61263,
+            "usage_complete": False,
+            "usage_source": "stream",
+            "api_key": "sensitive-value",
+            "prompt": "sensitive-value",
+            "subprocess_warning": "sensitive-value",
+            "last_message": "sensitive-value",
+            "iterations": "sensitive-value",
+            "session_id": "Bearer sensitive-value",
+            "cost_usd": float("nan"),
+            "duration_ms": True,
+        },
+    )
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    output = tmp_path / "compiled-run"
+    await Compiler().compile(fake_skill_dir, output)
+    text = (output / "compile-metrics.json").read_text()
+    assert "sensitive-value" not in text
+    assert json.loads(text) == {
+        "schema_version": 1,
+        "driver": "fake",
+        "metadata": {
+            "input_tokens": 3,
+            "output_tokens": None,
+            "cache_read_tokens": 61263,
+            "usage_complete": False,
+            "usage_source": "stream",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_no_change_compile_preserves_previous_metrics(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _FakeDriver(VALID_YAML, metadata={"input_tokens": 3, "output_tokens": 12})
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    output = tmp_path / "compiled-run"
+    compiler = Compiler()
+    await compiler.compile(fake_skill_dir, output)
+    metrics = output / "compile-metrics.json"
+    previous = metrics.read_bytes()
+    driver.run_called_with = None
+    await compiler.compile(fake_skill_dir, output, update=True)
+    assert driver.run_called_with is None
+    assert metrics.read_bytes() == previous
 
 
 @pytest.mark.asyncio
