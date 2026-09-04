@@ -10,6 +10,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Fixed
+- **Pinned `fastmcp` below 4.** The declaration was `fastmcp>=3.4.2` with
+  no upper bound, so CI resolved to `fastmcp` 4.0.2 (published
+  2026-09-02) and `mcp` 2.x on every fresh install while local
+  environments stayed on 3.x. Five tests across three CI jobs began
+  failing on an unchanged `main`: the `serve` client stops receiving
+  tool-list-changed notifications, two OAuth e2e tests fail, and the TS
+  runtime e2e reports `Method not found`. The pin restores a trustworthy
+  signal; migrating to the 4.x / 2.x line is separate work, and MCP SDK
+  v2 also renames `Tool.inputSchema` to `Tool.input_schema`.
+
+
+### Fixed
 - **A compilation's reported tokens and cost ignored prompt caching.**
   `claude -p` always runs prompt-cached, so `input_tokens` holds only the
   handful of tokens that were neither written to nor read from the cache.
