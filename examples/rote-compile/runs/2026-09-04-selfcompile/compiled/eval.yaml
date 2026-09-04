@@ -1,0 +1,138 @@
+version: 1
+source_skill: ../../../../../skills/rote-compile
+
+steps:
+  - description: "Read SKILL.md and all references/*.md files from the skill directory"
+    node_id: read_skill_bundle
+    phase: "1"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 2, high: 10}
+    notes: >-
+      The agent opens SKILL.md then lists and opens each references/*.md.
+      Turn count depends on how many reference files exist — one tool call
+      per file. The rote-compile skill has 6 reference files, so realistically
+      7-8 tool calls but typically 1-2 assistant turns (agents batch reads).
+
+  - description: "Determine compilation mode from CLI flags (full, report_only, update)"
+    node_id: detect_entry_point
+    phase: "routing"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+    notes: >-
+      The agent reads the progress marker spec and decides which phases to
+      run. Zero external tool calls — this is pure in-context reasoning.
+
+  - description: "Identify all distinct steps in the skill"
+    node_id: identify_steps
+    phase: "2"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 2}
+    notes: >-
+      The agent re-reads relevant sections to confirm step boundaries, then
+      outputs the step table. Most of the work is in-context.
+
+  - description: "Classify each identified step into one of five node kinds"
+    node_id: classify_step
+    phase: "2"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+    iterations: {low: 8, high: 15}
+    notes: >-
+      One round of classification per step. The agent may re-read the
+      node-kinds.md rubric once. Typical skills have 8-15 distinct steps;
+      rote-compile itself has 12.
+
+  - description: "Scan for crystallizable patterns and write extracted stubs"
+    node_id: codification_scan
+    phase: "3"
+    estimated_turns: {low: 4, high: 12}
+    estimated_tool_calls: {low: 6, high: 20}
+    notes: >-
+      The agent walks through every reference file and the SKILL.md body,
+      identifies patterns (literal code, constants, MANDATORY checks), and
+      writes extracted/*.py stubs. Multiple read/grep/write calls. The wide
+      high bound accounts for skills with many reference files.
+
+  - description: "Design typed signatures for each llm_judge node"
+    node_id: design_signatures
+    phase: "4"
+    estimated_turns: {low: 2, high: 8}
+    estimated_tool_calls: {low: 3, high: 12}
+    notes: >-
+      One signature design cycle per llm_judge node: read rubric, enumerate
+      decision space, write signatures/*.py and evals/*.jsonl. rote-compile
+      has 3 llm_judge nodes (identify_steps, classify_step, estimate_eval_turns).
+      Each takes 1-3 turns.
+
+  - description: "Estimate agent turns per step for the eval sidecar"
+    node_id: estimate_eval_turns
+    phase: "5"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+    iterations: {low: 8, high: 15}
+    notes: >-
+      One estimation per classified step. The agent applies calibration
+      anchors from eval-estimates.md. Low variance — the rubric is clear.
+
+  - description: "Assemble the full pipeline.yaml from all prior work"
+    node_id: assemble_ir
+    phase: "5"
+    estimated_turns: {low: 6, high: 20}
+    estimated_tool_calls: {low: 8, high: 30}
+    notes: >-
+      The highest-turn step in the skill. The agent must synthesize all
+      classification and codification results, decide data-flow bindings,
+      write the YAML, check for validation errors, and iterate. For a skill
+      with 10-15 nodes this realistically takes 8-15 turns. The wide high
+      bound accounts for back-and-forth on edge definitions.
+
+  - description: "Write eval.yaml sidecar from turn estimates"
+    node_id: write_eval_sidecar
+    phase: "5"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Validate pipeline.yaml with rote.ir.load_pipeline()"
+    node_id: validate_ir
+    phase: "6"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 3}
+    notes: >-
+      The agent runs validation and, if it fails, makes targeted edits to
+      pipeline.yaml and re-validates. High estimate accounts for one round
+      of correction.
+
+  - description: "Run rote emit to produce runtime-native code from the IR"
+    node_id: invoke_adapter
+    phase: "6"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Render compile-report.md from compilation results"
+    node_id: write_compile_report
+    phase: "7"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 1, high: 3}
+    notes: >-
+      The agent writes a structured markdown document. It reads the
+      codification plan and signature designs to populate the crystallization
+      log, then writes the report. Straightforward but involves re-reading
+      several intermediate outputs.
+
+totals:
+  # Steps with iterations: classify_step (×8-15) and estimate_eval_turns (×8-15).
+  # Other steps are sequential. Whole-run estimate:
+  #   sequential overhead: ~20-60 turns
+  #   classify_step: 1-2 × 8-15 = 8-30 turns
+  #   estimate_eval_turns: 1-2 × 8-15 = 8-30 turns
+  low: 36
+  high: 120
+
+notes: >-
+  The classification and estimation fan-outs (classify_step × steps and
+  estimate_eval_turns × steps) dominate the total. assemble_ir is the
+  highest single-step cost. A typical rote-compile run on a BDR-scale skill
+  (12-15 nodes) lands around 50-80 turns measured; the 36-120 range accounts
+  for simpler vs. more complex source skills. The whole-run cost is
+  primarily turn-dominated (most steps involve in-context reasoning over
+  already-loaded files), not payload-dominated.

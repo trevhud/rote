@@ -1,0 +1,759 @@
+name: rote-compile
+version: "0.1.0"
+source_skill: ../../../../../skills/rote-compile
+description: |
+  Compile an Anthropic-style skill bundle (SKILL.md + references/) into a
+  runtime-agnostic pipeline IR, extracted Python modules, typed LLM-judge
+  signatures, and a human-readable compile report. The pipeline reads the
+  source skill, classifies every step into one of five node kinds, extracts
+  deterministic procedures into code, designs typed signatures for fuzzy
+  steps, assembles and validates the IR, optionally invokes a runtime adapter,
+  and renders the final compilation report. This is the self-compilation of
+  the rote-compile skill — the "dogfood" pipeline.
+
+config:
+  on_failure: notify_owner
+  observability:
+    traces: true
+    eval_set_dir: ./evals/
+
+input:
+  type: CompileRequest
+  required:
+    - skill_dir
+  optional:
+    - runtime
+    - out_dir
+    - report_only
+    - update
+  input_schema:
+    type: object
+    title: CompileRequest
+    additionalProperties: false
+    properties:
+      skill_dir:
+        type: string
+        description: >-
+          Absolute or relative path to the skill directory containing
+          SKILL.md and (optionally) a references/ subdirectory.
+      runtime:
+        anyOf:
+          - type: string
+            enum: [dbos, temporal, cloudflare, python, dbos-ts, inngest]
+          - type: "null"
+        default: null
+        description: >-
+          Target runtime adapter. Defaults to 'cloudflare' when logged into
+          rote cloud; 'dbos' otherwise. Determined by detect_entry_point.
+      out_dir:
+        anyOf:
+          - type: string
+          - type: "null"
+        default: null
+        description: >-
+          Output directory for the compiled artifacts (pipeline.yaml,
+          extracted/, signatures/, evals/, compile-report.md, eval.yaml).
+          Defaults to a uniquely-named temporary directory.
+      report_only:
+        type: boolean
+        default: false
+        description: >-
+          If true, run phases 1-5 and produce the compile report but skip
+          adapter invocation (Phase 6). Equivalent to `rote analyze`.
+      update:
+        type: boolean
+        default: false
+        description: >-
+          If true, perform incremental re-compilation. Load the existing
+          pipeline.yaml, diff skill source hashes against the stamped
+          provenance, and re-derive only nodes whose source sections changed.
+    required:
+      - skill_dir
+
+nodes:
+  # ─── Phase 1: Intake ─────────────────────────────────────────────────────
+
+  - id: read_skill_bundle
+    kind: external_call
+    phase: "1"
+    source:
+      section: "Phase 1: Intake"
+    description: |
+      Read SKILL.md and all files under references/ from the skill directory.
+      Returns the full text of each file keyed by filename. Fails immediately
+      if SKILL.md is missing — every other node depends on this output.
+    impl: extracted/file_reader.py:read_skill_bundle
+    input:
+      skill_dir: str
+    output:
+      skill_md: str
+      reference_files: "dict[str, str]"
+      file_paths: "list[str]"
+    inputs:
+      skill_dir: pipeline.input.skill_dir
+    timeout: 30s
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network, io_error]
+    mandatory: true
+
+  - id: detect_entry_point
+    kind: pure_function
+    phase: "routing"
+    source:
+      section: "Phase Routing"
+    description: |
+      Determine which phases to run and the compilation mode from CLI flags
+      (report_only, update). Returns a canonical entry-point config that the
+      assemble_ir agent loop reads to scope its work. Runs in parallel with
+      read_skill_bundle since it reads only from pipeline input.
+    impl: extracted/entry_point.py:detect_entry_point
+    input:
+      report_only: bool
+      update: bool
+    output:
+      mode: str
+      phases: "list[str]"
+    inputs:
+      report_only: pipeline.input.report_only
+      update: pipeline.input.update
+    mandatory: true
+
+  # ─── Phase 2: Node Classification ────────────────────────────────────────
+
+  - id: identify_steps
+    kind: llm_judge
+    phase: "2"
+    source:
+      section: "Phase 2: Node Classification"
+    description: |
+      Read the full skill bundle and identify every distinct pipeline step.
+      Each step maps to one future IR node. A step is granular enough when
+      it has one clear input type and one clear output type. Returns a list
+      of StepDescription objects that classify_step fans over.
+    signature: signatures/identify_steps.py:IdentifySteps
+    signature_spec:
+      input_schema:
+        type: object
+        title: IdentifyStepsInput
+        additionalProperties: false
+        properties:
+          skill_md:
+            type: string
+            description: "Full text of SKILL.md"
+          reference_files:
+            type: object
+            additionalProperties:
+              type: string
+            description: "Map of filename → full text for each references/*.md file"
+        required: [skill_md, reference_files]
+      output_schema:
+        type: object
+        title: IdentifyStepsOutput
+        additionalProperties: false
+        properties:
+          steps:
+            type: array
+            description: "All distinct steps in execution order"
+            items:
+              $ref: "#/$defs/StepDescription"
+        required: [steps]
+        $defs:
+          StepDescription:
+            type: object
+            additionalProperties: false
+            properties:
+              step_id:
+                type: string
+                description: "snake_case identifier; will become node id"
+              name:
+                type: string
+                description: "Human-readable step name"
+              description:
+                type: string
+                description: "What the step does, 1-2 sentences"
+              source_section:
+                type: string
+                description: "Exact SKILL.md heading text (without # markers)"
+              phase:
+                anyOf:
+                  - type: string
+                  - type: "null"
+                default: null
+                description: "Skill phase number or name"
+            required: [step_id, name, description, source_section]
+      prompt: |
+        You are analyzing a skill bundle to identify all distinct pipeline steps.
+
+        A "step" is a unit of work that could become one IR node. Each step
+        should have one clear input type and one clear output type, and map
+        to one SKILL.md section or heading. Do not merge steps that are
+        logically separate, even if the prose describes them adjacently.
+
+        Identify every phase, gate, data pull, transformation, and output
+        step. Err toward more granular — it is better to have more steps
+        than to under-decompose.
+
+        Give each step a snake_case step_id that will become its IR node id.
+        A node id must match [a-z][a-z0-9_]* and be unique within this skill.
+
+        SKILL.md:
+        {{ skill_md }}
+
+        Reference files:
+        {{ reference_files }}
+
+        Return all identified steps via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+    input:
+      skill_md: str
+      reference_files: "dict[str, str]"
+    output:
+      steps: "list[StepDescription]"
+    inputs:
+      skill_md: read_skill_bundle.output.skill_md
+      reference_files: read_skill_bundle.output.reference_files
+    timeout: 3m
+    retry:
+      max: 2
+      backoff: exponential
+    mandatory: true
+    eval_set: evals/identify_steps.jsonl
+
+  - id: classify_step
+    kind: llm_judge
+    phase: "2"
+    source:
+      section: "Phase 2: Node Classification"
+    description: |
+      Apply the five-kind classification rubric to a single identified step
+      and return the kind plus a one-sentence justification. Prefers the
+      more deterministic kind when ambiguous (pure_function > external_call >
+      llm_judge > agent_loop). Also indicates whether the step should be
+      mandatory. Fanned out over identify_steps.output.steps.
+    signature: signatures/classify_step.py:ClassifyStep
+    signature_spec:
+      input_schema:
+        type: object
+        title: ClassifyStepInput
+        additionalProperties: false
+        properties:
+          step:
+            $ref: "#/$defs/StepDescription"
+          skill_md:
+            type: string
+          reference_files:
+            type: object
+            additionalProperties:
+              type: string
+        required: [step, skill_md, reference_files]
+        $defs:
+          StepDescription:
+            type: object
+            additionalProperties: false
+            properties:
+              step_id: {type: string}
+              name: {type: string}
+              description: {type: string}
+              source_section: {type: string}
+              phase:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+            required: [step_id, name, description, source_section]
+      output_schema:
+        type: object
+        title: ClassifyStepOutput
+        additionalProperties: false
+        properties:
+          step:
+            $ref: "#/$defs/StepDescription"
+            description: "Passed through from input for downstream fan-out consumers"
+          kind:
+            enum: [pure_function, external_call, llm_judge, agent_loop, hitl_gate]
+          justification:
+            type: string
+            description: "One-sentence explanation of why this kind over alternatives"
+          suggest_mandatory:
+            type: boolean
+            description: "True when skipping produces wrong or incomplete output"
+        required: [step, kind, justification, suggest_mandatory]
+        $defs:
+          StepDescription:
+            type: object
+            properties:
+              step_id: {type: string}
+              name: {type: string}
+              description: {type: string}
+              source_section: {type: string}
+              phase:
+                anyOf: [{type: string}, {type: "null"}]
+            required: [step_id, name, description, source_section]
+      prompt: |
+        Classify this skill step into exactly one of five pipeline node kinds.
+
+        Kinds in descending order of determinism (prefer more deterministic):
+        1. pure_function — fully deterministic; no LLM; no external service
+        2. external_call — deterministic call to external service (API, filesystem, subprocess)
+        3. llm_judge — fuzzy classification with bounded, typed output schema
+        4. agent_loop — genuinely exploratory; agent decides which tools to call and when to stop
+        5. hitl_gate — explicit human signal required before the workflow continues
+
+        Key decision rules:
+        - Does it call a fixed API with known params? → external_call
+        - Is it a fixed transformation or report render? → pure_function
+        - Is the output space enumerable (enum decisions + structured rationale)? → llm_judge
+        - Does the agent genuinely need to decide what to do next, based on intermediate results? → agent_loop
+        - Is there an explicit "wait for human approval" before the next step? → hitl_gate
+
+        Step to classify:
+        {{ step }}
+
+        Full skill context:
+        SKILL.md: {{ skill_md }}
+        References: {{ reference_files }}
+
+        Return your classification via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+    input:
+      step: StepDescription
+      skill_md: str
+      reference_files: "dict[str, str]"
+    output:
+      step: StepDescription
+      kind: NodeKind
+      justification: str
+      suggest_mandatory: bool
+    inputs:
+      step: identify_steps.output.steps
+      skill_md: read_skill_bundle.output.skill_md
+      reference_files: read_skill_bundle.output.reference_files
+    timeout: 2m
+    retry:
+      max: 2
+      backoff: exponential
+    mandatory: true
+    fan_out: true
+    eval_set: evals/classify_step.jsonl
+
+  # ─── Phase 3: Codification Scan ──────────────────────────────────────────
+
+  - id: codification_scan
+    kind: agent_loop
+    phase: "3"
+    source:
+      section: "Phase 3: Codification Scan"
+    description: |
+      Scan the source skill for every crystallizable pattern: literal Python
+      or pseudocode, fixed constants, MANDATORY checks, fixed string templates,
+      batching loops, taxonomy lookups, and numeric thresholds. For each step
+      classified as pure_function or external_call, write a contract-documented
+      stub in the extracted/ directory. Returns a codification plan listing
+      every extraction and the constants lifted. The agent reads reference files
+      in the order: references/*.md first (highest crystallization density),
+      then SKILL.md.
+    input:
+      classified_steps: "list[ClassifyStepOutput]"
+      skill_bundle: SkillBundle
+    output:
+      extractions: "list[ExtractionRecord]"
+      extracted_files: "list[str]"
+    inputs:
+      classified_steps: classify_step.output
+      skill_bundle: read_skill_bundle.output
+    tools:
+      - read_file
+      - write_file
+      - search_file_content
+    tool_servers:
+      read_file: filesystem
+      write_file: filesystem
+      search_file_content: filesystem
+    termination:
+      condition: >-
+        Every step with kind pure_function or external_call has a corresponding
+        extracted/*.py stub with a documented contract.
+      max_iterations: 20
+    timeout: 10m
+
+  # ─── Phase 4: LLM-Judge Extraction ───────────────────────────────────────
+
+  - id: design_signatures
+    kind: agent_loop
+    phase: "4"
+    source:
+      section: "Phase 4: LLM-Judge Extraction"
+    description: |
+      For each classified llm_judge step, design a typed signature following
+      the extraction procedure: enumerate the decision space, design input and
+      output Pydantic models with enum-bounded fields, lift hard numeric
+      thresholds into pre-filters, write signatures/<node_id>.py, and scaffold
+      evals/<node_id>.jsonl with 3-5 seed examples sourced directly from the
+      skill's rubric. Also populate the signature_spec block for each judge
+      (JSON Schema + prompt template) for cross-runtime support. Never sets
+      temperature in signature_spec.
+    input:
+      classified_steps: "list[ClassifyStepOutput]"
+      skill_bundle: SkillBundle
+    output:
+      signature_designs: "list[SignatureDesign]"
+      signature_files: "list[str]"
+      eval_files: "list[str]"
+    inputs:
+      classified_steps: classify_step.output
+      skill_bundle: read_skill_bundle.output
+    tools:
+      - read_file
+      - write_file
+    tool_servers:
+      read_file: filesystem
+      write_file: filesystem
+    termination:
+      condition: >-
+        Every step with kind llm_judge has a signatures/*.py file and a
+        evals/*.jsonl seed file with at least 3 examples.
+      max_iterations: 15
+    timeout: 10m
+
+  # ─── Phase 5: IR Assembly (part 1 — eval estimation) ─────────────────────
+
+  - id: estimate_eval_turns
+    kind: llm_judge
+    phase: "5"
+    source:
+      section: "Phase 5: IR Assembly"
+    description: |
+      Estimate how many agent turns a step consumes when the skill runs as raw
+      instructions (the "before" side of the eval scorecard). Returns low and
+      high bounds per iteration plus, when the step repeats per item, an
+      iteration count range. Fanned out over classify_step.output — one
+      invocation per classified step. Uses calibration anchors from
+      eval-estimates.md: pure_function/external_call 1-3 turns; llm_judge
+      1-3 turns; agent_loop 3-15 turns; hitl_gate 0 turns.
+    signature: signatures/estimate_eval_turns.py:EstimateEvalTurns
+    signature_spec:
+      input_schema:
+        type: object
+        title: EstimateEvalTurnsInput
+        additionalProperties: false
+        properties:
+          step:
+            $ref: "#/$defs/ClassifyStepOutput"
+          skill_md:
+            type: string
+            description: "Full SKILL.md text for context on batch sizes, iteration counts"
+        required: [step, skill_md]
+        $defs:
+          StepDescription:
+            type: object
+            properties:
+              step_id: {type: string}
+              name: {type: string}
+              description: {type: string}
+              source_section: {type: string}
+              phase:
+                anyOf: [{type: string}, {type: "null"}]
+            required: [step_id, name, description, source_section]
+          ClassifyStepOutput:
+            type: object
+            additionalProperties: false
+            properties:
+              step: {$ref: "#/$defs/StepDescription"}
+              kind:
+                enum: [pure_function, external_call, llm_judge, agent_loop, hitl_gate]
+              justification: {type: string}
+              suggest_mandatory: {type: boolean}
+            required: [step, kind, justification, suggest_mandatory]
+      output_schema:
+        type: object
+        title: EstimateEvalTurnsOutput
+        additionalProperties: false
+        properties:
+          turns_low:
+            type: integer
+            description: "Minimum agent turns per iteration of this step"
+          turns_high:
+            type: integer
+            description: "Maximum agent turns per iteration of this step"
+          has_iterations:
+            type: boolean
+            description: "True when the step repeats per item"
+          iterations_low:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: null
+            description: "Minimum item count per run; only set when has_iterations is true"
+          iterations_high:
+            anyOf: [{type: integer}, {type: "null"}]
+            default: null
+            description: "Maximum item count per run; only set when has_iterations is true"
+          notes:
+            anyOf: [{type: string}, {type: "null"}]
+            default: null
+            description: "Optional explanation of the estimate"
+        required: [turns_low, turns_high, has_iterations]
+      prompt: |
+        Estimate how many agent turns this step consumes when the source skill
+        runs as raw LLM instructions (not as a compiled workflow).
+
+        One turn = one assistant message (usually one tool call).
+        Provide low and high bounds. If the step repeats per item (per step
+        in a skill, per contact, per row), estimate turns per iteration and
+        estimate the realistic item count range separately via has_iterations
+        and iterations_low/high.
+
+        Calibration anchors:
+        - Single fixed API call: 1-2 turns
+        - Batch-and-review step: 2-4 turns
+        - Bounded search loop: 6-15 turns
+        - Open research step: 4-10 turns
+        - hitl_gate: 0 turns (human waits, not agent)
+
+        Step to estimate:
+        {{ step }}
+
+        Full skill context:
+        {{ skill_md }}
+
+        Return your estimate via the structured output tool.
+      client: anthropic
+      model: claude-sonnet-4-6
+    input:
+      step: ClassifyStepOutput
+      skill_md: str
+    output:
+      turns_low: int
+      turns_high: int
+      has_iterations: bool
+      iterations_low: "int | None"
+      iterations_high: "int | None"
+      notes: "str | None"
+    inputs:
+      step: classify_step.output
+      skill_md: read_skill_bundle.output.skill_md
+    timeout: 2m
+    retry:
+      max: 2
+      backoff: exponential
+    fan_out: true
+    eval_set: evals/estimate_eval_turns.jsonl
+
+  # ─── Phase 5: IR Assembly (part 2 — pipeline.yaml) ───────────────────────
+
+  - id: assemble_ir
+    kind: agent_loop
+    phase: "5"
+    source:
+      section: "Phase 5: IR Assembly"
+    description: |
+      Synthesize all prior work into a complete, valid pipeline.yaml. Uses the
+      classified steps, codification plan (extracted stubs), signature designs,
+      full skill bundle, and entry-point config. Makes judgment calls about:
+      data-flow bindings (inputs:), timeouts, retry policies, mandatory flags,
+      constants, fan_out relationships, and entry/exit nodes. Writes
+      pipeline.yaml to the work directory. Must pass the Phase 6 checklist
+      before terminating: every pure_function/external_call has impl:, every
+      llm_judge has signature: and signature_spec:, every agent_loop has
+      tools:, every hitl_gate has signal:, all node references resolve.
+    input:
+      classified_steps: "list[ClassifyStepOutput]"
+      codification_plan: CodificationPlan
+      signature_designs: "list[SignatureDesign]"
+      skill_bundle: SkillBundle
+      entry_config: EntryConfig
+    output:
+      pipeline_yaml_path: str
+      node_count: int
+      node_kind_breakdown: "dict[str, int]"
+      hitl_gates: "list[str]"
+    inputs:
+      classified_steps: classify_step.output
+      codification_plan: codification_scan.output
+      signature_designs: design_signatures.output
+      skill_bundle: read_skill_bundle.output
+      entry_config: detect_entry_point.output
+    tools:
+      - read_file
+      - write_file
+    tool_servers:
+      read_file: filesystem
+      write_file: filesystem
+    termination:
+      condition: >-
+        pipeline.yaml written and passes rote.ir.load_pipeline() validation
+        with no errors. Phase 6 checklist satisfied.
+      max_iterations: 5
+    timeout: 15m
+
+  # ─── Phase 5: IR Assembly (part 3 — eval sidecar) ────────────────────────
+
+  - id: write_eval_sidecar
+    kind: pure_function
+    phase: "5"
+    source:
+      section: "Phase 5: IR Assembly"
+    description: |
+      Render eval.yaml from the per-step turn estimates produced by
+      estimate_eval_turns and the step metadata from classify_step. Writes
+      eval.yaml to the output directory alongside pipeline.yaml. Computes a
+      totals block when any step has an iterations range. The eval sidecar
+      is the "before" side of the rote eval scorecard — it describes the
+      source skill's agent cost, not the compiled pipeline's cost.
+    impl: extracted/eval_sidecar_writer.py:write_eval_sidecar
+    input:
+      turn_estimates: "list[EstimateEvalTurnsOutput]"
+      classified_steps: "list[ClassifyStepOutput]"
+      out_dir: "str | None"
+      source_skill_dir: str
+    output:
+      eval_yaml_path: str
+    inputs:
+      turn_estimates: estimate_eval_turns.output
+      classified_steps: classify_step.output
+      out_dir: pipeline.input.out_dir
+      source_skill_dir: pipeline.input.skill_dir
+    timeout: 10s
+    mandatory: true
+
+  # ─── Phase 6: Adapter Invocation ─────────────────────────────────────────
+
+  - id: validate_ir
+    kind: pure_function
+    phase: "6"
+    source:
+      section: "Phase 6: Adapter Invocation"
+    description: |
+      Load and validate the pipeline.yaml written by assemble_ir using
+      rote.ir.load_pipeline(). Programmatically enforces the full Phase 6
+      checklist: every pure_function/external_call has impl:, every llm_judge
+      has signature: or signature_spec:, every agent_loop has tools:, every
+      hitl_gate has signal:, all node IDs are unique, all inputs: references
+      resolve, all entry_nodes/exit_nodes/loop_body members exist in nodes:.
+      Raises ValidationError on any violation — the workflow retries assemble_ir
+      if this fails, not this node.
+    impl: extracted/ir_validator.py:validate_ir
+    input:
+      pipeline_yaml_path: str
+    output:
+      is_valid: bool
+      node_count: int
+      warnings: "list[str]"
+    inputs:
+      pipeline_yaml_path: assemble_ir.output.pipeline_yaml_path
+    timeout: 30s
+    retry:
+      max: 1
+      backoff: constant
+    mandatory: true
+
+  - id: invoke_adapter
+    kind: external_call
+    phase: "6"
+    source:
+      section: "Phase 6: Adapter Invocation"
+    description: |
+      Run `rote emit <pipeline_yaml> --runtime <runtime> --out <out_dir>` to
+      produce runtime-native code from the validated IR. Skipped (no-op with
+      empty emitted_files) when report_only is true. The runtime adapter is
+      a black box — it accepts a valid IR and produces code without agent
+      involvement. This node is NOT mandatory: report_only mode skips it,
+      and the compile report runs in parallel regardless.
+    impl: extracted/adapter_invoker.py:invoke_adapter
+    input:
+      pipeline_yaml_path: str
+      runtime: "str | None"
+      out_dir: "str | None"
+      report_only: bool
+    output:
+      emitted_files: "list[str]"
+      adapter_log: str
+    inputs:
+      pipeline_yaml_path: assemble_ir.output.pipeline_yaml_path
+      runtime: pipeline.input.runtime
+      out_dir: pipeline.input.out_dir
+      report_only: pipeline.input.report_only
+    timeout: 5m
+    retry:
+      max: 2
+      backoff: exponential
+      retry_on: [network, subprocess_error]
+
+  # ─── Phase 7: Compilation Report ─────────────────────────────────────────
+
+  - id: write_compile_report
+    kind: pure_function
+    phase: "7"
+    source:
+      section: "Phase 7: Compilation Report"
+    description: |
+      Render compile-report.md from the full compilation results. Covers:
+      (1) summary metrics — node count, kind breakdown by percentage, HITL
+      gates list, codifiable % estimate; (2) crystallization log — every
+      prose-to-code extraction from Phase 3 with before/after snippets;
+      (3) open questions — ambiguous judgment calls the reviewer should verify;
+      (4) suggested next steps — what to dogfood first, which evals to run,
+      which node to recompile after the first production run. Runs after
+      validate_ir; does not wait for invoke_adapter (the report documents
+      the compilation process, not the emitted artifacts).
+    impl: extracted/compile_report_renderer.py:write_compile_report
+    input:
+      classified_steps: "list[ClassifyStepOutput]"
+      codification_plan: CodificationPlan
+      signature_designs: "list[SignatureDesign]"
+      validation_result: ValidationResult
+      out_dir: "str | None"
+      skill_dir: str
+    output:
+      report_path: str
+      report_markdown: str
+    inputs:
+      classified_steps: classify_step.output
+      codification_plan: codification_scan.output
+      signature_designs: design_signatures.output
+      validation_result: validate_ir.output
+      out_dir: pipeline.input.out_dir
+      skill_dir: pipeline.input.skill_dir
+    timeout: 30s
+    mandatory: true
+
+edges:
+  # Phase 1 → Phase 2
+  - {from: read_skill_bundle, to: identify_steps}
+  # Phase 2: fan-out classify_step over identified steps
+  - {from: identify_steps, to: classify_step, fan_out: true}
+  # Phase 2 → Phase 3
+  - {from: classify_step, to: codification_scan}
+  - {from: read_skill_bundle, to: codification_scan}
+  # Phase 2 → Phase 4
+  - {from: classify_step, to: design_signatures}
+  - {from: read_skill_bundle, to: design_signatures}
+  # Phase 2 → Phase 5 eval estimation (fan-out over classified steps)
+  - {from: classify_step, to: estimate_eval_turns, fan_out: true}
+  - {from: read_skill_bundle, to: estimate_eval_turns}
+  # Phase 3 + 4 → Phase 5 IR assembly
+  - {from: codification_scan, to: assemble_ir}
+  - {from: design_signatures, to: assemble_ir}
+  - {from: classify_step, to: assemble_ir}
+  - {from: read_skill_bundle, to: assemble_ir}
+  - {from: detect_entry_point, to: assemble_ir}
+  # Phase 5 eval estimation → eval sidecar
+  - {from: estimate_eval_turns, to: write_eval_sidecar}
+  - {from: classify_step, to: write_eval_sidecar}
+  # Phase 5 → Phase 6
+  - {from: assemble_ir, to: validate_ir}
+  - {from: validate_ir, to: invoke_adapter}
+  # Phase 6 validate → Phase 7 report (parallel with invoke_adapter)
+  - {from: validate_ir, to: write_compile_report}
+  - {from: codification_scan, to: write_compile_report}
+  - {from: design_signatures, to: write_compile_report}
+  - {from: classify_step, to: write_compile_report}
+
+entry_nodes:
+  - read_skill_bundle
+  - detect_entry_point
+
+exit_nodes:
+  - write_compile_report
+  - write_eval_sidecar
+  - invoke_adapter
