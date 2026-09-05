@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import ast
 import copy
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -603,27 +605,168 @@ def test_signature_module_base_url_defaults_to_vendor_endpoint(
     assert 'MODEL = os.environ.get("ROTE_MODEL_VET_CONTACT", ' in src
 
 
-def test_signature_spec_rejects_conflicting_defs() -> None:
+def _import_signature(judge: Node, monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    module = types.ModuleType("emitted_schema_test")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(emit_signature_module(judge, DbosAdapterConfig()), module.__dict__)
+    return module
+
+
+def test_signature_spec_scopes_conflicting_defs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic import ValidationError
+
     judge = Node(
         id="j",
         kind=NodeKind.LLM_JUDGE,
         description="x",
         signature_spec={
             "input_schema": {
-                "$defs": {"Thing": {"type": "object", "properties": {"a": {"type": "string"}}}},
+                "$defs": {
+                    "Thing": {
+                        "type": "object",
+                        "properties": {"a": {"type": "string"}},
+                        "required": ["a"],
+                    }
+                },
                 "type": "object",
                 "properties": {"t": {"$ref": "#/$defs/Thing"}},
             },
             "output_schema": {
-                "$defs": {"Thing": {"type": "object", "properties": {"b": {"type": "integer"}}}},
+                "$defs": {
+                    "Thing": {
+                        "type": "object",
+                        "properties": {"b": {"type": "integer"}},
+                        "required": ["b"],
+                    }
+                },
                 "type": "object",
                 "properties": {"t": {"$ref": "#/$defs/Thing"}},
             },
             "prompt": "p",
         },
     )
-    with pytest.raises(ValueError, match="different definitions"):
+    module = _import_signature(judge, monkeypatch)
+    assert module.JInput.model_validate({"t": {"a": "text"}}).t.a == "text"
+    assert module.JOutput.model_validate({"t": {"b": 7}}).t.b == 7
+    with pytest.raises(ValidationError):
+        module.JInput.model_validate({"t": {"b": 7}})
+    with pytest.raises(ValidationError):
+        module.JOutput.model_validate({"t": {"a": "text"}})
+    assert judge.signature_spec.output_schema == module.OUTPUT_JSON_SCHEMA
+
+
+def test_signature_spec_equal_wrappers_keep_local_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import ValidationError
+
+    def schema(kind: str) -> dict:
+        return {
+            "type": "object",
+            "properties": {"item": {"$ref": "#/$defs/Wrapper"}},
+            "required": ["item"],
+            "$defs": {
+                "Wrapper": {
+                    "type": "object",
+                    "properties": {"value": {"$ref": "#/$defs/Child"}},
+                    "required": ["value"],
+                },
+                "Child": {"type": kind},
+            },
+        }
+
+    judge = _judge_with(input_schema=schema("string"), output_schema=schema("integer"))
+    module = _import_signature(judge, monkeypatch)
+    assert module.GradeEssayInput.model_validate({"item": {"value": "text"}}).item.value == "text"
+    assert module.GradeEssayOutput.model_validate({"item": {"value": 7}}).item.value == 7
+    with pytest.raises(ValidationError):
+        module.GradeEssayInput.model_validate({"item": {"value": 7}})
+    with pytest.raises(ValidationError):
+        module.GradeEssayOutput.model_validate({"item": {"value": "text"}})
+
+
+def test_signature_spec_cannot_resolve_another_roots_definitions() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"value": {"$ref": "#/$defs/OnlyInput"}},
+    }
+    judge = _judge_with(
+        input_schema={**schema, "$defs": {"OnlyInput": {"type": "string"}}},
+        output_schema=schema,
+    )
+    with pytest.raises(ValueError, match="unknown.*OnlyInput"):
         emit_signature_module(judge, DbosAdapterConfig())
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "GradeEssayInput",
+        "GradeEssayOutput",
+        "GradeEssay",
+        "BaseModel",
+        "Any",
+        "Literal",
+        "ConfigDict",
+        "Field",
+        "None",
+        "True",
+        "False",
+    ],
+)
+@pytest.mark.parametrize("reference", [False, True])
+def test_signature_spec_model_names_cannot_shadow_module_symbols(
+    title: str,
+    reference: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nested = {
+        "title": title,
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+    schema = {
+        "type": "object",
+        "properties": {
+            "item": {"$ref": "#/$defs/Thing"} if reference else nested,
+            "from": {"type": "string"},
+            "kind": {"enum": ["a", "b"]},
+            "extra": {"type": "object"},
+        },
+        "required": ["item", "from", "kind", "extra"],
+        "$defs": {"Thing": nested} if reference else {},
+        "additionalProperties": False,
+    }
+    module = _import_signature(_judge_with(input_schema=schema, output_schema=schema), monkeypatch)
+    payload = {"item": {"value": "text"}, "from": "source", "kind": "a", "extra": {"n": 1}}
+    for model in (module.GradeEssayInput, module.GradeEssayOutput):
+        assert model.model_validate(payload).model_dump(by_alias=True) == payload
+    assert callable(module.GradeEssay().forward)
+
+
+def test_signature_spec_normalized_titles_stay_distinct(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema = {
+        "type": "object",
+        "properties": {name: {"$ref": f"#/$defs/{name}"} for name in ("some-name", "some_name")},
+        "required": ["some-name", "some_name"],
+        "$defs": {
+            "some-name": {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            },
+            "some_name": {
+                "type": "object",
+                "properties": {"b": {"type": "integer"}},
+                "required": ["b"],
+            },
+        },
+    }
+    module = _import_signature(_judge_with(input_schema=schema), monkeypatch)
+    payload = {"some-name": {"a": "text"}, "some_name": {"b": 7}}
+    assert module.GradeEssayInput.model_validate(payload).model_dump(by_alias=True) == payload
 
 
 def test_signature_spec_aliases_non_identifier_properties() -> None:
