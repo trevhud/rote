@@ -232,31 +232,33 @@ class _SchemaToPydantic:
 
     The Python analog of the Cloudflare adapter's ``json_schema_to_zod``.
     Named ``$defs`` become named classes / ``Literal`` aliases; inline
-    object schemas get synthesized names. Blocks are accumulated in
-    dependency order (a class is emitted only after everything it
-    references), so the generated module imports cleanly top-to-bottom.
+    object schemas get synthesized names. Each root schema resolves its
+    own definitions; generated names and dependency-ordered blocks are
+    shared across the module.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, reserved_names: tuple[str, ...] = ()) -> None:
         self._defs: dict[str, dict[str, Any]] = {}
         self._blocks: list[str] = []
         self._emitted: dict[str, str] = {}  # $def name -> python name
         self._in_progress: set[str] = set()
-        self._used_names: set[str] = set()
+        self._used_names: set[str] = {
+            *keyword.kwlist,
+            *reserved_names,
+            "Any",
+            "Literal",
+            "BaseModel",
+            "ConfigDict",
+            "Field",
+            "PROMPT",
+            "MODEL",
+            "TEMPERATURE",
+        }
         self.uses_literal = False
         self.uses_config_dict = False
         self.uses_field = False
 
     # ── public API ──
-
-    def add_defs(self, defs: dict[str, Any]) -> None:
-        for name, schema in defs.items():
-            if name in self._defs and self._defs[name] != schema:
-                raise ValueError(
-                    f"signature emission: $defs entry {name!r} appears in both input "
-                    f"and output schemas with different definitions"
-                )
-            self._defs[name] = schema
 
     def emit_root(self, class_name: str, schema: dict[str, Any]) -> None:
         if schema.get("type") != "object":
@@ -264,6 +266,13 @@ class _SchemaToPydantic:
                 f"signature emission: root signature schema for {class_name} must be "
                 f"an object schema, got type={schema.get('type')!r}"
             )
+        # A #/$defs reference belongs to its root document. Sharing this
+        # cache across input/output can bind even identical wrappers to the
+        # wrong nested definition. Only Python symbol allocation is global.
+        self._defs = schema.get("$defs", {})
+        self._emitted.clear()
+        self._in_progress.clear()
+        self._used_names.add(class_name)
         self._emit_object_class(class_name, schema)
 
     @property
@@ -498,9 +507,7 @@ def emit_signature_module(
     spec = node.signature_spec
     pascal = _to_pascal_case(node.id)
 
-    converter = _SchemaToPydantic()
-    converter.add_defs(spec.input_schema.get("$defs", {}))
-    converter.add_defs(spec.output_schema.get("$defs", {}))
+    converter = _SchemaToPydantic(reserved_names=(pascal, f"{pascal}Input", f"{pascal}Output"))
     converter.emit_root(f"{pascal}Input", spec.input_schema)
     converter.emit_root(f"{pascal}Output", spec.output_schema)
 

@@ -10,6 +10,11 @@ modules contain implementations. Runtime emission failed, however, and
 the offline audit found additional integration defects. This snapshot is
 evidence of what the compiler produced, not a working recursive compiler.
 
+The emitter's schema-namespace bug has since been fixed. The unchanged IR
+now emits Python, DBOS, and Temporal runtimes; regression tests import the
+generated models and verify their distinct input/output validation rules.
+The remaining data-flow and agent-result issues below are separate.
+
 ## Preserved run
 
 [`runs/2026-09-04-selfcompile/`](runs/2026-09-04-selfcompile/) contains the
@@ -43,7 +48,7 @@ The following checks used local files and emitted code, with no inference:
 | Skill reader | Read the real core skill and all six reference files; missing-file check passed. |
 | Entry routing | Mode and phase-selection checks passed. |
 | IR validation | All 12 nodes loaded successfully. |
-| Signature emission | Failed: `StepDescription` has conflicting definitions in one judge's input and output schemas. |
+| Signature emission | Failed in the original run; fixed by resolving input/output definitions separately in the emitter. The unchanged IR now emits on Python, DBOS, and Temporal. |
 | Report invocation | IR omits required `emitted_files`; `signature_designs` binds an object where the renderer expects a list. |
 | Eval sidecar | Generated `notes` fields violate the strict step-estimate schema. |
 | Adapter invocation | Omitting `out_dir` fails; successful emission of a known-good pipeline still returns an empty file list because the helper parses the wrong CLI output. |
@@ -64,7 +69,9 @@ rote emit examples/rote-compile/runs/2026-09-04-selfcompile/compiled/pipeline.ya
   --runtime dbos --out /tmp/rote-selfcompile-emit
 ```
 
-This reproduces the schema collision. To repeat the paid compilation:
+This now emits successfully with the original IR. It still reports the
+missing report argument as a contract error; emission does not establish
+that the complete generated workflow executes. To repeat the paid compilation:
 
 ```sh
 rote compile skills/rote-compile --local --no-deploy --runtime dbos \

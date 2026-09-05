@@ -80,6 +80,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- Python runtime emission keeps input and output signature definitions in
+  separate namespaces. Schemas may reuse a `$defs` name with different
+  definitions; generated model names remain unique without changing the
+  output schema sent to the model. This fixes emission of the preserved
+  core-skill compilation on Python, DBOS, and Temporal.
 - Final compiler metrics now survive runtime-emission failures in
   `compiled/compile-metrics.json`. The atomic sidecar contains allowlisted
   numeric/identifier fields, preserves incomplete usage, labels cost as an

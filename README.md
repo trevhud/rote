@@ -479,9 +479,9 @@ In rough priority order:
    short-circuit uniform across all six.
 2. **Make self-compilation executable**: the
    [preserved core-skill run](examples/rote-compile/) produced valid IR,
-   but its offline audit found schema, data-flow, and agent-result
-   contract failures. Close those gaps before treating it as a working
-   replacement compiler.
+   and runtime emission now succeeds. Its offline audit still has
+   data-flow and agent-result contract failures. Close those gaps before
+   treating it as a working replacement compiler.
 3. **More example skills**: four archetypes are covered today (BDR
    outreach, 100%-roteness, data-heavy, agent-loop). Research-heavy,
    retrieval-heavy, and code-review skills each stress the IR in ways
