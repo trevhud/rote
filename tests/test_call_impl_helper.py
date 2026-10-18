@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import http.server
 import inspect
+import os
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -34,6 +36,7 @@ def _sync_helper() -> Callable[[Any, dict[str, Any]], Any]:
         "Any": Any,
         "asyncio": asyncio,
         "inspect": inspect,
+        "os": os,
         "threading": threading,
     }
     exec(async_runner_helper() + "\n\n" + call_impl_helper(), namespace)
@@ -145,6 +148,41 @@ def test_sync_helper_refuses_to_deadlock_on_its_own_loop() -> None:
 
     with pytest.raises(RuntimeError, match="would deadlock"):
         call_impl(reenters, {"x": 1})
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # fork() with threads alive
+def test_a_forked_child_gets_its_own_loop() -> None:
+    """Pre-fork servers (gunicorn, uvicorn workers) fork after the parent
+    may already have run a step. The child inherits the loop globals but
+    not the loop's thread, so without the at-fork reset its first async
+    call blocks forever on a loop nothing runs."""
+    call_impl = _sync_helper()
+    assert call_impl(coroutine_fn, {"x": 1}) == {"async": 2}  # parent's loop is live
+
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # child: one more async call, report it, exit without cleanup
+        try:
+            ok = call_impl(coroutine_fn, {"x": 21}) == {"async": 42}
+            os.write(write_fd, b"ok" if ok else b"wrong")
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+        pytest.fail("the forked child hung on its first async call")
+    assert os.read(read_fd, 16) == b"ok"
+    os.close(read_fd)
+    # The parent's loop is untouched by the child's reset.
+    assert call_impl(coroutine_fn, {"x": 3}) == {"async": 6}
 
 
 def _pipeline(nodes: list[dict[str, Any]]) -> Pipeline:
