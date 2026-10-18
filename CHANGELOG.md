@@ -33,6 +33,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   comments. Agent-written stubs that are class methods (a body of only
   `raise NotImplementedError`) are now detected; `@abstractmethod`s are
   not stubs.
+- **Park-on-auth works again under fastmcp 4.** A 401 now reaches the
+  caller as a status-free `MCPError`, so the emitted MCP helper's
+  `httpx.HTTPStatusError` check never matched and an expired credential
+  failed the run instead of parking it. The helper now reads the status
+  from an httpx2 response hook on its own transport.
+- **MCP step results are plain JSON.** The emitted helper returned
+  fastmcp's hydrated `result.data`, which for a typed output schema is a
+  generated class that DBOS cannot pickle and that renames non-identifier
+  keys. It now returns the wire `structured_content` (unwrapping
+  fastmcp's `{"result": ...}` wrapper only when marked), else the parsed
+  text content.
+- `rote mcp login` and token refresh no longer end on `ping`, which the
+  sessionless 2026-07-28 protocol does not route.
+- `rote serve` keeps live tool-list updates on fastmcp 4: handshake-era
+  clients still get `notifications/tools/list_changed`, and sessionless
+  2026-07-28 clients get it on a `subscriptions/listen` stream (the
+  server now advertises `tools.listChanged` on that era).
 - README and AGENTS.md accuracy: the compiler skill has six reference
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags
@@ -117,6 +134,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   of guessing. `rote run`'s judge-usage line counts cache tokens as input.
 
 ### Changed
+- **fastmcp 4.** The `mcp` and `serve` extras now require
+  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
+  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
+  and five hosted servers on both protocol eras. Emitted DBOS READMEs
+  print the same range. Supersedes the blind `<5` bump in #92.
 - **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
   (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
   `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);

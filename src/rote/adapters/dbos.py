@@ -98,6 +98,7 @@ from rote.adapters._py_common import (
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
+from rote.mcp._runtime_helper import FASTMCP_REQUIREMENT
 
 # ───────── Adapter configuration ─────────
 
@@ -891,7 +892,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
             "(the `mcp` backend). To run them, install `fastmcp` and set one\n"
             "endpoint env var per server:\n\n"
             "```sh\n"
-            "pip install fastmcp\n"
+            f"pip install '{FASTMCP_REQUIREMENT}'\n"
             f"{env_lines}\n"
             "```\n\n"
             "### Authentication and parking\n\n"

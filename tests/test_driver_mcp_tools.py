@@ -62,13 +62,15 @@ def _tool(
     *,
     schema: dict[str, Any] | None = None,
     description: str = "",
-) -> SimpleNamespace:
-    """A fake MCP tool listing entry. ``read_only=None`` = no annotations."""
-    return SimpleNamespace(
+) -> Any:
+    """A real MCP SDK ``Tool`` listing entry. ``read_only=None`` = no annotations."""
+    from mcp.types import Tool, ToolAnnotations
+
+    return Tool(
         name=name,
         description=description,
-        inputSchema=schema or {"type": "object", "properties": {"q": {"type": "string"}}},
-        annotations=None if read_only is None else SimpleNamespace(readOnlyHint=read_only),
+        input_schema=schema or {"type": "object", "properties": {"q": {"type": "string"}}},
+        annotations=None if read_only is None else ToolAnnotations(read_only_hint=read_only),
     )
 
 
@@ -165,41 +167,18 @@ def test_mcp_tool_id_matches_the_claude_p_convention() -> None:
 
 
 def test_read_only_tools_requires_a_true_server_hint() -> None:
+    """Only an explicit true hint passes, and reading it never touches
+    the camelCase alias: MCP SDK v2 renamed ToolAnnotations.readOnlyHint
+    to read_only_hint, and fastmcp 4's alias fires FastMCPDeprecationWarning
+    (it surfaced as stderr noise in prod error emails)."""
+    import warnings
+
     ro = _tool("lookup", True)
     writer = _tool("delete", False)
     unannotated = _tool("mystery", None)
-    # MCP SDK v2 spelling: read_only_hint, snake_case — and when both
-    # spellings exist, snake_case is authoritative (it IS the field; the
-    # camelCase name is v2's deprecated alias).
-    ro_snake = SimpleNamespace(name="peek", annotations=SimpleNamespace(read_only_hint=True))
-    writer_snake = SimpleNamespace(
-        name="tricky",
-        annotations=SimpleNamespace(read_only_hint=False, readOnlyHint=True),
-    )
-    assert read_only_tools([ro, writer, unannotated, ro_snake, writer_snake]) == [ro, ro_snake]
-
-
-def test_read_only_predicate_is_warning_free_under_installed_fastmcp() -> None:
-    """MCP SDK v2 renamed ToolAnnotations.readOnlyHint to read_only_hint;
-    reading the camelCase alias fires FastMCPDeprecationWarning under
-    fastmcp 4 (it surfaced as stderr noise in prod error emails). The
-    predicate reads snake_case first, so it stays warning-free on
-    whichever fastmcp generation is installed."""
-    import warnings
-
-    from mcp.types import ToolAnnotations
-
-    # Construct via the installed generation's canonical field name so
-    # construction itself cannot warn.
-    field = "read_only_hint" if "read_only_hint" in ToolAnnotations.model_fields else "readOnlyHint"
-    ro = SimpleNamespace(name="a", annotations=ToolAnnotations(**{field: True}))
-    writer = SimpleNamespace(name="b", annotations=ToolAnnotations(**{field: False}))
-    unannotated = SimpleNamespace(name="c", annotations=None)
-
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        result = read_only_tools([ro, writer, unannotated])
-    assert [t.name for t in result] == ["a"]
+        assert read_only_tools([ro, writer, unannotated]) == [ro]
 
 
 def test_result_text_stringifies_structured_content() -> None:

@@ -48,21 +48,6 @@ def mcp_tool_id(server: str, tool: str) -> str:
     return f"{MCP_TOOL_PREFIX}{server}__{tool}"
 
 
-def _read_only_hint(annotations: Any) -> bool:
-    """The read-only hint under either SDK spelling, snake_case first.
-
-    MCP SDK v2 renamed ``ToolAnnotations.readOnlyHint`` to
-    ``read_only_hint`` and made the camelCase name a deprecated alias —
-    reading it under fastmcp 4 fires FastMCPDeprecationWarning (which
-    surfaced as stderr noise in prod error mail). Reading snake_case
-    first never touches the alias on a modern install; SDK v1 objects
-    (fastmcp 3.x) have no snake attribute and fall through to camelCase.
-    """
-    if hasattr(annotations, "read_only_hint"):
-        return annotations.read_only_hint is True
-    return getattr(annotations, "readOnlyHint", None) is True
-
-
 def read_only_tools(tools: Sequence[Any]) -> list[Any]:
     """The subset of listed tools whose server-declared read-only hint is true.
 
@@ -70,7 +55,10 @@ def read_only_tools(tools: Sequence[Any]) -> list[Any]:
     agent: only tools the server annotates as read-only are callable.
     A tool with no annotations (or a false/absent hint) is excluded.
     """
-    return [t for t in tools if t.annotations is not None and _read_only_hint(t.annotations)]
+    # snake_case: MCP SDK v2 renamed readOnlyHint, and the camelCase
+    # alias fastmcp keeps fires FastMCPDeprecationWarning on every read
+    # (it surfaced as stderr noise in prod error mail under 3.x/4 mixes).
+    return [t for t in tools if t.annotations is not None and t.annotations.read_only_hint is True]
 
 
 def result_text(result: Any) -> str:
@@ -186,7 +174,7 @@ class LiveMcpTools:
                 prefixed = mcp_tool_id(name, tool.name)
                 if prefixed in self._tools:
                     continue
-                schema = tool.inputSchema or {"type": "object", "properties": {}}
+                schema = tool.input_schema or {"type": "object", "properties": {}}
                 self._tools[prefixed] = (dict(spec), tool.name)
                 self._defs.append(
                     (

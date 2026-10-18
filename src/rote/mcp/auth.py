@@ -153,7 +153,11 @@ async def login(
         announce_url=announce_url,
     )
     async with fastmcp.Client(config.url, auth=oauth) as client:
-        await client.ping()  # triggers 401 → discovery → dance → tokens
+        # Any authenticated request triggers 401 → discovery → dance →
+        # tokens. Not ping: the sessionless 2026-07-28 era does not route
+        # it (MCPError "Method not found"), and fastmcp 4 negotiates that
+        # era by default. tools/list exists on every era.
+        await client.list_tools()
 
     doc = read_token_file(server)
     if doc is None or not (doc.get("tokens") or {}).get("access_token"):
@@ -204,7 +208,7 @@ async def fresh_access_token(server: str, config: McpServerConfig) -> str:
     # through the same durable store, then re-read.
     oauth = build_oauth(server, config)
     async with fastmcp.Client(config.url, auth=oauth) as client:
-        await client.ping()
+        await client.list_tools()  # see login(): ping is not routed on every era
     doc = read_token_file(server)
     token, fresh = access_token_state(doc or {})
     if not token or not fresh:
