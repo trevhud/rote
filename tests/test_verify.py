@@ -284,6 +284,18 @@ def test_an_elided_citation_passes_when_each_fragment_is_verbatim(tmp_path: Path
     assert v.ok, v.errors
 
 
+def test_a_citation_wrapped_across_comment_lines_passes(tmp_path: Path) -> None:
+    """A real compile wrapped long quotes over several `#` lines, and each
+    was rejected as not in the skill, costing a needless repair round."""
+    module = _CITED.replace(
+        '    # skill: "A missing receipt on a line of $25.00 or more is a block"\n',
+        '    # skill: "A missing receipt on a line of $25.00 or more\n    # is a block"\n',
+    )
+    root = _provenance_case(tmp_path, module, None)
+    v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
+    assert v.ok, v.errors
+
+
 def test_an_invented_citation_is_rejected(tmp_path: Path) -> None:
     """A citation that would cover a guessed outcome with made-up skill text."""
     module = _CITED.replace("is a block", "goes to review")

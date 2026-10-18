@@ -333,7 +333,9 @@ def _provenance_findings(root: Path, skill_dir: Path | None) -> list[ContractFin
             continue
         for m in _CITATION_RE.finditer(text):
             # "..." (or an ellipsis) elides text between verbatim fragments.
-            raw = m.group("quote").replace("…", "...")
+            # A long quote wraps across comment lines; the "#" that starts
+            # each continuation line is not part of the skill's text.
+            raw = re.sub(r"\n\s*#\s?", " ", m.group("quote")).replace("…", "...")
             fragments = [_normalized(f) for f in raw.split("...")]
             if not all(f in skill for f in fragments if f):
                 findings.append(

@@ -1147,3 +1147,33 @@ async def test_no_session_id_means_no_resume(
     )
     assert len(recorder.calls) == 1
     assert "no session_id" in result.metadata["repair_warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_repair_round_does_not_replay_the_phases(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real repaired compile printed Phase 1 to 7 again at every round,
+    which reads as a restart. Each phase is announced once per session."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    phases = '{"phase": 1, "name": "Intake"}\n{"phase": 2, "name": "Node Classification"}\n'
+    _install_sequence(
+        monkeypatch,
+        [
+            (
+                _stream(_result_with_session(2.0, 30, 100_000)),
+                {"pipeline.yaml": "v1", "progress.ndjson": phases},
+            ),
+            (_stream(_result_with_session(2.3, 2, 110_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    events: list[CompilationEvent] = []
+    rounds = iter(["fix it", None])
+    await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, on_event=events.append, repair=lambda _p: next(rounds)
+    )
+    assert [e.message for e in events if e.type == "phase"] == [
+        e.message for e in events if e.type == "phase"
+    ][:2]
+    assert sum(1 for e in events if e.type == "phase") == 2

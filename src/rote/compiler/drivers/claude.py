@@ -437,42 +437,48 @@ class ClaudeDriver(CompilerDriver):
                 # invocation of one compile must share it.
                 cwd=work_dir,
             )
-            async with ProgressFileWatcher(work_dir, on_event):
-                result_obj, stderr, totals, turn = await self._consume_stream(
-                    proc, on_event, work_dir, start_turn=start_turn
-                )
+            result_obj, stderr, totals, turn = await self._consume_stream(
+                proc, on_event, work_dir, start_turn=start_turn
+            )
             await proc.wait()
             return _Invocation(result_obj, stderr, totals, proc.returncode, turn)
 
-        first = await invoke(user_prompt, None, 0)
-        invocations = [first]
-        result_obj, stderr = first.result, first.stderr
-        # The first run's exit status decides recovery: a repair round that
-        # dies is reported as a repair_warning, not a failed compilation.
-        returncode = first.returncode
+        # One watcher for the whole session: a watcher per invocation
+        # re-announced every phase already in progress.ndjson at the start
+        # of each repair round, so a repaired compile read as if it had
+        # restarted from Phase 1.
+        async with ProgressFileWatcher(work_dir, on_event):
+            first = await invoke(user_prompt, None, 0)
+            invocations = [first]
+            result_obj, stderr = first.result, first.stderr
+            # The first run's exit status decides recovery: a repair round that
+            # dies is reported as a repair_warning, not a failed compilation.
+            returncode = first.returncode
 
-        pipeline_yaml = work_dir / "pipeline.yaml"
-        repair_warning: str | None = None
-        while repair is not None and pipeline_yaml.is_file():
-            instruction = repair(pipeline_yaml)
-            if instruction is None:
-                break
-            last = invocations[-1]
-            session_id = last.result.get("session_id") if isinstance(last.result, dict) else None
-            if not isinstance(session_id, str) or not session_id:
-                repair_warning = (
-                    "the deliverable needed repair but the claude CLI reported no "
-                    "session_id to resume, so it was left as the agent wrote it"
+            pipeline_yaml = work_dir / "pipeline.yaml"
+            repair_warning: str | None = None
+            while repair is not None and pipeline_yaml.is_file():
+                instruction = repair(pipeline_yaml)
+                if instruction is None:
+                    break
+                last = invocations[-1]
+                session_id = (
+                    last.result.get("session_id") if isinstance(last.result, dict) else None
                 )
-                break
-            repaired = await invoke(instruction, session_id, last.turn)
-            invocations.append(repaired)
-            if repaired.returncode != 0:
-                repair_warning = (
-                    f"a repair round exited with code {repaired.returncode}; the "
-                    f"deliverable is whatever it had written by then"
-                )
-                break
+                if not isinstance(session_id, str) or not session_id:
+                    repair_warning = (
+                        "the deliverable needed repair but the claude CLI reported no "
+                        "session_id to resume, so it was left as the agent wrote it"
+                    )
+                    break
+                repaired = await invoke(instruction, session_id, last.turn)
+                invocations.append(repaired)
+                if repaired.returncode != 0:
+                    repair_warning = (
+                        f"a repair round exited with code {repaired.returncode}; the "
+                        f"deliverable is whatever it had written by then"
+                    )
+                    break
         # The agent's deliverable is a file on disk, not a clean exit
         # code. A real-world failure mode: the agent writes a complete
         # pipeline.yaml at turn N, then runs an extra validation step at
