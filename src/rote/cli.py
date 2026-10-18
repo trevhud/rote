@@ -1611,6 +1611,28 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
             return 2
         headers[key.strip()] = value.strip()
 
+    issuer = args.issuer
+    if args.issuer and not args.client_id:
+        print(
+            "error: --issuer binds a pre-registered client, so it needs --client-id",
+            file=sys.stderr,
+        )
+        return 2
+    if args.client_id and not issuer:
+        # Bind the client from its first login: record the authorization
+        # server the resource names right now.
+        import asyncio
+
+        from rote.mcp.auth import discover_issuer
+
+        issuer = asyncio.run(discover_issuer(args.url))
+        if issuer is None:
+            print(
+                "  note: could not discover the server's authorization server; the "
+                "client binds to whichever one its first login uses (or pass --issuer)",
+                file=sys.stderr,
+            )
+
     registry = load_registry()
     replacing = args.name in registry.servers
     registry.servers[args.name] = McpServerConfig(
@@ -1618,12 +1640,15 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
         transport=args.transport,
         client_id=args.client_id,
         client_secret=args.client_secret,
+        issuer=issuer,
         scopes=args.scope or None,
         headers=headers or None,
     )
     path = save_registry(registry)
     verb = "updated" if replacing else "added"
     print(f"rote mcp: {verb} {args.name!r} → {args.url} ({path})")
+    if issuer:
+        print(f"  client {args.client_id!r} bound to authorization server {issuer}")
     if not headers:
         print(f"  authenticate with: rote mcp login {args.name}")
     return 0
@@ -1673,7 +1698,7 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
     import asyncio
 
     from rote.mcp import McpAuthError, load_registry
-    from rote.mcp.auth import login
+    from rote.mcp.auth import login, registration_of
 
     registry = load_registry()
     config = registry.servers.get(args.name)
@@ -1694,6 +1719,13 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
     expires_at = doc.get("expires_at")
     refresh = " (refresh token stored)" if (doc.get("tokens") or {}).get("refresh_token") else ""
     print(f"rote mcp: authenticated {args.name!r}{refresh}")
+    client = {
+        "pre-registered": "the pre-registered client from the registry",
+        "cimd": "rote's client metadata document",
+        "dcr": "a dynamically registered client",
+    }[registration_of(doc, config)]
+    issuer = doc.get("issuer")
+    print(f"  client: {client}" + (f"; authorization server: {issuer}" if issuer else ""))
     if expires_at:
         print(f"  access token expires at epoch {expires_at:.0f}; refresh is automatic")
     _release_parked_after_login(args.name)
@@ -3959,7 +3991,8 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "The MCP client layer. Registered server names match the logical "
             "`mcp.server` names in compiled pipelines; `login` runs the full "
-            "OAuth 2.1 dance (discovery, PKCE, dynamic registration) and "
+            "OAuth 2.1 dance (discovery, PKCE, a pre-registered client, else "
+            "rote's client metadata document, else dynamic registration) and "
             "stores tokens durably so emitted workflows and eval trials "
             "authenticate without re-prompting."
         ),
@@ -3977,7 +4010,19 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_add.add_argument(
         "--client-id",
         default=None,
-        help="Pre-registered OAuth client id (for servers without dynamic registration)",
+        help=(
+            "Pre-registered OAuth client id. Used before anything else; required for "
+            "servers whose authorization server offers neither a client metadata "
+            "document nor dynamic registration (GitHub-class)"
+        ),
+    )
+    mcp_add.add_argument(
+        "--issuer",
+        default=None,
+        help=(
+            "Authorization server (issuer) the --client-id was registered with. "
+            "Default: discovered from the server's protected-resource metadata now"
+        ),
     )
     mcp_add.add_argument(
         "--client-secret",
@@ -4020,7 +4065,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--callback-port",
         type=int,
         default=None,
-        help="Fixed localhost callback port (for servers with pinned redirect URIs)",
+        help=(
+            "Fixed localhost callback port. Default: the first free one of the ports "
+            "rote's client metadata document lists (33418-33421); any other port "
+            "skips that document and uses DCR or a pre-registered client"
+        ),
     )
     mcp_login.set_defaults(func=_cmd_mcp_login)
 

@@ -12,17 +12,20 @@
  * - Never interactive: anything that needs a human (no refresh path, a
  *   401 the refresh cannot fix) throws RoteMcpAuthNeeded — the emitted
  *   workflow parks durably on it until `rote mcp login <server>` (or a
- *   re-provisioned credential) releases it.
+ *   re-provisioned credential) releases it. A server asking for input
+ *   mid-call throws RoteMcpInputRequired, which fails the step instead.
+ * - Protocol: MCP 2026-07-28 when the server speaks it, else the 2025
+ *   handshake (TS SDK v2, versionNegotiation "auto").
  */
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+    Client,
+    SdkHttpError,
     StreamableHTTPClientTransport,
-    StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+} from "@modelcontextprotocol/client";
 
 /**
  * The MCP server needs a human to (re)authenticate.
@@ -63,6 +66,55 @@ export function isRoteMcpAuthNeeded(err: unknown): boolean {
     return false;
 }
 
+/**
+ * The MCP server asked for human input in the middle of a call.
+ *
+ * A 2026-07-28 server can answer a tool call with `input_required`
+ * (elicitation, sampling, or roots), or refuse it because the client did
+ * not declare the capability the tool needs (-32021). A workflow step has
+ * nobody to answer, so the call fails with this error. It is deliberately
+ * not RoteMcpAuthNeeded: a login cannot answer it, so the workflow fails
+ * instead of parking, and retries skip it too.
+ *
+ * Detect with isRoteMcpInputRequired(), never `instanceof` (same reason as
+ * RoteMcpAuthNeeded).
+ */
+export class RoteMcpInputRequired extends Error {
+    readonly server: string;
+    readonly tool: string;
+    readonly requests: Record<string, string>;
+
+    constructor(server: string, tool: string, requests: Record<string, string>) {
+        const asked = Object.keys(requests)
+            .sort()
+            .map((key) => `${key} (${requests[key]})`)
+            .join(", ");
+        super(
+            `tool '${tool}' on MCP server '${server}' asked for input mid-call (${asked}). ` +
+                "An unattended workflow step has nobody to answer, so the call fails " +
+                "instead of waiting; pass the input as tool arguments if the server accepts them",
+        );
+        this.name = "RoteMcpInputRequired";
+        this.server = server;
+        this.tool = tool;
+        this.requests = requests;
+    }
+}
+
+/** True if a RoteMcpInputRequired hides anywhere in the error tree. */
+export function isRoteMcpInputRequired(err: unknown): boolean {
+    let node: unknown = err;
+    for (let depth = 0; node != null && depth < 16; depth++) {
+        const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
+        if (e.name === "RoteMcpInputRequired") return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpInputRequired(sub))) {
+            return true;
+        }
+        node = e.cause;
+    }
+    return false;
+}
+
 interface TokenDoc {
     version?: number;
     server_url?: string;
@@ -76,6 +128,8 @@ interface TokenDoc {
     expires_at: number | null;
     client_info: { client_id?: string; client_secret?: string } | null;
     token_endpoint: string | null;
+    /** Contract v2; absent in v1 files. Not needed to refresh. */
+    issuer?: string | null;
 }
 
 interface RegistryEntry {
@@ -190,8 +244,18 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
 }
 
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
+/** `raw` in the form two spellings of one endpoint share: lowercase
+ * scheme and host, default port dropped, no trailing slash, no fragment.
+ * Same rule as the Python helper's normalize_server_url. */
+function normalizeServerUrl(raw: string): string {
+    const u = new URL(raw.trim());
+    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+}
+
 export async function freshHeaders(
     server: string,
+    url: string,
     forceRefresh = false,
 ): Promise<Record<string, string> | null> {
     const entry = registryServers()[server];
@@ -201,6 +265,14 @@ export async function freshHeaders(
     const doc = readTokenDoc(server);
     const access = doc?.tokens?.access_token;
     if (!doc || !access) return null;
+    // The file is keyed by server name, and the name may now point at a
+    // new endpoint: the old endpoint's bearer token must not go there.
+    if (doc.server_url && normalizeServerUrl(doc.server_url) !== normalizeServerUrl(url)) {
+        throw new RoteMcpAuthNeeded(
+            server,
+            `the stored login is for ${doc.server_url}, not ${url}`,
+        );
+    }
     const staleAt = doc.expires_at != null ? doc.expires_at - 60 : null;
     const isStale = forceRefresh || (staleAt != null && Date.now() / 1000 >= staleAt);
     const token = isStale ? await refreshAccessToken(server, doc) : access;
@@ -223,7 +295,10 @@ async function withMcpSession<T>(
     const url = resolveUrl(server, pipelineUrl);
 
     const attempt = async (headers: Record<string, string> | null) => {
-        const client = new Client({ name: "rote-pipeline", version: "1.0.0" });
+        const client = new Client(
+            { name: "rote-pipeline", version: "1.0.0" },
+            { versionNegotiation: { mode: "auto" } },
+        );
         const transport = new StreamableHTTPClientTransport(new URL(url), {
             requestInit: headers ? { headers } : undefined,
         });
@@ -236,14 +311,14 @@ async function withMcpSession<T>(
     };
 
     try {
-        return await attempt(await freshHeaders(server));
+        return await attempt(await freshHeaders(server, url));
     } catch (err) {
         if (!isUnauthorized(err)) throw err;
         if (!readTokenDoc(server)?.tokens?.refresh_token) {
             throw new RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized");
         }
         try {
-            return await attempt(await freshHeaders(server, true));
+            return await attempt(await freshHeaders(server, url, true));
         } catch (retryErr) {
             if (isUnauthorized(retryErr)) {
                 throw new RoteMcpAuthNeeded(
@@ -288,6 +363,46 @@ async function unwrapFastmcpResult(
     return structured;
 }
 
+
+/** The input the server asked for, if `err` is the SDK reporting that a
+ * call needs a human: either the client could not fulfil an embedded
+ * `input_required` request (no handler, by design), or the server refused
+ * because no capability was declared (-32021). */
+function requestedInput(err: unknown): Record<string, string> | null {
+    const e = err as { code?: unknown; data?: Record<string, unknown> } | null;
+    const data = e?.data ?? {};
+    if (
+        e?.code === "CAPABILITY_NOT_SUPPORTED" &&
+        typeof data.key === "string" &&
+        typeof data.method === "string"
+    ) {
+        return { [data.key]: data.method };
+    }
+    if (e?.code === -32021) {
+        const required = (data.requiredCapabilities ?? {}) as Record<string, unknown>;
+        const names = Object.keys(required);
+        return Object.fromEntries(
+            (names.length > 0 ? names : ["unknown"]).map((name) => [name, "client capability"]),
+        );
+    }
+    return null;
+}
+
+async function callToolUnattended(
+    client: Client,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+) {
+    try {
+        return await client.callTool({ name: tool, arguments: args });
+    } catch (err) {
+        const requests = requestedInput(err);
+        if (requests) throw new RoteMcpInputRequired(server, tool, requests);
+        throw err;
+    }
+}
+
 /**
  * Call one tool on an MCP server, authenticated from the rote credential
  * store. On a 401 (revoked/expired-early token) the call refreshes once
@@ -302,7 +417,7 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<unknown> {
     return withMcpSession(server, pipelineUrl, async (client) => {
-        const result = await client.callTool({ name: tool, arguments: args });
+        const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
                 `MCP tool '${tool}' on '${server}' returned an error: ` +
@@ -455,7 +570,10 @@ export async function bindAgentTools(
 }
 
 function isUnauthorized(err: unknown): boolean {
-    return err instanceof StreamableHTTPError
-        ? err.code === 401
+    // SDK v2 reports every non-2xx answer, the version probe's included,
+    // as SdkHttpError with the HTTP status. (v1's StreamableHTTPError
+    // carried it as `code`; v2's `code` is an SdkErrorCode string.)
+    return err instanceof SdkHttpError
+        ? err.status === 401
         : /\b401\b|[Uu]nauthorized/.test(String(err));
 }

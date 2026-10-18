@@ -33,7 +33,7 @@ import { exclusionCheckSequence } from "./extracted/exclusion_check_sequence";
 import { personalizeEmail } from "./signatures/personalize_email";
 import { createSalesTemplate } from "./extracted/create_sales_template";
 import { preEnrollmentReport } from "./extracted/pre_enrollment_report";
-import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";
+import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";
 
 export interface Env {
     ANTHROPIC_API_KEY: string;
@@ -115,8 +115,10 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                             brief: pipelineInput,
                         }, this.env);
                         } catch (err) {
-                            // No retry mints a credential — skip the budget.
-                            throw isRoteMcpAuthNeeded(err)
+                            // No retry mints a credential or answers an
+                            // input request: both skip the budget.
+                            throw (isRoteMcpAuthNeeded(err) ||
+                                isRoteMcpInputRequired(err))
                                 ? new NonRetryableError(
                                       err instanceof Error ? err.message : String(err),
                                   )
@@ -174,8 +176,10 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                             target_quota: pipelineInput["target_quota"],
                         }, this.env);
                         } catch (err) {
-                            // No retry mints a credential — skip the budget.
-                            throw isRoteMcpAuthNeeded(err)
+                            // No retry mints a credential or answers an
+                            // input request: both skip the budget.
+                            throw (isRoteMcpAuthNeeded(err) ||
+                                isRoteMcpInputRequired(err))
                                 ? new NonRetryableError(
                                       err instanceof Error ? err.message : String(err),
                                   )

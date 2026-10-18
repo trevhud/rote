@@ -10,7 +10,7 @@ updated in lockstep.
 Layout — ``<token_dir>/<server-name>.json``, mode ``0600``::
 
     {
-      "version": 1,
+      "version": 2,
       "server_url": "https://mcp.example.com/mcp",
       "tokens": {              # OAuthToken (MCP SDK shape), verbatim
         "access_token": "...",
@@ -22,18 +22,26 @@ Layout — ``<token_dir>/<server-name>.json``, mode ``0600``::
       "expires_at": 1770000000.0,   # absolute epoch; null = unknown
       "client_info": { ... },       # registered client (DCR result or
                                     # pre-registered), incl. client_id
-      "token_endpoint": "https://auth.example.com/token"  # for non-SDK
+      "token_endpoint": "https://auth.example.com/token", # for non-SDK
                                     # refreshers (the TS runtimes); may
                                     # be null until first login
+      "issuer": "https://auth.example.com"  # v2: the authorization
+                                    # server the credentials belong to
     }
+
+Version 2 added ``issuer``. Readers accept both versions: a v1 file is a
+v2 file whose issuer is unknown. Writers stamp the current version.
 
 ``tokens``/``client_info``/``expires_at`` are written by the fastmcp
 OAuth provider through :class:`ServerTokenKV` (an ``AsyncKeyValue``
 shim: the provider addresses three collections keyed by server URL; a
 shim instance is already bound to one server file, so the collection
-picks the field and the key is ignored). ``token_endpoint`` is stamped
-by ``rote mcp login`` after a successful dance so refresh-only clients
-never need to re-run discovery.
+picks the field and the key is ignored). ``token_endpoint`` and
+``issuer`` are stamped by ``rote mcp login`` after a successful dance,
+from the authorization server metadata the SDK validated: refresh-only
+clients never need to re-run discovery, and the issuer records which
+authorization server the stored client and tokens are bound to (the
+2026-07-28 spec keys credentials by issuer).
 
 The token dir is ``$ROTE_MCP_TOKEN_DIR`` >
 ``$XDG_DATA_HOME/rote/mcp-tokens`` > ``~/.local/share/rote/mcp-tokens``.
@@ -50,10 +58,15 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, SupportsFloat
 
+from rote.mcp._runtime_helper import _with_bound_issuer, stored_for_url
+
 if TYPE_CHECKING:
     from rote.mcp.registry import McpServerConfig
 
 TOKEN_DIR_ENV_VAR = "ROTE_MCP_TOKEN_DIR"
+
+#: The token-file contract version writers stamp. Readers accept 1 and 2.
+TOKEN_CONTRACT_VERSION = 2
 
 _COLLECTION_FIELDS = {
     "mcp-oauth-token": "tokens",
@@ -102,7 +115,7 @@ def write_token_file(server: str, data: dict[str, Any], directory: Path | None =
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{server}-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"version": 1, **data}, f, indent=2)
+            json.dump({**data, "version": TOKEN_CONTRACT_VERSION}, f, indent=2)
             f.write("\n")
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
@@ -172,7 +185,9 @@ def auth_status(server_config: McpServerConfig, token_doc: dict[str, Any] | None
     """
     if server_config.headers:
         return "static headers"
-    if token_doc is None:
+    if token_doc is None or not stored_for_url(token_doc, server_config.url):
+        # A login for the endpoint this name used to point at is not one
+        # for the endpoint it points at now.
         return "not authenticated"
     token, fresh = access_token_state(token_doc)
     if token and fresh:
@@ -202,12 +217,18 @@ class ServerTokenKV:
         self._directory = directory
 
     def _load(self) -> dict[str, Any]:
-        return read_token_file(self._server, self._directory) or {
+        doc = read_token_file(self._server, self._directory)
+        # A file for another endpoint is not this endpoint's login: reading
+        # it would send that endpoint's bearer token here.
+        if doc is not None and stored_for_url(doc, self._server_url):
+            return doc
+        return {
             "server_url": self._server_url,
             "tokens": None,
             "expires_at": None,
             "client_info": None,
             "token_endpoint": None,
+            "issuer": None,
         }
 
     def _store(self, doc: dict[str, Any]) -> None:
@@ -227,6 +248,8 @@ class ServerTokenKV:
             expires_at = doc.get("expires_at")
             return None if expires_at is None else {"expires_at": expires_at}
         value = doc.get(field)
+        if field == "client_info":
+            value = _with_bound_issuer(doc, value)
         return value if isinstance(value, dict) else None
 
     async def put(

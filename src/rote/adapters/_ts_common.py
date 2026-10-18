@@ -823,10 +823,125 @@ def emit_node_tsconfig() -> str:
 
 # ───────── MCP-backed external_call emission (Node runtimes) ─────────
 
-#: The npm package pin for the official MCP TypeScript SDK. v1.x is the
-#: supported production line (the repo's main branch is v2 beta with
-#: renamed packages); verified against npm 2026-07-10.
-MCP_SDK_NPM_VERSION = "^1.29.0"
+#: The npm package that provides the emitted helpers' MCP client: the TS
+#: SDK v2 client package, the first line that speaks MCP 2026-07-28. The
+#: v1 line (``@modelcontextprotocol/sdk`` 1.x) cannot talk to a
+#: modern-only server at all: it gets ``-32022 Unsupported protocol
+#: version`` (docs/design/mcp-2026-07-28.md, A5). Verified against npm
+#: 2026-10-18 (2.3.1 is latest).
+MCP_CLIENT_NPM_PACKAGE = "@modelcontextprotocol/client"
+MCP_CLIENT_NPM_VERSION = "^2.3.1"
+
+#: How every emitted direct-MCP helper builds its client. ``auto`` is not
+#: the SDK default: v2's default is ``legacy``, which behaves exactly like
+#: v1 against a modern-only server (A5, "v2 default (legacy)"). With
+#: ``auto`` the client probes ``server/discover`` and falls back to the 2025
+#: ``initialize`` handshake when the server does not speak 2026-07-28.
+#: No capabilities are declared: an unattended step cannot answer
+#: elicitation, sampling or roots requests, so it must not offer to.
+_TS_MCP_CLIENT_CONSTRUCTION = """new Client(
+            { name: "rote-pipeline", version: "1.0.0" },
+            { versionNegotiation: { mode: "auto" } },
+        )"""
+
+#: The input-required error and its detection, shared by every TS helper.
+#: The binding helper never raises it (the platform proxy owns the client)
+#: but exports it, because the emitted workflows import it from whichever
+#: helper the build carries.
+_TS_INPUT_REQUIRED = """
+/**
+ * The MCP server asked for human input in the middle of a call.
+ *
+ * A 2026-07-28 server can answer a tool call with `input_required`
+ * (elicitation, sampling, or roots), or refuse it because the client did
+ * not declare the capability the tool needs (-32021). A workflow step has
+ * nobody to answer, so the call fails with this error. It is deliberately
+ * not RoteMcpAuthNeeded: a login cannot answer it, so the workflow fails
+ * instead of parking, and retries skip it too.
+ *
+ * Detect with isRoteMcpInputRequired(), never `instanceof` (same reason as
+ * RoteMcpAuthNeeded).
+ */
+export class RoteMcpInputRequired extends Error {
+    readonly server: string;
+    readonly tool: string;
+    readonly requests: Record<string, string>;
+
+    constructor(server: string, tool: string, requests: Record<string, string>) {
+        const asked = Object.keys(requests)
+            .sort()
+            .map((key) => `${key} (${requests[key]})`)
+            .join(", ");
+        super(
+            `tool '${tool}' on MCP server '${server}' asked for input mid-call (${asked}). ` +
+                "An unattended workflow step has nobody to answer, so the call fails " +
+                "instead of waiting; pass the input as tool arguments if the server accepts them",
+        );
+        this.name = "RoteMcpInputRequired";
+        this.server = server;
+        this.tool = tool;
+        this.requests = requests;
+    }
+}
+
+/** True if a RoteMcpInputRequired hides anywhere in the error tree. */
+export function isRoteMcpInputRequired(err: unknown): boolean {
+    let node: unknown = err;
+    for (let depth = 0; node != null && depth < 16; depth++) {
+        const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
+        if (e.name === "RoteMcpInputRequired") return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpInputRequired(sub))) {
+            return true;
+        }
+        node = e.cause;
+    }
+    return false;
+}
+"""
+
+#: Maps the SDK's two "this call needs a human" failures onto
+#: RoteMcpInputRequired. Direct helpers only (they own an SDK client).
+_TS_INPUT_REQUIRED_MAPPING = """
+/** The input the server asked for, if `err` is the SDK reporting that a
+ * call needs a human: either the client could not fulfil an embedded
+ * `input_required` request (no handler, by design), or the server refused
+ * because no capability was declared (-32021). */
+function requestedInput(err: unknown): Record<string, string> | null {
+    const e = err as { code?: unknown; data?: Record<string, unknown> } | null;
+    const data = e?.data ?? {};
+    if (
+        e?.code === "CAPABILITY_NOT_SUPPORTED" &&
+        typeof data.key === "string" &&
+        typeof data.method === "string"
+    ) {
+        return { [data.key]: data.method };
+    }
+    if (e?.code === -32021) {
+        const required = (data.requiredCapabilities ?? {}) as Record<string, unknown>;
+        const names = Object.keys(required);
+        return Object.fromEntries(
+            (names.length > 0 ? names : ["unknown"]).map((name) => [name, "client capability"]),
+        );
+    }
+    return null;
+}
+
+async function callToolUnattended(
+    client: Client,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+) {
+    try {
+        return await client.callTool({ name: tool, arguments: args });
+    } catch (err) {
+        const requests = requestedInput(err);
+        if (requests) throw new RoteMcpInputRequired(server, tool, requests);
+        throw err;
+    }
+}
+"""
+
 
 #: How every direct-client TS helper reads a structured tool result.
 #: Spliced into both :data:`ROTE_MCP_HELPER_TS` and
@@ -875,7 +990,8 @@ async function unwrapFastmcpResult(
 #: authorization flow), and persists rotated refresh tokens atomically
 #: so the CLI and other processes see them. Node-only (fs); the
 #: Cloudflare adapter must NOT emit this file.
-ROTE_MCP_HELPER_TS = """/**
+ROTE_MCP_HELPER_TS = (
+    """/**
  * MCP connection helper (generated by rote — do not edit; the source
  * of truth is rote.adapters._ts_common.ROTE_MCP_HELPER_TS).
  *
@@ -889,17 +1005,20 @@ ROTE_MCP_HELPER_TS = """/**
  * - Never interactive: anything that needs a human (no refresh path, a
  *   401 the refresh cannot fix) throws RoteMcpAuthNeeded — the emitted
  *   workflow parks durably on it until `rote mcp login <server>` (or a
- *   re-provisioned credential) releases it.
+ *   re-provisioned credential) releases it. A server asking for input
+ *   mid-call throws RoteMcpInputRequired, which fails the step instead.
+ * - Protocol: MCP 2026-07-28 when the server speaks it, else the 2025
+ *   handshake (TS SDK v2, versionNegotiation "auto").
  */
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+    Client,
+    SdkHttpError,
     StreamableHTTPClientTransport,
-    StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+} from "@modelcontextprotocol/client";
 
 /**
  * The MCP server needs a human to (re)authenticate.
@@ -939,7 +1058,7 @@ export function isRoteMcpAuthNeeded(err: unknown): boolean {
     }
     return false;
 }
-
+__ROTE_TS_INPUT_REQUIRED__
 interface TokenDoc {
     version?: number;
     server_url?: string;
@@ -953,6 +1072,8 @@ interface TokenDoc {
     expires_at: number | null;
     client_info: { client_id?: string; client_secret?: string } | null;
     token_endpoint: string | null;
+    /** Contract v2; absent in v1 files. Not needed to refresh. */
+    issuer?: string | null;
 }
 
 interface RegistryEntry {
@@ -1067,8 +1188,18 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
 }
 
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
+/** `raw` in the form two spellings of one endpoint share: lowercase
+ * scheme and host, default port dropped, no trailing slash, no fragment.
+ * Same rule as the Python helper's normalize_server_url. */
+function normalizeServerUrl(raw: string): string {
+    const u = new URL(raw.trim());
+    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+}
+
 export async function freshHeaders(
     server: string,
+    url: string,
     forceRefresh = false,
 ): Promise<Record<string, string> | null> {
     const entry = registryServers()[server];
@@ -1078,6 +1209,14 @@ export async function freshHeaders(
     const doc = readTokenDoc(server);
     const access = doc?.tokens?.access_token;
     if (!doc || !access) return null;
+    // The file is keyed by server name, and the name may now point at a
+    // new endpoint: the old endpoint's bearer token must not go there.
+    if (doc.server_url && normalizeServerUrl(doc.server_url) !== normalizeServerUrl(url)) {
+        throw new RoteMcpAuthNeeded(
+            server,
+            `the stored login is for ${doc.server_url}, not ${url}`,
+        );
+    }
     const staleAt = doc.expires_at != null ? doc.expires_at - 60 : null;
     const isStale = forceRefresh || (staleAt != null && Date.now() / 1000 >= staleAt);
     const token = isStale ? await refreshAccessToken(server, doc) : access;
@@ -1100,7 +1239,7 @@ async function withMcpSession<T>(
     const url = resolveUrl(server, pipelineUrl);
 
     const attempt = async (headers: Record<string, string> | null) => {
-        const client = new Client({ name: "rote-pipeline", version: "1.0.0" });
+        const client = __ROTE_TS_MCP_CLIENT__;
         const transport = new StreamableHTTPClientTransport(new URL(url), {
             requestInit: headers ? { headers } : undefined,
         });
@@ -1113,14 +1252,14 @@ async function withMcpSession<T>(
     };
 
     try {
-        return await attempt(await freshHeaders(server));
+        return await attempt(await freshHeaders(server, url));
     } catch (err) {
         if (!isUnauthorized(err)) throw err;
         if (!readTokenDoc(server)?.tokens?.refresh_token) {
             throw new RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized");
         }
         try {
-            return await attempt(await freshHeaders(server, true));
+            return await attempt(await freshHeaders(server, url, true));
         } catch (retryErr) {
             if (isUnauthorized(retryErr)) {
                 throw new RoteMcpAuthNeeded(
@@ -1134,6 +1273,7 @@ async function withMcpSession<T>(
 }
 
 __FASTMCP_UNWRAP_TS__
+__ROTE_TS_INPUT_REQUIRED_MAPPING__
 /**
  * Call one tool on an MCP server, authenticated from the rote credential
  * store. On a 401 (revoked/expired-early token) the call refreshes once
@@ -1148,7 +1288,7 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<unknown> {
     return withMcpSession(server, pipelineUrl, async (client) => {
-        const result = await client.callTool({ name: tool, arguments: args });
+        const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
                 `MCP tool '${tool}' on '${server}' returned an error: ` +
@@ -1301,12 +1441,18 @@ export async function bindAgentTools(
 }
 
 function isUnauthorized(err: unknown): boolean {
-    return err instanceof StreamableHTTPError
-        ? err.code === 401
+    // SDK v2 reports every non-2xx answer, the version probe's included,
+    // as SdkHttpError with the HTTP status. (v1's StreamableHTTPError
+    // carried it as `code`; v2's `code` is an SdkErrorCode string.)
+    return err instanceof SdkHttpError
+        ? err.status === 401
         : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
-"""
-ROTE_MCP_HELPER_TS = ROTE_MCP_HELPER_TS.replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
+""".replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED)
+    .replace("__ROTE_TS_INPUT_REQUIRED_MAPPING__", _TS_INPUT_REQUIRED_MAPPING)
+    .replace("__ROTE_TS_MCP_CLIENT__", _TS_MCP_CLIENT_CONSTRUCTION)
+    .replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
+)
 
 
 def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
@@ -1383,7 +1529,8 @@ def emit_mcp_call_module(node: Node, *, generated_by: str) -> str:
 #: rotated refresh tokens persist to the ``ROTE_MCP_TOKENS`` KV binding
 #: (in-memory fallback per isolate when KV is absent — fine for
 #: servers that don't rotate refresh tokens; the README says which).
-ROTE_MCP_WORKERS_HELPER_TS = """/**
+ROTE_MCP_WORKERS_HELPER_TS = (
+    """/**
  * MCP connection helper for Cloudflare Workers (generated by rote — do
  * not edit; the source of truth is
  * rote.adapters._ts_common.ROTE_MCP_WORKERS_HELPER_TS).
@@ -1395,13 +1542,17 @@ ROTE_MCP_WORKERS_HELPER_TS = """/**
  * Access tokens are minted at runtime via the OAuth refresh grant and
  * cached — with rotated refresh tokens — in the ROTE_MCP_TOKENS KV
  * namespace, so every isolate sees the latest credentials.
+ *
+ * Protocol: MCP 2026-07-28 when the server speaks it, else the 2025
+ * handshake (TS SDK v2, versionNegotiation "auto"). A server asking for
+ * input mid-call throws RoteMcpInputRequired, which fails the step.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+    Client,
+    SdkHttpError,
     StreamableHTTPClientTransport,
-    StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+} from "@modelcontextprotocol/client";
 
 export interface RoteMcpEnv {
     ROTE_MCP_TOKENS?: KVNamespace;
@@ -1443,7 +1594,7 @@ export function isRoteMcpAuthNeeded(err: unknown): boolean {
     }
     return false;
 }
-
+__ROTE_TS_INPUT_REQUIRED__
 // Concrete JSON types: Cloudflare's step.do constrains callback returns to
 // Rpc.Serializable, which `unknown` members do not satisfy — a recursive
 // concrete JSON shape does (same reason emitted stubs are Promise<never>).
@@ -1574,7 +1725,7 @@ async function withMcpSession<T>(
     const url = resolveUrl(env, server, pipelineUrl);
 
     const attempt = async (token: string) => {
-        const client = new Client({ name: "rote-pipeline", version: "1.0.0" });
+        const client = __ROTE_TS_MCP_CLIENT__;
         const transport = new StreamableHTTPClientTransport(new URL(url), {
             requestInit: { headers: { Authorization: `Bearer ${token}` } },
         });
@@ -1605,6 +1756,7 @@ async function withMcpSession<T>(
 }
 
 __FASTMCP_UNWRAP_TS__
+__ROTE_TS_INPUT_REQUIRED_MAPPING__
 /**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
@@ -1619,7 +1771,7 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<JsonValue> {
     return withMcpSession(env, server, pipelineUrl, async (client) => {
-        const result = await client.callTool({ name: tool, arguments: args });
+        const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
                 `MCP tool '${tool}' on '${server}' returned an error: ` +
@@ -1762,13 +1914,15 @@ export async function bindAgentTools(
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {
-    return err instanceof StreamableHTTPError
-        ? err.code === 401
+    // See the Node helper: SDK v2 carries the HTTP status on SdkHttpError.
+    return err instanceof SdkHttpError
+        ? err.status === 401
         : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
-"""
-ROTE_MCP_WORKERS_HELPER_TS = ROTE_MCP_WORKERS_HELPER_TS.replace(
-    "__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS
+""".replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED)
+    .replace("__ROTE_TS_INPUT_REQUIRED_MAPPING__", _TS_INPUT_REQUIRED_MAPPING)
+    .replace("__ROTE_TS_MCP_CLIENT__", _TS_MCP_CLIENT_CONSTRUCTION)
+    .replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
 )
 
 
@@ -1963,7 +2117,7 @@ export function isRoteMcpAuthNeeded(err: unknown): boolean {
     }
     return false;
 }
-
+__ROTE_TS_INPUT_REQUIRED__
 // Concrete JSON types — same rationale as the direct helper: step.do
 // constrains callback returns to Rpc.Serializable, which `unknown`
 // members do not satisfy.
@@ -2180,7 +2334,7 @@ export async function bindAgentTools(
     }
     return [...bound.values()];
 }
-"""
+""".replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED)
 
 
 # ───────── signatures/_roteInference.ts (agent loops) ─────────

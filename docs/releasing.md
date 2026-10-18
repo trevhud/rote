@@ -71,17 +71,30 @@ That's it. No secrets to create, rotate, or leak.
 2. Run the pre-PR checklist from [CLAUDE.md](../CLAUDE.md): `pytest
    tests/`, `ruff check . && ruff format .`, `mypy src/rote`,
    `./scripts/sanity-check.sh`.
-3. Commit, push, and tag:
+3. Check that the published OAuth client metadata document is the one this
+   release expects. `rote mcp login` offers it to servers that support
+   CIMD only when the live copy matches the packaged one, so a mismatch
+   silently costs every user the CIMD path:
+
+   ```sh
+   curl -fsS https://roteskills.com/oauth/rote-cli.json | python3 -m json.tool --sort-keys > /tmp/live.json
+   python3 -m json.tool --sort-keys src/rote/mcp/client_metadata.json | diff - /tmp/live.json
+   ```
+
+   No output means they match. If they differ, publish the repo's
+   document first (rote-cloud `marketing/oauth-client.ts`; see
+   [`docs/oauth/README.md`](oauth/README.md)).
+4. Commit, push, and tag:
 
    ```sh
    git tag v0.2.0
    git push origin v0.2.0
    ```
 
-4. CI takes it from there. The tag must match `rote.__version__`
+5. CI takes it from there. The tag must match `rote.__version__`
    exactly (minus the `v` prefix) or the workflow fails before
    building anything.
-5. If the `pypi` environment has required reviewers, approve the
+6. If the `pypi` environment has required reviewers, approve the
    publish job in the Actions UI once the gates pass.
 
 ## What the wheel ships
@@ -94,3 +107,8 @@ falls back to the repo-root `skills/` layout for editable installs.
 If you move or rename the bundle, update the force-include mapping,
 the resolver, and the smoke test in the release workflow together —
 the workflow's clean-venv smoke test will catch a miss.
+
+The wheel also ships `rote/mcp/client_metadata.json`, the client
+metadata document a login compares the published one against. It is
+byte-identical to `docs/oauth/rote-cli.json`
+(`tests/test_mcp_client.py::test_packaged_client_metadata_is_the_published_document`).

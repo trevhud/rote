@@ -19,9 +19,14 @@ What it does, mirroring the rote CLI's behavior exactly:
 - **Never interactive**: emitted workflows run unattended, so this
   module must never open a browser. Anything that would require a human
   (expired token with no refresh path, a 401 from the server, an OAuth
-  flow wanting authorization) raises :class:`RoteMcpAuthNeeded` instead —
-  the emitted workflow catches it and parks durably until
-  ``rote mcp login <server>`` releases it.
+  flow wanting authorization or a new client registration) raises
+  :class:`RoteMcpAuthNeeded` instead; the emitted workflow catches it and
+  parks durably until ``rote mcp login <server>`` releases it. A server
+  that asks for human input in the middle of a call (a 2026-07-28
+  ``input_required`` result) gets :class:`RoteMcpInputRequired`, a plain
+  failure: no login can answer it, so parking on auth would wait forever.
+- **Protocol era**: fastmcp 4 negotiates MCP 2026-07-28 and falls back to
+  the 2025 handshake for servers that do not speak it.
 """
 
 from __future__ import annotations
@@ -31,9 +36,11 @@ import json
 import os
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, SupportsFloat
+from typing import Any, SupportsFloat, TypeVar
+
+_E = TypeVar("_E", bound=BaseException)
 
 #: The fastmcp range this helper is verified against. It reads MCP SDK v2
 #: field names and builds an httpx2 client, so fastmcp 3.x cannot run it.
@@ -64,6 +71,54 @@ def _token_dir() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "mcp-tokens"
 
 
+def normalize_server_url(url: str) -> str:
+    """``url`` in the form two spellings of one endpoint share.
+
+    Lowercase scheme and host, the scheme's default port dropped, no
+    trailing slash on the path, no fragment. Used to decide whether a
+    stored login belongs to the endpoint about to be called.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    if port is not None and port != {"http": 80, "https": 443}.get(scheme):
+        host = f"{host}:{port}"
+    if parts.username is not None:
+        user = parts.username + (f":{parts.password}" if parts.password is not None else "")
+        host = f"{user}@{host}"
+    return urlunsplit((scheme, host, parts.path.rstrip("/"), parts.query, ""))
+
+
+def stored_for_url(doc: Mapping[str, Any], url: str) -> bool:
+    """Whether a token-file document belongs to ``url``.
+
+    The file is keyed by server name, and a name can be pointed at a new
+    endpoint (`rote mcp add` again, or ROTE_MCP_<SERVER>_URL). A login for
+    the old endpoint must not send its bearer token to the new one. A
+    document that records no URL predates the field and is taken as is.
+    """
+    stored = doc.get("server_url")
+    return not stored or normalize_server_url(str(stored)) == normalize_server_url(url)
+
+
+def _with_bound_issuer(doc: Mapping[str, Any], client_info: Any) -> Any:
+    """``client_info`` with the file's top-level ``issuer`` filled in.
+
+    The SDK binds a client to an authorization server only through
+    ``client_info.issuer``, and treats a missing one as bound to nothing,
+    so it would offer the client to any server the resource names next.
+    """
+    issuer = doc.get("issuer")
+    if isinstance(client_info, dict) and issuer and not client_info.get("issuer"):
+        return {**client_info, "issuer": issuer}
+    return client_info
+
+
 class RoteMcpAuthNeeded(RuntimeError):
     """The MCP server needs a human to (re)authenticate.
 
@@ -89,6 +144,34 @@ class RoteMcpAuthNeeded(RuntimeError):
         return (type(self), (self.server, self.reason))
 
 
+class RoteMcpInputRequired(RuntimeError):
+    """The MCP server asked for human input in the middle of a call.
+
+    A 2026-07-28 server can answer ``tools/call`` with ``input_required``
+    (elicitation, sampling, or roots requests) and expect the client to
+    retry with the answers. An emitted workflow step has no human, so the
+    call fails here with the requests named. It is deliberately not a
+    :class:`RoteMcpAuthNeeded`: a login does not answer it, so the workflow
+    must fail rather than park, and retries cannot help either.
+    """
+
+    def __init__(self, server: str, tool: str | None, requests: dict[str, str]) -> None:
+        asked = ", ".join(f"{key} ({method})" for key, method in sorted(requests.items()))
+        target = f"tool {tool!r} on MCP server {server!r}" if tool else f"MCP server {server!r}"
+        super().__init__(
+            f"{target} asked for input mid-call ({asked}). An unattended workflow "
+            "step has nobody to answer, so the call fails instead of waiting; "
+            "pass the input as tool arguments if the server accepts them"
+        )
+        self.server = server
+        self.tool = tool
+        self.requests = requests
+
+    def __reduce__(self) -> tuple[type, tuple[str, str | None, dict[str, str]]]:
+        # Same reason as RoteMcpAuthNeeded: DBOS pickles step errors.
+        return (type(self), (self.server, self.tool, self.requests))
+
+
 def resolve_url(server: str, pipeline_url: str | None) -> str:
     env_url = os.environ.get(f"ROTE_MCP_{server.upper()}_URL")
     if env_url:
@@ -105,7 +188,7 @@ def resolve_url(server: str, pipeline_url: str | None) -> str:
 
 
 class _TokenKV:
-    """The rote token-file contract (version 1) as the AsyncKeyValue
+    """The rote token-file contract (versions 1 and 2) as the AsyncKeyValue
     shape fastmcp's OAuth storage adapter expects. One instance per
     server; the storage collection selects the field, keys are ignored.
     Keep byte-compatible with rote.mcp.tokens.ServerTokenKV."""
@@ -122,9 +205,11 @@ class _TokenKV:
         self._path = _token_dir() / f"{server}.json"
 
     def _load(self) -> dict[str, Any]:
+        # A file for another endpoint is not this endpoint's login.
         if self._path.is_file():
             with self._path.open("r", encoding="utf-8") as f:
                 loaded: dict[str, Any] = json.load(f)
+            if stored_for_url(loaded, self._server_url):
                 return loaded
         return {
             "server_url": self._server_url,
@@ -132,11 +217,12 @@ class _TokenKV:
             "expires_at": None,
             "client_info": None,
             "token_endpoint": None,
+            "issuer": None,
         }
 
     def _store(self, doc: dict[str, Any]) -> None:
         doc["server_url"] = self._server_url
-        doc.setdefault("version", 1)
+        doc.setdefault("version", 2)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=f".{self._server}-")
         try:
@@ -163,6 +249,8 @@ class _TokenKV:
             expires_at = doc.get("expires_at")
             return None if expires_at is None else {"expires_at": expires_at}
         value = doc.get(field)
+        if field == "client_info":
+            value = _with_bound_issuer(doc, value)
         return value if isinstance(value, dict) else None
 
     async def put(
@@ -228,13 +316,29 @@ class _TokenKV:
         return [(await self.get(k, collection=collection), None) for k in keys]
 
 
-def has_stored_login(server: str) -> bool:
+def _stored_doc(server: str) -> dict[str, Any] | None:
     path = _token_dir() / f"{server}.json"
     if not path.is_file():
-        return False
+        return None
     with path.open("r", encoding="utf-8") as f:
-        doc = json.load(f)
+        doc: dict[str, Any] = json.load(f)
+    return doc
+
+
+def has_stored_login(server: str, url: str) -> bool:
+    """A stored access token for ``server`` that belongs to ``url``."""
+    doc = _stored_doc(server)
+    if doc is None or not stored_for_url(doc, url):
+        return False
     return bool((doc.get("tokens") or {}).get("access_token"))
+
+
+def login_for_another_url(server: str, url: str) -> str | None:
+    """The endpoint the stored login is for, when it is not ``url``."""
+    doc = _stored_doc(server)
+    if doc is None or not (doc.get("tokens") or {}).get("access_token"):
+        return None
+    return None if stored_for_url(doc, url) else str(doc.get("server_url"))
 
 
 def token_is_usable(server: str) -> bool:
@@ -298,12 +402,57 @@ class _HttpStatusWatch:
         )
 
 
+def _stored_token_endpoint(server: str) -> str | None:
+    path = _token_dir() / f"{server}.json"
+    if not path.is_file():
+        return None
+    with path.open("r", encoding="utf-8") as f:
+        endpoint = json.load(f).get("token_endpoint")
+    return str(endpoint) if endpoint else None
+
+
+def retarget_token_request(request: Any, token_endpoint: str) -> Any:
+    """``request`` (an httpx2 token request) sent to ``token_endpoint`` instead.
+
+    The SDK refreshes before it has discovered anything, and with no
+    metadata it guesses ``<resource-origin>/token``. That is wrong for
+    every authorization server that is not the MCP server's own origin
+    root (a path issuer, or another host): the refresh 404s, the provider
+    falls into a full authorization, and an unattended caller parks on a
+    credential that was fine. ``rote mcp login`` records the real token
+    endpoint in the token file; this sends the refresh there.
+    """
+    import httpx2
+
+    headers = {
+        k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")
+    }
+    return httpx2.Request(request.method, token_endpoint, headers=headers, content=request.content)
+
+
+def is_registration_request(provider: Any, outgoing: Any, original: Any) -> bool:
+    """Whether ``outgoing``, yielded by the SDK's auth flow, registers a client.
+
+    The flow sends exactly one POST while it holds no client: the
+    registration. Token requests need a client, and the request being
+    authenticated is the original.
+    """
+    return (
+        outgoing is not original
+        and outgoing.method == "POST"
+        and provider.context.client_info is None
+    )
+
+
 def mcp_client(
     server: str, pipeline_url: str | None, *, http_status: _HttpStatusWatch | None = None
 ) -> Any:
     """A ready fastmcp ``Client`` for ``server`` — durable OAuth when the
     user has run ``rote mcp login``, static registry headers when
     configured, plain client otherwise. Use as an async context manager.
+
+    The client never asks a human for anything: a server that answers a
+    call with ``input_required`` raises :class:`RoteMcpInputRequired`.
 
     Pass ``http_status`` to learn afterwards whether the server's last
     answer was a 401 (see :class:`_HttpStatusWatch`)."""
@@ -314,21 +463,75 @@ def mcp_client(
     entry = _registry_servers().get(server) or {}
     factory = http_status.client_factory if http_status is not None else None
 
-    if has_stored_login(server):
+    class _UnattendedClient(Client[Any]):
+        """fastmcp's client with the multi-round-trip input driver refused.
+
+        fastmcp hands every 2026-07-28 ``input_required`` result to a
+        driver that answers it through the elicitation / sampling / roots
+        callbacks. Here there is nobody to answer, so any result that asks
+        for input fails the call. A result carrying only ``request_state``
+        asks for nothing (the server wants a retry), and still goes through.
+        """
+
+        async def _drive_input_required(self, first: Any, retry: Any) -> Any:
+            _refuse_input(first)
+
+            async def guarded(responses: Any, state: Any) -> Any:
+                result = await retry(responses, state)
+                _refuse_input(result)
+                return result
+
+            return await super()._drive_input_required(first, guarded)
+
+    def _refuse_input(result: Any) -> None:
+        if getattr(result, "result_type", None) != "input_required":
+            return
+        requests = getattr(result, "input_requests", None) or {}
+        if requests:
+            raise RoteMcpInputRequired(
+                server, None, {key: str(req.method) for key, req in requests.items()}
+            )
+
+    if has_stored_login(server, url):
         from fastmcp.client.auth import OAuth
+
+        token_endpoint = _stored_token_endpoint(server)
 
         class _NonInteractiveOAuth(OAuth):
             """OAuth that refreshes silently but never opens a browser.
 
             Workflow code runs unattended; if the provider falls out of
             the refresh path into a full authorization flow (revoked
-            grant, rotated client), surface RoteMcpAuthNeeded so the
-            workflow parks instead of hanging on a browser that will
-            never open.
+            grant, rotated client) or wants to register a new client,
+            surface RoteMcpAuthNeeded so the workflow parks instead of
+            hanging on a browser that will never open, or minting a client
+            nobody asked for.
             """
 
             async def redirect_handler(self, authorization_url: str) -> None:
                 raise RoteMcpAuthNeeded(server, "the server requires an interactive OAuth flow")
+
+            async def _refresh_token(self) -> Any:
+                request = await super()._refresh_token()
+                if self.context.oauth_metadata is None and token_endpoint:
+                    return retarget_token_request(request, token_endpoint)
+                return request
+
+            async def _auth_flow(self, request: Any) -> Any:
+                flow = super()._auth_flow(request)
+                try:
+                    outgoing = await flow.__anext__()
+                    while True:
+                        if is_registration_request(self, outgoing, request):
+                            raise RoteMcpAuthNeeded(
+                                server, "the stored client is no longer valid for this server"
+                            )
+                        response = yield outgoing
+                        outgoing = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+                finally:
+                    await flow.aclose()
 
         oauth = _NonInteractiveOAuth(
             mcp_url=url,
@@ -337,9 +540,11 @@ def mcp_client(
             client_id=entry.get("client_id"),
             client_secret=entry.get("client_secret"),
         )
-        return Client(StreamableHttpTransport(url, auth=oauth, httpx_client_factory=factory))
+        return _UnattendedClient(
+            StreamableHttpTransport(url, auth=oauth, httpx_client_factory=factory)
+        )
     headers = entry.get("headers")
-    return Client(
+    return _UnattendedClient(
         StreamableHttpTransport(
             url,
             headers=dict(headers) if isinstance(headers, dict) and headers else None,
@@ -348,12 +553,13 @@ def mcp_client(
     )
 
 
-def _find_auth_needed(exc: BaseException) -> RoteMcpAuthNeeded | None:
-    """The RoteMcpAuthNeeded hiding in an exception tree, if any.
+def _exception_tree(exc: BaseException) -> Iterator[BaseException]:
+    """Every exception in ``exc``'s tree: groups, causes, and contexts.
 
-    The OAuth redirect handler raises it from inside the transport's
-    task group, so it can arrive wrapped in an ExceptionGroup or as the
-    cause of another error rather than at the top level.
+    The OAuth provider and the input driver raise from inside the
+    transport's task group, so an error can arrive wrapped in an
+    ExceptionGroup or as the cause of another error rather than at the
+    top level.
     """
     seen: set[int] = set()
     stack: list[BaseException] = [exc]
@@ -362,14 +568,38 @@ def _find_auth_needed(exc: BaseException) -> RoteMcpAuthNeeded | None:
         if id(e) in seen:
             continue
         seen.add(id(e))
-        if isinstance(e, RoteMcpAuthNeeded):
-            return e
+        yield e
         if isinstance(e, BaseExceptionGroup):
             stack.extend(e.exceptions)
         if e.__cause__ is not None:
             stack.append(e.__cause__)
         if e.__context__ is not None and not e.__suppress_context__:
             stack.append(e.__context__)
+
+
+def _find_in_tree(exc: BaseException, wanted: type[_E]) -> _E | None:
+    """The first ``wanted`` error in ``exc``'s tree, if any."""
+    return next((e for e in _exception_tree(exc) if isinstance(e, wanted)), None)
+
+
+#: JSON-RPC code a 2026-07-28 server answers with when a tool needs a client
+#: capability (elicitation, sampling, roots) the request did not declare.
+_MISSING_CLIENT_CAPABILITY = -32021
+
+
+def _refused_capabilities(exc: BaseException) -> dict[str, str] | None:
+    """The capabilities a server refused the call for, if that is the error.
+
+    This client declares none, so a server that checks before asking
+    (the TS SDK does) refuses instead of returning ``input_required``.
+    Duck-typed on ``code``/``data``: this module does not import the SDK.
+    """
+    for e in _exception_tree(exc):
+        if getattr(e, "code", None) == _MISSING_CLIENT_CAPABILITY:
+            data = getattr(e, "data", None) or {}
+            required = data.get("requiredCapabilities") if isinstance(data, dict) else None
+            names = sorted(required) if isinstance(required, dict) and required else ["unknown"]
+            return {name: "client capability" for name in names}
     return None
 
 
@@ -427,9 +657,14 @@ async def call_mcp_tool(
     :class:`RoteMcpAuthNeeded` — raised *before* touching the network
     when the stored token is known-dead (expired with no refresh token),
     and mapped from an HTTP 401 when the server rejects whatever
-    credentials we did present.
+    credentials we did present. A server asking for input mid-call
+    becomes :class:`RoteMcpInputRequired`, naming the tool.
     """
-    if has_stored_login(server) and not token_is_usable(server):
+    url = resolve_url(server, pipeline_url)
+    elsewhere = login_for_another_url(server, url)
+    if elsewhere is not None:
+        raise RoteMcpAuthNeeded(server, f"the stored login is for {elsewhere}, not {url}")
+    if has_stored_login(server, url) and not token_is_usable(server):
         raise RoteMcpAuthNeeded(
             server, "the stored access token has expired and there is no refresh token"
         )
@@ -454,7 +689,13 @@ async def call_mcp_tool(
         # lands after a 401 must cancel the step, not park it. (A
         # BaseExceptionGroup only arises when one of its members is a
         # BaseException, so it falls through here too.)
-        auth_needed = _find_auth_needed(exc)
+        input_required = _find_in_tree(exc, RoteMcpInputRequired)
+        if input_required is not None:
+            raise RoteMcpInputRequired(server, tool, input_required.requests) from exc
+        refused = _refused_capabilities(exc)
+        if refused is not None:
+            raise RoteMcpInputRequired(server, tool, refused) from exc
+        auth_needed = _find_in_tree(exc, RoteMcpAuthNeeded)
         if auth_needed is exc:
             raise
         if auth_needed is not None:

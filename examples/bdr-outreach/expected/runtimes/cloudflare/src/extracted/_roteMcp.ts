@@ -10,13 +10,17 @@
  * Access tokens are minted at runtime via the OAuth refresh grant and
  * cached — with rotated refresh tokens — in the ROTE_MCP_TOKENS KV
  * namespace, so every isolate sees the latest credentials.
+ *
+ * Protocol: MCP 2026-07-28 when the server speaks it, else the 2025
+ * handshake (TS SDK v2, versionNegotiation "auto"). A server asking for
+ * input mid-call throws RoteMcpInputRequired, which fails the step.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+    Client,
+    SdkHttpError,
     StreamableHTTPClientTransport,
-    StreamableHTTPError,
-} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+} from "@modelcontextprotocol/client";
 
 export interface RoteMcpEnv {
     ROTE_MCP_TOKENS?: KVNamespace;
@@ -52,6 +56,55 @@ export function isRoteMcpAuthNeeded(err: unknown): boolean {
         const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
         if (e.name === "RoteMcpAuthNeeded") return true;
         if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpAuthNeeded(sub))) {
+            return true;
+        }
+        node = e.cause;
+    }
+    return false;
+}
+
+/**
+ * The MCP server asked for human input in the middle of a call.
+ *
+ * A 2026-07-28 server can answer a tool call with `input_required`
+ * (elicitation, sampling, or roots), or refuse it because the client did
+ * not declare the capability the tool needs (-32021). A workflow step has
+ * nobody to answer, so the call fails with this error. It is deliberately
+ * not RoteMcpAuthNeeded: a login cannot answer it, so the workflow fails
+ * instead of parking, and retries skip it too.
+ *
+ * Detect with isRoteMcpInputRequired(), never `instanceof` (same reason as
+ * RoteMcpAuthNeeded).
+ */
+export class RoteMcpInputRequired extends Error {
+    readonly server: string;
+    readonly tool: string;
+    readonly requests: Record<string, string>;
+
+    constructor(server: string, tool: string, requests: Record<string, string>) {
+        const asked = Object.keys(requests)
+            .sort()
+            .map((key) => `${key} (${requests[key]})`)
+            .join(", ");
+        super(
+            `tool '${tool}' on MCP server '${server}' asked for input mid-call (${asked}). ` +
+                "An unattended workflow step has nobody to answer, so the call fails " +
+                "instead of waiting; pass the input as tool arguments if the server accepts them",
+        );
+        this.name = "RoteMcpInputRequired";
+        this.server = server;
+        this.tool = tool;
+        this.requests = requests;
+    }
+}
+
+/** True if a RoteMcpInputRequired hides anywhere in the error tree. */
+export function isRoteMcpInputRequired(err: unknown): boolean {
+    let node: unknown = err;
+    for (let depth = 0; node != null && depth < 16; depth++) {
+        const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
+        if (e.name === "RoteMcpInputRequired") return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpInputRequired(sub))) {
             return true;
         }
         node = e.cause;
@@ -189,7 +242,10 @@ async function withMcpSession<T>(
     const url = resolveUrl(env, server, pipelineUrl);
 
     const attempt = async (token: string) => {
-        const client = new Client({ name: "rote-pipeline", version: "1.0.0" });
+        const client = new Client(
+            { name: "rote-pipeline", version: "1.0.0" },
+            { versionNegotiation: { mode: "auto" } },
+        );
         const transport = new StreamableHTTPClientTransport(new URL(url), {
             requestInit: { headers: { Authorization: `Bearer ${token}` } },
         });
@@ -251,6 +307,46 @@ async function unwrapFastmcpResult(
     return structured;
 }
 
+
+/** The input the server asked for, if `err` is the SDK reporting that a
+ * call needs a human: either the client could not fulfil an embedded
+ * `input_required` request (no handler, by design), or the server refused
+ * because no capability was declared (-32021). */
+function requestedInput(err: unknown): Record<string, string> | null {
+    const e = err as { code?: unknown; data?: Record<string, unknown> } | null;
+    const data = e?.data ?? {};
+    if (
+        e?.code === "CAPABILITY_NOT_SUPPORTED" &&
+        typeof data.key === "string" &&
+        typeof data.method === "string"
+    ) {
+        return { [data.key]: data.method };
+    }
+    if (e?.code === -32021) {
+        const required = (data.requiredCapabilities ?? {}) as Record<string, unknown>;
+        const names = Object.keys(required);
+        return Object.fromEntries(
+            (names.length > 0 ? names : ["unknown"]).map((name) => [name, "client capability"]),
+        );
+    }
+    return null;
+}
+
+async function callToolUnattended(
+    client: Client,
+    server: string,
+    tool: string,
+    args: Record<string, unknown>,
+) {
+    try {
+        return await client.callTool({ name: tool, arguments: args });
+    } catch (err) {
+        const requests = requestedInput(err);
+        if (requests) throw new RoteMcpInputRequired(server, tool, requests);
+        throw err;
+    }
+}
+
 /**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
@@ -265,7 +361,7 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<JsonValue> {
     return withMcpSession(env, server, pipelineUrl, async (client) => {
-        const result = await client.callTool({ name: tool, arguments: args });
+        const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
                 `MCP tool '${tool}' on '${server}' returned an error: ` +
@@ -408,7 +504,8 @@ export async function bindAgentTools(
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {
-    return err instanceof StreamableHTTPError
-        ? err.code === 401
+    // See the Node helper: SDK v2 carries the HTTP status on SdkHttpError.
+    return err instanceof SdkHttpError
+        ? err.status === 401
         : /\b401\b|[Uu]nauthorized/.test(String(err));
 }

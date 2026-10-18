@@ -104,7 +104,8 @@ from rote.adapters._common import (
 from rote.adapters._ts_common import (
     ANTHROPIC_SDK_NPM_VERSION,
     FAN_OUT_LIST_HELPER_TS,
-    MCP_SDK_NPM_VERSION,
+    MCP_CLIENT_NPM_PACKAGE,
+    MCP_CLIENT_NPM_VERSION,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
@@ -561,9 +562,10 @@ const AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600; // 30 days
 // the observer already released.
 const parkCounts = new Map<string, number>();
 
-/** Auth failures skip the retry budget and park instead. */
+/** Auth failures skip the retry budget and park instead; a server asking
+ * for input mid-call fails at once (no retry answers it). */
 function mcpShouldRetry(error: unknown): boolean {
-    return !isRoteMcpAuthNeeded(error);
+    return !isRoteMcpAuthNeeded(error) && !isRoteMcpInputRequired(error);
 }
 
 /** Suspend the workflow until `rote mcp login <server>` succeeds.
@@ -680,7 +682,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
 
     imports = module_imports(pipeline)
     if mcp_backed:
-        imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
+        imports += (
+            '\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";'
+        )
 
     helper_blocks: list[str] = []
     if pipeline.nodes_by_kind(NodeKind.LLM_JUDGE):
@@ -791,7 +795,7 @@ def emit_package_json(
     if "openai" in clients:
         dependencies["openai"] = "^6.45.0"
     if with_mcp:
-        dependencies["@modelcontextprotocol/sdk"] = MCP_SDK_NPM_VERSION
+        dependencies[MCP_CLIENT_NPM_PACKAGE] = MCP_CLIENT_NPM_VERSION
     obj = {
         "name": pipeline.name,
         "version": pipeline.version,

@@ -61,7 +61,8 @@ def test_node_ts_adapters_emit_working_mcp_calls(runtime: str, tmp_path: Path) -
     assert "throw new Error" in unbound  # binding-less nodes still stub
 
     package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
-    assert "@modelcontextprotocol/sdk" in package["dependencies"]
+    assert package["dependencies"]["@modelcontextprotocol/client"] == "^2.3.1"
+    assert "@modelcontextprotocol/sdk" not in package["dependencies"]  # v1 is legacy-only
 
 
 @pytest.mark.parametrize("runtime", ["dbos-ts", "inngest"])
@@ -71,7 +72,7 @@ def test_api_backend_keeps_stubs_and_skips_the_helper(runtime: str, tmp_path: Pa
     assert "throw new Error" in bound
     assert not (tmp_path / "src" / "extracted" / "_roteMcp.ts").exists()
     package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
-    assert "@modelcontextprotocol/sdk" not in package["dependencies"]
+    assert "@modelcontextprotocol/client" not in package["dependencies"]
 
 
 @pytest.mark.parametrize("runtime", ["dbos-ts", "inngest"])
@@ -94,7 +95,7 @@ def test_helper_not_emitted_without_bindings(runtime: str, tmp_path: Path) -> No
     get_adapter(runtime).emit(pipeline, tmp_path)
     assert not (tmp_path / "src" / "extracted" / "_roteMcp.ts").exists()
     package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
-    assert "@modelcontextprotocol/sdk" not in package["dependencies"]
+    assert "@modelcontextprotocol/client" not in package["dependencies"]
 
 
 @pytest.mark.parametrize("runtime", ["dbos-ts", "inngest", "cloudflare"])
@@ -145,7 +146,8 @@ def test_cloudflare_provisioning_surfaces(tmp_path: Path) -> None:
     dev_vars = (tmp_path / ".dev.vars.example").read_text(encoding="utf-8")
     assert "ROTE_MCP_VENDOR_TOKEN_ENDPOINT=" in dev_vars
     package = _json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
-    assert "@modelcontextprotocol/sdk" in package["dependencies"]
+    assert package["dependencies"]["@modelcontextprotocol/client"] == "^2.3.1"
+    assert "@modelcontextprotocol/sdk" not in package["dependencies"]  # v1 is legacy-only
 
 
 def test_cloudflare_api_backend_keeps_stubs(tmp_path: Path) -> None:
@@ -205,8 +207,13 @@ def test_dbos_ts_parks_on_auth(tmp_path: Path) -> None:
     Python CLI can read it."""
     get_adapter("dbos-ts").emit(_bound_pipeline_with_retry_and_parallel(), tmp_path)
     main = (tmp_path / "src" / "main.ts").read_text(encoding="utf-8")
-    assert 'import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";' in main
+    assert (
+        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";'
+        in main
+    )
     assert "runWithAuthPark(" in main
+    # Neither auth nor a mid-call input request is fixed by a retry.
+    assert "return !isRoteMcpAuthNeeded(error) && !isRoteMcpInputRequired(error);" in main
     assert "`rote:auth:${server}`" in main
     assert '{ serializationType: "portable" }' in main
     # Retried MCP steps exempt auth failures from the retry budget.
@@ -242,8 +249,12 @@ def test_inngest_parks_on_auth(tmp_path: Path) -> None:
     parked run — Inngest events fan out, so no discovery is needed."""
     get_adapter("inngest").emit(_bound_pipeline(), tmp_path)
     src = (tmp_path / "src" / "inngest" / "pipeline.ts").read_text(encoding="utf-8")
-    assert 'import { isRoteMcpAuthNeeded } from "../extracted/_roteMcp";' in src
+    assert (
+        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "../extracted/_roteMcp";'
+        in src
+    )
     assert 'runParkable(step, "pull_data", "ts_mcp_demo/rote.auth.vendor", "vendor"' in src
+    assert "if (isRoteMcpAuthNeeded(err) || isRoteMcpInputRequired(err)) {" in src
     assert "new NonRetriableError(" in src
     assert "-auth-wait-" in src  # fresh waitForEvent id per park
     assert 'timeout: "30d"' in src
@@ -269,9 +280,13 @@ def test_cloudflare_parks_on_auth(tmp_path: Path) -> None:
     get_adapter("cloudflare").emit(_bound_pipeline(), tmp_path)
     src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
-    assert 'import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";' in src
+    assert (
+        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";' in src
+    )
     assert 'const pull_data_event = "rote_auth_vendor";' in src
     assert '{ type: pull_data_event, timeout: "30 days" }' in src
+    assert "throw (isRoteMcpAuthNeeded(err) ||\n" in src
+    assert "isRoteMcpInputRequired(err))\n" in src
     assert "auth retry" in src  # fresh step names per attempt
     assert "function stepNeedsAuth" in src
     # Binding-less nodes keep the plain step.do.
@@ -368,7 +383,7 @@ def test_cloudflare_binding_mode_env_and_config_surfaces(tmp_path: Path) -> None
     dev_vars = (tmp_path / ".dev.vars.example").read_text(encoding="utf-8")
     assert "ROTE_MCP_VENDOR" not in dev_vars
     package = json.loads((tmp_path / "package.json").read_text(encoding="utf-8"))
-    assert "@modelcontextprotocol/sdk" not in package["dependencies"]
+    assert "@modelcontextprotocol/client" not in package["dependencies"]
     # The manifest's requirements key is mode-independent.
     manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mcp_servers"] == {"vendor": ["pull_data"]}

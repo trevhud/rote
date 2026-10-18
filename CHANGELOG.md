@@ -41,6 +41,31 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   only on the pipeline side) and a snapshot of a real `rote compile` of
   the skill under `runs/`, with its differences from the hand-written IR
   noted.
+- **`rote mcp login` follows the MCP 2026-07-28 registration order.** A
+  pre-registered client from the registry wins, then rote's Client ID
+  Metadata Document (client_id `https://roteskills.com/oauth/rote-cli.json`,
+  source in `docs/oauth/rote-cli.json`) when the authorization server
+  advertises `client_id_metadata_document_supported`, then dynamic client
+  registration. A server that offers neither (GitHub's shape) now fails
+  with an error naming `rote mcp add --client-id`, instead of a POST to a
+  guessed `<resource-origin>/register`. The login binds the first free
+  port of a published set (33418 to 33421), because a CIMD server matches
+  redirect URIs exactly. `ROTE_MCP_CLIENT_METADATA_URL` overrides the
+  document URL; empty turns CIMD off. The document is offered only after
+  a fetch shows it published and identical to the packaged copy; until
+  then the login uses DCR as before, with a one-line notice.
+- `rote mcp add --client-id` records the issuer the client belongs to
+  (discovered from the server's protected-resource metadata, or
+  `--issuer`), so a pre-registered client is bound from its first login.
+- **Token file contract v2** adds `issuer`, the authorization server the
+  credentials belong to. Readers accept v1. A pre-registered client is
+  bound to the issuer it logged in with, and a later login against a
+  different authorization server stops before the browser opens.
+- **`RoteMcpInputRequired`.** A server that asks for input in the middle
+  of a call (a 2026-07-28 `input_required` result, or `-32021` for a
+  capability the client did not declare) fails the step with the server,
+  tool, and requested inputs named, on all four MCP runtimes. It is not
+  an auth failure: it never parks, and it skips the retry budget.
 
 ### Fixed
 - Running the test suite no longer rewrites committed files. Five
@@ -57,6 +82,26 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   comments. Agent-written stubs that are class methods (a body of only
   `raise NotImplementedError`) are now detected; `@abstractmethod`s are
   not stubs.
+- **Token refresh reaches authorization servers off the MCP server's
+  origin.** Before discovery the SDK refreshes at
+  `<resource-origin>/token`, which 404s for a path issuer or another host,
+  so the provider fell into a full authorization and an emitted workflow
+  parked on a credential that was fine. The CLI and the emitted Python
+  helper now send the refresh to the stored `token_endpoint`.
+- **A stored login is sent only to the endpoint it was made for.** Token
+  files are keyed by server name, so after `rote mcp add <name>
+  <new-url>` or a `ROTE_MCP_<SERVER>_URL` override the old endpoint's
+  bearer token went to the new host. A file for another endpoint is now
+  treated as absent: the CLI refuses with a `rote mcp login` hint, and
+  the emitted Python and Node helpers park the run.
+- **Stored clients are bound to their authorization server.** The SDK
+  binds only through `client_info.issuer`, so a client stored without one
+  matched every issuer and could be offered to a repointed server. The
+  stores now fill it from the file's `issuer`, login writes both, and an
+  interactive login re-registers a client that has no issuer at all.
+- The emitted Python helper never registers a client from workflow code;
+  a server that wants a new registration parks the run like any other
+  dead credential.
 - **Park-on-auth works again under fastmcp 4.** A 401 now reaches the
   caller as a status-free `MCPError`, so the emitted MCP helper's
   `httpx.HTTPStatusError` check never matched and an expired credential
@@ -177,6 +222,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   of guessing. `rote run`'s judge-usage line counts cache tokens as input.
 
 ### Changed
+- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
+  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
+  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
+  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
+  server at all (`-32022`), and v2's default `legacy` mode behaves the
+  same, so the mode is set explicitly. A 401 is now read from
+  `SdkHttpError.status`. Proven against legacy stateless, legacy
+  sessionful, dual-era and modern-only TS SDK servers, from both helper
+  languages, in `tests/test_mcp_era_matrix_e2e.py`.
+- `rote mcp headers` (and any refresh outside `login`) never opens a
+  browser or registers a client: it refreshes or fails with the login
+  hint.
 - **fastmcp 4.** The `mcp` and `serve` extras now require
   `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
   `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,

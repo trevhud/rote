@@ -26,6 +26,7 @@ from rote.mcp import (
     read_token_file,
     resolve_server_url,
     save_registry,
+    token_file,
     write_token_file,
 )
 from rote.mcp.tokens import ServerTokenKV
@@ -83,11 +84,29 @@ def test_token_file_round_trip_and_permissions() -> None:
     path = write_token_file("slack", _doc(expires_at=None))
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     doc = read_token_file("slack")
-    assert doc is not None and doc["version"] == 1
+    assert doc is not None and doc["version"] == 2
     assert doc["tokens"]["access_token"] == "tok-123"
     assert clear_token_file("slack") is True
     assert read_token_file("slack") is None
     assert clear_token_file("slack") is False
+
+
+def test_a_version_1_token_file_still_reads_and_is_rewritten_as_version_2() -> None:
+    """Contract v2 only adds ``issuer``. A file a pre-v2 CLI wrote must keep
+    working, and the next write must stamp the current version rather than
+    carry the old one forward (``{"version": 1, **doc}`` would)."""
+    v1 = token_file("slack")
+    v1.parent.mkdir(parents=True, exist_ok=True)
+    v1.write_text(json.dumps({"version": 1, **_doc(expires_at=None)}), encoding="utf-8")
+    doc = read_token_file("slack")
+    assert doc is not None and doc["version"] == 1
+    assert access_token_state(doc) == ("tok-123", True)
+    assert doc.get("issuer") is None
+
+    write_token_file("slack", doc)
+    rewritten = read_token_file("slack")
+    assert rewritten is not None and rewritten["version"] == 2
+    assert rewritten["tokens"] == doc["tokens"]
 
 
 def test_access_token_state() -> None:
@@ -131,7 +150,7 @@ def test_server_token_kv_speaks_the_adapter_collections() -> None:
     assert doc["client_info"] == {"client_id": "c1"}
     assert doc["expires_at"] == 1_800_000_000.0
     assert doc["tokens"] is None  # deleted above
-    assert doc["version"] == 1
+    assert doc["version"] == 2
     with pytest.raises(ValueError, match="unexpected OAuth storage collection"):
         asyncio.run(kv.get("x", collection="bogus"))
 
@@ -295,7 +314,7 @@ def test_cli_mcp_login_unknown_server(capsys: pytest.CaptureFixture[str]) -> Non
 def test_cli_mcp_list_shows_expired_refreshable(capsys: pytest.CaptureFixture[str]) -> None:
     import time
 
-    assert cli_main(["mcp", "add", "slack", "https://mcp.example/slack"]) == 0
+    assert cli_main(["mcp", "add", "slack", "https://mcp.example.com/slack"]) == 0
     write_token_file("slack", _doc(expires_at=time.time() - 10))
     capsys.readouterr()
     assert cli_main(["mcp", "list", "--json"]) == 0
@@ -712,3 +731,192 @@ def test_oauth_client_never_opens_a_browser(monkeypatch: pytest.MonkeyPatch) -> 
     redirect = client.transport.auth.redirect_handler
     with pytest.raises(helper.RoteMcpAuthNeeded, match="interactive"):
         asyncio.run(redirect("https://auth.example.com/authorize?x=1"))
+
+
+# ───────── the CIMD document and the login's registration rules ─────────
+
+_CIMD_DOCUMENT = Path(__file__).resolve().parent.parent / "docs" / "oauth" / "rote-cli.json"
+
+
+def test_cimd_document_matches_what_the_login_offers() -> None:
+    """The published document and the CLI must agree byte for byte on the
+    client id and the redirect URIs. An AS compares both by exact string
+    match, so a drift here fails every CIMD login, on servers we cannot
+    test against before publishing."""
+    from rote.mcp.auth import (
+        CALLBACK_PORTS,
+        DEFAULT_CLIENT_METADATA_URL,
+        callback_redirect_uris,
+    )
+
+    doc = json.loads(_CIMD_DOCUMENT.read_text(encoding="utf-8"))
+    assert doc["client_id"] == DEFAULT_CLIENT_METADATA_URL
+    assert DEFAULT_CLIENT_METADATA_URL == "https://roteskills.com/oauth/rote-cli.json"
+    assert doc["redirect_uris"] == callback_redirect_uris()
+    assert {f"http://localhost:{p}/callback" for p in CALLBACK_PORTS} <= set(doc["redirect_uris"])
+    # A CLI is a public client; the CIMD draft forbids shared-secret methods.
+    assert doc["token_endpoint_auth_method"] == "none"
+    assert set(doc["grant_types"]) == {"authorization_code", "refresh_token"}
+    assert doc["response_types"] == ["code"]
+    assert doc["client_name"]
+
+
+def test_client_metadata_url_override_and_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.mcp.auth import (
+        CLIENT_METADATA_URL_ENV_VAR,
+        DEFAULT_CLIENT_METADATA_URL,
+        client_metadata_url,
+    )
+
+    monkeypatch.delenv(CLIENT_METADATA_URL_ENV_VAR, raising=False)
+    assert client_metadata_url() == DEFAULT_CLIENT_METADATA_URL
+    monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, "https://127.0.0.1:9/oauth/x.json")
+    assert client_metadata_url() == "https://127.0.0.1:9/oauth/x.json"
+    monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, "")
+    assert client_metadata_url() is None
+
+
+def test_login_errors_when_every_published_callback_port_is_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.mcp import auth
+
+    monkeypatch.setattr(auth, "_port_is_free", lambda port: False)
+    with pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"):
+        auth.select_callback_port()
+    taken = {auth.CALLBACK_PORTS[0], auth.CALLBACK_PORTS[1]}
+    monkeypatch.setattr(auth, "_port_is_free", lambda port: port not in taken)
+    assert auth.select_callback_port() == auth.CALLBACK_PORTS[2]
+
+
+def test_input_required_error_pickles_and_is_not_an_auth_error() -> None:
+    """DBOS pickles step errors; the emitted workflow must still see the
+    class (to fail instead of parking) after the round trip."""
+    import pickle
+
+    from rote.mcp._runtime_helper import RoteMcpAuthNeeded, RoteMcpInputRequired
+
+    err = RoteMcpInputRequired("vendor", "lookup", {"approval": "elicitation/create"})
+    back = pickle.loads(pickle.dumps(err))
+    assert isinstance(back, RoteMcpInputRequired)
+    assert not isinstance(back, RoteMcpAuthNeeded)
+    assert (back.server, back.tool, back.requests) == ("vendor", "lookup", err.requests)
+    assert "approval (elicitation/create)" in str(back)
+    assert "rote mcp login" not in str(back)
+
+
+def test_packaged_client_metadata_is_the_published_document() -> None:
+    """Installed CLIs compare the live document with the packaged copy, so
+    the copy in the wheel and docs/oauth/rote-cli.json must be one file."""
+    packaged = Path(__file__).resolve().parent.parent / "src" / "rote" / "mcp"
+    assert (packaged / "client_metadata.json").read_bytes() == _CIMD_DOCUMENT.read_bytes()
+    from rote.mcp.auth import packaged_client_metadata
+
+    assert packaged_client_metadata() == json.loads(_CIMD_DOCUMENT.read_text(encoding="utf-8"))
+
+
+# ───────── a login belongs to one endpoint ─────────
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("https://mcp.example.com/mcp", "https://mcp.example.com/mcp/", True),
+        ("https://MCP.Example.com:443/mcp", "https://mcp.example.com/mcp", True),
+        ("http://127.0.0.1:80/mcp", "http://127.0.0.1/mcp", True),
+        ("https://mcp.example.com/mcp", "https://mcp.example.com:8443/mcp", False),
+        ("https://mcp.example.com/mcp", "https://other.example.com/mcp", False),
+        ("https://mcp.example.com/mcp", "http://mcp.example.com/mcp", False),
+        ("https://mcp.example.com/v1/mcp", "https://mcp.example.com/v2/mcp", False),
+    ],
+)
+def test_normalize_server_url(a: str, b: str, same: bool) -> None:
+    from rote.mcp._runtime_helper import normalize_server_url
+
+    assert (normalize_server_url(a) == normalize_server_url(b)) is same
+
+
+def _login_for(url: str) -> dict[str, Any]:
+    return {
+        **_doc(expires_at=None),
+        "server_url": url,
+        "issuer": "https://auth.example.com",
+    }
+
+
+def test_a_login_for_another_endpoint_is_not_read_as_this_ones() -> None:
+    """The file is keyed by name; after `rote mcp add slack <new-url>` the
+    old endpoint's bearer token must not reach the new host."""
+    from rote.mcp import _runtime_helper
+
+    write_token_file("slack", _login_for("https://old.example.com/mcp"))
+
+    async def read(kv: Any) -> Any:
+        return await kv.get("k", collection="mcp-oauth-token")
+
+    new = "https://new.example.com/mcp"
+    assert asyncio.run(read(ServerTokenKV("slack", new))) is None
+    assert asyncio.run(read(_runtime_helper._TokenKV("slack", new))) is None
+    assert asyncio.run(read(ServerTokenKV("slack", "https://old.example.com/mcp/"))) is not None
+    assert not _runtime_helper.has_stored_login("slack", new)
+    assert _runtime_helper.login_for_another_url("slack", new) == "https://old.example.com/mcp"
+
+
+def test_the_cli_refuses_to_mint_headers_for_a_repointed_server() -> None:
+    from rote.mcp import McpAuthError
+    from rote.mcp.auth import fresh_access_token
+
+    write_token_file("slack", _login_for("https://old.example.com/mcp"))
+    config = McpServerConfig(url="https://new.example.com/mcp")
+    with pytest.raises(McpAuthError, match=r"is for https://old.example.com/mcp.*rote mcp login"):
+        asyncio.run(fresh_access_token("slack", config))
+    from rote.mcp import auth_status
+
+    assert auth_status(config, read_token_file("slack")) == "not authenticated"
+
+
+def test_the_emitted_helper_parks_instead_of_sending_another_endpoints_token() -> None:
+    from rote.mcp import _runtime_helper
+
+    write_token_file("slack", _login_for("https://old.example.com/mcp"))
+    # Port 9 refuses connections: reaching the network would be a different error.
+    with pytest.raises(_runtime_helper.RoteMcpAuthNeeded, match="stored login is for"):
+        asyncio.run(_runtime_helper.call_mcp_tool("slack", "http://127.0.0.1:9/mcp", "t", {}))
+
+
+def test_a_stored_client_without_an_issuer_takes_the_files() -> None:
+    """The SDK reads a binding only from client_info.issuer and treats a
+    missing one as bound to nothing."""
+    from rote.mcp import _runtime_helper
+
+    url = "https://mcp.example.com/mcp"
+    write_token_file("slack", _login_for(url))
+
+    async def client_info(kv: Any) -> Any:
+        return await kv.get("k", collection="mcp-oauth-client-info")
+
+    for kv in (ServerTokenKV("slack", url), _runtime_helper._TokenKV("slack", url)):
+        assert asyncio.run(client_info(kv)) == {
+            "client_id": "abc",
+            "issuer": "https://auth.example.com",
+        }
+
+
+def test_mcp_add_issuer_needs_a_client_id_and_is_stored() -> None:
+    assert cli_main(["mcp", "add", "gh", "https://h.example/mcp", "--issuer", "https://x"]) == 2
+    assert (
+        cli_main(
+            [
+                "mcp",
+                "add",
+                "gh",
+                "https://h.example/mcp",
+                "--client-id",
+                "app",
+                "--issuer",
+                "https://github.com/login/oauth",
+            ]
+        )
+        == 0
+    )
+    assert load_registry().servers["gh"].issuer == "https://github.com/login/oauth"
