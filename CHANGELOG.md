@@ -9,6 +9,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-18
+
 ### Added
 - `rote compile --no-mcp` skips live MCP discovery and calls for local
   `api` and `openai-api` compilation. `rote analyze` accepts the same
@@ -772,7 +774,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/trevhud/rote/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/trevhud/rote/compare/v0.11.0...v0.12.0

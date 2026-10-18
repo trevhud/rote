@@ -7,8 +7,8 @@ gate a build job (sdist + wheel + `twine check` + a clean-venv wheel
 smoke test), and a separate publish job uploads to PyPI via Trusted
 Publishing (OIDC). No API tokens are stored anywhere.
 
-`rote-cli` is **already published** — 0.1.0 through 0.9.0 are live on
-[PyPI](https://pypi.org/project/rote-cli/). The one-time setup below is
+`rote-cli` is **already published**. The release history is on
+[PyPI](https://pypi.org/project/rote-cli/#history). The one-time setup below is
 kept for the record (and in case the trusted publisher ever needs to be
 re-established); day-to-day releases only need the "Cutting a release"
 checklist.
@@ -60,7 +60,8 @@ That's it. No secrets to create, rotate, or leak.
 ## Cutting a release
 
 1. Bump the version in `src/rote/__init__.py` — the single source;
-   `pyproject.toml` reads it via `[tool.hatch.version]`. Bump the two
+   `pyproject.toml` reads it via `[tool.hatch.version]`. Bump `CITATION.cff`
+   to match (`tests/test_citation.py` checks it). Bump the two
    Claude Code plugin manifests to match: `plugin/.claude-plugin/plugin.json`
    and `.claude-plugin/marketplace.json` (they carry their own `version`
    and back the "install from Claude Code" path). `tests/test_plugin_manifest.py`
