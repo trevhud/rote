@@ -4,7 +4,7 @@
     "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
     "activities.py": "349755c319bac58b5040db743010b2116a119c9d0776ccfe5f2987e260afb606",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "52d800912b61bbead97a7a5cd609e032a3ddee5ba8c47613406ddd5957ecb97f",
+    "signatures/_rote_inference.py": "aa67ea177f4abec5f9e4ab3bf593dd90591e756c5362669befc75be2184b0b03",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",
     "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
     "workflow.py": "56ca1bfcf70e13f54a432175c160a9a14c884f76f2b9ea78f1ee3a8345c1c457"

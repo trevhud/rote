@@ -9,6 +9,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- Emitted Python agent loops report the turns that actually ran. The
+  vendor-SDK lane returned `max_iterations` as `iterations`, so every loop
+  looked saturated, and it logged only the final request's tokens to
+  `$ROTE_USAGE_LOG`. It now counts the assistant messages the tool runner
+  produced (the TS twin's semantics) and sums usage over every turn. The
+  `claude -p` lane reports `None` instead of `0` when the envelope carries
+  no `num_turns`.
+
 ## [0.14.0] - 2026-10-18
 
 ### Added
