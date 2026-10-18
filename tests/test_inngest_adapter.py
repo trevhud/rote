@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from pathlib import Path
 
 import pytest
@@ -46,7 +45,6 @@ from tests._helpers import assert_no_mcp_in_ts
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
-BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes" / "inngest"
 
 
 # ───────── Fixtures ─────────
@@ -58,12 +56,16 @@ def adapter() -> InngestAdapter:
 
 
 @pytest.fixture(scope="module")
-def emit_result(adapter: InngestAdapter, bdr_pipeline: Pipeline) -> dict[str, Path]:
-    """Emit the BDR pipeline once per module into the committed snapshot dir."""
-    if BDR_EMIT_DIR.exists():
-        # Remove stale files so renames produce a clean diff.
-        shutil.rmtree(BDR_EMIT_DIR)
-    return adapter.emit(bdr_pipeline, BDR_EMIT_DIR)
+def emit_result(
+    adapter: InngestAdapter, bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
+) -> dict[str, Path]:
+    """Emit the BDR pipeline once per module, into a temp dir.
+
+    Never into the committed snapshot: tests/test_committed_snapshots.py
+    diffs a fresh emission against it, and the conftest guard fails the
+    session if anything under examples/ changes.
+    """
+    return adapter.emit(bdr_pipeline, tmp_path_factory.mktemp("inngest-bdr"))
 
 
 @pytest.fixture(scope="module")

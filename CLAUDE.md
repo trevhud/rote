@@ -1255,6 +1255,22 @@ place; confirm the claim empirically before writing one off, since
 
 ---
 
+### The suite never writes into examples/
+
+The committed runtime snapshots under
+`examples/bdr-outreach/expected/runtimes/<runtime>/` are compared, not
+regenerated: adapter suites emit into `tmp_path`, and
+`tests/test_committed_snapshots.py` checks that a fresh emission (with
+the same `extracted/` sources `rote emit` reads) reproduces each one
+byte for byte. The suites used to emit straight into those dirs, so every
+pytest run rewrote committed files, and without the example's sources it
+replaced the real implementations with stubs. That dirtied the
+merge-queue worktree and blocked merges. A session hook in
+`tests/conftest.py` now fails the run if anything under `examples/`
+changed (`__pycache__` and `node_modules` excepted). When an adapter
+change is intended, regenerate with the `rote emit` command the failing
+snapshot test prints, and commit the result.
+
 ## Workflow expectations
 
 ### Running tests
