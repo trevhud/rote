@@ -1259,8 +1259,12 @@ compile runs with `cwd=work_dir`.
 
 ### The compiler's `claude -p` child is isolated from the user's setup
 
-`--setting-sources ""`, `--strict-mcp-config`, `--tools <allowlist>`, and
-`cwd=work_dir`. Each one was found by a real compile: a user's Vale
+`rote.inference.CLI_CONTEXT_ISOLATION_FLAGS` (`--setting-sources ""`,
+`--strict-mcp-config`, `--settings '{"autoMemoryEnabled": false}'`), then
+`--tools <allowlist>`, and `cwd=work_dir`. The context flags are the SAME
+tuple the emitted judge and agent-loop lanes use (they add `--tools ""`
+instead); the driver imports it from the helper, like
+`build_subscription_env`, so there is one copy. Each one was found by a real compile: a user's Vale
 prose hook (em dashes in `compile-report.md`) cost 12 of 48 turns in
 one-line edits. The same user settings granted Bash despite the
 allowlist. And run from this repo, the agent globbed into

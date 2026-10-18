@@ -114,8 +114,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 - The `claude` compiler driver runs isolated from the invoking user's
-  Claude Code setup: `--setting-sources ""`, `--strict-mcp-config`,
-  `--tools` set to the allowlist, and the work dir as its cwd. A user's
+  Claude Code setup: the same context flags as the emitted judge lane
+  (`--setting-sources ""`, `--strict-mcp-config`, auto memory off, now
+  one shared definition), `--tools` set to its allowlist, and the work
+  dir as its cwd. A user's
   prose-lint hook had cost a real compile 12 of its 48 turns in one-line
   report edits, the same settings granted Bash, and run from a repo the
   agent read that repo's earlier compiled output of the same skill.

@@ -968,7 +968,16 @@ async def test_child_is_isolated_from_user_settings_and_the_callers_cwd(
     assert args[args.index("--tools") + 1] == DEFAULT_ALLOWED_TOOLS
     assert args[args.index("--setting-sources") + 1] == ""
     assert "--strict-mcp-config" in args
+    assert json.loads(args[args.index("--settings") + 1]) == {"autoMemoryEnabled": False}
     assert "Bash" not in args[args.index("--tools") + 1]
+    # One definition with the emitted judge lane, not a copy that drifts.
+    from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS
+
+    start = args.index(CLI_CONTEXT_ISOLATION_FLAGS[0])
+    assert tuple(args[start : start + len(CLI_CONTEXT_ISOLATION_FLAGS)]) == (
+        CLI_CONTEXT_ISOLATION_FLAGS
+    )
+    assert args.count("--tools") == 1
     assert recorder.calls[0]["kwargs"]["cwd"] == work_dir.resolve()
 
 
