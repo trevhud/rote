@@ -41,7 +41,11 @@ UPSERT_BATCH_SIZE: int = 100
 ADD_TO_LIST_BATCH_SIZE: int = 250
 
 
-async def batch_upsert_contacts(contacts: list[VettedContact]) -> list[HubSpotContact]:
+async def batch_upsert_contacts(
+    contacts: list[VettedContact],
+    *,
+    batch_size: int,
+) -> list[HubSpotContact]:
     """Upsert contacts to HubSpot in batches of 100.
 
     Creates new contacts where the email is not yet in HubSpot, updates
@@ -49,6 +53,7 @@ async def batch_upsert_contacts(contacts: list[VettedContact]) -> list[HubSpotCo
 
     Args:
         contacts: Vetted contacts (any size — internal batching applies).
+        batch_size: The node's ``batch_size`` constant, passed by the step.
 
     Returns:
         HubSpotContact objects with HubSpot IDs assigned.
@@ -66,13 +71,17 @@ async def batch_upsert_contacts(contacts: list[VettedContact]) -> list[HubSpotCo
 async def create_campaign_list(
     campaign_name: str,
     contacts: list[HubSpotContact],
+    *,
+    add_batch_size: int,
 ) -> str:
     """Create a static HubSpot list and add the contacts to it.
 
     Args:
         campaign_name: Display name (e.g., "Rare Disease Q2 2026 - Orladeyo").
         contacts: HubSpot-resident contacts to add (any size — internal
-            batching applies up to ``ADD_TO_LIST_BATCH_SIZE`` per call).
+            batching applies up to ``add_batch_size`` per call).
+        add_batch_size: The node's ``add_batch_size`` constant, passed by
+            the step.
 
     Returns:
         The HubSpot list ID (used by exclusion checks downstream).

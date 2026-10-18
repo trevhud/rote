@@ -358,7 +358,8 @@ def test_bdr_workflow_runs_through_hitl_gates(
 
     # The first HITL gate's resume payload flowed into hubspot_upsert via
     # `contacts: contact_review_gate.output.approved_contacts`.
-    assert payloads["hubspot_upsert"] == {"contacts": [{"id": "c1"}]}
+    # The impl receives its IR constant merged into its arguments.
+    assert payloads["hubspot_upsert"] == {"contacts": [{"id": "c1"}], "batch_size": 100}
 
     # hubspot_upsert's mocked result flowed into the DNC check via
     # `contacts: hubspot_upsert.output.upserted`.

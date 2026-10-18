@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import keyword
+import math
 import re
 import textwrap
 from pathlib import Path
@@ -31,9 +32,11 @@ from rote.adapters._common import (
     STUB_SENTINEL,
     EmitWriter,
     _to_pascal_case,
+    mcp_tool_arguments,
     safe_docstring_line,
 )
 from rote.ir import (
+    CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
     Node,
     NodeKind,
@@ -84,12 +87,78 @@ def _ref_to_python_expr(ref: str) -> str:
     return f'{base}["{parsed.field}"]'
 
 
+def _constant_literal(node: Node, key: str, value: Any) -> str:
+    """A constant as a Python literal, refusing values that have none.
+
+    YAML can produce dates, NaN and infinity, none of which ``repr`` turns
+    into an expression that evaluates back to the value. Failing at emit
+    time names the node; emitting ``datetime.date(...)`` would fail with a
+    bare NameError inside generated code.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"node {node.id!r}: constant {key!r} is {value!r}, not a finite number")
+    if isinstance(value, list):
+        for item in value:
+            _constant_literal(node, key, item)
+    elif isinstance(value, dict):
+        for item_key, item in value.items():
+            if not isinstance(item_key, str):
+                raise ValueError(f"node {node.id!r}: constant {key!r} has a non-string key")
+            _constant_literal(node, key, item)
+    elif not isinstance(value, str | int | float | bool) and value is not None:
+        raise ValueError(
+            f"node {node.id!r}: constant {key!r} is a {type(value).__name__}; "
+            "constants must be JSON values (quote dates in pipeline.yaml)"
+        )
+    return _py_literal(value)
+
+
+def impl_kwargs_expr(node: Node) -> str:
+    """The expression a step body unpacks into its ``impl`` call.
+
+    Several nodes may share one ``impl`` with different constants (three
+    fetch nodes, one ``fetch_file_content``, three ``file_id`` values), so
+    each step merges its own node's constants into the payload it was
+    called with: ``{**payload, "file_id": "..."}``. Merging in the step
+    body, not the workflow's payload literal, is what reaches every
+    caller: the DAG, a fan_out element, and an agent loop calling a
+    ``loop_body`` sub-node as a tool with a payload the model built. The
+    constants never appear in that tool's schema, and they come last so a
+    model-built payload cannot override a pinned value.
+    """
+    if node.kind not in CONSTANT_ARGUMENT_KINDS or not node.constants:
+        return "payload"
+    pinned = ", ".join(
+        f"{json.dumps(key)}: {_constant_literal(node, key, value)}"
+        for key, value in node.constants.items()
+    )
+    return f"{{**payload, {pinned}}}"
+
+
+def mcp_arguments_line(node: Node, indent: str = "    ") -> str:
+    """``arguments = ...`` for an MCP-bound step (see ``mcp_tool_arguments``)."""
+    sources = mcp_tool_arguments(node)
+    if sources is None:
+        return f"{indent}arguments = payload  # tool arg names match the threaded payload keys\n"
+    items = ", ".join(
+        f"{json.dumps(tool_arg)}: "
+        + (
+            _constant_literal(node, tool_arg, value)
+            if origin == "constant"
+            else f"payload[{json.dumps(value)}]"
+        )
+        for tool_arg, origin, value in sources
+    )
+    return f"{indent}arguments = {{{items}}}\n"
+
+
 def _payload_literal(node: Node, indent: str) -> str:
     """Render the step/activity payload dict for a node's data-flow bindings.
 
     Nodes without ``inputs`` keep the empty payload (back-compat).
     ``indent`` is the indentation of the line the literal starts on;
-    continuation lines are indented one level deeper.
+    continuation lines are indented one level deeper. Constants are not
+    here: the step body merges them (:func:`impl_kwargs_expr`).
     """
     if not node.inputs:
         return "{}"
@@ -247,6 +316,8 @@ def fan_out_binding(
     node: Node, pipeline: Pipeline, indent: str = ""
 ) -> tuple[str, str, dict[str, str]]:
     """``(element_param, list_expr, scalar_exprs)`` for a ``fan_out`` node.
+
+    ``scalar_exprs`` is every payload key but the element.
 
     The Python rendering of :func:`fan_out_element_param` — which input
     is the list is a language-neutral property of the IR, so it is
@@ -1092,20 +1163,31 @@ def emit_extracted_module(
             doc_lines.append("    MANDATORY: this node was marked mandatory in the source")
             doc_lines.append("    skill. The workflow always calls it; do not make it")
             doc_lines.append("    conditional.")
-        if node.constants:
+        # Every node that calls this function, not just the first: shared
+        # impls exist precisely because nodes differ only in constants.
+        sharers = [n for n in nodes if _extracted_func_name(n) == func_name]
+        if any(n.constants for n in sharers):
             doc_lines.append("")
-            doc_lines.append("    Constants from the IR (lifted from the source skill):")
-            for k, v in node.constants.items():
-                # k is an identifier (IR-validated); v is arbitrary, so escape
-                # its repr so a value containing \"\"\" can't close this docstring.
-                doc_lines.extend(
-                    textwrap.wrap(
-                        f"{k} = {safe_docstring_line(repr(v))}",
-                        width=88,
-                        initial_indent="      ",
-                        subsequent_indent="          ",
+            doc_lines.append("    Constants from the IR (lifted from the source skill), passed")
+            doc_lines.append("    as keyword arguments alongside the node's inputs:")
+            for sharer in sharers:
+                indent = "      "
+                if len(sharers) > 1:
+                    doc_lines.append(f"      from node {sharer.id}:")
+                    indent = "        "
+                    if not sharer.constants:
+                        doc_lines.append(f"{indent}(none)")
+                for k, v in (sharer.constants or {}).items():
+                    # k is an identifier (IR-validated); v is arbitrary, so escape
+                    # its repr so a value containing \"\"\" can't close this docstring.
+                    doc_lines.extend(
+                        textwrap.wrap(
+                            f"{k} = {safe_docstring_line(repr(v))}",
+                            width=88,
+                            initial_indent=indent,
+                            subsequent_indent=indent + "    ",
+                        )
                     )
-                )
         for label, schema in (
             ("Input contract", node.input_schema),
             ("Output contract", node.output_schema),
@@ -1183,6 +1265,47 @@ def write_extracted_package(
             content=Path(_mcp_helper.__file__).read_text(encoding="utf-8"),
         )
     return written
+
+
+def require_constant_parameters(
+    pipeline: Pipeline,
+    writer: EmitWriter,
+    source_dir: Path | None,
+) -> None:
+    """Refuse an emit whose impls cannot take their nodes' constants.
+
+    Every step passes its node's constants as keyword arguments, so an
+    ``extracted/`` function that neither names them nor takes ``**kwargs``
+    raises TypeError on its first call, possibly after earlier steps have
+    already had side effects. The modules checked are the ones the runtime
+    dir will hold after this emit: an agent-written module sourced from
+    beside pipeline.yaml, or a user-filled file the writer would preserve.
+    A module with no source becomes a stub, which takes ``**payload`` and
+    always passes, so only its preserved user edit (if any) is read. Call
+    it before writing
+    anything, so a refused emit leaves no new main.py behind.
+    """
+    from rote.contracts import constants_not_accepted
+
+    landed: dict[str, str] = {}
+    origins: dict[str, Path] = {}
+    for module in _extracted_layout(pipeline):
+        fresh = resolve_extracted_source(source_dir, module) or ""
+        landed[module] = writer.landed_content("extracted", f"{module}.py", content=fresh)
+        # The file to fix: the agent's module beside pipeline.yaml, unless
+        # the writer would keep the user's own edit in the runtime dir.
+        if landed[module] != fresh or source_dir is None:
+            origins[module] = writer.output_dir / "extracted" / f"{module}.py"
+        else:
+            origins[module] = Path(source_dir) / "extracted" / f"{module}.py"
+    problems = constants_not_accepted(pipeline, landed, origins)
+    if problems:
+        detail = "; ".join(problems)
+        raise ValueError(
+            f"extracted/ functions do not accept their node's constants, which every step "
+            f"passes as keyword arguments: {detail}. In each file named, add each constant "
+            f"as a keyword parameter (or **kwargs), then re-emit"
+        )
 
 
 # ───────── Emitted runtime helpers ─────────

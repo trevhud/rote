@@ -94,7 +94,10 @@ from rote.adapters._py_common import (
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
+    impl_kwargs_expr,
+    mcp_arguments_line,
     needs_call_impl,
+    require_constant_parameters,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -273,7 +276,7 @@ def _emit_step_pure_or_external(node: Node) -> str:
         f"{_timeout_comment(node)}"
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
-        f"    return _serialize(_call_impl({func_name}, payload))\n"
+        f"    return _serialize(_call_impl({func_name}, {impl_kwargs_expr(node)}))\n"
     )
 
 
@@ -292,14 +295,7 @@ def _emit_step_mcp(node: Node) -> str:
     binding = node.mcp
     assert binding is not None
     url_literal = json.dumps(binding.url) if binding.url is not None else "None"
-    if binding.args:
-        arg_items = ", ".join(
-            f"{json.dumps(tool_arg)}: payload[{json.dumps(payload_key)}]"
-            for tool_arg, payload_key in binding.args.items()
-        )
-        args_line = f"    arguments = {{{arg_items}}}\n"
-    else:
-        args_line = "    arguments = payload  # tool arg names match the threaded payload keys\n"
+    args_line = mcp_arguments_line(node)
     mandatory_marker = ""
     if node.mandatory:
         mandatory_marker = (
@@ -1040,6 +1036,7 @@ class DbosAdapter:
 
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
         writer = EmitWriter(output_dir)
+        require_constant_parameters(pipeline, writer, self.config.extracted_source_dir)
 
         written: dict[str, Path] = {}
 

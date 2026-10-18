@@ -76,6 +76,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   now, `tests/test_committed_snapshots.py` diffs a fresh emission
   against each snapshot, and the suite fails if anything under
   `examples/` changes during a run.
+
+- An agent loop's local tools now return their result to the model as
+  JSON text. The SDK tool runner iterated a dict result, so the model saw
+  only its keys.
 - Stub detection no longer refuses a filled-in module that only mentions
   the `[rote stub]` marker in a comment or docstring: the marker counts
   in Python only as a `raise` argument, and in TypeScript only outside
@@ -234,6 +238,28 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 - `rote mcp headers` (and any refresh outside `login`) never opens a
   browser or registers a client: it refreshes or fails with the login
   hint.
+- **Breaking: an impl must accept its node's constants.** The Python
+  runtimes (dbos, python, temporal) now pass a `pure_function` /
+  `external_call` node's IR `constants` to its `impl` as keyword
+  arguments, merged in the step body so every caller gets them: the DAG,
+  each fan_out element, and an agent loop calling a `loop_body` sub-node
+  as a tool. Before, no step received them, so nodes sharing one `impl`
+  with different constants (ops-report's three fetch nodes, each with its
+  own `file_id`) all got the same empty payload. An `extracted/`
+  function that takes neither the constant nor `**kwargs` would raise
+  TypeError mid-run, so emission now refuses it up front, naming the node
+  and parameter, and `rote emit` reports it as a `constant_not_accepted`
+  contract finding. Most committed `examples/*/runs/` hard-code their
+  constants and no longer emit on a Python runtime until recompiled. The
+  BDR and expense-audit example modules take theirs as keyword
+  parameters, and expense-audit's now apply them, so editing a constant
+  in its pipeline.yaml changes the rule. The refusal names the full path
+  of the file to fix, and `rote compile` exits 1 with the `rote emit`
+  retry command instead of a traceback.
+- A constant reaches an MCP tool only when `mcp.args` names it, the same
+  on every runtime. A constant that reuses an input's name is an IR
+  validation error for impl-backed kinds. The stub for a shared `impl`
+  lists every calling node's constants.
 - **fastmcp 4.** The `mcp` and `serve` extras now require
   `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
   `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,

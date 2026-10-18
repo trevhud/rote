@@ -1405,57 +1405,105 @@ def test_analyze_json_includes_empty_mcp_manifest_for_unbound_pipeline(
 # ───────── Contract findings surface through the CLI ─────────
 
 
+def _emit_cli(python_executable: str, pipeline_yaml: Path, out: Path, runtime: str):  # type: ignore[no-untyped-def]
+    return subprocess.run(
+        [
+            python_executable,
+            "-m",
+            "rote.cli",
+            "emit",
+            str(pipeline_yaml),
+            "--runtime",
+            runtime,
+            "--out",
+            str(out),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+_BDR_MCP_RUN = REPO_ROOT / "examples/bdr-outreach/runs/2026-07-18-mcp-bindings/pipeline.yaml"
+
+
 def test_emit_reports_contract_breaks_in_json(python_executable: str, tmp_path: Path) -> None:
     """`rote emit` re-checks the IR against the modules beside the
     pipeline.yaml, because that is where the fix-and-re-emit loop runs.
 
-    The newest committed BDR compile carries two real breaks (see
-    tests/test_contracts.py), so this doubles as proof the findings reach
-    the machine-readable surface rather than only the human one.
+    The newest committed BDR compile carries real breaks (see
+    tests/test_contracts.py). A TS runtime still emits it, which shows the
+    findings reach the machine-readable surface rather than only the
+    human one.
     """
-    result = subprocess.run(
-        [
-            python_executable,
-            "-m",
-            "rote.cli",
-            "emit",
-            str(REPO_ROOT / "examples/bdr-outreach/runs/2026-07-18-mcp-bindings/pipeline.yaml"),
-            "--runtime",
-            "dbos",
-            "--out",
-            str(tmp_path / "emitted"),
-            "--json",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    result = _emit_cli(python_executable, _BDR_MCP_RUN, tmp_path / "emitted", "cloudflare")
     assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    findings = payload["contract_findings"]
-    assert {f["node"] for f in findings} == {"hubspot_create_list", "exclusion_check_dnc"}
+    findings = json.loads(result.stdout)["contract_findings"]
+    assert {(f["node"], f["kind"]) for f in findings} == {
+        ("conf_enrich_batch", "constant_not_accepted"),
+        ("enrich_contact_batch", "constant_not_accepted"),
+        ("exclusion_check_dnc", "constant_not_accepted"),
+        ("exclusion_check_dnc", "missing_argument"),
+        ("exclusion_check_recent", "constant_not_accepted"),
+        ("hubspot_add_to_list", "constant_not_accepted"),
+        ("hubspot_create_list", "unexpected_argument"),
+        ("hubspot_upsert", "constant_not_accepted"),
+    }
     assert all(f["severity"] == "error" for f in findings)
 
 
-def test_emit_stays_silent_on_a_clean_pipeline(python_executable: str, tmp_path: Path) -> None:
-    """A checker that reports on healthy compilations gets ignored."""
-    result = subprocess.run(
-        [
-            python_executable,
-            "-m",
-            "rote.cli",
-            "emit",
-            str(REPO_ROOT / "examples/ops-report/runs/2026-07-18-rubric-v2/pipeline.yaml"),
-            "--runtime",
-            "dbos",
-            "--out",
-            str(tmp_path / "emitted"),
-            "--json",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
+@pytest.mark.parametrize("runtime", ["dbos", "temporal"])
+def test_python_emit_refuses_impls_that_reject_their_constants(
+    python_executable: str, tmp_path: Path, runtime: str
+) -> None:
+    """Every Python step passes its node's constants as keyword arguments,
+    so an agent-written module that hard-codes them instead would raise
+    TypeError mid-run, after earlier steps had side effects. The emit
+    refuses up front and names the node and the parameter."""
+    result = _emit_cli(python_executable, _BDR_MCP_RUN, tmp_path / "emitted", runtime)
+    assert result.returncode == 1
+    # The full path of the file to fix: the agent's module beside pipeline.yaml.
+    module = _BDR_MCP_RUN.parent / "extracted" / "hubspot.py"
+    assert (
+        f"node 'hubspot_upsert': {module} batch_upsert_contacts() takes no batch_size"
+        in result.stderr
     )
+    assert "check_recently_emailed() takes no days_back, direction" in result.stderr
+
+
+def test_emit_stays_silent_on_a_clean_pipeline(python_executable: str, tmp_path: Path) -> None:
+    """A checker that reports on healthy compilations gets ignored. This
+    module takes its input and its constant, so nothing is wrong with it."""
+    from rote.ir import Pipeline, save_pipeline
+
+    compiled = tmp_path / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "drive.py").write_text(
+        "def fetch(region, *, file_id):\n    return {'region': region, 'file_id': file_id}\n",
+        encoding="utf-8",
+    )
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "clean",
+            "input": {"type": "In", "required": ["region"], "optional": []},
+            "nodes": [
+                {
+                    "id": "fetch_sheet",
+                    "kind": "external_call",
+                    "description": "fetch",
+                    "impl": "extracted/drive.py:fetch",
+                    "constants": {"file_id": "F-1"},
+                    "inputs": {"region": "pipeline.input.region"},
+                }
+            ],
+            "edges": [],
+            "entry_nodes": ["fetch_sheet"],
+            "exit_nodes": ["fetch_sheet"],
+        }
+    )
+    yaml_path = save_pipeline(pipeline, compiled / "pipeline.yaml")
+    result = _emit_cli(python_executable, yaml_path, tmp_path / "emitted", "dbos")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["contract_findings"] == []
 

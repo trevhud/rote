@@ -43,6 +43,15 @@ REVIEW = {
 EMPLOYEES = 5
 
 
+def _policy() -> dict:
+    """The audit node's IR constants, which every step passes to the impl."""
+    from rote.ir import load_pipeline
+
+    (node,) = [n for n in load_pipeline(GATED).nodes if n.id == "audit_report"]
+    assert node.constants is not None
+    return dict(node.constants)
+
+
 def _emit(pipeline_yaml: Path, runtime: str, out: Path, capsys: pytest.CaptureFixture[str]) -> None:
     rc = main(["emit", str(pipeline_yaml), "--runtime", runtime, "--out", str(out), "--json"])
     payload = json.loads(capsys.readouterr().out)
@@ -246,7 +255,7 @@ def test_two_over_limit_reports_take_separate_decisions(
     submissions += [ticket(f"EXP-{i}", "Ben Okafor", 880.00) for i in (4, 5, 6)]
     expenses = convert_to_usd(submissions, "2026-09")["expenses"]
     reports = group_by_employee(expenses)["reports"]
-    audits = [audit_report(r, duplicate_ids=[], late_ids=[]) for r in reports]
+    audits = [audit_report(r, duplicate_ids=[], late_ids=[], **_policy()) for r in reports]
     summary = summarize_audit(audits, expenses)
 
     queue = summary["review_queue"]
@@ -293,6 +302,7 @@ def test_over_cap_detail_states_the_excess() -> None:
         {"employee": "Ana Ruiz", "department": "Sales", "expenses": [meal]},
         duplicate_ids=[],
         late_ids=[],
+        **_policy(),
     )
     assert [f["detail"] for f in audit["findings"]] == [
         "$130.39 exceeds the $75.00 meals cap by $55.39"
@@ -355,6 +365,39 @@ def test_gated_run_on_dbos(
     _emit(GATED, "dbos", app, capsys)
     result = _run(app, capsys, "--signal", f"controller_review={json.dumps(REVIEW)}")
     _assert_final(result, report_dir)
+
+
+def test_editing_a_constant_in_the_ir_changes_the_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The constants drive the logic. EXP-2413 is dated 92 days before
+    period close, late under the shipped 60-day window. Widening the window
+    to 120 days in pipeline.yaml, and nothing else, clears it."""
+    import shutil
+
+    from rote.ir import load_pipeline, save_pipeline
+
+    pipeline = load_pipeline(DRAFT)
+    for node in pipeline.nodes:
+        if node.id == "find_late_submissions":
+            assert node.constants == {"late_window_days": 60}
+            node.constants = {"late_window_days": 120}
+    compiled = tmp_path / "compiled"
+    shutil.copytree(EXAMPLE / "expected" / "extracted", compiled / "extracted")
+    save_pipeline(pipeline, compiled / "pipeline.yaml")
+
+    late_row = "| EXP-2413 | Ben Okafor | late | review |"
+    reports: dict[str, str] = {}
+    for label, yaml_path in (("shipped", DRAFT), ("widened", compiled / "pipeline.yaml")):
+        report_dir = tmp_path / f"reports-{label}"
+        monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(report_dir))
+        app = tmp_path / label
+        _emit(yaml_path, "python", app, capsys)
+        _run(app, capsys)
+        reports[label] = (report_dir / "2026-09-expense-audit.md").read_text(encoding="utf-8")
+
+    assert late_row in reports["shipped"]
+    assert late_row not in reports["widened"]
 
 
 @pytest.fixture

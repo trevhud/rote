@@ -907,6 +907,56 @@ longer reads `dbos-config.yaml` at launch (only the `dbos` CLI does, so
 now throws, which is one reason the DBOS-TS emitter keeps parallel waves
 on `Promise.allSettled` instead of queues.
 
+### A node's constants reach its impl, and a tool only by name
+
+Several nodes can share one `impl` and differ only in `constants`
+(ops-report: three fetch nodes, one `fetch_file_content`, three
+`file_id`s). The Python runtimes passed no constants at all, so every
+fetch received `{}` and no implementation could tell the files apart.
+Three rules now, each learned the hard way:
+
+- **Merge in the step body, not the workflow's payload literal.** A
+  `pure_function` / `external_call` step calls
+  `impl(**{**payload, <constants>})` (`_py_common.impl_kwargs_expr`, used
+  by dbos, python and temporal). The payload literal only reaches DAG
+  callers. An agent loop calls its `loop_body` sub-nodes as tools with a
+  payload the model built, so BDR's `enrich_contact_batch` lost
+  `batch_size` the first time this was tried. Constants come last so the
+  model cannot override a pinned value, and they never appear in the tool
+  schema it sees. Judges are excluded: their input model rejects unknown
+  keys.
+- **A constant reaches an MCP tool only when `mcp.args` names it.**
+  Without `args`, the step sends its payload as the tool arguments, and a
+  tool rejects arguments it does not declare (FastMCP: "Unexpected
+  keyword argument"). `_common.mcp_tool_arguments` decides the arguments
+  once for every runtime, Python and TS, so a tool gets identical
+  arguments everywhere (`tests/test_constants_reach_every_caller.py`).
+- **The impl contract is checked at emit time.** An `extracted/` function
+  that takes neither the constant nor `**kwargs` raises TypeError on its
+  first call, possibly after earlier steps had side effects. The Python
+  adapters run `require_constant_parameters` BEFORE writing anything, on
+  the module text the runtime dir will hold (`EmitWriter.landed_content`:
+  the agent's source, or a user edit the writer would preserve). They
+  refuse the emit naming the node, the parameter and the full path of
+  the file to fix, and `rote compile` turns that into exit 1 with the
+  `rote emit` retry command. `check_contracts` reports the same break as
+  `constant_not_accepted`. Most committed `examples/*/runs/` predate this
+  and hard-code their constants, so they no longer emit on a Python
+  runtime. On Temporal the check is skipped when `extracted_module` is
+  not the emitted package (an explicit `TemporalAdapterConfig`, as the
+  BDR snapshot uses): those modules still receive constants and would
+  fail with TypeError at run time.
+- **Constants drive the logic.** An impl uses the value it is passed; a
+  module-level copy is only the default for a direct call. A module that
+  accepts a constant and then applies its own value turns the IR's
+  constant into dead config (expense-audit did this until
+  `test_editing_a_constant_in_the_ir_changes_the_rule`).
+
+Related, found by the loop test: the SDK tool runner does not serialize a
+dict tool result, it iterates it, so the model saw only the keys.
+`_runtime_helper._text_result` JSON-encodes a local tool's result, as the
+TS twin already did.
+
 ### A fan_out element's step name must carry its index
 
 Cloudflare and Inngest key a durable step by its **name**, so a fan_out

@@ -213,7 +213,10 @@ async def test_serve_backend_drives_bdr_through_hitl_gates(
     # ── The gate resume payload threaded into downstream nodes ──
     payloads = {r["node"]: r["payload"] for r in _recorded(record_path)}
     assert payloads["target_research"] == {"brief": brief}
-    assert payloads["hubspot_upsert"] == {"contacts": resume_1["approved_contacts"]}
+    assert payloads["hubspot_upsert"] == {
+        "contacts": resume_1["approved_contacts"],
+        "batch_size": 100,
+    }
     assert payloads["exclusion_check_dnc"] == {
         "contacts": _mock_output("hubspot_upsert")["upserted"]
     }

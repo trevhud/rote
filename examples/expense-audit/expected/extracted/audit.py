@@ -1,8 +1,9 @@
 """Steps 4 and 5: per-employee policy audit and the batch summary.
 
-Every cap and threshold below is a rule from references/expense-policy.md.
-They are module constants, not prompt text, so a rule can't be skipped or
-re-interpreted from one month to the next.
+Every cap and threshold is a rule from references/expense-policy.md. The
+pipeline's IR carries them as the audit node's constants, and the step
+passes them on every call, so they live in code and config, never in
+prompt text. The module constants below are the defaults for a direct call.
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ CATEGORY_CAPS_USD: dict[str, Decimal] = {
 }
 #: No cap, but always needs a pre-approval id.
 PREAPPROVAL_CATEGORIES = frozenset({"entertainment"})
-KNOWN_CATEGORIES = frozenset(CATEGORY_CAPS_USD) | PREAPPROVAL_CATEGORIES
 RECEIPT_THRESHOLD_USD = Decimal("25.00")
 REPORT_LIMIT_USD = Decimal("2500.00")
 
@@ -59,19 +59,23 @@ def group_by_employee(expenses: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _line_findings(
-    expense: dict[str, Any], duplicate_ids: set[str], late_ids: set[str]
+    expense: dict[str, Any],
+    duplicate_ids: set[str],
+    late_ids: set[str],
+    caps: dict[str, Decimal],
+    receipt_threshold: Decimal,
 ) -> list[dict[str, str]]:
     amount = Decimal(str(expense["amount_usd"]))
     category = expense["category"]
     found: list[tuple[str, str, str]] = []
 
-    if category not in KNOWN_CATEGORIES:
+    if category not in frozenset(caps) | PREAPPROVAL_CATEGORIES:
         found.append(("unknown_category", "block", f"category {category!r} is not in the policy"))
     elif category in PREAPPROVAL_CATEGORIES:
         if not expense.get("preapproval_id"):
             found.append(("preapproval_missing", "review", f"{category} without a pre-approval id"))
     else:
-        cap = CATEGORY_CAPS_USD[category]
+        cap = caps[category]
         if category == "lodging":
             cap *= int(expense.get("nights") or 1)
         if amount > cap:
@@ -86,14 +90,14 @@ def _line_findings(
                 )
             )
 
-    if amount >= RECEIPT_THRESHOLD_USD and not expense["receipt"]:
+    if amount >= receipt_threshold and not expense["receipt"]:
         found.append(("receipt_missing", "block", f"no receipt on a {_usd(amount)} line"))
     if expense["id"] in duplicate_ids:
         found.append(
             ("duplicate", "block", "same employee, merchant, amount, and date as an earlier line")
         )
     if expense["id"] in late_ids:
-        found.append(("late", "review", f"dated {expense['date']}, outside the 60-day window"))
+        found.append(("late", "review", f"dated {expense['date']}, outside the late-submission window"))
 
     return [
         {
@@ -107,17 +111,46 @@ def _line_findings(
     ]
 
 
+def _caps(category_caps_usd: dict[str, float] | None) -> dict[str, Decimal]:
+    """Per-line caps keyed by category. The IR names lodging's cap
+    ``lodging_per_night``, since a lodging line's cap scales with its nights."""
+    if category_caps_usd is None:
+        return dict(CATEGORY_CAPS_USD)
+    return {
+        ("lodging" if k == "lodging_per_night" else k): Decimal(str(v))
+        for k, v in category_caps_usd.items()
+    }
+
+
 def audit_report(
-    report: dict[str, Any], duplicate_ids: list[str], late_ids: list[str]
+    report: dict[str, Any],
+    duplicate_ids: list[str],
+    late_ids: list[str],
+    *,
+    receipt_threshold_usd: float | None = None,
+    report_limit_usd: float | None = None,
+    category_caps_usd: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    """Apply every policy rule to one employee's report."""
+    """Apply every policy rule to one employee's report.
+
+    The keyword arguments are the audit node's IR constants, which the step
+    passes on every call; editing one in pipeline.yaml changes the rule.
+    Omitted, each falls back to this module's default.
+    """
+    caps = _caps(category_caps_usd)
+    receipt_threshold = (
+        RECEIPT_THRESHOLD_USD
+        if receipt_threshold_usd is None
+        else Decimal(str(receipt_threshold_usd))
+    )
+    report_limit = REPORT_LIMIT_USD if report_limit_usd is None else Decimal(str(report_limit_usd))
     duplicates, late = set(duplicate_ids), set(late_ids)
     findings: list[dict[str, str]] = []
     for expense in report["expenses"]:
-        findings.extend(_line_findings(expense, duplicates, late))
+        findings.extend(_line_findings(expense, duplicates, late, caps, receipt_threshold))
 
     total = to_cents(sum((Decimal(str(e["amount_usd"])) for e in report["expenses"]), Decimal(0)))
-    if total > REPORT_LIMIT_USD:
+    if total > report_limit:
         findings.append(
             {
                 "expense_id": report_finding_id(report["employee"]),
@@ -125,8 +158,8 @@ def audit_report(
                 "rule": "report_limit",
                 "severity": "review",
                 "detail": (
-                    f"report total {_usd(total)} exceeds the {_usd(REPORT_LIMIT_USD)} "
-                    f"limit by {_usd(total - REPORT_LIMIT_USD)}"
+                    f"report total {_usd(total)} exceeds the {_usd(report_limit)} "
+                    f"limit by {_usd(total - report_limit)}"
                 ),
             }
         )

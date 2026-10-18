@@ -388,6 +388,12 @@ class MCPBinding(BaseModel):
         return v
 
 
+#: Node kinds whose ``constants`` are passed to their ``impl`` as keyword
+#: arguments. A judge's constants are not inputs to its typed signature,
+#: and an MCP-bound step forwards one only when ``mcp.args`` names it.
+CONSTANT_ARGUMENT_KINDS = frozenset({NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL})
+
+
 class Node(BaseModel):
     """A single step in the compiled pipeline.
 
@@ -628,6 +634,20 @@ class Node(BaseModel):
         description="Signal name the workflow waits for (resume on signal)",
     )
     notify: NotifyConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_constants_do_not_shadow_inputs(self) -> Self:
+        """An impl receives its constants and its inputs as one set of
+        keyword arguments, so a shared name would make one silently win.
+        Other kinds' constants never reach a call, so they may reuse a name."""
+        if self.kind not in CONSTANT_ARGUMENT_KINDS:
+            return self
+        clash = sorted(set(self.constants or {}) & set(self.inputs or {}))
+        if clash:
+            raise ValueError(
+                f"node {self.id!r}: {', '.join(clash)} is both a constant and an input; rename one"
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_kind_specific_fields(self) -> Self:

@@ -255,7 +255,7 @@ def enrich_contact_batch(payload: dict) -> dict:
     # primitive; enforce inside the implementation if required.
     from extracted.zoominfo import enrich_batch
 
-    return _serialize(_call_impl(enrich_batch, payload))
+    return _serialize(_call_impl(enrich_batch, {**payload, "batch_size": 10, "output_fields": ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"]}))
 
 
 @DBOS.step(name="vet_contact")
@@ -282,7 +282,7 @@ def hubspot_upsert(payload: dict) -> dict:
     # primitive; enforce inside the implementation if required.
     from extracted.hubspot import batch_upsert_contacts
 
-    return _serialize(_call_impl(batch_upsert_contacts, payload))
+    return _serialize(_call_impl(batch_upsert_contacts, {**payload, "batch_size": 100}))
 
 
 @DBOS.step(name="hubspot_create_list", retries_allowed=True, max_attempts=6, backoff_rate=2.0)
@@ -294,7 +294,7 @@ def hubspot_create_list(payload: dict) -> dict:
     """
     from extracted.hubspot import create_campaign_list
 
-    return _serialize(_call_impl(create_campaign_list, payload))
+    return _serialize(_call_impl(create_campaign_list, {**payload, "add_batch_size": 250}))
 
 
 @DBOS.step(name="exclusion_check_dnc")
@@ -322,7 +322,7 @@ def exclusion_check_recent(payload: dict) -> dict:
     # skill. The workflow always calls it; do not make it conditional.
     from extracted.exclusion_checks import check_recently_emailed
 
-    return _serialize(_call_impl(check_recently_emailed, payload))
+    return _serialize(_call_impl(check_recently_emailed, {**payload, "days_back": 30, "direction": "OUTBOUND"}))
 
 
 @DBOS.step(name="exclusion_check_sequence")

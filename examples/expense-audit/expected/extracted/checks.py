@@ -52,10 +52,20 @@ def period_bounds(period: str) -> tuple[date, date]:
     return date(year, month, 1), date(year, month, last_day)
 
 
-def find_late_submissions(submissions: list[dict[str, Any]], period: str) -> dict[str, Any]:
-    """Ids dated more than 60 days before period close, or after it."""
+def find_late_submissions(
+    submissions: list[dict[str, Any]],
+    period: str,
+    *,
+    late_window_days: int = LATE_WINDOW_DAYS,
+) -> dict[str, Any]:
+    """Ids dated more than ``late_window_days`` before period close, or after it.
+
+    The step passes the node's ``late_window_days`` constant on every call,
+    so editing it in pipeline.yaml changes the rule. ``LATE_WINDOW_DAYS``
+    is only the default for a direct call.
+    """
     _, period_end = period_bounds(period)
-    earliest = period_end - timedelta(days=LATE_WINDOW_DAYS)
+    earliest = period_end - timedelta(days=late_window_days)
     late = [
         line["id"]
         for line in submissions
