@@ -233,7 +233,9 @@ touching Python tooling:
 Then say "compile this skill" (or run `/rote:compile`). It confirms the
 source directory, asks which runtime you want, runs the CLI via
 [uv](https://docs.astral.sh/uv/) in the background, and reports the
-emitted pipeline. A second skill, `/rote:serve`, wires compiled
+emitted pipeline. `/rote:implement` then fills in the emitted stub
+modules against each node's IR contract and verifies the result with
+`rote run`. A third skill, `/rote:serve`, wires compiled
 pipelines up as MCP tools so Claude can trigger the deployed workflows
 (see [docs/mcp-trigger.md](docs/mcp-trigger.md)).
 
