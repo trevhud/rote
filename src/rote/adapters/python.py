@@ -70,19 +70,15 @@ from rote.adapters._common import (
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
-    _extracted_layout,
     _impl_path_parts,
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
     fan_out_binding,
     fan_out_list_helper,
-    resolve_extracted_source,
     serialize_helper,
+    write_extracted_package,
     write_signature_package,
-)
-from rote.adapters._py_common import (
-    emit_extracted_module as _shared_emit_extracted_module,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
@@ -645,43 +641,18 @@ class PythonAdapter:
 
         written["main"] = writer.write("main.py", content=self.emit_main(pipeline))
 
-        extracted_modules = _extracted_layout(pipeline)
-        # An agent_loop's `tools` are MCP tool names, so a loop that
-        # declares any needs the MCP helper to resolve their endpoints —
-        # the one case where this otherwise MCP-free target emits it.
-        # Node code still never references MCP; only the agent does, and
-        # only for tools the IR explicitly declared.
-        needs_mcp_helper = any(n.kind is NodeKind.AGENT_LOOP and n.tools for n in pipeline.nodes)
-        if extracted_modules or needs_mcp_helper:
-            written["extracted/__init__"] = writer.write(
-                "extracted",
-                "__init__.py",
-                content=f'"""Extracted deterministic modules for {pipeline.name}."""\n',
+        written.update(
+            write_extracted_package(
+                writer,
+                pipeline,
+                source_dir=self.config.extracted_source_dir,
+                generated_by="rote.adapters.python",
+                caller_note=(
+                    "the plain functions in main.py call these\n"
+                    "with the step payload as keyword arguments."
+                ),
             )
-            for module_name, nodes in sorted(extracted_modules.items()):
-                written[f"extracted/{module_name}"] = writer.write(
-                    "extracted",
-                    f"{module_name}.py",
-                    content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
-                    or _shared_emit_extracted_module(
-                        module_name,
-                        nodes,
-                        generated_by="rote.adapters.python",
-                        caller_note=(
-                            "the plain functions in main.py call these\n"
-                            "with the step payload as keyword arguments."
-                        ),
-                    ),
-                )
-
-        if needs_mcp_helper:
-            from rote.mcp import _runtime_helper as _mcp_helper
-
-            written["extracted/_rote_mcp"] = writer.write(
-                "extracted",
-                "_rote_mcp.py",
-                content=Path(_mcp_helper.__file__).read_text(encoding="utf-8"),
-            )
+        )
 
         written.update(
             write_signature_package(

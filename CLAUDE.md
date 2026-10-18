@@ -1126,12 +1126,16 @@ Don't waste time debugging stubs. These are intentional.
   reports it). Never write emitted files with bare `write_text` in an
   adapter — route through the writer. Emission also sources the agent's
   REAL `extracted/<module>.py` implementations found beside the
-  pipeline.yaml verbatim into the runtime dir (dbos + python adapters,
-  `rote.adapters._py_common.resolve_extracted_source`); IR-derived
-  stubs are only the fallback. Known gaps: temporal keeps its
-  config-driven `expected.extracted` module path, and TS runtimes
-  can't consume Python modules at all (the compiler would have to
-  emit TS implementations).
+  pipeline.yaml verbatim into the runtime dir (dbos, python and
+  temporal adapters, `rote.adapters._py_common.resolve_extracted_source`);
+  IR-derived stubs are only the fallback. Temporal writes its package
+  through the shared `write_extracted_package` (python uses it too) and
+  its activities call plain functions in a worker thread and await
+  coroutine functions, since agent-written modules are plain. Only the
+  BDR snapshot points temporal at a user-maintained package, through an
+  explicit `TemporalAdapterConfig(extracted_module="expected.extracted")`.
+  Known gap: TS runtimes can't consume Python modules at all (the
+  compiler would have to emit TS implementations).
 - `rote compile` (SKILL.md → IR → Temporal code), stamping a
   `provenance.json` sidecar (section hashes; see `rote.skill_source`).
   Every run streams NDJSON progress to `<out>/progress.jsonl`

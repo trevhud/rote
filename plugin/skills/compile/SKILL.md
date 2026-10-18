@@ -9,7 +9,8 @@ description: >-
   into code", "harden this skill for production", or complains that a skill
   is slow, expensive, or unreliable as a background job. Output: a
   pipeline.yaml IR, extracted code modules, typed LLM-judge signatures, and
-  runtime code for Temporal, Cloudflare Workflows, or DBOS.
+  runtime code for DBOS (Python or TypeScript), Temporal, Cloudflare
+  Workflows, Inngest, or a plain Python script.
 ---
 
 # Compile a skill
@@ -39,10 +40,14 @@ Ask the user which runtime, with these tradeoffs (one line each):
 | `dbos` | No infra to run — durability lives in SQLite/Postgres, runs anywhere Python runs | Python |
 | `cloudflare` | You want serverless, fully managed execution on Cloudflare Workers | TypeScript |
 | `temporal` | You already operate (or want) a Temporal cluster | Python |
+| `dbos-ts` | Like `dbos`, but your stack is TypeScript (needs Postgres) | TypeScript |
+| `inngest` | You want to mount the workflow into an existing Node or Next.js app | TypeScript |
+| `python` | You want one plain script with no durability. Refuses skills with human-approval gates | Python |
 
-If the user has no opinion and no existing infra, use `dbos` — it is
-the CLI's default and the only target with zero standing
-infrastructure (you can omit `--runtime` entirely in that case).
+If the user has no opinion and no existing infra, use `dbos`. It is
+the CLI's default when logged out of rote cloud and needs no standing
+infrastructure. Pass `--runtime dbos` explicitly, because a `rote login`
+or a `rote.yaml` can change the default.
 
 ## 3. Resolve the CLI (uv)
 
