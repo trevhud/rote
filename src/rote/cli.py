@@ -1716,6 +1716,46 @@ def _cmd_mcp_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp_parked(args: argparse.Namespace) -> int:
+    """List workflows parked on MCP auth, without releasing them."""
+    from rote.mcp.parked import list_parked_workflows
+    from rote.mcp.release import ReleaseUnavailable
+
+    try:
+        report = list_parked_workflows(args.name)
+    except ReleaseUnavailable as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        doc = {
+            "parked": [
+                {
+                    "app": str(p.app),
+                    "runtime": p.runtime,
+                    "workflow_id": p.workflow_id,
+                    "server": p.server,
+                    "node": p.node,
+                }
+                for p in report.parked
+            ],
+            "skipped": [{"app": str(a.app), "reason": a.reason} for a in report.skipped],
+        }
+        print(json.dumps(doc, indent=2))
+        return 0
+    for p in report.parked:
+        node = f" node {p.node!r}" if p.node else ""
+        print(f"{p.server}: workflow {p.workflow_id}{node} ({p.runtime}, {p.app})")
+    for app in report.skipped:
+        print(f"note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
+    if not report.parked:
+        which = f" waiting for {args.name!r}" if args.name else ""
+        print(f"rote mcp: no workflows parked{which}")
+    else:
+        servers = sorted({p.server for p in report.parked})
+        print("release with: " + "; ".join(f"rote mcp login {s}" for s in servers))
+    return 0
+
+
 def _cmd_mcp_logout(args: argparse.Namespace) -> int:
     from rote.mcp import clear_token_file
 
@@ -2604,6 +2644,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             gate_order=gate_order or None,
             pipeline=pipeline,
             timeout_seconds=args.timeout or 600.0,
+            # A browser login is only offered with a human on both ends.
+            interactive=sys.stdin.isatty() and sys.stderr.isatty(),
         )
         run = p_outcome.run
         status = "succeeded" if run.succeeded else f"failed: {run.error}"
@@ -3918,6 +3960,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     mcp_release.add_argument("name")
     mcp_release.set_defaults(func=_cmd_mcp_release)
+
+    mcp_parked = mcp_sub.add_parser(
+        "parked",
+        help="List workflows parked waiting for a server's auth, without releasing them",
+    )
+    mcp_parked.add_argument("name", nargs="?", default=None, help="Only this server")
+    mcp_parked.add_argument("--json", action="store_true", help="Machine-readable output")
+    mcp_parked.set_defaults(func=_cmd_mcp_parked)
 
     mcp_headers = mcp_sub.add_parser(
         "headers",

@@ -471,7 +471,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                 if payload == "{}":
                     lines.append(
                         f"    {node.id}_result = _run_with_auth_park("
-                        f"lambda: {node.id}({{}}), {node.mcp.server!r})"
+                        f"lambda: {node.id}({{}}), {node.mcp.server!r}, {node.id!r})"
                     )
                 else:
                     lines.append(f"    {node.id}_result = _run_with_auth_park(")
@@ -479,6 +479,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     lines.append(f"            {payload}")
                     lines.append("        ),")
                     lines.append(f"        {node.mcp.server!r},")
+                    lines.append(f"        {node.id!r},")
                     lines.append("    )")
             else:
                 payload = _payload_literal(node, indent=" " * 8)
@@ -517,6 +518,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     lines.append(f"        {node.id}_handle,")
                     lines.append(f"        lambda: queue.enqueue({node.id}, {node.id}_payload),")
                     lines.append(f"        {node.mcp.server!r},")
+                    lines.append(f"        {node.id!r},")
                     lines.append("    )")
                 else:
                     lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
@@ -542,7 +544,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                 lines.append("        _join_with_auth_park(")
                 lines.append(
                     f"            _h, lambda _p=_p: queue.enqueue({node.id}, _p), "
-                    f"{node.mcp.server!r}"
+                    f"{node.mcp.server!r}, {node.id!r}"
                 )
                 lines.append("        )")
                 lines.append(
@@ -685,15 +687,30 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
             _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
 
+            # Parks so far per workflow, so each park advertises a distinct
+            # number. A release can be followed by a re-park faster than an
+            # observer polls; without the number the second park looks like
+            # the first one, which the observer already released.
+            _PARK_COUNTS: dict[str, int] = {}
+
 
             def _mcp_should_retry(exc: BaseException) -> bool:
                 """Auth failures skip the retry budget and park instead."""
                 return not isinstance(exc, RoteMcpAuthNeeded)
 
 
-            def _park_for_auth(server: str) -> None:
-                """Suspend the workflow until `rote mcp login <server>` succeeds."""
-                DBOS.set_event("rote_auth_status", {"awaiting": server})
+            def _park_for_auth(server: str, node: str) -> None:
+                """Suspend the workflow until `rote mcp login <server>` succeeds.
+
+                The event names the node too, so `rote run` and `rote mcp
+                parked` can say which step is waiting, and numbers the park.
+                """
+                workflow_id = DBOS.workflow_id or ""
+                park = _PARK_COUNTS.get(workflow_id, 0) + 1
+                _PARK_COUNTS[workflow_id] = park
+                DBOS.set_event(
+                    "rote_auth_status", {"awaiting": server, "node": node, "park": park}
+                )
                 released = DBOS.recv(
                     topic=f"rote:auth:{server}",
                     timeout_seconds=_AUTH_PARK_TIMEOUT_SECONDS,
@@ -707,7 +724,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     )
 
 
-            def _run_with_auth_park(step_call: Callable[[], dict], server: str) -> dict:
+            def _run_with_auth_park(step_call: Callable[[], dict], server: str, node: str) -> dict:
                 """Run an MCP-backed step, parking durably on auth failures.
 
                 On RoteMcpAuthNeeded the step is retried once immediately (the
@@ -723,7 +740,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     except RoteMcpAuthNeeded:
                         attempts_since_park += 1
                         if attempts_since_park >= 2:
-                            _park_for_auth(server)
+                            _park_for_auth(server, node)
                             attempts_since_park = 0
 
 
@@ -731,6 +748,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                 handle: WorkflowHandle,
                 enqueue: Callable[[], WorkflowHandle],
                 server: str,
+                node: str,
             ) -> dict:
                 """get_result() with auth parking, for queue fan-out waves.
 
@@ -746,7 +764,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     except RoteMcpAuthNeeded:
                         attempts_since_park += 1
                         if attempts_since_park >= 2:
-                            _park_for_auth(server)
+                            _park_for_auth(server, node)
                             attempts_since_park = 0
                         handle = enqueue()
             '''

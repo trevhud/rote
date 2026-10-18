@@ -34,7 +34,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rote._dbos import dbos_system_database_url as _dbos_system_database_url
 from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
@@ -42,6 +42,9 @@ from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
 from rote.inference import build_subscription_env
 from rote.ir import NodeKind, Pipeline
+
+if TYPE_CHECKING:
+    from rote.mcp.parked import ParkWatchFactory
 
 RESULT_FILENAME = "result.json"
 MCP_CONFIG_FILENAME = "mcp-config.json"
@@ -409,6 +412,7 @@ def run_pipeline_trial(
     signals: dict[str, Any] | None = None,
     python_executable: str | None = None,
     timeout_seconds: float = 600.0,
+    park_watch: ParkWatchFactory | None = None,
 ) -> MeasuredRun:
     """Run the emitted pipeline once and measure it.
 
@@ -417,8 +421,12 @@ def run_pipeline_trial(
     gated DBOS pipelines, ``signals`` maps each gate's signal name to
     its resume payload — delivered cross-process via ``DBOSClient``
     against the app's SQLite system database. Real judge usage is
-    captured via the emitted ``$ROTE_USAGE_LOG`` hook.
+    captured via the emitted ``$ROTE_USAGE_LOG`` hook. ``park_watch``
+    (``rote run``) builds an :class:`rote.mcp.parked.AuthParkWatcher`
+    that reports and resolves MCP auth parks of a DBOS app while it runs.
     """
+    from rote.mcp.parked import DbosAuthChannel, app_parks_on_auth, wait_for_exit
+
     app_path = Path(app_dir).resolve()
     main_py = app_path / "main.py"
     if not main_py.is_file():
@@ -452,13 +460,18 @@ def run_pipeline_trial(
             proc = subprocess.Popen(
                 args, cwd=app_path, env=env, stdout=out_f, stderr=err_f, text=True
             )
+            watcher = (
+                park_watch(DbosAuthChannel(_dbos_system_database_url(app_path), stderr_path))
+                if park_watch is not None and is_dbos and app_parks_on_auth(app_path)
+                else None
+            )
             try:
                 if is_dbos and signals:
                     workflow_id = _wait_for_workflow_id(
                         stderr_path, proc, deadline=started + min(60.0, timeout_seconds)
                     )
                     _send_dbos_signals(_dbos_system_database_url(app_path), workflow_id, signals)
-                proc.wait(timeout=timeout_seconds - (time.monotonic() - started))
+                wait_for_exit(proc, deadline=started + timeout_seconds, watcher=watcher)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
@@ -475,6 +488,9 @@ def run_pipeline_trial(
                 proc.kill()
                 proc.wait()
                 raise
+            finally:
+                if watcher is not None:
+                    watcher.close()
         wall = time.monotonic() - started
 
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")

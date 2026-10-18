@@ -31,6 +31,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
+from rote.mcp.parked import LogMarkerChannel, ParkWatchFactory, app_parks_on_auth
 from rote.runners._node import (
     ensure_npm_install,
     find_free_port,
@@ -86,6 +87,7 @@ def run_cloudflare(
     signals: dict[str, Any],
     gate_order: list[str],
     timeout_seconds: float = 600.0,
+    park_watch: ParkWatchFactory | None = None,
 ) -> MeasuredRun:
     """Run an emitted Cloudflare Workflows app once under ``wrangler dev``.
 
@@ -94,6 +96,13 @@ def run_cloudflare(
     payload from ``signals``. The measured wall clock covers the
     workflow run itself (create → terminal), not npm install or the
     wrangler cold start.
+
+    ``park_watch`` reports MCP auth parks from the marker the emitted
+    park prints (workerd console output lands in the wrangler log). It
+    cannot release them: a Worker reads its own secrets, never the local
+    token store, so the watcher shows the export fix instead. An auth
+    park also looks parked to the stability heuristic, so while one is
+    active no gate payload is spent on it.
     """
     ensure_npm_install(app_dir)
     port = find_free_port()
@@ -114,9 +123,27 @@ def run_cloudflare(
             instance_id = str(create["id"])
             pending = [(g, signals[g]) for g in gate_order if g in signals]
 
+            watcher = None
+            if park_watch is not None and app_parks_on_auth(app_dir):
+
+                def remote_fix(server: str) -> str:
+                    return (
+                        "a Worker reads its own secrets, not the local token store: "
+                        f"rote mcp login {server}, then rote mcp export {server} >> "
+                        f"{app_dir / '.dev.vars'} and re-run (Ctrl-C this one)"
+                    )
+
+                watcher = park_watch(
+                    LogMarkerChannel(log_path, None, run_id=instance_id, remote_fix=remote_fix)
+                )
+
             while True:
                 state = _wait_until_parked_or_complete(port, instance_id, deadline=deadline)
                 status = state.get("status")
+                if status not in ("complete", "errored", "terminated") and watcher is not None:
+                    deadline += watcher.tick()
+                    if watcher.has_active_park:
+                        continue
                 if status == "complete":
                     wall = time.monotonic() - started
                     output = state.get("output")

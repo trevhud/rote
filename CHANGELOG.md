@@ -34,6 +34,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [0.14.0] - 2026-10-18
 
 ### Added
+- **`rote run` shows an MCP auth park instead of hanging.** On dbos,
+  dbos-ts, inngest and cloudflare, a run that parks on a missing or dead
+  MCP credential prints which node is waiting, on which server, and the
+  command that fixes it. On a terminal it offers the browser login in
+  place and releases the run. Piped or in CI it never prompts and
+  instead releases the run once the server's credentials change (for
+  example after `rote mcp login` in another terminal). Emitted parks now
+  name their node: the DBOS `rote_auth_status` event carries `node` and
+  a per-run `park` number, and
+  the Inngest and Cloudflare parks print a `rote-auth-park` marker line
+  before waiting.
+- `rote mcp parked [server] [--json]` lists workflows parked on auth
+  across the registered DBOS apps without releasing them.
 - `rote compile --no-mcp` skips live MCP discovery and calls for local
   `api` and `openai-api` compilation. `rote analyze` accepts the same
   opt-out. Emitted MCP bindings and default discovery behavior stay
