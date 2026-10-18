@@ -54,7 +54,7 @@ exactly the gate and its edges.
 
 ## Run it
 
-From the repo root, after `pip install 'rote-cli[dbos]'`:
+From the repo root, after `uv tool install 'rote-cli[dbos]'` (or `pip install` into a venv):
 
 ```sh
 # Plain Python, no gate: a draft report.
@@ -66,7 +66,7 @@ rote emit examples/expense-audit/expected/pipeline.yaml --out /tmp/expense-audit
 rote run /tmp/expense-audit-dbos --input examples/expense-audit/input.json \
   --signal controller_review='{"reviewer": "Priya Shah", "approved_ids": ["EXP-2403", "EXP-2413", "EXP-2420"], "rejected_ids": ["EXP-2410"]}'
 
-# Temporal (needs `rote-cli[temporal]`; first run downloads the dev server).
+# Temporal: needs the temporal extra and a release newer than 0.14.0. The first run downloads the dev server.
 rote emit examples/expense-audit/expected/pipeline.yaml --runtime temporal --out /tmp/expense-audit-temporal
 rote run /tmp/expense-audit-temporal --input examples/expense-audit/input.json \
   --signal controller_review='{"reviewer": "Priya Shah", "approved_ids": ["EXP-2403", "EXP-2413", "EXP-2420"], "rejected_ids": ["EXP-2410"]}'

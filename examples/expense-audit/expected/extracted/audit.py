@@ -29,6 +29,15 @@ RECEIPT_THRESHOLD_USD = Decimal("25.00")
 REPORT_LIMIT_USD = Decimal("2500.00")
 
 
+#: Prefix of a report-level finding's id. Each employee's gets its own id
+#: so the controller can approve one over-limit report and reject another.
+REPORT_FINDING_PREFIX = "REPORT:"
+
+
+def report_finding_id(employee: str) -> str:
+    return f"{REPORT_FINDING_PREFIX}{employee}"
+
+
 def _usd(value: Decimal) -> str:
     return f"${value:,.2f}"
 
@@ -66,12 +75,23 @@ def _line_findings(
         if category == "lodging":
             cap *= int(expense.get("nights") or 1)
         if amount > cap:
-            found.append(("over_cap", "review", f"{_usd(amount)} over the {_usd(cap)} {category} cap"))
+            found.append(
+                (
+                    "over_cap",
+                    "review",
+                    (
+                        f"{_usd(amount)} exceeds the {_usd(cap)} {category} cap "
+                        f"by {_usd(amount - cap)}"
+                    ),
+                )
+            )
 
     if amount >= RECEIPT_THRESHOLD_USD and not expense["receipt"]:
         found.append(("receipt_missing", "block", f"no receipt on a {_usd(amount)} line"))
     if expense["id"] in duplicate_ids:
-        found.append(("duplicate", "block", "same employee, merchant, amount, and date as an earlier line"))
+        found.append(
+            ("duplicate", "block", "same employee, merchant, amount, and date as an earlier line")
+        )
     if expense["id"] in late_ids:
         found.append(("late", "review", f"dated {expense['date']}, outside the 60-day window"))
 
@@ -100,11 +120,14 @@ def audit_report(
     if total > REPORT_LIMIT_USD:
         findings.append(
             {
-                "expense_id": "(report)",
+                "expense_id": report_finding_id(report["employee"]),
                 "employee": report["employee"],
                 "rule": "report_limit",
                 "severity": "review",
-                "detail": f"report total {_usd(total)} over the {_usd(REPORT_LIMIT_USD)} limit",
+                "detail": (
+                    f"report total {_usd(total)} exceeds the {_usd(REPORT_LIMIT_USD)} "
+                    f"limit by {_usd(total - REPORT_LIMIT_USD)}"
+                ),
             }
         )
     return {

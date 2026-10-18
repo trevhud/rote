@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from extracted.audit import REPORT_FINDING_PREFIX
 from extracted.fx import to_cents
 
 REPORT_DIR_ENV = "EXPENSE_AUDIT_REPORT_DIR"
@@ -44,7 +45,8 @@ def _decisions(
     if unknown:
         raise ValueError(
             f"controller decision names id(s) that are not review items: {', '.join(unknown)} "
-            f"(review items: {', '.join(sorted(reviewable)) or 'none'}; block items cannot be approved)"
+            f"(review items: {', '.join(sorted(reviewable)) or 'none'}). "
+            "Block items cannot be approved."
         )
     both = sorted(approved & rejected)
     if both:
@@ -69,8 +71,9 @@ def _line_outcomes(summary: dict[str, Any], decisions: dict[int, str]) -> dict[s
     per_line: dict[str, list[str]] = {}
     per_report: dict[str, list[str]] = {}
     for i, f in enumerate(summary["review_queue"]):
-        bucket = per_report if f["expense_id"] == "(report)" else per_line
-        key = f["employee"] if f["expense_id"] == "(report)" else f["expense_id"]
+        report_level = f["expense_id"].startswith(REPORT_FINDING_PREFIX)
+        bucket = per_report if report_level else per_line
+        key = f["employee"] if report_level else f["expense_id"]
         bucket.setdefault(key, []).append(decisions[i])
 
     outcomes: dict[str, str] = {}

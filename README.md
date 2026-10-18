@@ -27,7 +27,7 @@ audit skill whose compiled pipeline ships with working code, so you can
 emit it and run it before you compile anything of your own:
 
 ```sh
-pip install 'rote-cli[dbos]'
+uv tool install 'rote-cli[dbos]'   # or: python3 -m venv .venv && . .venv/bin/activate && pip install 'rote-cli[dbos]'
 git clone https://github.com/trevhud/rote.git && cd rote
 rote doctor     # what's installed and authed; read-only, costs nothing
 

@@ -164,40 +164,139 @@ def test_free_first_run_on_python(
     assert report.count("| returned |") == 2
 
 
-def test_controller_cannot_approve_a_block_item() -> None:
-    """The skill's "ask again rather than guess" rule fails the step loudly."""
-    import importlib.util
+@pytest.fixture
+def extracted() -> Any:
+    """Import the example's own expected/extracted/ modules, then forget them."""
+    import importlib
     import sys
 
-    sys.path.insert(0, str(EXAMPLE / "expected"))
-    try:
-        for name in [m for m in sys.modules if m == "extracted" or m.startswith("extracted.")]:
+    def forget() -> None:
+        for name in [m for m in sys.modules if m.split(".")[0] == "extracted"]:
             del sys.modules[name]
-        spec = importlib.util.find_spec("extracted.report")
-        assert spec is not None and spec.origin == str(EXAMPLE / "expected/extracted/report.py")
-        from extracted.report import file_report  # type: ignore[import-not-found]
 
-        summary = {
-            "batch_total_usd": 50.0,
-            "employees": [],
-            "auto_approved": [],
-            "review_queue": [
-                {
-                    "expense_id": "EXP-1",
-                    "employee": "A",
-                    "rule": "duplicate",
-                    "severity": "block",
-                    "detail": "",
-                }
-            ],
-            "expenses": [{"id": "EXP-1", "employee": "A", "amount_usd": 50.0}],
-        }
-        with pytest.raises(ValueError, match="EXP-1"):
-            file_report("2026-09", summary, {"reviewer": "x", "approved_ids": ["EXP-1"]})
+    source = str(EXAMPLE / "expected")
+    forget()
+    sys.path.insert(0, source)
+    try:
+        report = importlib.import_module("extracted.report")
+        assert report.__file__ == str(EXAMPLE / "expected" / "extracted" / "report.py")
+        yield
     finally:
-        sys.path.remove(str(EXAMPLE / "expected"))
-        for name in [m for m in sys.modules if m == "extracted" or m.startswith("extracted.")]:
-            del sys.modules[name]
+        sys.path.remove(source)
+        forget()
+
+
+@pytest.mark.usefixtures("extracted")
+def test_controller_cannot_approve_a_block_item() -> None:
+    """The skill's "ask again rather than guess" rule fails the step loudly."""
+    from extracted.report import file_report  # type: ignore[import-not-found]
+
+    summary = {
+        "batch_total_usd": 50.0,
+        "employees": [],
+        "auto_approved": [],
+        "review_queue": [
+            {
+                "expense_id": "EXP-1",
+                "employee": "A",
+                "rule": "duplicate",
+                "severity": "block",
+                "detail": "",
+            }
+        ],
+        "expenses": [{"id": "EXP-1", "employee": "A", "amount_usd": 50.0}],
+    }
+    with pytest.raises(ValueError, match="EXP-1"):
+        file_report("2026-09", summary, {"reviewer": "x", "approved_ids": ["EXP-1"]})
+
+
+@pytest.mark.usefixtures("extracted")
+def test_two_over_limit_reports_take_separate_decisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each report-limit finding has its own id, so decisions can split.
+
+    Every report-level finding once shared the id "(report)", so
+    approving one over-limit employee and rejecting another raised
+    "both approved and rejected".
+    """
+    from extracted.audit import (  # type: ignore[import-not-found]
+        audit_report,
+        group_by_employee,
+        summarize_audit,
+    )
+    from extracted.fx import convert_to_usd  # type: ignore[import-not-found]
+    from extracted.report import file_report  # type: ignore[import-not-found]
+
+    def ticket(expense_id: str, employee: str, amount: float) -> dict[str, Any]:
+        return {
+            "id": expense_id,
+            "employee": employee,
+            "department": "Sales",
+            "date": "2026-09-10",
+            "category": "airfare",
+            "merchant": f"Carrier {expense_id}",
+            "amount": amount,
+            "currency": "USD",
+            "receipt": True,
+        }
+
+    # Every line is under the $900 airfare cap; both reports are over $2,500.
+    submissions = [ticket(f"EXP-{i}", "Ana Ruiz", 850.00) for i in (1, 2, 3)]
+    submissions += [ticket(f"EXP-{i}", "Ben Okafor", 880.00) for i in (4, 5, 6)]
+    expenses = convert_to_usd(submissions, "2026-09")["expenses"]
+    reports = group_by_employee(expenses)["reports"]
+    audits = [audit_report(r, duplicate_ids=[], late_ids=[]) for r in reports]
+    summary = summarize_audit(audits, expenses)
+
+    queue = summary["review_queue"]
+    assert [(f["expense_id"], f["rule"]) for f in queue] == [
+        ("REPORT:Ana Ruiz", "report_limit"),
+        ("REPORT:Ben Okafor", "report_limit"),
+    ]
+    assert queue[0]["detail"] == "report total $2,550.00 exceeds the $2,500.00 limit by $50.00"
+
+    monkeypatch.setenv("EXPENSE_AUDIT_REPORT_DIR", str(tmp_path))
+    result = file_report(
+        "2026-09",
+        summary,
+        {
+            "reviewer": "Priya Shah",
+            "approved_ids": ["REPORT:Ana Ruiz"],
+            "rejected_ids": ["REPORT:Ben Okafor"],
+        },
+    )
+    assert result["status"] == "final"
+    assert result["reimbursable_usd"] == 2550.00  # Ana's whole report
+    assert result["returned_usd"] == 2640.00  # Ben's whole report
+    assert result["pending_usd"] == 0.0
+    report = (tmp_path / "2026-09-expense-audit.md").read_text(encoding="utf-8")
+    assert "| REPORT:Ana Ruiz | Ana Ruiz | report_limit | review |" in report
+    assert report.count("| approved |") == 1
+    assert report.count("| rejected |") == 1
+
+
+@pytest.mark.usefixtures("extracted")
+def test_over_cap_detail_states_the_excess() -> None:
+    """The detail names the amount, the cap, and the excess, unambiguously."""
+    from extracted.audit import audit_report  # type: ignore[import-not-found]
+
+    meal = {
+        "id": "EXP-2403",
+        "employee": "Ana Ruiz",
+        "category": "meals",
+        "amount_usd": 130.39,
+        "receipt": True,
+        "date": "2026-09-04",
+    }
+    audit = audit_report(
+        {"employee": "Ana Ruiz", "department": "Sales", "expenses": [meal]},
+        duplicate_ids=[],
+        late_ids=[],
+    )
+    assert [f["detail"] for f in audit["findings"]] == [
+        "$130.39 exceeds the $75.00 meals cap by $55.39"
+    ]
 
 
 def test_temporal_activities_run_the_shipped_sync_modules(
