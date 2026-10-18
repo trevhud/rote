@@ -1,0 +1,14 @@
+https://api.githubcopilot.com/mcp/
+https://mcp.linear.app/mcp
+https://mcp.notion.com/mcp
+https://mcp.sentry.dev/mcp
+https://mcp.atlassian.com/v1/mcp
+https://bindings.mcp.cloudflare.com/mcp
+https://observability.mcp.cloudflare.com/mcp
+https://mcp.stripe.com
+https://mcp.supabase.com/mcp
+https://mcp.vercel.com
+https://mcp.figma.com/mcp
+https://mcp.zapier.com/api/mcp/mcp
+https://mcp.asana.com/v2/mcp
+https://mcp.hubspot.com/

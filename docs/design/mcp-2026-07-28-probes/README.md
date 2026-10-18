@@ -9,10 +9,17 @@ They check the ecosystem, not rote, so they are **not tests**:
 Rerun them before acting on the doc, or before a release that touches MCP.
 
 None of them authenticate, and none need credentials. The login-path probe
-runs rote's real OAuth code but aborts before any request with side effects:
+runs rote's real OAuth code but aborts before any request with side effects,
+using two independent guards:
 
-- it blocks the DCR `POST` before it is sent;
-- it intercepts the authorization redirect and never opens it.
+1. **Allowlist.** It first discovers each server's advertised
+   `registration_endpoint`. During the run it lets through only GET requests
+   and the POST to the MCP endpoint itself. Every other request is aborted
+   before it is sent, whatever its URL. That covers DCR at the advertised
+   endpoint, DCR at a guessed `/register` URL, a token request, and anything
+   unforeseen.
+2. **Redirect intercepted.** It intercepts the authorization redirect and
+   never opens it, so the flow cannot reach a token request.
 
 No inference anywhere.
 
@@ -41,8 +48,8 @@ uv pip install --python /tmp/rote-probe-fm4/bin/python 'fastmcp[tasks]==4.1.1' '
 
 | Appendix | Command | What it shows |
 | --- | --- | --- |
-| A1 | `python3 -I $P/probe_meta.py https://mcp.linear.app/mcp https://mcp.atlassian.com/v1/mcp ...` | RFC 9728 / 8414 metadata of hosted servers: issuer, DCR endpoint, `client_id_metadata_document_supported`, `authorization_response_iss_parameter_supported` |
-| A2 | `/tmp/rote-probe-main/bin/python -I $P/probe_login_path.py linear=https://mcp.linear.app/mcp atlassian=https://mcp.atlassian.com/v1/mcp` | Which registration path `rote mcp login` takes today, and with a CIMD URL |
+| A1 | `python3 -I $P/probe_meta.py $(cat $P/a1-servers.txt)` (the 14 servers in the appendix table) | RFC 9728 / 8414 metadata of hosted servers: issuer, DCR endpoint, `client_id_metadata_document_supported`, `authorization_response_iss_parameter_supported` |
+| A2 | `/tmp/rote-probe-main/bin/python -I $P/probe_login_path.py linear=https://mcp.linear.app/mcp atlassian=https://mcp.atlassian.com/v1/mcp cfbindings=https://bindings.mcp.cloudflare.com/mcp github=https://api.githubcopilot.com/mcp/` | Which registration path `rote mcp login` takes today, and with a CIMD URL |
 | A3 | `python3 -I $P/probe_stateless.py <url>` and `python3 -I $P/probe_modern.py <url>` | Raw wire behavior: no-initialize requests, spec-shaped 2026-07-28 requests, `server/discover` |
 | A4 | `/tmp/rote-probe-main/bin/python -I $P/probe_rote_client.py` | rote's emitted Python helper (`call_mcp_tool`) against Cloudflare docs, Context7, DeepWiki |
 | A4b | `/tmp/rote-probe-fm4/bin/python -I $P/probe_fm4_client.py` | fastmcp 4 `auto` negotiation against the same servers plus GitMCP |
