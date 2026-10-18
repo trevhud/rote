@@ -40,6 +40,7 @@ from rote._dbos import dbos_system_database_url as _dbos_system_database_url
 from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
+from rote.extras import extra_for_missing_module, install_hint
 from rote.inference import build_subscription_env
 from rote.ir import NodeKind, Pipeline
 
@@ -58,6 +59,38 @@ _TRANSPORT_TO_MCP_TYPE = {"streamable-http": "http", "sse": "sse"}
 
 class EmpiricalError(RuntimeError):
     """A trial could not be started (misconfiguration, missing deps)."""
+
+
+#: How much of a failed process's output an error message carries.
+FAILURE_EXCERPT_CHARS = 1500
+
+
+def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_CHARS) -> str:
+    """The useful part of a failed process's output, for an error message.
+
+    That is the END: a Python traceback, a DBOS retry exhaustion, or a
+    Node stack all finish with the exception that killed the process,
+    and runtime log lines pile up in front of it. A head slice of the
+    same output showed a newcomer DBOS's startup banner cut off
+    mid-word and hid the ``NotImplementedError`` entirely. When the tail
+    is a ``ModuleNotFoundError`` for a module one of rote's extras
+    provides, the install hint is appended.
+    """
+    text = (stderr or stdout).strip()
+    if len(text) > limit:
+        cut = text[-limit:]
+        newline = cut.find("\n")
+        if 0 <= newline < len(cut) - 1:
+            cut = cut[newline + 1 :]
+        text = f"[... {len(text) - len(cut)} earlier characters omitted ...]\n{cut}"
+    missing = extra_for_missing_module(stderr or stdout)
+    if missing is not None:
+        module, extra = missing
+        text += (
+            f"\nhint: the app imports `{module}`, which the {extra} extra provides: "
+            f"{install_hint(extra)}"
+        )
+    return text
 
 
 # ───────── MCP auto-wiring ─────────
@@ -308,7 +341,7 @@ def run_skill_trial(
     usage = meta.get("usage") or {}
     error: str | None = None
     if proc.returncode != 0 and output is None:
-        error = f"claude exited {proc.returncode}: {(proc.stderr or proc.stdout)[:500]}"
+        error = f"claude exited {proc.returncode}: {failure_excerpt(proc.stderr, proc.stdout)}"
     elif output is None:
         error = parse_error
     turns = meta.get("num_turns")
@@ -384,7 +417,7 @@ def _wait_for_workflow_id(stderr_path: Path, proc: subprocess.Popen[Any], deadli
         if proc.poll() is not None:
             raise EmpiricalError(
                 f"DBOS app exited (code {proc.returncode}) before starting "
-                f"a workflow:\n{text[:800]}"
+                f"a workflow:\n{failure_excerpt(text)}"
             )
         time.sleep(0.2)
     raise EmpiricalError("timed out waiting for the DBOS app to report a workflow id")
@@ -395,7 +428,7 @@ def _send_dbos_signals(system_database_url: str, workflow_id: str, signals: dict
         from dbos import DBOSClient
     except ImportError as e:
         raise EmpiricalError(
-            "signaling a gated pipeline requires the dbos extra: pip install 'rote-cli[dbos]'"
+            f"signaling a gated pipeline requires the dbos extra: {install_hint('dbos')}"
         ) from e
     client = DBOSClient(system_database_url=system_database_url)
     # DBOS notifications persist per-topic, so sending before the
@@ -509,7 +542,7 @@ def run_pipeline_trial(
         return MeasuredRun(
             wall_seconds=wall,
             output=None,
-            error=f"pipeline exited {proc.returncode}: {(stderr or stdout)[:800]}",
+            error=f"pipeline exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
             judge_usage=tuple(usage_rows),
         )
     try:
@@ -518,7 +551,7 @@ def run_pipeline_trial(
         error = None
     except json.JSONDecodeError:
         output = None
-        error = f"pipeline stdout was not JSON: {stdout[:300]}"
+        error = f"pipeline stdout was not JSON:\n{failure_excerpt(stdout)}"
     return MeasuredRun(wall_seconds=wall, output=output, error=error, judge_usage=tuple(usage_rows))
 
 

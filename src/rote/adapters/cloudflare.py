@@ -36,6 +36,7 @@ from typing import Literal
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
+    STUB_SENTINEL,
     EmitResult,
     EmitWriter,
     _execution_waves,
@@ -43,6 +44,7 @@ from rote.adapters._common import (
     _to_camel_case,
     check_input_refs_available,
     fan_out_nodes,
+    override_env_vars,
     pipeline_identity,
     safe_block_comment_line,
     workflow_class_name,
@@ -67,7 +69,6 @@ from rote.adapters._ts_common import (
     llm_clients,
     mcp_backed_nodes,
     module_imports,
-    override_env_vars,
     payload_ts_literal,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
@@ -861,7 +862,7 @@ def emit_extracted_module(node: Node) -> str:
     # Replace the annotation with your concrete output type when you
     # fill in the implementation.
     if node.kind is NodeKind.AGENT_LOOP:
-        msg = f'"agent_loop {node.id}: requires an agent runtime — implement me"'
+        msg = f'"{STUB_SENTINEL} agent_loop {node.id}: requires an agent runtime — implement me"'
         body = [
             "",
             'import { type Env } from "../workflow";',
@@ -875,7 +876,7 @@ def emit_extracted_module(node: Node) -> str:
             "",
         ]
     else:
-        msg = f'"{node.kind.value} {node.id}: stub not implemented"'
+        msg = f'"{STUB_SENTINEL} {node.kind.value} {node.id}: stub not implemented"'
         body = [
             "",
             f"export async function {fn_name}(_input: unknown): Promise<never> {{",

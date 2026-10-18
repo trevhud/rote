@@ -158,7 +158,7 @@ def test_api_driver_reports_missing_package_when_anthropic_not_importable(
         driver = AnthropicApiDriver()
         available, reason = driver.is_available()
         assert available is False
-        assert "rote[api]" in reason
+        assert "rote-cli[api]" in reason
 
 
 # ───────── auto_detect() behavior ─────────

@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from rote.config import user_config_path, write_config
+from rote.extras import install_hint
 
 #: Runtime menu: (name, one-line pitch). Order = recommendation order,
 #: matching the compile default (dbos) first for the local path.
@@ -81,7 +82,7 @@ def run_wizard(
         echo(f"  {mark} {driver['name']}{suffix}")
     missing = [r["name"] for r in report["runtimes"] if not r["installed"]]
     if missing:
-        echo(f"Runtime extras not installed (pip install 'rote-cli[<name>]'): {', '.join(missing)}")
+        echo(f"Runtime extras not installed ({install_hint('<name>')}): {', '.join(missing)}")
     echo("")
 
     values: dict[str, str] = {}

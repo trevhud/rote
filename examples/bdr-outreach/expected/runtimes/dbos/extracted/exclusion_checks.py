@@ -23,7 +23,8 @@ def check_do_not_contact(**payload: Any) -> Any:
     conditional.
     """
     raise NotImplementedError(
-        "exclusion_checks.check_do_not_contact: implement against the vendor API"
+        "[rote stub] exclusion_checks.check_do_not_contact: "
+        "implement against the vendor API"
     )
 
 
@@ -42,7 +43,8 @@ def check_recently_emailed(**payload: Any) -> Any:
       direction = 'OUTBOUND'
     """
     raise NotImplementedError(
-        "exclusion_checks.check_recently_emailed: implement against the vendor API"
+        "[rote stub] exclusion_checks.check_recently_emailed: "
+        "implement against the vendor API"
     )
 
 
@@ -57,5 +59,6 @@ def check_active_sequence(**payload: Any) -> Any:
     conditional.
     """
     raise NotImplementedError(
-        "exclusion_checks.check_active_sequence: implement against the vendor API"
+        "[rote stub] exclusion_checks.check_active_sequence: "
+        "implement against the vendor API"
     )

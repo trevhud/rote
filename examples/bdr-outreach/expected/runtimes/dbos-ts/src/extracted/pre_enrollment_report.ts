@@ -9,5 +9,5 @@
  */
 
 export async function preEnrollmentReport(_input: unknown): Promise<never> {
-    throw new Error("pure_function pre_enrollment_report: stub not implemented");
+    throw new Error("[rote stub] pure_function pre_enrollment_report: stub not implemented");
 }

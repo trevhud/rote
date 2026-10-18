@@ -41,7 +41,7 @@ from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPo
 from rote.mcp import clear_token_file, write_token_file
 from rote.mcp.release import release_parked_workflows
 
-dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
+dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
 
 pytestmark = pytest.mark.slow
 

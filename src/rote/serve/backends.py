@@ -24,6 +24,7 @@ import re
 import uuid
 from typing import Any
 
+from rote.extras import install_hint
 from rote.serve.registry import (
     CloudflareTrigger,
     DbosTrigger,
@@ -94,7 +95,7 @@ async def _temporal_client(trigger: TemporalTrigger) -> Any:
         from temporalio.client import Client
     except ImportError as e:  # pragma: no cover - environment-dependent
         raise BackendError(
-            "temporalio is not installed. Install the Temporal extra: pip install 'rote[temporal]'"
+            f"temporalio is not installed. Install the Temporal extra: {install_hint('temporal')}"
         ) from e
 
     try:
@@ -241,7 +242,7 @@ async def _dbos_client(trigger: DbosTrigger) -> Any:
         from dbos import DBOSClient
     except ImportError as e:  # pragma: no cover - environment-dependent
         raise BackendError(
-            "dbos is not installed. Install the DBOS extra: pip install 'rote[dbos]'"
+            f"dbos is not installed. Install the DBOS extra: {install_hint('dbos')}"
         ) from e
 
     # Construction connects eagerly (DBOSClient runs a connection check),

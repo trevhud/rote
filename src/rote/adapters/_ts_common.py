@@ -40,7 +40,9 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     _to_camel_case,
     _to_pascal_case,
+    override_env_vars,
     safe_block_comment_line,
+    temperature_env_var,
 )
 from rote.ir import (
     LLMSignature,
@@ -157,33 +159,6 @@ def json_schema_to_zod(schema: dict[str, Any], indent: int = 0) -> str:
 
 
 # ───────── signatures/<id>.ts emission ─────────
-
-
-def override_env_vars(node_id: str) -> tuple[str, str]:
-    """The per-node operator-override env var names for a judge.
-
-    ``ROTE_MODEL_<ID>`` swaps the model; ``ROTE_BASE_URL_<ID>`` points the
-    vendor SDK at a different endpoint (proxy, gateway, OpenAI-compatible
-    server). Same convention as the Python (DBOS) emitter, so operators
-    learn one knob regardless of target runtime. ``node_id`` is a
-    validated identifier, so uppercasing it yields a safe env var name.
-    """
-    suffix = node_id.upper()
-    return f"ROTE_MODEL_{suffix}", f"ROTE_BASE_URL_{suffix}"
-
-
-def temperature_env_var(node_id: str) -> str:
-    """The per-node ``temperature`` override env var name.
-
-    Kept separate from :func:`override_env_vars` (whose two-tuple shape
-    several emitters unpack) because it is only emitted for judges whose
-    IR actually sets a temperature. Setting it to an empty string drops
-    the parameter from the request entirely — current Anthropic models
-    reject ``temperature`` with a 400, so an operator retargeting
-    ``ROTE_MODEL_<ID>`` at a newer model needs a way out that does not
-    require re-emitting.
-    """
-    return f"ROTE_TEMPERATURE_{node_id.upper()}"
 
 
 def _temperature_block(node_id: str, temperature: float | None) -> tuple[str, str, str]:

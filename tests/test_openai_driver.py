@@ -553,7 +553,7 @@ def test_is_available_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("rote.compiler.drivers.openai_api._OPENAI_AVAILABLE", False)
     available, reason = OpenAIApiDriver(model="x").is_available()
     assert available is False
-    assert "rote[openai-api]" in reason
+    assert "rote-cli[openai-api]" in reason
 
 
 def test_client_kwargs_omitted_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:

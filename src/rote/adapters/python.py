@@ -66,6 +66,7 @@ from rote.adapters._common import (
     _to_pascal_case,
     check_input_refs_available,
     fan_out_nodes,
+    judge_override_readme,
     refuse_mcp_only_nodes,
     safe_docstring_line,
 )
@@ -539,16 +540,7 @@ def emit_requirements(pipeline: Pipeline) -> str:
 
 
 def emit_readme(pipeline: Pipeline, cfg: PythonAdapterConfig) -> str:
-    judges = pipeline.nodes_by_kind(NodeKind.LLM_JUDGE)
-    judge_note = (
-        "LLM judge steps call the vendor SDK directly and read the standard\n"
-        "`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each\n"
-        "judge also honors per-node `ROTE_MODEL_<NODE_ID>` and\n"
-        "`ROTE_BASE_URL_<NODE_ID>` overrides, so you can swap the model or\n"
-        "point at an OpenAI-compatible endpoint without re-emitting.\n"
-        if judges
-        else "This pipeline has no LLM-judge nodes — no API keys required.\n"
-    )
+    judge_note = judge_override_readme(pipeline)
     # Dedent BEFORE interpolating: a multi-line interpolated value would put
     # column-0 lines inside the template, making dedent a no-op and shipping
     # the whole README indented (Markdown renders that as one code block).

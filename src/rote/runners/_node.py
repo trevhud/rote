@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from rote.eval.empirical import EmpiricalError
+from rote.eval.empirical import EmpiricalError, failure_excerpt
 
 NPM_INSTALL_TIMEOUT_SECONDS = 300.0
 
@@ -71,7 +71,7 @@ def ensure_npm_install(app_dir: Path, *extra_args: str) -> None:
     )
     if proc.returncode != 0:
         raise EmpiricalError(
-            f"npm install failed in {app_dir}:\n{(proc.stderr or proc.stdout)[:800]}"
+            f"npm install failed in {app_dir}:\n{failure_excerpt(proc.stderr, proc.stdout)}"
         )
 
 

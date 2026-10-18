@@ -144,6 +144,41 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   prior (default 10, `--prior` to override). The scorecard's
   Assumptions section lists each fanned node's width and source. Elements
   run concurrently, so they multiply tokens and dollars but not wall time.
+- **First-run CLI output, from a fresh-install test of 0.13.0.**
+  - Every install hint now says `rote-cli[...]` (`rote doctor`, the api and
+    openai-api drivers, `rote serve`, the serve backends). The `rote`
+    package on PyPI is an unrelated library. All hints come from
+    `rote.extras.install_hint`; a test fails on a bare `rote[`, or a
+    hand-typed `rote-cli[`, anywhere in `src/` outside `rote/extras.py`.
+  - `rote run` checks the runtime's extra before starting (dbos, temporal)
+    and prints the install hint instead of a `ModuleNotFoundError`
+    traceback. When an app subprocess dies on a missing module that an
+    extra provides, the error ends with the same hint.
+  - `rote run` refuses an emitted dir whose `extracted/` modules are still
+    stubs, listing the files, before any retries run. Previously a stub's
+    `NotImplementedError` was retried for about 10 seconds first.
+    `--allow-stubs` starts the run anyway. A stub is a function that raises
+    with the `[rote stub]` sentinel rote now puts in every emitted stub, or
+    (Python) one whose whole body is `raise NotImplementedError`, so a real
+    module that raises it on an unsupported branch is not refused.
+  - A failed runner subprocess now shows the end of its output, where the
+    exception is, not the first 800 characters of startup logs cut off
+    mid-word.
+  - Plain-text `rote emit` and `rote compile` print the stub count, each
+    stub path, and the next `rote run` step. Text, `--json`, and the
+    preflight read the same manifest-based stub list. Output whose code
+    imports its implementations from outside the emitted dir says the stubs
+    are "not tracked" (and `--json` carries `stubs_tracked: false`) instead
+    of reporting none.
+  - `--json` commands that fail without printing a result now write
+    `{"ok": false, "exit_code": N, "error": "..."}` to stdout, keeping the
+    exit code. This is enforced once in `main()` for every `--json` command.
+  - `rote run --help` lists the runtimes it actually runs (all six), and
+    `--model` help reads the default model from the driver constant.
+  - Emitted READMEs (dbos, dbos-ts, python) document the env knobs of the
+    pipeline's real judges, or say there are none, instead of a
+    `ROTE_MODEL_VET_CONTACT` example on pipelines with no judges.
+  - `rote config` columns line up for every key, including `inference`.
 
 ## [0.14.0] - 2026-10-18
 

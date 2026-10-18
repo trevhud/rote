@@ -8,7 +8,7 @@ Three pieces, three files:
   documented cross-language contract shared with the emitted
   TypeScript runtimes.
 - :mod:`rote.mcp.auth` — the OAuth dance and refresh, via fastmcp's
-  client (optional dependency; ``pip install 'rote-cli[mcp]'``).
+  client (optional dependency: the ``mcp`` extra, see :mod:`rote.extras`).
 """
 
 from rote.mcp.auth import McpAuthError, fresh_access_token, login

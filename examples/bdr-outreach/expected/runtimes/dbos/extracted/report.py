@@ -19,5 +19,6 @@ def generate_pre_enrollment_report(**payload: Any) -> Any:
     STUB — replace with the deterministic API call.
     """
     raise NotImplementedError(
-        "report.generate_pre_enrollment_report: implement against the vendor API"
+        "[rote stub] report.generate_pre_enrollment_report: "
+        "implement against the vendor API"
     )

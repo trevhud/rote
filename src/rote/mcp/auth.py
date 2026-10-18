@@ -8,7 +8,7 @@ open: durable storage (:class:`rote.mcp.tokens.ServerTokenKV`),
 pre-registered client credentials for DCR-less servers (from the
 registry), and a no-browser mode for SSH boxes.
 
-fastmcp is an optional dependency (`pip install 'rote-cli[mcp]'`) —
+fastmcp is an optional dependency (the `mcp` extra, see `rote.extras`) —
 everything here imports it lazily and fails with that hint.
 """
 
@@ -18,6 +18,7 @@ import sys
 import webbrowser
 from typing import Any
 
+from rote.extras import install_hint
 from rote.mcp.registry import McpServerConfig
 from rote.mcp.tokens import (
     ServerTokenKV,
@@ -36,7 +37,7 @@ def _require_fastmcp() -> Any:
         import fastmcp
     except ImportError as e:
         raise McpAuthError(
-            "MCP auth requires the fastmcp client — install it with: pip install 'rote-cli[mcp]'"
+            f"MCP auth requires the fastmcp client — install it with: {install_hint('mcp')}"
         ) from e
     return fastmcp
 

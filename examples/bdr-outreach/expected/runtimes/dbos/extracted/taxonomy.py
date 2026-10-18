@@ -19,5 +19,6 @@ def resolve_taxonomy_ids(**payload: Any) -> Any:
     STUB — replace with the deterministic API call.
     """
     raise NotImplementedError(
-        "taxonomy.resolve_taxonomy_ids: implement against the vendor API"
+        "[rote stub] taxonomy.resolve_taxonomy_ids: "
+        "implement against the vendor API"
     )

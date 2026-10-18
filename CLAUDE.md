@@ -314,6 +314,35 @@ drops the parameter entirely (`_sampling_kwargs()` in Python,
 a literal keyword argument: a baked constant cannot be escaped without
 a re-emit, which defeats the model-override knob next to it.
 
+### First-run output: three contracts that live in one place each
+
+Found by a fresh-install run of the published wheel, where every one of
+these read fine to someone who already knew the answer:
+
+- **Install hints come from `rote.extras.install_hint`.** The PyPI
+  distribution is `rote-cli`; `rote` is somebody else's package, so a
+  hand-typed `pip install rote[api]` installs the wrong thing.
+  `tests/test_first_run_output.py` fails on the bare form, and on a
+  hand-typed `rote-cli[` outside `rote/extras.py`.
+- **A failed subprocess reports its tail** (`rote.eval.empirical.failure_excerpt`).
+  The exception is at the end; a `[:800]` head slice showed a newcomer
+  DBOS's startup banner cut off mid-word and nothing else.
+- **`--json` always puts one object on stdout.** `main()` wraps every
+  `--json` handler; a nonzero exit with empty stdout gets
+  `{"ok": false, "exit_code", "error"}` built from the `error:` line the
+  handler printed. New error paths only need the usual
+  `print(f"error: ...", file=sys.stderr)`.
+
+`rote run` also refuses stubs up front (`rote.runners.preflight_pipeline`,
+reading the emit manifest via `rote.adapters._common.unimplemented_stubs`),
+so a stub never burns a durable runtime's retry budget before failing.
+A stub is a function raising with `STUB_SENTINEL` (`[rote stub]`, in
+every stub rote emits) or, in Python, one whose whole body is `raise
+NotImplementedError` (the shape compile agents write). Never go back to a
+`NotImplementedError` substring match: a real module that raises it on an
+unsupported branch was refused with no way past it. `--allow-stubs` is
+the escape hatch.
+
 ### Vendor SDK errors do not survive a durable step boundary
 
 `anthropic.APIError` / `openai.APIError` subclasses take keyword-only

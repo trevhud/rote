@@ -13,5 +13,5 @@
  */
 
 export async function hubspotCreateList(_input: unknown): Promise<never> {
-    throw new Error("external_call hubspot_create_list: stub not implemented");
+    throw new Error("[rote stub] external_call hubspot_create_list: stub not implemented");
 }

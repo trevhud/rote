@@ -101,6 +101,7 @@ from typing import Literal
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
+    STUB_SENTINEL,
     EmitWriter,
     _execution_waves,
     _pipeline_hash,
@@ -376,9 +377,9 @@ def emit_extracted_module(node: Node) -> str:
     # the annotation with your concrete output type when you fill in
     # the implementation.
     if node.kind is NodeKind.AGENT_LOOP:
-        msg = f'"agent_loop {node.id}: requires an agent runtime — implement me"'
+        msg = f'"{STUB_SENTINEL} agent_loop {node.id}: requires an agent runtime — implement me"'
     else:
-        msg = f'"{node.kind.value} {node.id}: stub not implemented"'
+        msg = f'"{STUB_SENTINEL} {node.kind.value} {node.id}: stub not implemented"'
     body = [
         "",
         f"export async function {fn_name}(_input: unknown): Promise<never> {{",

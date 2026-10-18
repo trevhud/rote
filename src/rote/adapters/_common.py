@@ -11,6 +11,7 @@ once the second adapter proved the helpers were genuinely shared.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -27,6 +28,86 @@ from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
+
+# ───────── Judge operator knobs ─────────
+#
+# One naming convention for every runtime, Python and TypeScript alike,
+# so operators learn one set of knobs. The emitted code and the emitted
+# README both derive the names from here.
+
+
+def override_env_vars(node_id: str) -> tuple[str, str]:
+    """The per-node operator-override env var names for a judge.
+
+    ``ROTE_MODEL_<ID>`` swaps the model; ``ROTE_BASE_URL_<ID>`` points the
+    vendor SDK at a different endpoint (proxy, gateway, OpenAI-compatible
+    server). Same convention as the Python (DBOS) emitter, so operators
+    learn one knob regardless of target runtime. ``node_id`` is a
+    validated identifier, so uppercasing it yields a safe env var name.
+    """
+    suffix = node_id.upper()
+    return f"ROTE_MODEL_{suffix}", f"ROTE_BASE_URL_{suffix}"
+
+
+def temperature_env_var(node_id: str) -> str:
+    """The per-node ``temperature`` override env var name.
+
+    Kept separate from :func:`override_env_vars` (whose two-tuple shape
+    several emitters unpack) because it is only emitted for judges whose
+    IR actually sets a temperature. Setting it to an empty string drops
+    the parameter from the request entirely — current Anthropic models
+    reject ``temperature`` with a 400, so an operator retargeting
+    ``ROTE_MODEL_<ID>`` at a newer model needs a way out that does not
+    require re-emitting.
+    """
+    return f"ROTE_TEMPERATURE_{node_id.upper()}"
+
+
+def judge_override_readme(pipeline: Pipeline) -> str:
+    """The emitted README's paragraph on judge credentials and env knobs.
+
+    Derived from the pipeline's actual judges: each one with a
+    ``signature_spec`` gets its real ``ROTE_MODEL_<ID>`` /
+    ``ROTE_BASE_URL_<ID>`` names (plus ``ROTE_TEMPERATURE_<ID>`` when the
+    IR sets a temperature). A pipeline with no judges says so instead of
+    documenting knobs for a node that does not exist. Legacy
+    ``signature: path:Class`` judges are user code and read no knobs.
+    """
+    judges = pipeline.nodes_by_kind(NodeKind.LLM_JUDGE)
+    if not judges:
+        return "This pipeline has no LLM-judge nodes, so it needs no model API keys.\n"
+    lines = [
+        "LLM judge steps call the vendor SDK directly and read the standard",
+        "`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables.",
+    ]
+    knobbed = [n for n in judges if n.signature_spec is not None]
+    if not knobbed:
+        return "\n".join(lines) + "\n"
+    lines += [
+        "Each judge also honors per-node overrides, so operators can change",
+        "the model or point at an OpenAI-compatible endpoint (Ollama, vLLM,",
+        "a gateway) without re-emitting:",
+        "",
+        "```sh",
+    ]
+    rows: list[tuple[str, str]] = []
+    for node in knobbed:
+        model_var, base_var = override_env_vars(node.id)
+        rows.append((f"export {model_var}=...", f"`{node.id}`: model id"))
+        rows.append((f"export {base_var}=...", f"`{node.id}`: custom endpoint"))
+        assert node.signature_spec is not None
+        if node.signature_spec.temperature is not None:
+            rows.append(
+                (
+                    f"export {temperature_env_var(node.id)}=...",
+                    f"`{node.id}`: empty value drops the parameter",
+                )
+            )
+    width = max(len(cmd) for cmd, _ in rows)
+    lines += [f"{cmd.ljust(width)}  # {note}" for cmd, note in rows]
+    lines.append("```")
+    return "\n".join(lines) + "\n"
+
 
 # ───────── Prose → safe code comment/docstring ─────────
 
@@ -193,6 +274,108 @@ class EmitWriter:
             json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+#: Carried in the error message of every stub function rote emits, Python
+#: and TypeScript alike. A module is a stub while any function in it still
+#: raises with this sentinel, which survives the user filling in some of a
+#: module's functions and not others.
+STUB_SENTINEL = "[rote stub]"
+
+
+def _raises_not_implemented(stmt: ast.stmt) -> bool:
+    if not isinstance(stmt, ast.Raise) or stmt.exc is None:
+        return False
+    exc = stmt.exc.func if isinstance(stmt.exc, ast.Call) else stmt.exc
+    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+
+
+def _python_module_is_stub(text: str) -> bool:
+    """Whether a Python module still has a top-level stub function.
+
+    A stub function's whole body (after its docstring) is one ``raise
+    NotImplementedError``. That covers rote's own templates and the stubs
+    a compile agent writes beside the pipeline (sourced verbatim, so they
+    carry no sentinel). It deliberately does not match a real
+    implementation that raises ``NotImplementedError`` on one unsupported
+    branch: a substring match flagged those, and ``rote run`` refused to
+    start working code.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        if len(body) == 1 and _raises_not_implemented(body[0]):
+            return True
+    return False
+
+
+def _is_stub_module(path: Path, text: str) -> bool:
+    if STUB_SENTINEL in text:
+        return True
+    return path.suffix == ".py" and _python_module_is_stub(text)
+
+
+def unimplemented_stubs(output_dir: str | Path) -> list[Path]:
+    """The emitted ``extracted/`` modules in ``output_dir`` that are still stubs.
+
+    The file list comes from the emit manifest, so this works the same on
+    every runtime's layout (``extracted/x.py``, ``src/extracted/x.ts``)
+    and for any later reader of the directory (``rote emit``'s report,
+    ``rote run``'s preflight). "Still a stub" is read off disk: a module
+    drops off the list once none of its functions is still a stub, either
+    a function raising with :data:`STUB_SENTINEL` or (Python) one whose
+    whole body is ``raise NotImplementedError``. A directory with no
+    manifest (not emitted by rote) has no known stubs; see
+    :func:`stubs_tracked`.
+    """
+    root = Path(output_dir).resolve()
+    manifest = root / MANIFEST_NAME
+    if not manifest.is_file():
+        return []
+    files = json.loads(manifest.read_text(encoding="utf-8")).get("files") or {}
+    stubs: list[Path] = []
+    for rel in files:
+        parts = rel.split("/")
+        if "extracted" not in parts[:-1] or parts[-1].split(".", 1)[0] == "__init__":
+            continue
+        path = root / rel
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if _is_stub_module(path, text):
+            stubs.append(path)
+    return sorted(stubs)
+
+
+def stubs_tracked(output_dir: str | Path, pipeline: Pipeline) -> bool:
+    """Whether :func:`unimplemented_stubs` can vouch for ``output_dir``.
+
+    True when the pipeline needs no implementation modules at all, or when
+    the emit put its ``extracted/`` modules in this directory. False for an
+    output whose code imports implementations from somewhere else (the
+    temporal adapter before it emitted ``extracted/``), where an empty
+    stub list would wrongly read as "nothing left to implement".
+    """
+    if not any(n.impl for n in pipeline.nodes):
+        return True
+    manifest = Path(output_dir).resolve() / MANIFEST_NAME
+    if not manifest.is_file():
+        return False
+    files = json.loads(manifest.read_text(encoding="utf-8")).get("files") or {}
+    return any("extracted" in rel.split("/")[:-1] for rel in files)
 
 
 class EmitResult(dict[str, Path]):

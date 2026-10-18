@@ -57,7 +57,7 @@ from .test_dbos_e2e import (
     _write_test_overlay,
 )
 
-pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
+pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
