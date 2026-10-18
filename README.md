@@ -529,7 +529,7 @@ rote/
   emitted code uses under `--backend mcp`: endpoint/credential
   resolution and durable park-on-auth across every MCP-capable runtime
 - [`docs/mcp-trigger.md`](docs/mcp-trigger.md): `rote register` +
-  `rote serve`: compiled pipelines as MCP tools (FastMCP 3.x)
+  `rote serve`: compiled pipelines as MCP tools (FastMCP 4.x)
 - [`docs/releasing.md`](docs/releasing.md): tag-driven PyPI Trusted
   Publishing
 - [`skills/rote-compile/`](skills/rote-compile/): the compiler's

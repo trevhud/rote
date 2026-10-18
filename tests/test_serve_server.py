@@ -14,9 +14,11 @@ HTTP POST.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 import threading
+from collections.abc import AsyncIterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,8 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.messages import MessageHandler
 from fastmcp.exceptions import ToolError
+from mcp.client.subscriptions import ToolsListChanged, listen
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from rote.serve import backends
 from rote.serve.registry import (
@@ -116,15 +120,15 @@ async def test_list_tools_one_trigger_plus_one_status_per_entry(registry_path: P
         "dbos-pipeline_signal",
     }
     # The trigger tool's inputSchema is exactly the registry's stored schema.
-    assert tools["bdr-campaign"].inputSchema == BDR_INPUT_SCHEMA
+    assert tools["bdr-campaign"].input_schema == BDR_INPUT_SCHEMA
     # The status tool takes only workflow_id.
-    assert tools["bdr-campaign_status"].inputSchema["required"] == ["workflow_id"]
-    assert "workflow_id" in tools["bdr-campaign_status"].inputSchema["properties"]
+    assert tools["bdr-campaign_status"].input_schema["required"] == ["workflow_id"]
+    assert "workflow_id" in tools["bdr-campaign_status"].input_schema["properties"]
     # Descriptions guide the LLM toward the polling pattern.
     assert "workflow_id" in (tools["bdr-campaign"].description or "")
     # The signal tool requires workflow_id + signal, and the register-time
     # gate list becomes an enum so the LLM can't invent topic names.
-    signal_schema = tools["dbos-pipeline_signal"].inputSchema
+    signal_schema = tools["dbos-pipeline_signal"].input_schema
     assert set(signal_schema["required"]) == {"workflow_id", "signal"}
     assert signal_schema["properties"]["signal"]["enum"] == ["contact_review_approved"]
 
@@ -230,17 +234,57 @@ class _ToolListChangedRecorder(MessageHandler):
         self.changed.set()
 
 
+@contextlib.asynccontextmanager
+async def _tool_change_watch(server: Any, era: str) -> AsyncIterator[tuple[Client, asyncio.Event]]:
+    """A connected client plus an event that fires on a tool-list change.
+
+    The two protocol eras deliver the change on different channels, and
+    the server has to serve both: a handshake-era session gets a bare
+    ``notifications/tools/list_changed``; a 2026-07-28 connection has no
+    session and only hears about changes on a ``subscriptions/listen``
+    stream it opened.
+    """
+    if era == "legacy":
+        handler = _ToolListChangedRecorder()
+        async with Client(server, message_handler=handler, mode="legacy") as client:
+            assert client.protocol_version not in MODERN_PROTOCOL_VERSIONS
+            yield client, handler.changed
+        return
+
+    changed = asyncio.Event()
+    async with Client(server) as client:
+        assert client.protocol_version in MODERN_PROTOCOL_VERSIONS
+        # Without a listen handler the SDK advertises listChanged: false on
+        # this era, and a well-behaved client would never even ask.
+        assert client.server_capabilities.tools is not None
+        assert client.server_capabilities.tools.list_changed is True
+        async with listen(client.session, tools_list_changed=True) as subscription:
+
+            async def _drain() -> None:
+                async for event in subscription:
+                    if isinstance(event, ToolsListChanged):
+                        changed.set()
+
+            drain = asyncio.create_task(_drain())
+            try:
+                yield client, changed
+            finally:
+                drain.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await drain
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("era", ["legacy", "modern"])
 async def test_register_mid_session_notifies_and_updates_tool_list(
-    registry_path: Path,
+    registry_path: Path, era: str
 ) -> None:
     """Writing a new entry to the registry while a client is connected must
-    (a) push notifications/tools/list_changed to that client and
-    (b) show the new tool on the next tools/list."""
-    handler = _ToolListChangedRecorder()
+    (a) tell that client the tool list changed, on whichever channel its
+    protocol era uses, and (b) show the new tool on the next tools/list."""
     server = build_server(registry_path, poll_interval=0.05)
 
-    async with Client(server, message_handler=handler) as client:
+    async with _tool_change_watch(server, era) as (client, changed):
         before = {t.name for t in await client.list_tools()}
         assert "new-pipeline" not in before
 
@@ -257,10 +301,43 @@ async def test_register_mid_session_notifies_and_updates_tool_list(
         )
         registry.save(registry_path)
 
-        await asyncio.wait_for(handler.changed.wait(), timeout=5.0)
+        await asyncio.wait_for(changed.wait(), timeout=5.0)
 
         after = {t.name for t in await client.list_tools()}
         assert {"new-pipeline", "new-pipeline_status"} <= after
+
+
+@pytest.mark.asyncio
+async def test_sdk_moving_the_connection_degrades_only_notifications(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Connection tracking reads a private MCP SDK attribute. If a release
+    moves it, legacy-era tool calls must keep working and the server must
+    say why notifications stopped, once, instead of failing every
+    request in the middleware."""
+    from rote.serve import server as server_module
+
+    async def fake_start(entry: RegistryEntry, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"workflow_id": "wf-1", "status": "started", "runtime": "temporal"}
+
+    monkeypatch.setattr(backends, "start_workflow", fake_start)
+    monkeypatch.setattr(server_module, "_SESSION_CONNECTION_ATTR", "_moved_in_a_future_sdk")
+    server = build_server(registry_path, poll_interval=3600.0)
+
+    with caplog.at_level("WARNING", logger="rote.serve.server"):
+        async with Client(server, mode="legacy") as client:
+            assert "bdr-campaign" in {t.name for t in await client.list_tools()}
+            result = await client.call_tool(
+                "bdr-campaign", {"drug_brand": "ExampleDrug", "target_quota": 25}
+            )
+            assert result.structured_content == {
+                "workflow_id": "wf-1",
+                "status": "started",
+                "runtime": "temporal",
+            }
+
+    warnings = [r for r in caplog.records if "cannot track handshake-era" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 @pytest.mark.asyncio
@@ -287,14 +364,14 @@ async def test_tool_list_fresh_without_notification(registry_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_corrupt_registry_survives_and_recovers(registry_path: Path) -> None:
+@pytest.mark.parametrize("era", ["legacy", "modern"])
+async def test_corrupt_registry_survives_and_recovers(registry_path: Path, era: str) -> None:
     """A corrupt registry file must not kill the watcher or pin the stale
     digest: the server keeps serving the previous tool list, and once the
     file is fixed the next poll picks it up and notifies."""
-    handler = _ToolListChangedRecorder()
     server = build_server(registry_path, poll_interval=0.05)
 
-    async with Client(server, message_handler=handler) as client:
+    async with _tool_change_watch(server, era) as (client, changed):
         before = {t.name for t in await client.list_tools()}
         assert "bdr-campaign" in before
 
@@ -302,7 +379,7 @@ async def test_corrupt_registry_survives_and_recovers(registry_path: Path) -> No
         # it must neither die nor notify.
         registry_path.write_text("{ not json", encoding="utf-8")
         await asyncio.sleep(0.3)
-        assert not handler.changed.is_set()
+        assert not changed.is_set()
 
         # Fix the file with a new entry. The watcher must still be alive to
         # see it — this fails if the corrupt poll killed the task or if the
@@ -321,7 +398,7 @@ async def test_corrupt_registry_survives_and_recovers(registry_path: Path) -> No
         )
         registry.save(registry_path)
 
-        await asyncio.wait_for(handler.changed.wait(), timeout=5.0)
+        await asyncio.wait_for(changed.wait(), timeout=5.0)
         after = {t.name for t in await client.list_tools()}
         assert "post-recovery" in after
 

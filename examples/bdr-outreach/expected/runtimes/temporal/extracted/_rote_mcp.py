@@ -35,6 +35,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, SupportsFloat
 
+#: The fastmcp range this helper is verified against. It reads MCP SDK v2
+#: field names and builds an httpx2 client, so fastmcp 3.x cannot run it.
+#: Emitted READMEs print it; tests pin it to pyproject's extras.
+FASTMCP_REQUIREMENT = "fastmcp>=4.1.1,<5"
+
 
 def _registry_servers() -> dict[str, Any]:
     path_str = os.environ.get("ROTE_MCP_CONFIG")
@@ -248,14 +253,66 @@ def token_is_usable(server: str) -> bool:
     return bool(tokens.get("refresh_token"))
 
 
-def mcp_client(server: str, pipeline_url: str | None) -> Any:
+class _HttpStatusWatch:
+    """Remembers whether the server's latest answer was a 401.
+
+    MCP SDK v2 turns a non-2xx HTTP answer into a bare JSON-RPC error
+    (``MCPError`` code -32603, "Server returned an error response") with
+    no cause chain, so the status code never reaches the caller's
+    exception (verified against fastmcp 4.1.1 / mcp 2.3.0). The only
+    place a 401 is still visible is the HTTP client itself, so the
+    transport is built with an httpx2 response hook that records it.
+
+    A 401 sets the flag and any 2xx clears it, so an OAuth refresh that
+    answers a 401 and then succeeds does not count, while a concurrent
+    non-2xx (a 405 on the optional GET stream) leaves the flag alone.
+    """
+
+    def __init__(self) -> None:
+        self.unauthorized = False
+
+    async def _on_response(self, response: Any) -> None:
+        if response.status_code == 401:
+            self.unauthorized = True
+        elif 200 <= response.status_code < 300:
+            self.unauthorized = False
+
+    def client_factory(
+        self,
+        headers: dict[str, str] | None = None,
+        timeout: Any = None,
+        auth: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """An ``McpHttpClientFactory`` (fastmcp also passes follow_redirects)."""
+        import httpx2
+
+        return httpx2.AsyncClient(
+            headers=headers,
+            # The SDK's own default: 30s connect/write/pool, a long read
+            # because a server may hold a response stream open.
+            timeout=timeout if timeout is not None else httpx2.Timeout(30.0, read=300.0),
+            auth=auth,
+            event_hooks={"response": [self._on_response]},
+            **kwargs,
+        )
+
+
+def mcp_client(
+    server: str, pipeline_url: str | None, *, http_status: _HttpStatusWatch | None = None
+) -> Any:
     """A ready fastmcp ``Client`` for ``server`` — durable OAuth when the
     user has run ``rote mcp login``, static registry headers when
-    configured, plain client otherwise. Use as an async context manager."""
+    configured, plain client otherwise. Use as an async context manager.
+
+    Pass ``http_status`` to learn afterwards whether the server's last
+    answer was a 401 (see :class:`_HttpStatusWatch`)."""
     from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
 
     url = resolve_url(server, pipeline_url)
     entry = _registry_servers().get(server) or {}
+    factory = http_status.client_factory if http_status is not None else None
 
     if has_stored_login(server):
         from fastmcp.client.auth import OAuth
@@ -273,34 +330,31 @@ def mcp_client(server: str, pipeline_url: str | None) -> Any:
             async def redirect_handler(self, authorization_url: str) -> None:
                 raise RoteMcpAuthNeeded(server, "the server requires an interactive OAuth flow")
 
-        return Client(
-            url,
-            auth=_NonInteractiveOAuth(
-                mcp_url=url,
-                client_name="rote",
-                token_storage=_TokenKV(server, url),
-                client_id=entry.get("client_id"),
-                client_secret=entry.get("client_secret"),
-            ),
+        oauth = _NonInteractiveOAuth(
+            mcp_url=url,
+            client_name="rote",
+            token_storage=_TokenKV(server, url),
+            client_id=entry.get("client_id"),
+            client_secret=entry.get("client_secret"),
         )
+        return Client(StreamableHttpTransport(url, auth=oauth, httpx_client_factory=factory))
     headers = entry.get("headers")
-    if isinstance(headers, dict) and headers:
-        from fastmcp.client.transports import StreamableHttpTransport
+    return Client(
+        StreamableHttpTransport(
+            url,
+            headers=dict(headers) if isinstance(headers, dict) and headers else None,
+            httpx_client_factory=factory,
+        )
+    )
 
-        return Client(StreamableHttpTransport(url, headers=headers))
-    return Client(url)
 
+def _find_auth_needed(exc: BaseException) -> RoteMcpAuthNeeded | None:
+    """The RoteMcpAuthNeeded hiding in an exception tree, if any.
 
-def _find_http_401(exc: BaseException) -> bool:
-    """True if an HTTP 401 hides anywhere in the exception tree.
-
-    fastmcp surfaces a bare 401 as an unwrapped httpx.HTTPStatusError
-    (verified empirically), but anyio task groups can wrap transport
-    errors in ExceptionGroups and cause-chains on other paths — walk all
-    three edges rather than trusting the top-level type.
+    The OAuth redirect handler raises it from inside the transport's
+    task group, so it can arrive wrapped in an ExceptionGroup or as the
+    cause of another error rather than at the top level.
     """
-    import httpx
-
     seen: set[int] = set()
     stack: list[BaseException] = [exc]
     while stack:
@@ -308,32 +362,45 @@ def _find_http_401(exc: BaseException) -> bool:
         if id(e) in seen:
             continue
         seen.add(id(e))
-        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
-            return True
+        if isinstance(e, RoteMcpAuthNeeded):
+            return e
         if isinstance(e, BaseExceptionGroup):
             stack.extend(e.exceptions)
         if e.__cause__ is not None:
             stack.append(e.__cause__)
         if e.__context__ is not None and not e.__suppress_context__:
             stack.append(e.__context__)
-    return False
+    return None
 
 
-def _result_payload(result: Any) -> Any:
+def _result_payload(result: Any, output_schema: Mapping[str, Any] | None = None) -> Any:
     """Extract the useful payload from a fastmcp ``CallToolResult``.
 
-    ``result.data`` is fastmcp's hydrated structured output — populated
-    only when the server declares an output schema or returns structured
-    content. Many real-world servers (the TS SDK in particular) declare
-    neither and return plain text content carrying JSON; without this
-    fallback every such call would silently yield ``None``. Text that
-    isn't JSON comes back verbatim — the workflow step decides what it
-    means.
+    The payload is plain JSON (dicts, lists, scalars) because a durable
+    runtime pickles or serializes it at the step boundary. That rules
+    out ``result.data``: for a typed output schema fastmcp hydrates it
+    into generated classes (``types.Root``) that neither pickle nor
+    JSON-encode, and hydration renames keys that are not identifiers.
+
+    In order:
+
+    - ``structured_content``, the wire value. fastmcp servers wrap a
+      non-object return as ``{"result": ...}`` and mark it (the
+      ``x-fastmcp-wrap-result`` schema flag or ``_meta.fastmcp.wrap_result``);
+      that wrapper is removed so a list-returning tool yields the list.
+    - text content. Many real-world servers (the TS SDK in particular)
+      declare no output schema and return JSON as text; without this
+      every such call would silently yield ``None``. Text that isn't
+      JSON comes back verbatim, and the workflow step decides what it
+      means.
     """
-    if result.data is not None:
-        return result.data
-    if result.structured_content is not None:
-        return result.structured_content
+    structured = result.structured_content
+    if structured is not None:
+        fastmcp_meta = (result.meta or {}).get("fastmcp")
+        wrapped = (isinstance(fastmcp_meta, dict) and fastmcp_meta.get("wrap_result")) or bool(
+            output_schema and output_schema.get("x-fastmcp-wrap-result")
+        )
+        return structured.get("result") if wrapped else structured
     # Duck-typed on `.text` so image/audio blocks are skipped without
     # importing mcp.types (this module ships verbatim in emitted apps).
     texts = [block.text for block in result.content if getattr(block, "text", None) is not None]
@@ -366,13 +433,32 @@ async def call_mcp_tool(
         raise RoteMcpAuthNeeded(
             server, "the stored access token has expired and there is no refresh token"
         )
+    http_status = _HttpStatusWatch()
     try:
-        async with mcp_client(server, pipeline_url) as client:
+        async with mcp_client(server, pipeline_url, http_status=http_status) as client:
+            # The listing is not an extra round trip. The MCP SDK's
+            # ClientSession.call_tool validates every successful result
+            # against the tool's output schema and lists tools to learn it
+            # whenever the session has not, which on a fresh client is
+            # every call, text-only results included (measured: exactly one
+            # tools/list per step either way; pinned by
+            # tests/test_mcp_ts_server_e2e.py). Listing first reuses that
+            # cache, gives _result_payload the wrap flag, and moves a
+            # listing failure ahead of the call instead of after the tool
+            # has already run its side effects.
+            schemas = {t.name: t.output_schema for t in await client.list_tools()}
             result = await client.call_tool(tool, arguments)
-            return _result_payload(result)
-    except RoteMcpAuthNeeded:
-        raise
-    except BaseException as exc:
-        if _find_http_401(exc):
+            return _result_payload(result, schemas.get(tool))
+    except Exception as exc:
+        # Exception, not BaseException: a cancellation or interrupt that
+        # lands after a 401 must cancel the step, not park it. (A
+        # BaseExceptionGroup only arises when one of its members is a
+        # BaseException, so it falls through here too.)
+        auth_needed = _find_auth_needed(exc)
+        if auth_needed is exc:
+            raise
+        if auth_needed is not None:
+            raise auth_needed from exc
+        if http_status.unauthorized:
             raise RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized") from exc
         raise

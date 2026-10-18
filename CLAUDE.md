@@ -270,18 +270,58 @@ Two regimes, don't mix them up:
   reconstruct as plain `Error`s). See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
-### fastmcp `result.data` is None on most real-world servers
+### Never return fastmcp's `result.data` from an MCP step
 
-`call_mcp_tool` in `rote.mcp._runtime_helper` must NOT be "simplified"
-back to `return result.data`: fastmcp only hydrates `.data` when the
-server declares an output schema or returns structured content. FastMCP
-servers auto-generate output schemas (which is why the wordbank e2e
-fixtures never caught this), but real-world servers — the TS SDK in
-particular — return plain text-content JSON, and `.data` is silently
-None. The helper's `_result_payload` falls back to parsing text blocks
-(regression: `tests/test_mcp_client.py::
-test_call_mcp_tool_falls_back_to_text_content`). Found live on the
-first real-server run: every MCP step returned None.
+`_result_payload` in `rote.mcp._runtime_helper` must NOT be
+"simplified" to `return result.data`. Re-verified on fastmcp 4.1.1
+against real TS-SDK servers (v1 and v2) and five hosted servers, it
+fails both ways:
+
+- **None for text-only results.** fastmcp hydrates `.data` only from
+  structured content. FastMCP servers auto-generate output schemas
+  (which is why FastMCP fixtures never caught this), but real-world
+  servers, the TS SDK in particular, return JSON as text and `.data` is
+  silently None. Found live on the first real-server run: every MCP
+  step returned None.
+- **Unpicklable for typed results.** With an output schema, `.data` is
+  a generated `types.Root` class: DBOS cannot pickle it, and keys that
+  are not identifiers come back renamed (`display-name` →
+  `display_name`). Found live against `docs.mcp.cloudflare.com`.
+
+The payload is `structured_content` (the wire value, with fastmcp's
+`{"result": ...}` wrapper removed only when the server marked it), else
+the parsed text blocks. Two things to keep: the marker is
+`_meta.fastmcp.wrap_result` on current fastmcp but only the
+`x-fastmcp-wrap-result` output-schema flag on 2.x/3.0 servers, so the
+schema is still needed; and the TS helpers apply the same rule through
+`_FASTMCP_UNWRAP_TS` (one source spliced into the Node and Workers
+helpers). The helper's explicit `list_tools()` is not an extra round
+trip, because the MCP SDK's `call_tool` lists tools itself on a fresh
+session to validate the result (measured, and pinned by
+`test_one_tools_list_per_step`). Regressions: `tests/test_mcp_client.py::
+test_result_payload_is_plain_json_from_a_real_fastmcp_server` and
+`tests/test_mcp_ts_server_e2e.py` (real TS-SDK servers, slow).
+
+### fastmcp 4 hides HTTP status codes; the helper hooks the transport
+
+MCP SDK v2 turns any non-2xx answer into a bare `MCPError` (-32603,
+"Server returned an error response") with no cause chain, and the HTTP
+stack is httpx2, not httpx. So a 401 can no longer be found by walking
+the exception for `httpx.HTTPStatusError`; that check silently matched
+nothing and park-on-auth stopped working. `_HttpStatusWatch` builds the
+transport's httpx2 client with a response hook and remembers whether
+the latest answer was a 401. Regression: `tests/test_mcp_client.py::
+test_call_mcp_tool_maps_a_real_401_to_auth_needed` (a real localhost
+401, with a 500 as the negative half). Any new `except httpx.` around a
+fastmcp call is dead code for the same reason.
+
+Two smaller fastmcp 4 traps: `client.ping()` raises "Method not found"
+on the sessionless 2026-07-28 era, which `Client(url)` negotiates by
+default (use an authenticated `list_tools()` to trigger OAuth), and an
+SDK v2 `ServerSession` is per request, so anything that remembers a
+client across requests must hold the `Connection` instead (see
+`rote serve`'s list_changed delivery, which also has to publish on a
+`subscriptions/listen` bus for modern clients).
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
@@ -1489,7 +1529,7 @@ Don't waste time debugging stubs. These are intentional.
   `None` — resolution happens at the top of `_cmd_compile`; don't
   reintroduce a static default in the parser.
 - `rote register` + `rote serve` (compiled pipelines as MCP tools,
-  FastMCP 3.x, stdio + Streamable HTTP — see
+  FastMCP 4.x, stdio + Streamable HTTP — see
   [`docs/mcp-trigger.md`](docs/mcp-trigger.md))
 - `rote eval` + the auto-emitted `compiled/scorecard.md` (static
   before/after estimate of speed, cost, determinism; live-fetched

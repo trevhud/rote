@@ -227,6 +227,29 @@ def test_dbos_emits_the_helper_verbatim(tmp_path: Path) -> None:
     emitted = (tmp_path / "extracted" / "_rote_mcp.py").read_text(encoding="utf-8")
     source = Path(_runtime_helper.__file__).read_text(encoding="utf-8")
     assert emitted == source
+    # The emitted README names the fastmcp range the helper was verified
+    # against, not a bare `pip install fastmcp` that could resolve to a
+    # generation the helper cannot run on.
+    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
+    assert f"pip install '{_runtime_helper.FASTMCP_REQUIREMENT}'" in readme
+    assert "pip install fastmcp\n" not in readme
+
+
+def test_helper_fastmcp_requirement_matches_the_package_extras() -> None:
+    """One verified range: the extras rote installs with and the range the
+    emitted helper advertises are the same string."""
+    import tomllib
+
+    from rote.mcp import _runtime_helper
+
+    pyproject = tomllib.loads(
+        (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    extras = pyproject["project"]["optional-dependencies"]
+    pins = {
+        dep for name in ("mcp", "serve", "dev") for dep in extras[name] if dep.startswith("fastmcp")
+    }
+    assert pins == {_runtime_helper.FASTMCP_REQUIREMENT}
 
 
 # ───────── CLI ─────────
@@ -417,11 +440,111 @@ def test_call_mcp_tool_preflights_dead_token(monkeypatch: pytest.MonkeyPatch) ->
     assert exc_info.value.server == "slack"
 
 
-def test_call_mcp_tool_maps_401_to_auth_needed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A server 401 — even wrapped in an ExceptionGroup by anyio — becomes
-    RoteMcpAuthNeeded; other errors pass through untouched."""
-    import httpx
+class _StatusServer:
+    """A localhost HTTP endpoint answering every request with one status.
 
+    A real socket, not a mocked client: under MCP SDK v2 the status code
+    of a non-2xx answer never reaches the caller's exception, so the only
+    honest test of 401 detection is a real HTTP 401 through the real
+    fastmcp transport.
+    """
+
+    def __init__(self, status: int) -> None:
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class _Handler(BaseHTTPRequestHandler):
+            def _answer(self) -> None:
+                self.send_response(status)
+                if status == 401:
+                    self.send_header("WWW-Authenticate", 'Bearer realm="test"')
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            do_GET = do_POST = do_DELETE = _answer
+
+            def log_message(self, *args: Any) -> None:
+                return None
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/mcp"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@pytest.mark.parametrize("status", [401, 500])
+def test_call_mcp_tool_maps_a_real_401_to_auth_needed(status: int) -> None:
+    """An HTTP 401 becomes RoteMcpAuthNeeded (the workflow parks); any
+    other failure status passes through as an ordinary error. Under
+    fastmcp 4 both arrive as the same bare MCPError, so this pins the
+    distinction the transport hook has to make."""
+    pytest.importorskip("fastmcp")
+    from rote.mcp import _runtime_helper as helper
+
+    server = _StatusServer(status)
+    try:
+        if status == 401:
+            with pytest.raises(helper.RoteMcpAuthNeeded, match="401") as exc_info:
+                asyncio.run(helper.call_mcp_tool("slack", server.url, "t", {}))
+            assert exc_info.value.server == "slack"
+        else:
+            with pytest.raises(Exception) as other:
+                asyncio.run(helper.call_mcp_tool("slack", server.url, "t", {}))
+            assert not isinstance(other.value, helper.RoteMcpAuthNeeded)
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize("interrupt", [asyncio.CancelledError, KeyboardInterrupt])
+def test_cancellation_after_a_401_cancels_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch, interrupt: type[BaseException]
+) -> None:
+    """A cancel or Ctrl-C that lands after the server answered 401 must
+    propagate as itself. Mapping it to RoteMcpAuthNeeded would park a
+    workflow somebody was trying to stop."""
+    from rote.mcp import _runtime_helper as helper
+
+    def _client_seeing_401_then(*a: Any, http_status: Any = None, **kw: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                http_status.unauthorized = True  # the transport hook saw a 401
+                raise interrupt()
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+        return _Ctx()
+
+    monkeypatch.setattr(helper, "mcp_client", _client_seeing_401_then)
+    with pytest.raises(interrupt):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+    # Negative half: the same 401 with an ordinary failure still parks.
+    def _client_seeing_401_then_error(*a: Any, http_status: Any = None, **kw: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                http_status.unauthorized = True
+                raise RuntimeError("Server returned an error response")
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+        return _Ctx()
+
+    monkeypatch.setattr(helper, "mcp_client", _client_seeing_401_then_error)
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+
+def test_call_mcp_tool_unwraps_auth_needed_from_the_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OAuth redirect handler raises RoteMcpAuthNeeded inside the
+    transport's task group, so it can surface wrapped. It must come out
+    as itself; unrelated errors pass through untouched."""
     from rote.mcp import _runtime_helper as helper
 
     def _client_raising(exc: BaseException) -> Any:
@@ -434,83 +557,129 @@ def test_call_mcp_tool_maps_401_to_auth_needed(monkeypatch: pytest.MonkeyPatch) 
 
         return _Ctx()
 
-    def _http_401() -> httpx.HTTPStatusError:
-        return httpx.HTTPStatusError(
-            "Client error '401 Unauthorized'",
-            request=httpx.Request("POST", "https://mcp.example.com/slack"),
-            response=httpx.Response(401),
-        )
-
-    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(_http_401()))
-    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
+    needed = helper.RoteMcpAuthNeeded("slack", "the server requires an interactive OAuth flow")
+    wrapped = ExceptionGroup("transport", [RuntimeError("x"), needed])
+    monkeypatch.setattr(helper, "mcp_client", lambda *a, **kw: _client_raising(wrapped))
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="interactive") as exc_info:
         asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+    assert exc_info.value is needed
 
-    wrapped = ExceptionGroup("transport", [RuntimeError("x"), _http_401()])
-    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(wrapped))
-    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
-        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
-
-    monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_raising(RuntimeError("boom")))
+    monkeypatch.setattr(
+        helper, "mcp_client", lambda *a, **kw: _client_raising(RuntimeError("boom"))
+    )
     with pytest.raises(RuntimeError, match="boom"):
         asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
 
 
-def test_call_mcp_tool_falls_back_to_text_content(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A server with no output schema (fastmcp leaves ``result.data`` as
-    None) must not yield None when the payload sits in text content —
-    the shape every TS-SDK server produces. Found live against a real
-    server: every emitted MCP step silently returned None."""
-    from types import SimpleNamespace
+def test_result_payload_is_plain_json_from_a_real_fastmcp_server() -> None:
+    """Every shape a real fastmcp server produces comes back as plain,
+    picklable JSON: a durable runtime (DBOS) pickles the step result.
+
+    ``result.data`` fails that for a typed object schema: fastmcp
+    hydrates it into a generated ``types.Root`` class that cannot be
+    pickled (found live against a hosted server). The wire value
+    (structured content) is used instead, with fastmcp's
+    ``{"result": ...}`` wrapper removed for non-object returns.
+    """
+    import pickle
+
+    fastmcp = pytest.importorskip("fastmcp")
+    from fastmcp.tools import ToolResult
+    from mcp.types import TextContent
 
     from rote.mcp import _runtime_helper as helper
 
-    def _client_returning(result: Any) -> Any:
-        class _Ctx:
-            async def __aenter__(self) -> Any:
-                return SimpleNamespace(call_tool=self._call_tool)
+    server = fastmcp.FastMCP("payloads")
 
-            async def __aexit__(self, *a: Any) -> None:
-                return None
+    # Keys that are not Python identifiers, as many non-Python servers
+    # declare. fastmcp hydrates this into Root(display_name=..., class_=...).
+    org_schema = {
+        "type": "object",
+        "properties": {"display-name": {"type": "string"}, "class": {"type": "string"}},
+        "required": ["display-name", "class"],
+    }
 
-            @staticmethod
-            async def _call_tool(tool: str, arguments: dict[str, Any]) -> Any:
-                return result
+    @server.tool(output_schema=org_schema)
+    def typed_object():  # type: ignore[no-untyped-def]  # noqa: ANN202
+        return ToolResult(structured_content={"display-name": "Vaib Studio", "class": "org"})
 
-        return _Ctx()
+    @server.tool
+    def a_list() -> list[dict[str, int]]:
+        return [{"a": 1}, {"a": 2}]
+
+    @server.tool
+    def a_scalar() -> int:
+        return 7
+
+    @server.tool(output_schema=None)
+    def text_only():  # type: ignore[no-untyped-def]  # noqa: ANN202 — no annotation to resolve
+        # The TS-SDK shape: no output schema, JSON riding in a text block.
+        return ToolResult(content=[TextContent(type="text", text='[{"id": "abc"}]')])
+
+    async def _payloads() -> dict[str, Any]:
+        async with fastmcp.Client(server) as client:
+            schemas = {t.name: t.output_schema for t in await client.list_tools()}
+            out = {}
+            for name in ("typed_object", "a_list", "a_scalar", "text_only"):
+                result = await client.call_tool(name, {})
+                out[name] = helper._result_payload(result, schemas.get(name))
+            return out
+
+    payloads = asyncio.run(_payloads())
+    assert payloads == {
+        # The wire key, not hydration's renamed attribute.
+        "typed_object": {"display-name": "Vaib Studio", "class": "org"},
+        "a_list": [{"a": 1}, {"a": 2}],
+        "a_scalar": 7,
+        "text_only": [{"id": "abc"}],
+    }
+    for value in payloads.values():
+        assert pickle.loads(pickle.dumps(value)) == value
+        json.dumps(value)
+
+
+def test_result_payload_text_fallback_shapes() -> None:
+    """Text-content edge cases no server fixture needs to produce."""
+    from types import SimpleNamespace
+
+    from rote.mcp import _runtime_helper as helper
 
     def _result(**kw: Any) -> Any:
         fields: dict[str, Any] = {
             "data": None,
             "structured_content": None,
+            "meta": None,
             "content": [],
             "is_error": False,
         }
         fields.update(kw)
         return SimpleNamespace(**fields)
 
-    def _call(result: Any) -> Any:
-        monkeypatch.setattr(helper, "mcp_client", lambda *a: _client_returning(result))
-        return asyncio.run(helper.call_mcp_tool("slack", None, "t", {}))
-
     orgs = [{"id": "abc", "name": "Vaib Studio"}]
     text_block = SimpleNamespace(text=json.dumps(orgs))
 
-    # Hydrated data still wins when present.
-    assert _call(_result(data={"already": "structured"})) == {"already": "structured"}
-    # Structured content is preferred over text parsing.
-    assert _call(_result(structured_content={"result": 1})) == {"result": 1}
-    # The real-world case: JSON riding in a single text block.
-    assert _call(_result(content=[text_block])) == orgs
-    # Non-JSON text comes back verbatim, not None and not an error.
-    assert _call(_result(content=[SimpleNamespace(text="plain words")])) == "plain words"
+    # Hydrated data is never the payload, even when present.
+    hydrated = _result(data=object(), structured_content={"wire": True})
+    assert helper._result_payload(hydrated) == {"wire": True}
+    # The wrapper is removed only when fastmcp marked it.
+    wrapped = {"result": [1, 2]}
+    assert helper._result_payload(_result(structured_content=wrapped)) == wrapped
+    marked = _result(structured_content=wrapped, meta={"fastmcp": {"wrap_result": True}})
+    assert helper._result_payload(marked) == [1, 2]
+    flagged = {"x-fastmcp-wrap-result": True}
+    assert helper._result_payload(_result(structured_content=wrapped), flagged) == [1, 2]
+    # JSON in a single text block, non-JSON verbatim.
+    assert helper._result_payload(_result(content=[text_block])) == orgs
+    plain = _result(content=[SimpleNamespace(text="plain words")])
+    assert helper._result_payload(plain) == "plain words"
     # Non-text blocks (image/audio) are skipped, not crashed on.
-    image_block = SimpleNamespace(mimeType="image/png")
-    assert _call(_result(content=[image_block, text_block])) == orgs
+    image_block = SimpleNamespace(mime_type="image/png")
+    assert helper._result_payload(_result(content=[image_block, text_block])) == orgs
     # Several text blocks parse independently.
-    two = _call(_result(content=[SimpleNamespace(text='{"a": 1}'), SimpleNamespace(text="raw")]))
-    assert two == [{"a": 1}, "raw"]
+    two = _result(content=[SimpleNamespace(text='{"a": 1}'), SimpleNamespace(text="raw")])
+    assert helper._result_payload(two) == [{"a": 1}, "raw"]
     # Nothing usable at all stays None.
-    assert _call(_result()) is None
+    assert helper._result_payload(_result()) is None
 
 
 def test_auth_needed_survives_pickling() -> None:

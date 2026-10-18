@@ -6,7 +6,10 @@ and any MCP client (Claude Code, Claude Desktop, claude.ai custom
 connectors) can trigger the deterministic workflow instead of
 re-running the fuzzy skill.
 
-Built on FastMCP 3.x (>= 3.4.2). Install with the serve extra:
+Built on FastMCP 4.x (>= 4.1.1, on MCP Python SDK v2). One server
+answers both protocol eras: sessionless 2026-07-28 clients and
+handshake-era (2025-11-25 and earlier) clients. Install with the serve
+extra:
 
 ```sh
 pip install 'rote-cli[serve]'
@@ -129,11 +132,15 @@ DBOS has no orchestrator or HTTP endpoint — the trigger contract is the
    only — use Postgres in production (`DBOS_SYSTEM_DATABASE_URL` on
    both the app and `rote register`).
 
-On MCP Tasks (SEP-1686): FastMCP 3.4 ships server-side support, but the
-extension is a spec RC and running triggers as tasks would tie
-multi-day workflow observability to the server process's lifetime. The
-`_status` polling pattern is deliberate; revisit once the 2026-07-28
-spec lands and Claude clients request task augmentation.
+On MCP Tasks: FastMCP 4 ships them as the optional
+`io.modelcontextprotocol/tasks` extension (`fastmcp-tasks`), but running
+triggers as tasks would tie multi-day workflow observability to the
+server process's lifetime. The `_status` polling pattern is deliberate.
+
+Idle sessions: since fastmcp 4.1 a handshake-era Streamable HTTP
+session expires after 30 idle minutes. Nothing about a run lives in the
+session (the `workflow_id` is the handle), so a client that reconnects
+polls the same id. stdio has no session timeout.
 
 ### 4. Call from Claude
 
@@ -165,11 +172,17 @@ ways:
 1. **Pull:** the tool list is re-read from the registry file on every
    `tools/list`, so any client that re-lists sees new pipelines
    immediately.
-2. **Push:** a file watcher sends `notifications/tools/list_changed`
-   to every connected session when the registry changes. (FastMCP 3.4
-   doesn't emit this for provider-sourced changes on its own; the
-   server tracks sessions and uses the SDK's
-   `send_tool_list_changed()` directly.)
+2. **Push:** a file watcher tells every connected client when the
+   registry changes. FastMCP doesn't emit this for provider-sourced
+   changes on its own, and the two protocol eras need different
+   channels, so the server does both:
+   - handshake-era connections get `notifications/tools/list_changed`
+     on their standalone stream (the server tracks each connection);
+   - sessionless 2026-07-28 clients have no session to push to. They
+     open a `subscriptions/listen` stream (SEP-2575) and the change
+     arrives on it. FastMCP 4.1 registers no listen handler, so `rote
+     serve` installs the SDK's; without it the server would advertise
+     `tools.listChanged: false` on that era.
 
 The caveat: push only helps clients that honor it. **Claude Code
 refreshes its tool list on `list_changed`. Claude Desktop and

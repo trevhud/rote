@@ -197,12 +197,15 @@ def test_full_oauth_dance_persists_reuses_and_refreshes(
 
 def test_unauthenticated_client_is_rejected_by_the_server(protected_server: str) -> None:
     """Sanity: the server really is protected — a bare client 401s.
-    (Without this, test 1 could pass against an open server.)"""
-    import fastmcp
+    (Without this, test 1 could pass against an open server.)
 
-    async def bare_call() -> None:
-        async with fastmcp.Client(protected_server) as client:
-            await client.ping()
+    Goes through the emitted helper rather than a bare fastmcp client:
+    under fastmcp 4 the 401 reaches the caller only as a status-free
+    MCPError ("Server returned an error response"), so the helper's
+    transport hook is the one place left that can tell. With no stored
+    login, a real OAuth server's 401 must surface as RoteMcpAuthNeeded,
+    which is what parks an emitted workflow."""
+    from rote.mcp import _runtime_helper
 
-    with pytest.raises(Exception, match="[Uu]nauthorized|401|[Aa]uth"):
-        asyncio.run(bare_call())
+    with pytest.raises(_runtime_helper.RoteMcpAuthNeeded, match="401"):
+        asyncio.run(_runtime_helper.call_mcp_tool("vendor", protected_server, "whoami", {}))

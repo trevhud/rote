@@ -72,11 +72,11 @@ dbos = [
     "dbos>=3.3,<4",
 ]
 serve = [
-    "fastmcp>=3.4.2,<4",
+    "fastmcp>=4.1.1,<5",
     "httpx>=0.28",
 ]
 mcp = [
-    "fastmcp>=3.4.2,<4",
+    "fastmcp>=4.1.1,<5",
     "httpx>=0.28",
 ]
 dev = [
@@ -89,7 +89,7 @@ dev = [
     "anthropic>=0.89",
     "openai>=2.45",
     "dbos>=3.3,<4",
-    "fastmcp>=3.4.2,<4",
+    "fastmcp>=4.1.1,<5",
     "httpx>=0.28",
 ]
 

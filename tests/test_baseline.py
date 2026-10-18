@@ -352,17 +352,17 @@ def test_run_baseline_read_only_gate_uses_annotations(
         encoding="utf-8",
     )
 
-    class _Annotations:
-        def __init__(self, read_only: bool | None) -> None:
-            self.readOnlyHint = read_only
+    from mcp.types import Tool, ToolAnnotations
 
-    class _Tool:
-        def __init__(self, name: str, read_only: bool | None) -> None:
-            self.name = name
-            self.annotations = _Annotations(read_only) if read_only is not None else None
+    def _Tool(name: str, read_only: bool | None) -> Tool:  # noqa: N802 — reads like the class it builds
+        return Tool(
+            name=name,
+            input_schema={"type": "object"},
+            annotations=None if read_only is None else ToolAnnotations(read_only_hint=read_only),
+        )
 
     class _FakeClient:
-        def __init__(self, tools: list[_Tool]) -> None:
+        def __init__(self, tools: list[Tool]) -> None:
             self._tools = tools
 
         async def __aenter__(self) -> _FakeClient:
