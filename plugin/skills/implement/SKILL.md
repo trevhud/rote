@@ -24,11 +24,11 @@ contract, then prove the pipeline runs end to end with `rote run`.
 You write code only in user-owned files. rote owns everything else and
 regenerates it on the next emit.
 
-The CLI ships on PyPI as `rote-cli` with an executable named `rote`, so
-every invocation is `uvx --from rote-cli rote <args>` (never
-`uvx rote-cli ...`). Running a Python app needs that runtime's extra in
-the same environment, because `rote run` executes it with its own
-interpreter: `uvx --from 'rote-cli[dbos]' rote run ...` for DBOS,
+The CLI ships on PyPI as `rote-cli`. Invoke it as
+`uvx --from rote-cli rote <args>`, which works on every release (the
+`uvx rote-cli` shorthand needs a release newer than 0.14.0). Running a
+Python app needs that runtime's extra in the same environment, because
+`rote run` executes it with its own interpreter: `uvx --from 'rote-cli[dbos]' rote run ...` for DBOS,
 `'rote-cli[temporal]'` for Temporal. If the user is inside a rote
 checkout with a `.venv`, `.venv/bin/rote` works too.
 
