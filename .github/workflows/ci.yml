@@ -142,6 +142,7 @@ jobs:
             tests/test_judge_schema_parity_e2e.py \
             tests/test_ts_typed_impls_e2e.py \
             tests/test_mcp_ts_e2e.py \
+            tests/test_mcp_text_payload_parity_e2e.py \
             tests/test_mcp_ts_server_e2e.py \
             tests/test_mcp_era_matrix_e2e.py \
             tests/test_mcp_park_cf_e2e.py \
