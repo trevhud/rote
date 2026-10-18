@@ -69,7 +69,7 @@ openai-api = [
     "openai>=2.45",
 ]
 dbos = [
-    "dbos>=2.26",
+    "dbos>=2.26,<3",
 ]
 serve = [
     "fastmcp>=3.4.2,<4",
@@ -88,13 +88,16 @@ dev = [
     "temporalio>=1.7",
     "anthropic>=0.89",
     "openai>=2.45",
-    "dbos>=2.26",
+    "dbos>=2.26,<3",
     "fastmcp>=3.4.2,<4",
     "httpx>=0.28",
 ]
 
 [project.scripts]
 rote = "rote.cli:main"
+# `uvx rote-cli ...` runs the command named after the distribution, so the
+# distribution name is also a command. Both run the same entry point.
+rote-cli = "rote.cli:main"
 
 [project.urls]
 Homepage = "https://roteskills.com"

@@ -9,6 +9,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- Emitted Python agent loops report the turns that actually ran. The
+  vendor-SDK lane returned `max_iterations` as `iterations`, so every loop
+  looked saturated, and it logged only the final request's tokens to
+  `$ROTE_USAGE_LOG`. It now counts the assistant messages the tool runner
+  produced (the TS twin's semantics) and sums usage over every turn. The
+  `claude -p` lane reports `None` instead of `0` when the envelope carries
+  no `num_turns`.
+- `uvx rote-cli ...` works. The wheel installed only a `rote` command,
+  and uvx runs the command named after the package, so `uvx rote-cli
+  serve` failed with executable not found. The package now installs
+  `rote-cli` as a second command for the same CLI.
+
+## [0.14.0] - 2026-10-18
+
 ### Added
 - `rote compile --no-mcp` skips live MCP discovery and calls for local
   `api` and `openai-api` compilation. `rote analyze` accepts the same
@@ -80,6 +95,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- The `dbos` and `dev` extras now cap `dbos<3`. DBOS 3.0 (2026-09-16)
+  made `Queue(...)` construction raise in favor of
+  `DBOS.register_queue` and removed the admin server, so a fresh
+  `pip install 'rote-cli[dbos]'` resolved 3.x and every emitted DBOS
+  app died on import. The lock moves to 2.31.1, the newest 2.x. This is
+  a stopgap until the emitter targets DBOS 3.
 - Python runtime emission keeps input and output signature definitions in
   separate namespaces. Schemas may reuse a `$defs` name with different
   definitions; generated model names remain unique without changing the
@@ -766,7 +787,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/trevhud/rote/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/trevhud/rote/compare/v0.11.0...v0.12.0
