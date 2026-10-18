@@ -200,6 +200,7 @@ class Compiler:
         model: str | None = None,
         on_event: EventCallback | None = None,
         driver_kwargs: dict[str, Any] | None = None,
+        run_generated_tests: bool = True,
     ) -> None:
         """
         Parameters
@@ -226,12 +227,19 @@ class Compiler:
             pass the api driver's ``base_url`` / ``default_headers`` for
             AI Gateway routing. Keys collide-last: an explicit
             ``driver_kwargs["model"]`` overrides the ``model`` argument.
+        run_generated_tests
+            Run the agent-written tests as part of verification (in a
+            subprocess with an allowlisted environment and an empty HOME;
+            see :mod:`rote.compiler.verify`). ``False`` is
+            ``--no-verify-tests``: for a skill you do not trust, nothing
+            the agent wrote is executed, and the static checks still run.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
         self.model = model
         self.on_event = on_event
         self.driver_kwargs = driver_kwargs
+        self.run_generated_tests = run_generated_tests
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -422,7 +430,7 @@ class Compiler:
             # (the in-process drivers, and claude via `--resume`).
             base_dir = output_dir if plan is not None else None
             if "repair" in inspect.signature(driver.run).parameters:
-                run_kwargs["repair"] = self._deliverable_repairer(base_dir)
+                run_kwargs["repair"] = self._deliverable_repairer(base_dir, skill_dir)
 
             try:
                 result = await driver.run(
@@ -439,10 +447,11 @@ class Compiler:
             try:
                 pipeline = load_pipeline(result.pipeline_yaml_path)
             except Exception as e:
-                kept = self._keep_rejected_work(result.work_dir, output_dir, plan is not None)
+                kept = self._keep_rejected_work(result.work_dir, output_dir)
                 raise CompilerError(
                     f"Driver {driver.name!r} produced an invalid pipeline.yaml: {e}\n\n"
-                    f"The agent's work is kept at {kept}. Fix {kept / 'pipeline.yaml'} "
+                    f"Any previous output in {output_dir} is untouched. The agent's "
+                    f"work is kept at {kept}. Fix {kept / 'pipeline.yaml'} "
                     f"where the errors point, then emit it without another agent run: "
                     f"rote emit {kept / 'pipeline.yaml'} --runtime <runtime> --out <dir>"
                 ) from e
@@ -451,13 +460,13 @@ class Compiler:
                 produced_ids = {n.id for n in pipeline.nodes}
                 missing = [nid for nid in plan.preserved_node_ids if nid not in produced_ids]
                 if missing:
-                    kept = self._keep_rejected_work(result.work_dir, output_dir, True)
+                    kept = self._keep_rejected_work(result.work_dir, output_dir)
                     raise CompilerError(
                         f"Update run dropped or renamed nodes whose source sections "
                         f"did not change: {missing}. Node ids version the emitted "
                         f"workflow, so this would orphan in-flight runs. The previous "
                         f"output was left untouched and the rejected update is kept "
-                        f"at {kept} — re-run, or run a full compilation if the "
+                        f"at {kept}. Re-run, or run a full compilation if the "
                         f"restructure is intentional."
                     )
 
@@ -465,7 +474,12 @@ class Compiler:
             # reports, and what decides its exit code. Run before the move
             # so a verification crash can't strand the work in the temp dir
             # half-moved; verification itself never raises on bad code.
-            verification = verify_deliverable(result.work_dir, base_dir=base_dir)
+            verification = verify_deliverable(
+                result.work_dir,
+                base_dir=base_dir,
+                run_tests=self.run_generated_tests,
+                skill_dir=skill_dir,
+            )
             self._emit_verification(verification)
 
             # Stamp provenance: hash every SKILL.md section so a later
@@ -539,7 +553,9 @@ class Compiler:
                 f"generated tests {verification.tests.status}: {verification.tests.summary}",
             )
 
-    def _deliverable_repairer(self, base_dir: Path | None) -> Callable[[Path], str | None]:
+    def _deliverable_repairer(
+        self, base_dir: Path | None, skill_dir: Path
+    ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
         The driver calls it with the produced pipeline.yaml path at each
@@ -559,7 +575,12 @@ class Compiler:
         def _repair(pipeline_yaml_path: Path) -> str | None:
             nonlocal attempts
             artifact_dir = pipeline_yaml_path.parent
-            verification = verify_deliverable(artifact_dir, base_dir=base_dir)
+            verification = verify_deliverable(
+                artifact_dir,
+                base_dir=base_dir,
+                run_tests=self.run_generated_tests,
+                skill_dir=skill_dir,
+            )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
                 return None
@@ -769,17 +790,19 @@ class Compiler:
             sidecar_path.write_text(original, encoding="utf-8")
 
     @classmethod
-    def _keep_rejected_work(cls, work_dir: Path, output_dir: Path, update: bool) -> Path:
+    def _keep_rejected_work(cls, work_dir: Path, output_dir: Path) -> Path:
         """Move a paid run's work out of the temp dir before it is deleted.
 
         A rejected deliverable is still the output of a real-money agent
-        run, and usually a small fix away from usable. A full compilation
-        lands it in ``output_dir`` as usual (there was nothing there worth
-        protecting). An update must leave the previous output untouched,
-        so its work goes to a ``<output_dir>.rejected`` sibling instead.
+        run, and usually a small fix away from usable. It goes to a
+        ``<output_dir>.rejected`` sibling, never into ``output_dir``: a
+        re-run into an existing ``--out`` must not replace the last good
+        pipeline.yaml and extracted/ (possibly with stubs the user filled in
+        since) with work that failed validation. Only the previous rejected
+        copy is replaced.
         """
-        target = output_dir.with_name(output_dir.name + ".rejected") if update else output_dir
-        if update and target.exists():
+        target = output_dir.with_name(output_dir.name + ".rejected")
+        if target.exists():
             shutil.rmtree(target)
         cls._move_work_dir_to_output(work_dir, target)
         return target

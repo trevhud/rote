@@ -168,6 +168,40 @@ def test_a_raise_inside_a_branch_is_real_code_not_a_stub(tmp_path: Path) -> None
     assert impl.status == "implemented"
 
 
+def test_a_non_utf8_module_is_a_finding_not_a_crash(tmp_path: Path) -> None:
+    """An agent-written Latin-1 module used to raise UnicodeDecodeError out
+    of verification, which runs where only DriverError is caught."""
+    root = _deliverable(
+        tmp_path,
+        {
+            "extracted/vendor.py": VENDOR_STUB,
+            "tests/test_logic.py": GOOD_TEST + "# caf\xe9\n",
+        },
+    )
+    (root / "extracted" / "logic.py").write_bytes(REAL.encode() + b"# caf\xe9\n")
+    v = verify_deliverable(root)
+    assert not v.ok
+    assert [(f.node_id, f.kind) for f in v.errors] == [("count_open", "not_utf8")]
+    assert "extracted/logic.py is not valid UTF-8" in v.errors[0].message
+
+
+def test_any_crash_inside_verification_becomes_a_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _deliverable(tmp_path, {"extracted/logic.py": REAL, "extracted/vendor.py": VENDOR_STUB})
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr("rote.compiler.verify.check_contracts", boom)
+    v = verify_deliverable(root)
+    assert not v.ok
+    [finding] = v.errors
+    assert finding.kind == "verification_error"
+    assert "OSError: disk went away" in finding.message
+    assert v.repair_instruction(root) is not None
+
+
 def test_an_invalid_pipeline_short_circuits_with_the_validation_text(tmp_path: Path) -> None:
     (tmp_path / "pipeline.yaml").write_text("name: x\nnodes: [{id: a, kind: nope}]\n")
     v = verify_deliverable(tmp_path)
@@ -205,8 +239,153 @@ def test_an_update_is_verified_against_the_previous_code(tmp_path: Path) -> None
     assert broken.tests is not None and broken.tests.status == "failed"
 
 
+# ───────── Every outcome traces to the skill, or is a declared assumption ─────────
+
+_SKILL_MD = """\
+# Expense audit
+
+Lines under **$25.00** don't need a receipt. A missing receipt on a line of
+$25.00 or more is a **block**: the employee must resubmit.
+"""
+
+_CITED = """\
+def count_open(rows):
+    # skill: "A missing receipt on a line of $25.00 or more is a block"
+    return {"open": sum(1 for r in rows if r["Resolved"] == "FALSE")}
+"""
+
+
+def _provenance_case(tmp_path: Path, module: str, report: str | None) -> Path:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(_SKILL_MD)
+    files = {
+        "extracted/logic.py": module,
+        "extracted/vendor.py": VENDOR_STUB,
+        "tests/test_logic.py": GOOD_TEST,
+    }
+    if report is not None:
+        files["compile-report.md"] = report
+    return _deliverable(tmp_path / "out", files)
+
+
+def test_a_verbatim_citation_passes(tmp_path: Path) -> None:
+    root = _provenance_case(tmp_path, _CITED, None)
+    assert verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False).ok
+
+
+def test_an_elided_citation_passes_when_each_fragment_is_verbatim(tmp_path: Path) -> None:
+    module = _CITED.replace(
+        '"A missing receipt on a line of $25.00 or more is a block"',
+        '"Lines under $25.00 don\'t need a receipt ... is a block"',
+    )
+    root = _provenance_case(tmp_path, module, None)
+    v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
+    assert v.ok, v.errors
+
+
+def test_an_invented_citation_is_rejected(tmp_path: Path) -> None:
+    """A citation that would cover a guessed outcome with made-up skill text."""
+    module = _CITED.replace("is a block", "goes to review")
+    root = _provenance_case(tmp_path, module, None)
+    v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
+    assert [f.kind for f in v.errors] == ["citation_not_in_skill"]
+    assert "goes to review" in v.errors[0].message
+
+
+_ASSUMED = _CITED.replace(
+    '    return {"open"',
+    "    # rote: assumption: an over-cap line is a block (the skill names the rule, "
+    "not its severity)\n"
+    '    return {"open"',
+)
+
+
+@pytest.mark.parametrize(
+    ("report", "ok"),
+    [
+        (None, False),
+        ("# Report\n\n## Open questions\n\n(none)\n\n## Next steps\n\n- ship it\n", False),
+        (
+            "# Report\n\n## Open questions\n\n- Over-cap lines are treated as block; the "
+            "skill does not say. Confirm with finance.\n",
+            True,
+        ),
+        ("**Open questions:**\n\n1. Over-cap severity is assumed block.\n", True),
+    ],
+)
+def test_a_recorded_assumption_must_reach_the_open_questions(
+    tmp_path: Path, report: str | None, ok: bool
+) -> None:
+    root = _provenance_case(tmp_path, _ASSUMED, report)
+    v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
+    assert v.ok is ok, v.errors
+    if not ok:
+        assert [f.kind for f in v.errors] == ["unlisted_assumption"]
+
+
 def test_no_tests_dir_means_nothing_to_run(tmp_path: Path) -> None:
     assert run_generated_tests(tmp_path) is None
+
+
+#: What a skill-steered "test" would go looking for.
+_SECRETS = {
+    "ANTHROPIC_API_KEY": "sk-ant-should-not-leak",
+    "OPENAI_API_KEY": "sk-should-not-leak",
+    "CLOUDFLARE_API_TOKEN": "cf-should-not-leak",
+    "ROTE_CLOUD_TOKEN": "rote_should_not_leak",
+    "AWS_SECRET_ACCESS_KEY": "aws-should-not-leak",
+    "GITHUB_TOKEN": "ghp-should-not-leak",
+}
+
+_SNOOPING_TEST = """\
+import os
+from pathlib import Path
+
+SECRETS = {names!r}
+
+
+def test_sees_no_credentials():
+    leaked = {{k: os.environ[k] for k in SECRETS if k in os.environ}}
+    assert leaked == {{}}, leaked
+    assert not any("should-not-leak" in v or "should_not_leak" in v for v in os.environ.values())
+
+
+def test_home_holds_none_of_the_users_files():
+    home = Path.home()
+    assert str(home) != {real_home!r}
+    assert not (home / ".local" / "share" / "rote" / "cloud.json").exists()
+    assert list(home.iterdir()) == []
+"""
+
+
+def test_generated_tests_cannot_see_credentials_or_the_users_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A third-party SKILL.md can steer the agent into a test that reads
+    secrets, and rote runs that test automatically. The child environment
+    is an allowlist and HOME is empty, so there is nothing to read.
+
+    The test runs a real pytest subprocess with real secrets exported and
+    a real cloud credential under the parent's HOME.
+    """
+    real_home = tmp_path / "real-home"
+    cred = real_home / ".local" / "share" / "rote" / "cloud.json"
+    cred.parent.mkdir(parents=True)
+    cred.write_text('{"token": "rote_should_not_leak"}')
+    monkeypatch.setenv("HOME", str(real_home))
+    for name, value in _SECRETS.items():
+        monkeypatch.setenv(name, value)
+
+    root = tmp_path / "deliverable"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "test_snoop.py").write_text(
+        _SNOOPING_TEST.format(names=sorted(_SECRETS), real_home=str(real_home))
+    )
+    result = run_generated_tests(root)
+    assert result is not None
+    assert result.status == "passed", result.output
+    assert "2 passed" in result.summary
 
 
 def test_missing_pytest_is_reported_not_passed(

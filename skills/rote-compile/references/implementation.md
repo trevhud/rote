@@ -44,8 +44,9 @@ What "implement" means:
 Only when the logic depends on something the skill does not state: a
 business fact (a threshold "as agreed with finance", a mapping table
 that lives elsewhere) or an external system (the step secretly reads a
-database). Write the stub so the decision is reviewable: the first
-statement after the docstring is
+database). Write the stub so the decision is reviewable: the whole body
+after the docstring is this one statement (code before it makes the
+function count as implemented, and then it must pass tests):
 
 ```python
 raise NotImplementedError(
@@ -59,6 +60,41 @@ with this message, and rejects a pure_function stub without one. List
 each stub under **Open questions** in the compilation report. "The input
 format is not shown" is not a reason (rule 2 above), and "the rule is
 complex" is not a reason either.
+
+### Every outcome cites the skill, or is a declared assumption
+
+Implementing a rule is not the same as inventing one. A skill often
+names a case without stating its outcome: a returns skill lists
+"Damaged in Transit" among the return reasons, and says which returns
+are refunded at once and which go to manual review, but never says which
+of the two a damaged return is.
+Picking one silently, then writing tests that encode the pick, produces
+green tests for a rule nobody stated. A real compile did exactly that.
+
+So every place the code decides an output value, category, severity, or
+branch carries the skill text that decides it, verbatim, in a comment:
+
+```python
+# skill: "A return over $50.00 without a receipt goes to manual review"
+if ret["amount"] > RECEIPT_REQUIRED_OVER and not ret["receipt"]:
+    return {"route": "manual_review"}
+```
+
+Quote short fragments, joined with `...` if you elide text between
+them. rote checks that every quoted fragment appears in the skill's
+files. When the skill does NOT state the outcome, choose one of two:
+
+1. **Decide, and declare it.** Write the branch with the outcome you
+   think is most defensible, mark it
+   `# rote: assumption: <the outcome you chose, and what the skill leaves open>`,
+   and list it under **Open questions** in the compilation report. A
+   test that pins the assumed outcome carries the same comment, so it
+   reads as an assumption, not a rule. rote rejects a deliverable whose
+   code records assumptions while the report's Open questions are empty.
+2. **Stub the function**, when the unstated fact is what the function is
+   for (a whole mapping table, a threshold that drives every branch).
+
+Never write a `# skill:` citation for text the skill does not contain.
 
 ## `external_call` nodes: the two regimes
 
@@ -167,9 +203,13 @@ these checks on your work dir when you end your turn:
    function, and accepts the node's `inputs:` as keyword arguments.
 3. Every `pure_function` is implemented, or is a stub whose
    `NotImplementedError` message says why.
-4. Every implemented `pure_function` is called from a file under
+4. Every `# skill: "..."` citation quotes the skill's own text, and if
+   any `# rote: assumption:` exists, the report's Open questions list
+   is not empty.
+5. Every implemented `pure_function` is called from a file under
    `tests/`.
-5. `python -m pytest tests` passes.
+6. `python -m pytest tests` passes. It runs with no credentials in its
+   environment and an empty HOME, so a test that needs either is broken.
 
 If any check fails, the problems come back to you as the next message,
 verbatim, with the pytest output. Fix exactly what they name and end

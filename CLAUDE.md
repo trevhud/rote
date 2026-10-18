@@ -1245,6 +1245,35 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   the work dir, because an update's work dir holds only what changed.
 - **A deliverable that still fails is returned, not raised.** It is the
   output of a paid run. The CLI exits 1 and skips the cloud deploy.
+- **Verification never raises.** It runs inside the driver's repair loop
+  (where only `DriverError` is caught) and before the work dir leaves its
+  temp home, so an exception there deletes the paid work. Any crash
+  becomes a `verification_error` finding; a non-UTF-8 module is a
+  `not_utf8` finding.
+- **A rejected IR goes to `<out>.rejected`, never into `<out>`.** A
+  re-run into an existing `--out` must not replace the last good
+  pipeline.yaml and the stubs the user filled in since.
+- **Generated tests are untrusted code and run with an allowlisted env.**
+  The agent wrote them from a SKILL.md that may be third-party
+  (invariant #7), and rote runs them automatically, up to three times.
+  `verify.generated_test_env` passes only PATH and locale through, sets
+  an empty throwaway HOME (so `~/.local/share/rote/cloud.json` and other
+  dotfiles are not there), `PYTHONPATH` to the work dir, and cwd to the
+  work dir. An allowlist, not the credential scrub lists in
+  `build_subscription_env` or conftest: those keep everything else, and
+  no list knows every secret a developer exports. It is a credential
+  boundary, not a sandbox (absolute paths and the network are still
+  reachable), which is what `--no-verify-tests` is for. Regression:
+  `tests/test_verify.py::test_generated_tests_cannot_see_credentials_or_the_users_home`.
+- **One stub predicate.** `rote.adapters._common.stub_raise` decides what
+  a stub is for both `rote run`'s preflight and the compile's per-node
+  status (whole body after the docstring is one `raise
+  NotImplementedError`). Two predicates disagreed once.
+- **Outcomes cite the skill or are declared.** `# skill: "..."` comments
+  must quote text the skill contains, and any `# rote: assumption:`
+  requires a non-empty Open questions list in compile-report.md. Found by
+  a real compile that chose block over review for a rule whose severity
+  the skill never states, then wrote tests that encoded the choice.
 
 ### The claude driver repairs by resuming, and a resumed result is cumulative
 
@@ -1252,8 +1281,13 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
 <session_id>` with the same flags. Measured on claude 2.1.302: a resumed
 run's `total_cost_usd` and `modelUsage` cover the WHOLE session (the
 first run's plus its own), while `num_turns` and `duration_ms` are per
-invocation. So usage comes from the last result and only turns and wall
-time are summed. Summing cost would double-bill every repaired compile.
+invocation. That is observed, not documented with a version floor, and
+least likely to hold after an abnormal exit, so `_session_metadata`
+checks it: non-decreasing costs mean cumulative (use the last result),
+anything else is summed per round (`usage_basis` says which), and a
+round with no result marks `usage_complete` False. The usage gotcha
+above applies: a total that silently drops a round reads as a small
+number.
 `--resume` looks the session up by cwd, so every invocation of one
 compile runs with `cwd=work_dir`.
 

@@ -296,6 +296,52 @@ def _module_for(node: Node) -> tuple[str, str] | None:
     return None
 
 
+def _parse_module(
+    node_id: str, rel: str, path: Path
+) -> tuple[ast.Module | None, list[ContractFinding]]:
+    """Parse one agent-written module, or say why it cannot be imported."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # Python reads source as UTF-8 by default, so the import fails too.
+        return None, [
+            ContractFinding(
+                node_id=node_id,
+                kind="not_utf8",
+                severity="error",
+                message=f"{rel} is not valid UTF-8 ({exc.reason} at byte {exc.start}), "
+                f"so Python cannot import it",
+                path=rel,
+            )
+        ]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return None, [
+            ContractFinding(
+                node_id=node_id,
+                kind="syntax_error",
+                severity="error",
+                message=f"{rel} does not parse: {exc.msg} (line {exc.lineno})",
+                path=rel,
+            )
+        ]
+    oldest = ".".join(map(str, OLDEST_SUPPORTED_PYTHON))
+    return tree, [
+        ContractFinding(
+            node_id=node_id,
+            kind="needs_newer_python",
+            severity="error",
+            message=(
+                f"{rel} line {line}: {message}, but rote supports Python {oldest}, "
+                f"where the module would not import"
+            ),
+            path=rel,
+        )
+        for line, message in newer_syntax_problems(source)
+    ]
+
+
 def check_contracts(pipeline: Pipeline, artifact_dir: Path | str) -> list[ContractFinding]:
     """Check every IR promise against the artifacts actually on disk.
 
@@ -328,34 +374,8 @@ def check_contracts(pipeline: Pipeline, artifact_dir: Path | str) -> list[Contra
             path = root / rel
             if path.is_file():
                 if path not in parsed:
-                    source = path.read_text(encoding="utf-8")
-                    try:
-                        parsed[path] = ast.parse(source)
-                        findings.extend(
-                            ContractFinding(
-                                node_id=node.id,
-                                kind="needs_newer_python",
-                                severity="error",
-                                message=(
-                                    f"{rel} line {line}: {message}, but rote supports "
-                                    f"Python {'.'.join(map(str, OLDEST_SUPPORTED_PYTHON))}"
-                                    f" — the module would not import there"
-                                ),
-                                path=rel,
-                            )
-                            for line, message in newer_syntax_problems(source)
-                        )
-                    except SyntaxError as exc:
-                        parsed[path] = None
-                        findings.append(
-                            ContractFinding(
-                                node_id=node.id,
-                                kind="syntax_error",
-                                severity="error",
-                                message=f"{rel} does not parse: {exc.msg} (line {exc.lineno})",
-                                path=rel,
-                            )
-                        )
+                    parsed[path], module_findings = _parse_module(node.id, rel, path)
+                    findings.extend(module_findings)
                 tree = parsed.get(path)
                 if tree is not None:
                     findings.extend(
@@ -555,36 +575,28 @@ class NodeImplementation:
         }
 
 
-def _raise_names_not_implemented(stmt: ast.stmt) -> bool:
-    if not isinstance(stmt, ast.Raise) or stmt.exc is None:
-        return False
-    exc = stmt.exc.func if isinstance(stmt.exc, ast.Call) else stmt.exc
-    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
-
-
 def stub_reason(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str | None]:
     """``(is_stub, reason)`` for one function definition.
 
-    A function is a stub when its body raises ``NotImplementedError`` at
-    the top level: nothing after that line runs and nothing before it
-    returns. A ``raise`` inside a branch (an unsupported variant of a
-    real implementation) is real code, not a stub. The reason is the
+    Whether it is a stub is :func:`rote.adapters._common.stub_raise`, the
+    same predicate ``rote run``'s preflight uses: the whole body after the
+    docstring is one ``raise NotImplementedError``. The reason is that
     exception's message, rendered from source when it is not a plain
     string (an f-string naming a constant, say).
     """
-    for stmt in fn.body:
-        if not _raise_names_not_implemented(stmt):
-            continue
-        assert isinstance(stmt, ast.Raise)
-        if not isinstance(stmt.exc, ast.Call) or not stmt.exc.args:
-            return True, None
-        arg = stmt.exc.args[0]
-        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-            text = arg.value
-        else:
-            text = ast.unparse(arg)
-        return True, " ".join(text.split()) or None
-    return False, None
+    from rote.adapters._common import stub_raise
+
+    stmt = stub_raise(fn)
+    if stmt is None:
+        return False, None
+    if not isinstance(stmt.exc, ast.Call) or not stmt.exc.args:
+        return True, None
+    arg = stmt.exc.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        text = arg.value
+    else:
+        text = ast.unparse(arg)
+    return True, " ".join(text.split()) or None
 
 
 def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[NodeImplementation]:
@@ -607,7 +619,8 @@ def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[
         if path not in trees:
             try:
                 trees[path] = ast.parse(path.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError):
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                # check_contracts reports why the module is unreadable.
                 trees[path] = None
         tree = trees[path]
         stmt = _toplevel_defs(tree).get(symbol) if tree is not None else None

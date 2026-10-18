@@ -858,15 +858,28 @@ async def test_an_invalid_ir_is_kept_after_the_paid_run(
     fake_compiler_skill_dir: Path,
     tmp_path: Path,
 ) -> None:
-    """The temp work dir is deleted on exit, so a rejected IR used to vanish."""
+    """The temp work dir is deleted on exit, so a rejected IR used to vanish.
+
+    And it must not land on top of the previous run: a re-run into an
+    existing --out keeps the last good IR and the stubs the user filled in.
+    """
     output_dir = tmp_path / "output"
+    (output_dir / "extracted").mkdir(parents=True)
+    (output_dir / "pipeline.yaml").write_text(VALID_YAML)
+    filled = "def only_node():\n    return {'filled': 'by the user'}\n"
+    (output_dir / "extracted" / "foo.py").write_text(filled)
+
     compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=INVALID_YAML)  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError) as excinfo:
         await compiler.compile(fake_skill_dir, output_dir)
-    assert (output_dir / "pipeline.yaml").read_text() == INVALID_YAML
-    assert f"rote emit {output_dir / 'pipeline.yaml'}" in str(excinfo.value)
+    rejected = tmp_path / "output.rejected"
+    assert (rejected / "pipeline.yaml").read_text() == INVALID_YAML
+    assert f"rote emit {rejected / 'pipeline.yaml'}" in str(excinfo.value)
+    # The previous good output is exactly as it was.
+    assert (output_dir / "pipeline.yaml").read_text() == VALID_YAML
+    assert (output_dir / "extracted" / "foo.py").read_text() == filled
 
 
 _LOGIC_YAML = VALID_YAML.replace(

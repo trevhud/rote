@@ -1058,7 +1058,7 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
     3. else the only node-bound param;
     4. else, when NO param is node-bound, the only param bound to a
        pipeline-input field that can hold a list
-       (``invoice: pipeline.input.invoices``) — a field the input schema
+       (``invoice: pipeline.input.invoices``). A field the input schema
        declares with a non-array type is excluded, an undeclared or
        untyped one is not. Fanning over a list the caller passes in is a
        legitimate shape, and before this tier it crashed ``rote compile``
@@ -1109,7 +1109,7 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
         if len(input_lists) == 1:
             return input_lists[0]
         raise ValueError(
-            f"fan_out node {node.id!r}: cannot identify the element param — no input "
+            f"fan_out node {node.id!r}: cannot identify the element param: no input "
             f"is bound to an upstream node, and the pipeline-input fields that could "
             f"hold the list ({input_lists or 'none'}) don't single one out. Bind "
             f"exactly one param to the list (`<param>: pipeline.input.<list_field>`), "

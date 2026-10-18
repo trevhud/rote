@@ -207,9 +207,11 @@ Checklist before declaring Phase 5 done:
 - Every `pure_function` is implemented (or is a stub whose
   `NotImplementedError` message says what the skill leaves unstated),
   parses on Python 3.11, and is called from a `tests/test_<module>.py`
-  that is deterministic and offline. rote runs the tests after you
-  stop and sends any failure back to you (implementation.md, "What
-  rote checks after you stop").
+  that is deterministic and offline. Every outcome the code decides
+  cites the skill text that decides it (`# skill: "..."`) or is marked
+  `# rote: assumption:`. rote runs the tests after you stop and sends
+  any failure back to you (implementation.md, "What rote checks after
+  you stop").
 - Every `llm_judge` node has a `signature:` pointing at a real file
   you created in Phase 4.
 - Every `llm_judge` node's `inputs:` keys match the top-level
@@ -255,7 +257,9 @@ they land, in one pass. Cover:
 - **Open questions**: ambiguous judgment calls where you made a decision
   but the human reviewer should verify. Be explicit about what you chose
   and why. List every `pure_function` you left as a stub, with the
-  fact the skill did not state.
+  fact the skill did not state, and every outcome you marked
+  `# rote: assumption:` in the code (implementation.md, "Every outcome
+  cites the skill").
 - **Suggested next steps**: what to dogfood first, which evals to run,
   which node to recompile after the first production run reveals new
   information.

@@ -1095,6 +1095,42 @@ async def test_a_failed_repair_round_keeps_the_deliverable(
     assert result.pipeline_yaml_path.read_text() == "v1"
     assert "exited with code 1" in result.metadata["repair_warning"]
     assert "subprocess_warning" not in result.metadata
+    # The dead round reported nothing, so the total cannot claim to be whole.
+    assert result.metadata["usage_complete"] is False
+    assert "1 of 2 claude invocations produced no result" in result.metadata["usage_note"]
+    assert result.metadata["cost_usd"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_non_cumulative_rounds_are_summed_not_taken_from_the_last(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a resumed round reports only itself (its cost is lower than the
+    previous round's), taking the last result would drop the first run's
+    $2 entirely. Sum instead, and say so."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            (_stream(_result_with_session(0.3, 2, 10_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    seen: list[str] = []
+
+    def repair(path: Path) -> str | None:
+        seen.append(path.read_text())
+        return "fix" if len(seen) == 1 else None
+
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+    meta = result.metadata
+    assert meta["cost_usd"] == pytest.approx(2.3)
+    assert meta["cache_write_tokens"] == 110_000
+    assert meta["usage_basis"] == "summed_per_round"
+    assert "[2.0, 0.3]" in meta["usage_note"]
+    assert meta["usage_complete"] is True
+    assert meta["num_turns"] == 32
 
 
 @pytest.mark.asyncio

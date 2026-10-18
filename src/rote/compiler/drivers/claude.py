@@ -473,19 +473,6 @@ class ClaudeDriver(CompilerDriver):
                     f"deliverable is whatever it had written by then"
                 )
                 break
-        if len(invocations) > 1:
-            # A resumed run's result reports the WHOLE session: total_cost_usd
-            # and modelUsage are cumulative (measured on claude 2.1.302: a
-            # resume's cost was the first run's plus its own, and its
-            # cacheCreationInputTokens the sum of both). num_turns and
-            # duration_ms are per invocation. So the last result carries the
-            # usage, and only turns and wall time are summed below.
-            last_result = next(
-                (inv.result for inv in reversed(invocations) if inv.result is not None), None
-            )
-            if last_result is not None:
-                result_obj = last_result
-
         # The agent's deliverable is a file on disk, not a clean exit
         # code. A real-world failure mode: the agent writes a complete
         # pipeline.yaml at turn N, then runs an extra validation step at
@@ -506,21 +493,7 @@ class ClaudeDriver(CompilerDriver):
                 details=detail,
             )
 
-        # Stream tallies only cover what each invocation streamed (a resume
-        # replays nothing), so they sum. They are the fallback anyway: a
-        # final result's usage replaces them in _parse_metadata.
-        totals = dict(_EMPTY_TOTALS)
-        for inv in invocations:
-            for bucket, value in inv.totals.items():
-                totals[bucket] = totals.get(bucket, 0) + value
-        metadata = self._parse_metadata(result_obj, totals)
-        if len(invocations) > 1:
-            metadata["repair_rounds"] = len(invocations) - 1
-            per_run = [inv.result for inv in invocations if isinstance(inv.result, dict)]
-            for key in ("num_turns", "duration_ms"):
-                values = [r.get(key) for r in per_run]
-                if values and all(isinstance(v, int) for v in values):
-                    metadata[key] = sum(v for v in values if isinstance(v, int))
+        metadata = self._session_metadata(invocations)
         if repair_warning is not None:
             metadata["repair_warning"] = repair_warning
         if returncode != 0:
@@ -537,6 +510,65 @@ class ClaudeDriver(CompilerDriver):
         )
 
     # ───────── Private helpers ─────────
+
+    def _session_metadata(self, invocations: list[_Invocation]) -> dict[str, Any]:
+        """Usage for the whole compile, across the first run and its repair rounds.
+
+        A resumed ``claude -p`` reports the WHOLE session in
+        ``total_cost_usd`` and ``modelUsage`` (measured on claude 2.1.302:
+        a resume's cost was the first run's plus its own), while
+        ``num_turns`` and ``duration_ms`` are per invocation. That is
+        observed behavior with no version floor here, and it is least
+        likely to hold exactly when it matters: a round after an abnormal
+        exit. So it is checked, not assumed:
+
+        * the rounds' costs never decrease: they are cumulative, and the
+          last result is the session's usage;
+        * otherwise each round reported only itself, and the rounds are
+          summed (``usage_basis`` says which, ``usage_note`` why);
+        * a round that produced no result leaves the total incomplete, so
+          ``usage_complete`` is False. A number that silently omits a
+          round reads as a small number, not a missing one.
+        """
+        per = [self._parse_metadata(inv.result, inv.totals) for inv in invocations]
+        if len(invocations) == 1:
+            return per[0]
+        reported = [m for inv, m in zip(invocations, per, strict=True) if inv.result is not None]
+        costs = [m.get("cost_usd") for m in reported]
+        numeric = [c for c in costs if isinstance(c, int | float) and not isinstance(c, bool)]
+        cumulative = len(numeric) == len(costs) and all(
+            later >= earlier for earlier, later in zip(numeric, numeric[1:], strict=False)
+        )
+        if not reported:
+            metadata = per[-1]
+        elif cumulative:
+            metadata = dict(reported[-1])
+            metadata["usage_basis"] = "cumulative_last_result"
+        else:
+            metadata = dict(reported[-1])
+            for key in ("input_tokens", "cache_write_tokens", "cache_read_tokens"):
+                metadata[key] = sum(int(m.get(key) or 0) for m in reported)
+            outputs = [m.get("output_tokens") for m in reported]
+            known = [o for o in outputs if isinstance(o, int)]
+            metadata["output_tokens"] = sum(known) if len(known) == len(outputs) else None
+            metadata["cost_usd"] = sum(numeric) if numeric else None
+            metadata["usage_basis"] = "summed_per_round"
+            metadata["usage_note"] = (
+                f"repair rounds reported non-cumulative costs {costs}; summed them"
+            )
+        missing = len(invocations) - len(reported)
+        if missing:
+            metadata["usage_complete"] = False
+            metadata["usage_note"] = (
+                f"{missing} of {len(invocations)} claude invocations produced no result; "
+                f"usage omits them"
+            )
+        metadata["repair_rounds"] = len(invocations) - 1
+        for key in ("num_turns", "duration_ms"):
+            values = [r.get(key) for r in (inv.result for inv in invocations) if r is not None]
+            if values and all(isinstance(v, int) for v in values):
+                metadata[key] = sum(v for v in values if isinstance(v, int))
+        return metadata
 
     def _build_child_env(self) -> dict[str, str]:
         """Build the environment for the subprocess.

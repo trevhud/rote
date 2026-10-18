@@ -107,6 +107,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   kept, and `rote compile` exits 1 and skips the rote cloud deploy.
   The summary prints how many impl nodes were implemented and every
   stub with its reason (`verification` in `--json`).
+- **Generated tests run without your credentials.** They are code an LLM
+  wrote from a possibly third-party skill, so rote runs them with only
+  `PATH` and locale from the environment, an empty throwaway `HOME`,
+  and the work dir as cwd. That is a credential boundary, not a sandbox:
+  `rote compile --no-verify-tests` (also on `rote analyze`) skips
+  running them for a skill you don't trust. The static checks still run.
+- **Every outcome the compiled code decides cites the skill, or is a
+  declared assumption.** The rubric has the agent quote the skill text
+  behind each value, category, and branch (`# skill: "..."`), and mark
+  an outcome the skill leaves open `# rote: assumption:`. Verification
+  rejects a quote the skill does not contain, and recorded assumptions
+  with an empty Open questions list in compile-report.md.
 - `rote.contracts` reports syntax that parses on the running Python but
   not on 3.11 (`needs_newer_python`). `ast.parse(feature_version=...)`
   misses PEP 701 f-strings, and a real compile on 3.12 wrote a backslash

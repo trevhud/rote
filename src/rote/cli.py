@@ -805,6 +805,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         model=args.model,
         on_event=_on_event,
         driver_kwargs=driver_kwargs or None,
+        run_generated_tests=not args.no_verify_tests,
     )
 
     try:
@@ -898,7 +899,17 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     from rote.compiler.verify import run_generated_tests
 
     deliverable = result.verification
-    tests_run = deliverable.tests if deliverable is not None else run_generated_tests(compiled_dir)
+    if args.no_verify_tests:
+        tests_run = None
+        print(
+            f"rote compile: generated tests NOT RUN (--no-verify-tests); review "
+            f"{compiled_dir / 'tests'} before running them",
+            file=sys.stderr,
+        )
+    elif deliverable is not None:
+        tests_run = deliverable.tests
+    else:
+        tests_run = run_generated_tests(compiled_dir)
     verification = tests_run.as_dict() if tests_run is not None else None
     if tests_run is not None:
         status = {"passed": "passed", "failed": "FAILED", "unavailable": "NOT RUN"}[
@@ -1261,6 +1272,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
         ("--no-mcp", args.no_mcp),
+        ("--no-verify-tests", args.no_verify_tests),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2365,6 +2377,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         agent=agent,
         model=model,
         driver_kwargs={"mcp_servers": []} if args.no_mcp else None,
+        run_generated_tests=not args.no_verify_tests,
     )
 
     out_ctx: Any = (
@@ -3866,6 +3879,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     compile_p.set_defaults(func=_cmd_compile)
     compile_p.add_argument(
+        "--no-verify-tests",
+        action="store_true",
+        help=(
+            "Don't run the tests the compiler agent writes. They run by default, "
+            "in a subprocess with only PATH and locale from your environment and "
+            "an empty HOME, but that is not a sandbox: use this for a skill you "
+            "don't trust, then review and run the tests yourself. Static checks "
+            "still run."
+        ),
+    )
+    compile_p.add_argument(
         "--no-mcp",
         action="store_true",
         help=(
@@ -4386,6 +4410,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the analysis report as JSON instead of text.",
     )
     analyze.set_defaults(func=_cmd_analyze)
+    analyze.add_argument(
+        "--no-verify-tests",
+        action="store_true",
+        help="Don't run the tests the compiler agent writes (see rote compile --help)",
+    )
     analyze.add_argument(
         "--no-mcp",
         action="store_true",
