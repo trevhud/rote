@@ -80,6 +80,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- The `dbos` and `dev` extras now cap `dbos<3`. DBOS 3.0 (2026-09-16)
+  made `Queue(...)` construction raise in favor of
+  `DBOS.register_queue` and removed the admin server, so a fresh
+  `pip install 'rote-cli[dbos]'` resolved 3.x and every emitted DBOS
+  app died on import. The lock moves to 2.31.1, the newest 2.x. This is
+  a stopgap until the emitter targets DBOS 3.
 - Python runtime emission keeps input and output signature definitions in
   separate namespaces. Schemas may reuse a `$defs` name with different
   definitions; generated model names remain unique without changing the
