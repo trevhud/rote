@@ -3,8 +3,8 @@
 The **free first run**. A month-end expense audit skill whose compiled
 pipeline ships with *working* extracted code, so `rote emit` + `rote run`
 complete end to end with no API key, no subscription, and no tokens. The
-other examples show what compilation produces against real vendor APIs;
-their extracted modules are `NotImplementedError` stubs until someone
+other examples show what compilation produces against real vendor APIs.
+Their extracted modules are `NotImplementedError` stubs until someone
 writes the HubSpot or Gmail client. This one shows the result actually
 running.
 
@@ -93,7 +93,7 @@ Expected results on `input.json`:
 The review queue holds four review items (a meal over the cap, software
 over the cap, a late line, entertainment without pre-approval) and two
 blocks (a $25.97 ride with no receipt, a duplicate Lyft charge filed as
-"lyft"). Blocks go back to the employee whatever the controller says; a
+"lyft"). Blocks go back to the employee whatever the controller says. A
 decision that names a block item fails the step with the ids to fix.
 
 ## Layout
@@ -102,6 +102,8 @@ decision that names a block item fails the step with the ids to fix.
 examples/expense-audit/
 ├── README.md
 ├── input.json                    # the sample month export (2026-09)
+├── eval-input.json               # input.json plus the gate payload, for `rote eval --run`
+├── scorecard.md                  # measured before/after (rote eval --run)
 ├── skill/
 │   ├── SKILL.md                  # the source skill, as an agent would run it
 │   └── references/
@@ -117,8 +119,40 @@ examples/expense-audit/
         ├── checks.py
         ├── audit.py
         └── report.py
+└── runs/
+    └── 2026-10-18-first-agent-run/   # a real `rote compile` of skill/, for comparison
 ```
 
-`expected/` is hand-authored, like the other examples' baselines. There
-is no `runs/` snapshot of a real `rote compile` on this skill yet; that
-costs inference and is the next thing to add.
+`expected/` is hand-authored, like the other examples' baselines.
+
+## Measured, not estimated
+
+`scorecard.md` is `rote eval --run --trials 2` on this example, with
+`eval-input.json` (the batch plus the controller's decision). The agent
+runs took 42.9 s and $0.22 each, and they disagreed on `report_path`.
+The pipeline runs took 9.8 s, most of it DBOS startup, cost $0, and
+produced identical output. The static estimate at the top of that file
+(3.2 to 6.5 minutes before) is only a model of agent turns. Trust the
+Measured section over it. To reproduce, emit the dbos app as above and
+run this (it spends subscription tokens on the agent side):
+
+```sh
+rote eval examples/expense-audit/expected/pipeline.yaml --run --trials 2 \
+  --input examples/expense-audit/eval-input.json --runtime-dir /tmp/expense-audit-dbos
+```
+
+## What the real compiler produced
+
+`runs/2026-10-18-first-agent-run/` is a real `rote compile` of this
+skill (claude driver, Sonnet, 46 turns, 12 minutes, $2.56). It agrees on
+node kinds and on the three-way parallel entry wave, and it puts the
+controller gate in the same place. It differs in three ways:
+
+- It folded grouping and auditing into one `apply_policy_rules` node
+  instead of fanning `audit_report` out per employee.
+- It marked 7 nodes mandatory where the hand-written IR marks 5.
+- It left every extracted function as a `NotImplementedError` stub, even
+  though this skill's logic is plain Python.
+
+The hand-written IR is the intended shape. The compiler gaps are being
+fixed in a separate PR.

@@ -68,10 +68,24 @@ rote run /tmp/expense-audit-dbos --input examples/expense-audit/input.json \
 # ... "status": "final", "reimbursable_usd": 2990.98, "returned_usd": 313.17
 ```
 
-Then see what compiling the skill buys: `rote eval` prints a before/after
-scorecard (wall clock, cost across the current model lineup, how much of
-the run is still LLM-decided). It fetches the live price list once and
-runs no inference:
+What compiling it bought, measured: we ran the same batch twice each way
+with `rote eval --run` (the skill as an agent via `claude -p` on Sonnet,
+against the dbos app above):
+
+| | Skill run as an agent | Compiled pipeline |
+| --- | --- | --- |
+| Wall clock per run | 42.9 s | 9.8 s, mostly DBOS startup |
+| Cost per run | $0.22 | $0 |
+| Identical output across runs | 1 of 2 | 2 of 2 |
+
+So it's roughly 4x faster in practice, it drops from $0.22 a run to
+nothing, and it gives the same answer every time. The agent's two runs
+disagreed on where they filed the report. Full results are in
+[`examples/expense-audit/scorecard.md`](examples/expense-audit/scorecard.md).
+
+To get a scorecard for any pipeline without running anything, use
+`rote eval`. It fetches the live price list once and runs no inference.
+Its numbers are an estimate from turn counts, not a measurement:
 
 ```sh
 rote eval examples/expense-audit/expected/pipeline.yaml

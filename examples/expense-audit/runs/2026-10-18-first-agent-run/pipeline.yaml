@@ -1,0 +1,382 @@
+name: expense-audit
+version: "0.1.0"
+source_skill: ../../src/examples/expense-audit/skill
+description: |
+  Month-end audit of employee expense reports. Converts every line to USD
+  at finance-published month-end rates, runs mandatory duplicate and
+  late-submission checks (in parallel with the FX conversion), applies
+  every policy rule from expense-policy.md (category caps, receipt
+  requirements, entertainment pre-approvals, unknown categories, report
+  total limit), auto-approves clean reports, routes findings to the
+  controller for a decision via a durable HITL gate, and files a
+  payroll-ready audit report to the finance shared folder.
+
+config:
+  on_failure: notify_owner
+  observability:
+    traces: true
+    eval_set_dir: ./evals/
+  hitl:
+    default_timeout: 3d
+
+input:
+  type: AuditInput
+  required:
+    - period
+    - lines
+    - controller
+  optional:
+    - fx_rates
+    - finance_folder_path
+  input_schema:
+    type: object
+    title: AuditInput
+    additionalProperties: false
+    required: [period, lines, controller]
+    properties:
+      period:
+        type: string
+        description: "Reporting period in YYYY-MM format (e.g. 2026-09)"
+        pattern: "^\\d{4}-\\d{2}$"
+      lines:
+        type: array
+        description: "All expense lines in the month's export"
+        items:
+          $ref: "#/$defs/ExpenseLine"
+      controller:
+        type: string
+        description: "Name or identifier of the controller who will review the queue"
+      fx_rates:
+        anyOf:
+          - type: object
+            additionalProperties:
+              type: number
+          - type: "null"
+        default: null
+        description: >-
+          Finance-supplied override rates for the period (ISO-4217 code →
+          USD per unit). Null uses the built-in rate table from
+          extracted/fx.py. Supply this when the period is not yet in the
+          table — ask finance, never look up a live rate.
+      finance_folder_path:
+        anyOf:
+          - type: string
+          - type: "null"
+        default: null
+        description: >-
+          Absolute path to the finance shared folder where the audit report
+          is saved. Null skips the file write (useful for dry runs).
+    $defs:
+      ExpenseLine:
+        type: object
+        additionalProperties: false
+        required: [expense_id, employee, merchant, amount, currency, date, category, receipt]
+        properties:
+          expense_id:
+            type: string
+            description: "Unique expense line identifier (lower ID = earlier submission)"
+          employee:
+            type: string
+          department:
+            type: string
+          merchant:
+            type: string
+            description: "Merchant name; duplicate check ignores case"
+          amount:
+            type: number
+            description: "Line amount in the original currency"
+          currency:
+            type: string
+            description: "ISO-4217 currency code (e.g. USD, EUR, GBP)"
+          date:
+            type: string
+            pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+            description: "Expense date in YYYY-MM-DD format"
+          category:
+            type: string
+            description: "Expense tool category code (e.g. airfare, lodging, meals)"
+          receipt:
+            type: boolean
+            description: "True when a receipt image is attached in the expense tool"
+          nights:
+            anyOf: [{type: integer, minimum: 1}, {type: "null"}]
+            default: null
+            description: "Number of nights (lodging lines only)"
+          preapproval_id:
+            anyOf: [{type: string}, {type: "null"}]
+            default: null
+            description: "Pre-approval reference ID (entertainment lines only)"
+
+nodes:
+  # =========================================================================
+  # Wave 1 — Three entry nodes that do not depend on each other.
+  # The skill explicitly says "Steps 1 to 3 do not depend on each other,
+  # so do them together." Adapters run same-wave nodes concurrently.
+  # =========================================================================
+
+  - id: convert_to_usd
+    kind: pure_function
+    phase: "1"
+    source:
+      section: "Step 1: Convert every line to USD"
+    description: |
+      Convert every expense line's amount to USD using the finance-published
+      month-end rate for the reporting period. Uses MONTH_END_RATES from
+      extracted/fx.py; finance can override via the pipeline input fx_rates
+      field. Raises when the period or any line's currency is missing from
+      the rate table — do not proceed and do not look up a live rate.
+    impl: extracted/fx.py:convert_to_usd
+    input:
+      lines: list[ExpenseLine]
+      period: str
+      fx_rates: dict[str, float] | None
+    inputs:
+      lines: pipeline.input.lines
+      period: pipeline.input.period
+      fx_rates: pipeline.input.fx_rates
+    output:
+      converted_lines: list[ConvertedLine]
+    mandatory: true
+    timeout: 30s
+
+  - id: check_duplicates
+    kind: pure_function
+    phase: "2"
+    source:
+      section: "Step 2: Check for duplicate submissions (MANDATORY)"
+    description: |
+      Identify duplicate expense lines — same (employee, merchant, amount,
+      currency, date). Keep the first submission by expense_id; flag every
+      later copy as a BLOCK finding. MANDATORY: run on every line, every
+      month, even when the batch looks small enough to eyeball.
+    impl: extracted/checks.py:check_duplicates
+    input:
+      lines: list[ExpenseLine]
+    inputs:
+      lines: pipeline.input.lines
+    output:
+      duplicate_findings: list[Finding]
+    mandatory: true
+    timeout: 30s
+
+  - id: check_late_submissions
+    kind: pure_function
+    phase: "3"
+    source:
+      section: "Step 3: Check for late submissions (MANDATORY)"
+    description: |
+      Flag expense lines dated more than 60 days before the last day of the
+      reporting period, or dated after the period closed. Late lines are
+      REVIEW severity — the controller can approve them. MANDATORY every month.
+    impl: extracted/checks.py:check_late_submissions
+    input:
+      lines: list[ExpenseLine]
+      period: str
+    inputs:
+      lines: pipeline.input.lines
+      period: pipeline.input.period
+    output:
+      late_findings: list[Finding]
+    mandatory: true
+    timeout: 30s
+    constants:
+      late_submission_days: 60
+
+  # =========================================================================
+  # Wave 2 — Audit: waits for all three Wave 1 nodes.
+  # =========================================================================
+
+  - id: apply_policy_rules
+    kind: pure_function
+    phase: "4"
+    source:
+      section: "Step 4: Audit each employee's report"
+    description: |
+      Group USD-converted lines by employee and apply every rule from
+      expense-policy.md: category cap (lodging cap is per night), receipt
+      required on $25+ lines, entertainment requires preapproval_id, unknown
+      category, and the duplicate/late findings from the Wave 1 checks.
+      Also flags the employee's report when its USD total exceeds $2,500,
+      even with no other findings. Reports with zero findings are auto-approved.
+    impl: extracted/policy.py:apply_policy_rules
+    input:
+      converted_lines: list[ConvertedLine]
+      duplicate_findings: list[Finding]
+      late_findings: list[Finding]
+    inputs:
+      converted_lines: convert_to_usd.output.converted_lines
+      duplicate_findings: check_duplicates.output.duplicate_findings
+      late_findings: check_late_submissions.output.late_findings
+    output:
+      findings_by_employee: dict[str, list[Finding]]
+      auto_approved_employees: list[str]
+      employee_totals_usd: dict[str, float]
+      employee_line_counts: dict[str, int]
+      employee_departments: dict[str, str]
+    mandatory: true
+    timeout: 60s
+    constants:
+      receipt_required_threshold: 25.00
+      report_total_limit: 2500.00
+      category_caps:
+        airfare: 900.00
+        lodging: 325.00
+        meals: 75.00
+        ground_transport: 150.00
+        software: 100.00
+        office_supplies: 250.00
+        entertainment: null   # no cap — but always requires preapproval_id
+
+  # =========================================================================
+  # Wave 3 — Review queue: waits for apply_policy_rules.
+  # =========================================================================
+
+  - id: build_review_queue
+    kind: pure_function
+    phase: "5"
+    source:
+      section: "Step 5: Summarize the batch"
+    description: |
+      Aggregate all findings into a sorted review queue (by employee, then
+      expense_id). Set decision="returned" for BLOCK items and
+      decision="pending" for REVIEW items. Compute initial batch totals.
+      Auto-approved employees appear in the totals but have no queue rows.
+    impl: extracted/report.py:build_review_queue
+    input:
+      findings_by_employee: dict[str, list[Finding]]
+      auto_approved_employees: list[str]
+      employee_totals_usd: dict[str, float]
+    inputs:
+      findings_by_employee: apply_policy_rules.output.findings_by_employee
+      auto_approved_employees: apply_policy_rules.output.auto_approved_employees
+      employee_totals_usd: apply_policy_rules.output.employee_totals_usd
+    output:
+      review_queue: list[QueueRow]
+      batch_summary: BatchSummary
+    mandatory: true
+    timeout: 30s
+
+  # =========================================================================
+  # Wave 4 — Controller HITL gate.
+  # Holds the workflow for up to 3 days awaiting controller decisions.
+  # BLOCK items are listed for information only; the controller decides
+  # only REVIEW items.
+  # =========================================================================
+
+  - id: controller_review_gate
+    kind: hitl_gate
+    phase: "6"
+    source:
+      section: "Step 6: Controller review"
+    description: |
+      Post the review queue to the controller and wait for a decision on
+      every REVIEW item (approve or reject). BLOCK items are returned to
+      the employee regardless of the controller's preferences. If the
+      controller names an expense_id not in the queue, the runtime should
+      reject the signal and ask again. Hold for up to 3 days; escalate
+      to the finance manager if no decision arrives.
+    input:
+      review_queue: list[QueueRow]
+      batch_summary: BatchSummary
+    output:
+      # Signal payload: the controller submits decisions for REVIEW items only.
+      decisions: dict[str, str]       # expense_id → "approved" | "rejected"
+      controller_name: str            # identity of the reviewer for the report
+    signal: controller_review_complete
+    timeout: 3d
+    notify:
+      channel: slack
+      target: "#finance-expense-review"
+      message_template: |
+        Expense audit for {period} is ready for controller review.
+        Please approve or reject every REVIEW item and submit the
+        controller_review_complete signal with your decisions.
+
+  # =========================================================================
+  # Wave 5 — Render and file the report.
+  # Waits for the controller HITL gate to complete.
+  # =========================================================================
+
+  - id: render_audit_report
+    kind: pure_function
+    phase: "7"
+    source:
+      section: "Step 7: File the audit report"
+    description: |
+      Render the final audit report in the fixed layout from
+      references/report-format.md. A line is reimbursable when it has no
+      findings, or when all its REVIEW findings were approved. Blocked and
+      rejected lines are returned to the employee. Sets the report status
+      to "final" once all REVIEW findings have a controller decision.
+    impl: extracted/report.py:render_audit_report
+    input:
+      period: str
+      controller: str
+      auto_approved_employees: list[str]
+      employee_totals_usd: dict[str, float]
+      employee_line_counts: dict[str, int]
+      employee_departments: dict[str, str]
+      review_queue: list[QueueRow]
+      decisions: dict[str, str]
+    inputs:
+      period: pipeline.input.period
+      controller: pipeline.input.controller
+      auto_approved_employees: apply_policy_rules.output.auto_approved_employees
+      employee_totals_usd: apply_policy_rules.output.employee_totals_usd
+      employee_line_counts: apply_policy_rules.output.employee_line_counts
+      employee_departments: apply_policy_rules.output.employee_departments
+      review_queue: build_review_queue.output.review_queue
+      decisions: controller_review_gate.output.decisions
+    output:
+      report_markdown: str
+    mandatory: true
+    timeout: 30s
+
+  - id: save_audit_report
+    kind: external_call
+    phase: "7"
+    source:
+      section: "Step 7: File the audit report"
+    description: |
+      Save the audit report to the finance shared folder as
+      <period>-expense-audit.md. Payroll reads from this file and only
+      reimburses from a report marked final.
+    impl: extracted/save.py:save_audit_report
+    input:
+      period: str
+      report_markdown: str
+      finance_folder_path: str | None
+    inputs:
+      period: pipeline.input.period
+      report_markdown: render_audit_report.output.report_markdown
+      finance_folder_path: pipeline.input.finance_folder_path
+    output:
+      file_path: str | None
+    mandatory: true
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [network, io_error]
+    timeout: 30s
+
+edges:
+  # Wave 1 → Wave 2: apply_policy_rules waits for all three checks.
+  - { from: convert_to_usd,          to: apply_policy_rules }
+  - { from: check_duplicates,        to: apply_policy_rules }
+  - { from: check_late_submissions,  to: apply_policy_rules }
+  # Wave 2 → Wave 3
+  - { from: apply_policy_rules,      to: build_review_queue }
+  # Wave 3 → Wave 4 (HITL gate)
+  - { from: build_review_queue,      to: controller_review_gate }
+  # Wave 4 → Wave 5: render waits for controller decisions.
+  - { from: controller_review_gate,  to: render_audit_report, on_signal: controller_review_complete }
+  # Wave 5: save follows render.
+  - { from: render_audit_report,     to: save_audit_report }
+
+entry_nodes:
+  - convert_to_usd
+  - check_duplicates
+  - check_late_submissions
+
+exit_nodes:
+  - save_audit_report

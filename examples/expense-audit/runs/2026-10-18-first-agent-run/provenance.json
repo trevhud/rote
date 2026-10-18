@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "skill_md_sha256": "8ca3b9a788dfd31172d428e968bff7f4dc4a21e0890e0543bf51338899f542bc",
+  "sections": {
+    "": "f161c17b41c18c5b70c0261eeb4146ecef11269f4dd606dc7e293a840b24f66d",
+    "Month-End Expense Audit": "9e37aae9e5b710e9da904b6a51ed0450e16445b10e80e9cb095b02c8b9ed568a",
+    "Step 1: Convert every line to USD": "6716fc2eef491ac345c00c73ffcee000eacb9db3aeaefa6f4b02257ff8ba35ce",
+    "Step 2: Check for duplicate submissions (MANDATORY)": "3fc20027fb073ccd64f4a64c0747c141659587ae4ad5a73a54e54a8bb1bf061e",
+    "Step 3: Check for late submissions (MANDATORY)": "ac4d0080f72fe3f3e7697f4af0c8125b34501a2b2c4a9ffc2fa27ae2169f3661",
+    "Step 4: Audit each employee's report": "507624f657a4d2e9c5cc37daf1907f82d63eee7292e1f17b69bb317cd5d9aacf",
+    "Step 5: Summarize the batch": "89e2d4804840845cb7daff83ebd7155e798517580a24c637d8d46347838e01e8",
+    "Step 6: Controller review": "79b4597f20ab9db135c06d33497ae8437904f44ae473b7088a587c69567cfc1b",
+    "Step 7: File the audit report": "3d0e2347597062b3913aea67046cea2312ac93d0ac1a7cd76f8e6a67e9b8e5cb"
+  },
+  "nodes": {
+    "apply_policy_rules": {
+      "section": "Step 4: Audit each employee's report",
+      "content_hash": "507624f657a4d2e9c5cc37daf1907f82d63eee7292e1f17b69bb317cd5d9aacf"
+    },
+    "build_review_queue": {
+      "section": "Step 5: Summarize the batch",
+      "content_hash": "89e2d4804840845cb7daff83ebd7155e798517580a24c637d8d46347838e01e8"
+    },
+    "check_duplicates": {
+      "section": "Step 2: Check for duplicate submissions (MANDATORY)",
+      "content_hash": "3fc20027fb073ccd64f4a64c0747c141659587ae4ad5a73a54e54a8bb1bf061e"
+    },
+    "check_late_submissions": {
+      "section": "Step 3: Check for late submissions (MANDATORY)",
+      "content_hash": "ac4d0080f72fe3f3e7697f4af0c8125b34501a2b2c4a9ffc2fa27ae2169f3661"
+    },
+    "controller_review_gate": {
+      "section": "Step 6: Controller review",
+      "content_hash": "79b4597f20ab9db135c06d33497ae8437904f44ae473b7088a587c69567cfc1b"
+    },
+    "convert_to_usd": {
+      "section": "Step 1: Convert every line to USD",
+      "content_hash": "6716fc2eef491ac345c00c73ffcee000eacb9db3aeaefa6f4b02257ff8ba35ce"
+    },
+    "render_audit_report": {
+      "section": "Step 7: File the audit report",
+      "content_hash": "3d0e2347597062b3913aea67046cea2312ac93d0ac1a7cd76f8e6a67e9b8e5cb"
+    },
+    "save_audit_report": {
+      "section": "Step 7: File the audit report",
+      "content_hash": "3d0e2347597062b3913aea67046cea2312ac93d0ac1a7cd76f8e6a67e9b8e5cb"
+    }
+  }
+}
