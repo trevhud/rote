@@ -89,6 +89,7 @@ function takes that item as one parameter and reads its fields:
 # function asks for the element's fields. Every call raises TypeError.
 def fetch_thread_content(thread_id: str, thread_url: str) -> dict: ...
 
+
 # RIGHT: one parameter per `inputs:` key. Fields come from the element.
 def fetch_thread_content(thread: dict) -> dict:
     thread_id = thread["thread_id"]

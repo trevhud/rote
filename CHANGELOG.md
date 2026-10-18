@@ -124,6 +124,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   run `2026-04-26-signature-spec` (`personalize_email` bound nothing).
   The compiler rubric now says a fanned judge's input has one property
   for the whole element, and shows the wrong shapes it produced.
+- deal-monitor's `expected` IR no longer sets `temperature: 0.0` on its
+  three judges. Current Claude models reject the parameter, and the
+  rubric already forbids it. A test now keeps every `expected/` IR free
+  of it; historical `runs/` snapshots stay as compiled.
 - The `dbos` and `dev` extras now cap `dbos<3`. DBOS 3.0 (2026-09-16)
   made `Queue(...)` construction raise in favor of
   `DBOS.register_queue` and removed the admin server, so a fresh

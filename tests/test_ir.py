@@ -982,3 +982,18 @@ def test_every_committed_pipeline_validates(path: str) -> None:
     from rote.ir import load_pipeline
 
     assert load_pipeline(REPO_ROOT / path).nodes
+
+
+@pytest.mark.parametrize("path", [p for p in _COMMITTED_PIPELINES if "/expected/" in p])
+def test_expected_irs_never_set_judge_temperature(path: str) -> None:
+    """Current Claude models reject `temperature` outright, so a baseline IR
+    that sets it ships judges that 400 on every call (see the CLAUDE.md
+    gotcha). Historical runs/ snapshots are left as compiled."""
+    from rote.ir import load_pipeline
+
+    offenders = [
+        n.id
+        for n in load_pipeline(REPO_ROOT / path).nodes
+        if n.signature_spec is not None and n.signature_spec.temperature is not None
+    ]
+    assert offenders == []
