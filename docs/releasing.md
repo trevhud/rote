@@ -22,7 +22,9 @@ published there in May 2026, actively maintained, so not reclaimable
 under PEP 541. The distribution is therefore named `rote-cli`
 (`pyproject.toml` `name`); the import name (`import rote`) and
 console script (`rote`) stay as they are — distribution and import
-names don't have to match.
+names don't have to match. A second console script named `rote-cli`
+points at the same entry point, because `uvx rote-cli ...` runs the
+command named after the distribution (`tests/test_packaging.py`).
 
 One real conflict to know about: the existing `rote` package on
 PyPI *also* installs an `import rote` module, so the two packages

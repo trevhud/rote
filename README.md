@@ -174,9 +174,10 @@ this README still works logged out.
 
 > **Naming note:** the `rote` package on PyPI is an unrelated
 > memoization library that also installs `import rote`, so the two can't
-> share an environment. This project's distribution is `rote-cli` while
-> the CLI command and import name stay `rote`, hence
-> `uvx --from rote-cli rote ...`. See [docs/releasing.md](docs/releasing.md).
+> share an environment. This project's distribution is `rote-cli` and the
+> import name stays `rote`. The package installs the same CLI under two
+> commands, `rote` and `rote-cli`, so both `uvx rote-cli ...` and
+> `uvx --from rote-cli rote ...` work. See [docs/releasing.md](docs/releasing.md).
 
 ### Run on the bundled example
 
