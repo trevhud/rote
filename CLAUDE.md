@@ -120,7 +120,8 @@ the Anthropic SDK client (see
     with the Cloudflare adapter. Note: the DBOS **TS** SDK is
     Postgres-only (no SQLite parity with DBOS Python), and its
     `DBOS.recv` defaults to a 60s timeout — the emitter always passes
-    the IR timeout explicitly.
+    the IR timeout explicitly. Targets DBOS 3 (Python) / Transact v5
+    (TS); see the DBOS 3 queue gotcha below.
   - `InngestAdapter`
     ([`src/rote/adapters/inngest.py`](src/rote/adapters/inngest.py),
     registered as `inngest`) — emits a TypeScript Inngest app (one
@@ -682,6 +683,25 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    dev server's single startup sync can race the app boot and never
    register it — the e2e sends an explicit `PUT` to the app's serve
    handler to force registration. See `tests/test_inngest_e2e.py`.
+
+### DBOS 3 queues exist only after launch; emitted apps start through `launch()`
+
+DBOS 3 (Python) and DBOS Transact v5 (TS) removed direct queue
+construction: `Queue("name")` raises `DBOSException` at import, and
+`DBOS.register_queue` needs a launched runtime because queues now live
+in the system database. A workflow enqueued on a queue nobody registered
+does not fail; it sits in `ENQUEUED` forever. So the emitted `main.py`
+declares `QUEUE_NAME`, enqueues via `_enqueue` (a thin
+`DBOS.enqueue_workflow(QUEUE_NAME, ...)` wrapper), and exposes
+`launch()` = `DBOS.launch()` + `DBOS.register_queue(QUEUE_NAME)`. Any
+in-process launcher, tests included, must call `main_module.launch()`.
+A bare `DBOS.launch()` hangs the first parallel wave, which shows up
+only as a test timeout. Two more v5 traps on the TS side: the SDK no
+longer reads `dbos-config.yaml` at launch (only the `dbos` CLI does, so
+`rote._dbos.dbos_ts_system_database_url` ignores its
+`system_database_url` key), and starting or enqueuing a *step* directly
+now throws, which is one reason the DBOS-TS emitter keeps parallel waves
+on `Promise.allSettled` instead of queues.
 
 ### A fan_out element's step name must carry its index
 

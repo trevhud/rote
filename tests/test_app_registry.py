@@ -246,7 +246,32 @@ def test_release_scans_dbos_ts_apps_with_postgres_urls(
     assert [r.workflow_id for r in report.released] == ["wf-parked"]
 
 
-def test_dbos_ts_url_prefers_config_key_with_env_expansion(
+def test_dbos_ts_url_ignores_config_file_database_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DBOS-TS v5 stopped reading dbos-config.yaml at launch, so the
+    running app never sees a ``system_database_url`` key there. Release
+    messages must go where the app actually is: the env override, else
+    the SDK default derived from the app name."""
+    from rote._dbos import dbos_ts_system_database_url
+
+    monkeypatch.delenv("DBOS_SYSTEM_DATABASE_URL", raising=False)
+    monkeypatch.setenv("MY_PG_URL", "postgresql://u:p@db.example:5432/custom")
+    app = tmp_path / "tsapp"
+    app.mkdir()
+    (app / "dbos-config.yaml").write_text(
+        "name: Ts-Demo\nsystem_database_url: ${MY_PG_URL}\n", encoding="utf-8"
+    )
+    # The SDK's toDbName(): lowercased, '-' to '_'.
+    assert dbos_ts_system_database_url(app) == (
+        "postgresql://postgres:dbos@localhost:5432/ts_demo_dbos_sys"
+    )
+    # The env override outranks everything, matching emitted main.ts.
+    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://o:o@override:5432/sys")
+    assert dbos_ts_system_database_url(app) == "postgresql://o:o@override:5432/sys"
+
+
+def test_dbos_ts_url_prefixes_a_leading_digit_like_the_sdk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from rote._dbos import dbos_ts_system_database_url
@@ -254,17 +279,8 @@ def test_dbos_ts_url_prefers_config_key_with_env_expansion(
     monkeypatch.delenv("DBOS_SYSTEM_DATABASE_URL", raising=False)
     app = tmp_path / "tsapp"
     app.mkdir()
-    (app / "dbos-config.yaml").write_text(
-        "name: ts_demo\nsystem_database_url: ${MY_PG_URL}\n", encoding="utf-8"
-    )
-    # Unset var expands to empty — the SDK behavior — so the default wins.
-    monkeypatch.delenv("MY_PG_URL", raising=False)
-    assert dbos_ts_system_database_url(app).endswith("/ts_demo_dbos_sys")
-    monkeypatch.setenv("MY_PG_URL", "postgresql://u:p@db.example:5432/custom")
-    assert dbos_ts_system_database_url(app) == "postgresql://u:p@db.example:5432/custom"
-    # The env override outranks everything, matching emitted main.ts.
-    monkeypatch.setenv("DBOS_SYSTEM_DATABASE_URL", "postgresql://o:o@override:5432/sys")
-    assert dbos_ts_system_database_url(app) == "postgresql://o:o@override:5432/sys"
+    (app / "dbos-config.yaml").write_text("name: 2fa-flow\n", encoding="utf-8")
+    assert dbos_ts_system_database_url(app).endswith("/_2fa_flow_dbos_sys")
 
 
 def test_release_broadcasts_to_inngest_apps(

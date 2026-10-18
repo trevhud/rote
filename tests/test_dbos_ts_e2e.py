@@ -104,7 +104,7 @@ def test_emitted_typescript_compiles(emitted_dir: Path) -> None:
     """Run `tsc --noEmit` over the emitted output. Zero diagnostics expected.
 
     If this passes, the emitted code typechecks against the real
-    @dbos-inc/dbos-sdk v4 definitions, the Anthropic SDK, and Zod.
+    @dbos-inc/dbos-sdk v5 definitions, the Anthropic SDK, and Zod.
     """
     proc = subprocess.run(
         ["npx", "--no-install", "tsc", "--noEmit"],
@@ -186,7 +186,6 @@ async function serve(): Promise<void> {
     DBOS.setConfig({
         name: "bdr-campaign",
         systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
-        runAdminServer: false,
     });
     await DBOS.launch();
     const server = http.createServer((req, res) => {

@@ -69,7 +69,7 @@ openai-api = [
     "openai>=2.45",
 ]
 dbos = [
-    "dbos>=2.26,<3",
+    "dbos>=3.3,<4",
 ]
 serve = [
     "fastmcp>=3.4.2,<4",
@@ -88,7 +88,7 @@ dev = [
     "temporalio>=1.7",
     "anthropic>=0.89",
     "openai>=2.45",
-    "dbos>=2.26,<3",
+    "dbos>=3.3,<4",
     "fastmcp>=3.4.2,<4",
     "httpx>=0.28",
 ]

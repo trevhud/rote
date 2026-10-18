@@ -17,11 +17,11 @@ Output layout::
         dbos-config.yaml            # CLI/Cloud tooling config (`npx dbos start`)
         README.md                   # how to run, signal HITL gates, deploy
 
-Key design choices, verified against ``@dbos-inc/dbos-sdk`` v4.23.6 (the
+Key design choices, verified against ``@dbos-inc/dbos-sdk`` v5.3.0 (the
 installed package's ``.d.ts`` is the source of truth; docs.dbos.dev
 corroborates):
 
-* **Function-wrapper registration, not decorators.** The v4 TS SDK's
+* **Function-wrapper registration, not decorators.** The v5 TS SDK's
   primary API is ``DBOS.registerWorkflow(fn, config)`` /
   ``DBOS.registerStep(fn, config)`` — plain function wrappers. The
   legacy class-static decorator form still exists but the emitted code
@@ -130,7 +130,7 @@ class DbosTsAdapterConfig:
 
     Defaults work out-of-the-box for the BDR example: the SDK's default
     local Postgres URL for dev (overridable via
-    ``DBOS_SYSTEM_DATABASE_URL``), admin server off.
+    ``DBOS_SYSTEM_DATABASE_URL``).
     """
 
     anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
@@ -737,9 +737,6 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
                 // which matches `npx dbos postgres start`. The TS SDK is
                 // Postgres-only — unlike DBOS Python there is no SQLite mode.
                 systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
-                // The admin server (port 3001) is opt-in; enable it when you
-                // want the DBOS console / management API.
-                runAdminServer: false,
             }});
             await DBOS.launch();
             try {{
@@ -785,7 +782,7 @@ def emit_package_json(
     emitted entrypoint depends on it too.
     """
     dependencies = {
-        "@dbos-inc/dbos-sdk": "^4.23.6",
+        "@dbos-inc/dbos-sdk": "^5.3.0",
         "zod": "^4.4.3",
     }
     clients = llm_clients(pipeline)
