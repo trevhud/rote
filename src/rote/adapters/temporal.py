@@ -44,6 +44,7 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
     write_extracted_package,
@@ -331,24 +332,7 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
         )
     )
     if has_impls:
-        parts.append(
-            textwrap.dedent(
-                '''
-
-                async def _call_impl(fn: Any, payload: dict) -> Any:
-                    """Call an extracted function with the step payload.
-
-                    A coroutine function is awaited. A plain one, which is what
-                    the shared stubs and most agent-written modules are, runs
-                    in a worker thread so it cannot block the activity's event
-                    loop.
-                    """
-                    if inspect.iscoroutinefunction(fn):
-                        return await fn(**payload)
-                    return await asyncio.to_thread(fn, **payload)
-                '''
-            )
-        )
+        parts.append("\n\n" + call_impl_helper(is_async=True))
 
     # Emit one activity per non-HITL node (including loop_body sub-nodes
     # so they can be tested in isolation).

@@ -503,7 +503,8 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
     """BDR judges carry both legacy signature and signature_spec; the DBOS
     step must import the *generated* module, not the legacy path."""
     assert "from signatures.vet_contact import VetContact, VetContactInput" in main_src
-    assert "asyncio.run" not in main_src
+    # The legacy path's marker: it bridges an async forward() on the loop.
+    assert "_run_async(judge.forward" not in main_src
 
 
 # ───────── Legacy signature path + openai client (synthetic pipelines) ─────────
@@ -511,7 +512,7 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
 
 def test_legacy_signature_path_fallback() -> None:
     """A judge with only the legacy path form imports the user-maintained
-    module and bridges its async forward with asyncio.run."""
+    module and bridges its async forward with _run_async."""
     judge = Node(
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
@@ -520,7 +521,7 @@ def test_legacy_signature_path_fallback() -> None:
     )
     src = emit_main(mini_pipeline(judge), DbosAdapterConfig())
     assert "from signatures.grade_essay import (" in src
-    assert "asyncio.run(judge.forward(GradeEssayInput(**payload)))" in src
+    assert "_run_async(judge.forward(GradeEssayInput(**payload)))" in src
 
 
 def test_openai_client_signature_module() -> None:

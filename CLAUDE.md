@@ -270,6 +270,21 @@ Two regimes, don't mix them up:
   reconstruct as plain `Error`s). See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
+### Sync Python runtimes run async work on ONE background loop
+
+python and dbos steps are plain functions, so every coroutine they need
+(an `async def` extracted function, a dbos MCP step, a legacy async
+judge) goes through the emitted `_run_async`, which submits it to one
+daemon-thread event loop per process. Do not "simplify" it back to
+`asyncio.run`: that makes and closes a loop per call, so a module-level
+`httpx.AsyncClient` fails from its second call on ("Event loop is
+closed"), which is every fan_out element and every retry; and it raises
+inside a running loop, where `run_pipeline` lands when async code
+imports it. `_call_impl` comes in two forms from one place
+(`_py_common.call_impl_helper`, `is_async=True` for temporal), and both
+check the *result* for awaitability, so a plain wrapper returning a
+coroutine works on every runtime (`tests/test_call_impl_helper.py`).
+
 ### Never return fastmcp's `result.data` from an MCP step
 
 `_result_payload` in `rote.mcp._runtime_helper` must NOT be

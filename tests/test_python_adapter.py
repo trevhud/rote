@@ -240,7 +240,18 @@ def test_stdlib_only_imports(main_src: str) -> None:
             roots.update(alias.name.split(".")[0] for alias in imp.names)
         elif imp.module is not None:
             roots.add(imp.module.split(".")[0])
-    assert roots == {"__future__", "json", "os", "sys", "time", "concurrent", "typing"}
+    assert roots == {
+        "__future__",
+        "asyncio",
+        "inspect",
+        "json",
+        "os",
+        "sys",
+        "threading",
+        "time",
+        "concurrent",
+        "typing",
+    }
 
 
 def test_conditional_imports_dropped_when_unused() -> None:
@@ -483,7 +494,7 @@ def test_agent_loop_emits_a_real_bounded_loop(main_src: str) -> None:
 
 def test_legacy_signature_path_fallback() -> None:
     """A judge with only the legacy path form imports the user-maintained
-    module and bridges its async forward with asyncio.run."""
+    module and bridges its async forward with _run_async."""
     judge = Node(
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
@@ -492,7 +503,7 @@ def test_legacy_signature_path_fallback() -> None:
     )
     src = emit_main(mini_pipeline(judge))
     assert "from signatures.grade_essay import (" in src
-    assert "asyncio.run(GradeEssay().forward(GradeEssayInput(**payload)))" in src
+    assert "_run_async(GradeEssay().forward(GradeEssayInput(**payload)))" in src
 
 
 # ───────── The MCP invariant ─────────
