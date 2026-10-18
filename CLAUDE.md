@@ -338,10 +338,14 @@ reading the emit manifest via `rote.adapters._common.unimplemented_stubs`),
 so a stub never burns a durable runtime's retry budget before failing.
 A stub is a function raising with `STUB_SENTINEL` (`[rote stub]`, in
 every stub rote emits) or, in Python, one whose whole body is `raise
-NotImplementedError` (the shape compile agents write). Never go back to a
-`NotImplementedError` substring match: a real module that raises it on an
-unsupported branch was refused with no way past it. `--allow-stubs` is
-the escape hatch.
+NotImplementedError` (the shape compile agents write), at any depth,
+methods included, `@abstractmethod` excepted. The marker counts only
+where it is executable: in Python as a `raise` argument (AST), in TS
+after `strip_ts_comments`. A raw-text match kept a filled-in module that
+merely mentions the marker in a comment listed, and `rote run` refused
+it. Never go back to a `NotImplementedError` substring match either: a
+real module that raises it on an unsupported branch was refused with no
+way past it. `--allow-stubs` is the escape hatch.
 
 ### Vendor SDK errors do not survive a durable step boundary
 
