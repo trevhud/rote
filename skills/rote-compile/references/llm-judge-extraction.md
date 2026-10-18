@@ -83,7 +83,7 @@ one for one.** Each field gets a binding (`contact:` the fanned list,
 binding exists without a field. A field nothing upstream can supply
 is a design error, not a gap to leave for later: add the upstream
 output or pipeline input that carries it. The IR validator rejects a
-judge whose `required` fields are unbound or whose bindings a closed
+judge whose `required` fields are unbound or whose bindings the
 schema does not declare (ir-schema.md, validation rule 9).
 
 ### Step 4 — Design the output model

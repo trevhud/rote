@@ -714,7 +714,7 @@ nodes:
       input_schema:
         type: object
         title: PersonalizeEmailInput
-        required: [contact, brief_campaign_type, brief_drug_brand, brief_condition, brief_therapeutic_area, intel, acme_experience]
+        required: [contact, brief_campaign_type, brief_drug_brand, brief_condition, brief_therapeutic_area, intel]
         additionalProperties: false
         properties:
           contact:
@@ -727,7 +727,7 @@ nodes:
           brief_therapeutic_area: {type: string, title: Brief Therapeutic Area}
           intel:
             $ref: "#/$defs/IntelBrief"
-          acme_experience: {type: string, title: Acme Experience}
+          acme_experience: {anyOf: [{type: string}, {type: "null"}], default: null, title: Acme Experience}
         $defs:
           ContactTier:
             enum: [ideal, strong, good]

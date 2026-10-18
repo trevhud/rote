@@ -106,10 +106,19 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
     schema_type = schema.get("type")
 
     if schema_type == "object":
+        # Unknown-key handling mirrors the Pydantic emitter exactly, so one
+        # payload validates the same way on every runtime: an object with no
+        # declared properties is a free-form dict (``dict[str, Any]``), one
+        # with properties rejects extra keys only under
+        # ``additionalProperties: false`` (``extra="forbid"``) and otherwise
+        # drops them (Pydantic's default ``extra="ignore"`` is Zod's default
+        # strip). Unconditional ``.strict()`` made an upstream object with one
+        # undeclared field fail only on the TypeScript runtimes.
         props = schema.get("properties", {})
         required = set(schema.get("required", []))
         if not props:
-            return "z.object({}).strict()"
+            return "z.record(z.string(), z.unknown())"
+        closing = ").strict()" if schema.get("additionalProperties") is False else ")"
         pad = "  " * (indent + 1)
         outer = "  " * indent
         lines = []
@@ -119,7 +128,7 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
                 inner = f"{inner}.optional()"
             lines.append(f"{pad}{json.dumps(name)}: {inner},")
         body = "\n".join(lines)
-        return f"z.object({{\n{body}\n{outer}}}).strict()"
+        return f"z.object({{\n{body}\n{outer}}}{closing}"
 
     if schema_type == "array":
         items = schema.get("items", {})

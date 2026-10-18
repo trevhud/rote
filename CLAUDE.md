@@ -674,8 +674,11 @@ would reject every other element.
 Every adapter builds a judge's payload from its `inputs:` keys and
 nothing else (`{"thread": _item}` for a fan, plus shared params), then
 validates it against `signature_spec.input_schema`. So a `required`
-property `inputs:` does not bind, or a bound key a closed schema
-(`additionalProperties: false`) does not declare, fails *every* call.
+property `inputs:` does not bind fails *every* call. A bound key the
+schema does not declare is also rejected, open schema or not: Python
+silently drops it, and before the Zod emitter honored
+`additionalProperties` the TS runtimes rejected every call with it. A
+binding the contract cannot name is a mistake on every runtime.
 Nothing caught that before run time: the IR loaded, every adapter
 emitted, and the first real eval of deal-monitor failed all of its
 fanned `classify_thread_step` calls on a missing `account_name`.
@@ -701,6 +704,14 @@ things to preserve:
   schema in the IR to check. Don't widen the check to `Node.input_schema`
   on other kinds: that is observed documentation, not a contract any
   adapter enforces.
+
+Unknown-key handling is behavioral emitted code, so it must match across
+languages: Zod gets `.strict()` exactly where Pydantic gets
+`extra="forbid"` (`additionalProperties: false`), strips otherwise, and a
+property-less object is a free-form record on both.
+`tests/test_judge_schema_parity_e2e.py` runs one schema through the
+emitted Pydantic model and real `zod` and compares verdicts and parsed
+values; touch either converter and run it.
 
 `tests/test_ir.py::test_every_committed_pipeline_validates` sweeps every
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its

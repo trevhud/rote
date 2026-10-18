@@ -458,8 +458,9 @@ these constraints in mind:
    The emitted judge builds its input from the `inputs:` keys alone
    and validates it against the schema, so the IR is rejected when a
    `required` property is not a key of `inputs:`, or when `inputs:`
-   binds a key the schema does not declare and the schema sets
-   `additionalProperties: false`. A root `$ref` into `$defs` is
+   binds a key the schema's `properties` do not declare (whatever
+   `additionalProperties` says: a closed schema rejects the call, an
+   open one silently drops the value). A root `$ref` into `$defs` is
    followed. Exempt: loop-body sub-nodes (their parent loop supplies
    the arguments) and judges with only the legacy `signature:` path.
    The error names the node, the param, and the schema, e.g.

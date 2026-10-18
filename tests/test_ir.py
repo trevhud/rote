@@ -828,21 +828,25 @@ def test_judge_rejects_bound_param_a_closed_schema_does_not_declare() -> None:
         )
     message = str(exc.value)
     assert "binds ['extra'], which" in message
-    assert "additionalProperties: false; properties: ['thread']" in message
+    assert "which it does not declare (properties: ['thread'])" in message
     assert "requires" not in message  # nothing required is missing
 
 
-def test_judge_accepts_extra_bound_param_when_schema_is_open() -> None:
-    """The negative half: without ``additionalProperties: false`` the emitted
-    model ignores unknown keys, so an extra binding is harmless."""
+def test_judge_rejects_undeclared_bound_param_even_when_schema_is_open() -> None:
+    """An open schema doesn't make an extra binding harmless: Python drops
+    the value silently, and before the Zod emitter honored
+    ``additionalProperties`` the TS runtimes rejected every call. Either
+    way it is a binding the judge's contract cannot name."""
+    from pydantic import ValidationError
+
     schema = {"type": "object", "properties": {"thread": _THREAD_SCHEMA}, "required": ["thread"]}
-    pipeline = _judge_pipeline(
-        schema, {"thread": "source.output.threads", "extra": "pipeline.input.rubric"}
-    )
-    assert pipeline.node_by_id("judge").inputs == {
-        "thread": "source.output.threads",
-        "extra": "pipeline.input.rubric",
-    }
+    with pytest.raises(ValidationError, match=r"binds \['extra'\], which it does not declare"):
+        _judge_pipeline(
+            schema, {"thread": "source.output.threads", "extra": "pipeline.input.rubric"}
+        )
+    # The negative half: binding exactly the declared properties passes.
+    ok = _judge_pipeline(schema, {"thread": "source.output.threads"})
+    assert ok.node_by_id("judge").inputs == {"thread": "source.output.threads"}
 
 
 def test_fanned_judge_with_a_sibling_per_element_field_is_rejected_naming_the_element() -> None:

@@ -203,8 +203,8 @@ Checklist before declaring Phase 5 done:
   you created in Phase 4.
 - Every `llm_judge` node's `inputs:` keys match the top-level
   properties of its `signature_spec.input_schema`: each `required`
-  property is bound, and nothing extra is bound when the schema says
-  `additionalProperties: false`. The validator rejects a mismatch (see
+  property is bound, and nothing is bound that the schema does not
+  declare. The validator rejects a mismatch (see
   ir-schema.md rule 9). On a `fan_out` judge the element is ONE
   property holding the whole element, never its fields flattened.
 - Every `agent_loop` node has `tools:` listed.

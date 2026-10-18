@@ -1039,8 +1039,10 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
     element param carries one list item, the rest are shared), then
     validates it against ``signature_spec.input_schema`` before the
     vendor call. So a required property ``inputs:`` does not bind fails
-    every call, and so does a bound param the schema does not declare
-    when it sets ``additionalProperties: false``. Both are decidable
+    every call. A bound param the schema does not declare is rejected
+    whatever ``additionalProperties`` says: under ``false`` every call
+    fails, and otherwise the value is silently dropped, so either way it
+    is a binding the judge's contract cannot name. Both are decidable
     from the IR alone.
     """
     assert node.signature_spec is not None
@@ -1058,11 +1060,7 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
     required = [r for r in root.get("required") or [] if isinstance(r, str)]
     bound = node.inputs or {}
     missing = [p for p in required if p not in bound]
-    undeclared = (
-        sorted(p for p in bound if p not in declared)
-        if root.get("additionalProperties") is False
-        else []
-    )
+    undeclared = sorted(p for p in bound if p not in declared)
     if not missing and not undeclared:
         return None
 
@@ -1071,8 +1069,7 @@ def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
         problems.append(f"it requires {missing}, which `inputs:` does not bind")
     if undeclared:
         problems.append(
-            f"`inputs:` binds {undeclared}, which it does not declare "
-            f"(additionalProperties: false; properties: {declared})"
+            f"`inputs:` binds {undeclared}, which it does not declare (properties: {declared})"
         )
     message = (
         f"{prefix}`inputs:` ({sorted(bound) if bound else 'nothing bound'}) does not "

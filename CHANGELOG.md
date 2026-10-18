@@ -32,10 +32,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   being awaited, which used to raise `TypeError`.
 - **A judge whose `inputs:` cannot satisfy its input schema is rejected
   at load time.** Every adapter builds a judge's payload from its
-  `inputs:` keys alone, so a `required` property nothing binds, or a
-  bound param a schema with `additionalProperties: false` does not
-  declare, failed pydantic validation on every call, and nothing caught
-  it before run time. Found by a real eval: deal-monitor's fanned
+  `inputs:` keys alone, so a `required` property nothing binds failed
+  validation on every call, and nothing caught it before run time. A
+  bound param the schema does not declare is rejected too, whatever
+  `additionalProperties` says: a binding the judge's contract cannot
+  name is a mistake either way. Found by a real eval: deal-monitor's fanned
   `classify_thread_step` bound only `thread` while its schema also
   required `account_name`, so all of its calls failed. The new
   `Pipeline` validator names the node, the params, and the schema, and
@@ -50,6 +51,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   run `2026-04-26-signature-spec` (`personalize_email` bound nothing).
   The compiler rubric now says a fanned judge's input has one property
   for the whole element, and shows the wrong shapes it produced.
+- **Zod schemas honor `additionalProperties` the way Pydantic does.**
+  The TypeScript emitters put `.strict()` on every object, while the
+  Python emitters forbid unknown keys only under
+  `additionalProperties: false`. An upstream object carrying one
+  undeclared field therefore passed on dbos and python and failed every
+  judge call on Cloudflare, Inngest and DBOS-TS. Objects now get
+  `.strict()` only when the schema is closed and Zod's default strip
+  otherwise (Pydantic's `extra="ignore"`), and a property-less object is
+  `z.record(z.string(), z.unknown())` to match `dict[str, Any]`. A new
+  slow test runs one schema through the emitted Pydantic model and real
+  `zod` under Node and requires the same verdicts and parsed values.
 - deal-monitor's `expected` IR no longer sets `temperature: 0.0` on its
   three judges. Current Claude models reject the parameter, and the
   rubric already forbids it. A test now keeps every `expected/` IR free
