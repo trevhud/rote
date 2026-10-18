@@ -62,6 +62,14 @@ class McpServerConfig(BaseModel):
         default=None,
         description="Pre-registered client secret (confidential clients).",
     )
+    issuer: str | None = Field(
+        default=None,
+        description=(
+            "The authorization server a pre-registered client belongs to, recorded "
+            "at `rote mcp add`. A login against any other issuer stops before the "
+            "browser opens instead of offering the client there."
+        ),
+    )
     scopes: list[str] | None = Field(
         default=None,
         description="OAuth scopes to request at login. Omit to let the server decide.",

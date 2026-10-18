@@ -35,7 +35,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   guessed `<resource-origin>/register`. The login binds the first free
   port of a published set (33418 to 33421), because a CIMD server matches
   redirect URIs exactly. `ROTE_MCP_CLIENT_METADATA_URL` overrides the
-  document URL; empty turns CIMD off.
+  document URL; empty turns CIMD off. The document is offered only after
+  a fetch shows it published and identical to the packaged copy; until
+  then the login uses DCR as before, with a one-line notice.
+- `rote mcp add --client-id` records the issuer the client belongs to
+  (discovered from the server's protected-resource metadata, or
+  `--issuer`), so a pre-registered client is bound from its first login.
 - **Token file contract v2** adds `issuer`, the authorization server the
   credentials belong to. Readers accept v1. A pre-registered client is
   bound to the issuer it logged in with, and a later login against a
@@ -67,6 +72,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   so the provider fell into a full authorization and an emitted workflow
   parked on a credential that was fine. The CLI and the emitted Python
   helper now send the refresh to the stored `token_endpoint`.
+- **A stored login is sent only to the endpoint it was made for.** Token
+  files are keyed by server name, so after `rote mcp add <name>
+  <new-url>` or a `ROTE_MCP_<SERVER>_URL` override the old endpoint's
+  bearer token went to the new host. A file for another endpoint is now
+  treated as absent: the CLI refuses with a `rote mcp login` hint, and
+  the emitted Python and Node helpers park the run.
+- **Stored clients are bound to their authorization server.** The SDK
+  binds only through `client_info.issuer`, so a client stored without one
+  matched every issuer and could be offered to a repointed server. The
+  stores now fill it from the file's `issuer`, login writes both, and an
+  interactive login re-registers a client that has no issuer at all.
 - The emitted Python helper never registers a client from workflow code;
   a server that wants a new registration parks the run like any other
   dead credential.

@@ -95,6 +95,14 @@ negative half proves the modern-only fixture really refuses a
 points it at a local TLS copy of the document), and an empty value
 turns CIMD off.
 
+The SDK does not fall back to DCR when a CIMD server rejects the
+document, so rote checks it first. When the authorization server's
+metadata advertises CIMD, the login fetches the document URL once per
+process and offers it only if it returns 200 and equals the packaged
+copy with `client_id` set to the URL. Otherwise it prints one line and
+registers with DCR. Servers that do not advertise CIMD never trigger
+the fetch.
+
 ### The pre-registered client path (GitHub-class servers)
 
 Servers whose authorization server offers neither CIMD nor DCR (GitHub,
@@ -110,8 +118,11 @@ rote mcp add github https://api.githubcopilot.com/mcp/ \
 rote mcp login github
 ```
 
-A pre-registered client is bound to the issuer it first logged in
-with (the token file's `issuer`). If the server's protected-resource
+A pre-registered client is bound to an issuer from the start:
+`rote mcp add --client-id` records the authorization server the
+resource's protected-resource metadata names at that moment (or
+`--issuer <url>`, which wins), and after a login the token file's
+`issuer` is the binding. If the server's protected-resource
 metadata later names a different authorization server, the login stops
 with an error before the browser opens instead of offering that client
 to the new server, or quietly switching to CIMD or DCR there (spec:
@@ -139,7 +150,25 @@ advertises `authorization_response_iss_parameter_supported`. rote
 surfaces the failure as a login error and no token request is sent.
 DCR credentials carry the issuer they were registered with, and a login
 against a different authorization server re-registers instead of
-presenting them there. `tests/test_mcp_oauth_registration_e2e.py` runs
+presenting them there. The SDK reads that binding only from
+`client_info.issuer` and treats a missing one as matching every
+issuer, so both stores fill it in from the file's top-level `issuer`
+when it is missing, login writes it to both places, and an interactive
+login drops a registered client that has no issuer anywhere (a v1 file)
+and registers again rather than offer it, secret included, to whatever
+server the resource names next.
+
+### A login belongs to one endpoint
+
+Token files are keyed by server name, and a name can be pointed at a
+new endpoint (`rote mcp add <name> <new-url>`, or
+`ROTE_MCP_<SERVER>_URL` at run time). A file whose `server_url` is a
+different endpoint is treated as absent, compared after normalizing
+(scheme and host case, default port, trailing slash): `rote mcp
+headers` refuses and names `rote mcp login`, `rote mcp list` shows the
+server as not authenticated, a login starts fresh, and the emitted
+Python and Node helpers raise `RoteMcpAuthNeeded` so the run parks.
+The old endpoint's bearer token never reaches the new host. `tests/test_mcp_oauth_registration_e2e.py` runs
 the real login against a local authorization server switchable between
 CIMD-only, DCR-only, both, and neither, with correct, mismatched, and
 missing `iss`, and two issuers to switch between. Every test asserts on

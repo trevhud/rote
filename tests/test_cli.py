@@ -1075,11 +1075,11 @@ def test_doctor_reports_mcp_servers_and_apps(
     from rote.mcp.registry import McpRegistry, McpServerConfig
     from rote.mcp.tokens import write_token_file
 
-    def _token(*, expires_at: float | None, refresh: bool) -> dict[str, object]:
+    def _token(url: str, *, expires_at: float | None, refresh: bool) -> dict[str, object]:
         tokens: dict[str, object] = {"access_token": "tok", "token_type": "Bearer"}
         if refresh:
             tokens["refresh_token"] = "ref"
-        return {"server_url": "https://x.example/mcp", "tokens": tokens, "expires_at": expires_at}
+        return {"server_url": url, "tokens": tokens, "expires_at": expires_at}
 
     save_registry(
         McpRegistry(
@@ -1092,9 +1092,13 @@ def test_doctor_reports_mcp_servers_and_apps(
             }
         )
     )
-    write_token_file("fresh", _token(expires_at=None, refresh=False))
-    write_token_file("refreshable", _token(expires_at=time.time() - 10, refresh=True))
-    write_token_file("dead", _token(expires_at=time.time() - 10, refresh=False))
+    write_token_file("fresh", _token("https://f.example/mcp", expires_at=None, refresh=False))
+    write_token_file(
+        "refreshable", _token("https://r.example/mcp", expires_at=time.time() - 10, refresh=True)
+    )
+    write_token_file(
+        "dead", _token("https://d.example/mcp", expires_at=time.time() - 10, refresh=False)
+    )
 
     live_app = tmp_path / "live-app"
     live_app.mkdir()

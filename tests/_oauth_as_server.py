@@ -2,7 +2,7 @@
 
 Run as a script (the e2e suites start it as a subprocess)::
 
-    python tests/_oauth_as_server.py <http_port> <tls_port> <cimd_document_path>
+    python tests/_oauth_as_server.py <http_port> <tls_port> <cimd_document_path> <ca_pem_out>
 
 One process serves three things:
 
@@ -16,9 +16,10 @@ One process serves three things:
   the active server issued gets a 401 with ``resource_metadata``.
 - **A client metadata document host** over TLS at
   ``https://127.0.0.1:<tls_port>/oauth/rote-cli.json``, serving the file it
-  was given. The SDK only accepts an HTTPS ``client_metadata_url``, so the
-  document is served over a local ``trustme`` CA that this process alone
-  trusts, rather than relaxing that check.
+  was given (or a 404, or a tampered copy, per ``cimd_document``). The SDK
+  only accepts an HTTPS ``client_metadata_url``, so the document is served
+  over a local ``trustme`` CA, written to ``<ca_pem_out>`` so the test can
+  make rote's own pre-flight fetch trust it, rather than relaxing that check.
 
 The authorization servers are strict where a real one is: a CIMD client's
 redirect URI must appear in the fetched document by exact string match
@@ -30,7 +31,8 @@ Test control, plain JSON over HTTP:
 - ``POST /_control`` sets any of ``cimd``, ``dcr`` (bools), ``iss``
   (``"correct"``, ``"mismatch"``, ``"omit"``), ``advertise_iss`` (bool),
   ``active`` (``"a"`` or ``"b"``), ``preregistered`` (a map of client id to
-  ``{"redirect_uris": [...], "client_secret": ...}``), and ``reset`` (clears
+  ``{"redirect_uris": [...], "client_secret": ...}``), ``cimd_document``
+  (``"served"``, ``"missing"``, ``"tampered"``), and ``reset`` (clears
   issued tokens, registrations, and the event log).
 - ``GET /_events`` returns every authorization-server hit since the last
   reset, so a test can assert what did *not* happen (no token request after
@@ -42,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 import sys
 import tempfile
@@ -70,6 +73,7 @@ STATE: dict[str, Any] = {
     "advertise_iss": True,
     "active": "a",
     "preregistered": {},
+    "cimd_document": "served",
 }
 REGISTERED: dict[str, dict[str, Any]] = {}  # "<as>:<client_id>" -> registration
 CODES: dict[str, dict[str, Any]] = {}
@@ -78,7 +82,7 @@ EVENTS: list[dict[str, Any]] = []
 
 _ca = trustme.CA()
 _tmp = Path(tempfile.mkdtemp(prefix="rote-oauth-fixture-"))
-CA_PEM = _tmp / "ca.pem"
+CA_PEM = Path(sys.argv[4])
 _ca.cert_pem.write_to_path(str(CA_PEM))
 _leaf = _ca.issue_cert("127.0.0.1", "localhost")
 LEAF_PEM = _tmp / "leaf.pem"
@@ -123,7 +127,7 @@ async def resolve_client(name: str, client_id: str) -> dict[str, Any] | None:
         return registered
     if STATE["cimd"] and client_id.startswith("https://"):
         async with httpx.AsyncClient(verify=str(CA_PEM)) as client:
-            response = await client.get(client_id)
+            response = await client.get(client_id, headers={"x-fixture-as": "1"})
         log("cimd_fetch", issuer=issuer(name), url=client_id, status=response.status_code)
         if response.status_code != 200:
             return None
@@ -305,10 +309,19 @@ async def http_app(scope: Scope, receive: Receive, send: Send) -> None:
 async def tls_app(scope: Scope, receive: Receive, send: Send) -> None:
     if scope["type"] != "http":
         return
-    if scope["path"] == "/oauth/rote-cli.json":
-        response: Response = Response(CIMD_DOCUMENT.read_bytes(), media_type="application/json")
+    request = Request(scope, receive)
+    mode = STATE["cimd_document"]
+    if scope["path"] == "/oauth/rote-cli.json" and "x-fixture-as" not in request.headers:
+        # The fetch rote makes itself before offering the document.
+        log("document_check", mode=mode)
+    if scope["path"] != "/oauth/rote-cli.json" or mode == "missing":
+        response: Response = PlainTextResponse("not found", status_code=404)
+    elif mode == "tampered":
+        doc = json.loads(CIMD_DOCUMENT.read_text(encoding="utf-8"))
+        doc["redirect_uris"] = ["http://localhost:1/callback"]
+        response = JSONResponse(doc)
     else:
-        response = PlainTextResponse("not found", status_code=404)
+        response = Response(CIMD_DOCUMENT.read_bytes(), media_type="application/json")
     await response(scope, receive, send)
 
 

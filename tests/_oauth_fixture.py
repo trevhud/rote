@@ -48,6 +48,9 @@ class OAuthFixture:
 
     base: str
     cimd_url: str
+    #: The local CA the document host uses. Point SSL_CERT_FILE at it so
+    #: rote's own pre-flight fetch of the document trusts the host.
+    ca_pem: Path
 
     @property
     def mcp_url(self) -> str:
@@ -81,15 +84,23 @@ def oauth_fixture(workdir: Path) -> Iterator[OAuthFixture]:
     document["client_id"] = cimd_url
     served = workdir / "rote-cli.json"
     served.write_text(json.dumps(document), encoding="utf-8")
+    ca_pem = workdir / "ca.pem"
     proc = subprocess.Popen(
-        [sys.executable, str(SERVER_SCRIPT), str(http_port), str(tls_port), str(served)],
+        [
+            sys.executable,
+            str(SERVER_SCRIPT),
+            str(http_port),
+            str(tls_port),
+            str(served),
+            str(ca_pem),
+        ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     try:
         wait_port(http_port)
         wait_port(tls_port)
-        yield OAuthFixture(base=f"http://127.0.0.1:{http_port}", cimd_url=cimd_url)
+        yield OAuthFixture(base=f"http://127.0.0.1:{http_port}", cimd_url=cimd_url, ca_pem=ca_pem)
     finally:
         proc.terminate()
         proc.wait(timeout=10)

@@ -449,3 +449,47 @@ def test_a_modern_era_401_still_means_auth_needed(
         asyncio.run(helper.call_mcp_tool("era", modern_only_with_auth.url, "echo", {"text": "x"}))
     out = _ts_call(ts_app, modern_only_with_auth.url, "echo", {"text": "x"})
     assert out["error"] == "RoteMcpAuthNeeded", out
+
+
+# ───────── a stored login belongs to one endpoint ─────────
+
+
+def _store_login(server_url: str) -> None:
+    from rote.mcp import write_token_file
+
+    write_token_file(
+        "era",
+        {
+            "server_url": server_url,
+            "tokens": {"access_token": "good", "token_type": "Bearer"},
+            "expires_at": None,
+            "client_info": {"client_id": "c"},
+            "token_endpoint": None,
+        },
+    )
+
+
+def test_both_helpers_send_a_login_only_to_its_own_endpoint(
+    modern_only_with_auth: Running, ts_app: Path
+) -> None:
+    """The token file is keyed by server name. Repoint the name (rote mcp
+    add, ROTE_MCP_<SERVER>_URL) and the old endpoint's bearer token must
+    not go to the new host: the run parks instead."""
+    server = modern_only_with_auth
+    # Same endpoint, spelled with a trailing slash and an explicit default
+    # port: the login is used, and the server accepts its token.
+    host_port = server.url.split("//", 1)[1].split("/", 1)[0]
+    _store_login(f"http://{host_port.upper()}/mcp/")
+    assert asyncio.run(helper.call_mcp_tool("era", server.url, "echo", {"text": "a"})) == {
+        "echoed": "a"
+    }
+    assert _ts_call(ts_app, server.url, "echo", {"text": "b"}) == {"result": {"echoed": "b"}}
+
+    _store_login("http://old.example.com/mcp")
+    server.reset()
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="stored login is for"):
+        asyncio.run(helper.call_mcp_tool("era", server.url, "echo", {"text": "c"}))
+    out = _ts_call(ts_app, server.url, "echo", {"text": "d"})
+    assert out["error"] == "RoteMcpAuthNeeded", out
+    assert "stored login is for http://old.example.com/mcp" in out["message"]
+    assert server.eras() == set(), "no request may reach the new endpoint"

@@ -29,15 +29,21 @@ everything here imports it lazily and fails with that hint.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import sys
 import webbrowser
 from collections.abc import AsyncGenerator
+from importlib import resources
 from typing import Any, Literal
 
 from rote.extras import install_hint
-from rote.mcp._runtime_helper import is_registration_request, retarget_token_request
+from rote.mcp._runtime_helper import (
+    is_registration_request,
+    retarget_token_request,
+    stored_for_url,
+)
 from rote.mcp.registry import McpServerConfig
 from rote.mcp.tokens import (
     ServerTokenKV,
@@ -89,6 +95,72 @@ def client_metadata_url() -> str | None:
     return value or None
 
 
+#: How long the one fetch that checks the published document may take.
+#: Only authorization servers that advertise CIMD trigger it.
+_DOCUMENT_CHECK_TIMEOUT_SECONDS = 5.0
+
+#: Per-process verdicts of :func:`_published_document_problem`, by URL.
+_document_checks: dict[str, str | None] = {}
+
+
+def packaged_client_metadata() -> dict[str, Any]:
+    """The client metadata document this CLI expects to find published.
+
+    Shipped in the wheel (``rote/mcp/client_metadata.json``) so an installed
+    CLI can compare without the repo; ``docs/oauth/rote-cli.json`` is the
+    same file, enforced by a test.
+    """
+    text = resources.files("rote.mcp").joinpath("client_metadata.json").read_text("utf-8")
+    doc: dict[str, Any] = json.loads(text)
+    return doc
+
+
+async def _published_document_problem(url: str) -> str | None:
+    """Why the document at ``url`` cannot be offered as a client id, or None.
+
+    A CIMD authorization server fetches the document and rejects the login
+    when it is missing or lists other redirect URIs, and the SDK does not
+    fall back to DCR when that happens. So before offering it, rote fetches
+    it once and requires exactly what this CLI expects: the packaged
+    document, with ``client_id`` equal to ``url`` (CIMD draft section 3).
+    """
+    if url in _document_checks:
+        return _document_checks[url]
+    import httpx
+
+    expected = {**packaged_client_metadata(), "client_id": url}
+    problem: str | None
+    try:
+        async with httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client:
+            response = await client.get(url, follow_redirects=False)
+        if response.status_code != 200:
+            problem = f"HTTP {response.status_code}"
+        elif response.json() != expected:
+            problem = "it differs from the document this version of rote expects"
+        else:
+            problem = None
+    except (httpx.HTTPError, ValueError) as e:
+        problem = f"{type(e).__name__}: {e}"
+    _document_checks[url] = problem
+    return problem
+
+
+async def _advertises_cimd(response: Any) -> bool:
+    """Whether ``response`` is authorization server metadata offering CIMD."""
+    if response.status_code != 200:
+        return False
+    try:
+        # Read now; the SDK's own aread() afterwards gets the cached body.
+        body = json.loads(await response.aread())
+    except ValueError:
+        return False
+    return (
+        isinstance(body, dict)
+        and "issuer" in body
+        and body.get("client_id_metadata_document_supported") is True
+    )
+
+
 def callback_redirect_uris() -> list[str]:
     """Every redirect URI the CIMD document must list, in document order."""
     return [
@@ -126,6 +198,36 @@ def select_callback_port() -> int:
     )
 
 
+async def discover_issuer(url: str) -> str | None:
+    """The authorization server ``url``'s protected-resource metadata names.
+
+    RFC 9728 discovery: the path-specific well-known document, then the
+    origin's. The first ``authorization_servers`` entry is an issuer
+    identifier, the same one the SDK will expect at login. None when the
+    server publishes no metadata or cannot be reached.
+    """
+    from urllib.parse import urlsplit
+
+    import httpx
+
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    path = parts.path.rstrip("/")
+    candidates = [f"{origin}/.well-known/oauth-protected-resource{path}"] if path else []
+    candidates.append(f"{origin}/.well-known/oauth-protected-resource")
+    async with httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client:
+        for candidate in candidates:
+            try:
+                response = await client.get(candidate)
+                body = response.json() if response.status_code == 200 else None
+            except (httpx.HTTPError, ValueError):
+                continue
+            servers = body.get("authorization_servers") if isinstance(body, dict) else None
+            if isinstance(servers, list) and servers and isinstance(servers[0], str):
+                return servers[0]
+    return None
+
+
 def _oauth_class() -> type[Any]:
     """rote's fastmcp ``OAuth`` subclass, built lazily (fastmcp is optional)."""
     from fastmcp.client.auth import OAuth
@@ -147,6 +249,7 @@ def _oauth_class() -> type[Any]:
             announce_url: bool,
             stored_issuer: str | None,
             token_endpoint: str | None,
+            drop_unbound_client: bool,
             **kwargs: Any,
         ) -> None:
             self._rote_server = server
@@ -155,6 +258,7 @@ def _oauth_class() -> type[Any]:
             self._rote_announce_url = announce_url
             self._rote_stored_issuer = stored_issuer
             self._rote_token_endpoint = token_endpoint
+            self._rote_drop_unbound_client = drop_unbound_client
             super().__init__(**kwargs)
 
         async def _refresh_token(self) -> Any:
@@ -178,6 +282,20 @@ def _oauth_class() -> type[Any]:
                 self.context.client_info = static.model_copy(
                     update={"issuer": self._rote_stored_issuer}
                 )
+            # A registered client with no issuer at all (a login from before
+            # the token file recorded one) is bound to nothing, and the SDK
+            # would offer it, secret included, to whichever authorization
+            # server the resource names next. An interactive login drops it
+            # and registers again, which binds the new client.
+            current = self.context.client_info
+            if (
+                self._rote_drop_unbound_client
+                and static is None
+                and current is not None
+                and current.issuer is None
+                and current.client_id != self.context.client_metadata_url
+            ):
+                self.context.client_info = None
 
         async def redirect_handler(self, authorization_url: str) -> None:
             if not self._rote_interactive:
@@ -273,6 +391,23 @@ def _oauth_class() -> type[Any]:
                     "[--client-secret <secret>]"
                 )
 
+        async def _check_offered_document(self, response: Any) -> None:
+            # The SDK picks CIMD inside the same step that reads this
+            # response, so this is the last moment to withdraw the URL.
+            # Checking here, not up front, keeps logins to servers that do
+            # not offer CIMD free of the extra fetch and the notice.
+            url = self.context.client_metadata_url
+            if url is None or not await _advertises_cimd(response):
+                return
+            problem = await _published_document_problem(url)
+            if problem is not None:
+                print(
+                    f"note: rote's client metadata document {url} is not usable "
+                    f"({problem}); registering a client with this server instead",
+                    file=sys.stderr,
+                )
+                self.context.client_metadata_url = None
+
         async def _auth_flow(self, request: Any) -> AsyncGenerator[Any, Any]:
             flow = super()._auth_flow(request)
             try:
@@ -280,6 +415,8 @@ def _oauth_class() -> type[Any]:
                 while True:
                     self._refuse_registration(outgoing, request)
                     response = yield outgoing
+                    if outgoing is not request:
+                        await self._check_offered_document(response)
                     outgoing = await flow.asend(response)
             except StopAsyncIteration:
                 return
@@ -322,11 +459,16 @@ def build_oauth(
         metadata_url = None
 
     # The issuer a pre-registered client is bound to: the one its last
-    # login used. A client_id that changed since (the user registered a
-    # new app with `rote mcp add`) starts unbound.
+    # login used, else the one recorded at `rote mcp add`. A client_id that
+    # changed since its last login (a new app registered with `rote mcp
+    # add`) takes the recorded one. A file for another endpoint is ignored.
     stored = read_token_file(server) or {}
+    if not stored_for_url(stored, config.url):
+        stored = {}
     stored_client = (stored.get("client_info") or {}).get("client_id")
-    stored_issuer = stored.get("issuer") if stored_client == config.client_id else None
+    stored_issuer = (
+        stored.get("issuer") if stored_client == config.client_id else None
+    ) or config.issuer
     return _oauth_class()(
         server=server,
         interactive=interactive,
@@ -334,6 +476,7 @@ def build_oauth(
         announce_url=announce_url,
         stored_issuer=stored_issuer,
         token_endpoint=stored.get("token_endpoint"),
+        drop_unbound_client=interactive,
         mcp_url=config.url,
         scopes=config.scopes,
         client_name="rote",
@@ -447,13 +590,19 @@ async def login(
         )
 
     metadata = getattr(oauth.context, "oauth_metadata", None)
-    stamped = {
-        "token_endpoint": str(metadata.token_endpoint) if metadata is not None else None,
-        "issuer": str(metadata.issuer) if metadata is not None else None,
-    }
-    stamped = {k: v for k, v in stamped.items() if v is not None}
-    if any(doc.get(k) != v for k, v in stamped.items()):
-        doc.update(stamped)
+    if metadata is None:
+        # The stored token was still good: no flow ran, nothing to stamp.
+        return doc
+    issuer = str(metadata.issuer)
+    before = json.dumps(doc, sort_keys=True)
+    doc["token_endpoint"] = str(metadata.token_endpoint)
+    doc["issuer"] = issuer
+    # Also on the client itself: that is the only place the SDK reads a
+    # binding from, and it records one only when it registers.
+    client_info = doc.get("client_info")
+    if isinstance(client_info, dict) and not client_info.get("issuer"):
+        client_info["issuer"] = issuer
+    if json.dumps(doc, sort_keys=True) != before:
         write_token_file(server, doc)
     return doc
 
@@ -472,6 +621,12 @@ async def fresh_access_token(server: str, config: McpServerConfig) -> str:
     if doc is None:
         raise McpAuthError(
             f"no stored credentials for MCP server {server!r} — run: rote mcp login {server}"
+        )
+    if not stored_for_url(doc, config.url):
+        raise McpAuthError(
+            f"the stored login for {server!r} is for {doc.get('server_url')}, but the "
+            f"server is now registered at {config.url}. Log in to the new endpoint: "
+            f"rote mcp login {server}"
         )
     token, fresh = access_token_state(doc)
     if token and fresh:

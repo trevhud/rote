@@ -58,6 +58,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, SupportsFloat
 
+from rote.mcp._runtime_helper import _with_bound_issuer, stored_for_url
+
 if TYPE_CHECKING:
     from rote.mcp.registry import McpServerConfig
 
@@ -183,7 +185,9 @@ def auth_status(server_config: McpServerConfig, token_doc: dict[str, Any] | None
     """
     if server_config.headers:
         return "static headers"
-    if token_doc is None:
+    if token_doc is None or not stored_for_url(token_doc, server_config.url):
+        # A login for the endpoint this name used to point at is not one
+        # for the endpoint it points at now.
         return "not authenticated"
     token, fresh = access_token_state(token_doc)
     if token and fresh:
@@ -213,7 +217,12 @@ class ServerTokenKV:
         self._directory = directory
 
     def _load(self) -> dict[str, Any]:
-        return read_token_file(self._server, self._directory) or {
+        doc = read_token_file(self._server, self._directory)
+        # A file for another endpoint is not this endpoint's login: reading
+        # it would send that endpoint's bearer token here.
+        if doc is not None and stored_for_url(doc, self._server_url):
+            return doc
+        return {
             "server_url": self._server_url,
             "tokens": None,
             "expires_at": None,
@@ -239,6 +248,8 @@ class ServerTokenKV:
             expires_at = doc.get("expires_at")
             return None if expires_at is None else {"expires_at": expires_at}
         value = doc.get(field)
+        if field == "client_info":
+            value = _with_bound_issuer(doc, value)
         return value if isinstance(value, dict) else None
 
     async def put(

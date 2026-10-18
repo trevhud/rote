@@ -4,8 +4,8 @@
     ".dev.vars.example": "68dd53a52244fb35cb167367375ab89c80f39c7551d210c6344e91d13b095482",
     "README.md": "93168a30a0dafca306569c71251701ba5a0baa8cabd21371eacc2a22c4c01f9a",
     "manifest.json": "470525f11ef70ad8986c144d30fdc5cd5007436342ec039c9e4efcd1cde5f837",
-    "package.json": "1055e525175d1e4595fd53f2e5f20fa04dc98105b5d7a723400f7aabead0e8c7",
-    "src/extracted/_roteMcp.ts": "2259dcedf12d5903bcd5339ec60dd9248a01608e09aeaf70f0ae264754143e21",
+    "package.json": "58d1a60f83397f7cf22f185a637ff41f7c3d38a5ca562a5413225a953817b1a8",
+    "src/extracted/_roteMcp.ts": "6cfd57ffd21816e693ee110a9032fd5d41e4f0af730d60749fca8590dcf4b5a9",
     "src/extracted/create_sales_template.ts": "3e80ba60e0533e967cecc13e37166d63bcbea1d2c3dd97ae2449df6971478047",
     "src/extracted/enrich_contact_batch.ts": "8704dad399db63160fd74bb111c1a6819e53e41608a1c642e07c789f61950761",
     "src/extracted/exclusion_check_dnc.ts": "929795b75b11568568638c10f9b2db0cf25d4b134a53555d18d490c8f142f995",
@@ -21,7 +21,7 @@
     "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "3f2c36d103afcba9ef1320fe212cc08802fa3b5c623b1252ce830b12f5f4445e",
     "src/signatures/vet_contact.ts": "89046fa5fb1c6646188c195507dd89927f9a4b009c600b0614db86735bcb3b99",
-    "src/workflow.ts": "7419741393307747989ae80b4ee11bea2cde596ea57c8456d328cfe499dad4d1",
+    "src/workflow.ts": "adde211ede8f8d6efd73c01104fc0e485051d6cdf1359d031f1afba8d42e2817",
     "tsconfig.json": "11ebc79fa7946d07d6cc0b555485988ec0de25e1183a7c654660f3bdfd4163f3",
     "wrangler.jsonc": "fa4f9733ea58ffeaa4e9ab94812ccd7b89f361ca4b7e68929fe8c1cd8b8f2ca2"
   }

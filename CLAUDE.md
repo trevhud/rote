@@ -340,7 +340,7 @@ client across requests must hold the `Connection` instead (see
 
 ### MCP 2026-07-28: what keeps both eras and every registration mode working
 
-Five things, each with a test that fails when it is undone
+Seven things, each with a test that fails when it is undone
 (`tests/test_mcp_era_matrix_e2e.py`, `tests/test_mcp_oauth_registration_e2e.py`,
 `tests/test_mcp_park_e2e.py`). See [`docs/mcp-client.md`](docs/mcp-client.md).
 
@@ -372,6 +372,16 @@ Five things, each with a test that fails when it is undone
   that was fine. `retarget_token_request` is shared by the CLI and the
   emitted helper. FastMCP fixtures cannot catch this: their AS is the
   server's own origin root.
+- **Never offer the CIMD document unverified.** The SDK does not fall back
+  to DCR when a CIMD server rejects it, so an unpublished or stale
+  document breaks logins that DCR serves. `_check_offered_document`
+  fetches it once per process when the AS advertises CIMD and withdraws
+  the URL unless it equals the packaged `client_metadata.json`.
+- **A token file is bound to an endpoint and an issuer.** Files are keyed
+  by server name, so `stored_for_url` gates every read (else a repointed
+  name gets the old bearer token), and `_with_bound_issuer` fills
+  `client_info.issuer` from the file (the SDK treats a missing one as
+  matching every issuer).
 - **`RoteMcpInputRequired` is not an auth error.** A server that wants
   input mid-call (`input_required`, or `-32021` for an undeclared
   capability; TS SDK servers send the latter because rote declares no

@@ -1,0 +1,20 @@
+{
+  "client_id": "https://roteskills.com/oauth/rote-cli.json",
+  "client_name": "rote",
+  "client_uri": "https://roteskills.com",
+  "software_id": "rote-cli",
+  "application_type": "native",
+  "redirect_uris": [
+    "http://localhost:33418/callback",
+    "http://localhost:33419/callback",
+    "http://localhost:33420/callback",
+    "http://localhost:33421/callback",
+    "http://127.0.0.1:33418/callback",
+    "http://127.0.0.1:33419/callback",
+    "http://127.0.0.1:33420/callback",
+    "http://127.0.0.1:33421/callback"
+  ],
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}

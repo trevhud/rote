@@ -244,8 +244,18 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
 }
 
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
+/** `raw` in the form two spellings of one endpoint share: lowercase
+ * scheme and host, default port dropped, no trailing slash, no fragment.
+ * Same rule as the Python helper's normalize_server_url. */
+function normalizeServerUrl(raw: string): string {
+    const u = new URL(raw.trim());
+    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+}
+
 export async function freshHeaders(
     server: string,
+    url: string,
     forceRefresh = false,
 ): Promise<Record<string, string> | null> {
     const entry = registryServers()[server];
@@ -255,6 +265,14 @@ export async function freshHeaders(
     const doc = readTokenDoc(server);
     const access = doc?.tokens?.access_token;
     if (!doc || !access) return null;
+    // The file is keyed by server name, and the name may now point at a
+    // new endpoint: the old endpoint's bearer token must not go there.
+    if (doc.server_url && normalizeServerUrl(doc.server_url) !== normalizeServerUrl(url)) {
+        throw new RoteMcpAuthNeeded(
+            server,
+            `the stored login is for ${doc.server_url}, not ${url}`,
+        );
+    }
     const staleAt = doc.expires_at != null ? doc.expires_at - 60 : null;
     const isStale = forceRefresh || (staleAt != null && Date.now() / 1000 >= staleAt);
     const token = isStale ? await refreshAccessToken(server, doc) : access;
@@ -293,14 +311,14 @@ async function withMcpSession<T>(
     };
 
     try {
-        return await attempt(await freshHeaders(server));
+        return await attempt(await freshHeaders(server, url));
     } catch (err) {
         if (!isUnauthorized(err)) throw err;
         if (!readTokenDoc(server)?.tokens?.refresh_token) {
             throw new RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized");
         }
         try {
-            return await attempt(await freshHeaders(server, true));
+            return await attempt(await freshHeaders(server, url, true));
         } catch (retryErr) {
             if (isUnauthorized(retryErr)) {
                 throw new RoteMcpAuthNeeded(

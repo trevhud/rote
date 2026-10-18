@@ -39,6 +39,7 @@ from rote.mcp import (  # noqa: E402
     McpServerConfig,
     read_token_file,
     save_registry,
+    token_file,
     write_token_file,
 )
 from rote.mcp.auth import (  # noqa: E402
@@ -73,9 +74,14 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         advertise_iss=True,
         active="a",
         preregistered={},
+        cimd_document="served",
     )
     monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, fixture_server.cimd_url)
+    monkeypatch.setenv("SSL_CERT_FILE", str(fixture_server.ca_pem))
     monkeypatch.setattr("webbrowser.open", fake_browser_open())
+    # rote checks the published document once per process; each test
+    # changes what the fixture serves.
+    monkeypatch.setattr("rote.mcp.auth._document_checks", {})
     yield fixture_server
 
 
@@ -337,3 +343,108 @@ def test_emitted_helper_parks_instead_of_registering_a_client(fx: OAuthFixture) 
     with pytest.raises(_runtime_helper.RoteMcpAuthNeeded, match="no longer valid"):
         _call_through_emitted_helper(fx)
     assert len(fx.events("register")) == registrations_before
+
+
+# ───────── the published document is checked before it is offered ─────────
+
+
+@pytest.mark.parametrize("served", ["missing", "tampered"])
+def test_an_unusable_published_document_falls_back_to_dcr(
+    fx: OAuthFixture, served: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The SDK does not fall back when a CIMD server rejects the document,
+    so offering an unpublished or stale one would break logins that DCR
+    serves today (the state before roteskills.com serves the file)."""
+    fx.configure(cimd_document=served)
+    doc = asyncio.run(login("vendor", _config(fx)))
+
+    assert doc["client_info"]["client_id"].startswith("dcr-")
+    assert len(fx.events("register")) == 1
+    assert fx.cimd_url not in {e["client_id"] for e in fx.events("authorize")}
+    assert fx.events("cimd_fetch") == []  # the AS was never asked to resolve it
+    assert len(fx.events("document_check")) == 1
+    assert "registering a client with this server instead" in capsys.readouterr().err
+
+
+def test_a_matching_published_document_is_checked_once_per_process(fx: OAuthFixture) -> None:
+    config = _config(fx)
+    asyncio.run(login("vendor", config))
+    stale = read_token_file("vendor")
+    assert stale is not None
+    stale["tokens"] = None
+    stale["client_info"] = None
+    write_token_file("vendor", stale)
+    second = asyncio.run(login("vendor", config))
+
+    assert second["client_info"]["client_id"] == fx.cimd_url
+    assert len(fx.events("document_check")) == 1
+
+
+def test_a_server_without_cimd_triggers_no_document_check(fx: OAuthFixture) -> None:
+    fx.configure(cimd=False)
+    asyncio.run(login("vendor", _config(fx)))
+    assert fx.events("document_check") == []
+
+
+# ───────── issuer binding for clients stored before it existed ─────────
+
+
+def test_a_v1_dcr_client_is_not_offered_to_a_repointed_authorization_server(
+    fx: OAuthFixture,
+) -> None:
+    """A v1 token file records no issuer anywhere, and the SDK treats an
+    unbound client as matching every issuer: after the resource repoints at
+    another AS, the next login would send the old DCR client there."""
+    fx.configure(cimd=False)
+    config = _config(fx)
+    first = asyncio.run(login("vendor", config))
+    old_client = first["client_info"]["client_id"]
+
+    v1 = read_token_file("vendor")
+    assert v1 is not None
+    v1.pop("issuer")
+    v1["client_info"].pop("issuer", None)
+    v1["expires_at"] = time.time() - 10
+    v1["tokens"]["refresh_token"] = "revoked"
+    path = token_file("vendor")
+    path.write_text(json.dumps({**v1, "version": 1}), encoding="utf-8")
+
+    fx.configure(active="b")
+    second = asyncio.run(login("vendor", config))
+
+    at_b = [e for e in fx.events() if e.get("issuer") == fx.issuer("b")]
+    assert old_client not in {e.get("client_id") for e in at_b}
+    assert [e["issuer"] for e in fx.events("register")] == [fx.issuer("a"), fx.issuer("b")]
+    assert second["issuer"] == fx.issuer("b")
+    assert second["client_info"]["issuer"] == fx.issuer("b")
+
+
+def test_login_binds_the_stored_client_in_both_places(fx: OAuthFixture) -> None:
+    """The SDK records an issuer on a client only when it registers one, so a
+    pre-registered client would be stored unbound; readers of the file (the
+    emitted helper, `rote mcp export`) see the binding only if login writes it."""
+    _preregister(fx)
+    doc = asyncio.run(login("vendor", _config(fx, client_id=PRE_ID)))
+    assert doc["client_info"]["client_id"] == PRE_ID
+    assert doc["issuer"] == doc["client_info"]["issuer"] == fx.issuer("a")
+
+
+# ───────── a pre-registered client is bound from its first login ─────────
+
+
+def test_mcp_add_records_the_issuer_a_pre_registered_client_belongs_to(
+    fx: OAuthFixture,
+) -> None:
+    from rote.cli import main as cli_main
+    from rote.mcp import load_registry
+
+    _preregister(fx)
+    assert cli_main(["mcp", "add", "vendor", fx.mcp_url, "--client-id", PRE_ID]) == 0
+    assert load_registry().servers["vendor"].issuer == fx.issuer("a")
+
+    # Repointed before the first login: the recorded issuer stops it.
+    fx.configure(active="b")
+    config = load_registry().servers["vendor"]
+    with pytest.raises(McpAuthError, match=r"--client-id"):
+        asyncio.run(login("vendor", config))
+    assert [e for e in fx.events("authorize") if e["issuer"] == fx.issuer("b")] == []

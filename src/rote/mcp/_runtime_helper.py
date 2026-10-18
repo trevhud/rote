@@ -71,6 +71,54 @@ def _token_dir() -> Path:
     return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "mcp-tokens"
 
 
+def normalize_server_url(url: str) -> str:
+    """``url`` in the form two spellings of one endpoint share.
+
+    Lowercase scheme and host, the scheme's default port dropped, no
+    trailing slash on the path, no fragment. Used to decide whether a
+    stored login belongs to the endpoint about to be called.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url.strip())
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parts.port
+    if port is not None and port != {"http": 80, "https": 443}.get(scheme):
+        host = f"{host}:{port}"
+    if parts.username is not None:
+        user = parts.username + (f":{parts.password}" if parts.password is not None else "")
+        host = f"{user}@{host}"
+    return urlunsplit((scheme, host, parts.path.rstrip("/"), parts.query, ""))
+
+
+def stored_for_url(doc: Mapping[str, Any], url: str) -> bool:
+    """Whether a token-file document belongs to ``url``.
+
+    The file is keyed by server name, and a name can be pointed at a new
+    endpoint (`rote mcp add` again, or ROTE_MCP_<SERVER>_URL). A login for
+    the old endpoint must not send its bearer token to the new one. A
+    document that records no URL predates the field and is taken as is.
+    """
+    stored = doc.get("server_url")
+    return not stored or normalize_server_url(str(stored)) == normalize_server_url(url)
+
+
+def _with_bound_issuer(doc: Mapping[str, Any], client_info: Any) -> Any:
+    """``client_info`` with the file's top-level ``issuer`` filled in.
+
+    The SDK binds a client to an authorization server only through
+    ``client_info.issuer``, and treats a missing one as bound to nothing,
+    so it would offer the client to any server the resource names next.
+    """
+    issuer = doc.get("issuer")
+    if isinstance(client_info, dict) and issuer and not client_info.get("issuer"):
+        return {**client_info, "issuer": issuer}
+    return client_info
+
+
 class RoteMcpAuthNeeded(RuntimeError):
     """The MCP server needs a human to (re)authenticate.
 
@@ -157,9 +205,11 @@ class _TokenKV:
         self._path = _token_dir() / f"{server}.json"
 
     def _load(self) -> dict[str, Any]:
+        # A file for another endpoint is not this endpoint's login.
         if self._path.is_file():
             with self._path.open("r", encoding="utf-8") as f:
                 loaded: dict[str, Any] = json.load(f)
+            if stored_for_url(loaded, self._server_url):
                 return loaded
         return {
             "server_url": self._server_url,
@@ -199,6 +249,8 @@ class _TokenKV:
             expires_at = doc.get("expires_at")
             return None if expires_at is None else {"expires_at": expires_at}
         value = doc.get(field)
+        if field == "client_info":
+            value = _with_bound_issuer(doc, value)
         return value if isinstance(value, dict) else None
 
     async def put(
@@ -264,13 +316,29 @@ class _TokenKV:
         return [(await self.get(k, collection=collection), None) for k in keys]
 
 
-def has_stored_login(server: str) -> bool:
+def _stored_doc(server: str) -> dict[str, Any] | None:
     path = _token_dir() / f"{server}.json"
     if not path.is_file():
-        return False
+        return None
     with path.open("r", encoding="utf-8") as f:
-        doc = json.load(f)
+        doc: dict[str, Any] = json.load(f)
+    return doc
+
+
+def has_stored_login(server: str, url: str) -> bool:
+    """A stored access token for ``server`` that belongs to ``url``."""
+    doc = _stored_doc(server)
+    if doc is None or not stored_for_url(doc, url):
+        return False
     return bool((doc.get("tokens") or {}).get("access_token"))
+
+
+def login_for_another_url(server: str, url: str) -> str | None:
+    """The endpoint the stored login is for, when it is not ``url``."""
+    doc = _stored_doc(server)
+    if doc is None or not (doc.get("tokens") or {}).get("access_token"):
+        return None
+    return None if stored_for_url(doc, url) else str(doc.get("server_url"))
 
 
 def token_is_usable(server: str) -> bool:
@@ -424,7 +492,7 @@ def mcp_client(
                 server, None, {key: str(req.method) for key, req in requests.items()}
             )
 
-    if has_stored_login(server):
+    if has_stored_login(server, url):
         from fastmcp.client.auth import OAuth
 
         token_endpoint = _stored_token_endpoint(server)
@@ -592,7 +660,11 @@ async def call_mcp_tool(
     credentials we did present. A server asking for input mid-call
     becomes :class:`RoteMcpInputRequired`, naming the tool.
     """
-    if has_stored_login(server) and not token_is_usable(server):
+    url = resolve_url(server, pipeline_url)
+    elsewhere = login_for_another_url(server, url)
+    if elsewhere is not None:
+        raise RoteMcpAuthNeeded(server, f"the stored login is for {elsewhere}, not {url}")
+    if has_stored_login(server, url) and not token_is_usable(server):
         raise RoteMcpAuthNeeded(
             server, "the stored access token has expired and there is no refresh token"
         )

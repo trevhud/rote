@@ -44,10 +44,14 @@ every installed CLI that still binds it.
 
 ## Publishing
 
-The landing site (`rote-cloud/marketing`) serves this file. It is not
-fetched by rote itself. Only authorization servers read it. Until it is
-published, a login against a CIMD server (Linear, Notion, Sentry) fails,
-because that server cannot fetch the client it is asked to authorize. The
-document must be live before a release ships this CLI. Until then, a user
-can set `ROTE_MCP_CLIENT_METADATA_URL=` (empty) to turn CIMD off and log
-in with DCR as before.
+The landing site (`rote-cloud/marketing`) serves this file. rote never
+offers a document it has not seen: when an authorization server
+advertises CIMD, `rote mcp login` fetches the URL once (5 second
+timeout, cached per process) and offers it only if the response is 200
+and equals the packaged copy (`src/rote/mcp/client_metadata.json`, the
+same bytes as this file) with `client_id` set to the URL. Anything else
+(404, a stale or edited copy, no network) prints one line and the login
+registers a client with DCR instead. So an unpublished or outdated
+document degrades to the pre-CIMD behavior rather than breaking logins,
+and the release checklist (`docs/releasing.md`) diffs the live copy
+against the repo before each release.
