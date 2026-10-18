@@ -1,0 +1,242 @@
+name: expense-audit-draft
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  Month-end audit of employee expense reports. Converts every line to USD at
+  the finance month-end rates, runs the mandatory duplicate and late checks,
+  audits each employee's report against the expense policy, auto-approves
+  clean reports, and files the report as a draft with every review item
+  pending. The same pipeline as pipeline.yaml minus the controller_review
+  gate, so it runs on runtimes that cannot durably park (python).
+
+config:
+  on_failure: notify_owner
+
+input:
+  type: ExpenseBatch
+  required:
+    - period
+    - submissions
+  input_schema:
+    type: object
+    title: ExpenseBatch
+    properties:
+      period:
+        type: string
+        pattern: "^[0-9]{4}-[0-9]{2}$"
+        description: "Reporting period, YYYY-MM"
+      submissions:
+        type: array
+        description: "The expense tool's month export, one object per expense line"
+        items:
+          type: object
+          properties:
+            id: {type: string}
+            employee: {type: string}
+            department: {type: string}
+            date: {type: string, format: date}
+            category: {type: string}
+            merchant: {type: string}
+            amount: {type: number}
+            currency: {type: string}
+            nights: {type: integer}
+            receipt: {type: boolean}
+            preapproval_id: {type: string}
+          required: [id, employee, department, date, category, merchant, amount, currency, receipt]
+    required: [period, submissions]
+    additionalProperties: false
+
+nodes:
+
+  # ── Wave 1: three independent checks over the raw export (parallel) ──
+
+  - id: convert_to_usd
+    kind: pure_function
+    phase: "convert"
+    source:
+      section: "Step 1: Convert every line to USD"
+    description: >-
+      Convert each line's amount to USD at the reporting period's month-end
+      rate (references/fx-rates.md). Unknown currency or period is an error,
+      never a live lookup.
+    impl: extracted/fx.py:convert_to_usd
+    inputs:
+      submissions: pipeline.input.submissions
+      period: pipeline.input.period
+    input:
+      submissions: list[Submission]
+      period: str
+    output:
+      expenses: list[Expense]
+    mandatory: true
+
+  - id: find_duplicates
+    kind: pure_function
+    phase: "checks"
+    source:
+      section: "Step 2: Check for duplicate submissions (MANDATORY)"
+    description: >-
+      Flag every later copy of a line with the same employee, merchant
+      (case-insensitive), amount, currency, and date. Duplicates are a block.
+    impl: extracted/checks.py:find_duplicates
+    inputs:
+      submissions: pipeline.input.submissions
+    input:
+      submissions: list[Submission]
+    output:
+      duplicate_ids: list[str]
+    mandatory: true
+
+  - id: find_late_submissions
+    kind: pure_function
+    phase: "checks"
+    source:
+      section: "Step 3: Check for late submissions (MANDATORY)"
+    description: >-
+      Flag lines dated more than 60 days before the period's last day, or
+      after the period closed. Late lines are review.
+    impl: extracted/checks.py:find_late_submissions
+    inputs:
+      submissions: pipeline.input.submissions
+      period: pipeline.input.period
+    input:
+      submissions: list[Submission]
+      period: str
+    output:
+      late_ids: list[str]
+    constants:
+      late_window_days: 60
+    mandatory: true
+
+  # ── Wave 2: one report per employee ──
+
+  - id: group_by_employee
+    kind: pure_function
+    phase: "audit"
+    source:
+      section: "Step 4: Audit each employee's report"
+    description: Group the converted lines into one report per employee, sorted by name.
+    impl: extracted/audit.py:group_by_employee
+    inputs:
+      expenses: convert_to_usd.output.expenses
+    input:
+      expenses: list[Expense]
+    output:
+      reports: list[EmployeeReport]
+
+  # ── Wave 3: audit every report (fan_out) ──
+
+  - id: audit_report
+    kind: pure_function
+    phase: "audit"
+    source:
+      section: "Step 4: Audit each employee's report"
+    description: >-
+      Apply every policy rule to one employee's report: category caps
+      (lodging per night), receipts at $25.00 and up, entertainment
+      pre-approval, unknown category, the duplicate and late flags, and the
+      $2,500.00 report limit. A report with no findings is auto-approved.
+    impl: extracted/audit.py:audit_report
+    fan_out: true
+    inputs:
+      report: group_by_employee.output.reports
+      duplicate_ids: find_duplicates.output.duplicate_ids
+      late_ids: find_late_submissions.output.late_ids
+    input:
+      report: EmployeeReport
+      duplicate_ids: list[str]
+      late_ids: list[str]
+    output:
+      employee: str
+      department: str
+      lines: int
+      total_usd: float
+      findings: list[Finding]
+      auto_approved: bool
+    constants:
+      receipt_threshold_usd: 25.00
+      report_limit_usd: 2500.00
+      category_caps_usd:
+        airfare: 900.00
+        lodging_per_night: 325.00
+        meals: 75.00
+        ground_transport: 150.00
+        software: 100.00
+        office_supplies: 250.00
+    mandatory: true
+
+  # ── Wave 4: batch summary + review queue ──
+
+  - id: summarize_audit
+    kind: pure_function
+    phase: "summarize"
+    source:
+      section: "Step 5: Summarize the batch"
+    description: >-
+      Total the batch, list the auto-approved employees, and build the review
+      queue (one row per finding, sorted by employee then expense id).
+    impl: extracted/audit.py:summarize_audit
+    inputs:
+      audits: audit_report.output
+      expenses: convert_to_usd.output.expenses
+    input:
+      audits: list[EmployeeAudit]
+      expenses: list[Expense]
+    output:
+      batch_total_usd: float
+      employees: list[EmployeeAudit]
+      auto_approved: list[str]
+      review_queue: list[Finding]
+      expenses: list[Expense]
+
+  # ── Wave 5: file the report (as a draft: no controller gate) ──
+
+  - id: file_report
+    kind: external_call
+    phase: "file"
+    source:
+      section: "Step 7: File the audit report"
+    description: >-
+      Apply the controller's decisions, compute reimbursable / pending /
+      returned totals, render the report in references/report-format.md
+      layout, and write <period>-expense-audit.md to the finance folder.
+    impl: extracted/report.py:file_report
+    inputs:
+      period: pipeline.input.period
+      summary: summarize_audit.output
+    input:
+      period: str
+      summary: AuditSummary
+    output:
+      report_path: str
+      status: str
+      reimbursable_usd: float
+      pending_usd: float
+      returned_usd: float
+      batch_total_usd: float
+      reviewer: str | None
+      auto_approved: list[str]
+      review_items: int
+      blocked_items: int
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [io_error]
+    timeout: 30s
+    mandatory: true
+
+edges:
+  - {from: convert_to_usd, to: group_by_employee}
+  - {from: group_by_employee, to: audit_report, fan_out: true}
+  - {from: find_duplicates, to: audit_report}
+  - {from: find_late_submissions, to: audit_report}
+  - {from: audit_report, to: summarize_audit}
+  - {from: summarize_audit, to: file_report}
+
+entry_nodes:
+  - convert_to_usd
+  - find_duplicates
+  - find_late_submissions
+
+exit_nodes:
+  - file_report

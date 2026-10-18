@@ -22,7 +22,7 @@ the scorecard using live-fetched prices.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 # _execution_waves is IR-only (no runtime semantics) and already the
@@ -59,6 +59,10 @@ class Range:
 
     def __add__(self, other: Range) -> Range:
         return Range(self.low + other.low, self.high + other.high)
+
+    def __mul__(self, other: Range) -> Range:
+        """Product of two non-negative ranges (loop iterations x fan width)."""
+        return Range(self.low * other.low, self.high * other.high)
 
     def scale(self, factor: float) -> Range:
         return Range(self.low * factor, self.high * factor)
@@ -136,6 +140,10 @@ class NodeEstimate:
     note: str | None = None
     """A per-node modeling assumption worth surfacing (e.g., an unbounded
     loop estimated at the prior default)."""
+    sequential_calls: Range | None = None
+    """Calls that run one after another, when fewer than ``calls``. A
+    fan_out node's elements run concurrently on every runtime, so they
+    multiply its tokens but not its wall time. None means ``calls``."""
 
     @property
     def llm_input_tokens(self) -> Range:
@@ -147,7 +155,17 @@ class NodeEstimate:
 
     @property
     def wall_seconds(self) -> Range:
-        return self.calls.scale(self.wall_seconds_per_call)
+        sequential = self.sequential_calls if self.sequential_calls is not None else self.calls
+        return sequential.scale(self.wall_seconds_per_call)
+
+
+@dataclass(frozen=True)
+class FanOutWidth:
+    """Elements a ``fan_out`` node runs over per run, and where that came from."""
+
+    node_id: str
+    elements: Range
+    source: str
 
 
 @dataclass(frozen=True)
@@ -163,9 +181,35 @@ class PipelineEstimate:
     llm_input_tokens: Range
     llm_output_tokens: Range
     sampling: SamplingSurface
+    fan_out_widths: tuple[FanOutWidth, ...] = ()
+    """The width assumed for every fan_out node, for the Assumptions list."""
 
 
 # ───────── After: pipeline estimator ─────────
+
+
+def fan_out_width(node: Node, priors: Priors, sidecar: EvalEstimates | None) -> FanOutWidth:
+    """How many elements a ``fan_out`` node runs over in one run.
+
+    The list is data, so the IR cannot say. The compiler's ``eval.yaml``
+    can: it records ``iterations`` (per item, per row) for the source step
+    a node came from. Without that, the stated, overridable
+    ``fan_out_elements_per_run`` prior applies. Never 1 by default: that
+    would price a fanned judge as a single call.
+    """
+    if sidecar is not None:
+        for step in sidecar.steps:
+            if step.node_id == node.id and step.iterations is not None:
+                return FanOutWidth(
+                    node_id=node.id,
+                    elements=Range(step.iterations.low, step.iterations.high),
+                    source="eval.yaml iterations",
+                )
+    return FanOutWidth(
+        node_id=node.id,
+        elements=Range.exact(float(priors.fan_out_elements_per_run)),
+        source="prior fan_out_elements_per_run",
+    )
 
 
 def _judge_field_counts(node: Node) -> tuple[int, int]:
@@ -256,6 +300,7 @@ def estimate_pipeline(
     pipeline: Pipeline,
     counter: TokenCounter,
     priors: Priors | None = None,
+    sidecar: EvalEstimates | None = None,
 ) -> PipelineEstimate:
     """Predict one run of the compiled pipeline, without executing it.
 
@@ -268,9 +313,19 @@ def estimate_pipeline(
     waves = _execution_waves(pipeline)
 
     estimates: dict[str, NodeEstimate] = {}
+    widths: list[FanOutWidth] = []
     for wave in waves:
         for node in wave:
-            estimates[node.id] = _estimate_node(node, counter, priors)
+            estimate = _estimate_node(node, counter, priors)
+            if node.fan_out and node.kind is not NodeKind.HITL_GATE:
+                width = fan_out_width(node, priors, sidecar)
+                widths.append(width)
+                estimate = replace(
+                    estimate,
+                    calls=estimate.calls * width.elements,
+                    sequential_calls=estimate.calls,
+                )
+            estimates[node.id] = estimate
 
     critical_path = ZERO
     for wave in waves:
@@ -303,6 +358,7 @@ def estimate_pipeline(
             schema_constrained_steps=sum(1 for e in sampled if e.kind is NodeKind.LLM_JUDGE),
             sampled_output_tokens=sampled_tokens,
         ),
+        fan_out_widths=tuple(widths),
     )
 
 

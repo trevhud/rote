@@ -1,0 +1,17 @@
+{
+  "cost_basis": "driver_estimate",
+  "driver": "claude",
+  "metadata": {
+    "cache_read_tokens": 3461057,
+    "cache_write_tokens": 138559,
+    "cost_usd": 2.5647530999999995,
+    "duration_ms": 709794,
+    "input_tokens": 29,
+    "num_turns": 46,
+    "output_tokens": 46333,
+    "session_id": "01e43b5c-b150-4655-b146-84ae7e5f94ee",
+    "usage_complete": true,
+    "usage_source": "modelUsage"
+  },
+  "schema_version": 1
+}
