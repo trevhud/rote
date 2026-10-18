@@ -334,6 +334,9 @@ nodes:
       Fuzzy-match email threads to #deal-intake opps by account name.
       Opps with ≥1 matched thread → Quoting tab (matched_threads).
       Opps with no matched thread → New Opps tab (unmatched_opps).
+      Each matched_threads element is the full email thread plus the
+      account_name of the opp it matched, so the per-thread classifier
+      receives everything it needs in one element.
     impl: extracted/matching.py:match_threads_to_opps
     source:
       section: "Step 2: Search Gmail for outbound quoting emails"
@@ -346,6 +349,44 @@ nodes:
     output:
       matched_threads: list[MatchedThread]
       unmatched_opps: list[FilteredOpportunity]
+    output_schema:
+      type: object
+      properties:
+        matched_threads:
+          type: array
+          items:
+            "$ref": "#/$defs/MatchedThread"
+        unmatched_opps:
+          type: array
+          items:
+            type: object
+      required:
+        - matched_threads
+        - unmatched_opps
+      "$defs":
+        MatchedThread:
+          description: An EmailThread plus the account_name of the opp it matched.
+          type: object
+          properties:
+            account_name:
+              type: string
+            thread_id:
+              type: string
+            subject:
+              type: string
+            thread_url:
+              anyOf:
+                - type: string
+                - type: "null"
+            messages:
+              type: array
+              items:
+                type: object
+          required:
+            - account_name
+            - thread_id
+            - subject
+            - messages
 
   # ── Classify threads (fan-out per thread) ─────────────────────────────────
   - id: classify_thread_step
@@ -355,21 +396,24 @@ nodes:
       6 pipeline steps: 1=RFP Sent, 2=Response Needed, 3=Follow-Up Needed,
       4=Pricing Returned, 5=Pricing Sent, 6=Declined.
     signature_spec:
+      # A fanned judge takes the WHOLE element: `thread` is one
+      # MatchedThread, and the account it matched travels inside it. The
+      # emitter binds only `inputs:` keys, so a sibling `account_name`
+      # property could never be filled.
       input_schema:
         type: object
         properties:
           thread:
-            "$ref": "#/$defs/EmailThread"
-          account_name:
-            type: string
+            "$ref": "#/$defs/MatchedThread"
         required:
           - thread
-          - account_name
         additionalProperties: false
         "$defs":
-          EmailThread:
+          MatchedThread:
             type: object
             properties:
+              account_name:
+                type: string
               thread_id:
                 type: string
               subject:
@@ -398,6 +442,7 @@ nodes:
                     - date
                     - body
             required:
+              - account_name
               - thread_id
               - subject
               - messages
@@ -445,6 +490,8 @@ nodes:
             type: string
           account_name:
             type: string
+          thread_id:
+            type: string
           thread_url:
             anyOf:
               - type: string
@@ -456,6 +503,7 @@ nodes:
           - needs_attention
           - classification_rationale
           - account_name
+          - thread_id
         additionalProperties: false
       prompt: |
         You are classifying an email thread for the warehouse quoting pipeline.
@@ -480,9 +528,10 @@ nodes:
         days, a warehouse asked questions the team hasn't answered, or there is an explicit
         deadline requiring action.
 
-        Pass through account_name and thread_url unchanged from the input.
+        Copy thread.account_name, thread.thread_id and thread.thread_url into
+        account_name, thread_id and thread_url unchanged.
 
-        Account name: {{ account_name }}
+        Account name: {{ thread.account_name }}
         Thread: {{ thread }}
 
         Return your classification via the structured output tool.
@@ -502,6 +551,7 @@ nodes:
       needs_attention: bool
       classification_rationale: str
       account_name: str
+      thread_id: str
       thread_url: str
     fan_out: true
     timeout: 60s

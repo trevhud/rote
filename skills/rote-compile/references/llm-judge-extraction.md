@@ -77,6 +77,15 @@ class VetContactInput(BaseModel):
 **`extra="forbid"`** prevents accidental field additions that would
 silently break downstream reads. Strict-by-default.
 
+**The input model's top-level fields are the node's `inputs:` keys,
+one for one.** Each field gets a binding (`contact:` the fanned list,
+`brief: pipeline.input`, `intel: target_research.output`), and no
+binding exists without a field. A field nothing upstream can supply
+is a design error, not a gap to leave for later: add the upstream
+output or pipeline input that carries it. The IR validator rejects a
+judge whose `required` fields are unbound or whose bindings a closed
+schema does not declare (ir-schema.md, validation rule 9).
+
 ### Step 4 — Design the output model
 
 ```python
@@ -185,6 +194,42 @@ If the source skill applies the same judgment to a list of inputs
 (vet 50 contacts, personalize 10 emails), set `fan_out: true` on the
 node in the IR. The adapter will invoke the signature once per input
 element in parallel. The signature itself handles one input at a time.
+
+Each call receives `{<element param>: <one item>}` plus the shared
+params. So the input model has **one field for the whole element**,
+and every per-element value is read through it. Two shapes the
+validator rejects, both from real deal-monitor compiles:
+
+```yaml
+# WRONG: per-element value declared beside the element. Nothing can
+# bind account_name per thread, so every call is missing it.
+inputs: {thread: match_threads_to_opps.output.matched_threads}
+input_schema:
+  properties: {thread: {...}, account_name: {type: string}}
+  required: [thread, account_name]
+
+# WRONG: element flattened into top-level fields. The payload key is
+# `threads`; thread_id / messages never arrive.
+inputs: {threads: match_opps_to_threads.output.all_threads}
+input_schema:
+  properties: {thread_id: {...}, messages: {...}}
+  required: [thread_id, messages]
+
+# RIGHT: one property is the element; the upstream step puts the
+# account on each element it emits (MatchedThread = thread + account).
+inputs: {thread: match_threads_to_opps.output.matched_threads}
+input_schema:
+  properties: {thread: {$ref: "#/$defs/MatchedThread"}}
+  required: [thread]
+prompt: |
+  Account name: {{ thread.account_name }}
+  Thread: {{ thread }}
+```
+
+Name the element param in the singular (`thread`, `contact`,
+`opportunity`): it holds one item. Values that are the same for every
+call (a rubric, the campaign brief) stay separate shared params bound
+to their own source.
 
 ### Pattern: "cheap pre-filter + expensive LLM"
 
@@ -344,9 +389,10 @@ belongs in the nullable set.
 ### Designing the prompt template
 
 The prompt is a Jinja-style template. Variables are addressed by the
-input model's field names (top-level only — adapters use simple
-`{{ contact }}` substitution that JSON-stringifies non-string
-values). Three rules:
+input model's field names, with dotted paths into nested objects
+(`{{ contact }}`, `{{ thread.account_name }}`); non-string values are
+JSON-stringified, and a path the input does not have raises at call
+time. There are no filters or control blocks. Three rules:
 
 1. **Always end with a directive that names the structured-output
    tool** — the adapter wraps the call in tool-use mode and the LLM

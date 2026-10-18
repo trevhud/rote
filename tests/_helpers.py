@@ -104,8 +104,7 @@ def fan_out_source_keys(pipeline: Pipeline) -> dict[str, dict[str, list[dict[str
     Uses the adapters' own element-param resolution, so a mock can never
     disagree with the emitted code about which input is the fanned list.
     """
-    from rote.adapters._common import fan_out_element_param
-    from rote.ir import parse_input_ref
+    from rote.ir import fan_out_element_param, parse_input_ref
 
     extra: dict[str, dict[str, list[dict[str, int]]]] = {}
     for node in pipeline.nodes:

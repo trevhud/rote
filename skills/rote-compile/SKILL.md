@@ -201,6 +201,12 @@ Checklist before declaring Phase 5 done:
   exists, is deterministic and offline, and you believe it passes.
 - Every `llm_judge` node has a `signature:` pointing at a real file
   you created in Phase 4.
+- Every `llm_judge` node's `inputs:` keys match the top-level
+  properties of its `signature_spec.input_schema`: each `required`
+  property is bound, and nothing extra is bound when the schema says
+  `additionalProperties: false`. The validator rejects a mismatch (see
+  ir-schema.md rule 9). On a `fan_out` judge the element is ONE
+  property holding the whole element, never its fields flattened.
 - Every `agent_loop` node has `tools:` listed.
 - Every `hitl_gate` node has a `signal:`.
 - Every node mentioned in `entry_nodes`, `exit_nodes`, `edges.from`,

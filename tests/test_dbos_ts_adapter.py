@@ -393,6 +393,7 @@ def test_openai_client_signature_module() -> None:
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
         description="Grade an essay.",
+        inputs={"essay": "pipeline.input.essay"},
         signature_spec={
             "input_schema": {
                 "type": "object",

@@ -861,6 +861,36 @@ class Pipeline(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _validate_judge_input_bindings(self) -> Self:
+        """A judge's ``inputs:`` must satisfy its ``signature_spec.input_schema``.
+
+        Runs after DAG integrity (pydantic applies after-validators in
+        definition order), so every reference here already resolves.
+
+        Scope, and why:
+
+        * Only ``llm_judge`` nodes with a ``signature_spec``. The legacy
+          ``signature:`` path points at a hand-maintained Python class the
+          IR cannot see, and no other kind validates its payload against a
+          schema (``Node.input_schema`` is observed documentation).
+        * Not ``loop_body`` sub-nodes. Their parent loop calls them with
+          model-chosen arguments; their ``inputs:`` describe, they do not
+          bind.
+        """
+        loop_body_ids = {sub for n in self.nodes for sub in (n.loop_body or ())}
+        errors = [
+            error
+            for node in self.nodes
+            if node.kind is NodeKind.LLM_JUDGE
+            and node.signature_spec is not None
+            and node.id not in loop_body_ids
+            and (error := _judge_binding_error(node, self)) is not None
+        ]
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
     def node_by_id(self, node_id: str) -> Node:
         for n in self.nodes:
             if n.id == node_id:
@@ -913,6 +943,157 @@ class Pipeline(BaseModel):
             for server in sorted(set((n.tool_servers or {}).values())):
                 by_server.setdefault(server, []).append(n.id)
         return {server: sorted(set(ids)) for server, ids in sorted(by_server.items())}
+
+
+# ───────── Fan-out element + judge input contract ─────────
+
+
+def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
+    """Which ``inputs`` param carries the list a ``fan_out`` node fans over.
+
+    Every other input is shared verbatim by all invocations. Which param
+    is the list, in precedence order:
+
+    1. the param bound to the source of an incoming ``fan_out: true``
+       edge (the IR's explicit marker);
+    2. else the param bound to a node with any incoming edge — inputs
+       may also reference nodes *without* an edge (shared context, e.g.
+       BDR's ``intel``), which is what makes "the only node-bound
+       param" too naive;
+    3. else the only node-bound param.
+
+    Ambiguity after all three is an emit-time error, never a guess:
+    dispatching over the wrong list would silently judge the wrong
+    things.
+
+    This lives in the IR module because the answer is a property of the
+    IR, not of the target language: every adapter must fan over the
+    *same* input or the same pipeline would mean different things on
+    different runtimes, and the judge-binding validator
+    (:meth:`Pipeline._validate_judge_input_bindings`) must agree with
+    the emitters about which param is the element.
+    """
+    if not node.inputs:
+        raise ValueError(f"fan_out node {node.id!r} has no inputs: nothing to fan over")
+    node_bound = {
+        param: parsed.node_id
+        for param, ref in node.inputs.items()
+        if (parsed := parse_input_ref(ref)).node_id is not None
+    }
+    edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
+    fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
+
+    # The tiers are tried narrowest-first, but the ORDER is provably
+    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
+    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
+    # singles out exactly one param. If the broader tier singles one out,
+    # it is necessarily the same one. (Mutation testing flags swapping
+    # these as a surviving mutant — it is equivalent, not a test gap.)
+    # The tiers still earn their place: they express which signal the
+    # author gave, and tier 2 is what handles a marker pointing at a node
+    # no input references.
+    for sources in (fan_edge_sources, edge_sources):
+        matching = sorted(p for p, src in node_bound.items() if src in sources)
+        if len(matching) == 1:
+            return matching[0]
+    if len(node_bound) != 1:
+        raise ValueError(
+            f"fan_out node {node.id!r}: cannot identify the element param — "
+            f"node-bound inputs {sorted(node_bound)} and incoming edges "
+            f"{sorted(edge_sources)} don't single one out; mark the list edge "
+            f"with `fan_out: true`"
+        )
+    return next(iter(node_bound))
+
+
+def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:
+    """The object a judge's input schema describes, after any root ``$ref``.
+
+    Follows ``#/$defs/<name>`` within the same schema, which is the only
+    ``$ref`` form the signature emitters accept (a definition belongs to
+    its root document). Anything else raises: emission would refuse it
+    too, and a clear message at load time beats one at emit time.
+    """
+    root = schema
+    seen: set[str] = set()
+    while "$ref" in root:
+        ref = root["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
+            raise ValueError(f"unsupported root $ref {ref!r} (only '#/$defs/<name>' resolves)")
+        name = ref[len("#/$defs/") :]
+        if name in seen:
+            raise ValueError(f"cyclic root $ref through {name!r}")
+        seen.add(name)
+        defs = schema.get("$defs")
+        if not isinstance(defs, dict) or not isinstance(defs.get(name), dict):
+            raise ValueError(f"root $ref {ref!r} names no definition in this schema's $defs")
+        root = defs[name]
+    return root
+
+
+def _judge_binding_error(node: Node, pipeline: Pipeline) -> str | None:
+    """Where a judge's ``inputs:`` and its input schema disagree, if anywhere.
+
+    Every adapter builds a judge's input payload from ``inputs:`` and
+    nothing else: one key per bound param (on a ``fan_out`` node the
+    element param carries one list item, the rest are shared), then
+    validates it against ``signature_spec.input_schema`` before the
+    vendor call. So a required property ``inputs:`` does not bind fails
+    every call, and so does a bound param the schema does not declare
+    when it sets ``additionalProperties: false``. Both are decidable
+    from the IR alone.
+    """
+    assert node.signature_spec is not None
+    schema = node.signature_spec.input_schema
+    title = schema.get("title")
+    schema_name = "signature_spec.input_schema" + (f" ({title})" if isinstance(title, str) else "")
+    prefix = f"Node {node.id!r} (llm_judge): "
+    try:
+        root = _schema_root(schema)
+    except ValueError as e:
+        return f"{prefix}{schema_name}: {e}"
+
+    props = root.get("properties")
+    declared = sorted(props) if isinstance(props, dict) else []
+    required = [r for r in root.get("required") or [] if isinstance(r, str)]
+    bound = node.inputs or {}
+    missing = [p for p in required if p not in bound]
+    undeclared = (
+        sorted(p for p in bound if p not in declared)
+        if root.get("additionalProperties") is False
+        else []
+    )
+    if not missing and not undeclared:
+        return None
+
+    problems = []
+    if missing:
+        problems.append(f"it requires {missing}, which `inputs:` does not bind")
+    if undeclared:
+        problems.append(
+            f"`inputs:` binds {undeclared}, which it does not declare "
+            f"(additionalProperties: false; properties: {declared})"
+        )
+    message = (
+        f"{prefix}`inputs:` ({sorted(bound) if bound else 'nothing bound'}) does not "
+        f"satisfy {schema_name}: {'; and '.join(problems)}. The emitted judge builds its "
+        f"input from `inputs:` alone, so every call would fail validation."
+    )
+    if node.fan_out and bound:
+        try:
+            element: str | None = fan_out_element_param(node, pipeline)
+        except ValueError:
+            # Ambiguous fan: emission raises its own, more specific error.
+            element = None
+        if element is not None:
+            message += (
+                f" On this fan_out node {element!r} is the element (one item of "
+                f"{bound[element]} per call): give the schema a property named {element!r} "
+                f"describing one whole element, and read per-element fields through "
+                f"it (e.g. {{{{ {element}.<field> }}}}) instead of declaring them "
+                f"beside it."
+            )
+    return message
 
 
 def load_pipeline(path: str | Path) -> Pipeline:

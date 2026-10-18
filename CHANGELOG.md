@@ -104,6 +104,26 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- **A judge whose `inputs:` cannot satisfy its input schema is rejected
+  at load time.** Every adapter builds a judge's payload from its
+  `inputs:` keys alone, so a `required` property nothing binds, or a
+  bound param a schema with `additionalProperties: false` does not
+  declare, failed pydantic validation on every call, and nothing caught
+  it before run time. Found by a real eval: deal-monitor's fanned
+  `classify_thread_step` bound only `thread` while its schema also
+  required `account_name`, so all of its calls failed. The new
+  `Pipeline` validator names the node, the params, and the schema, and
+  on a `fan_out` node names the element param through the same
+  `fan_out_element_param` the emitters use (moved to `rote.ir` so the
+  IR and the adapters share one resolver). Loop-body sub-nodes and
+  legacy `signature:`-only judges are exempt. Four committed IRs failed
+  it and are fixed: deal-monitor `expected` (the judge now takes the
+  whole `MatchedThread`, which carries the account), deal-monitor runs
+  `2026-07-18-rubric-v2` and `2026-07-18-first-agent-run` (fanned
+  judges had their element flattened into top-level fields), and BDR
+  run `2026-04-26-signature-spec` (`personalize_email` bound nothing).
+  The compiler rubric now says a fanned judge's input has one property
+  for the whole element, and shows the wrong shapes it produced.
 - The `dbos` and `dev` extras now cap `dbos<3`. DBOS 3.0 (2026-09-16)
   made `Queue(...)` construction raise in favor of
   `DBOS.register_queue` and removed the admin server, so a fresh

@@ -40,10 +40,16 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     _to_camel_case,
     _to_pascal_case,
-    fan_out_element_param,
     safe_block_comment_line,
 )
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import (
+    LLMSignature,
+    Node,
+    NodeKind,
+    Pipeline,
+    fan_out_element_param,
+    parse_input_ref,
+)
 
 # ───────── JSON Schema → Zod ─────────
 
@@ -622,7 +628,7 @@ def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tupl
     The payload is a one-line object binding the element param to the
     loop variable ``_item`` and every other input to its shared
     expression — the TS rendering of
-    :func:`rote.adapters._common.fan_out_element_param`, which decides
+    :func:`rote.ir.fan_out_element_param`, which decides
     *which* input is the list.
 
     The list expression goes through ``fanOutList``

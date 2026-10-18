@@ -431,62 +431,6 @@ def check_input_refs_available(node: Node, available: set[str]) -> None:
             )
 
 
-def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
-    """Which ``inputs`` param carries the list a ``fan_out`` node fans over.
-
-    Every other input is shared verbatim by all invocations. Which param
-    is the list, in precedence order:
-
-    1. the param bound to the source of an incoming ``fan_out: true``
-       edge (the IR's explicit marker);
-    2. else the param bound to a node with any incoming edge — inputs
-       may also reference nodes *without* an edge (shared context, e.g.
-       BDR's ``intel``), which is what makes "the only node-bound
-       param" too naive;
-    3. else the only node-bound param.
-
-    Ambiguity after all three is an emit-time error, never a guess:
-    dispatching over the wrong list would silently judge the wrong
-    things.
-
-    This lives in the language-neutral common module because the answer
-    is a property of the IR, not of the target language — every adapter
-    must fan over the *same* input or the same pipeline would mean
-    different things on different runtimes.
-    """
-    if not node.inputs:
-        raise ValueError(f"fan_out node {node.id!r} has no inputs: nothing to fan over")
-    node_bound = {
-        param: parsed.node_id
-        for param, ref in node.inputs.items()
-        if (parsed := parse_input_ref(ref)).node_id is not None
-    }
-    edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id}
-    fan_edge_sources = {e.from_ for e in pipeline.edges if e.to == node.id and e.fan_out}
-
-    # The tiers are tried narrowest-first, but the ORDER is provably
-    # unobservable: fan_edge_sources ⊆ edge_sources by construction, so
-    # matching(fan) ⊆ matching(edge), and a tier is accepted only when it
-    # singles out exactly one param. If the broader tier singles one out,
-    # it is necessarily the same one. (Mutation testing flags swapping
-    # these as a surviving mutant — it is equivalent, not a test gap.)
-    # The tiers still earn their place: they express which signal the
-    # author gave, and tier 2 is what handles a marker pointing at a node
-    # no input references.
-    for sources in (fan_edge_sources, edge_sources):
-        matching = sorted(p for p, src in node_bound.items() if src in sources)
-        if len(matching) == 1:
-            return matching[0]
-    if len(node_bound) != 1:
-        raise ValueError(
-            f"fan_out node {node.id!r}: cannot identify the element param — "
-            f"node-bound inputs {sorted(node_bound)} and incoming edges "
-            f"{sorted(edge_sources)} don't single one out; mark the list edge "
-            f"with `fan_out: true`"
-        )
-    return next(iter(node_bound))
-
-
 def fan_out_nodes(wave: Sequence[Node]) -> tuple[list[Node], list[Node]]:
     """Split a wave into ``(fan_out_nodes, plain_nodes)``, order preserved.
 
