@@ -1012,6 +1012,59 @@ def emit_extracted_module(
     return "".join(parts)
 
 
+def write_extracted_package(
+    writer: EmitWriter,
+    pipeline: Pipeline,
+    *,
+    source_dir: Path | None,
+    generated_by: str,
+    caller_note: str,
+) -> dict[str, Path]:
+    """Write ``extracted/`` for an adapter whose steps import plain modules.
+
+    Each module is the agent's real implementation from ``source_dir``
+    when one exists (:func:`resolve_extracted_source`), otherwise an
+    IR-derived stub. The ``extracted/<module>`` labels in the returned
+    mapping are what ``rote emit``'s ``unimplemented_stubs`` scans, so an
+    adapter that writes through here reports its TODO list for free.
+
+    An ``agent_loop`` that declares tools also gets ``extracted/_rote_mcp.py``
+    (the verbatim MCP helper): its tools are MCP tool names, and the
+    inference helper resolves their endpoints through that module. Node
+    code still never references MCP; only the agent does, and only for
+    tools the IR declared.
+    """
+    written: dict[str, Path] = {}
+    modules = _extracted_layout(pipeline)
+    needs_mcp_helper = any(n.kind is NodeKind.AGENT_LOOP and n.tools for n in pipeline.nodes)
+    if not modules and not needs_mcp_helper:
+        return written
+
+    written["extracted/__init__"] = writer.write(
+        "extracted",
+        "__init__.py",
+        content=f'"""Extracted deterministic modules for {pipeline.name}."""\n',
+    )
+    for module_name, nodes in sorted(modules.items()):
+        written[f"extracted/{module_name}"] = writer.write(
+            "extracted",
+            f"{module_name}.py",
+            content=resolve_extracted_source(source_dir, module_name)
+            or emit_extracted_module(
+                module_name, nodes, generated_by=generated_by, caller_note=caller_note
+            ),
+        )
+    if needs_mcp_helper:
+        from rote.mcp import _runtime_helper as _mcp_helper
+
+        written["extracted/_rote_mcp"] = writer.write(
+            "extracted",
+            "_rote_mcp.py",
+            content=Path(_mcp_helper.__file__).read_text(encoding="utf-8"),
+        )
+    return written
+
+
 # ───────── Emitted runtime helpers ─────────
 
 _SERIALIZE_TEMPLATE = '''\
