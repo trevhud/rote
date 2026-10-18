@@ -31,6 +31,31 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   (non-async) implementations now run in a worker thread instead of
   being awaited, which used to raise `TypeError`.
 
+### Changed
+- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
+  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
+  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
+  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
+  and exposes `launch()`, which runs `DBOS.launch()` and then
+  `DBOS.register_queue`. Anything that runs an emitted app in-process
+  must call `launch()` instead of a bare `DBOS.launch()`, or runs
+  enqueued by `rote serve` stay `ENQUEUED`. The removed
+  `run_admin_server` key is gone from both runtimes' config, and the
+  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
+  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
+  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
+  against an app installed today. Apps emitted for 2.x need a re-emit.
+- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
+  system database the way the v5 SDK does. v5 stopped reading
+  `dbos-config.yaml` at launch, so a `system_database_url` key there no
+  longer counts, and the default database name follows the SDK's
+  `toDbName()` (lowercased, leading digit prefixed).
+- A new `Newest dependencies` workflow installs every extra at the top
+  of its range with no lock or cache, daily and on PRs that touch
+  dependencies or DBOS code, and runs the fast suite plus the DBOS
+  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
+  turns CI red instead of reaching fresh installs first.
+
 ## [0.14.0] - 2026-10-18
 
 ### Added
@@ -201,29 +226,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   overstate cache reads roughly tenfold.
 
 ### Changed
-- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
-  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
-  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
-  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
-  and exposes `launch()`, which runs `DBOS.launch()` and then
-  `DBOS.register_queue`. Anything that runs an emitted app in-process
-  must call `launch()` instead of a bare `DBOS.launch()`, or runs
-  enqueued by `rote serve` stay `ENQUEUED`. The removed
-  `run_admin_server` key is gone from both runtimes' config, and the
-  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
-  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
-  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
-  against an app installed today. Apps emitted for 2.x need a re-emit.
-- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
-  system database the way the v5 SDK does. v5 stopped reading
-  `dbos-config.yaml` at launch, so a `system_database_url` key there no
-  longer counts, and the default database name follows the SDK's
-  `toDbName()` (lowercased, leading digit prefixed).
-- A new `Newest dependencies` workflow installs every extra at the top
-  of its range with no lock or cache, daily and on dependency PRs, and
-  runs the fast suite plus the DBOS Python and DBOS-TS e2e suites. An
-  upstream major that breaks rote now turns CI red instead of reaching
-  fresh installs first.
 - The README roadmap dropped two items that had already shipped: real
   compiler runs have produced `signature_spec` since April, and the
   ops-report, deal-monitor, and invoice-push archetypes have existed
