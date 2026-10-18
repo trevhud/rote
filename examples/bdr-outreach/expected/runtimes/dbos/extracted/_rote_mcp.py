@@ -103,7 +103,15 @@ def stored_for_url(doc: Mapping[str, Any], url: str) -> bool:
     document that records no URL predates the field and is taken as is.
     """
     stored = doc.get("server_url")
-    return not stored or normalize_server_url(str(stored)) == normalize_server_url(url)
+    if not stored:
+        return True
+    try:
+        normalized = normalize_server_url(str(stored))
+    except ValueError:
+        # An unparseable stored URL (a bad port) names no endpoint at all,
+        # so it is not this one: the caller treats the login as elsewhere.
+        return False
+    return normalized == normalize_server_url(url)
 
 
 def _with_bound_issuer(doc: Mapping[str, Any], client_info: Any) -> Any:

@@ -920,3 +920,82 @@ def test_mcp_add_issuer_needs_a_client_id_and_is_stored() -> None:
         == 0
     )
     assert load_registry().servers["gh"].issuer == "https://github.com/login/oauth"
+
+
+# ───────── hardening ─────────
+
+
+@pytest.mark.parametrize(
+    ("url", "trusted"),
+    [
+        ("https://auth.example.com", True),
+        ("http://127.0.0.1:8000/as", True),
+        ("http://[::1]:8000/as", True),
+        ("http://localhost/as", True),
+        ("http://auth.example.com", False),
+        ("http://127.0.0.1.attacker.example/as", False),
+        ("ftp://auth.example.com", False),
+    ],
+)
+def test_only_https_or_loopback_issuers_are_trusted(url: str, trusted: bool) -> None:
+    from rote.mcp.auth import is_trusted_transport
+
+    assert is_trusted_transport(url) is trusted
+
+
+def test_issuer_discovery_does_not_trust_a_plain_http_resource() -> None:
+    """Over plain HTTP a network attacker writes the metadata, and with it
+    the server a client secret is later offered to. No request is made."""
+    from rote.mcp.auth import discover_issuer
+
+    found = asyncio.run(discover_issuer("http://mcp.example.com/mcp"))
+    assert found.issuer is None
+    assert "not HTTPS" in (found.problem or "")
+
+
+def test_mcp_add_refuses_a_plain_http_issuer(capsys: pytest.CaptureFixture[str]) -> None:
+    args = ["mcp", "add", "gh", "https://h.example/mcp", "--client-id", "app"]
+    assert cli_main([*args, "--issuer", "http://auth.example.com"]) == 2
+    assert "must be an https URL" in capsys.readouterr().err
+    assert cli_main([*args, "--issuer", "http://127.0.0.1:9000/as"]) == 0
+
+
+def test_an_unparseable_stored_url_parks_instead_of_crashing() -> None:
+    """A bad port in the stored server_url made the URL comparison raise
+    ValueError and crash the run. It names no endpoint, so it is not this one."""
+    from rote.mcp import _runtime_helper
+
+    write_token_file("slack", _login_for("https://old.example.com:99999/mcp"))
+    with pytest.raises(_runtime_helper.RoteMcpAuthNeeded, match="stored login is for"):
+        asyncio.run(_runtime_helper.call_mcp_tool("slack", "http://127.0.0.1:9/mcp", "t", {}))
+
+
+def test_export_takes_client_id_and_secret_from_one_source(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A dynamically registered client must not be exported with the
+    registry's pre-registered secret."""
+    url = "https://mcp.example.com/slack"
+    save_registry(
+        McpRegistry(
+            servers={"slack": McpServerConfig(url=url, client_id="pre", client_secret="pre-secret")}
+        )
+    )
+    doc = {
+        **_doc(expires_at=None),
+        "server_url": url,
+        "client_info": {"client_id": "dcr-1"},
+        "tokens": {"access_token": "a", "token_type": "Bearer", "refresh_token": "r"},
+    }
+    write_token_file("slack", doc)
+    assert cli_main(["mcp", "export", "slack", "--json"]) == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["ROTE_MCP_SLACK_CLIENT_ID"] == "dcr-1"
+    assert "ROTE_MCP_SLACK_CLIENT_SECRET" not in exported
+
+    doc["client_info"] = None
+    write_token_file("slack", doc)
+    assert cli_main(["mcp", "export", "slack", "--json"]) == 0
+    exported = json.loads(capsys.readouterr().out)
+    assert exported["ROTE_MCP_SLACK_CLIENT_ID"] == "pre"
+    assert exported["ROTE_MCP_SLACK_CLIENT_SECRET"] == "pre-secret"

@@ -68,6 +68,24 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   an auth failure: it never parks, and it skips the retry budget.
 
 ### Fixed
+- **MCP auth hardening.**
+  - The client metadata document check has a 5 second total deadline.
+    httpx's timeout is per read, so a host sending a byte every few
+    seconds held the login open indefinitely.
+  - `rote mcp add --client-id` records an issuer only from metadata that
+    describes this resource (RFC 9728 section 3.3) and only over HTTPS
+    (loopback excepted), for both the resource and the issuer. An
+    origin-level document on a shared host, or a plain-HTTP answer a
+    network attacker could write, no longer chooses which server the
+    client secret is offered to. `--issuer` must be HTTPS too.
+  - The TS refresh grant and `rote mcp export` take the client id and
+    secret from the same source, so a stored dynamically registered
+    client is never paired with the registry's pre-registered secret.
+  - A stored login URL that does not parse (a bad port) parks the run
+    on both Python and TS instead of crashing it.
+  - When rote sets aside a client from an older token file and the
+    server no longer allows registration, the login error says so and
+    names the `rote mcp add --client-id` fix.
 - Running the test suite no longer rewrites committed files. Five
   adapter suites emitted the BDR pipeline straight into
   `examples/bdr-outreach/expected/runtimes/`, and the dbos and temporal

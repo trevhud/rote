@@ -29,6 +29,8 @@ everything here imports it lazily and fails with that hint.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import json
 import os
 import socket
@@ -36,11 +38,12 @@ import sys
 import webbrowser
 from collections.abc import AsyncGenerator
 from importlib import resources
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from rote.extras import install_hint
 from rote.mcp._runtime_helper import (
     is_registration_request,
+    normalize_server_url,
     retarget_token_request,
     stored_for_url,
 )
@@ -95,8 +98,10 @@ def client_metadata_url() -> str | None:
     return value or None
 
 
-#: How long the one fetch that checks the published document may take.
-#: Only authorization servers that advertise CIMD trigger it.
+#: How long the one fetch that checks the published document may take,
+#: in total. httpx's own timeout is per read, so a host that sends a byte
+#: every few seconds would hold the login open forever without this.
+#: Only authorization servers that advertise CIMD trigger the fetch.
 _DOCUMENT_CHECK_TIMEOUT_SECONDS = 5.0
 
 #: Per-process verdicts of :func:`_published_document_problem`, by URL.
@@ -131,7 +136,10 @@ async def _published_document_problem(url: str) -> str | None:
     expected = {**packaged_client_metadata(), "client_id": url}
     problem: str | None
     try:
-        async with httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client:
+        async with (
+            asyncio.timeout(_DOCUMENT_CHECK_TIMEOUT_SECONDS),
+            httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client,
+        ):
             response = await client.get(url, follow_redirects=False)
         if response.status_code != 200:
             problem = f"HTTP {response.status_code}"
@@ -139,6 +147,8 @@ async def _published_document_problem(url: str) -> str | None:
             problem = "it differs from the document this version of rote expects"
         else:
             problem = None
+    except TimeoutError:
+        problem = f"no complete answer within {_DOCUMENT_CHECK_TIMEOUT_SECONDS:g}s"
     except (httpx.HTTPError, ValueError) as e:
         problem = f"{type(e).__name__}: {e}"
     _document_checks[url] = problem
@@ -198,34 +208,91 @@ def select_callback_port() -> int:
     )
 
 
-async def discover_issuer(url: str) -> str | None:
+def is_trusted_transport(url: str) -> bool:
+    """HTTPS, or plain HTTP to a loopback host (local development)."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return True
+    if parts.scheme != "http" or not parts.hostname:
+        return False
+    if parts.hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
+
+
+class IssuerDiscovery(NamedTuple):
+    """What :func:`discover_issuer` found: an issuer, or why there is none."""
+
+    issuer: str | None
+    problem: str | None
+
+
+async def discover_issuer(url: str) -> IssuerDiscovery:
     """The authorization server ``url``'s protected-resource metadata names.
 
     RFC 9728 discovery: the path-specific well-known document, then the
     origin's. The first ``authorization_servers`` entry is an issuer
-    identifier, the same one the SDK will expect at login. None when the
-    server publishes no metadata or cannot be reached.
+    identifier, the same one the SDK will expect at login.
+
+    What gets recorded here decides which server a client secret is later
+    offered to, so nothing unauthenticated or ambiguous is accepted: the
+    resource and the issuer must be HTTPS (or loopback), and the document
+    must describe this resource (RFC 9728 section 3.3: ``resource`` equal to
+    the URL). The origin-level document on a shared host describes some
+    other resource, and its issuer is not this one's.
     """
     from urllib.parse import urlsplit
 
     import httpx
 
+    if not is_trusted_transport(url):
+        return IssuerDiscovery(None, f"{url} is not HTTPS, so its metadata is not trusted")
     parts = urlsplit(url)
     origin = f"{parts.scheme}://{parts.netloc}"
     path = parts.path.rstrip("/")
     candidates = [f"{origin}/.well-known/oauth-protected-resource{path}"] if path else []
     candidates.append(f"{origin}/.well-known/oauth-protected-resource")
-    async with httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client:
-        for candidate in candidates:
-            try:
-                response = await client.get(candidate)
-                body = response.json() if response.status_code == 200 else None
-            except (httpx.HTTPError, ValueError):
-                continue
-            servers = body.get("authorization_servers") if isinstance(body, dict) else None
-            if isinstance(servers, list) and servers and isinstance(servers[0], str):
-                return servers[0]
-    return None
+    problem = "the server publishes no protected-resource metadata"
+    try:
+        async with (
+            asyncio.timeout(_DOCUMENT_CHECK_TIMEOUT_SECONDS * len(candidates)),
+            httpx.AsyncClient(timeout=_DOCUMENT_CHECK_TIMEOUT_SECONDS) as client,
+        ):
+            for candidate in candidates:
+                try:
+                    response = await client.get(candidate)
+                    body = response.json() if response.status_code == 200 else None
+                except (httpx.HTTPError, ValueError):
+                    continue
+                if not isinstance(body, dict):
+                    continue
+                resource = body.get("resource")
+                try:
+                    same = isinstance(resource, str) and normalize_server_url(
+                        resource
+                    ) == normalize_server_url(url)
+                except ValueError:
+                    same = False
+                if not same:
+                    problem = f"the metadata at {candidate} describes {resource!r}, not {url}"
+                    continue
+                servers = body.get("authorization_servers")
+                if not (isinstance(servers, list) and servers and isinstance(servers[0], str)):
+                    problem = f"the metadata at {candidate} names no authorization server"
+                    continue
+                if not is_trusted_transport(servers[0]):
+                    return IssuerDiscovery(
+                        None, f"the named authorization server {servers[0]} is not HTTPS"
+                    )
+                return IssuerDiscovery(servers[0], None)
+    except TimeoutError:
+        problem = "the server's metadata did not arrive in time"
+    return IssuerDiscovery(None, problem)
 
 
 def _oauth_class() -> type[Any]:
@@ -259,6 +326,7 @@ def _oauth_class() -> type[Any]:
             self._rote_stored_issuer = stored_issuer
             self._rote_token_endpoint = token_endpoint
             self._rote_drop_unbound_client = drop_unbound_client
+            self._rote_dropped_client_id: str | None = None
             super().__init__(**kwargs)
 
         async def _refresh_token(self) -> Any:
@@ -295,6 +363,7 @@ def _oauth_class() -> type[Any]:
                 and current.issuer is None
                 and current.client_id != self.context.client_metadata_url
             ):
+                self._rote_dropped_client_id = current.client_id
                 self.context.client_info = None
 
         async def redirect_handler(self, authorization_url: str) -> None:
@@ -381,14 +450,27 @@ def _oauth_class() -> type[Any]:
                     f"Re-authenticate with: rote mcp login {server}"
                 )
             if metadata is not None and metadata.registration_endpoint is None:
-                raise McpAuthError(
-                    f"the authorization server for {server!r} ({metadata.issuer}) "
-                    "offers neither a client metadata document rote can use nor "
-                    "dynamic client registration. Register an OAuth app with it "
-                    "(redirect URI "
+                fix = (
+                    "Register an OAuth app with it (redirect URI "
                     f"http://{CALLBACK_HOST}:{CALLBACK_PORTS[0]}/callback), then: "
                     f"rote mcp add {server} <url> --client-id <id> "
                     "[--client-secret <secret>]"
+                )
+                if self._rote_dropped_client_id is not None:
+                    # The login had a client, and rote set it aside: say so,
+                    # or the user sees a server that "worked yesterday" refuse.
+                    raise McpAuthError(
+                        f"the stored client for {server!r} "
+                        f"({self._rote_dropped_client_id}) was saved by an older rote "
+                        "without the authorization server it belongs to, so rote will "
+                        "not offer it to any server, and the authorization server "
+                        f"({metadata.issuer}) no longer accepts new client "
+                        f"registrations. {fix}"
+                    )
+                raise McpAuthError(
+                    f"the authorization server for {server!r} ({metadata.issuer}) "
+                    "offers neither a client metadata document rote can use nor "
+                    f"dynamic client registration. {fix}"
                 )
 
         async def _check_offered_document(self, response: Any) -> None:

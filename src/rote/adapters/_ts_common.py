@@ -1145,9 +1145,14 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
             "the token store has no token_endpoint (written by rote mcp login)",
         );
     }
+    // id and secret from ONE source: the client the login stored, else the
+    // registry's pre-registered one. Mixing them would send the registry's
+    // secret with a dynamically registered client's id, to whichever server
+    // issued that id.
     const entry = registryServers()[server];
-    const clientId = doc.client_info?.client_id ?? entry?.client_id;
-    const clientSecret = doc.client_info?.client_secret ?? entry?.client_secret;
+    const client = doc.client_info?.client_id ? doc.client_info : entry;
+    const clientId = client?.client_id;
+    const clientSecret = client?.client_secret;
     if (!clientId) {
         throw new RoteMcpAuthNeeded(server, "no client_id is stored for the refresh grant");
     }
@@ -1198,6 +1203,18 @@ function normalizeServerUrl(raw: string): string {
     return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
 }
 
+/** Whether a stored login URL names `url`. False when the stored one
+ * does not parse (`new URL` throws on a bad port or host). */
+function sameServerUrl(stored: string, url: string): boolean {
+    let normalized: string;
+    try {
+        normalized = normalizeServerUrl(stored);
+    } catch {
+        return false;
+    }
+    return normalized === normalizeServerUrl(url);
+}
+
 export async function freshHeaders(
     server: string,
     url: string,
@@ -1211,8 +1228,9 @@ export async function freshHeaders(
     const access = doc?.tokens?.access_token;
     if (!doc || !access) return null;
     // The file is keyed by server name, and the name may now point at a
-    // new endpoint: the old endpoint's bearer token must not go there.
-    if (doc.server_url && normalizeServerUrl(doc.server_url) !== normalizeServerUrl(url)) {
+    // new endpoint: the old endpoint's bearer token must not go there. A
+    // stored URL that does not parse belongs to no endpoint either.
+    if (doc.server_url && !sameServerUrl(doc.server_url, url)) {
         throw new RoteMcpAuthNeeded(
             server,
             `the stored login is for ${doc.server_url}, not ${url}`,

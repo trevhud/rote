@@ -1630,6 +1630,16 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
         headers[key.strip()] = value.strip()
 
     issuer = args.issuer
+    if args.issuer:
+        from rote.mcp.auth import is_trusted_transport
+
+        if not is_trusted_transport(args.issuer):
+            print(
+                f"error: --issuer {args.issuer!r} must be an https URL "
+                "(http is accepted only for loopback hosts)",
+                file=sys.stderr,
+            )
+            return 2
     if args.issuer and not args.client_id:
         print(
             "error: --issuer binds a pre-registered client, so it needs --client-id",
@@ -1643,11 +1653,12 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
 
         from rote.mcp.auth import discover_issuer
 
-        issuer = asyncio.run(discover_issuer(args.url))
+        discovery = asyncio.run(discover_issuer(args.url))
+        issuer = discovery.issuer
         if issuer is None:
             print(
-                "  note: could not discover the server's authorization server; the "
-                "client binds to whichever one its first login uses (or pass --issuer)",
+                f"  note: no authorization server recorded ({discovery.problem}). The "
+                "client binds to whichever one its first login uses, or pass --issuer",
                 file=sys.stderr,
             )
 
@@ -1876,7 +1887,16 @@ def _cmd_mcp_export(args: argparse.Namespace) -> int:
     client_info = doc.get("client_info") or {}
     refresh_token = tokens.get("refresh_token")
     token_endpoint = doc.get("token_endpoint")
-    client_id = client_info.get("client_id") or config.client_id
+    # id and secret from one source: the stored client, else the registry's.
+    client_source = (
+        client_info
+        if client_info.get("client_id")
+        else {
+            "client_id": config.client_id,
+            "client_secret": config.client_secret,
+        }
+    )
+    client_id = client_source.get("client_id")
     if not refresh_token or not token_endpoint or not client_id:
         missing = [
             name
@@ -1900,7 +1920,7 @@ def _cmd_mcp_export(args: argparse.Namespace) -> int:
         f"ROTE_MCP_{upper}_TOKEN_ENDPOINT": str(token_endpoint),
         f"ROTE_MCP_{upper}_URL": str(doc.get("server_url") or config.url),
     }
-    client_secret = client_info.get("client_secret") or config.client_secret
+    client_secret = client_source.get("client_secret")
     if client_secret:
         secrets[f"ROTE_MCP_{upper}_CLIENT_SECRET"] = str(client_secret)
 

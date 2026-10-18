@@ -32,7 +32,10 @@ Test control, plain JSON over HTTP:
   (``"correct"``, ``"mismatch"``, ``"omit"``), ``advertise_iss`` (bool),
   ``active`` (``"a"`` or ``"b"``), ``preregistered`` (a map of client id to
   ``{"redirect_uris": [...], "client_secret": ...}``), ``cimd_document``
-  (``"served"``, ``"missing"``, ``"tampered"``), and ``reset`` (clears
+  (``"served"``, ``"missing"``, ``"tampered"``, ``"dribble"``), the
+  protected-resource metadata knobs ``prm_path`` (serve the path-specific
+  document), ``prm_origin_resource`` and ``prm_issuer`` (override what the
+  documents say), and ``reset`` (clears
   issued tokens, registrations, and the event log).
 - ``GET /_events`` returns every authorization-server hit since the last
   reset, so a test can assert what did *not* happen (no token request after
@@ -57,7 +60,13 @@ import trustme
 import uvicorn
 from fastmcp import FastMCP
 from starlette.requests import Request
-from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.responses import (
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.types import Receive, Scope, Send
 
 HTTP_PORT = int(sys.argv[1])
@@ -74,6 +83,9 @@ STATE: dict[str, Any] = {
     "active": "a",
     "preregistered": {},
     "cimd_document": "served",
+    "prm_path": True,
+    "prm_origin_resource": None,
+    "prm_issuer": None,
 }
 REGISTERED: dict[str, dict[str, Any]] = {}  # "<as>:<client_id>" -> registration
 CODES: dict[str, dict[str, Any]] = {}
@@ -275,12 +287,21 @@ async def http_app(scope: Scope, receive: Receive, send: Send) -> None:
         response = await control(request)
     elif path == "/_events":
         response = JSONResponse(EVENTS)
-    elif path in (
-        "/.well-known/oauth-protected-resource/mcp",
-        "/.well-known/oauth-protected-resource",
-    ):
+    elif path == "/.well-known/oauth-protected-resource/mcp" and STATE["prm_path"]:
         response = JSONResponse(
-            {"resource": RESOURCE, "authorization_servers": [issuer(STATE["active"])]}
+            {
+                "resource": RESOURCE,
+                "authorization_servers": [STATE["prm_issuer"] or issuer(STATE["active"])],
+            }
+        )
+    elif path == "/.well-known/oauth-protected-resource":
+        # The origin-level document. On a shared host it may describe a
+        # different resource than /mcp (`prm_origin_resource`).
+        response = JSONResponse(
+            {
+                "resource": STATE["prm_origin_resource"] or RESOURCE,
+                "authorization_servers": [STATE["prm_issuer"] or issuer(STATE["active"])],
+            }
         )
     elif path.startswith("/.well-known/oauth-authorization-server/as-"):
         response = JSONResponse(as_metadata(path.rsplit("-", 1)[1]))
@@ -316,6 +337,15 @@ async def tls_app(scope: Scope, receive: Receive, send: Send) -> None:
         log("document_check", mode=mode)
     if scope["path"] != "/oauth/rote-cli.json" or mode == "missing":
         response: Response = PlainTextResponse("not found", status_code=404)
+    elif mode == "dribble":
+        # Headers at once, then a byte every half second for a minute: every
+        # read finishes inside any per-read timeout, the body never does.
+        async def trickle() -> Any:
+            for _ in range(120):
+                yield b" "
+                await asyncio.sleep(0.5)
+
+        response = StreamingResponse(trickle(), media_type="application/json")
     elif mode == "tampered":
         doc = json.loads(CIMD_DOCUMENT.read_text(encoding="utf-8"))
         doc["redirect_uris"] = ["http://localhost:1/callback"]
