@@ -128,6 +128,7 @@ from rote.adapters._ts_common import (
     payload_ts_literal,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
+from rote.mcp.parked import AUTH_PARK_MARKER
 
 _GENERATED_BY = "rote.adapters.inngest"
 
@@ -567,8 +568,15 @@ async function runParkable(
             // failure. (Attempts 0,2,4,... follow a park or start the
             // loop; attempts 1,3,5,... are the immediate retries.)
             if (attempt % 2 === 1) {
+                const waitId = `${stepId}-auth-wait-${attempt}`;
+                // Tells `rote run` the run is parked and on what. It can
+                // print again on replay; the wait id de-duplicates it.
+                console.error(
+                    "__ROTE_AUTH_PARK_MARKER__ " +
+                        JSON.stringify({ server, node: stepId, wait: waitId }),
+                );
                 const released = await step.waitForEvent(
-                    `${stepId}-auth-wait-${attempt}`,
+                    waitId,
                     // 30 days; note the free plan caps pauses at 7 days.
                     { event: releaseEvent, timeout: "30d" },
                 );
@@ -582,7 +590,7 @@ async function runParkable(
         }
     }
 }
-"""
+""".replace("__ROTE_AUTH_PARK_MARKER__", AUTH_PARK_MARKER)
 
 
 def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:

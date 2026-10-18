@@ -2,12 +2,13 @@
   "name": "rote",
   "displayName": "Rote",
   "version": "0.14.0",
-  "description": "Compile fuzzy AI skills into deterministic workflows: /rote:compile compiles a SKILL.md into a runnable pipeline (Temporal, Cloudflare Workflows, or DBOS); /rote:serve exposes compiled pipelines as MCP tools.",
+  "description": "Compile an AI agent skill into a deterministic workflow for DBOS, Temporal, Cloudflare Workflows, Inngest, or plain Python with /rote:compile, then trigger the deployed workflows from Claude over MCP with /rote:serve.",
   "author": {
     "name": "Trevor Hudson",
-    "email": "trevhud@gmail.com"
+    "email": "trevhud@gmail.com",
+    "url": "https://github.com/trevhud"
   },
-  "homepage": "https://github.com/trevhud/rote",
+  "homepage": "https://roteskills.com",
   "repository": "https://github.com/trevhud/rote",
   "license": "Apache-2.0",
   "keywords": [
@@ -17,11 +18,17 @@
     "temporal",
     "cloudflare",
     "dbos",
+    "inngest",
+    "python",
+    "typescript",
+    "durable-execution",
     "mcp",
     "claude",
     "claude-code",
     "agent-skills",
     "token-cost",
     "deterministic"
-  ]
+  ],
+  "documentationUrl": "https://github.com/trevhud/rote#readme",
+  "supportUrl": "https://github.com/trevhud/rote/issues"
 }

@@ -404,6 +404,7 @@ def test_requirements_includes_openai_when_needed() -> None:
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
         description="Grade an essay.",
+        inputs={"essay": "pipeline.input.essay"},
         signature_spec={
             "input_schema": {
                 "type": "object",

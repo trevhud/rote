@@ -30,6 +30,15 @@ from rote.runners import (
 # ───────── Target detection ─────────
 
 
+def _pop_park_watch(kwargs: dict[str, Any], *, interactive: bool = False) -> None:
+    """Every parking runtime gets a park watcher; non-TTY by default."""
+    from rote.mcp.parked import LogMarkerChannel
+
+    factory = kwargs.pop("park_watch")
+    watcher = factory(LogMarkerChannel(Path("unused.log"), lambda park: None))
+    assert watcher.interactive is interactive
+
+
 def _mk(d: Path, *names: str) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     for name in names:
@@ -253,6 +262,7 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
     outcome = run_pipeline(target, {"x": 1}, signals={"g": {"ok": True}}, timeout_seconds=30.0)
     assert captured["app_dir"] == tmp_path
     assert captured["payload"] == {"x": 1}
+    _pop_park_watch(captured["kwargs"])
     assert captured["kwargs"] == {"signals": {"g": {"ok": True}}, "timeout_seconds": 30.0}
     assert outcome.runtime == "dbos"
     assert outcome.run.output == {"done": 1}
@@ -314,6 +324,7 @@ def test_run_pipeline_dispatches_cloudflare(
         timeout_seconds=42.0,
     )
     assert outcome.run.output == {"cf": True}
+    _pop_park_watch(captured["kwargs"])
     assert captured["kwargs"] == {
         "signals": {"g1": {"ok": True}},
         "gate_order": ["g1"],
@@ -436,6 +447,7 @@ def test_run_pipeline_dispatches_dbos_ts(tmp_path: Path, monkeypatch: pytest.Mon
     target = RunTarget(kind="pipeline", path=tmp_path, runtime="dbos-ts")
     outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=7.0)
     assert outcome.run.output == {"ts": True}
+    _pop_park_watch(captured["kwargs"])
     assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 7.0}
 
 
@@ -460,7 +472,7 @@ def test_dbos_ts_parses_trailing_json_after_sdk_banner() -> None:
 
     stdout = (
         "Running DBOS system database migrations...\n"
-        "Initializing DBOS (v4.23.6)\n"
+        "Initializing DBOS (v5.3.0)\n"
         "System Database URL: postgresql://postgres:***@localhost:5432/x\n"
         '{\n  "gate": {\n    "ok": true\n  }\n}\n'
     )
@@ -485,6 +497,7 @@ def test_run_pipeline_dispatches_temporal(tmp_path: Path, monkeypatch: pytest.Mo
     target = RunTarget(kind="pipeline", path=tmp_path, runtime="temporal")
     outcome = run_pipeline(target, {"x": 1}, signals={"g": {}}, timeout_seconds=5.0)
     assert outcome.run.output == {"temporal": True}
+    assert "park_watch" not in captured["kwargs"]  # temporal never parks on auth
     assert captured["kwargs"] == {"signals": {"g": {}}, "timeout_seconds": 5.0}
 
 

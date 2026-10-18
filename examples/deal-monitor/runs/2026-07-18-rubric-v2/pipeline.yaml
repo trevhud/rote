@@ -23,6 +23,7 @@ input:
     - account_owner_email
     - warehouse_contact_domains
     - deal_scoring_rubric_path
+    - deal_scoring_rubric
   input_schema:
     type: object
     title: DealMonitorInput
@@ -49,6 +50,12 @@ input:
           injected into score_new_opportunity. Defaults to
           ~/.claude/skills/deal-scoring/SKILL.md.
         default: "~/.claude/skills/deal-scoring/SKILL.md"
+      deal_scoring_rubric:
+        type: string
+        description: >-
+          Full text of the deal-scoring rubric, bound into
+          score_new_opportunity. No node loads it from
+          deal_scoring_rubric_path, so the caller supplies the text.
 
 nodes:
 
@@ -209,19 +216,30 @@ nodes:
         type: object
         title: ClassifyWarehouseThreadInput
         additionalProperties: false
-        required: [thread_id, account_name, warehouse, messages]
+        required: [thread]
         properties:
-          thread_id:
-            type: string
-          account_name:
-            type: string
-          warehouse:
-            type: string
-          messages:
-            type: array
-            items:
-              $ref: "#/$defs/EmailMessage"
+          thread:
+            $ref: "#/$defs/GmailThread"
         $defs:
+          # One element of match_opps_to_threads.output.all_threads (keys
+          # per extracted/gmail.py). Open, since the thread dict carries
+          # more keys than the judge reads.
+          GmailThread:
+            type: object
+            required: [thread_id, account_name_raw, warehouse, messages]
+            properties:
+              thread_id:
+                type: string
+              account_name_raw:
+                type: string
+              warehouse:
+                type: string
+              thread_url:
+                type: string
+              messages:
+                type: array
+                items:
+                  $ref: "#/$defs/EmailMessage"
           EmailMessage:
             type: object
             additionalProperties: false
@@ -284,19 +302,19 @@ nodes:
         - If we last emailed with a follow-up and no reply → step 3
         - If the warehouse last emailed with a pricing sheet → step 4
 
-        Account: {{ account_name }}
-        Warehouse: {{ warehouse }}
-        Thread ({{ messages | length }} messages):
-        {{ messages }}
+        Account: {{ thread.account_name_raw }}
+        Warehouse: {{ thread.warehouse }}
+        Thread messages:
+        {{ thread.messages }}
 
         Return your classification via the structured output tool.
       client: anthropic
       model: claude-haiku-4-5-20251001
       temperature: 0.0
     inputs:
-      threads: match_opps_to_threads.output.all_threads
+      thread: match_opps_to_threads.output.all_threads
     input:
-      threads: list[dict]
+      thread: dict
     output:
       classifications: list[ClassifyWarehouseThreadOutput]
     eval_set: evals/classify_warehouse_thread.jsonl
@@ -319,50 +337,59 @@ nodes:
         type: object
         title: NewOpportunityInput
         additionalProperties: false
-        required: [account_name, submitter, sku_count_unknown, deal_scoring_rubric]
+        required: [opportunity, deal_scoring_rubric]
         properties:
-          account_name:
-            type: string
-          submitter:
-            type: string
-          arr:
-            anyOf: [{type: string}, {type: "null"}]
-            default: null
-          monthly_dtc_orders:
-            anyOf: [{type: integer}, {type: "null"}]
-            default: null
-          sku_count:
-            anyOf: [{type: integer}, {type: "null"}]
-            default: null
-          sku_count_unknown:
-            type: boolean
-          requested_location:
-            anyOf: [{type: string}, {type: "null"}]
-            default: null
-          sales_channels:
-            anyOf: [{type: array, items: {type: string}}, {type: "null"}]
-            default: null
-          current_situation:
-            anyOf: [{type: string}, {type: "null"}]
-            default: null
-          pallets:
-            anyOf: [{type: integer}, {type: "null"}]
-            default: null
-          sq_ft:
-            anyOf: [{type: integer}, {type: "null"}]
-            default: null
-          international_shipping:
-            anyOf: [{type: boolean}, {type: "null"}]
-            default: null
-          go_live_date:
-            anyOf: [{type: string}, {type: "null"}]
-            default: null
-          product_item_context:
-            anyOf: [{type: string}, {type: "null"}]
-            default: null
+          opportunity:
+            $ref: "#/$defs/Opportunity"
           deal_scoring_rubric:
             type: string
             description: Full text of deal-scoring/SKILL.md, injected at runtime.
+        $defs:
+          # One element of match_opps_to_threads.output.unmatched
+          # (extracted/opps.py:Opportunity).
+          Opportunity:
+            type: object
+            required: [account_name, submitter, sku_count_unknown]
+            properties:
+              account_name:
+                type: string
+              submitter:
+                type: string
+              arr:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              monthly_dtc_orders:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+              sku_count:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+              sku_count_unknown:
+                type: boolean
+              requested_location:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              sales_channels:
+                anyOf: [{type: array, items: {type: string}}, {type: "null"}]
+                default: null
+              current_situation:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              pallets:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+              sq_ft:
+                anyOf: [{type: integer}, {type: "null"}]
+                default: null
+              international_shipping:
+                anyOf: [{type: boolean}, {type: "null"}]
+                default: null
+              go_live_date:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
+              product_item_context:
+                anyOf: [{type: string}, {type: "null"}]
+                default: null
       output_schema:
         type: object
         title: ScoreNewOpportunityOutput
@@ -397,28 +424,30 @@ nodes:
         {{ deal_scoring_rubric }}
 
         Opportunity details:
-        - Account: {{ account_name }}
-        - Submitter: {{ submitter }}
-        - ARR: {{ arr }}
-        - Monthly DTC Orders: {{ monthly_dtc_orders }}
-        - SKU Count: {{ sku_count }}{% if sku_count_unknown %} (UNKNOWN — flag as risk){% endif %}
-        - Requested Location: {{ requested_location }}
-        - Sales Channels: {{ sales_channels }}
-        - Current Situation: {{ current_situation }}
-        - Pallets: {{ pallets }}
-        - Sq Ft: {{ sq_ft }}
-        - International Shipping: {{ international_shipping }}
-        - Go-Live Date: {{ go_live_date }}
-        - Product/Item Context: {{ product_item_context }}
+        - Account: {{ opportunity.account_name }}
+        - Submitter: {{ opportunity.submitter }}
+        - ARR: {{ opportunity.arr }}
+        - Monthly DTC Orders: {{ opportunity.monthly_dtc_orders }}
+        - SKU Count: {{ opportunity.sku_count }} (unknown: {{ opportunity.sku_count_unknown }})
+        - Requested Location: {{ opportunity.requested_location }}
+        - Sales Channels: {{ opportunity.sales_channels }}
+        - Current Situation: {{ opportunity.current_situation }}
+        - Pallets: {{ opportunity.pallets }}
+        - Sq Ft: {{ opportunity.sq_ft }}
+        - International Shipping: {{ opportunity.international_shipping }}
+        - Go-Live Date: {{ opportunity.go_live_date }}
+        - Product/Item Context: {{ opportunity.product_item_context }}
 
         Return your scoring via the structured output tool.
       client: anthropic
       model: claude-haiku-4-5-20251001
       temperature: 0.0
     inputs:
-      opps: match_opps_to_threads.output.unmatched
+      opportunity: match_opps_to_threads.output.unmatched
+      deal_scoring_rubric: pipeline.input.deal_scoring_rubric
     input:
-      opps: list[Opportunity]
+      opportunity: Opportunity
+      deal_scoring_rubric: str
     output:
       scored_opps: list[ScoreNewOpportunityOutput]
     eval_set: evals/score_new_opportunity.jsonl

@@ -198,10 +198,22 @@ nodes:
         type: object
         title: ExtractThreadDataInput
         properties:
-          thread_id: {type: string}
-          messages: {type: array, items: {type: string}}
-          known_account_names: {type: array, items: {type: string}}
-        required: [thread_id, messages, known_account_names]
+          # One element of fetch_thread_content's fan (extracted/gmail.py:ThreadContent).
+          thread:
+            type: object
+            properties:
+              thread_id: {type: string}
+              gmail_thread_url: {type: string}
+              messages: {type: array, items: {type: string}}
+            required: [thread_id, messages]
+          # Shared by every call: the included deals, for fuzzy account matching.
+          known_deals:
+            type: array
+            items:
+              type: object
+              properties:
+                account_name: {type: string}
+        required: [thread, known_deals]
         additionalProperties: false
       output_schema:
         type: object
@@ -230,26 +242,24 @@ nodes:
         - warehouse_name, sent_date (ISO YYYY-MM-DD if possible), reply_received,
           state_description (1 sentence).
 
-        Also identify account_name using known_account_names for fuzzy matching.
+        Also identify account_name using the known deals' account names for fuzzy matching.
         Pick the closest match, or extract from email content if none match.
 
-        Set gmail_thread_url = https://mail.google.com/mail/u/0/#inbox/{{ thread_id }}
+        Set gmail_thread_url = https://mail.google.com/mail/u/0/#inbox/{{ thread.thread_id }}
 
-        Thread ID: {{ thread_id }}
-        Known account names: {{ known_account_names }}
+        Thread ID: {{ thread.thread_id }}
+        Known deals (match on account_name): {{ known_deals }}
 
         Email messages (oldest first):
-        {{ messages }}
+        {{ thread.messages }}
 
         Return your extraction via the structured output tool.
       client: anthropic
       model: claude-sonnet-4-6
       temperature: 0.0
     inputs:
-      thread_id: fetch_thread_content.output
-      messages: fetch_thread_content.output
-      # known_account_names: left unbound — implementation passes
-      # apply_inclusion_filter.output.included account names as a parameter.
+      thread: fetch_thread_content.output
+      known_deals: apply_inclusion_filter.output.included
     output:
       thread_id: str
       gmail_thread_url: str
@@ -295,11 +305,16 @@ nodes:
         type: object
         title: ClassifyThreadInput
         properties:
-          thread_id: {type: string}
-          messages: {type: array, items: {type: string}}
-          account_name: {anyOf: [{type: string}, {type: "null"}], default: null}
-          warehouse_name: {anyOf: [{type: string}, {type: "null"}], default: null}
-        required: [thread_id, messages]
+          # One fetched thread (extracted/gmail.py:ThreadContent). The
+          # classifier needs the messages, which only ThreadContent carries.
+          thread:
+            type: object
+            properties:
+              thread_id: {type: string}
+              gmail_thread_url: {type: string}
+              messages: {type: array, items: {type: string}}
+            required: [thread_id, messages]
+        required: [thread]
         additionalProperties: false
       output_schema:
         type: object
@@ -327,21 +342,17 @@ nodes:
 
         Set needs_attention=true if step is 2 or 3.
 
-        Account: {{ account_name }}
-        Warehouse: {{ warehouse_name }}
+        Thread ID: {{ thread.thread_id }}
 
         Thread messages (oldest first):
-        {{ messages }}
+        {{ thread.messages }}
 
         Return your classification via the structured output tool.
       client: anthropic
       model: claude-sonnet-4-6
       temperature: 0.0
     inputs:
-      # threads derived from match_threads_to_deals.output.quoted — the
-      # implementation iterates over each QuotedDeal's thread list and
-      # calls this signature once per thread (warehouse interaction).
-      threads: extract_thread_data.output
+      thread: fetch_thread_content.output
     output:
       step: int
       step_label: str

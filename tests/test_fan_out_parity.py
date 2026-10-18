@@ -240,7 +240,7 @@ def test_all_six_runtimes_agree_on_which_input_is_the_list() -> None:
     two adapters cannot disagree about which input is the list — that
     would make one pipeline mean two different things.
     """
-    from rote.adapters._common import fan_out_element_param
+    from rote.ir import fan_out_element_param
 
     pipeline = _fan_out_pipeline()
     judge = pipeline.nodes[1]
@@ -253,7 +253,7 @@ def test_ambiguous_fan_out_is_an_emit_time_error() -> None:
     Picking the wrong list silently judges the wrong things, which is
     far worse than failing to emit.
     """
-    from rote.adapters._common import fan_out_element_param
+    from rote.ir import fan_out_element_param
 
     pipeline = Pipeline(
         name="ambiguous",
@@ -290,7 +290,7 @@ def test_the_fan_out_edge_marker_beats_a_plain_edge() -> None:
     Getting this wrong fans over the wrong upstream list, which judges
     the wrong things silently rather than failing.
     """
-    from rote.adapters._common import fan_out_element_param
+    from rote.ir import fan_out_element_param
 
     judge = Node(
         id="j",

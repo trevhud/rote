@@ -136,6 +136,7 @@ jobs:
             tests/test_cloudflare_e2e.py \
             tests/test_inngest_e2e.py \
             tests/test_ts_agent_loop_e2e.py \
+            tests/test_judge_schema_parity_e2e.py \
             tests/test_mcp_ts_e2e.py \
             tests/test_mcp_park_cf_e2e.py \
             tests/test_mcp_park_inngest_e2e.py

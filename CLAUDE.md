@@ -120,7 +120,8 @@ the Anthropic SDK client (see
     with the Cloudflare adapter. Note: the DBOS **TS** SDK is
     Postgres-only (no SQLite parity with DBOS Python), and its
     `DBOS.recv` defaults to a 60s timeout — the emitter always passes
-    the IR timeout explicitly.
+    the IR timeout explicitly. Targets DBOS 3 (Python) / Transact v5
+    (TS); see the DBOS 3 queue gotcha below.
   - `InngestAdapter`
     ([`src/rote/adapters/inngest.py`](src/rote/adapters/inngest.py),
     registered as `inngest`) — emits a TypeScript Inngest app (one
@@ -402,6 +403,41 @@ Two behaviors to preserve:
   parks and `rote mcp login` releases it, instead of dying with a
   misleading "unknown tool".
 
+### `rote run` must see a park, and only the runner can release a local one
+
+A parked run used to look like a hang under `rote run`. The run-side
+watcher (`rote.mcp.parked`) reads each runtime's park signal: the DBOS
+`rote_auth_status` event (now `{awaiting, node}`), and on Inngest and
+Cloudflare a `rote-auth-park {json}` line the emitted park prints before
+its `waitForEvent`, because neither local dev server reports what a run
+waits on. Traps, all found by running it:
+
+- **The prompt goes to stderr.** `input()` writes its prompt to stdout,
+  which is `rote run`'s result JSON. On a pty with stdout piped the user
+  is asked a question they never see and the run waits forever.
+  `_stderr_input` exists for this; don't "simplify" it back to `input`.
+- **Replays reprint the marker.** Both TS runtimes re-execute workflow
+  code after a release, so the line prints again. Dedupe on its `wait`
+  field (the wait's step id), never on server or node.
+- **`rote mcp login` cannot reach a `rote run` dev server.** The
+  registry-wide release targets Inngest's default port and the
+  Cloudflare REST API. So the watcher releases its own run when the
+  server's token file or registry entry changes. On DBOS it waits a few
+  seconds first, because login already released registered DBOS apps.
+- **A login writes the token file twice.** Client registration lands
+  first with no token. Releasing on that write wakes the run into the
+  same failure, it parks again, and the finished login then looks like
+  "no change". `credentials_settled` waits for an access token.
+- **A Worker never sees the local token store.** On Cloudflare the
+  watcher shows the export-to-`.dev.vars` fix and neither offers a login
+  nor self-releases, since a login there would "succeed" and change
+  nothing the Worker can read.
+- **An auth park looks like a gate park to the Cloudflare stability
+  heuristic.** While the watcher reports an active park, the runner must
+  not spend a gate payload on it.
+- Non-TTY never prompts and never opens a browser. The browser login is
+  offered only when stdin and stderr are both terminals.
+
 ### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
 
 Its tools are MCP tools, so `bindAgentTools` and every in-loop tool call
@@ -648,6 +684,25 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    register it — the e2e sends an explicit `PUT` to the app's serve
    handler to force registration. See `tests/test_inngest_e2e.py`.
 
+### DBOS 3 queues exist only after launch; emitted apps start through `launch()`
+
+DBOS 3 (Python) and DBOS Transact v5 (TS) removed direct queue
+construction: `Queue("name")` raises `DBOSException` at import, and
+`DBOS.register_queue` needs a launched runtime because queues now live
+in the system database. A workflow enqueued on a queue nobody registered
+does not fail; it sits in `ENQUEUED` forever. So the emitted `main.py`
+declares `QUEUE_NAME`, enqueues via `_enqueue` (a thin
+`DBOS.enqueue_workflow(QUEUE_NAME, ...)` wrapper), and exposes
+`launch()` = `DBOS.launch()` + `DBOS.register_queue(QUEUE_NAME)`. Any
+in-process launcher, tests included, must call `main_module.launch()`.
+A bare `DBOS.launch()` hangs the first parallel wave, which shows up
+only as a test timeout. Two more v5 traps on the TS side: the SDK no
+longer reads `dbos-config.yaml` at launch (only the `dbos` CLI does, so
+`rote._dbos.dbos_ts_system_database_url` ignores its
+`system_database_url` key), and starting or enqueuing a *step* directly
+now throws, which is one reason the DBOS-TS emitter keeps parallel waves
+on `Promise.allSettled` instead of queues.
+
 ### A fan_out element's step name must carry its index
 
 Cloudflare and Inngest key a durable step by its **name**, so a fan_out
@@ -668,6 +723,54 @@ runs its elements *sequentially*, not in `Promise.all`, for the same
 reason a parkable step leaves its parallel wave — `waitForEvent` inside
 a promise combinator is undocumented and its timeout *throws*, which
 would reject every other element.
+
+### A judge's `inputs:` must satisfy its input schema, and a fan passes one element
+
+Every adapter builds a judge's payload from its `inputs:` keys and
+nothing else (`{"thread": _item}` for a fan, plus shared params), then
+validates it against `signature_spec.input_schema`. So a `required`
+property `inputs:` does not bind fails *every* call. A bound key the
+schema does not declare is also rejected, open schema or not: Python
+silently drops it, and before the Zod emitter honored
+`additionalProperties` the TS runtimes rejected every call with it. A
+binding the contract cannot name is a mistake on every runtime.
+Nothing caught that before run time: the IR loaded, every adapter
+emitted, and the first real eval of deal-monitor failed all of its
+fanned `classify_thread_step` calls on a missing `account_name`.
+
+`Pipeline._validate_judge_input_bindings` now rejects it at load. Three
+things to preserve:
+
+- **The fanned compiler shape is the usual offender.** The compiler
+  tends to flatten the element into top-level schema fields
+  (`thread_id`, `messages`) while binding the list under one name
+  (`threads`), or to declare a per-element value beside the element.
+  Neither can work, because the grammar has no per-element reference;
+  the per-element value must travel inside the element (the upstream
+  step puts `account_name` on each `MatchedThread`). The rubric says so
+  with the real wrong shapes; keep them there.
+- **It resolves the element with `rote.ir.fan_out_element_param`**, the
+  same function the emitters call, which is why that function moved out
+  of `rote.adapters._common`. A validator with its own resolution rule
+  could pass a pipeline the emitters dispatch differently.
+- **Two exemptions, both principled.** Loop-body sub-nodes are called by
+  their parent loop with model-chosen arguments, so their `inputs:`
+  describe rather than bind. A legacy `signature:`-only judge has no
+  schema in the IR to check. Don't widen the check to `Node.input_schema`
+  on other kinds: that is observed documentation, not a contract any
+  adapter enforces.
+
+Unknown-key handling is behavioral emitted code, so it must match across
+languages: Zod gets `.strict()` exactly where Pydantic gets
+`extra="forbid"` (`additionalProperties: false`), strips otherwise, and a
+property-less object is a free-form record on both.
+`tests/test_judge_schema_parity_e2e.py` runs one schema through the
+emitted Pydantic model and real `zod` and compares verdicts and parsed
+values; touch either converter and run it.
+
+`tests/test_ir.py::test_every_committed_pipeline_validates` sweeps every
+`pipeline.yaml` under `examples/`, so a snapshot that would fail its
+first judge call cannot be committed.
 
 ### An undefined fanned list must name the node, on every runtime
 
@@ -1062,11 +1165,12 @@ Don't waste time debugging stubs. These are intentional.
 - `fan_out` on ALL SIX runtimes: a node marked `fan_out: true` is
   invoked once per element of its bound list, and the result binds as a
   list in input order. Which input is the list is resolved by
-  `rote.adapters._common.fan_out_element_param` (fan_out edge marker >
+  `rote.ir.fan_out_element_param` (fan_out edge marker >
   incoming-edge source > only node-bound param; ambiguity is an
-  emit-time error, never a guess) — it lives in the *language-neutral*
-  common module on purpose: two adapters disagreeing about which input
-  is the list would make one pipeline mean two different things. Per
+  emit-time error, never a guess). It lives in the IR module on
+  purpose: two adapters disagreeing about which input is the list would
+  make one pipeline mean two different things, and the judge-binding
+  validator must agree with them too. Per
   runtime: DBOS enqueues one durable step per element; python uses
   `pool.map`; temporal `asyncio.gather` over one activity execution
   each; Cloudflare and Inngest `Promise.all` over per-element steps;

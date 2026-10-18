@@ -250,7 +250,8 @@ def test_cloudflare_parks_on_auth(tmp_path: Path) -> None:
     src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
     assert 'import { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";' in src
-    assert 'type: "rote_auth_vendor", timeout: "30 days"' in src
+    assert 'const pull_data_event = "rote_auth_vendor";' in src
+    assert '{ type: pull_data_event, timeout: "30 days" }' in src
     assert "auth retry" in src  # fresh step names per attempt
     assert "function stepNeedsAuth" in src
     # Binding-less nodes keep the plain step.do.
@@ -360,7 +361,8 @@ def test_cloudflare_binding_mode_keeps_the_park_loop(tmp_path: Path) -> None:
     src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
     assert "isRoteMcpAuthNeeded" in src
-    assert 'type: "rote_auth_vendor", timeout: "30 days"' in src
+    assert 'const pull_data_event = "rote_auth_vendor";' in src
+    assert '{ type: pull_data_event, timeout: "30 days" }' in src
     assert "function stepNeedsAuth" in src
 
 

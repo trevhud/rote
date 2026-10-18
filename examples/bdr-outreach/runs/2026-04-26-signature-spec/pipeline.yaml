@@ -47,6 +47,7 @@ input:
     - job_focus            # enum: medical | rwe | heor | clinical-development
     - target_quota         # int (default 30) — vetted contacts to deliver
     - conference_file_path # required for conference path; CSV/XLSX/Sheet path
+    - acme_experience      # validated experience text personalize_email grounds on
 
 nodes:
 
@@ -693,6 +694,7 @@ nodes:
     output:
       report_markdown: str
       ready_to_enroll_count: int
+      ready_contacts: list[VettedContact]  # the contacts that count covers
     timeout: 5s
 
   # ── Phase 6: Email Templates ───────────────────────────────────────────────
@@ -712,7 +714,7 @@ nodes:
       input_schema:
         type: object
         title: PersonalizeEmailInput
-        required: [contact, brief_campaign_type, brief_drug_brand, brief_condition, brief_therapeutic_area, intel, acme_experience]
+        required: [contact, brief_campaign_type, brief_drug_brand, brief_condition, brief_therapeutic_area, intel]
         additionalProperties: false
         properties:
           contact:
@@ -725,7 +727,7 @@ nodes:
           brief_therapeutic_area: {type: string, title: Brief Therapeutic Area}
           intel:
             $ref: "#/$defs/IntelBrief"
-          acme_experience: {type: string, title: Acme Experience}
+          acme_experience: {anyOf: [{type: string}, {type: "null"}], default: null, title: Acme Experience}
         $defs:
           ContactTier:
             enum: [ideal, strong, good]
@@ -829,6 +831,17 @@ nodes:
       client: anthropic
       model: claude-sonnet-4-6
       temperature: 0.3
+    # Added after the run: this snapshot predates data-flow threading, and
+    # a judge with no `inputs:` receives an empty payload that fails its
+    # own input schema on every call. `contact` is the fan_out element.
+    inputs:
+      contact: pre_enrollment_report.output.ready_contacts
+      brief_campaign_type: pipeline.input.campaign_type
+      brief_drug_brand: pipeline.input.drug_brand
+      brief_condition: pipeline.input.condition_full
+      brief_therapeutic_area: pipeline.input.therapeutic_area
+      intel: target_research.output.intel
+      acme_experience: pipeline.input.acme_experience
     input:
       contact: VettedContact
       brief: CampaignBrief
@@ -922,7 +935,7 @@ edges:
   - {from: exclusion_check_sequence,    to: pre_enrollment_report}
   # Email personalization: needs intel from research + contacts from report
   - {from: target_research,             to: personalize_email}
-  - {from: pre_enrollment_report,       to: personalize_email}
+  - {from: pre_enrollment_report,       to: personalize_email, fan_out: true}
   - {from: personalize_email,           to: hubspot_save_template}
   # Final handoff waits for BOTH report AND saved templates
   - {from: pre_enrollment_report,       to: manual_enrollment_handoff}

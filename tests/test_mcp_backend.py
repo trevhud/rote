@@ -116,8 +116,12 @@ def test_mcp_step_dispatch_parks_on_auth() -> None:
     assert "_run_with_auth_park(" in src
     # The park advertises what it waits for (CLI discovery) and blocks on
     # the rote:auth topic — the ':' makes IR-signal collisions impossible.
-    assert 'DBOS.set_event("rote_auth_status", {"awaiting": server})' in src
+    # It names the node as well, so `rote run` can say which step waits.
+    assert '"rote_auth_status", {"awaiting": server, "node": node, "park": park}' in src
+    assert "park = _PARK_COUNTS.get(workflow_id, 0) + 1" in src
     assert 'topic=f"rote:auth:{server}"' in src
+    node_id = _pipeline(mcp=_BINDING).nodes[0].id
+    assert f"{_BINDING.server!r},\n        {node_id!r},\n    )" in src
     ast.parse(src)
 
 
@@ -177,7 +181,7 @@ def test_parallel_mcp_wave_joins_through_auth_park() -> None:
     )
     src = emit_main(pipeline, DbosAdapterConfig())
     assert "enrich_a_payload = {" in src
-    assert "lambda: queue.enqueue(enrich_a, enrich_a_payload)" in src
+    assert "lambda: _enqueue(enrich_a, enrich_a_payload)" in src
     assert "_join_with_auth_park(" in src
     ast.parse(src)
 

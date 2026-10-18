@@ -728,3 +728,276 @@ def test_required_mcp_servers_empty_without_any_mcp_declaration() -> None:
         }
     )
     assert pipeline.required_mcp_servers == {}
+
+
+# ───────── Judge inputs vs signature_spec.input_schema ─────────
+#
+# Every adapter builds a judge's payload from its `inputs:` keys and
+# nothing else, then validates it against the input schema. A required
+# property nothing binds (or a bound param a closed schema rejects) fails
+# every call at run time; these tests pin that it fails at load instead.
+
+_THREAD_SCHEMA = {
+    "type": "object",
+    "properties": {"thread_id": {"type": "string"}, "body": {"type": "string"}},
+    "required": ["thread_id"],
+}
+
+
+def _judge_pipeline(
+    input_schema: dict,
+    inputs: dict[str, str] | None,
+    *,
+    fan_out: bool = False,
+    loop_body: bool = False,
+) -> Pipeline:
+    """``source`` (produces the list) → ``judge``; optional parent loop."""
+    nodes: list[dict] = [
+        {"id": "source", "kind": "pure_function", "description": "x", "impl": "x.py:y"},
+        {
+            "id": "judge",
+            "kind": "llm_judge",
+            "description": "Classify a thread.",
+            "fan_out": fan_out,
+            "signature_spec": {
+                "input_schema": input_schema,
+                "output_schema": {"type": "object", "properties": {"step": {"type": "integer"}}},
+                "prompt": "Classify.",
+            },
+            **({"inputs": inputs} if inputs is not None else {}),
+        },
+    ]
+    if loop_body:
+        nodes.append(
+            {
+                "id": "loop",
+                "kind": "agent_loop",
+                "description": "Drives the judge.",
+                "tools": ["search"],
+                "loop_body": ["judge"],
+            }
+        )
+    return Pipeline.model_validate(
+        {
+            "name": "judge-bindings",
+            "input": {"type": "In", "required": [], "optional": ["account_name", "rubric"]},
+            "nodes": nodes,
+            "edges": [{"from": "source", "to": "judge", "fan_out": fan_out}],
+        }
+    )
+
+
+def test_judge_rejects_required_schema_property_that_inputs_do_not_bind() -> None:
+    from pydantic import ValidationError
+
+    schema = {
+        "type": "object",
+        "title": "ClassifyInput",
+        "properties": {"thread": _THREAD_SCHEMA, "rubric": {"type": "string"}},
+        "required": ["thread", "rubric"],
+    }
+    with pytest.raises(ValidationError) as exc:
+        _judge_pipeline(schema, {"thread": "source.output.threads"})
+    message = str(exc.value)
+    # Names the node, the param, and the schema; the bound param is not missing.
+    assert "Node 'judge' (llm_judge)" in message
+    assert "requires ['rubric'], which" in message
+    assert "signature_spec.input_schema (ClassifyInput)" in message
+
+
+def test_judge_with_no_inputs_at_all_is_rejected_when_schema_requires_fields() -> None:
+    from pydantic import ValidationError
+
+    schema = {"type": "object", "properties": {"thread": _THREAD_SCHEMA}, "required": ["thread"]}
+    with pytest.raises(ValidationError, match=r"nothing bound.*requires \['thread'\]"):
+        _judge_pipeline(schema, None)
+
+
+def test_judge_rejects_bound_param_a_closed_schema_does_not_declare() -> None:
+    from pydantic import ValidationError
+
+    schema = {
+        "type": "object",
+        "properties": {"thread": _THREAD_SCHEMA},
+        "required": ["thread"],
+        "additionalProperties": False,
+    }
+    with pytest.raises(ValidationError) as exc:
+        _judge_pipeline(
+            schema, {"thread": "source.output.threads", "extra": "pipeline.input.rubric"}
+        )
+    message = str(exc.value)
+    assert "binds ['extra'], which" in message
+    assert "which it does not declare (properties: ['thread'])" in message
+    assert "requires" not in message  # nothing required is missing
+
+
+def test_judge_rejects_undeclared_bound_param_even_when_schema_is_open() -> None:
+    """An open schema doesn't make an extra binding harmless: Python drops
+    the value silently, and before the Zod emitter honored
+    ``additionalProperties`` the TS runtimes rejected every call. Either
+    way it is a binding the judge's contract cannot name."""
+    from pydantic import ValidationError
+
+    schema = {"type": "object", "properties": {"thread": _THREAD_SCHEMA}, "required": ["thread"]}
+    with pytest.raises(ValidationError, match=r"binds \['extra'\], which it does not declare"):
+        _judge_pipeline(
+            schema, {"thread": "source.output.threads", "extra": "pipeline.input.rubric"}
+        )
+    # The negative half: binding exactly the declared properties passes.
+    ok = _judge_pipeline(schema, {"thread": "source.output.threads"})
+    assert ok.node_by_id("judge").inputs == {"thread": "source.output.threads"}
+
+
+def test_fanned_judge_with_a_sibling_per_element_field_is_rejected_naming_the_element() -> None:
+    """The deal-monitor defect: the fan binds only `thread`, the schema also
+    requires `account_name` beside it, and the emitter builds
+    ``{"thread": _item}``, so every fanned call failed validation."""
+    from pydantic import ValidationError
+
+    schema = {
+        "type": "object",
+        "properties": {"thread": _THREAD_SCHEMA, "account_name": {"type": "string"}},
+        "required": ["thread", "account_name"],
+        "additionalProperties": False,
+    }
+    with pytest.raises(ValidationError) as exc:
+        _judge_pipeline(schema, {"thread": "source.output.matched_threads"}, fan_out=True)
+    message = str(exc.value)
+    assert "requires ['account_name'], which" in message
+    # The element is identified by the same rule the emitters use.
+    assert "'thread' is the element (one item of source.output.matched_threads per call)" in (
+        message
+    )
+
+
+def test_fanned_judge_taking_the_whole_element_is_accepted() -> None:
+    """The fix: the element property describes one whole element (through a
+    ``$defs`` reference), and a shared value binds beside it."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "thread": {"$ref": "#/$defs/MatchedThread"},
+            "rubric": {"type": "string"},
+        },
+        "required": ["thread", "rubric"],
+        "additionalProperties": False,
+        "$defs": {
+            "MatchedThread": {
+                **_THREAD_SCHEMA,
+                "properties": {
+                    **_THREAD_SCHEMA["properties"],
+                    "account_name": {"type": "string"},
+                },
+            }
+        },
+    }
+    pipeline = _judge_pipeline(
+        schema,
+        {"thread": "source.output.matched_threads", "rubric": "pipeline.input.rubric"},
+        fan_out=True,
+    )
+    assert pipeline.node_by_id("judge").fan_out
+
+
+def test_judge_schema_with_a_root_ref_is_checked_through_the_ref() -> None:
+    """A root ``$ref`` to ``$defs`` is a valid input schema; the contract is
+    the definition it names, not the property-less wrapper."""
+    from pydantic import ValidationError
+
+    schema = {
+        "$ref": "#/$defs/ClassifyInput",
+        "$defs": {
+            "ClassifyInput": {
+                "type": "object",
+                "properties": {"thread": _THREAD_SCHEMA},
+                "required": ["thread"],
+                "additionalProperties": False,
+            }
+        },
+    }
+    with pytest.raises(ValidationError, match=r"requires \['thread'\]"):
+        _judge_pipeline(schema, {})
+    with pytest.raises(ValidationError, match=r"binds \['other'\]"):
+        _judge_pipeline(schema, {"thread": "source.output", "other": "source.output"})
+    assert _judge_pipeline(schema, {"thread": "source.output"}).node_by_id("judge")
+
+
+def test_judge_schema_with_an_unresolvable_root_ref_is_rejected() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="names no definition"):
+        _judge_pipeline({"$ref": "#/$defs/Missing"}, {"thread": "source.output"})
+
+
+def test_loop_body_judge_is_exempt_because_the_loop_supplies_its_arguments() -> None:
+    """A loop-body judge is called by its parent agent loop with model-chosen
+    arguments; its ``inputs:`` describe rather than bind."""
+    from pydantic import ValidationError
+
+    schema = {"type": "object", "properties": {"thread": _THREAD_SCHEMA}, "required": ["thread"]}
+    pipeline = _judge_pipeline(schema, None, loop_body=True)
+    assert pipeline.node_by_id("loop").loop_body == ["judge"]
+    # The same judge outside a loop is rejected: the exemption is what lets
+    # it through, not a lenient schema.
+    with pytest.raises(ValidationError, match="nothing bound"):
+        _judge_pipeline(schema, None)
+
+
+def test_legacy_signature_only_judge_is_not_checked() -> None:
+    """The legacy ``signature:`` path points at a Python class the IR cannot
+    see, so there is no schema to check bindings against."""
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "legacy",
+            "input": {"type": "In", "required": []},
+            "nodes": [
+                {
+                    "id": "judge",
+                    "kind": "llm_judge",
+                    "description": "x",
+                    "signature": "signatures/judge.py:Judge",
+                }
+            ],
+            "edges": [],
+        }
+    )
+    assert pipeline.node_by_id("judge").signature_spec is None
+
+
+_COMMITTED_PIPELINES = sorted(
+    str(p.relative_to(REPO_ROOT))
+    for p in (REPO_ROOT / "examples").rglob("pipeline.yaml")
+    if "runtimes" not in p.parts
+)
+
+
+def test_committed_pipeline_sweep_is_not_degenerate() -> None:
+    """Every example has an expected IR plus historical runs; a glob that
+    found only a handful would quietly stop guarding the snapshots."""
+    assert len(_COMMITTED_PIPELINES) >= 14
+
+
+@pytest.mark.parametrize("path", _COMMITTED_PIPELINES)
+def test_every_committed_pipeline_validates(path: str) -> None:
+    """Every IR the repo ships (expected baselines and historical compile
+    snapshots) must load: a snapshot the validator rejects is one whose
+    judges would fail on their first real call."""
+    from rote.ir import load_pipeline
+
+    assert load_pipeline(REPO_ROOT / path).nodes
+
+
+@pytest.mark.parametrize("path", [p for p in _COMMITTED_PIPELINES if "/expected/" in p])
+def test_expected_irs_never_set_judge_temperature(path: str) -> None:
+    """Current Claude models reject `temperature` outright, so a baseline IR
+    that sets it ships judges that 400 on every call (see the CLAUDE.md
+    gotcha). Historical runs/ snapshots are left as compiled."""
+    from rote.ir import load_pipeline
+
+    offenders = [
+        n.id
+        for n in load_pipeline(REPO_ROOT / path).nodes
+        if n.signature_spec is not None and n.signature_spec.temperature is not None
+    ]
+    assert offenders == []

@@ -27,6 +27,7 @@ the gate picks them up when it parks — no parking detection needed.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -38,6 +39,12 @@ from urllib.parse import urlsplit
 
 from rote._dbos import _load_dbos_config, dbos_ts_system_database_url
 from rote.eval.empirical import EmpiricalError, MeasuredRun, _wait_for_workflow_id
+from rote.mcp.parked import (
+    DbosAuthChannel,
+    ParkWatchFactory,
+    app_parks_on_auth,
+    wait_for_exit,
+)
 from rote.runners._node import ensure_npm_install, terminate
 
 PG_READY_TIMEOUT_SECONDS = 60.0
@@ -173,8 +180,14 @@ def run_dbos_ts(
     *,
     signals: dict[str, Any],
     timeout_seconds: float = 600.0,
+    park_watch: ParkWatchFactory | None = None,
 ) -> MeasuredRun:
-    """Run an emitted DBOS TypeScript app once against a real Postgres."""
+    """Run an emitted DBOS TypeScript app once against a real Postgres.
+
+    ``park_watch`` reports and resolves MCP auth parks while it runs
+    (the TS park writes the same portable ``rote_auth_status`` event the
+    Python one does).
+    """
     import sys
 
     _ensure_build(app_dir)
@@ -215,13 +228,25 @@ def run_dbos_ts(
                 stderr=err_f,
                 env={**os.environ, "DBOS_SYSTEM_DATABASE_URL": url},
             )
+            watcher = None
+            if park_watch is not None and app_parks_on_auth(app_dir):
+                # Reading the park needs the Python DBOS client, which a
+                # TS-only install may not have. The run itself does not.
+                if importlib.util.find_spec("dbos") is None:
+                    print(
+                        "rote run: note: auth parks of this run will not be reported "
+                        "(needs the dbos extra: pip install 'rote-cli[dbos]')",
+                        file=sys.stderr,
+                    )
+                else:
+                    watcher = park_watch(DbosAuthChannel(url, stderr_path))
             try:
                 if signals:
                     workflow_id = _wait_for_workflow_id(
                         stderr_path, proc, deadline=started + min(60.0, timeout_seconds)
                     )
                     _send_signals_portable(url, workflow_id, signals)
-                proc.wait(timeout=timeout_seconds - (time.monotonic() - started))
+                wait_for_exit(proc, deadline=started + timeout_seconds, watcher=watcher)
             except subprocess.TimeoutExpired:
                 terminate(proc)
                 return MeasuredRun(
@@ -234,6 +259,9 @@ def run_dbos_ts(
                 # the runner — same rule as the dbos-py trial runner.
                 terminate(proc)
                 raise
+            finally:
+                if watcher is not None:
+                    watcher.close()
         wall = time.monotonic() - started
 
         stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
