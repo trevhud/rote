@@ -24,8 +24,18 @@ on:
       - pyproject.toml
       - uv.lock
       - .github/workflows/newest-deps.yml
+      # Everything that emits DBOS code or talks to a DBOS system
+      # database, plus the suites that prove it.
       - src/rote/adapters/dbos.py
       - src/rote/adapters/dbos_ts.py
+      - src/rote/_dbos.py
+      - src/rote/mcp/**
+      - src/rote/serve/**
+      - src/rote/runners/**
+      - src/rote/eval/empirical.py
+      - tests/test_dbos*
+      - tests/test_mcp_park*
+      - tests/test_eval_empirical_dbos.py
 
 concurrency:
   group: newest-deps-${{ github.ref }}
