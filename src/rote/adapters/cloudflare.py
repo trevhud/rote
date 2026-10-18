@@ -65,6 +65,7 @@ from rote.adapters._ts_common import (
     emit_agent_loop_module,
     emit_ts_signature_module,
     emit_workers_mcp_call_module,
+    exit_return_ts_lines,
     fan_out_ts_binding,
     llm_clients,
     mcp_backed_nodes,
@@ -681,13 +682,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         body_lines.append("")
         available.update(n.id for n in wave)
 
-    # Build return object. Cast `unknown` step results so the workflow's
-    # declared return type stays serializable.
-    body_lines.append("        return {")
-    for exit_id in pipeline.exit_nodes:
-        cast = "as Record<string, unknown>"
-        body_lines.append(f"            {json.dumps(exit_id)}: {exit_id}_result {cast},")
-    body_lines.append("        };")
+    body_lines.extend(exit_return_ts_lines(pipeline))
 
     body = "\n".join(body_lines)
 
@@ -853,9 +848,10 @@ def emit_extracted_module(node: Node) -> str:
 
     body: list[str]
     # Stubs declare Promise<never> — honest for a function that always
-    # throws, and `never` is the one type that both satisfies step.do's
-    # `Rpc.Serializable<T>` constraint and stays castable at the
-    # workflow's data-flow reference sites (see `ref_to_ts_expr`).
+    # throws, and `never` satisfies step.do's `Rpc.Serializable<T>`
+    # constraint. The workflow's reference sites never depend on it:
+    # they compile against any concrete type the user swaps in (see
+    # `ref_to_ts_expr` and `exit_return_ts_lines`).
     # Note: `Promise<Record<string, unknown>>` would NOT work here —
     # `unknown` values aren't structurally serializable, which breaks
     # step.do overload resolution (verified via the tsc e2e test).

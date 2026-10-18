@@ -112,6 +112,7 @@ from rote.adapters._ts_common import (
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    exit_return_ts_lines,
     fan_out_ts_binding,
     judge_env_arg,
     llm_clients,
@@ -284,11 +285,11 @@ def emit_extracted_module(node: Node) -> str:
 
     doc.append(" */")
 
-    # Stubs declare Promise<never> — honest for a function that always
-    # throws, and the one type the workflow's data-flow casts
-    # (`(<id>_result as Record<...>)["field"]`) always accept. Replace
-    # the annotation with your concrete output type when you fill in
-    # the implementation.
+    # Stubs declare Promise<never>, honest for a function that always
+    # throws. The workflow's reference sites index results directly
+    # (`<id>_result["field"]`), which is legal on `never` and checks the
+    # field name once you replace the annotation with your concrete
+    # output type (see `ref_to_ts_expr`).
     if node.kind is NodeKind.AGENT_LOOP:
         msg = f'"{STUB_SENTINEL} agent_loop {node.id}: requires an agent runtime — implement me"'
     else:
@@ -524,12 +525,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
         available.update(n.id for n in wave)
 
     lines.append("")
-    lines.append("        return {")
-    for exit_id in pipeline.exit_nodes:
-        lines.append(
-            f"            {json.dumps(exit_id)}: {exit_id}_result as Record<string, unknown>,"
-        )
-    lines.append("        };")
+    lines.extend(exit_return_ts_lines(pipeline))
     return "\n".join(lines), uses_unwrap
 
 

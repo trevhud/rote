@@ -613,18 +613,18 @@ def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> Non
 def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path]) -> None:
     """The committed BDR bindings appear as real payload expressions."""
     src = emit_result["workflow"].read_text()
-    # HITL gate output field → downstream step payload. Field access on
-    # node results goes through a Record cast (step.do's Rpc.Serializable
-    # constraint widens inferred result types — see _ref_to_ts_expr).
-    rec = "as Record<string, unknown>"
-    assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in src
+    # HITL gate output field → downstream step payload.
+    # Indexed directly, never cast: tsc then checks the IR field name
+    # against the implementation's declared type (see ref_to_ts_expr).
+    assert "_result as " not in src
+    assert 'contacts: contact_review_gate_result["approved_contacts"],' in src
     # Node output fields chain through the exclusion checks.
-    assert f'contacts: (hubspot_upsert_result {rec})["upserted"],' in src
-    assert f'contacts: (exclusion_check_dnc_result {rec})["passed"],' in src
+    assert 'contacts: hubspot_upsert_result["upserted"],' in src
+    assert 'contacts: exclusion_check_dnc_result["passed"],' in src
     # Pipeline input field selection (Params is already a Record — no cast).
     assert 'target_quota: pipelineInput["target_quota"],' in src
     # Fan-in on the report node.
-    assert f'template_ids: (create_sales_template_result {rec})["template_ids"],' in src
+    assert 'template_ids: create_sales_template_result["template_ids"],' in src
     # No node is left passing the placeholder empty payload in BDR.
     assert "async () => hubspotUpsert({})" not in src
 
@@ -679,17 +679,13 @@ def test_extracted_stub_return_type_is_never(
     emit_result: dict[str, Path],
 ) -> None:
     """Stubs declare Promise<never>: honest for an always-throwing stub,
-    satisfies step.do's Rpc.Serializable constraint, and keeps the
-    workflow's `(<id>_result as Record<...>)["field"]` casts compiling.
+    and satisfies step.do's Rpc.Serializable constraint.
     (Promise<Record<string, unknown>> breaks step.do overload resolution —
     `unknown` isn't structurally serializable.)"""
     src = emit_result["extracted/hubspot_upsert"].read_text()
     assert "Promise<never> {" in src
     # An agent_loop module is NOT a stub — it returns the loop's real
-    # result. Its return type is an anonymous object type rather than an
-    # interface, which is what keeps the workflow's
-    # `as Record<string, unknown>` casts compiling (TypeScript grants
-    # implicit index signatures to the former only).
+    # result.
     loop_src = emit_result["extracted/lead_generation_loop"].read_text()
     assert "Promise<never> {" not in loop_src
     assert "iterations: number | null }> {" in loop_src

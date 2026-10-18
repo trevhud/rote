@@ -1,31 +1,77 @@
-"""Extracted module: zoominfo
+"""ZoomInfo enrichment — batch contact lookup.
 
-Auto-generated stubs by rote.adapters.dbos. Replace each body
-with the real implementation (direct vendor API calls — the MCP
-tool calls from the source skill were graduated away at emit
-time). Keep the signatures: the DBOS steps in main.py call these
-with the step payload as keyword arguments.
+# MCP origin
+
+Originally invoked from inside the bdr-outreach skill's lead generation
+loop via the ``zoominfo_enrich_contacts`` MCP tool. The skill always
+requested ``employmentHistory`` because the LLM vetting step depended on
+it.
+
+# Compiled form
+
+After compilation, this is a deterministic call to the ZoomInfo
+Enrichment REST endpoint::
+
+    POST https://api.zoominfo.com/enrich/contact
+    {
+        "matchPersonInput": [...],
+        "outputFields": [...]
+    }
+
+The batch size is hard-locked at 10 (a ZoomInfo API limit, not a
+heuristic) and is enforced by the IR's ``constants.batch_size`` field.
+The Temporal activity wrapper applies retry-with-backoff for rate-limit
+and network errors.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..types import EnrichedContact, RawContact
+
+# Constant lifted from the IR (constants.batch_size). Kept here for
+# defense-in-depth — even if the workflow forgets to pre-batch, this
+# function will reject oversize batches rather than silently truncating.
+BATCH_SIZE: int = 10
+
+# Constant lifted from the IR (constants.output_fields). Encoded once
+# in code so the prompt and the wire payload can never disagree.
+OUTPUT_FIELDS: tuple[str, ...] = (
+    "firstName",
+    "lastName",
+    "jobTitle",
+    "email",
+    "phone",
+    "mobilePhone",
+    "contactAccuracyScore",
+    "companyName",
+    "externalUrls",
+    "employmentHistory",
+    "directPhoneDoNotCall",
+    "mobilePhoneDoNotCall",
+    "validDate",
+)
 
 
-def enrich_batch(**payload: Any) -> Any:
+async def enrich_batch(contacts: list[RawContact]) -> list[EnrichedContact]:
+    """Enrich up to 10 contacts in a single ZoomInfo API call.
+
+    Args:
+        contacts: A batch of 1–10 raw contacts to enrich.
+
+    Returns:
+        EnrichedContact objects in the same order as the input. Contacts
+        that ZoomInfo could not match are filtered out by the caller, not
+        here, so the index correspondence is preserved.
+
+    Raises:
+        ValueError: if the batch exceeds 10 contacts (ZoomInfo API limit).
+        NotImplementedError: stub for v0. Production calls
+            ``POST https://api.zoominfo.com/enrich/contact``.
     """
-    Batch enrich contacts via ZoomInfo. Always requests employmentHistory
-
-    STUB — replace with the deterministic API call.
-
-    Constants from the IR (lifted from the source skill):
-      batch_size = 10
-      output_fields = ['firstName', 'lastName', 'jobTitle', 'email', 'phone',
-          'mobilePhone', 'contactAccuracyScore', 'companyName', 'externalUrls',
-          'employmentHistory', 'directPhoneDoNotCall', 'mobilePhoneDoNotCall',
-          'validDate']
-    """
+    if len(contacts) > BATCH_SIZE:
+        raise ValueError(
+            f"ZoomInfo enrich batch size is {BATCH_SIZE} (got {len(contacts)})"
+        )
     raise NotImplementedError(
-        "[rote stub] zoominfo.enrich_batch: "
-        "implement against the vendor API"
+        "zoominfo.enrich_batch: implement against ZoomInfo Enrichment API"
     )

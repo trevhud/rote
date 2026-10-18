@@ -201,7 +201,10 @@ def test_loop_body_nodes_excluded_from_workflow(main_src: str) -> None:
 
 def test_workflow_returns_exit_nodes(main_src: str, bdr_pipeline: Pipeline) -> None:
     for exit_id in bdr_pipeline.exit_nodes:
-        assert f'"{exit_id}": {exit_id}_result as Record<string, unknown>,' in main_src
+        # Returned as-is: a cast breaks the moment an implementation
+        # returns a scalar (see exit_return_ts_lines).
+        assert f'"{exit_id}": {exit_id}_result,' in main_src
+        assert f"{exit_id}_result as " not in main_src
 
 
 def test_mandatory_nodes_marked_unconditional(main_src: str) -> None:
@@ -231,16 +234,18 @@ def test_entry_nodes_receive_pipeline_input(main_src: str) -> None:
 
 def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
-    rec = "as Record<string, unknown>"
+    # Indexed directly, never cast: tsc then checks the IR field name
+    # against the implementation's declared type (see ref_to_ts_expr).
+    assert "_result as " not in main_src
     # HITL gate resume payload (DBOS.recv result) → downstream step payload.
-    assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in main_src
+    assert 'contacts: contact_review_gate_result["approved_contacts"],' in main_src
     # Node output field chains through the exclusion checks.
-    assert f'contacts: (hubspot_upsert_result {rec})["upserted"],' in main_src
-    assert f'contacts: (exclusion_check_dnc_result {rec})["passed"],' in main_src
+    assert 'contacts: hubspot_upsert_result["upserted"],' in main_src
+    assert 'contacts: exclusion_check_dnc_result["passed"],' in main_src
     # Pipeline input field selection.
     assert 'target_quota: pipelineInput["target_quota"],' in main_src
     # Fan-in: the report node pulls from several sources.
-    assert f'template_ids: (create_sales_template_result {rec})["template_ids"],' in main_src
+    assert 'template_ids: create_sales_template_result["template_ids"],' in main_src
 
 
 def test_node_without_inputs_gets_empty_payload() -> None:

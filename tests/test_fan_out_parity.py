@@ -87,7 +87,7 @@ def _fan_out_pipeline() -> Pipeline:
 # appears as the *value bound to the element param*, the adapter is
 # batching.
 _PY_LIST_EXPR = 'filter_posts_result["published_posts"]'
-_TS_LIST_EXPR = '(filter_posts_result as Record<string, unknown>)["published_posts"]'
+_TS_LIST_EXPR = 'filter_posts_result["published_posts"]'
 
 _EMITTERS = {
     "python": (emit_python, "py"),
