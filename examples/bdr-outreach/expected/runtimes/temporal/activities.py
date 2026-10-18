@@ -15,6 +15,7 @@ direct API calls during the rote emission step.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from typing import Any
@@ -37,6 +38,19 @@ def _serialize(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     return obj
+
+
+async def _call_impl(fn: Any, payload: dict) -> Any:
+    """Call an extracted function with the step payload.
+
+    A coroutine function is awaited. A plain one, which is what
+    the shared stubs and most agent-written modules are, runs
+    in a worker thread so it cannot block the activity's event
+    loop.
+    """
+    if inspect.iscoroutinefunction(fn):
+        return await fn(**payload)
+    return await asyncio.to_thread(fn, **payload)
 
 
 @activity.defn(name="target_research")
@@ -82,7 +96,7 @@ async def taxonomy_lookup(payload: dict) -> dict:
     ``expected.extracted.taxonomy`` for implementation.
     """
     from expected.extracted.taxonomy import resolve_taxonomy_ids
-    result = await resolve_taxonomy_ids(**payload)
+    result = await _call_impl(resolve_taxonomy_ids, payload)
     return _serialize(result)
 
 
@@ -127,7 +141,7 @@ async def enrich_contact_batch(payload: dict) -> dict:
     #   batch_size = 10
     #   output_fields = ['firstName', 'lastName', 'jobTitle', 'email', 'phone', 'mobilePhone', 'contactAccuracyScore', 'companyName', 'externalUrls', 'employmentHistory', 'directPhoneDoNotCall', 'mobilePhoneDoNotCall', 'validDate']
     from expected.extracted.zoominfo import enrich_batch
-    result = await enrich_batch(**payload)
+    result = await _call_impl(enrich_batch, payload)
     return _serialize(result)
 
 @activity.defn(name="vet_contact")
@@ -153,7 +167,7 @@ async def hubspot_upsert(payload: dict) -> dict:
     # Constants from the IR (extracted from the source skill prose):
     #   batch_size = 100
     from expected.extracted.hubspot import batch_upsert_contacts
-    result = await batch_upsert_contacts(**payload)
+    result = await _call_impl(batch_upsert_contacts, payload)
     return _serialize(result)
 
 @activity.defn(name="hubspot_create_list")
@@ -166,7 +180,7 @@ async def hubspot_create_list(payload: dict) -> dict:
     # Constants from the IR (extracted from the source skill prose):
     #   add_batch_size = 250
     from expected.extracted.hubspot import create_campaign_list
-    result = await create_campaign_list(**payload)
+    result = await _call_impl(create_campaign_list, payload)
     return _serialize(result)
 
 @activity.defn(name="exclusion_check_dnc")
@@ -179,7 +193,7 @@ async def exclusion_check_dnc(payload: dict) -> dict:
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
     from expected.extracted.exclusion_checks import check_do_not_contact
-    result = await check_do_not_contact(**payload)
+    result = await _call_impl(check_do_not_contact, payload)
     return _serialize(result)
 
 @activity.defn(name="exclusion_check_recent")
@@ -195,7 +209,7 @@ async def exclusion_check_recent(payload: dict) -> dict:
     #   days_back = 30
     #   direction = 'OUTBOUND'
     from expected.extracted.exclusion_checks import check_recently_emailed
-    result = await check_recently_emailed(**payload)
+    result = await _call_impl(check_recently_emailed, payload)
     return _serialize(result)
 
 @activity.defn(name="exclusion_check_sequence")
@@ -208,7 +222,7 @@ async def exclusion_check_sequence(payload: dict) -> dict:
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
     from expected.extracted.exclusion_checks import check_active_sequence
-    result = await check_active_sequence(**payload)
+    result = await _call_impl(check_active_sequence, payload)
     return _serialize(result)
 
 @activity.defn(name="personalize_email")
@@ -232,7 +246,7 @@ async def create_sales_template(payload: dict) -> dict:
     ``expected.extracted.hubspot`` for implementation.
     """
     from expected.extracted.hubspot import upsert_sales_template
-    result = await upsert_sales_template(**payload)
+    result = await _call_impl(upsert_sales_template, payload)
     return _serialize(result)
 
 @activity.defn(name="pre_enrollment_report")
@@ -243,5 +257,5 @@ async def pre_enrollment_report(payload: dict) -> dict:
     ``expected.extracted.report`` for implementation.
     """
     from expected.extracted.report import generate_pre_enrollment_report
-    result = await generate_pre_enrollment_report(**payload)
+    result = await _call_impl(generate_pre_enrollment_report, payload)
     return _serialize(result)

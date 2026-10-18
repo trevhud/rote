@@ -2,7 +2,7 @@
   "version": 1,
   "files": {
     "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
-    "activities.py": "349755c319bac58b5040db743010b2116a119c9d0776ccfe5f2987e260afb606",
+    "activities.py": "e2374070bccbc4c246d97b00f6a4cecac7c7935aabfdc5d3895bcd9c52d094b3",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
     "signatures/_rote_inference.py": "aa67ea177f4abec5f9e4ab3bf593dd90591e756c5362669befc75be2184b0b03",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",

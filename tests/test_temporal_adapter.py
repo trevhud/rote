@@ -38,9 +38,15 @@ BDR_EXAMPLE_PKG_ROOT = REPO_ROOT / "examples" / "bdr-outreach"
 # ───────── Fixtures ─────────
 
 
+#: The BDR example keeps its hand-written implementations in the
+#: ``expected.extracted`` package, so its snapshot is emitted against that
+#: instead of an emitted extracted/ package.
+BDR_TEMPORAL_CONFIG = TemporalAdapterConfig(extracted_module="expected.extracted")
+
+
 @pytest.fixture(scope="module")
 def adapter() -> TemporalAdapter:
-    return TemporalAdapter()
+    return TemporalAdapter(BDR_TEMPORAL_CONFIG)
 
 
 @pytest.fixture(scope="module")
@@ -597,3 +603,153 @@ def test_per_node_timeout_reaches_the_activity_call() -> None:
     )
     # The pinned node must NOT also carry the default.
     assert '_parse_minutes("5m")' not in fast_call
+
+
+# ───────── extracted/: emitted, sourced, and reported ─────────
+
+
+def _two_module_pipeline() -> Pipeline:
+    """A sync step feeding an async one, each in its own extracted module."""
+    return Pipeline.model_validate(
+        {
+            "name": "chain",
+            "version": "0.1.0",
+            "input": {"type": "In", "required": ["x"], "optional": []},
+            "nodes": [
+                {
+                    "id": "double",
+                    "kind": "pure_function",
+                    "description": "Double x.",
+                    "impl": "extracted/math_ops.py:double",
+                    "inputs": {"x": "pipeline.input.x"},
+                },
+                {
+                    "id": "add_one",
+                    "kind": "external_call",
+                    "description": "Add one to y.",
+                    "impl": "extracted/remote_ops.py:add_one",
+                    "inputs": {"y": "double.output.y"},
+                },
+            ],
+            "edges": [{"from": "double", "to": "add_one"}],
+            "entry_nodes": ["double"],
+            "exit_nodes": ["add_one"],
+        }
+    )
+
+
+def test_emit_without_real_modules_writes_and_reports_stubs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Temporal used to emit no extracted/ at all: activities imported
+    ``expected.extracted.*``, which only resolves inside the BDR example,
+    and ``rote emit --json`` reported zero stubs for a dir that could not
+    import a single module."""
+    import json
+
+    from rote.cli import main as cli_main
+    from rote.ir import save_pipeline
+
+    (tmp_path / "compiled").mkdir()
+    pipeline_yaml = save_pipeline(_two_module_pipeline(), tmp_path / "compiled" / "pipeline.yaml")
+    out = tmp_path / "out"
+
+    rc = cli_main(
+        ["emit", str(pipeline_yaml), "--runtime", "temporal", "--out", str(out), "--json"]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    expected_stubs = sorted(
+        str(out.resolve() / "extracted" / name) for name in ("math_ops.py", "remote_ops.py")
+    )
+    assert sorted(str(Path(p).resolve()) for p in payload["unimplemented_stubs"]) == (
+        expected_stubs
+    )
+    activities = (out / "activities.py").read_text(encoding="utf-8")
+    assert "from extracted.math_ops import double" in activities
+    assert "from extracted.remote_ops import add_one" in activities
+    assert "expected.extracted" not in activities
+
+
+def test_agent_loop_with_tools_gets_the_mcp_helper(tmp_path: Path) -> None:
+    """The inference helper resolves an agent loop's MCP tools through
+    ``extracted/_rote_mcp.py``. Temporal emitted no extracted/ at all, so a
+    loop that declared tools died with "extracted/_rote_mcp.py is missing"."""
+    from rote.mcp import _runtime_helper as mcp_helper
+
+    loop = Node(
+        id="research",
+        kind=NodeKind.AGENT_LOOP,
+        description="Research.",
+        tools=["web_search"],
+    )
+    written = TemporalAdapter().emit(mini_pipeline(loop), tmp_path)
+
+    assert written["extracted/_rote_mcp"].read_text(encoding="utf-8") == Path(
+        mcp_helper.__file__
+    ).read_text(encoding="utf-8")
+
+
+def test_emitted_app_runs_the_agent_written_modules(tmp_path: Path) -> None:
+    """Real modules beside pipeline.yaml are emitted verbatim and actually
+    run: a plain function (the shape agent-written modules take) and a
+    coroutine function both complete, with the payload threaded through."""
+    import asyncio
+    from uuid import uuid4
+
+    from temporalio.testing import WorkflowEnvironment
+    from temporalio.worker import UnsandboxedWorkflowRunner, Worker
+
+    from rote.adapters import get_adapter
+    from rote.runners.temporal import _load_app_modules
+
+    source = tmp_path / "compiled"
+    (source / "extracted").mkdir(parents=True)
+    sync_impl = "def double(x):\n    return {'y': x * 2}\n"
+    async_impl = "async def add_one(y):\n    return {'z': y + 1}\n"
+    (source / "extracted" / "math_ops.py").write_text(sync_impl, encoding="utf-8")
+    (source / "extracted" / "remote_ops.py").write_text(async_impl, encoding="utf-8")
+    out = tmp_path / "out"
+
+    written = get_adapter("temporal", extracted_source_dir=source).emit(_two_module_pipeline(), out)
+
+    assert written["extracted/math_ops"].read_text(encoding="utf-8") == sync_impl
+    assert written["extracted/remote_ops"].read_text(encoding="utf-8") == async_impl
+
+    workflow_class, activities = _load_app_modules(out)
+
+    async def _run() -> dict:
+        async with await WorkflowEnvironment.start_time_skipping() as env:
+            queue = f"chain-{uuid4()}"
+            async with Worker(
+                env.client,
+                task_queue=queue,
+                workflows=[workflow_class],
+                activities=activities,
+                workflow_runner=UnsandboxedWorkflowRunner(),
+            ):
+                # Activities retry forever by default, so a broken call
+                # would hang the test instead of failing it.
+                return await asyncio.wait_for(
+                    env.client.execute_workflow(
+                        workflow_class.run,  # type: ignore[attr-defined]
+                        {"x": 3},
+                        id=f"chain-{uuid4()}",
+                        task_queue=queue,
+                    ),
+                    timeout=30,
+                )
+
+    try:
+        result = asyncio.run(_run())
+    finally:
+        sys.path.remove(str(out))
+        for name in [
+            m
+            for m in sys.modules
+            if m.split(".")[0] in ("workflow", "activities", "extracted", "signatures")
+        ]:
+            del sys.modules[name]
+
+    assert result == {"add_one": {"z": 7}}
