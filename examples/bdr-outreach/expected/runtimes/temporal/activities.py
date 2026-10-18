@@ -93,9 +93,9 @@ async def taxonomy_lookup(payload: dict) -> dict:
     """Resolve ZoomInfo IDs for management levels (VP, Director), industries
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.taxonomy`` for implementation.
+    ``extracted.taxonomy`` for implementation.
     """
-    from expected.extracted.taxonomy import resolve_taxonomy_ids
+    from extracted.taxonomy import resolve_taxonomy_ids
     result = await _call_impl(resolve_taxonomy_ids, payload)
     return _serialize(result)
 
@@ -135,12 +135,12 @@ async def enrich_contact_batch(payload: dict) -> dict:
     """Batch enrich contacts via ZoomInfo. Always requests employmentHistory
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.zoominfo`` for implementation.
+    ``extracted.zoominfo`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
     #   batch_size = 10
     #   output_fields = ['firstName', 'lastName', 'jobTitle', 'email', 'phone', 'mobilePhone', 'contactAccuracyScore', 'companyName', 'externalUrls', 'employmentHistory', 'directPhoneDoNotCall', 'mobilePhoneDoNotCall', 'validDate']
-    from expected.extracted.zoominfo import enrich_batch
+    from extracted.zoominfo import enrich_batch
     result = await _call_impl(enrich_batch, payload)
     return _serialize(result)
 
@@ -162,11 +162,11 @@ async def hubspot_upsert(payload: dict) -> dict:
     """Batch upsert contacts to HubSpot (create or update by email). Hard
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.hubspot`` for implementation.
+    ``extracted.hubspot`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
     #   batch_size = 100
-    from expected.extracted.hubspot import batch_upsert_contacts
+    from extracted.hubspot import batch_upsert_contacts
     result = await _call_impl(batch_upsert_contacts, payload)
     return _serialize(result)
 
@@ -175,11 +175,11 @@ async def hubspot_create_list(payload: dict) -> dict:
     """Create a static list named after the campaign and add the upserted
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.hubspot`` for implementation.
+    ``extracted.hubspot`` for implementation.
     """
     # Constants from the IR (extracted from the source skill prose):
     #   add_batch_size = 250
-    from expected.extracted.hubspot import create_campaign_list
+    from extracted.hubspot import create_campaign_list
     result = await _call_impl(create_campaign_list, payload)
     return _serialize(result)
 
@@ -188,11 +188,11 @@ async def exclusion_check_dnc(payload: dict) -> dict:
     """For each contact, look up \"BDR do not contact\" list memberships.
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.exclusion_checks`` for implementation.
+    ``extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
-    from expected.extracted.exclusion_checks import check_do_not_contact
+    from extracted.exclusion_checks import check_do_not_contact
     result = await _call_impl(check_do_not_contact, payload)
     return _serialize(result)
 
@@ -201,14 +201,14 @@ async def exclusion_check_recent(payload: dict) -> dict:
     """For each contact, check if they were emailed (outbound) in the last
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.exclusion_checks`` for implementation.
+    ``extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
     # Constants from the IR (extracted from the source skill prose):
     #   days_back = 30
     #   direction = 'OUTBOUND'
-    from expected.extracted.exclusion_checks import check_recently_emailed
+    from extracted.exclusion_checks import check_recently_emailed
     result = await _call_impl(check_recently_emailed, payload)
     return _serialize(result)
 
@@ -217,11 +217,11 @@ async def exclusion_check_sequence(payload: dict) -> dict:
     """For each contact, check if they are already enrolled in an active
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.exclusion_checks`` for implementation.
+    ``extracted.exclusion_checks`` for implementation.
     """
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
-    from expected.extracted.exclusion_checks import check_active_sequence
+    from extracted.exclusion_checks import check_active_sequence
     result = await _call_impl(check_active_sequence, payload)
     return _serialize(result)
 
@@ -243,9 +243,9 @@ async def create_sales_template(payload: dict) -> dict:
     """Create or update HubSpot sales templates for the campaign sequence
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.hubspot`` for implementation.
+    ``extracted.hubspot`` for implementation.
     """
-    from expected.extracted.hubspot import upsert_sales_template
+    from extracted.hubspot import upsert_sales_template
     result = await _call_impl(upsert_sales_template, payload)
     return _serialize(result)
 
@@ -254,8 +254,8 @@ async def pre_enrollment_report(payload: dict) -> dict:
     """Generate the final pre-enrollment report (markdown) with totals,
 
     Compiled from MCP tool call → deterministic API call. See
-    ``expected.extracted.report`` for implementation.
+    ``extracted.report`` for implementation.
     """
-    from expected.extracted.report import generate_pre_enrollment_report
+    from extracted.report import generate_pre_enrollment_report
     result = await _call_impl(generate_pre_enrollment_report, payload)
     return _serialize(result)

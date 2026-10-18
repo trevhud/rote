@@ -1,24 +1,51 @@
-"""Extracted module: taxonomy
+"""ZoomInfo taxonomy lookups — resolved once per campaign and cached.
 
-Auto-generated stubs by rote.adapters.dbos. Replace each body
-with the real implementation (direct vendor API calls — the MCP
-tool calls from the source skill were graduated away at emit
-time). Keep the signatures: the DBOS steps in main.py call these
-with the step payload as keyword arguments.
+# MCP origin
+
+Originally invoked from inside the bdr-outreach skill via the
+``zoominfo_lookup`` MCP tool. The skill made three lookups in parallel
+during Phase 2 setup:
+
+* ``management-levels`` — VP Level Exec, Director
+* ``industries`` (fuzzyMatch=pharmaceutical) — pharma ID
+* ``industries`` (fuzzyMatch=biotechnology) — biotech ID
+* ``departments`` (fuzzyMatch=medical) — Medical & Health ID
+
+# Compiled form
+
+The taxonomy IDs are stable — they do not change run-over-run. After
+compilation, this function calls the ZoomInfo Lookup REST endpoint
+directly and caches the result for 30 days (per the IR's ``cache:``
+config). No agent loop, no LLM, no MCP server in the path.
+
+Real implementation would call::
+
+    GET https://api.zoominfo.com/lookup/managementLevel
+    GET https://api.zoominfo.com/lookup/industry?fuzzyMatch=pharmaceutical
+    GET https://api.zoominfo.com/lookup/industry?fuzzyMatch=biotechnology
+    GET https://api.zoominfo.com/lookup/department?fuzzyMatch=medical
 """
 
 from __future__ import annotations
 
-from typing import Any
+from ..types import CampaignBrief, TaxonomyIds
 
 
-def resolve_taxonomy_ids(**payload: Any) -> Any:
-    """
-    Resolve ZoomInfo IDs for management levels (VP, Director), industries
+async def resolve_taxonomy_ids(brief: CampaignBrief) -> TaxonomyIds:
+    """Resolve the ZoomInfo IDs needed for lead generation searches.
 
-    STUB — replace with the deterministic API call.
+    Args:
+        brief: The campaign brief (currently unused — taxonomy IDs are
+            global, not per-campaign — but kept in the signature for
+            future extensibility, e.g., TA-specific industry filtering).
+
+    Returns:
+        TaxonomyIds with all five IDs resolved.
+
+    Raises:
+        NotImplementedError: stub for v0. Production implementation calls
+            the ZoomInfo Lookup endpoints via httpx.
     """
     raise NotImplementedError(
-        "[rote stub] taxonomy.resolve_taxonomy_ids: "
-        "implement against the vendor API"
+        "taxonomy.resolve_taxonomy_ids: implement against ZoomInfo Lookup API"
     )
