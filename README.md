@@ -370,6 +370,8 @@ subscription path.
 
 ## How it differs from other tools
 
+For a side-by-side with calcifier, skill-to-workflow, Claude Code dynamic workflows, and hand-written workflows, see [docs/comparison.md](docs/comparison.md).
+
 - **vs. raw durable engines (Temporal / Cloudflare / Inngest / Restate):**
   they give you the workflow *runtime*; they don't help you decide *what
   should be a workflow*. `rote` is the missing step that turns a working
