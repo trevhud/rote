@@ -28,7 +28,7 @@ Concretely, against a real DBOS 2.x runtime with a SQLite system database
 
 Gated behind ``@pytest.mark.slow`` because it launches a real DBOS
 runtime (queue workers, system DB migrations) — a few seconds, plus the
-``dbos`` package requirement (``pip install rote[dbos]``).
+``dbos`` package requirement (``pip install 'rote-cli[dbos]'``).
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from rote.adapters.dbos import DbosAdapter, _extracted_layout
 from rote.adapters.temporal import _execution_waves, _impl_path_parts, _to_pascal_case
 from rote.ir import NodeKind, Pipeline
 
-dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install rote[dbos])")
+dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"

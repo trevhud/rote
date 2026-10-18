@@ -80,6 +80,7 @@ from rote.adapters._common import (
     _seconds_literal,
     _to_pascal_case,
     check_input_refs_available,
+    judge_override_readme,
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
@@ -963,17 +964,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         python main.py '{{...}}'   # or: dbos start
         ```
 
-        LLM judge steps call the vendor SDK directly and read the standard
-        `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
-        judge also honors two per-node overrides, so operators can change
-        the model or point at an OpenAI-compatible endpoint (Ollama, vLLM,
-        a gateway) without re-emitting:
-
-        ```sh
-        export ROTE_MODEL_<NODE_ID>=...      # e.g. ROTE_MODEL_VET_CONTACT
-        export ROTE_BASE_URL_<NODE_ID>=...   # custom endpoint for that judge
-        ```
-        {mcp_note}
+        {judge_note}{mcp_note}
         ## HITL gates
 
         The workflow parks durably at each gate until a message arrives on
@@ -1002,6 +993,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         pipeline_name=pipeline.name,
         gate_lines=gate_lines,
         first_signal=first_signal,
+        judge_note=judge_override_readme(pipeline),
         mcp_note=mcp_note,
     )
 

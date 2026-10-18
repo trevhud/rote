@@ -17,9 +17,8 @@ accounting, and ``max_completion_tokens``.
 # Optional dependency
 
 The ``openai`` package is an optional extra so users of the subprocess
-drivers don't pay the import cost::
-
-    pip install "rote[openai-api]"
+drivers don't pay the import cost. It is the ``openai-api`` extra;
+:func:`rote.extras.install_hint` spells the install command.
 
 # No default model
 
@@ -54,12 +53,13 @@ from rote.compiler.events import (
     emit_safely,
     relative_display_path,
 )
+from rote.extras import install_hint
 
 if TYPE_CHECKING:
     from openai.types.chat import ChatCompletionMessageParam
 
 # Detect the optional dep at import time so is_available() can report a
-# specific "pip install rote[openai-api]" message instead of a cryptic
+# specific install-hint message instead of a cryptic
 # ImportError.
 try:
     import openai  # noqa: F401
@@ -247,7 +247,7 @@ class OpenAIApiDriver(CompilerDriver):
             compiler agent as ``mcp__<server>__<tool>`` tools — each
             entry ``{"name": str, "url": str, "headers": dict[str, str]
             | None}`` (streamable HTTP only). Requires the ``mcp`` extra
-            (``pip install 'rote-cli[mcp]'``). Only tools whose server
+            (see :mod:`rote.extras`). Only tools whose server
             declares ``readOnlyHint`` are exposed; a server that cannot
             be reached is skipped with a warning event, never an error.
         """
@@ -285,7 +285,7 @@ class OpenAIApiDriver(CompilerDriver):
             return (
                 False,
                 "The `openai` package is not installed. "
-                "Install the optional extra with: `pip install rote[openai-api]`.",
+                f"Install the optional extra with: `{install_hint('openai-api')}`.",
             )
         if os.environ.get("OPENAI_API_KEY"):
             return (True, "")
@@ -318,7 +318,7 @@ class OpenAIApiDriver(CompilerDriver):
         orchestrators that saw it in this signature.
         """
         if not _OPENAI_AVAILABLE:
-            raise DriverError("openai package is not installed. Run: pip install rote[openai-api]")
+            raise DriverError(f"openai package is not installed. Run: {install_hint('openai-api')}")
 
         skill_dir = skill_dir.resolve()
         compiler_skill_dir = compiler_skill_dir.resolve()

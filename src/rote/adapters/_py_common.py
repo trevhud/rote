@@ -28,6 +28,7 @@ from typing import Any
 
 from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
+    STUB_SENTINEL,
     EmitWriter,
     _to_pascal_case,
     safe_docstring_line,
@@ -1011,7 +1012,8 @@ def emit_extracted_module(
             f"\n\ndef {func_name}(**payload: Any) -> Any:\n"
             f'    """\n{doc}\n    """\n'
             f"    raise NotImplementedError(\n"
-            f'        "{module_name}.{func_name}: implement against the vendor API"\n'
+            f'        "{STUB_SENTINEL} {module_name}.{func_name}: "\n'
+            f'        "implement against the vendor API"\n'
             f"    )\n"
         )
 

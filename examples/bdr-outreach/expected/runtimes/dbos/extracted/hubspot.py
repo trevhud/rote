@@ -22,7 +22,8 @@ def batch_upsert_contacts(**payload: Any) -> Any:
       batch_size = 100
     """
     raise NotImplementedError(
-        "hubspot.batch_upsert_contacts: implement against the vendor API"
+        "[rote stub] hubspot.batch_upsert_contacts: "
+        "implement against the vendor API"
     )
 
 
@@ -36,7 +37,8 @@ def create_campaign_list(**payload: Any) -> Any:
       add_batch_size = 250
     """
     raise NotImplementedError(
-        "hubspot.create_campaign_list: implement against the vendor API"
+        "[rote stub] hubspot.create_campaign_list: "
+        "implement against the vendor API"
     )
 
 
@@ -47,5 +49,6 @@ def upsert_sales_template(**payload: Any) -> Any:
     STUB — replace with the deterministic API call.
     """
     raise NotImplementedError(
-        "hubspot.upsert_sales_template: implement against the vendor API"
+        "[rote stub] hubspot.upsert_sales_template: "
+        "implement against the vendor API"
     )

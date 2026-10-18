@@ -14,5 +14,5 @@
  */
 
 export async function enrichContactBatch(_input: unknown): Promise<never> {
-    throw new Error("external_call enrich_contact_batch: stub not implemented");
+    throw new Error("[rote stub] external_call enrich_contact_batch: stub not implemented");
 }

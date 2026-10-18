@@ -50,6 +50,7 @@ from rote.compiler.update import (
     render_update_brief,
 )
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
+from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline
 from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
 
@@ -269,7 +270,7 @@ class Compiler:
             lines.append("")
             lines.append(
                 "Install one of the supported coding agent CLIs, or set "
-                "ANTHROPIC_API_KEY and `pip install rote[api]`."
+                f"ANTHROPIC_API_KEY and `{install_hint('api')}`."
             )
             raise CompilerError("\n".join(lines))
 

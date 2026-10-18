@@ -46,10 +46,12 @@ from typing import Any
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
+from rote.adapters._common import stubs_tracked
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.contracts import check_contracts
+from rote.extras import EXTRAS, install_hint
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
@@ -93,32 +95,51 @@ def _preserved_new_files(written: dict[str, Path]) -> list[str]:
     return sorted(str(path) for path in written.values() if path.name.endswith(".new"))
 
 
-def _unimplemented_stubs(written: dict[str, Path]) -> list[str]:
-    """The emitted ``extracted/*`` modules still carrying a stub marker — the
-    agent's fill-in TODO list.
+def _unimplemented_stubs(runtime_dir: Path) -> list[str]:
+    """The emitted ``extracted/*`` modules still carrying a stub marker: the
+    fill-in TODO list. One source for the human report, ``--json``, the
+    compile progress summary, and ``rote run``'s preflight
+    (:func:`rote.adapters._common.unimplemented_stubs`), so they never
+    disagree."""
+    from rote.adapters._common import unimplemented_stubs
 
-    "Still a stub" is read straight off disk: a Python stub raises
-    ``NotImplementedError``; a TypeScript stub throws ``"… stub not
-    implemented"`` (or, for agent loops, ``"… requires an agent runtime"``).
-    A node the user has filled in, or an ``mcp``-backed external_call that
-    emits a working call, no longer matches, so it drops off the list. On
-    re-emit a preserved (user-edited) file's fresh content lands in a
-    ``.new`` sibling; we read the authoritative on-disk target, not the
-    ``.new``, so a filled-in stub isn't re-reported as a TODO.
+    return [str(p) for p in unimplemented_stubs(runtime_dir)]
+
+
+def _print_stub_todo(
+    stubs: list[str],
+    runtime_dir: Path,
+    *,
+    tracked: bool,
+    indent: str = "  ",
+    stream: Any = None,
+) -> None:
+    """Tell a human which emitted modules they still have to fill in.
+
+    ``tracked`` is :func:`rote.adapters._common.stubs_tracked`: when the
+    emitted code imports its implementations from outside the directory,
+    an empty list proves nothing, so this says so instead of "none".
     """
-    markers = ("NotImplementedError", "stub not implemented", "requires an agent runtime")
-    stubs: list[str] = []
-    for label, path in written.items():
-        if not label.startswith("extracted/") or label.rsplit("/", 1)[-1] == "__init__":
-            continue
-        target = path.with_name(path.name[:-4]) if path.name.endswith(".new") else path
-        try:
-            text = target.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if any(marker in text for marker in markers):
-            stubs.append(str(target))
-    return sorted(stubs)
+    out = stream if stream is not None else sys.stdout
+    if not tracked:
+        print(
+            f"{indent}stubs: not tracked for this output (its implementation "
+            "modules are not emitted here); implement what the emitted code "
+            "imports before running",
+            file=out,
+        )
+        return
+    if not stubs:
+        print(f"{indent}stubs: none, every extracted module is implemented", file=out)
+        print(f"{indent}next: rote run {runtime_dir}", file=out)
+        return
+    print(
+        f"{indent}stubs: {len(stubs)} module(s) still raise until you implement them:",
+        file=out,
+    )
+    for stub in stubs:
+        print(f"{indent}  {stub}", file=out)
+    print(f"{indent}next: fill those in, then rote run {runtime_dir}", file=out)
 
 
 def _cmd_emit(args: argparse.Namespace) -> int:
@@ -187,6 +208,8 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     # also the fix-and-re-emit loop's checkpoint. Free, and it needs no
     # runtime; reported, never fatal (the emitted dir is still useful).
     contract_findings = check_contracts(pipeline, pipeline_path.parent)
+    stubs = _unimplemented_stubs(out_dir)
+    tracked = stubs_tracked(out_dir, pipeline)
 
     if args.json:
         import json
@@ -197,7 +220,8 @@ def _cmd_emit(args: argparse.Namespace) -> int:
             "out_dir": str(out_dir.resolve()),
             "written": {label: str(path) for label, path in written.items()},
             "preserved_new_files": _preserved_new_files(written),
-            "unimplemented_stubs": _unimplemented_stubs(written),
+            "unimplemented_stubs": stubs,
+            "stubs_tracked": tracked,
             "mcp_servers": mcp_servers,
             "contract_findings": [f.as_dict() for f in contract_findings],
         }
@@ -214,6 +238,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"  required MCP servers: {rendered}")
         for line in _mcp_recommendation_lines(mcp_servers):
             print(line)
+    _print_stub_todo(stubs, out_dir, tracked=tracked)
     return 0
 
 
@@ -490,7 +515,7 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     except ImportError:
         print(
             "rote compile: mcp — registered servers not wired into the "
-            "compiler (install the extra: pip install 'rote-cli[mcp]')",
+            f"compiler (install the extra: {install_hint('mcp')})",
             file=sys.stderr,
         )
         return None
@@ -916,6 +941,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         print(f"  eval scorecard: {scorecard_path}", file=summary_stream)
     print(f"  emitted runtime ({args.runtime}): {runtime_dir}", file=summary_stream)
     _print_written(written, indent="    ", stream=summary_stream)
+    _print_stub_todo(
+        _unimplemented_stubs(runtime_dir),
+        runtime_dir,
+        tracked=stubs_tracked(runtime_dir, pipeline),
+        stream=summary_stream,
+    )
 
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
@@ -1040,7 +1071,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             "driver_metadata": result.driver_metadata,
             "written": {label: str(path) for label, path in written.items()},
             "preserved_new_files": _preserved_new_files(written),
-            "unimplemented_stubs": _unimplemented_stubs(written),
+            "unimplemented_stubs": _unimplemented_stubs(runtime_dir),
+            "stubs_tracked": stubs_tracked(runtime_dir, pipeline),
             "mcp_servers": mcp_servers,
         }
         if baseline_result is not None:
@@ -1089,7 +1121,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "nodes": analysis_nodes["total"],
                 "compiled_dir": str(compiled_dir.resolve()),
                 "runtime_dir": str(runtime_dir.resolve()),
-                "unimplemented_stubs": _unimplemented_stubs(written),
+                "unimplemented_stubs": _unimplemented_stubs(runtime_dir),
                 "mcp_servers": analysis["mcp_servers"],
                 "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
                 "total_tokens": total_tokens,
@@ -1530,7 +1562,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     except ImportError as e:
         print(
             f"error: fastmcp is not installed ({e}). "
-            "Install the serve extra: pip install 'rote[serve]'",
+            f"Install the serve extra: {install_hint('serve')}",
             file=sys.stderr,
         )
         return 2
@@ -2180,19 +2212,6 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-#: Optional package extras → the module whose importability proves the
-#: extra is installed. ``find_spec`` is a pure lookup (no import side
-#: effects), so this stays cheap and safe to run on every ``doctor``.
-_DOCTOR_EXTRAS: dict[str, str] = {
-    "temporal": "temporalio",
-    "api": "anthropic",
-    "openai-api": "openai",
-    "dbos": "dbos",
-    "serve": "fastmcp",
-    "mcp": "fastmcp",
-}
-
-
 def _doctor_mcp_servers() -> list[dict[str, object]]:
     """Registered MCP servers with their five-state auth status.
 
@@ -2251,7 +2270,7 @@ def _build_doctor_report() -> dict[str, Any]:
     ]
     runtimes = [
         {"name": extra, "installed": importlib.util.find_spec(module) is not None}
-        for extra, module in _DOCTOR_EXTRAS.items()
+        for extra, module in EXTRAS.items()
     ]
     return {
         "version": __version__,
@@ -2285,7 +2304,7 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
         if runtime["installed"]:
             lines.append(f"  ✓ {runtime['name']}")
         else:
-            lines.append(f"  ✗ {runtime['name']} — pip install 'rote-cli[{runtime['name']}]'")
+            lines.append(f"  ✗ {runtime['name']} — {install_hint(runtime['name'])}")
     lines.append("")
 
     lines.append("MCP servers:")
@@ -2543,6 +2562,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         TargetError,
         detect_target,
         parse_signal_args,
+        preflight_pipeline,
         resolve_gate_signals,
         resolve_input,
         run_pipeline,
@@ -2602,6 +2622,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 print(json.dumps(run.output, indent=2))
             return 0 if run.succeeded else 1
 
+        # Before input derivation (an LLM call) and gate prompts: a run
+        # that cannot start should say so before asking for anything.
+        preflight_pipeline(target, allow_stubs=args.allow_stubs)
         _export_inference_selection(args.inference)
 
         pipeline: Pipeline | None = None
@@ -3016,8 +3039,12 @@ def _cmd_config(args: argparse.Namespace) -> int:
     project_state = _tilde(str(layers.project_path)) if layers.project_path else "(none found)"
     print(f"  project config: {project_state}")
     print()
+    # Column widths come from the rows themselves, so a longer key
+    # ("inference") or value never pushes its row out of line.
+    name_width = max(len(name) for name in effective)
+    value_width = max(len(value) for value, _source in effective.values())
     for name, (value, source) in effective.items():
-        print(f"  {name:<8} {value:<18} {_tilde(source)}")
+        print(f"  {name:<{name_width}}  {value:<{value_width}}  {_tilde(source)}")
     print()
     if cred is not None:
         print(f"  rote cloud: logged in as {cred.user or '(unknown)'} ({cred.url})")
@@ -3320,6 +3347,19 @@ def _run_empirical(
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # Help text names the real defaults, read from the constants the code
+    # uses, so `--help` cannot drift from behavior when a default moves.
+    from rote.compiler.drivers.anthropic_api import DEFAULT_MODEL as API_DEFAULT_MODEL
+    from rote.compiler.drivers.claude import DEFAULT_MODEL as CLAUDE_DEFAULT_MODEL
+    from rote.runners import RUNNABLE_RUNTIMES
+
+    model_default_note = (
+        f"{CLAUDE_DEFAULT_MODEL} for the claude and api drivers"
+        if CLAUDE_DEFAULT_MODEL == API_DEFAULT_MODEL
+        else f"{CLAUDE_DEFAULT_MODEL} for the claude driver, {API_DEFAULT_MODEL} for api"
+    )
+    runnable = ", ".join(sorted(RUNNABLE_RUNTIMES))
+
     parser = argparse.ArgumentParser(
         prog="rote",
         description=(
@@ -3470,10 +3510,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help=(
-            "Override the LLM model used by the compiler agent "
-            "(e.g. 'claude-opus-4-6' for higher-quality / higher-cost "
-            "runs on complex skills). Defaults to the driver's default, "
-            "which is Sonnet 4.6 for the subscription path."
+            "Override the LLM model used by the compiler agent (a larger "
+            "model costs more per run). Defaults to the driver's default: "
+            f"{model_default_note}; codex uses its CLI's configured model."
         ),
     )
     compile_p.add_argument(
@@ -3571,10 +3610,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "directory runs as an agent via `claude -p` — registered MCP "
             "servers injected, read-only gate unless --allow-writes, billed "
             "to your Claude subscription. An emitted runtime directory (or a "
-            "`rote compile --out` directory) runs the pipeline itself: "
-            "python and dbos execute in-process today; other runtimes print "
-            "their native dev command. The run's output JSON lands on stdout "
-            "so it pipes; status goes to stderr."
+            "`rote compile --out` directory) runs the pipeline itself on a "
+            f"local dev setup for its runtime ({runnable}). Emitted modules "
+            "that are still stubs are refused up front. The run's output "
+            "JSON lands on stdout so it pipes; status goes to stderr."
         ),
     )
     run_p.add_argument(
@@ -3608,7 +3647,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--model",
         default=None,
-        help="Skill runs: the agent model (default: the compiler's default Sonnet)",
+        help=f"Skill runs: the agent model (default: {CLAUDE_DEFAULT_MODEL})",
     )
     run_p.add_argument(
         "--inference",
@@ -3625,6 +3664,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-writes",
         action="store_true",
         help="Skill runs: lift the read-only MCP gate — side effects included",
+    )
+    run_p.add_argument(
+        "--allow-stubs",
+        action="store_true",
+        help=(
+            "Pipeline runs: start even though emitted extracted/ modules are "
+            "still stubs (for a run that will not reach them)"
+        ),
     )
     run_p.add_argument(
         "--max-turns",
@@ -4261,7 +4308,7 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument(
         "--model",
         default=None,
-        help="Model for the agent run (default: the compiler's default Sonnet)",
+        help=f"Model for the agent run (default: {CLAUDE_DEFAULT_MODEL})",
     )
     baseline.add_argument(
         "--max-turns",
@@ -4332,7 +4379,59 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     func = args.func
-    return int(func(args))
+    if not getattr(args, "json", False):
+        return int(func(args))
+    return _run_json_command(func, args)
+
+
+class _RecordingStream:
+    """A text stream proxy that remembers what passed through it."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.text: list[str] = []
+
+    def write(self, data: str) -> int:
+        self.text.append(data)
+        return int(self._inner.write(data))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def _run_json_command(func: Callable[[argparse.Namespace], int], args: argparse.Namespace) -> int:
+    """Run a ``--json`` command and hold it to the stdout contract.
+
+    ``--json`` promises one JSON object on stdout, so a pipe into ``jq``
+    gets something to parse whatever happened. Handlers print their own
+    payload on success, but many early-exit error paths print only to
+    stderr, which left a consumer with empty stdout and a nonzero exit.
+    Enforcing it here covers every ``--json`` command at once: when a
+    handler fails without writing stdout, the error it printed is
+    re-emitted as ``{"ok": false, "exit_code": N, "error": "..."}``. The
+    exit code is unchanged.
+    """
+    out = _RecordingStream(sys.stdout)
+    err = _RecordingStream(sys.stderr)
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = int(func(args))
+    if code != 0 and not "".join(out.text).strip():
+        print(json.dumps({"ok": False, "exit_code": code, "error": _last_error(err.text)}))
+    return code
+
+
+def _last_error(stderr_chunks: list[str]) -> str:
+    """The error a failed command reported on stderr, for its JSON error object.
+
+    Prefers the last ``error: ...`` line (the CLI's convention) plus the
+    detail lines printed after it; falls back to the stderr tail.
+    """
+    lines = "".join(stderr_chunks).rstrip().splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].startswith("error: "):
+            return "\n".join([lines[i].removeprefix("error: "), *lines[i + 1 :]])
+    tail = [ln for ln in lines if ln.strip()][-5:]
+    return "\n".join(tail) if tail else "command failed without an error message"
 
 
 if __name__ == "__main__":

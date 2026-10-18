@@ -147,13 +147,11 @@ def run_temporal(
     signals: dict[str, Any],
     timeout_seconds: float = 600.0,
 ) -> MeasuredRun:
-    """Run an emitted Temporal app once on a managed local dev server."""
-    try:
-        import temporalio  # noqa: F401
-    except ImportError as e:
-        raise EmpiricalError(
-            "running a temporal app requires the temporal extra: pip install 'rote-cli[temporal]'"
-        ) from e
+    """Run an emitted Temporal app once on a managed local dev server.
+
+    The temporal extra is checked by :func:`rote.runners.run_pipeline`'s
+    preflight, the one place every runner's install hint comes from.
+    """
     workflow_class, activities = _load_app_modules(app_dir)
     return asyncio.run(
         _run_async(workflow_class, activities, input_payload, signals, timeout_seconds)

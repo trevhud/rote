@@ -13,5 +13,5 @@
  */
 
 export async function exclusionCheckSequence(_input: unknown): Promise<never> {
-    throw new Error("pure_function exclusion_check_sequence: stub not implemented");
+    throw new Error("[rote stub] pure_function exclusion_check_sequence: stub not implemented");
 }

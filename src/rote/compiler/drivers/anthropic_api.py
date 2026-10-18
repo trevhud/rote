@@ -17,9 +17,8 @@ on ``claude-agent-sdk`` would only add weight without adding value.
 
 The ``anthropic`` package is an optional extra. Users who only use
 the subprocess drivers (``claude`` / ``codex``) don't pay the import
-cost::
-
-    pip install "rote[api]"
+cost. It is the ``api`` extra; :func:`rote.extras.install_hint` spells
+the install command.
 
 # Filesystem tool surface
 
@@ -71,6 +70,7 @@ from rote.compiler.events import (
     emit_safely,
     relative_display_path,
 )
+from rote.extras import install_hint
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, ToolResultBlockParam
@@ -87,7 +87,7 @@ __all__ = [
 ]
 
 # Detect the optional dep at import time so is_available() can report
-# a specific "pip install rote[api]" message instead of a cryptic
+# a specific install-hint message instead of a cryptic
 # ImportError.
 try:
     import anthropic  # noqa: F401
@@ -225,7 +225,7 @@ class AnthropicApiDriver(CompilerDriver):
             compiler agent as ``mcp__<server>__<tool>`` tools — each
             entry ``{"name": str, "url": str, "headers": dict[str, str]
             | None}`` (streamable HTTP only). Requires the ``mcp`` extra
-            (``pip install 'rote-cli[mcp]'``). Only tools whose server
+            (see :mod:`rote.extras`). Only tools whose server
             declares ``readOnlyHint`` are exposed; a server that cannot
             be reached is skipped with a warning event, never an error.
         """
@@ -265,7 +265,7 @@ class AnthropicApiDriver(CompilerDriver):
             return (
                 False,
                 "The `anthropic` package is not installed. "
-                "Install the optional extra with: `pip install rote[api]`.",
+                f"Install the optional extra with: `{install_hint('api')}`.",
             )
         if os.environ.get("ANTHROPIC_API_KEY"):
             return (True, "")
@@ -298,7 +298,7 @@ class AnthropicApiDriver(CompilerDriver):
         orchestrators that saw it in this signature.
         """
         if not _ANTHROPIC_AVAILABLE:
-            raise DriverError("anthropic package is not installed. Run: pip install rote[api]")
+            raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
 
         skill_dir = skill_dir.resolve()
         compiler_skill_dir = compiler_skill_dir.resolve()

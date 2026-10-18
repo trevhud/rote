@@ -27,7 +27,6 @@ the gate picks them up when it parks — no parking detection needed.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import subprocess
@@ -38,7 +37,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from rote._dbos import _load_dbos_config, dbos_ts_system_database_url
-from rote.eval.empirical import EmpiricalError, MeasuredRun, _wait_for_workflow_id
+from rote.eval.empirical import (
+    EmpiricalError,
+    MeasuredRun,
+    _wait_for_workflow_id,
+    failure_excerpt,
+)
+from rote.extras import install_hint, is_installed
 from rote.mcp.parked import (
     DbosAuthChannel,
     ParkWatchFactory,
@@ -97,7 +102,9 @@ def _start_throwaway_postgres(app_dir: Path) -> tuple[str, str]:
         timeout=300,  # includes a possible first-time image pull
     )
     if run.returncode != 0:
-        raise EmpiricalError(f"docker run postgres failed: {(run.stderr or run.stdout)[:500]}")
+        raise EmpiricalError(
+            f"docker run postgres failed: {failure_excerpt(run.stderr, run.stdout)}"
+        )
     deadline = time.monotonic() + PG_READY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         ready = subprocess.run(
@@ -124,8 +131,7 @@ def _send_signals_portable(url: str, workflow_id: str, signals: dict[str, Any]) 
         from dbos import DBOSClient, WorkflowSerializationFormat
     except ImportError as e:
         raise EmpiricalError(
-            "signaling a gated dbos-ts pipeline requires the dbos extra: "
-            "pip install 'rote-cli[dbos]'"
+            f"signaling a gated dbos-ts pipeline requires the dbos extra: {install_hint('dbos')}"
         ) from e
     client = DBOSClient(system_database_url=url)
     for topic, payload in signals.items():
@@ -232,10 +238,10 @@ def run_dbos_ts(
             if park_watch is not None and app_parks_on_auth(app_dir):
                 # Reading the park needs the Python DBOS client, which a
                 # TS-only install may not have. The run itself does not.
-                if importlib.util.find_spec("dbos") is None:
+                if not is_installed("dbos"):
                     print(
                         "rote run: note: auth parks of this run will not be reported "
-                        "(needs the dbos extra: pip install 'rote-cli[dbos]')",
+                        f"(needs the dbos extra: {install_hint('dbos')})",
                         file=sys.stderr,
                     )
                 else:
@@ -270,7 +276,7 @@ def run_dbos_ts(
             return MeasuredRun(
                 wall_seconds=wall,
                 output=None,
-                error=f"app exited {proc.returncode}: {(stderr or stdout)[:800]}",
+                error=f"app exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
             )
         output = _parse_trailing_json(stdout)
         if output is None:

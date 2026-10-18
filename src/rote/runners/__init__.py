@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from rote.adapters._common import unimplemented_stubs
 from rote.eval.baseline import (
     ObservedToolCall,
     derive_input_payload,
@@ -26,6 +27,7 @@ from rote.eval.baseline import (
     run_baseline_trial,
 )
 from rote.eval.empirical import MeasuredRun, run_pipeline_trial
+from rote.extras import MissingExtraError, require_extra
 
 __all__ = [
     "RUNNABLE_RUNTIMES",
@@ -36,6 +38,7 @@ __all__ = [
     "detect_target",
     "native_run_hint",
     "parse_signal_args",
+    "preflight_pipeline",
     "resolve_gate_signals",
     "resolve_input",
     "run_pipeline",
@@ -358,6 +361,48 @@ def run_skill(
         servers_skipped=skipped,
         read_only=not allow_writes,
     )
+
+
+#: Runtimes whose runner needs a Python extra in rote's own environment:
+#: dbos apps run under ``sys.executable`` and temporal runs its worker
+#: in-process. The TS runtimes bring their own toolchain.
+_RUNTIME_EXTRAS: dict[str, str] = {"dbos": "dbos", "temporal": "temporal"}
+
+
+def preflight_pipeline(target: RunTarget, *, allow_stubs: bool = False) -> None:
+    """Refuse a run that cannot work, before anything starts or retries.
+
+    Two checks, both cheap and both things a newcomer hits first:
+
+    * the runtime's extra is installed (otherwise the app dies on its
+      first import, behind a traceback that never says which extra);
+    * no emitted ``extracted/`` module is still a stub. A stub raises on
+      every call, and a durable runtime retries it per the IR's policy
+      before failing, so the user waits through the retries only to
+      learn something the emit manifest already knew. ``allow_stubs``
+      skips this one, for a pipeline whose stubbed node is on a branch
+      the run will not take (``rote run --allow-stubs``).
+
+    ``rote run`` calls this before input derivation and gate prompts;
+    :func:`run_pipeline` does not repeat it.
+    """
+    runtime = target.runtime or ""
+    extra = _RUNTIME_EXTRAS.get(runtime)
+    if extra is not None:
+        try:
+            require_extra(extra, f"running a {runtime} app")
+        except MissingExtraError as e:
+            raise TargetError(str(e)) from e
+    stubs = [] if allow_stubs else unimplemented_stubs(target.path)
+    if stubs:
+        listing = "\n".join(f"  {stub}" for stub in stubs)
+        raise TargetError(
+            f"{len(stubs)} emitted module(s) are still stubs and would raise "
+            f"on their first call:\n{listing}\n"
+            f"Implement them (or re-emit next to the real extracted/ modules), "
+            f"then re-run: rote run {target.path}\n"
+            f"If the run will not reach them, pass --allow-stubs."
+        )
 
 
 @dataclass(frozen=True)

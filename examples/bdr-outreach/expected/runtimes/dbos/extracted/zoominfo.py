@@ -26,5 +26,6 @@ def enrich_batch(**payload: Any) -> Any:
           'validDate']
     """
     raise NotImplementedError(
-        "zoominfo.enrich_batch: implement against the vendor API"
+        "[rote stub] zoominfo.enrich_batch: "
+        "implement against the vendor API"
     )

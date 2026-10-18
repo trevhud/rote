@@ -10,5 +10,5 @@
  */
 
 export async function createSalesTemplate(_input: unknown): Promise<never> {
-    throw new Error("external_call create_sales_template: stub not implemented");
+    throw new Error("[rote stub] external_call create_sales_template: stub not implemented");
 }

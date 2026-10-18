@@ -88,6 +88,7 @@ from typing import Literal
 from rote.adapters._common import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_OPENAI_MODEL,
+    STUB_SENTINEL,
     EmitWriter,
     _duration_to_seconds,
     _execution_waves,
@@ -97,6 +98,7 @@ from rote.adapters._common import (
     _to_pascal_case,
     check_input_refs_available,
     fan_out_nodes,
+    judge_override_readme,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
@@ -288,9 +290,9 @@ def emit_extracted_module(node: Node) -> str:
     # the annotation with your concrete output type when you fill in
     # the implementation.
     if node.kind is NodeKind.AGENT_LOOP:
-        msg = f'"agent_loop {node.id}: requires an agent runtime — implement me"'
+        msg = f'"{STUB_SENTINEL} agent_loop {node.id}: requires an agent runtime — implement me"'
     else:
-        msg = f'"{node.kind.value} {node.id}: stub not implemented"'
+        msg = f'"{STUB_SENTINEL} {node.kind.value} {node.id}: stub not implemented"'
     body = [
         "",
         f"export async function {fn_name}(_input: unknown): Promise<never> {{",
@@ -876,6 +878,7 @@ Prefer direct vendor-SDK calls? Re-emit with
 """
     else:
         mcp_note = ""
+    judge_note = judge_override_readme(pipeline)
 
     # Built flush-left (not textwrap.dedent) because interpolated
     # multi-line values — the gate table rows — contain unindented lines
@@ -922,12 +925,7 @@ export DBOS_SYSTEM_DATABASE_URL="postgresql://user:pass@host:5432/db"
 node dist/main.js '{{...}}'   # or: npx dbos start
 ```
 
-LLM judge steps call the vendor SDK directly and read the standard
-`ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variables. Each
-judge also honors per-node `ROTE_MODEL_<NODE_ID>` and
-`ROTE_BASE_URL_<NODE_ID>` overrides, so operators can swap the model
-or point at an OpenAI-compatible endpoint without re-emitting.
-{mcp_note}
+{judge_note}{mcp_note}
 ## HITL gates
 
 The workflow parks durably at each gate until a message arrives on
