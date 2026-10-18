@@ -18,12 +18,20 @@ park, which delivers the next gate event early. Cloudflare buffers
 events per instance, so an early event is consumed when its
 ``waitForEvent`` registers — harmless for distinct gate signals, but
 raise ``--timeout``/stability if a pipeline re-uses one signal name in
-a loop.
+a loop. A step sleeping between retry attempts looks the same, which is
+why a "park" after the last gate payload is not an error: the runner
+keeps waiting for a terminal state instead.
+
+Local dev reports a failed step as a generic ``WorkflowFatalError``
+("a step threw an NonRetryableError"), so the error a user needs (for
+example "set ROTE_MCP_VENDOR_URL") is only in workerd's console output.
+The runner reads it back from the wrangler log and reports it.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -31,7 +39,12 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
-from rote.mcp.parked import LogMarkerChannel, ParkWatchFactory, app_parks_on_auth
+from rote.mcp.parked import (
+    AuthParkWatcher,
+    LogMarkerChannel,
+    ParkWatchFactory,
+    app_parks_on_auth,
+)
 from rote.runners._node import (
     ensure_npm_install,
     find_free_port,
@@ -137,44 +150,145 @@ def run_cloudflare(
                     LogMarkerChannel(log_path, None, run_id=instance_id, remote_fix=remote_fix)
                 )
 
-            while True:
-                state = _wait_until_parked_or_complete(port, instance_id, deadline=deadline)
-                status = state.get("status")
-                if status not in ("complete", "errored", "terminated") and watcher is not None:
-                    deadline += watcher.tick()
-                    if watcher.has_active_park:
-                        continue
-                if status == "complete":
-                    wall = time.monotonic() - started
-                    output = state.get("output")
-                    if isinstance(output, dict):
-                        return MeasuredRun(wall_seconds=wall, output=output)
-                    return MeasuredRun(
-                        wall_seconds=wall,
-                        output={"result": output} if output is not None else None,
-                    )
-                if status in ("errored", "terminated"):
-                    return MeasuredRun(
-                        wall_seconds=time.monotonic() - started,
-                        output=None,
-                        error=f"workflow {status}: {json.dumps(state)[:800]}",
-                    )
-                if not pending:
-                    return MeasuredRun(
-                        wall_seconds=time.monotonic() - started,
-                        output=None,
-                        error=(
-                            "workflow is parked but every gate payload has been "
-                            f"delivered — last state: {json.dumps(state)[:500]}"
-                        ),
-                    )
-                gate, payload = pending.pop(0)
-                http_post_json(
-                    f"http://127.0.0.1:{port}/event/{instance_id}/{gate}",
-                    payload if isinstance(payload, dict) else {"payload": payload},
-                )
+            return _drive_instance(
+                port,
+                instance_id,
+                pending,
+                started=started,
+                deadline=deadline,
+                log_path=log_path,
+                watcher=watcher,
+            )
         finally:
             terminate(proc)
+
+
+def _drive_instance(
+    port: int,
+    instance_id: str,
+    pending: list[tuple[str, Any]],
+    *,
+    started: float,
+    deadline: float,
+    log_path: Path,
+    watcher: AuthParkWatcher | None = None,
+) -> MeasuredRun:
+    """Deliver gate payloads on each inferred park until the run ends.
+
+    Once every payload is out, a "park" is usually a step sleeping
+    between retry attempts, so the runner keeps waiting for a terminal
+    state (bounded by ``deadline``) and reports what actually failed.
+    The exception is a stuck gate: the last payload was never consumed
+    (a consumed payload adds a step output) and no step has logged an
+    error, so nothing is retrying. That fails at once.
+    """
+    steps_at_last_payload: int | None = None
+    while True:
+        try:
+            state = _wait_until_parked_or_complete(port, instance_id, deadline=deadline)
+        except EmpiricalError as exc:
+            if pending:
+                raise
+            raise EmpiricalError(
+                f"every gate payload was delivered but the workflow did not finish: "
+                f"{exc}{_step_errors_suffix(log_path)}"
+            ) from None
+        status = state.get("status")
+        if status not in ("complete", "errored", "terminated") and watcher is not None:
+            deadline += watcher.tick()
+            if watcher.has_active_park:
+                continue
+        if status == "complete":
+            wall = time.monotonic() - started
+            output = state.get("output")
+            if isinstance(output, dict):
+                return MeasuredRun(wall_seconds=wall, output=output)
+            return MeasuredRun(
+                wall_seconds=wall,
+                output={"result": output} if output is not None else None,
+            )
+        if status in ("errored", "terminated"):
+            return MeasuredRun(
+                wall_seconds=time.monotonic() - started,
+                output=None,
+                error=_failure_message(status, state, log_path),
+            )
+        steps = len(state.get("__LOCAL_DEV_STEP_OUTPUTS", []))
+        if not pending:
+            if steps == steps_at_last_payload and not _step_errors(log_path):
+                return MeasuredRun(
+                    wall_seconds=time.monotonic() - started,
+                    output=None,
+                    error=(
+                        "workflow is still parked after its last gate payload, which it "
+                        "never consumed, and no step is retrying. Check that each "
+                        "--signal name matches its gate's signal. Last state: "
+                        f"{json.dumps(state)[:500]}"
+                    ),
+                )
+            continue
+        steps_at_last_payload = steps
+        gate, payload = pending.pop(0)
+        http_post_json(
+            f"http://127.0.0.1:{port}/event/{instance_id}/{gate}",
+            payload if isinstance(payload, dict) else {"payload": payload},
+        )
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+#: workerd prints an uncaught step error as `✘ [ERROR] Uncaught <Name>: <message>`,
+#: sometimes followed by a stray ` Error` (the start of its stack heading).
+_UNCAUGHT_RE = re.compile(r"\[ERROR\]\s+Uncaught\s+(.+?)(?:\s+Error)?\s*$")
+
+
+def _step_errors(log_path: Path) -> list[str]:
+    """Distinct uncaught step errors from the wrangler log, newest last.
+
+    Ordered by each error's latest occurrence, so an early failure that
+    a retry recovered from never outranks the failure that ended the run.
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return []
+    errors: list[str] = []
+    for line in _ANSI_RE.sub("", text).splitlines():
+        match = _UNCAUGHT_RE.search(line)
+        if match:
+            if match.group(1) in errors:
+                errors.remove(match.group(1))
+            errors.append(match.group(1))
+    return errors
+
+
+def _step_errors_suffix(log_path: Path) -> str:
+    errors = _step_errors(log_path)
+    if not errors:
+        return ""
+    return "\nstep error: " + errors[-1]
+
+
+#: workerd's console output reaches the log file after the status API
+#: already says "errored", so a failure waits this long for the line.
+STEP_ERROR_LOG_GRACE_SECONDS = 3.0
+
+
+def _failure_message(status: str, state: dict[str, Any], log_path: Path) -> str:
+    """``workflow errored: <error>``, with the real step error when the log has it."""
+    error = state.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        name = error.get("name")
+        summary = f"{name}: {error['message']}" if name else str(error["message"])
+    else:
+        summary = json.dumps(state)[:800]
+    errors = _step_errors(log_path)
+    grace_deadline = time.monotonic() + STEP_ERROR_LOG_GRACE_SECONDS
+    while status == "errored" and not errors and time.monotonic() < grace_deadline:
+        time.sleep(0.2)
+        errors = _step_errors(log_path)
+    if errors and errors[-1] not in summary:
+        summary += "\nstep error: " + errors[-1]
+    return f"workflow {status}: {summary}"
 
 
 def _wait_for_ready(proc: subprocess.Popen[Any], port: int, log_path: Path) -> None:

@@ -529,6 +529,21 @@ def test_parallel_wave_omits_retry_policy_when_ir_declares_none() -> None:
     ast.parse(src)
 
 
+def test_agent_loop_with_tools_does_not_retry_a_missing_mcp_endpoint() -> None:
+    """Its tool servers resolve at run time; Temporal matches non-retryable
+    types by exception class name, so RoteMcpConfigError fails at once.
+    A loop without tools, or any other node, keeps a plain policy."""
+    from tests._helpers import unconfigured_mcp_pipelines
+
+    src = TemporalAdapter().emit_workflow(unconfigured_mcp_pipelines("t")["research"])
+    assert (
+        "RetryPolicy(maximum_attempts=4, backoff_coefficient=2.0, "
+        'non_retryable_error_types=["RoteMcpConfigError"])'
+    ) in src
+    plain = TemporalAdapter().emit_workflow(_two_node_wave_pipeline())
+    assert "non_retryable_error_types" not in plain
+
+
 # ───────── MCP-only external_call refusal ─────────
 
 

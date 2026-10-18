@@ -169,9 +169,11 @@ def test_retry_policy_mapping(main_src: str) -> None:
         "max_attempts=6, backoff_rate=2.0)" in main_src
     )
     assert (
-        '@DBOS.step(name="target_research", retries_allowed=True, '
-        "max_attempts=3, backoff_rate=2.0)" in main_src
+        '@DBOS.step(name="target_research", retries_allowed=True, max_attempts=3, '
+        "backoff_rate=2.0, should_retry=_retry_unless_config_error)" in main_src
     )
+    # An agent loop with tools skips its retries on a missing MCP endpoint.
+    assert 'return type(exc).__name__ != "RoteMcpConfigError"' in main_src
     assert '@DBOS.step(name="taxonomy_lookup")' in main_src
 
 

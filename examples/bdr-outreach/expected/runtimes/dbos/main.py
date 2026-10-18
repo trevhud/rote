@@ -161,7 +161,13 @@ def _call_impl(fn: Any, payload: dict) -> Any:
     return result
 
 
-@DBOS.step(name="target_research", retries_allowed=True, max_attempts=3, backoff_rate=2.0)
+def _retry_unless_config_error(exc: BaseException) -> bool:
+    """A missing MCP endpoint (RoteMcpConfigError) is configuration: no
+    retry can fix it. Matched by name, like the other runtimes."""
+    return type(exc).__name__ != "RoteMcpConfigError"
+
+
+@DBOS.step(name="target_research", retries_allowed=True, max_attempts=3, backoff_rate=2.0, should_retry=_retry_unless_config_error)
 def target_research(payload: dict) -> dict:
     """Run external research (Bright Data web search, ClinicalTrials.gov)
 

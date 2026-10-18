@@ -154,8 +154,10 @@ def test_retry_policy_mapping(main_src: str) -> None:
         "maxAttempts: 6, backoffRate: 2, timeoutMS: 30000 }" in main_src
     )
     assert (
-        '{ name: "target_research", retriesAllowed: true, '
-        "maxAttempts: 3, backoffRate: 2, timeoutMS: 300000 }" in main_src
+        '{ name: "target_research", retriesAllowed: true, maxAttempts: 3, backoffRate: 2, '
+        "shouldRetry: (error: unknown) => "
+        '(error as { name?: unknown } | null)?.name !== "RoteMcpConfigError", '
+        "timeoutMS: 300000 }" in main_src
     )
     assert '{ name: "taxonomy_lookup" }' in main_src
 

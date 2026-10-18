@@ -167,7 +167,9 @@ def _step_decorator(node: Node, *, mcp: bool = False) -> str:
     dead credential is not transient, and burning attempts on it only
     delays the park that actually fixes it. A server asking for input
     mid-call (``RoteMcpInputRequired``) is opted out too: nothing a retry
-    sends can answer it.
+    sends can answer it. A missing endpoint
+    (``RoteMcpConfigError``) is opted out the same way: no attempt can fix
+    configuration.
     """
     args = [f'name="{node.id}"']
     if node.retry and node.retry.max > 0:
@@ -177,7 +179,19 @@ def _step_decorator(node: Node, *, mcp: bool = False) -> str:
         args.append(f"backoff_rate={backoff_rate}")
         if mcp:
             args.append("should_retry=_mcp_should_retry")
+        elif node.kind is NodeKind.AGENT_LOOP and node.tools:
+            # Its tool servers resolve at run time; a missing endpoint
+            # fails at once (the loop does not park on auth here).
+            args.append("should_retry=_retry_unless_config_error")
     return f"@DBOS.step({', '.join(args)})"
+
+
+_RETRY_UNLESS_CONFIG_ERROR = '''\
+def _retry_unless_config_error(exc: BaseException) -> bool:
+    """A missing MCP endpoint (RoteMcpConfigError) is configuration: no
+    retry can fix it. Matched by name, like the other runtimes."""
+    return type(exc).__name__ != "RoteMcpConfigError"
+'''
 
 
 def _retry_on_comment(node: Node) -> str:
@@ -688,6 +702,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         header = header.replace("import json\n", "import inspect\nimport json\n", 1)
         header += "\n\n" + call_impl_helper()
 
+    if any(
+        n.kind is NodeKind.AGENT_LOOP and n.tools and n.retry and n.retry.max > 0
+        for n in pipeline.nodes
+    ):
+        header += "\n\n" + _RETRY_UNLESS_CONFIG_ERROR
+
     if mcp_backed:
         header += "\n\n" + textwrap.dedent(
             '''\
@@ -705,7 +725,11 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
             from dbos import WorkflowHandle
 
-            from extracted._rote_mcp import RoteMcpAuthNeeded, RoteMcpInputRequired
+            from extracted._rote_mcp import (
+                RoteMcpAuthNeeded,
+                RoteMcpConfigError,
+                RoteMcpInputRequired,
+            )
 
             _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
 
@@ -717,9 +741,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
 
             def _mcp_should_retry(exc: BaseException) -> bool:
-                """Auth failures skip the retry budget and park instead; a server
-                asking for human input mid-call fails at once (no retry answers it)."""
-                return not isinstance(exc, (RoteMcpAuthNeeded, RoteMcpInputRequired))
+                """Auth failures skip the retry budget and park instead. A server
+                asking for human input mid-call, and a missing endpoint
+                (configuration), fail at once: no retry answers or fixes them."""
+                return not isinstance(
+                    exc, (RoteMcpAuthNeeded, RoteMcpInputRequired, RoteMcpConfigError)
+                )
 
 
             def _park_for_auth(server: str, node: str) -> None:

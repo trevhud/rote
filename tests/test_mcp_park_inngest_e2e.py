@@ -40,6 +40,7 @@ from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPo
 from rote.mcp import clear_token_file, write_token_file
 from rote.mcp.parked import parse_auth_park_markers
 from rote.mcp.release import release_parked_workflows
+from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
 
 pytest.importorskip("fastmcp")
 
@@ -275,3 +276,34 @@ def test_inngest_run_parks_and_broadcast_release_completes_it(
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+
+
+@pytest.mark.parametrize("node_id", ["lookup", "research"])
+def test_inngest_missing_endpoint_runs_the_step_once(
+    node_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No endpoint for the server: a bound step and an agent loop each run
+    ONCE despite the function-level retries, and the run fails naming the
+    variable. Driven through the production runner (`rote run`'s)."""
+    if not _node_available():
+        pytest.skip("Node / npm not available")
+    from rote.runners.inngest import run_inngest
+
+    monkeypatch.delenv("ROTE_MCP_VENDOR_URL", raising=False)
+    app_dir = tmp_path / "app"
+    pipeline = unconfigured_mcp_pipelines("inngest_config")[node_id]
+    InngestAdapter().emit(pipeline, app_dir)
+    count_ts_step_attempts(app_dir / "src" / "extracted" / f"{node_id}.ts", node_id)
+
+    run = run_inngest(
+        app_dir,
+        {"contact_id": "lead-9"},
+        pipeline=pipeline,
+        signals={},
+        gate_order=[],
+        timeout_seconds=240,
+    )
+    app_log = (app_dir / "rote-run-app.log").read_text(encoding="utf-8")
+    assert run.error is not None, app_log
+    assert attempts_in(app_log, node_id) == 1, app_log
+    assert "ROTE_MCP_VENDOR_URL" in app_log

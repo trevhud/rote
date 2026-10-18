@@ -351,6 +351,30 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     pipeline's real judges, or say there are none, instead of a
     `ROTE_MODEL_VET_CONTACT` example on pipelines with no judges.
   - `rote config` columns line up for every key, including `inference`.
+- A missing MCP endpoint (no `ROTE_MCP_<SERVER>_URL`, no registry entry,
+  no URL in the IR) now fails the step at once on every MCP runtime,
+  naming the variable to set. It used to be retried like a network
+  error: DBOS ran all 4 attempts and reported only
+  `DBOSMaxStepRetriesExceeded`. The helpers raise a new
+  `RoteMcpConfigError`, which `should_retry` (DBOS Python),
+  `shouldRetry` (DBOS-TS), `NonRetriableError` (Inngest) and
+  `NonRetryableError` (Cloudflare) now exclude from the retry budget,
+  the same way they already excluded auth failures. It does not park:
+  the fix is the variable and a restart, not a login. Agent loops get
+  the same treatment: tool discovery that cannot reach a pinned server
+  for lack of an endpoint raises `RoteMcpConfigError` (TS and Python),
+  and each runtime's loop step skips its retries on it (temporal via
+  `non_retryable_error_types`). The Python loop also wires a pinned
+  server that resolves from its `ROTE_MCP_<SERVER>_URL` alone, which
+  it used to ignore.
+- `rote run` on a Cloudflare app reports the step error that failed the
+  run. Local dev's status only says `WorkflowFatalError`, so the runner
+  now reads the real error back from the wrangler log. A step sleeping
+  between retry attempts after the last gate payload was delivered is
+  no longer mistaken for a park and failed with "every gate payload has
+  been delivered"; the runner waits for the run's real outcome, reports
+  the newest step error, and still fails fast on a gate that never
+  consumes its payload while nothing is retrying.
 
 ## [0.14.0] - 2026-10-18
 

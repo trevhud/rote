@@ -46,6 +46,7 @@ import pytest
 from rote.adapters.cloudflare import CloudflareAdapter, workflow_class_name
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPolicy
 from rote.mcp.parked import parse_auth_park_markers
+from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
 
 pytest.importorskip("fastmcp")
 
@@ -301,3 +302,29 @@ def test_cf_instance_parks_and_event_release_completes_it(mcp_server: str, tmp_p
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+@pytest.mark.parametrize("node_id", ["lookup", "research"])
+def test_cf_missing_endpoint_runs_the_step_once(
+    node_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No endpoint for the server: a bound step and an agent loop each run
+    ONCE despite `retries.limit`, and `rote run`'s runner reports the
+    variable (local dev's status alone says only WorkflowFatalError)."""
+    if not _node_available():
+        pytest.skip("Node / npm not available")
+    from rote.runners.cloudflare import run_cloudflare
+
+    monkeypatch.delenv("ROTE_MCP_VENDOR_URL", raising=False)
+    app_dir = tmp_path / "app"
+    pipeline = unconfigured_mcp_pipelines("cf_config")[node_id]
+    CloudflareAdapter().emit(pipeline, app_dir)
+    count_ts_step_attempts(app_dir / "src" / "extracted" / f"{node_id}.ts", node_id)
+
+    run = run_cloudflare(
+        app_dir, {"contact_id": "lead-9"}, signals={}, gate_order=[], timeout_seconds=240
+    )
+    log = (app_dir / "wrangler-dev.log").read_text(encoding="utf-8", errors="replace")
+    assert run.error is not None, log
+    assert attempts_in(log, node_id) == 1, log
+    assert "ROTE_MCP_VENDOR_URL" in run.error

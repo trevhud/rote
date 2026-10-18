@@ -287,7 +287,9 @@ def test_gate_timeout_raises_non_retriable(pipeline_src: str, bdr_pipeline: Pipe
         if node.kind is not NodeKind.HITL_GATE:
             continue
         assert f"if ({node.id}_event === null) {{" in pipeline_src
-    assert pipeline_src.count("throw new NonRetriableError(") == 2
+    # Two gates, plus failFastOnConfigError (BDR's agent loops reach MCP).
+    assert pipeline_src.count("throw new NonRetriableError(") == 3
+    assert 'step.run("target_research", async () => failFastOnConfigError(() =>' in pipeline_src
 
 
 def test_gate_resume_payload_binds_as_result(pipeline_src: str) -> None:

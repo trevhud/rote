@@ -157,6 +157,11 @@ def _duration_to_ms(s: str) -> int:
     return int(_duration_to_seconds(s) * 1000)
 
 
+def _loop_reaches_mcp(node: Node) -> bool:
+    """An agent loop that declares tools reaches MCP servers at run time."""
+    return node.kind is NodeKind.AGENT_LOOP and bool(node.tools)
+
+
 def _step_config_literal(node: Node, *, mcp: bool = False) -> str:
     """Render the config object for a ``DBOS.registerStep`` call.
 
@@ -176,10 +181,13 @@ def _step_config_literal(node: Node, *, mcp: bool = False) -> str:
     |               | predicate, not categories — surfaced as a      |
     |               | comment)                                       |
 
-    MCP-backed steps with retries additionally opt auth failures out of
-    the retry budget (``shouldRetry: mcpShouldRetry``): a missing or
-    dead credential is not transient, and burning attempts on it only
-    delays the park that actually fixes it.
+    MCP-backed steps with retries additionally opt auth and configuration
+    failures out of the retry budget (``shouldRetry: mcpShouldRetry``): a
+    missing or dead credential is not transient, and burning attempts on
+    it only delays the park that actually fixes it; a missing endpoint is
+    not transient either, and no attempt can fix it. An agent loop that
+    declares tools opts out the configuration failure only: its tool
+    servers resolve at run time, and it does not park on auth here.
     """
     parts = [f"name: {json.dumps(node.id)}"]
     if node.retry and node.retry.max > 0:
@@ -189,6 +197,11 @@ def _step_config_literal(node: Node, *, mcp: bool = False) -> str:
         parts.append(f"backoffRate: {backoff_rate}")
         if mcp:
             parts.append("shouldRetry: mcpShouldRetry")
+        elif _loop_reaches_mcp(node):
+            parts.append(
+                "shouldRetry: (error: unknown) => "
+                '(error as { name?: unknown } | null)?.name !== "RoteMcpConfigError"'
+            )
     if node.timeout:
         parts.append(f"timeoutMS: {_duration_to_ms(node.timeout)}")
     return "{ " + ", ".join(parts) + " }"
@@ -562,10 +575,15 @@ const AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600; // 30 days
 // the observer already released.
 const parkCounts = new Map<string, number>();
 
-/** Auth failures skip the retry budget and park instead; a server asking
- * for input mid-call fails at once (no retry answers it). */
+/** Auth failures skip the retry budget and park instead. A server asking
+ * for input mid-call, and a missing endpoint (configuration), fail at
+ * once: no retry answers or fixes them. */
 function mcpShouldRetry(error: unknown): boolean {
-    return !isRoteMcpAuthNeeded(error) && !isRoteMcpInputRequired(error);
+    return (
+        !isRoteMcpAuthNeeded(error) &&
+        !isRoteMcpInputRequired(error) &&
+        !isRoteMcpConfigError(error)
+    );
 }
 
 /** Suspend the workflow until `rote mcp login <server>` succeeds.
@@ -683,7 +701,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     imports = module_imports(pipeline)
     if mcp_backed:
         imports += (
-            '\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";'
+            "\nimport { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired }"
+            ' from "./extracted/_roteMcp";'
         )
 
     helper_blocks: list[str] = []

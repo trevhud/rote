@@ -285,6 +285,24 @@ imports it. `_call_impl` comes in two forms from one place
 check the *result* for awaitability, so a plain wrapper returning a
 coroutine works on every runtime (`tests/test_call_impl_helper.py`).
 
+### A missing MCP endpoint is configuration: never retried, never parked
+
+`resolve_url` / `resolveUrl` raise `RoteMcpConfigError` (Python and all
+three TS helpers, detected by `name` in TS like the auth error) when no
+endpoint resolves. Every runtime's retry opt-out excludes it next to the
+auth error, so a step fails on its first attempt with a message naming
+`ROTE_MCP_<SERVER>_URL`. Agent loops reach the same gap through tool
+discovery, so `bindAgentTools` / `_mcp_config_for` raise the config error
+when it explains a missing tool, and loop steps carry a name-based opt-out
+(by name so `main` never imports MCP code, invariant #3). It must not join
+the park path: a parked run
+waits for a login, and no login supplies an endpoint. Before this, DBOS
+spent 4 attempts and surfaced only `DBOSMaxStepRetriesExceeded`
+(`tests/test_mcp_config_error_e2e.py`). On Cloudflare local dev the
+instance status then reads only `WorkflowFatalError`; the real message is
+in workerd's console output, which `rote.runners.cloudflare` reads back
+from `wrangler-dev.log`.
+
 ### Never return fastmcp's `result.data` from an MCP step
 
 `_result_payload` in `rote.mcp._runtime_helper` must NOT be
