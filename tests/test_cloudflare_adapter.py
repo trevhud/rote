@@ -138,7 +138,35 @@ def test_zod_converts_object_with_required_and_optional() -> None:
     assert "z.object({" in src
     assert '"name": z.string()' in src
     assert '"age": z.number().int().optional()' in src
-    assert "}).strict()" in src
+    # Open schema: Zod's default strip, matching Pydantic's extra="ignore".
+    assert src.endswith("})")
+    assert ".strict()" not in src
+
+
+def test_zod_object_strictness_follows_additional_properties() -> None:
+    """`.strict()` exactly where the Pydantic emitter sets extra="forbid"."""
+    closed = json_schema_to_zod(
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": False,
+        }
+    )
+    assert closed.endswith("}).strict()")
+    explicit_open = json_schema_to_zod(
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "additionalProperties": True,
+        }
+    )
+    assert ".strict()" not in explicit_open
+
+
+def test_zod_object_without_properties_is_a_free_form_record() -> None:
+    """Pydantic renders a property-less object as dict[str, Any]; an empty
+    strict object would reject every key it carries."""
+    assert json_schema_to_zod({"type": "object"}) == "z.record(z.string(), z.unknown())"
 
 
 def test_zod_converts_array() -> None:
@@ -783,6 +811,7 @@ def test_emit_accepts_llm_judge_with_signature_spec(tmp_path: Path) -> None:
                 kind=NodeKind.LLM_JUDGE,
                 description="structured signature",
                 signature_spec=spec,
+                inputs={"q": "pipeline.input.q"},
             ),
         ],
         edges=[],

@@ -40,10 +40,16 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     _to_camel_case,
     _to_pascal_case,
-    fan_out_element_param,
     safe_block_comment_line,
 )
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import (
+    LLMSignature,
+    Node,
+    NodeKind,
+    Pipeline,
+    fan_out_element_param,
+    parse_input_ref,
+)
 
 # ───────── JSON Schema → Zod ─────────
 
@@ -100,10 +106,19 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
     schema_type = schema.get("type")
 
     if schema_type == "object":
+        # Unknown-key handling mirrors the Pydantic emitter exactly, so one
+        # payload validates the same way on every runtime: an object with no
+        # declared properties is a free-form dict (``dict[str, Any]``), one
+        # with properties rejects extra keys only under
+        # ``additionalProperties: false`` (``extra="forbid"``) and otherwise
+        # drops them (Pydantic's default ``extra="ignore"`` is Zod's default
+        # strip). Unconditional ``.strict()`` made an upstream object with one
+        # undeclared field fail only on the TypeScript runtimes.
         props = schema.get("properties", {})
         required = set(schema.get("required", []))
         if not props:
-            return "z.object({}).strict()"
+            return "z.record(z.string(), z.unknown())"
+        closing = ").strict()" if schema.get("additionalProperties") is False else ")"
         pad = "  " * (indent + 1)
         outer = "  " * indent
         lines = []
@@ -113,7 +128,7 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
                 inner = f"{inner}.optional()"
             lines.append(f"{pad}{json.dumps(name)}: {inner},")
         body = "\n".join(lines)
-        return f"z.object({{\n{body}\n{outer}}}).strict()"
+        return f"z.object({{\n{body}\n{outer}}}{closing}"
 
     if schema_type == "array":
         items = schema.get("items", {})
@@ -622,7 +637,7 @@ def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tupl
     The payload is a one-line object binding the element param to the
     loop variable ``_item`` and every other input to its shared
     expression — the TS rendering of
-    :func:`rote.adapters._common.fan_out_element_param`, which decides
+    :func:`rote.ir.fan_out_element_param`, which decides
     *which* input is the list.
 
     The list expression goes through ``fanOutList``

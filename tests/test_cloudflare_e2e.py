@@ -38,9 +38,8 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from rote.adapters._common import fan_out_element_param
 from rote.adapters.cloudflare import CloudflareAdapter
-from rote.ir import Pipeline, parse_input_ref
+from rote.ir import Pipeline, fan_out_element_param, parse_input_ref
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"

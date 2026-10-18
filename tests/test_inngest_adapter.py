@@ -490,6 +490,7 @@ def test_emit_accepts_llm_judge_with_signature_spec(tmp_path: Path) -> None:
                 kind=NodeKind.LLM_JUDGE,
                 description="structured signature",
                 signature_spec=spec,
+                inputs={"q": "pipeline.input.q"},
             ),
         ],
         entry_nodes=["judge"],

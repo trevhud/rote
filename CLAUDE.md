@@ -724,6 +724,54 @@ reason a parkable step leaves its parallel wave — `waitForEvent` inside
 a promise combinator is undocumented and its timeout *throws*, which
 would reject every other element.
 
+### A judge's `inputs:` must satisfy its input schema, and a fan passes one element
+
+Every adapter builds a judge's payload from its `inputs:` keys and
+nothing else (`{"thread": _item}` for a fan, plus shared params), then
+validates it against `signature_spec.input_schema`. So a `required`
+property `inputs:` does not bind fails *every* call. A bound key the
+schema does not declare is also rejected, open schema or not: Python
+silently drops it, and before the Zod emitter honored
+`additionalProperties` the TS runtimes rejected every call with it. A
+binding the contract cannot name is a mistake on every runtime.
+Nothing caught that before run time: the IR loaded, every adapter
+emitted, and the first real eval of deal-monitor failed all of its
+fanned `classify_thread_step` calls on a missing `account_name`.
+
+`Pipeline._validate_judge_input_bindings` now rejects it at load. Three
+things to preserve:
+
+- **The fanned compiler shape is the usual offender.** The compiler
+  tends to flatten the element into top-level schema fields
+  (`thread_id`, `messages`) while binding the list under one name
+  (`threads`), or to declare a per-element value beside the element.
+  Neither can work, because the grammar has no per-element reference;
+  the per-element value must travel inside the element (the upstream
+  step puts `account_name` on each `MatchedThread`). The rubric says so
+  with the real wrong shapes; keep them there.
+- **It resolves the element with `rote.ir.fan_out_element_param`**, the
+  same function the emitters call, which is why that function moved out
+  of `rote.adapters._common`. A validator with its own resolution rule
+  could pass a pipeline the emitters dispatch differently.
+- **Two exemptions, both principled.** Loop-body sub-nodes are called by
+  their parent loop with model-chosen arguments, so their `inputs:`
+  describe rather than bind. A legacy `signature:`-only judge has no
+  schema in the IR to check. Don't widen the check to `Node.input_schema`
+  on other kinds: that is observed documentation, not a contract any
+  adapter enforces.
+
+Unknown-key handling is behavioral emitted code, so it must match across
+languages: Zod gets `.strict()` exactly where Pydantic gets
+`extra="forbid"` (`additionalProperties: false`), strips otherwise, and a
+property-less object is a free-form record on both.
+`tests/test_judge_schema_parity_e2e.py` runs one schema through the
+emitted Pydantic model and real `zod` and compares verdicts and parsed
+values; touch either converter and run it.
+
+`tests/test_ir.py::test_every_committed_pipeline_validates` sweeps every
+`pipeline.yaml` under `examples/`, so a snapshot that would fail its
+first judge call cannot be committed.
+
 ### An undefined fanned list must name the node, on every runtime
 
 Emitted code routes the fanned list through a guard — `fanOutList` in
@@ -1117,11 +1165,12 @@ Don't waste time debugging stubs. These are intentional.
 - `fan_out` on ALL SIX runtimes: a node marked `fan_out: true` is
   invoked once per element of its bound list, and the result binds as a
   list in input order. Which input is the list is resolved by
-  `rote.adapters._common.fan_out_element_param` (fan_out edge marker >
+  `rote.ir.fan_out_element_param` (fan_out edge marker >
   incoming-edge source > only node-bound param; ambiguity is an
-  emit-time error, never a guess) — it lives in the *language-neutral*
-  common module on purpose: two adapters disagreeing about which input
-  is the list would make one pipeline mean two different things. Per
+  emit-time error, never a guess). It lives in the IR module on
+  purpose: two adapters disagreeing about which input is the list would
+  make one pipeline mean two different things, and the judge-binding
+  validator must agree with them too. Per
   runtime: DBOS enqueues one durable step per element; python uses
   `pool.map`; temporal `asyncio.gather` over one activity execution
   each; Cloudflare and Inngest `Promise.all` over per-element steps;

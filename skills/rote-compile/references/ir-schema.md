@@ -199,12 +199,32 @@ Rules and edge cases:
    level, so treat them as documentation for the loop harness.
 5. **`fan_out` nodes:** bind the element parameter to the upstream
    *list* (e.g. `contact: exclusion_check_sequence.output.passed`).
-   The runtime is responsible for per-element dispatch — the DBOS
-   adapter enqueues one durable step per element (other adapters still
-   pass the whole list in one invocation). Type the node's signature
-   for a SINGLE element, and when the node also binds other upstream
-   outputs as shared context, mark the list edge with `fan_out: true`
-   so the element parameter is unambiguous.
+   Every runtime dispatches once per element, and each call's payload
+   is exactly `{<element param>: <one item>, <other params>: <shared
+   value>}` and nothing else. Type the node's signature for a SINGLE
+   element, and when the node also binds other upstream outputs as
+   shared context, mark the list edge with `fan_out: true` so the
+   element parameter is unambiguous.
+
+   Anything that differs per element must travel **inside** the
+   element. If the classifier needs each thread's account name, the
+   upstream step puts `account_name` on each thread it emits, and the
+   judge reads `{{ thread.account_name }}`. A sibling
+   `account_name:` param cannot work: the grammar has no per-element
+   reference, so it would bind one value for every call (or nothing).
+   deal-monitor's `classify_thread_step`:
+
+   ```yaml
+   inputs:
+     thread: match_threads_to_opps.output.matched_threads  # list of MatchedThread
+   signature_spec:
+     input_schema:
+       type: object
+       properties:
+         thread: {$ref: "#/$defs/MatchedThread"}  # carries account_name
+       required: [thread]
+       additionalProperties: false
+   ```
 6. **HITL gates need no `inputs:`** — a gate's "output" is the signal
    payload the human sends, and downstream nodes reference it as
    `<gate_id>.output[...]`.
@@ -434,6 +454,21 @@ these constraints in mind:
    match one of the four reference forms (see "Data-flow bindings"),
    node references must name real nodes (and never the node itself),
    and `pipeline.input.<field>` must name a declared input field.
+9. **An `llm_judge`'s `inputs:` satisfy its `signature_spec.input_schema`.**
+   The emitted judge builds its input from the `inputs:` keys alone
+   and validates it against the schema, so the IR is rejected when a
+   `required` property is not a key of `inputs:`, or when `inputs:`
+   binds a key the schema's `properties` do not declare (whatever
+   `additionalProperties` says: a closed schema rejects the call, an
+   open one silently drops the value). A root `$ref` into `$defs` is
+   followed. Exempt: loop-body sub-nodes (their parent loop supplies
+   the arguments) and judges with only the legacy `signature:` path.
+   The error names the node, the param, and the schema, e.g.
+   `Node 'classify_thread_step' (llm_judge): inputs: (['thread']) does
+   not satisfy signature_spec.input_schema: it requires
+   ['account_name'], which inputs: does not bind`. A pipeline input
+   the judge needs (a rubric, a campaign brief) is bound like any other
+   param: `scoring_rubric: pipeline.input.scoring_rubric`.
 
 ## Duration strings
 

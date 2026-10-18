@@ -30,10 +30,16 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     EmitWriter,
     _to_pascal_case,
-    fan_out_element_param,
     safe_docstring_line,
 )
-from rote.ir import LLMSignature, Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import (
+    LLMSignature,
+    Node,
+    NodeKind,
+    Pipeline,
+    fan_out_element_param,
+    parse_input_ref,
+)
 
 # ───────── impl / signature path references ─────────
 
