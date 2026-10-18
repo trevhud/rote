@@ -150,19 +150,11 @@ def test_sync_helper_refuses_to_deadlock_on_its_own_loop() -> None:
         call_impl(reenters, {"x": 1})
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # fork() with threads alive
-def test_a_forked_child_gets_its_own_loop() -> None:
-    """Pre-fork servers (gunicorn, uvicorn workers) fork after the parent
-    may already have run a step. The child inherits the loop globals but
-    not the loop's thread, so without the at-fork reset its first async
-    call blocks forever on a loop nothing runs."""
-    call_impl = _sync_helper()
-    assert call_impl(coroutine_fn, {"x": 1}) == {"async": 2}  # parent's loop is live
-
+def _second_call_in_a_forked_child(call_impl: Callable[[Any, dict[str, Any]], Any]) -> None:
+    """Fork, make one async call in the child, and fail if it hangs (15s)."""
     read_fd, write_fd = os.pipe()
     pid = os.fork()
-    if pid == 0:  # child: one more async call, report it, exit without cleanup
+    if pid == 0:  # child: one async call, report it, exit without cleanup
         try:
             ok = call_impl(coroutine_fn, {"x": 21}) == {"async": 42}
             os.write(write_fd, b"ok" if ok else b"wrong")
@@ -181,7 +173,45 @@ def test_a_forked_child_gets_its_own_loop() -> None:
         pytest.fail("the forked child hung on its first async call")
     assert os.read(read_fd, 16) == b"ok"
     os.close(read_fd)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # fork() with threads alive
+def test_a_forked_child_gets_its_own_loop() -> None:
+    """Pre-fork servers (gunicorn, uvicorn workers) fork after the parent
+    may already have run a step. The child inherits the loop globals but
+    not the loop's thread, so without the at-fork reset its first async
+    call blocks forever on a loop nothing runs."""
+    call_impl = _sync_helper()
+    assert call_impl(coroutine_fn, {"x": 1}) == {"async": 2}  # parent's loop is live
+    _second_call_in_a_forked_child(call_impl)
     # The parent's loop is untouched by the child's reset.
+    assert call_impl(coroutine_fn, {"x": 3}) == {"async": 6}
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # fork() with threads alive
+def test_a_child_forked_while_another_thread_holds_the_lock_still_runs() -> None:
+    """A step starting the loop on another thread at the moment of the
+    fork: the child inherits the lock locked, with no thread left to
+    release it, so without a fresh lock its first async call blocks."""
+    call_impl = _sync_helper()
+    lock = call_impl.__globals__["_ASYNC_LOOP_LOCK"]
+    held, release = threading.Event(), threading.Event()
+
+    def hold() -> None:
+        with lock:
+            held.set()
+            release.wait(30)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    assert held.wait(10)
+    try:
+        _second_call_in_a_forked_child(call_impl)
+    finally:
+        release.set()
+        holder.join(10)
     assert call_impl(coroutine_fn, {"x": 3}) == {"async": 6}
 
 
