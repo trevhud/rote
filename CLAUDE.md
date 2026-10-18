@@ -120,7 +120,8 @@ the Anthropic SDK client (see
     with the Cloudflare adapter. Note: the DBOS **TS** SDK is
     Postgres-only (no SQLite parity with DBOS Python), and its
     `DBOS.recv` defaults to a 60s timeout — the emitter always passes
-    the IR timeout explicitly.
+    the IR timeout explicitly. Targets DBOS 3 (Python) / Transact v5
+    (TS); see the DBOS 3 queue gotcha below.
   - `InngestAdapter`
     ([`src/rote/adapters/inngest.py`](src/rote/adapters/inngest.py),
     registered as `inngest`) — emits a TypeScript Inngest app (one
@@ -402,6 +403,41 @@ Two behaviors to preserve:
   parks and `rote mcp login` releases it, instead of dying with a
   misleading "unknown tool".
 
+### `rote run` must see a park, and only the runner can release a local one
+
+A parked run used to look like a hang under `rote run`. The run-side
+watcher (`rote.mcp.parked`) reads each runtime's park signal: the DBOS
+`rote_auth_status` event (now `{awaiting, node}`), and on Inngest and
+Cloudflare a `rote-auth-park {json}` line the emitted park prints before
+its `waitForEvent`, because neither local dev server reports what a run
+waits on. Traps, all found by running it:
+
+- **The prompt goes to stderr.** `input()` writes its prompt to stdout,
+  which is `rote run`'s result JSON. On a pty with stdout piped the user
+  is asked a question they never see and the run waits forever.
+  `_stderr_input` exists for this; don't "simplify" it back to `input`.
+- **Replays reprint the marker.** Both TS runtimes re-execute workflow
+  code after a release, so the line prints again. Dedupe on its `wait`
+  field (the wait's step id), never on server or node.
+- **`rote mcp login` cannot reach a `rote run` dev server.** The
+  registry-wide release targets Inngest's default port and the
+  Cloudflare REST API. So the watcher releases its own run when the
+  server's token file or registry entry changes. On DBOS it waits a few
+  seconds first, because login already released registered DBOS apps.
+- **A login writes the token file twice.** Client registration lands
+  first with no token. Releasing on that write wakes the run into the
+  same failure, it parks again, and the finished login then looks like
+  "no change". `credentials_settled` waits for an access token.
+- **A Worker never sees the local token store.** On Cloudflare the
+  watcher shows the export-to-`.dev.vars` fix and neither offers a login
+  nor self-releases, since a login there would "succeed" and change
+  nothing the Worker can read.
+- **An auth park looks like a gate park to the Cloudflare stability
+  heuristic.** While the watcher reports an active park, the runner must
+  not spend a gate payload on it.
+- Non-TTY never prompts and never opens a browser. The browser login is
+  offered only when stdin and stderr are both terminals.
+
 ### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
 
 Its tools are MCP tools, so `bindAgentTools` and every in-loop tool call
@@ -647,6 +683,25 @@ empirically against `inngest` 4.11.0 + `inngest-cli` 1.34.0:
    dev server's single startup sync can race the app boot and never
    register it — the e2e sends an explicit `PUT` to the app's serve
    handler to force registration. See `tests/test_inngest_e2e.py`.
+
+### DBOS 3 queues exist only after launch; emitted apps start through `launch()`
+
+DBOS 3 (Python) and DBOS Transact v5 (TS) removed direct queue
+construction: `Queue("name")` raises `DBOSException` at import, and
+`DBOS.register_queue` needs a launched runtime because queues now live
+in the system database. A workflow enqueued on a queue nobody registered
+does not fail; it sits in `ENQUEUED` forever. So the emitted `main.py`
+declares `QUEUE_NAME`, enqueues via `_enqueue` (a thin
+`DBOS.enqueue_workflow(QUEUE_NAME, ...)` wrapper), and exposes
+`launch()` = `DBOS.launch()` + `DBOS.register_queue(QUEUE_NAME)`. Any
+in-process launcher, tests included, must call `main_module.launch()`.
+A bare `DBOS.launch()` hangs the first parallel wave, which shows up
+only as a test timeout. Two more v5 traps on the TS side: the SDK no
+longer reads `dbos-config.yaml` at launch (only the `dbos` CLI does, so
+`rote._dbos.dbos_ts_system_database_url` ignores its
+`system_database_url` key), and starting or enqueuing a *step* directly
+now throws, which is one reason the DBOS-TS emitter keeps parallel waves
+on `Promise.allSettled` instead of queues.
 
 ### A fan_out element's step name must carry its index
 

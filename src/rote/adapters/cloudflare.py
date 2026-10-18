@@ -71,6 +71,7 @@ from rote.adapters._ts_common import (
     payload_ts_literal,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
+from rote.mcp.parked import AUTH_PARK_MARKER
 
 # ───────── Adapter configuration ─────────
 
@@ -275,9 +276,23 @@ def _emit_step_call_mcp_parkable(
         f"                // refreshed the KV token cache); park on the second\n"
         f"                // consecutive failure. Fresh step names per attempt.\n"
         f"                if ({nid}_attempt % 2 === 1) {{\n"
+        f"                    const {nid}_wait =\n"
+        f"                        `{nid}{name_suffix} auth wait ${{{nid}_attempt}}`;\n"
+        f"                    const {nid}_event = {event_expr};\n"
+        f"                    // Tells `rote run` the instance is parked and on what.\n"
+        f"                    // It can print again on replay; the wait name\n"
+        f"                    // de-duplicates it.\n"
+        f"                    console.error(\n"
+        f'                        "{AUTH_PARK_MARKER} " +\n'
+        f"                            JSON.stringify({{\n"
+        f'                                server: {nid}_event.slice("rote_auth_".length),\n'
+        f"                                node: {first_name},\n"
+        f"                                wait: {nid}_wait,\n"
+        f"                            }}),\n"
+        f"                    );\n"
         f"                    await step.waitForEvent<any>(\n"
-        f"                        `{nid}{name_suffix} auth wait ${{{nid}_attempt}}`,\n"
-        f'                        {{ type: {event_expr}, timeout: "30 days" }},\n'
+        f"                        {nid}_wait,\n"
+        f'                        {{ type: {nid}_event, timeout: "30 days" }},\n'
         f"                    );\n"
         f"                }}\n"
         f"            }}\n"

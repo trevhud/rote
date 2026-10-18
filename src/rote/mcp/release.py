@@ -16,8 +16,10 @@ quite reached its ``recv`` yet is safe — the message waits for it.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rote._dbos import dbos_system_database_url, dbos_ts_system_database_url
 from rote.app_registry import RegisteredApp, registered_apps
@@ -95,22 +97,45 @@ def release_parked_workflows(server: str) -> ReleaseReport:
         _release_inngest_apps(server, inngest_apps, broadcasts, skipped)
     if cloudflare_apps:
         _release_cloudflare_apps(server, cloudflare_apps, released, skipped)
-    if not dbos_apps:
-        return ReleaseReport(
-            released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
-        )
+    if dbos_apps:
 
+        def visit(client: Any, app: RegisteredApp) -> None:
+            released.extend(_release_in_app(client, app, server))
+
+        skipped.extend(scan_dbos_apps(visit, dbos_apps))
+    return ReleaseReport(
+        released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
+    )
+
+
+def scan_dbos_apps(
+    visit: Callable[[Any, RegisteredApp], None],
+    apps: list[RegisteredApp] | None = None,
+) -> list[SkippedApp]:
+    """Open a ``DBOSClient`` on each registered DBOS app and ``visit`` it.
+
+    Shared by release and by ``rote mcp parked``'s read-only listing, so
+    both agree on which apps count and why one was skipped. Registry
+    entries are allowed to be stale (moved/deleted app dirs, apps that
+    never ran, an unreachable Postgres): each such app comes back as a
+    :class:`SkippedApp` with its reason rather than failing the scan.
+    Apps sharing one system database are visited once.
+    """
+    if apps is None:
+        apps = [a for a in registered_apps() if a.runtime in _DBOS_RUNTIMES]
+    if not apps:
+        return []
     try:
         from dbos import DBOSClient
     except ImportError as e:
         raise ReleaseUnavailable(
-            "DBOS apps are registered but releasing their parked workflows "
+            "DBOS apps are registered but reaching their parked workflows "
             "requires the dbos extra: pip install 'rote-cli[dbos]'"
         ) from e
 
+    skipped: list[SkippedApp] = []
     seen_urls: set[str] = set()
-
-    for app in dbos_apps:
+    for app in apps:
         if not app.path.is_dir():
             skipped.append(SkippedApp(app.path, "directory no longer exists"))
             continue
@@ -130,12 +155,14 @@ def release_parked_workflows(server: str) -> ReleaseReport:
             skipped.append(SkippedApp(app.path, "no system database yet (app never ran)"))
             continue
         try:
-            released.extend(_release_in_app(DBOSClient, app, url, server))
+            client = DBOSClient(system_database_url=url)
+            try:
+                visit(client, app)
+            finally:
+                client.destroy()
         except Exception as e:  # noqa: BLE001 — a stale entry must not sink the scan
             skipped.append(SkippedApp(app.path, f"could not reach its system database: {e}"))
-    return ReleaseReport(
-        released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
-    )
+    return skipped
 
 
 def _inngest_event_endpoint() -> str:
@@ -290,28 +317,22 @@ def _release_cloudflare_apps(
             skipped.append(SkippedApp(app.path, f"could not release via the Cloudflare API: {e}"))
 
 
-def _release_in_app(
-    client_cls: type, app: RegisteredApp, url: str, server: str
-) -> list[ReleasedWorkflow]:
+def _release_in_app(client: Any, app: RegisteredApp, server: str) -> list[ReleasedWorkflow]:
     from dbos import WorkflowSerializationFormat
 
-    client = client_cls(system_database_url=url)
-    try:
-        released: list[ReleasedWorkflow] = []
-        # load_input/output off: a TS app's superjson-serialized values
-        # are unreadable from Python, and we only need ids + the event.
-        for wf in client.list_workflows(status="PENDING", load_input=False, load_output=False):
-            status = client.get_event(wf.workflow_id, "rote_auth_status", timeout_seconds=0)
-            if isinstance(status, dict) and status.get("awaiting") == server:
-                client.send(
-                    wf.workflow_id,
-                    {"released_by": f"rote mcp login {server}"},
-                    topic=f"rote:auth:{server}",
-                    # Portable JSON: readable by BOTH SDKs' recv (the
-                    # Python default, pickle, is TS-opaque).
-                    serialization_type=WorkflowSerializationFormat.PORTABLE,
-                )
-                released.append(ReleasedWorkflow(app.path, wf.workflow_id))
-        return released
-    finally:
-        client.destroy()
+    released: list[ReleasedWorkflow] = []
+    # load_input/output off: a TS app's superjson-serialized values
+    # are unreadable from Python, and we only need ids + the event.
+    for wf in client.list_workflows(status="PENDING", load_input=False, load_output=False):
+        status = client.get_event(wf.workflow_id, "rote_auth_status", timeout_seconds=0)
+        if isinstance(status, dict) and status.get("awaiting") == server:
+            client.send(
+                wf.workflow_id,
+                {"released_by": f"rote mcp login {server}"},
+                topic=f"rote:auth:{server}",
+                # Portable JSON: readable by BOTH SDKs' recv (the
+                # Python default, pickle, is TS-opaque).
+                serialization_type=WorkflowSerializationFormat.PORTABLE,
+            )
+            released.append(ReleasedWorkflow(app.path, wf.workflow_id))
+    return released

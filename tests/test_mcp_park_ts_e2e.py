@@ -289,7 +289,7 @@ def test_ts_workflow_parks_and_python_release_completes_it(
                 assert proc.poll() is None, (
                     f"app exited instead of parking:\n{stderr_path.read_text()}"
                 )
-            assert status == {"awaiting": "vendor"}
+            assert status == {"awaiting": "vendor", "node": "enrich", "park": 1}
 
             # ── Release precision: another server's login wakes nothing ──
             wrong = release_parked_workflows("other_server")

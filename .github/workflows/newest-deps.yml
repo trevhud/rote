@@ -1,0 +1,88 @@
+# Newest-dependency canary.
+#
+# ci.yml tests what a contributor's change does to the code. This tests
+# what upstream releases do to it. Every extra is installed at the
+# newest version its constraint allows, resolved fresh from PyPI with no
+# lock and no cache, and the emitted npm apps resolve their caret ranges
+# fresh too. That is exactly what `pip install 'rote-cli[...]'` gives a
+# new user today.
+#
+# Why it exists: dbos 3.0 shipped while the extra had no upper bound.
+# Nothing in the repo changed, so no CI ran, and every fresh install
+# emitted a DBOS app that crashed on import. The schedule is the point:
+# an upstream release that breaks us should turn this red within a day
+# instead of reaching users first.
+
+name: Newest dependencies
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/newest-deps.yml
+      # Everything that emits DBOS code or talks to a DBOS system
+      # database, plus the suites that prove it.
+      - src/rote/adapters/dbos.py
+      - src/rote/adapters/dbos_ts.py
+      - src/rote/_dbos.py
+      - src/rote/mcp/**
+      - src/rote/serve/**
+      - src/rote/runners/**
+      - src/rote/eval/empirical.py
+      - tests/test_dbos*
+      - tests/test_mcp_park*
+      - tests/test_eval_empirical_dbos.py
+
+concurrency:
+  group: newest-deps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  newest:
+    name: Newest resolvable deps (fast suite + DBOS e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # The newest supported Python, so a release that only breaks on
+          # it surfaces here too. Keep in sync with pyproject classifiers.
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install every extra at its newest resolvable version
+        # `uv pip install` never reads uv.lock; --resolution highest and
+        # --upgrade --no-cache force a fresh resolve to the top of every
+        # range.
+        run: |
+          python -m pip install --upgrade uv
+          uv pip install --system --no-cache --upgrade --resolution highest \
+            -e ".[api,openai-api,dbos,serve,mcp,temporal,dev]"
+
+      - name: Record what resolved
+        run: uv pip list --system
+
+      - name: Pytest (fast suite)
+        run: pytest tests/
+
+      - name: DBOS Python e2e (live runtime on SQLite)
+        run: |
+          pytest -m slow -v \
+            tests/test_dbos_e2e.py \
+            tests/test_dbos_serve_e2e.py \
+            tests/test_eval_empirical_dbos.py \
+            tests/test_mcp_park_e2e.py
+
+      - name: DBOS-TS e2e (live runtime against Docker Postgres)
+        run: |
+          pytest -m slow -v \
+            tests/test_dbos_ts_e2e.py \
+            tests/test_mcp_park_ts_e2e.py

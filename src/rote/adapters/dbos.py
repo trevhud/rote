@@ -24,8 +24,9 @@ Key design choices vs. the other adapters:
   durability comes from the library checkpointing every step result to
   the system database.
 
-* **Parallel waves via ``Queue``.** DBOS's documented concurrency
-  primitive is enqueueing work onto a :class:`dbos.Queue`, which returns
+* **Parallel waves via a registered queue.** DBOS's documented
+  concurrency primitive is ``DBOS.enqueue_workflow`` onto a queue
+  registered with ``DBOS.register_queue`` (DBOS 3), which returns
   a ``WorkflowHandle`` per enqueued function. Multi-node waves enqueue
   every node then join with ``get_result()``; single-node waves call the
   step directly. This keeps the emitted code synchronous and the
@@ -106,7 +107,7 @@ class DbosAdapterConfig:
 
     Defaults work out-of-the-box for the BDR example: SQLite system
     database for local dev (overridable via ``DBOS_SYSTEM_DATABASE_URL``
-    for Postgres in production), admin server off.
+    for Postgres in production).
     """
 
     anthropic_default_model: str = DEFAULT_ANTHROPIC_MODEL
@@ -471,7 +472,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                 if payload == "{}":
                     lines.append(
                         f"    {node.id}_result = _run_with_auth_park("
-                        f"lambda: {node.id}({{}}), {node.mcp.server!r})"
+                        f"lambda: {node.id}({{}}), {node.mcp.server!r}, {node.id!r})"
                     )
                 else:
                     lines.append(f"    {node.id}_result = _run_with_auth_park(")
@@ -479,6 +480,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     lines.append(f"            {payload}")
                     lines.append("        ),")
                     lines.append(f"        {node.mcp.server!r},")
+                    lines.append(f"        {node.id!r},")
                     lines.append("    )")
             else:
                 payload = _payload_literal(node, indent=" " * 8)
@@ -498,15 +500,13 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     # the same call after `rote mcp login` releases us.
                     payload = _payload_literal(node, indent=" " * 4)
                     lines.append(f"    {node.id}_payload = {payload}")
-                    lines.append(
-                        f"    {node.id}_handle = queue.enqueue({node.id}, {node.id}_payload)"
-                    )
+                    lines.append(f"    {node.id}_handle = _enqueue({node.id}, {node.id}_payload)")
                 else:
                     payload = _payload_literal(node, indent=" " * 8)
                     if payload == "{}":
-                        lines.append(f"    {node.id}_handle = queue.enqueue({node.id}, {{}})")
+                        lines.append(f"    {node.id}_handle = _enqueue({node.id}, {{}})")
                     else:
-                        lines.append(f"    {node.id}_handle = queue.enqueue(")
+                        lines.append(f"    {node.id}_handle = _enqueue(")
                         lines.append(f"        {node.id},")
                         lines.append(f"        {payload},")
                         lines.append("    )")
@@ -515,8 +515,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
                     assert node.mcp is not None
                     lines.append(f"    {node.id}_result = _join_with_auth_park(")
                     lines.append(f"        {node.id}_handle,")
-                    lines.append(f"        lambda: queue.enqueue({node.id}, {node.id}_payload),")
+                    lines.append(f"        lambda: _enqueue({node.id}, {node.id}_payload),")
                     lines.append(f"        {node.mcp.server!r},")
+                    lines.append(f"        {node.id!r},")
                     lines.append("    )")
                 else:
                     lines.append(f"    {node.id}_result = {node.id}_handle.get_result()")
@@ -533,16 +534,15 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
             lines.append(f"        for _item in {list_expr}")
             lines.append("    ]")
             lines.append(
-                f"    {node.id}_handles = "
-                f"[queue.enqueue({node.id}, _p) for _p in {node.id}_payloads]"
+                f"    {node.id}_handles = [_enqueue({node.id}, _p) for _p in {node.id}_payloads]"
             )
             if _is_mcp_backed(node, cfg):
                 assert node.mcp is not None
                 lines.append(f"    {node.id}_result = [")
                 lines.append("        _join_with_auth_park(")
                 lines.append(
-                    f"            _h, lambda _p=_p: queue.enqueue({node.id}, _p), "
-                    f"{node.mcp.server!r}"
+                    f"            _h, lambda _p=_p: _enqueue({node.id}, _p), "
+                    f"{node.mcp.server!r}, {node.id!r}"
                 )
                 lines.append("        )")
                 lines.append(
@@ -629,7 +629,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         from pathlib import Path
         from typing import Any
 
-        from dbos import DBOS, DBOSConfig, Queue
+        from dbos import DBOS, DBOSConfig
 
         # ───────── DBOS configuration ─────────
         #
@@ -644,15 +644,31 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                 "DBOS_SYSTEM_DATABASE_URL",
                 f"sqlite:///{{_APP_DIR / '{sqlite_file}'}}",
             ),
-            # The admin server (port 3001) is opt-in; enable it when you
-            # want the DBOS console / management API.
-            "run_admin_server": False,
         }}
         DBOS(config=config)
 
         # Parallel waves fan out onto this queue; each enqueued step runs as
-        # a one-step workflow with its own durable handle.
-        queue = Queue("{queue_name}")
+        # a one-step workflow with its own durable handle. Externally
+        # triggered runs (`rote serve` / DBOSClient.enqueue) land here too.
+        # DBOS 3 persists queues in the system database and registers them
+        # only after DBOS.launch(), so launch() below does both.
+        QUEUE_NAME = "{queue_name}"
+
+
+        def _enqueue(step: Any, payload: dict) -> Any:
+            """Run one step as its own durable one-step workflow on QUEUE_NAME."""
+            return DBOS.enqueue_workflow(QUEUE_NAME, step, payload)
+
+
+        def launch() -> None:
+            """Launch DBOS, then register this app's queue.
+
+            Anything that runs this module's workflows in-process must call
+            this instead of a bare DBOS.launch(): a workflow enqueued on an
+            unregistered queue stays ENQUEUED forever.
+            """
+            DBOS.launch()
+            DBOS.register_queue(QUEUE_NAME)
         '''
     )
 
@@ -685,15 +701,30 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
             _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
 
+            # Parks so far per workflow, so each park advertises a distinct
+            # number. A release can be followed by a re-park faster than an
+            # observer polls; without the number the second park looks like
+            # the first one, which the observer already released.
+            _PARK_COUNTS: dict[str, int] = {}
+
 
             def _mcp_should_retry(exc: BaseException) -> bool:
                 """Auth failures skip the retry budget and park instead."""
                 return not isinstance(exc, RoteMcpAuthNeeded)
 
 
-            def _park_for_auth(server: str) -> None:
-                """Suspend the workflow until `rote mcp login <server>` succeeds."""
-                DBOS.set_event("rote_auth_status", {"awaiting": server})
+            def _park_for_auth(server: str, node: str) -> None:
+                """Suspend the workflow until `rote mcp login <server>` succeeds.
+
+                The event names the node too, so `rote run` and `rote mcp
+                parked` can say which step is waiting, and numbers the park.
+                """
+                workflow_id = DBOS.workflow_id or ""
+                park = _PARK_COUNTS.get(workflow_id, 0) + 1
+                _PARK_COUNTS[workflow_id] = park
+                DBOS.set_event(
+                    "rote_auth_status", {"awaiting": server, "node": node, "park": park}
+                )
                 released = DBOS.recv(
                     topic=f"rote:auth:{server}",
                     timeout_seconds=_AUTH_PARK_TIMEOUT_SECONDS,
@@ -707,7 +738,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     )
 
 
-            def _run_with_auth_park(step_call: Callable[[], dict], server: str) -> dict:
+            def _run_with_auth_park(step_call: Callable[[], dict], server: str, node: str) -> dict:
                 """Run an MCP-backed step, parking durably on auth failures.
 
                 On RoteMcpAuthNeeded the step is retried once immediately (the
@@ -723,7 +754,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     except RoteMcpAuthNeeded:
                         attempts_since_park += 1
                         if attempts_since_park >= 2:
-                            _park_for_auth(server)
+                            _park_for_auth(server, node)
                             attempts_since_park = 0
 
 
@@ -731,6 +762,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                 handle: WorkflowHandle,
                 enqueue: Callable[[], WorkflowHandle],
                 server: str,
+                node: str,
             ) -> dict:
                 """get_result() with auth parking, for queue fan-out waves.
 
@@ -746,7 +778,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                     except RoteMcpAuthNeeded:
                         attempts_since_park += 1
                         if attempts_since_park >= 2:
-                            _park_for_auth(server)
+                            _park_for_auth(server, node)
                             attempts_since_park = 0
                         handle = enqueue()
             '''
@@ -796,7 +828,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
             #
             # HITL gates are resumed from another process either way — see
             # README.md.
-            DBOS.launch()
+            launch()
             try:
                 if "--serve" in sys.argv[1:]:
                     print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)
@@ -912,7 +944,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         ## Run locally
 
         ```sh
-        pip install dbos
+        pip install 'dbos>=3.3,<4'   # the emitted main.py targets DBOS 3
         python main.py '{{"your": "input"}}'   # one run, blocks until done
         python main.py --serve                 # long-lived worker (see below)
         ```

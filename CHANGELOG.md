@@ -67,9 +67,47 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   rubric already forbids it. A test now keeps every `expected/` IR free
   of it; historical `runs/` snapshots stay as compiled.
 
+### Changed
+- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
+  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
+  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
+  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
+  and exposes `launch()`, which runs `DBOS.launch()` and then
+  `DBOS.register_queue`. Anything that runs an emitted app in-process
+  must call `launch()` instead of a bare `DBOS.launch()`, or runs
+  enqueued by `rote serve` stay `ENQUEUED`. The removed
+  `run_admin_server` key is gone from both runtimes' config, and the
+  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
+  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
+  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
+  against an app installed today. Apps emitted for 2.x need a re-emit.
+- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
+  system database the way the v5 SDK does. v5 stopped reading
+  `dbos-config.yaml` at launch, so a `system_database_url` key there no
+  longer counts, and the default database name follows the SDK's
+  `toDbName()` (lowercased, leading digit prefixed).
+- A new `Newest dependencies` workflow installs every extra at the top
+  of its range with no lock or cache, daily and on PRs that touch
+  dependencies or DBOS code, and runs the fast suite plus the DBOS
+  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
+  turns CI red instead of reaching fresh installs first.
+
 ## [0.14.0] - 2026-10-18
 
 ### Added
+- **`rote run` shows an MCP auth park instead of hanging.** On dbos,
+  dbos-ts, inngest and cloudflare, a run that parks on a missing or dead
+  MCP credential prints which node is waiting, on which server, and the
+  command that fixes it. On a terminal it offers the browser login in
+  place and releases the run. Piped or in CI it never prompts and
+  instead releases the run once the server's credentials change (for
+  example after `rote mcp login` in another terminal). Emitted parks now
+  name their node: the DBOS `rote_auth_status` event carries `node` and
+  a per-run `park` number, and
+  the Inngest and Cloudflare parks print a `rote-auth-park` marker line
+  before waiting.
+- `rote mcp parked [server] [--json]` lists workflows parked on auth
+  across the registered DBOS apps without releasing them.
 - `rote compile --no-mcp` skips live MCP discovery and calls for local
   `api` and `openai-api` compilation. `rote analyze` accepts the same
   opt-out. Emitted MCP bindings and default discovery behavior stay

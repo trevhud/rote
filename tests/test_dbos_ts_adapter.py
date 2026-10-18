@@ -209,7 +209,7 @@ def test_mandatory_nodes_marked_unconditional(main_src: str) -> None:
 
 
 def test_entrypoint_launches_and_starts_workflow(main_src: str) -> None:
-    """The emitted entrypoint follows the v4 lifecycle: setConfig →
+    """The emitted entrypoint follows the v5 lifecycle: setConfig →
     launch → startWorkflow (curried, function-registration form) →
     shutdown."""
     assert "DBOS.setConfig({" in main_src
@@ -217,6 +217,8 @@ def test_entrypoint_launches_and_starts_workflow(main_src: str) -> None:
     assert "await DBOS.startWorkflow(runPipeline)(pipelineInput);" in main_src
     assert "await DBOS.shutdown();" in main_src
     assert "require.main === module" in main_src
+    # v5 removed the admin server; the key is a deprecated no-op.
+    assert "runAdminServer" not in main_src
 
 
 # ───────── Data-flow threading ─────────
@@ -450,7 +452,10 @@ def test_package_json_has_required_deps(
 ) -> None:
     pkg = json.loads(emit_result["package.json"].read_text(encoding="utf-8"))
     assert pkg["name"] == bdr_pipeline.name
-    assert "@dbos-inc/dbos-sdk" in pkg["dependencies"]
+    # v5 is the major the emitted code is written against: v4 cannot read
+    # workflows v5 wrote, and a v4 install would silently pair with the
+    # Python side's DBOS 3 client.
+    assert pkg["dependencies"]["@dbos-inc/dbos-sdk"].startswith("^5.")
     assert "zod" in pkg["dependencies"]
     # BDR judges are all Anthropic — no OpenAI SDK.
     assert "@anthropic-ai/sdk" in pkg["dependencies"]

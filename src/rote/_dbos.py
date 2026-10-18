@@ -8,7 +8,6 @@ MCP auth-release path (``rote mcp login`` waking parked workflows).
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 import yaml
@@ -38,26 +37,28 @@ def dbos_system_database_url(app_dir: Path) -> str:
 def dbos_ts_system_database_url(app_dir: Path) -> str:
     """The system database URL an emitted DBOS *TypeScript* app will use.
 
-    Mirrors the TS SDK's resolution (verified against dbos-transact-ts
-    ``src/config.ts``, SDK 4.23.x): the emitted main.ts passes
-    ``process.env.DBOS_SYSTEM_DATABASE_URL`` to ``DBOS.setConfig``; a
-    ``system_database_url`` key in dbos-config.yaml (with ``${VAR}``
-    substitution — unset vars become empty, exactly like the SDK) wins
-    next; otherwise the SDK default: Postgres at ``PGHOST``/``PGPORT``
-    with ``PGUSER``/``PGPASSWORD`` (falling back to
+    Mirrors the TS SDK's resolution (verified against the shipped
+    ``dist/src/config.js`` of SDK 5.3.0): the emitted main.ts passes
+    ``process.env.DBOS_SYSTEM_DATABASE_URL`` to ``DBOS.setConfig``;
+    otherwise the SDK default: Postgres at ``PGHOST``/``PGPORT`` with
+    ``PGUSER``/``PGPASSWORD`` (falling back to
     ``postgres:dbos@localhost:5432``) and database ``<name>_dbos_sys``.
-    The TS SDK is Postgres-only — there is no SQLite branch.
+
+    dbos-config.yaml contributes only the app ``name``. Since v5 the SDK
+    no longer reads that file at launch, so a ``system_database_url``
+    key there feeds the ``dbos`` CLI and never the running app. Reading
+    it here would deliver release messages to a database the app is not
+    watching. The TS SDK is Postgres-only; there is no SQLite branch.
     """
     override = os.environ.get("DBOS_SYSTEM_DATABASE_URL")
     if override:
         return override
     config = _load_dbos_config(app_dir)
-    configured = config.get("system_database_url")
-    if isinstance(configured, str) and configured:
-        expanded = re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), configured)
-        if expanded:
-            return expanded
-    name = re.sub(r"[^a-zA-Z0-9_]", "_", str(config.get("name", "pipeline")))
+    # The SDK's toDbName(): lowercase, '-' and ' ' to '_', and a leading
+    # '_' when the name starts with a digit.
+    name = str(config.get("name", "pipeline")).lower().replace("-", "_").replace(" ", "_")
+    if name[:1].isdigit():
+        name = f"_{name}"
     host = os.environ.get("PGHOST", "localhost")
     port = os.environ.get("PGPORT", "5432")
     user = os.environ.get("PGUSER", "postgres")

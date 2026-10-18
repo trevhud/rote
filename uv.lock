@@ -278,6 +278,18 @@ wheels = [
 ]
 
 [[package]]
+name = "croniter"
+version = "6.2.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/37/57/2e2a65aee2a70483cb28e2b7e15a072d00a523207593b44400d4717bb100/croniter-6.2.4.tar.gz", hash = "sha256:fc124f751b1b04805c2a04b061898b436b45ab2320b045e1e052ea895de65189", size = 166267, upload-time = "2026-07-10T09:52:59.955Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/ba/d678e5bd329646ca51d3c92addbc77804e86d21f4b6b6a027218e6abb010/croniter-6.2.4-py3-none-any.whl", hash = "sha256:8ef3d544107a5c05a150a2d78f8bf5a8eb9c5c4d93405a736b824109574e3f4d", size = 46677, upload-time = "2026-07-10T09:52:58.425Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "49.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -350,19 +362,19 @@ wheels = [
 
 [[package]]
 name = "dbos"
-version = "2.31.1"
+version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
+    { name = "croniter" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/26/30/9865e3592b757e89251bfb9f30c315e972ce6e23175eee4dc486ff8c1073/dbos-2.31.1.tar.gz", hash = "sha256:646918de8ec579f56281ec744b87f562497e2618edbedf79960311fa03f2b078", size = 703678, upload-time = "2026-09-08T17:02:48.486Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/54/1bcf792851d184e82c27f3de1ce1e7e2008482083d3098ea4ffc97c873f8/dbos-3.3.0.tar.gz", hash = "sha256:5b5fe81272e7f0b16b8e98befe1d4475b1ad72ba57e0a421900e3f7df21eb898", size = 516801, upload-time = "2026-10-15T17:20:59.905Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/0c/674bb1e686257003a149218b68a398884f2185c7de2e3dcf1d552ee97ebb/dbos-2.31.1-py3-none-any.whl", hash = "sha256:5c32840683cbb10727d30d208d8e1eb3ccaec7ed881776e5bf9d89cb32d7583c", size = 278527, upload-time = "2026-09-08T17:02:46.764Z" },
+    { url = "https://files.pythonhosted.org/packages/94/db/407d2748b9aaccd28930815a0f3de6013bc53b7ddb87c3b7949abc8741f7/dbos-3.3.0-py3-none-any.whl", hash = "sha256:398e5c3182d0aa9fa4115c9f06028202365d0c356c172f2ec21c1fd8be6e441b", size = 246771, upload-time = "2026-10-15T17:20:58.114Z" },
 ]
 
 [[package]]
@@ -1662,8 +1674,8 @@ temporal = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.89" },
     { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.89" },
-    { name = "dbos", marker = "extra == 'dbos'", specifier = ">=2.26,<3" },
-    { name = "dbos", marker = "extra == 'dev'", specifier = ">=2.26,<3" },
+    { name = "dbos", marker = "extra == 'dbos'", specifier = ">=3.3,<4" },
+    { name = "dbos", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=3.4.2,<4" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=3.4.2,<4" },
     { name = "fastmcp", marker = "extra == 'serve'", specifier = ">=3.4.2,<4" },

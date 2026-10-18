@@ -15,6 +15,7 @@ everything here imports it lazily and fails with that hint.
 from __future__ import annotations
 
 import sys
+import webbrowser
 from typing import Any
 
 from rote.mcp.registry import McpServerConfig
@@ -46,8 +47,16 @@ def build_oauth(
     *,
     no_browser: bool = False,
     callback_port: int | None = None,
+    announce_url: bool = False,
 ) -> Any:
-    """A fastmcp ``OAuth`` bound to rote's token store for this server."""
+    """A fastmcp ``OAuth`` bound to rote's token store for this server.
+
+    ``announce_url`` always prints the authorization URL to stderr and
+    says so when no browser could be opened. fastmcp logs the URL only
+    at info level and ignores ``webbrowser.open``'s result, so on an SSH
+    session or a display-less TTY the user would wait on a callback for
+    a URL they never saw.
+    """
     _require_fastmcp()
     from fastmcp.client.auth import OAuth
 
@@ -67,6 +76,38 @@ def build_oauth(
                 )
 
         oauth_cls = _PrintUrlOAuth
+    elif announce_url:
+
+        class _AnnounceUrlOAuth(OAuth):
+            async def redirect_handler(self, authorization_url: str) -> None:
+                # fastmcp's own handler, kept: the pre-flight GET is how a
+                # stale cached client gets detected and re-registered.
+                from fastmcp.client.auth.oauth import ClientNotFoundError
+
+                async with self.httpx_client_factory() as client:
+                    response = await client.get(authorization_url, follow_redirects=False)
+                    if response.status_code == 400:
+                        raise ClientNotFoundError(
+                            "OAuth client not found - cached credentials may be stale"
+                        )
+                    if response.status_code not in (200, 302, 303, 307, 308):
+                        raise RuntimeError(
+                            f"Unexpected authorization response: {response.status_code}"
+                        )
+                print(
+                    f"\nAuthorize {server!r} in your browser:\n\n  {authorization_url}\n",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if not webbrowser.open(authorization_url):
+                    print(
+                        "No browser could be opened here. Open the URL above in any "
+                        "browser; if you're on SSH, port-forward the callback port.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+        oauth_cls = _AnnounceUrlOAuth
 
     return oauth_cls(
         mcp_url=config.url,
@@ -85,6 +126,7 @@ async def login(
     *,
     no_browser: bool = False,
     callback_port: int | None = None,
+    announce_url: bool = False,
 ) -> dict[str, Any]:
     """Run the full OAuth dance and persist tokens durably.
 
@@ -102,7 +144,13 @@ async def login(
             f"server {server!r} is configured with static headers — no OAuth login needed"
         )
 
-    oauth = build_oauth(server, config, no_browser=no_browser, callback_port=callback_port)
+    oauth = build_oauth(
+        server,
+        config,
+        no_browser=no_browser,
+        callback_port=callback_port,
+        announce_url=announce_url,
+    )
     async with fastmcp.Client(config.url, auth=oauth) as client:
         await client.ping()  # triggers 401 → discovery → dance → tokens
 

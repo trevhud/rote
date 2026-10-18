@@ -45,6 +45,7 @@ import pytest
 
 from rote.adapters.cloudflare import CloudflareAdapter, workflow_class_name
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPolicy
+from rote.mcp.parked import parse_auth_park_markers
 
 pytest.importorskip("fastmcp")
 
@@ -258,6 +259,12 @@ def test_cf_instance_parks_and_event_release_completes_it(mcp_server: str, tmp_p
             port, instance_id, min_step_count=0, timeout=90, stability_polls=6
         )
         assert state.get("status") == "running", f"expected a parked instance: {state}"
+        # The park announced itself, which is what `rote run` watches for
+        # (local-dev status cannot tell this park from a running step).
+        parks = parse_auth_park_markers(log_path.read_text(encoding="utf-8"))
+        assert {(m["server"], m["node"], m["wait"]) for m in parks} == {
+            ("vendor", "enrich", "enrich auth wait 1")
+        }, log_path.read_text(encoding="utf-8")
 
         # ── Release precision: the wrong server's event wakes nothing ──
         _http_post(f"http://127.0.0.1:{port}/event/{instance_id}/rote_auth_other", {})
