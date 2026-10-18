@@ -507,12 +507,54 @@ documents; argv is size-limited and visible in `ps`).
 
 The default invocation ships Claude Code's entire coding-agent system
 prompt: measured ~37k cache-creation tokens and 11.5s for a
-one-sentence judge. `--system-prompt <one line>` + `--tools` (no
-arguments = no tools) + `--setting-sources ""` brings the identical
-call to ~740 tokens and ~3.5s. All three are in the emitted helper;
-removing any of them silently restores the overhead. Also: the CLI
-reports API failures *inside a zero exit* (`is_error: true` in the
-envelope), so returncode alone calls a failed judge a success.
+one-sentence judge. `--system-prompt <one line>` + `--tools ""` +
+`--setting-sources ""` was supposed to fix that, and on a machine with
+claude.ai connectors it did not: Claude Code 2.1.302 still loaded the
+user's connector and plugin MCP schemas (`--tools` does not touch MCP
+tools) plus the auto-memory index of the repository the pipeline ran
+from. A real "say hi" judge through the helper measured 30.3k tokens,
+$0.183 cold; one greeted the developer by name from that memory. The
+connectors load asynchronously, so the same call ranged from 1.2k to
+28k tokens run to run.
+
+The helper now passes one shared `_CLI_ISOLATION_FLAGS` tuple on BOTH
+paths. Each flag was measured by removing it from the full set:
+
+| Removed | Judge tokens (input + cache) |
+| --- | --- |
+| nothing | 1,250 |
+| `--strict-mcp-config` | 30,300 |
+| `--setting-sources ""` | 25,600 |
+| `--settings '{"autoMemoryEnabled": false}'` | 3,070 (from a repo with memory) |
+
+`--setting-sources ""` does not cover auto memory; only the setting
+does (or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, rejected because
+`build_subscription_env` is shared with the compiler). `--bare` would
+do all of it but refuses OAuth, which is the whole lane; `--safe-mode`
+measured the same 1.25k but is documented as a troubleshooting mode
+whose scope may change, so the explicit flags win.
+
+The agent loop takes the same tuple plus its own `--mcp-config`:
+strict mode means it sees only the servers rote resolved. It also now
+passes `--tools ""` when it has servers, because `--tools` removes only
+built-ins: before, the loop carried 31 coding tools (Bash, Write,
+Agent...) at ~31k tokens a turn. A real two-turn loop against a local
+fastmcp server went from 120k tokens / $0.38 to 2.8k / $0.012 with the
+tool still bound and called. Removing any flag silently restores its
+overhead. Also: the CLI reports API failures *inside a zero exit*
+(`is_error: true` in the envelope), so returncode alone calls a failed
+judge a success.
+
+The compiler's `ClaudeDriver` passes `--strict-mcp-config` too, with no
+`--mcp-config`: it wires no MCP (live compile-time MCP is the
+in-process drivers' job), and on this machine the user's connectors put
+357 tools into the first compile request, past 200k tokens, which the
+subscription rejected outright ("Usage credits are required for long
+context requests"). Strict, that request is 70.7k. The compiler still
+inherits the user's settings, CLAUDE.md, auto memory, output style,
+permission mode and 25 unused built-in tools (11k tokens with all of
+those isolated too); that is a separate change because it alters what
+the compile agent is told, and needs a real compile eval to land.
 
 ### A prompt-cached run reports almost nothing in `input_tokens`
 

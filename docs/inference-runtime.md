@@ -239,16 +239,30 @@ Two things still differ, and both are cost, not correctness:
   does not pay.
 * **Prompt overhead.** Claude Code sends its full coding-agent system
   prompt by default — measured at ~37k cache-creation tokens and 11.5s
-  for a one-sentence judge. Replacing it (`--system-prompt`), dropping
-  tools (`--tools` with no arguments) and ignoring the user's settings
-  files (`--setting-sources ""`) brings the same call to ~740 tokens
-  and ~3.5s. The emitted helper always passes all three; do not
-  "simplify" them away.
+  for a one-sentence judge. Replacing it (`--system-prompt`) is the
+  first step. The rest is isolation from the user's own setup, and each
+  flag was measured by removing it on Claude Code 2.1.302: built-in
+  tools off (`--tools ""`), settings files, CLAUDE.md, hooks and plugins
+  off (`--setting-sources ""`, 25.6k tokens without it), the user's
+  claude.ai connectors and plugin MCP servers off
+  (`--strict-mcp-config`, 30.3k tokens and $0.183 a cold call without
+  it), and auto memory off (`--settings '{"autoMemoryEnabled": false}'`,
+  1.8k tokens of the repository's private memory index without it).
+  With all of them a judge is ~1.25k tokens. Agent loops get the same
+  set plus their own `--mcp-config`, so they see their declared servers
+  and nothing else: ~1.4k tokens a turn instead of ~60k. The emitted
+  helper passes them from one shared tuple; do not "simplify" any away.
 
-The provider is still stamped into every `$ROTE_USAGE_LOG` record and
-must reach `rote eval`'s corpus, because the same token count costs
-differently per lane — a subscription trial is not priced against a
-key trial. That is a *billing* distinction now, not a quality one.
+Every `$ROTE_USAGE_LOG` record carries all four token buckets:
+`input_tokens`, `output_tokens`, `cache_write_tokens` and
+`cache_read_tokens`. The cache pair is not optional detail: `claude -p`
+always runs prompt-cached, so `input_tokens` alone records a 1.25k-token
+judge call as 3 tokens. `rote eval --run` prices all four at live rates.
+
+The provider is still stamped into every record and must reach
+`rote eval`'s corpus, because the same token count costs differently
+per lane: a subscription trial is not priced against a key trial. That
+is a *billing* distinction now, not a quality one.
 
 ## Auto-detect behavior
 

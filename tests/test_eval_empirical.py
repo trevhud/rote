@@ -479,6 +479,47 @@ def test_measured_cost_prices_judge_usage() -> None:
     assert unpriced == []
 
 
+CACHED_CATALOG = PricingCatalog(
+    prices=CATALOG.prices,
+    reference_prices={"claude-mid-9": (2.0, 10.0)},
+    reference_cache_rates={"claude-mid-9": (0.2, 2.5)},
+)
+
+
+def test_measured_cost_prices_the_cache_buckets() -> None:
+    """A prompt-cached claude -p judge row, priced in dollars.
+
+    The row is the real shape: 3 plain input tokens beside ~29.7k cached.
+    Pricing only input/output put this call at ~$0.001; the cache buckets
+    are ~$0.009 of it.
+    """
+    row = {
+        "model": "claude-mid-9",
+        "input_tokens": 3,
+        "output_tokens": 92,
+        "cache_write_tokens": 1220,
+        "cache_read_tokens": 28474,
+    }
+    cost, unpriced = measured_pipeline_cost_usd((_pipeline_run([row]),), CACHED_CATALOG)
+    expected = (3 * 2.0 + 92 * 10.0 + 1220 * 2.5 + 28474 * 0.2) / 1_000_000
+    assert cost == pytest.approx(expected)
+    assert cost == pytest.approx(0.0096708)
+    assert unpriced == []
+
+
+def test_measured_cost_refuses_to_guess_a_missing_cache_rate() -> None:
+    """No published cache rate means no figure, not the plain input rate."""
+    row = {
+        "model": "claude-mid-9",
+        "input_tokens": 3,
+        "output_tokens": 92,
+        "cache_read_tokens": 28474,
+    }
+    cost, unpriced = measured_pipeline_cost_usd((_pipeline_run([row]),), CATALOG)
+    assert cost == 0.0
+    assert unpriced == ["claude-mid-9"]
+
+
 def test_measured_cost_flags_unpriced_models() -> None:
     runs = (_pipeline_run([{"model": "mystery-lm", "input_tokens": 10, "output_tokens": 5}]),)
     cost, unpriced = measured_pipeline_cost_usd(runs, CATALOG)

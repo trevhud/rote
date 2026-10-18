@@ -51,7 +51,12 @@ def _fake_anthropic(create: Any) -> types.ModuleType:
 def _tool_use_response(payload: dict[str, Any]) -> Any:
     return types.SimpleNamespace(
         content=[types.SimpleNamespace(type="tool_use", input=payload)],
-        usage=types.SimpleNamespace(input_tokens=11, output_tokens=7),
+        usage=types.SimpleNamespace(
+            input_tokens=11,
+            output_tokens=7,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        ),
     )
 
 
@@ -326,6 +331,8 @@ def test_usage_log_records_the_provider_that_served_the_call(
         "model": "claude-sonnet-5",
         "input_tokens": 11,
         "output_tokens": 7,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
     }
 
 
@@ -595,9 +602,13 @@ def test_agent_loop_cli_wires_resolved_servers_and_allowlists_tools(
     command = seen["command"]
     assert command[command.index("--allowedTools") + 1] == "mcp__vendor__bright_data_search"
     assert json.loads(command[command.index("--mcp-config") + 1]) == {"mcpServers": servers}
-    # The tool-free form must not also appear — it would contradict the
-    # allowlist and reload the default toolset.
-    assert "--tools" not in command
+    # `--tools ""` removes only the built-in coding tools; MCP tools are
+    # unaffected by it, which is why the loop can carry both. Measured on
+    # Claude Code 2.1.302: the declared MCP tool still bound and was
+    # called, and the 31 built-in tools (31k tokens a turn) were gone.
+    assert command[command.index("--tools") + 1] == ""
+    # Only the servers passed above, never the user's own connectors.
+    assert "--strict-mcp-config" in command
 
 
 def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -812,7 +823,12 @@ class _ToolLoopStub(BaseHTTPRequestHandler):
             "type": "message",
             "role": "assistant",
             "model": payload["model"],
-            "usage": {"input_tokens": 100 * turn, "output_tokens": 10 * turn},
+            "usage": {
+                "input_tokens": 100 * turn,
+                "output_tokens": 10 * turn,
+                "cache_creation_input_tokens": 1000 * turn,
+                "cache_read_input_tokens": 5000 * turn,
+            },
         }
         if turn <= 2:
             message["stop_reason"] = "tool_use"
@@ -890,3 +906,120 @@ def test_agent_loop_sdk_reports_turns_run_and_usage_of_every_turn(
     record = json.loads(usage_log.read_text(encoding="utf-8"))
     assert record["input_tokens"] == 100 + 200 + 300
     assert record["output_tokens"] == 10 + 20 + 30
+    assert record["cache_write_tokens"] == 1000 + 2000 + 3000
+    assert record["cache_read_tokens"] == 5000 + 10000 + 15000
+
+
+# ───────── Context isolation and the four usage buckets, on BOTH paths ─────────
+#
+# `--tools "" --setting-sources ""` was not enough. Measured on Claude Code
+# 2.1.302 with a real "say hi" judge through this helper: 30.3k tokens and
+# $0.183 a cold call, because the user's claude.ai connectors and plugin MCP
+# servers, plus the auto-memory index of the repository the pipeline ran
+# from, were all still in the prompt. The full isolation set brought it to
+# 1.25k. An agent loop carried 60k a turn; isolated, 1.4k with its declared
+# MCP tool still bound.
+
+
+def _run_cli_path(path: str, monkeypatch: pytest.MonkeyPatch, envelope: str) -> dict[str, Any]:
+    """Drive one CLI path through the public entry point and capture argv."""
+    if path == "agent_loop_with_servers":
+        servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
+        allowed = ["mcp__vendor__bright_data_search"]
+        monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
+    else:
+        monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    seen = _capture_cli(monkeypatch, envelope)
+    if path == "judge":
+        helper.call_judge(
+            node_id="grade_essay",
+            client="anthropic",
+            prompt="Grade it.",
+            output_schema={"type": "object", "properties": {"grade": {"type": "integer"}}},
+            model="claude-sonnet-4-6",
+        )
+    else:
+        helper.run_agent_loop(
+            node_id="target_research",
+            description="Research the account.",
+            task='{"account": "acme"}',
+            model="claude-sonnet-4-6",
+            tools=["bright_data_search"],
+            max_iterations=6,
+        )
+    return seen
+
+
+_CLI_PATHS = ["judge", "agent_loop_no_servers", "agent_loop_with_servers"]
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+def test_every_cli_path_isolates_the_child_from_the_users_setup(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each flag here was measured by removing it; each one costs real tokens.
+
+    Values, not presence: `--settings` must actually turn auto memory off,
+    and `--tools` must be the empty string (a bare flag exits 1).
+    """
+    envelope = _cli_envelope() if path == "judge" else _agent_envelope()
+    command = _run_cli_path(path, monkeypatch, envelope)["command"]
+
+    assert "--strict-mcp-config" in command
+    assert json.loads(_cli_flag(command, "--settings")) == {"autoMemoryEnabled": False}
+    assert _cli_flag(command, "--setting-sources") == ""
+    assert _cli_flag(command, "--tools") == ""
+    # Strict MCP with a config means only the declared servers; without
+    # one it means no MCP at all, which is right when nothing resolved.
+    if path == "agent_loop_with_servers":
+        assert set(json.loads(_cli_flag(command, "--mcp-config"))["mcpServers"]) == {"vendor"}
+    else:
+        assert "--mcp-config" not in command
+
+
+_CACHED_USAGE = {
+    # Shape of a real prompt-cached `claude -p` envelope: almost nothing in
+    # input_tokens, the volume in the two cache buckets.
+    "input_tokens": 3,
+    "output_tokens": 92,
+    "cache_creation_input_tokens": 1220,
+    "cache_read_input_tokens": 28474,
+}
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+def test_every_cli_path_logs_all_four_usage_buckets(
+    path: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Logging `input_tokens` alone recorded a ~30k-token call as 3."""
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
+    envelope = (
+        _cli_envelope(usage=_CACHED_USAGE)
+        if path == "judge"
+        else _agent_envelope(usage=_CACHED_USAGE)
+    )
+    _run_cli_path(path, monkeypatch, envelope)
+
+    record = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert record["provider"] == "claude-cli"
+    assert record["input_tokens"] == 3
+    assert record["output_tokens"] == 92
+    assert record["cache_write_tokens"] == 1220
+    assert record["cache_read_tokens"] == 28474
+
+
+def test_openai_usage_splits_cached_tokens_out_of_prompt_tokens() -> None:
+    """OpenAI counts cached tokens inside prompt_tokens; the log must not
+    count them twice once they also appear as cache_read."""
+    usage = types.SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=50,
+        prompt_tokens_details=types.SimpleNamespace(cached_tokens=800),
+    )
+    assert helper._openai_usage(usage) == {
+        "input_tokens": 200,
+        "output_tokens": 50,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 800,
+    }
