@@ -109,7 +109,9 @@ opens a browser) — the step raises `RoteMcpAuthNeeded` and the workflow
    the retry budget — no number of retries produces a credential.
 2. The workflow advertises what it's blocked on via the
    `rote_auth_status` workflow event
-   (`{"awaiting": "<server>", "node": "<node id>"}`).
+   (`{"awaiting": "<server>", "node": "<node id>", "park": <n>}`). The
+   number tells two consecutive parks apart when an observer polls
+   slower than a release followed by a re-park.
    DBOS has no distinct WAITING status — a parked workflow is just
    PENDING, so it must say what it's waiting for.
 3. It blocks on `DBOS.recv(topic="rote:auth:<server>")` (30-day

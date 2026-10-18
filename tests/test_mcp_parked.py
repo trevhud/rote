@@ -311,6 +311,69 @@ def test_remote_fix_channel_never_offers_a_local_login_or_self_releases() -> Non
     assert watcher.has_active_park  # the Cloudflare runner keeps gates for it
 
 
+# ───────── The in-place login over SSH / without a display ─────────
+
+
+class _FakeAuthorizeResponse:
+    status_code = 302
+
+
+class _FakeHttpx:
+    async def __aenter__(self) -> _FakeHttpx:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def get(self, url: str, follow_redirects: bool) -> _FakeAuthorizeResponse:
+        return _FakeAuthorizeResponse()
+
+
+@pytest.mark.parametrize("opened", [False, True])
+def test_announced_login_always_prints_the_url_and_says_when_no_browser_opened(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], opened: bool
+) -> None:
+    """Found in review: over SSH `webbrowser.open` fails quietly and fastmcp
+    logs the URL at info level only, so the user answered Y and then waited
+    on a callback for a URL they never saw."""
+    import asyncio
+
+    pytest.importorskip("fastmcp")
+    from rote.mcp.auth import build_oauth
+
+    opened_urls: list[str] = []
+
+    def fake_open(url: str) -> bool:
+        opened_urls.append(url)
+        return opened
+
+    monkeypatch.setattr("webbrowser.open", fake_open)
+    oauth = build_oauth("vendor", McpServerConfig(url="http://127.0.0.1:9/mcp"), announce_url=True)
+    oauth.httpx_client_factory = _FakeHttpx
+    url = "http://127.0.0.1:9/authorize?state=abc"
+    asyncio.run(oauth.redirect_handler(url))
+
+    err = capsys.readouterr().err
+    assert f"  {url}\n" in err
+    assert opened_urls == [url]
+    assert ("No browser could be opened here" in err) is not opened
+
+
+def test_in_place_login_asks_for_the_announced_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.mcp.parked import login_server
+
+    save_registry(McpRegistry(servers={"vendor": McpServerConfig(url="http://v.example/mcp")}))
+    seen: dict[str, Any] = {}
+
+    async def fake_login(server: str, config: Any, **kwargs: Any) -> dict[str, Any]:
+        seen.update(kwargs, server=server)
+        return {}
+
+    monkeypatch.setattr("rote.mcp.auth.login", fake_login)
+    login_server("vendor")
+    assert seen == {"server": "vendor", "announce_url": True}
+
+
 # ───────── Release hints from the registry ─────────
 
 
@@ -423,6 +486,42 @@ def test_dbos_channel_reads_the_event_and_keys_each_park_episode(
     ]
 
 
+def test_release_then_reparking_within_one_poll_is_announced_again(
+    tmp_path: Path, fake_dbos: type[_FakeDBOSClient]
+) -> None:
+    """Found in review: the watcher releases, the credential is still bad
+    (wrong account, missing scope), and the workflow clears its event,
+    retries and parks again before the next poll. No poll ever sees the
+    event cleared, so without the park number the new park reused the
+    released key: no message, no prompt, and a run hung to --timeout."""
+    stderr = tmp_path / "stderr.txt"
+    stderr.write_text("workflow started: wf-7\n")
+    channel = DbosAuthChannel("sqlite:///unused", stderr)
+    first = {"awaiting": "vendor", "node": "enrich", "park": 1}
+    second = {"awaiting": "vendor", "node": "enrich", "park": 2}
+    client = _EventClient([first, first, second, second])
+    channel._client = client
+
+    version = ["v1"]
+    lines: list[str] = []
+    watcher = _watcher(
+        channel,
+        lines,
+        fingerprint_fn=lambda server: (version[0],),
+        external_grace_seconds=0.0,
+    )
+    watcher.tick()
+    version[0] = "v2"
+    watcher.tick()  # credentials changed: released
+    assert len(client.sent) == 1
+    watcher.tick()  # already parked again, never seen cleared
+    assert sum("needs MCP credentials" in line for line in lines) == 2
+    assert watcher.has_active_park
+    version[0] = "v3"  # fixed for real this time
+    watcher.tick()
+    assert len(client.sent) == 2
+
+
 # ───────── wait_for_exit ─────────
 
 
@@ -490,7 +589,8 @@ def test_dbos_ts_park_event_names_the_node(tmp_path: Path) -> None:
 
     get_adapter("dbos-ts").emit(_mcp_pipeline(), tmp_path)
     src = (tmp_path / "src" / "main.ts").read_text(encoding="utf-8")
-    assert "{ awaiting: server, node }," in src
+    assert "{ awaiting: server, node, park }," in src
+    assert "const park = (parkCounts.get(workflowId) ?? 0) + 1;" in src
     assert '"vendor",\n            "enrich",\n        );' in src
 
 

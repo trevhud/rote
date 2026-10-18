@@ -191,7 +191,7 @@ def test_workflow_parks_on_dead_token_and_login_release_completes_it(
                 assert proc.poll() is None, (
                     f"app exited instead of parking:\n{stderr_path.read_text()}"
                 )
-            assert status == {"awaiting": "vendor", "node": "enrich"}
+            assert status == {"awaiting": "vendor", "node": "enrich", "park": 1}
 
             # ── Release precision: another server's login must not wake it ──
             wrong = release_parked_workflows("other_server")

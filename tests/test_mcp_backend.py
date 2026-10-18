@@ -117,7 +117,8 @@ def test_mcp_step_dispatch_parks_on_auth() -> None:
     # The park advertises what it waits for (CLI discovery) and blocks on
     # the rote:auth topic — the ':' makes IR-signal collisions impossible.
     # It names the node as well, so `rote run` can say which step waits.
-    assert 'DBOS.set_event("rote_auth_status", {"awaiting": server, "node": node})' in src
+    assert '"rote_auth_status", {"awaiting": server, "node": node, "park": park}' in src
+    assert "park = _PARK_COUNTS.get(workflow_id, 0) + 1" in src
     assert 'topic=f"rote:auth:{server}"' in src
     node_id = _pipeline(mcp=_BINDING).nodes[0].id
     assert f"{_BINDING.server!r},\n        {node_id!r},\n    )" in src

@@ -28,7 +28,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   place and releases the run. Piped or in CI it never prompts and
   instead releases the run once the server's credentials change (for
   example after `rote mcp login` in another terminal). Emitted parks now
-  name their node: the DBOS `rote_auth_status` event carries `node`, and
+  name their node: the DBOS `rote_auth_status` event carries `node` and
+  a per-run `park` number, and
   the Inngest and Cloudflare parks print a `rote-auth-park` marker line
   before waiting.
 - `rote mcp parked [server] [--json]` lists workflows parked on auth

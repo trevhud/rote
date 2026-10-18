@@ -687,6 +687,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
             _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
 
+            # Parks so far per workflow, so each park advertises a distinct
+            # number. A release can be followed by a re-park faster than an
+            # observer polls; without the number the second park looks like
+            # the first one, which the observer already released.
+            _PARK_COUNTS: dict[str, int] = {}
+
 
             def _mcp_should_retry(exc: BaseException) -> bool:
                 """Auth failures skip the retry budget and park instead."""
@@ -697,9 +703,14 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                 """Suspend the workflow until `rote mcp login <server>` succeeds.
 
                 The event names the node too, so `rote run` and `rote mcp
-                parked` can say which step is waiting.
+                parked` can say which step is waiting, and numbers the park.
                 """
-                DBOS.set_event("rote_auth_status", {"awaiting": server, "node": node})
+                workflow_id = DBOS.workflow_id or ""
+                park = _PARK_COUNTS.get(workflow_id, 0) + 1
+                _PARK_COUNTS[workflow_id] = park
+                DBOS.set_event(
+                    "rote_auth_status", {"awaiting": server, "node": node, "park": park}
+                )
                 released = DBOS.recv(
                     topic=f"rote:auth:{server}",
                     timeout_seconds=_AUTH_PARK_TIMEOUT_SECONDS,

@@ -557,6 +557,12 @@ _AUTH_PARK_HELPER = """\
 
 const AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600; // 30 days
 
+// Parks so far per workflow, so each park advertises a distinct number.
+// A release can be followed by a re-park faster than an observer polls;
+// without the number the second park looks like the first one, which
+// the observer already released.
+const parkCounts = new Map<string, number>();
+
 /** Auth failures skip the retry budget and park instead. */
 function mcpShouldRetry(error: unknown): boolean {
     return !isRoteMcpAuthNeeded(error);
@@ -564,11 +570,14 @@ function mcpShouldRetry(error: unknown): boolean {
 
 /** Suspend the workflow until `rote mcp login <server>` succeeds.
  * The event names the node too, so `rote run` and `rote mcp parked`
- * can say which step is waiting. */
+ * can say which step is waiting, and numbers the park. */
 async function parkForAuth(server: string, node: string): Promise<void> {
+    const workflowId = DBOS.workflowID ?? "";
+    const park = (parkCounts.get(workflowId) ?? 0) + 1;
+    parkCounts.set(workflowId, park);
     await DBOS.setEvent(
         "rote_auth_status",
-        { awaiting: server, node },
+        { awaiting: server, node, park },
         { serializationType: "portable" },
     );
     const released = await DBOS.recv<Record<string, unknown>>(

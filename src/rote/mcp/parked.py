@@ -171,12 +171,18 @@ class DbosAuthChannel:
         self._was_parked = True
         server = str(status["awaiting"])
         node = status.get("node")
+        # Current apps number each park, which is the only reliable key: a
+        # release then an immediate re-park can both land between two
+        # polls, so "saw the event clear" never happens. The episode
+        # counter only serves apps emitted before the number existed.
+        park = status.get("park")
+        episode = f"p{park}" if park is not None else f"e{self._episode}"
         return [
             AuthPark(
                 server=server,
                 node=str(node) if node else None,
                 run_id=self._workflow_id,
-                key=f"{self._workflow_id}#{self._episode}:{server}",
+                key=f"{self._workflow_id}#{episode}:{server}",
             )
         ]
 
@@ -344,7 +350,9 @@ def login_server(server: str) -> None:
         raise McpAuthError(
             f"no MCP server named {server!r} is registered; run: rote mcp add {server} <url>"
         )
-    asyncio.run(login(server, config))
+    # Always show the URL: the user just said yes at a prompt, and on SSH
+    # or a display-less TTY no browser will open by itself.
+    asyncio.run(login(server, config, announce_url=True))
 
 
 def _stderr_echo(line: str) -> None:
@@ -388,6 +396,12 @@ class AuthParkWatcher:
     settled_fn: Callable[[str], bool] = credentials_settled
     #: Seconds a credential change waits for an external release (only on
     #: channels with ``external_release``) before this watcher sends one.
+    #: A known race, accepted: if the workflow has not consumed the login's
+    #: release within the grace, both messages are sent. DBOS messages
+    #: persist per topic, so the spare one is consumed by the next park on
+    #: that server in this run. That park returns at once and retries,
+    #: costing at most two extra failing attempts before it parks for real.
+    #: Nothing is lost and nothing is skipped.
     external_grace_seconds: float = 5.0
     clock: Callable[[], float] = time.monotonic
     _seen: dict[str, tuple[Any, ...]] = field(default_factory=dict, init=False)
