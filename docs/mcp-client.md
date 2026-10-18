@@ -33,19 +33,127 @@ One durable credential layer, four consumers:
 
 - **Registry** (`rote mcp add <name> <url>`): logical server names —
   the same names pipelines carry in `mcp.server` — mapped to endpoints,
-  optional pre-registered `client_id`/`client_secret` (for DCR-less
-  servers: Slack/GitHub-class), optional scopes, optional static
-  headers (API-key schemes). Written `0600`; overridable via
-  `ROTE_MCP_CONFIG`.
+  optional pre-registered `client_id`/`client_secret` (see
+  [Client registration](#client-registration)), optional scopes,
+  optional static headers (API-key schemes). Written `0600`;
+  overridable via `ROTE_MCP_CONFIG`.
 - **Token store**: one JSON file per server name, `0600`, holding the
-  SDK-shaped `tokens`, the registered `client_info` (so dynamic client
-  registration never repeats), an absolute `expires_at`, and the
-  discovered `token_endpoint`. Overridable via `ROTE_MCP_TOKEN_DIR`.
-- **OAuth engine**: fastmcp's `OAuth` (a subclass of the official MCP
-  SDK's `OAuthClientProvider`) — protected-resource discovery, PKCE,
-  DCR/CIMD, refresh. rote plugs in durable storage via
-  `ServerTokenKV`, an `AsyncKeyValue` shim mapping the provider's three
-  storage collections onto the contract file's fields.
+  SDK-shaped `tokens`, the `client_info` the login used (so registration
+  never repeats), an absolute `expires_at`, and the `token_endpoint` and
+  `issuer` of the authorization server. Overridable via
+  `ROTE_MCP_TOKEN_DIR`.
+- **OAuth engine**: fastmcp 4's `OAuth` (a subclass of the official MCP
+  SDK v2's `OAuthClientProvider`): protected-resource discovery, PKCE,
+  RFC 9207 `iss` validation, issuer-bound credentials, CIMD, DCR,
+  refresh. rote plugs in durable storage via `ServerTokenKV`, an
+  `AsyncKeyValue` shim mapping the provider's three storage collections
+  onto the contract file's fields, and the registration rules below.
+
+## Protocol eras
+
+MCP 2026-07-28 removed the `initialize` handshake and sessions. Every
+client rote ships prefers it and falls back to the 2025 handshake:
+
+| Client | Library | Negotiation |
+| --- | --- | --- |
+| `rote mcp login`, live compiler tools, the emitted Python helper | fastmcp 4 / MCP SDK v2 | `auto` (fastmcp's default): probe `server/discover`, fall back |
+| emitted `_roteMcp.ts` (DBOS-TS, Inngest) and the Workers helper | `@modelcontextprotocol/client` 2.x | `versionNegotiation: { mode: "auto" }`, passed explicitly |
+
+The explicit `auto` matters: the v2 TS client defaults to `legacy`,
+which behaves exactly like v1 against a modern-only server
+(`-32022 Unsupported protocol version`). v1
+(`@modelcontextprotocol/sdk` 1.x) has no 2026-07-28 support at all,
+which is why the emitted helpers moved to v2.
+`tests/test_mcp_era_matrix_e2e.py` runs both helpers against four real
+TypeScript SDK servers (legacy stateless, legacy sessionful, dual-era,
+modern-only) and asserts the era each server saw, so a client that
+silently stays on the old era against a dual-era server fails. Its
+negative half proves the modern-only fixture really refuses a
+`legacy`-mode client.
+
+## Client registration
+
+`rote mcp login` follows the spec's priority order:
+
+1. **A pre-registered client** from the registry (`rote mcp add <name>
+   <url> --client-id <id> [--client-secret <secret>]`). Always wins,
+   even when the server offers more.
+2. **rote's Client ID Metadata Document (CIMD)** when the authorization
+   server advertises `client_id_metadata_document_supported`. The
+   client_id is the URL `https://roteskills.com/oauth/rote-cli.json`;
+   the document's source is [`docs/oauth/rote-cli.json`](oauth/rote-cli.json).
+3. **Dynamic client registration (DCR)** when the server advertises a
+   `registration_endpoint`. Deprecated in 2026-07-28, still the only
+   option for most hosted servers today.
+4. **Otherwise, an error** naming the fix: register an OAuth app with
+   that authorization server and add it with `--client-id`. The SDK on
+   its own would POST to a guessed `<resource-origin>/register`, which
+   for GitHub is not GitHub's authorization server at all; rote refuses
+   to send that request.
+
+`ROTE_MCP_CLIENT_METADATA_URL` overrides the CIMD URL (the e2e suite
+points it at a local TLS copy of the document), and an empty value
+turns CIMD off.
+
+### The pre-registered client path (GitHub-class servers)
+
+Servers whose authorization server offers neither CIMD nor DCR (GitHub,
+Asana, HubSpot in the July 2026 probe) need an OAuth app registered by
+hand. Register one with the provider, set its redirect URI to
+`http://localhost:33418/callback` (add 33419 to 33421 too if the
+provider accepts several, so a busy port does not block the login),
+then:
+
+```sh
+rote mcp add github https://api.githubcopilot.com/mcp/ \
+  --client-id <id> --client-secret <secret>
+rote mcp login github
+```
+
+A pre-registered client is bound to the issuer it first logged in
+with (the token file's `issuer`). If the server's protected-resource
+metadata later names a different authorization server, the login stops
+with an error before the browser opens instead of offering that client
+to the new server, or quietly switching to CIMD or DCR there (spec:
+clients SHOULD surface an error rather than use mismatched credentials).
+
+### Loopback redirect ports
+
+A CIMD authorization server validates the redirect URI against the
+document by exact string comparison (CIMD draft section 4.2). Neither
+the CIMD draft nor the MCP spec defines a loopback port wildcard, and
+RFC 8252's any-port rule is per-server behavior. So the document lists
+a fixed set, `localhost` and `127.0.0.1` on ports 33418 to 33421, and
+the login binds the first free one (`rote.mcp.auth.CALLBACK_PORTS`; a
+unit test pins the document to that constant). This works without the
+server being lenient. `--callback-port` with any other port skips CIMD
+for that login, since it would be rejected by exactly the servers that
+support it. If all four ports are busy the login fails and says so.
+
+### `iss` and issuer binding
+
+The SDK validates RFC 9207 `iss` before redeeming the code: a present
+`iss` must equal the recorded issuer (whether or not the server
+advertises support), and a missing one is rejected when the server
+advertises `authorization_response_iss_parameter_supported`. rote
+surfaces the failure as a login error and no token request is sent.
+DCR credentials carry the issuer they were registered with, and a login
+against a different authorization server re-registers instead of
+presenting them there. `tests/test_mcp_oauth_registration_e2e.py` runs
+the real login against a local authorization server switchable between
+CIMD-only, DCR-only, both, and neither, with correct, mismatched, and
+missing `iss`, and two issuers to switch between. Every test asserts on
+the server's hit log, because the failures that matter are requests
+that should never be sent.
+
+### Refresh goes where login found the token endpoint
+
+Before any discovery, the SDK refreshes at `<resource-origin>/token`.
+For an authorization server on another host or a path issuer that
+404s, the provider falls into a full authorization, and an unattended
+caller parks on a credential that was fine. The CLI and the emitted
+Python helper send the refresh to the token file's `token_endpoint`
+instead (`retarget_token_request`). The TS helpers always did.
 
 ## URL resolution — the one rule
 
@@ -59,14 +167,14 @@ Exception: *at workflow runtime* the env var outranks the IR-recorded
 URL (deployment context beats compilation-time capture) — see
 `rote/mcp/_runtime_helper.py:resolve_url`.
 
-## The token-file contract (version 1)
+## The token-file contract (version 2)
 
 The store layout is a **cross-language contract**: Python writes it,
 Python and TypeScript runtimes read and refresh through it.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "server_url": "https://mcp.example.com/mcp",
   "tokens": {
     "access_token": "…", "token_type": "Bearer",
@@ -74,9 +182,15 @@ Python and TypeScript runtimes read and refresh through it.
   },
   "expires_at": 1770000000.0,
   "client_info": { "client_id": "…", "…": "…" },
-  "token_endpoint": "https://auth.example.com/token"
+  "token_endpoint": "https://auth.example.com/token",
+  "issuer": "https://auth.example.com"
 }
 ```
+
+Version 2 added `issuer`, the authorization server the credentials
+belong to (the spec keys credentials by issuer). Readers accept both
+versions; a v1 file is a v2 file whose issuer is unknown, and the next
+write stamps version 2.
 
 Rules: atomic replace, mode `0600`; `expires_at` is absolute (never
 trust a stale relative `expires_in`); a reader treats a missing
@@ -232,7 +346,7 @@ workerd (`tests/test_mcp_park_cf_e2e.py`):
    token into KV is the same read path the helper takes on retry.
 
 The park e2e also closed a long-standing gap: the post-release retry
-drives `callMcpTool` through the real `@modelcontextprotocol/sdk`
+drives `callMcpTool` through the real `@modelcontextprotocol/client`
 streamable-HTTP client **inside workerd** against a live server — the
 Workers MCP output was previously only ever typechecked.
 
@@ -287,6 +401,25 @@ skipped). Proven live in `tests/test_mcp_park_e2e.py`: a piped `rote
 run` that resumes on a credential fix, and a `rote run` on a pty that
 logs in against a real OAuth-protected server and completes.
 
+## A server asking for input mid-call
+
+A 2026-07-28 server can answer a tool call with `input_required`
+(elicitation, sampling, or roots requests) and expect the client to
+retry with the answers, or refuse the call with `-32021` because the
+client declared no capability the tool needs. An emitted step has
+nobody to answer, and no login answers it either, so it is not an auth
+failure: every helper raises `RoteMcpInputRequired` naming the server,
+the tool, and what was asked, and every runtime fails the step at once
+(the retry opt-outs exempt it, and the park loops never see it). A
+result that carries only `requestState`, asking for nothing, is still
+retried as the server wants. Proven by
+`tests/test_mcp_era_matrix_e2e.py` (both helpers, a real TS v2 server)
+and `tests/test_mcp_park_e2e.py` (a real DBOS run fails in one call,
+with a retry budget of 3, and never parks).
+
+Parking on such a request and resuming with the persisted
+`requestState` is a possible follow-up; it is not built.
+
 ## eval --run
 
 `mcp_servers_for_pipeline` builds the `claude -p --mcp-config` and now
@@ -322,8 +455,10 @@ with a plain `grant_type=refresh_token` POST to the stored
 `token_endpoint` (deliberately *not* the SDK's `authProvider`, which
 insists on running discovery and can silently fall through to a new
 authorization flow), writes rotated refresh tokens back atomically, and
-calls the tool via `@modelcontextprotocol/sdk` (^1.29 — the supported
-v1 line; v2 splits the packages) with a retry-once-on-401. Proven by
+calls the tool via `@modelcontextprotocol/client` (^2.3, negotiation
+`auto`; see [Protocol eras](#protocol-eras)) with a retry-once-on-401.
+A 401 arrives as `SdkHttpError` with `status === 401`, the version
+probe's included. Proven by
 `tests/test_mcp_ts_e2e.py`: Python logs in, compiled TS authenticates,
 refreshes a forced-stale token, and rotates credentials Python reads
 back.
@@ -340,8 +475,8 @@ refresh grant and caches them — with rotated refresh tokens — in the
 (per-isolate memory fallback when KV is absent). MCP results are
 declared `Promise<never>` in emitted modules for the same
 `Rpc.Serializable` reason stubs are. Static verification: the emitted
-output typechecks against `@cloudflare/workers-types` v5 + the MCP SDK
-(`test_cloudflare_mcp_output_typechecks`); the park-on-auth e2e
+output typechecks against `@cloudflare/workers-types` v5 + the MCP
+client (`test_cloudflare_mcp_output_typechecks`); the park-on-auth e2e
 (`tests/test_mcp_park_cf_e2e.py`) additionally drives the SDK's
 streamable-HTTP client through a live workerd run against a real
 server.

@@ -188,7 +188,7 @@ def test_ts_runtime_reads_refreshes_and_rotates_python_tokens(
     assert after["tokens"]["access_token"] != first_access
     assert after["tokens"]["refresh_token"]
     assert after["expires_at"] and after["expires_at"] > time.time()
-    assert after["version"] == 1
+    assert after["version"] == 2
 
 
 @pytest.mark.skipif(not _node_available(), reason="requires node + npm")

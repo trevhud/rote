@@ -434,3 +434,53 @@ def test_rote_run_on_a_tty_offers_the_login_and_completes_after_it(
     assert proc.returncode == 0, transcript
     result = json.loads(stdout)
     assert result["enrich"] == {"contact_id": "lead-7", "source": "protected-vendor-mcp"}
+
+
+_INPUT_SERVER = Path(__file__).resolve().parent / "_mcp_input_server.py"
+
+
+def test_a_mid_call_input_request_fails_the_workflow_without_parking_or_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 2026-07-28 server answering a tool call with input_required.
+
+    Nobody can answer it from a workflow step, and no login fixes it, so
+    the run must fail fast: no park (that would wait 30 days for a login
+    that changes nothing) and no retry (the node allows 3)."""
+    monkeypatch.delenv("DBOS_SYSTEM_DATABASE_URL", raising=False)
+    calls = tmp_path / "calls.log"
+    calls.write_text("", encoding="utf-8")
+    port = _free_port()
+    server = subprocess.Popen(
+        [sys.executable, str(_INPUT_SERVER), str(port), str(calls)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_port(port)
+        url = f"http://127.0.0.1:{port}/mcp/"
+        app_dir = tmp_path / "app"
+        DbosAdapter().emit(_park_pipeline(url), app_dir)
+        monkeypatch.setenv("ROTE_MCP_VENDOR_URL", url)
+
+        started = time.time()
+        proc = subprocess.run(
+            [sys.executable, "main.py", json.dumps({"contact_id": "lead-9"})],
+            cwd=app_dir,
+            env={**os.environ},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        elapsed = time.time() - started
+    finally:
+        server.terminate()
+        server.wait(timeout=10)
+
+    assert proc.returncode != 0, proc.stdout
+    assert "RoteMcpInputRequired" in proc.stderr
+    assert "approval (elicitation/create)" in proc.stderr
+    assert "needs (re)authentication" not in proc.stderr
+    # One call: the retry budget was skipped, not spent.
+    assert calls.read_text(encoding="utf-8").splitlines() == ["lead-9"]
+    assert elapsed < 60

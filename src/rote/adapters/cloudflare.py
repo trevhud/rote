@@ -56,7 +56,8 @@ from rote.adapters._ts_common import (
     AI_UTILS_NPM_VERSION,
     ANTHROPIC_SDK_NPM_VERSION,
     FAN_OUT_LIST_HELPER_TS,
-    MCP_SDK_NPM_VERSION,
+    MCP_CLIENT_NPM_PACKAGE,
+    MCP_CLIENT_NPM_VERSION,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_BINDING_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
@@ -262,8 +263,10 @@ def _emit_step_call_mcp_parkable(
         f"                        try {{\n"
         f"                            return await {fn_name}({payload}, this.env);\n"
         f"                        }} catch (err) {{\n"
-        f"                            // No retry mints a credential — skip the budget.\n"
-        f"                            throw isRoteMcpAuthNeeded(err)\n"
+        f"                            // No retry mints a credential or answers an\n"
+        f"                            // input request: both skip the budget.\n"
+        f"                            throw (isRoteMcpAuthNeeded(err) ||\n"
+        f"                                isRoteMcpInputRequired(err))\n"
         f"                                ? new NonRetryableError(\n"
         f"                                      err instanceof Error ? err.message : String(err),\n"
         f"                                  )\n"
@@ -533,10 +536,14 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         if cfg.mcp_client == "binding":
             # The Env interface names the platform proxy's structural type.
             imports += (
-                '\nimport { isRoteMcpAuthNeeded, type RoteMcpBinding } from "./extracted/_roteMcp";'
+                "\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired, type RoteMcpBinding } "
+                'from "./extracted/_roteMcp";'
             )
         else:
-            imports += '\nimport { isRoteMcpAuthNeeded } from "./extracted/_roteMcp";'
+            imports += (
+                "\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired } "
+                'from "./extracted/_roteMcp";'
+            )
 
     # The Env interface carries only the credentials the pipeline's judges
     # actually use: an API key per SDK client, and the Workers AI binding
@@ -947,7 +954,7 @@ def emit_package_json(
             "@anthropic-ai/sdk": ANTHROPIC_SDK_NPM_VERSION,
             "openai": "^6.0.0",
             "zod": "^4.0.0",
-            **({"@modelcontextprotocol/sdk": MCP_SDK_NPM_VERSION} if with_mcp else {}),
+            **({MCP_CLIENT_NPM_PACKAGE: MCP_CLIENT_NPM_VERSION} if with_mcp else {}),
             # Cloudflare's embedded function-calling toolkit — the
             # workers-ai lane's tool runner.
             **({"@cloudflare/ai-utils": AI_UTILS_NPM_VERSION} if with_agent_loops else {}),

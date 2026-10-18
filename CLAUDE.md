@@ -338,6 +338,47 @@ client across requests must hold the `Connection` instead (see
 `rote serve`'s list_changed delivery, which also has to publish on a
 `subscriptions/listen` bus for modern clients).
 
+### MCP 2026-07-28: what keeps both eras and every registration mode working
+
+Five things, each with a test that fails when it is undone
+(`tests/test_mcp_era_matrix_e2e.py`, `tests/test_mcp_oauth_registration_e2e.py`,
+`tests/test_mcp_park_e2e.py`). See [`docs/mcp-client.md`](docs/mcp-client.md).
+
+- **The TS helpers must pass `versionNegotiation: { mode: "auto" }`.**
+  `@modelcontextprotocol/client` 2.x defaults to `legacy`, which fails
+  against a modern-only server exactly like v1 (`-32022`). Checking the
+  import line proves nothing; the era matrix asserts the era each server
+  saw. A 401 is `SdkHttpError.status`; v1's `err.code === 401` reads an
+  SdkErrorCode string in v2 and never matches, which silently turns
+  park-on-auth into a failure.
+- **The CIMD document's redirect URIs and `CALLBACK_PORTS` are one fact.**
+  A CIMD server compares redirect URIs by exact string match and no spec
+  defines a loopback port wildcard, so the login binds a published port.
+  `tests/test_mcp_client.py::test_cimd_document_matches_what_the_login_offers`
+  pins `docs/oauth/rote-cli.json` to the code, and the copy served by
+  rote-cloud's marketing site must match it too. Add ports to the
+  document before the CLI uses them, never after.
+- **rote refuses registrations the SDK would send on its own.** Without
+  a `registration_endpoint` the SDK POSTs a guessed
+  `<resource-origin>/register` (GitHub: not its authorization server).
+  `RoteOAuth._refuse_registration` stops that, the emitted helper refuses
+  any registration (it parks instead), and an issuer-bound pre-registered
+  client that the SDK dropped is not silently replaced by CIMD or DCR.
+  The tests assert on the authorization server's hit log, because the
+  failure is a request that should never have been sent.
+- **Refresh goes to the stored `token_endpoint`.** Before discovery the
+  SDK refreshes at `<resource-origin>/token`. For a path issuer or an AS
+  on another host that 404s, and an unattended run parks on a credential
+  that was fine. `retarget_token_request` is shared by the CLI and the
+  emitted helper. FastMCP fixtures cannot catch this: their AS is the
+  server's own origin root.
+- **`RoteMcpInputRequired` is not an auth error.** A server that wants
+  input mid-call (`input_required`, or `-32021` for an undeclared
+  capability; TS SDK servers send the latter because rote declares no
+  capabilities) fails the step on every runtime, and every retry opt-out
+  exempts it. Making it a `RoteMcpAuthNeeded` would park the run for 30
+  days waiting for a login that answers nothing.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

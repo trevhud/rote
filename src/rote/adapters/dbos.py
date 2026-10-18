@@ -162,7 +162,9 @@ def _step_decorator(node: Node, *, mcp: bool = False) -> str:
     MCP-backed steps with retries additionally opt auth failures out of
     the retry budget (``should_retry=_mcp_should_retry``): a missing or
     dead credential is not transient, and burning attempts on it only
-    delays the park that actually fixes it.
+    delays the park that actually fixes it. A server asking for input
+    mid-call (``RoteMcpInputRequired``) is opted out too: nothing a retry
+    sends can answer it.
     """
     args = [f'name="{node.id}"']
     if node.retry and node.retry.max > 0:
@@ -707,7 +709,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
             from dbos import WorkflowHandle
 
-            from extracted._rote_mcp import RoteMcpAuthNeeded
+            from extracted._rote_mcp import RoteMcpAuthNeeded, RoteMcpInputRequired
 
             _AUTH_PARK_TIMEOUT_SECONDS = 30 * 24 * 3600  # 30 days
 
@@ -719,8 +721,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
 
             def _mcp_should_retry(exc: BaseException) -> bool:
-                """Auth failures skip the retry budget and park instead."""
-                return not isinstance(exc, RoteMcpAuthNeeded)
+                """Auth failures skip the retry budget and park instead; a server
+                asking for human input mid-call fails at once (no retry answers it)."""
+                return not isinstance(exc, (RoteMcpAuthNeeded, RoteMcpInputRequired))
 
 
             def _park_for_auth(server: str, node: str) -> None:

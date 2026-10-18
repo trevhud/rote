@@ -113,7 +113,8 @@ from rote.adapters._common import (
 from rote.adapters._ts_common import (
     ANTHROPIC_SDK_NPM_VERSION,
     FAN_OUT_LIST_HELPER_TS,
-    MCP_SDK_NPM_VERSION,
+    MCP_CLIENT_NPM_PACKAGE,
+    MCP_CLIENT_NPM_VERSION,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
@@ -554,7 +555,9 @@ async function runParkable(
                     try {
                         return await fn();
                     } catch (err) {
-                        if (isRoteMcpAuthNeeded(err)) {
+                        // No retry mints a credential or answers an input
+                        // request: both skip the budget.
+                        if (isRoteMcpAuthNeeded(err) || isRoteMcpInputRequired(err)) {
                             throw new NonRetriableError(
                                 err instanceof Error ? err.message : String(err),
                                 { cause: err instanceof Error ? err : undefined },
@@ -764,7 +767,9 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         'import { NonRetriableError } from "inngest";\n' if (has_gates or mcp_backed) else ""
     ) + 'import { inngest } from "./client";\n'
     if mcp_backed:
-        inngest_imports += 'import { isRoteMcpAuthNeeded } from "../extracted/_roteMcp";\n'
+        inngest_imports += (
+            'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "../extracted/_roteMcp";\n'
+        )
 
     imports_block = module_imports(pipeline, prefix="../")
 
@@ -870,7 +875,7 @@ def emit_package_json(
     if "openai" in clients:
         dependencies["openai"] = "^6.45.0"
     if with_mcp:
-        dependencies["@modelcontextprotocol/sdk"] = MCP_SDK_NPM_VERSION
+        dependencies[MCP_CLIENT_NPM_PACKAGE] = MCP_CLIENT_NPM_VERSION
     obj = {
         "name": pipeline.name,
         "version": pipeline.version,
