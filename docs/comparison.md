@@ -25,7 +25,7 @@ before relying on a detail.
 | Cost and determinism report | `rote eval` scorecard (estimate) and `rote eval --run` (measured, both sides) | `calcifier profile` summarizes a run's timings, attempts, and tokens | Not provided | Per-agent token usage in `/workflows` | You build it |
 | Re-compile after the skill changes | `rote compile --update` re-derives only changed sections and keeps node ids and filled-in code | `calcifier update` recompiles and prints a diff without writing | Re-run the converter | Ask Claude to edit the script | You edit it |
 | Who pays for model calls | Chosen at run time per node: Claude subscription, your API key, or rote cloud | The configured Claude or Codex CLI, or a custom agent command | Your Claude Code session | Your Claude Code session | Your choice |
-| Compile-time checks | Pydantic IR validation, deterministic emission, emitted code tested per runtime in CI | Ruff, ty, semantic and taint checks, and a whole-recipe dry run with stub agents | A V8 parse gate plus three review agents | Schema contradictions caught before an agent starts | Your CI |
+| Compile-time checks | Pydantic IR validation, deterministic emission, adapter emission tested in rote's CI. No per-pipeline dry run | Ruff, ty, semantic and taint checks, and a whole-recipe dry run with stub agents | A V8 parse gate plus three review agents | Schema contradictions caught before an agent starts | Your CI |
 | License | Apache-2.0 | MIT | MIT | Part of Claude Code | n/a |
 
 ## Measured: compiling the same skill
@@ -82,9 +82,9 @@ Adapters turn that IR into native code for one of six targets
 substitution, so the same IR always produces the same files.
 
 The trade-off is that rote asks more of you up front. You pick a
-durable runtime and operate it (or use rote cloud), and an
-`external_call` node that the compiler could not implement is a stub
-you fill in. The TypeScript runtimes cannot reuse Python
+durable runtime and operate it (or use rote cloud), and any node the
+compiler did not implement is a stub you fill in. In the measured run
+above, that included every parser and the report renderer. The TypeScript runtimes cannot reuse Python
 implementations, so they always start from stubs.
 
 ## calcifier

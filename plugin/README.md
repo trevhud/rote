@@ -8,7 +8,8 @@ durable background workflow on DBOS, Temporal, Cloudflare Workflows, Inngest,
 DBOS TypeScript, or a plain Python script, instead of a 10 to 20 minute agent
 loop.
 
-This plugin adds two skills to Claude:
+This plugin adds skills to Claude. Each one lives in its own folder under
+[`skills/`](skills/). The main ones:
 
 - **compile** (`/rote:compile`): confirms the skill directory with you, asks
   which runtime you want, runs the rote CLI in the background, and explains
@@ -19,12 +20,27 @@ This plugin adds two skills to Claude:
 
 ## Install
 
+In a Claude Code session (v2.1.275 or later):
+
 ```
 /plugin install rote --marketplace trevhud/rote
 ```
 
-On Claude Code older than 2.1.275, run `/plugin marketplace add trevhud/rote`
-and then `/plugin install rote@rote`.
+From your shell (v2.1.292 or later):
+
+```
+claude plugin install rote --marketplace trevhud/rote
+```
+
+On older versions, add the marketplace first:
+
+```
+/plugin marketplace add trevhud/rote
+/plugin install rote@rote
+```
+
+These forms and version requirements come from
+[Install and manage plugins](https://code.claude.com/docs/en/discover-plugins#add-a-marketplace-and-install-in-one-command).
 
 ## Try it
 
