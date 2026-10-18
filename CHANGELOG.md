@@ -34,6 +34,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [0.14.0] - 2026-10-18
 
 ### Added
+- **A free first run.** `examples/expense-audit/` is a month-end expense
+  audit skill with a hand-compiled pipeline whose extracted modules are
+  working code, so `rote emit` + `rote run` finish end to end with no
+  credentials and no tokens on python (`pipeline-draft.yaml`, no gate),
+  dbos, and temporal (`pipeline.yaml`, with a `controller_review` HITL
+  gate). It covers a three-node parallel entry wave, a `fan_out` audit
+  per employee, mandatory checks, and policy constants lifted out of
+  prose. The README opens with it as "Try it free in 60 seconds", and
+  `tests/test_expense_audit_example.py` runs it on python in the fast
+  suite and on dbos and temporal in the slow suite (now in CI).
 - `rote compile --no-mcp` skips live MCP discovery and calls for local
   `api` and `openai-api` compilation. `rote analyze` accepts the same
   opt-out. Emitted MCP bindings and default discovery behavior stay
@@ -104,6 +114,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runner can provision connections without re-deriving them from the IR.
 
 ### Fixed
+- README and AGENTS.md accuracy: the compiler skill has six reference
+  files, not four; `rote run` executes all six runtimes (AGENTS.md said
+  python/dbos only); the slow e2e suites do run in CI; the BDR run flags
+  three mandatory nodes, not four.
 - The `dbos` and `dev` extras now cap `dbos<3`. DBOS 3.0 (2026-09-16)
   made `Queue(...)` construction raise in favor of
   `DBOS.register_queue` and removed the admin server, so a fresh

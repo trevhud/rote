@@ -19,6 +19,71 @@ genuinely need judgment. A 10 to 20 minute agent loop becomes a
 background workflow that costs a fraction of the tokens and can be
 regression tested.
 
+### Try it free in 60 seconds
+
+No API key, no subscription, no tokens. The
+[`expense-audit`](examples/expense-audit/) example is a month-end expense
+audit skill whose compiled pipeline ships with working code, so you can
+emit it and run it before you compile anything of your own:
+
+```sh
+pip install 'rote-cli[dbos]'
+git clone https://github.com/trevhud/rote.git && cd rote
+rote doctor     # what's installed and authed; read-only, costs nothing
+
+# IR -> a plain Python script, then run it on the sample batch
+rote emit examples/expense-audit/expected/pipeline-draft.yaml --runtime python --out /tmp/expense-audit
+rote run /tmp/expense-audit --input examples/expense-audit/input.json
+```
+
+```
+rote run (python): succeeded
+  0.1s
+{
+  "file_report": {
+    "report_path": "/tmp/expense-audit/reports/2026-09-expense-audit.md",
+    "status": "draft",
+    "reviewer": null,
+    "reimbursable_usd": 2395.59,
+    "pending_usd": 844.39,
+    "returned_usd": 64.17,
+    "batch_total_usd": 3304.15,
+    "auto_approved": ["Dev Patel", "Emi Tanaka"],
+    "review_items": 4,
+    "blocked_items": 2
+  }
+}
+```
+
+Sixteen expense lines in five currencies went through a parallel wave of
+three mandatory checks, a per-employee audit fanned out five ways, and a
+report written to disk, with no model anywhere in the loop. The full
+skill also parks for the controller's approval, which needs a durable
+runtime:
+
+```sh
+rote emit examples/expense-audit/expected/pipeline.yaml --out /tmp/expense-audit-dbos
+rote run /tmp/expense-audit-dbos --input examples/expense-audit/input.json \
+  --signal controller_review='{"reviewer": "Priya Shah", "approved_ids": ["EXP-2403", "EXP-2413", "EXP-2420"], "rejected_ids": ["EXP-2410"]}'
+# ... "status": "final", "reimbursable_usd": 2990.98, "returned_usd": 313.17
+```
+
+Then see what compiling the skill buys: `rote eval` prints a before/after
+scorecard (wall clock, cost across the current model lineup, how much of
+the run is still LLM-decided). It fetches the live price list once and
+runs no inference:
+
+```sh
+rote eval examples/expense-audit/expected/pipeline.yaml
+```
+
+`pip` installs don't include `examples/`, hence the clone. The other
+examples' extracted modules are `NotImplementedError` stubs waiting for
+real vendor API clients, so `expense-audit` is the one that runs end to
+end. Details in [its README](examples/expense-audit/README.md).
+
+### Compile your own skill
+
 ```sh
 pip install rote-cli    # or zero-install: uvx --from rote-cli rote ...
 
@@ -124,7 +189,7 @@ a small interface.
 ```
 
 1. **The compiler agent** (`skills/rote-compile/`): a regular
-   Anthropic Skill (`SKILL.md` + four reference files). This is the
+   Anthropic Skill (`SKILL.md` + six reference files). This is the
    *brain*; it runs inside any Skills-compatible surface, and you don't
    need `rote` to use it.
 2. **The IR** (`src/rote/ir.py`): Pydantic models for the five node
@@ -191,7 +256,7 @@ rote compile examples/bdr-outreach/skill --out /tmp/bdr-compiled
 
 On that skill the compiler produces a 22-node IR that's **78.9%
 codifiable** (15 of 19 non-gate nodes), extracts 5 Python modules and 2
-typed judge signatures, and flags 4 mandatory nodes and 3 HITL gates,
+typed judge signatures, and flags 3 mandatory nodes and 3 HITL gates,
 all in ~13 minutes for ~$0.70 (Sonnet via Claude Code). Along the way it
 independently lifts the three MANDATORY exclusion checks out of prose,
 pulls four batch-size constants out of prompt text, and models a
@@ -388,16 +453,17 @@ subscription path.
 ## Status
 
 `rote` is **pre-1.0**. The end-to-end flow works on the BDR example. The
-fast suite (`pytest tests/`) makes no real API calls and is what CI runs
-on every push, alongside a Python e2e (DBOS over SQLite + the MCP server
-over real stdio). Each adapter also has a `slow`-marked e2e that runs its
-emitted code against the real runtime (Temporal's time-skipping server,
-the TypeScript targets via `tsc --noEmit` and live dev servers, the
-plain-Python subprocess); those need a Node toolchain / Docker, so they
-run locally with `pytest tests/ -m slow`, not in CI.
+fast suite (`pytest tests/`) makes no real API calls, spends no tokens,
+and runs on every push. CI also runs every `slow`-marked e2e suite on
+every push: DBOS over SQLite, the MCP server over real stdio, the
+TypeScript targets via `tsc --noEmit` and live dev servers (Cloudflare
+`wrangler dev`, the Inngest dev server), and DBOS TypeScript against a
+Docker Postgres. Locally, `pytest tests/ -m slow` runs them; they need a
+Node toolchain and Docker.
 
-Known gaps: the extracted modules are `NotImplementedError` stubs
-you fill in with real API-client code, and a Restate adapter is planned.
+Known gaps: extracted modules that need a vendor API client (HubSpot,
+ZoomInfo, and so on) come out as `NotImplementedError` stubs you fill in,
+and a Restate adapter is planned.
 Published on
 PyPI as [`rote-cli`](https://pypi.org/project/rote-cli/) via tag-driven
 Trusted Publishing ([docs/releasing.md](docs/releasing.md)).
@@ -417,7 +483,7 @@ measure your own workflow instead of reading someone else's, use
 ```
 rote/
 ├── docs/                  agent-runtime · mcp-client · mcp-trigger · releasing
-├── skills/rote-compile/  the compiler agent (SKILL.md + 4 reference files)
+├── skills/rote-compile/  the compiler agent (SKILL.md + 6 reference files)
 ├── src/rote/
 │   ├── cli.py             rote compile / emit / eval / serve
 │   ├── ir.py              Pydantic IR models + load_pipeline
@@ -425,6 +491,7 @@ rote/
 │   └── adapters/          dbos · temporal · python · cloudflare · dbos_ts · inngest
 │                          (+ _common / _py_common / _ts_common emit helpers)
 ├── examples/
+│   ├── expense-audit/     free first run: working extracted code · fan-out · HITL gate
 │   ├── bdr-outreach/      canonical: all 5 node kinds · IR baseline · run snapshots
 │   ├── ops-report/        100% roteness: zero LLM nodes + a HITL gate
 │   ├── deal-monitor/      data-heavy: parallel waves · fan-out judges · template render
@@ -450,8 +517,12 @@ rote/
 - [`docs/releasing.md`](docs/releasing.md): tag-driven PyPI Trusted
   Publishing
 - [`skills/rote-compile/`](skills/rote-compile/): the compiler's
-  `SKILL.md` and its four rubric files (node kinds, crystallization
-  heuristics, IR schema, LLM-judge extraction)
+  `SKILL.md` and its six rubric files (node kinds, crystallization
+  heuristics, IR schema, LLM-judge extraction, implementation, eval
+  estimates)
+- [`examples/expense-audit/`](examples/expense-audit/): the free first
+  run: a hand-compiled pipeline with working extracted code that
+  `rote run` completes on python, dbos, and temporal with no credentials
 - [`examples/bdr-outreach/`](examples/bdr-outreach/): the canonical
   skill, its ground-truth IR, and snapshotted real compiler runs
 - [`examples/ops-report/`](examples/ops-report/): the 100%-roteness
