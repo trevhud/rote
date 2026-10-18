@@ -50,7 +50,12 @@ from rote.mcp.auth import (  # noqa: E402
     login,
     registration_of,
 )
-from tests._oauth_fixture import CIMD_DOCUMENT, OAuthFixture, fake_browser_open, free_port  # noqa: E402
+from tests._oauth_fixture import (  # noqa: E402
+    CIMD_DOCUMENT,
+    OAuthFixture,
+    fake_browser_open,
+    free_port,
+)
 
 PRE_ID = "github-style-app"
 
