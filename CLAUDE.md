@@ -402,6 +402,41 @@ Two behaviors to preserve:
   parks and `rote mcp login` releases it, instead of dying with a
   misleading "unknown tool".
 
+### `rote run` must see a park, and only the runner can release a local one
+
+A parked run used to look like a hang under `rote run`. The run-side
+watcher (`rote.mcp.parked`) reads each runtime's park signal: the DBOS
+`rote_auth_status` event (now `{awaiting, node}`), and on Inngest and
+Cloudflare a `rote-auth-park {json}` line the emitted park prints before
+its `waitForEvent`, because neither local dev server reports what a run
+waits on. Traps, all found by running it:
+
+- **The prompt goes to stderr.** `input()` writes its prompt to stdout,
+  which is `rote run`'s result JSON. On a pty with stdout piped the user
+  is asked a question they never see and the run waits forever.
+  `_stderr_input` exists for this; don't "simplify" it back to `input`.
+- **Replays reprint the marker.** Both TS runtimes re-execute workflow
+  code after a release, so the line prints again. Dedupe on its `wait`
+  field (the wait's step id), never on server or node.
+- **`rote mcp login` cannot reach a `rote run` dev server.** The
+  registry-wide release targets Inngest's default port and the
+  Cloudflare REST API. So the watcher releases its own run when the
+  server's token file or registry entry changes. On DBOS it waits a few
+  seconds first, because login already released registered DBOS apps.
+- **A login writes the token file twice.** Client registration lands
+  first with no token. Releasing on that write wakes the run into the
+  same failure, it parks again, and the finished login then looks like
+  "no change". `credentials_settled` waits for an access token.
+- **A Worker never sees the local token store.** On Cloudflare the
+  watcher shows the export-to-`.dev.vars` fix and neither offers a login
+  nor self-releases, since a login there would "succeed" and change
+  nothing the Worker can read.
+- **An auth park looks like a gate park to the Cloudflare stability
+  heuristic.** While the watcher reports an active park, the runner must
+  not spend a gate payload on it.
+- Non-TTY never prompts and never opens a browser. The browser login is
+  offered only when stdin and stderr are both terminals.
+
 ### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
 
 Its tools are MCP tools, so `bindAgentTools` and every in-loop tool call

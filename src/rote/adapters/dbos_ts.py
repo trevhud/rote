@@ -401,7 +401,9 @@ def _emit_fan_out(node: Node, pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> l
         assert node.mcp is not None
         # Each element parks independently; one release signal wakes the
         # workflow and runWithAuthPark retries the element that parked.
-        call = f"runWithAuthPark(() => {call}, {json.dumps(node.mcp.server)})"
+        call = (
+            f"runWithAuthPark(() => {call}, {json.dumps(node.mcp.server)}, {json.dumps(node.id)})"
+        )
     return [
         f"        // fan_out: {node.id} runs once per element of the bound list,",
         "        // each as its own durable step.",
@@ -454,6 +456,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 else:
                     lines.append(f"            () => {fn_name}Step({payload}),")
                 lines.append(f"            {json.dumps(node.mcp.server)},")
+                lines.append(f"            {json.dumps(node.id)},")
                 lines.append("        );")
             else:
                 payload = payload_ts_literal(node, indent=" " * 8)
@@ -504,6 +507,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                     lines.append(f"            {node.id}_result = await runWithAuthPark(")
                     lines.append(f"                () => {fn_name}Step({node.id}_payload),")
                     lines.append(f"                {json.dumps(node.mcp.server)},")
+                    lines.append(f"                {json.dumps(node.id)},")
                     lines.append("            );")
                     lines.append("        }")
                 else:
@@ -558,11 +562,13 @@ function mcpShouldRetry(error: unknown): boolean {
     return !isRoteMcpAuthNeeded(error);
 }
 
-/** Suspend the workflow until `rote mcp login <server>` succeeds. */
-async function parkForAuth(server: string): Promise<void> {
+/** Suspend the workflow until `rote mcp login <server>` succeeds.
+ * The event names the node too, so `rote run` and `rote mcp parked`
+ * can say which step is waiting. */
+async function parkForAuth(server: string, node: string): Promise<void> {
     await DBOS.setEvent(
         "rote_auth_status",
-        { awaiting: server },
+        { awaiting: server, node },
         { serializationType: "portable" },
     );
     const released = await DBOS.recv<Record<string, unknown>>(
@@ -590,6 +596,7 @@ async function parkForAuth(server: string): Promise<void> {
 async function runWithAuthPark(
     stepCall: () => Promise<Record<string, unknown>>,
     server: string,
+    node: string,
 ): Promise<Record<string, unknown>> {
     let attemptsSincePark = 0;
     for (;;) {
@@ -599,7 +606,7 @@ async function runWithAuthPark(
             if (!isRoteMcpAuthNeeded(err)) throw err;
             attemptsSincePark += 1;
             if (attemptsSincePark >= 2) {
-                await parkForAuth(server);
+                await parkForAuth(server, node);
                 attemptsSincePark = 0;
             }
         }

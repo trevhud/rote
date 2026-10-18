@@ -377,6 +377,7 @@ def run_pipeline(
     gate_order: list[str] | None = None,
     pipeline: Any = None,
     timeout_seconds: float = 600.0,
+    interactive: bool = False,
 ) -> PipelineRunOutcome:
     """Run an emitted pipeline once.
 
@@ -387,7 +388,16 @@ def run_pipeline(
     pipeline's gate signal names in topological order). ``inngest``
     runs the emitted serve entrypoint against a managed dev server and
     additionally needs the loaded ``pipeline`` IR for event naming.
+
+    On the four runtimes that park on MCP auth (dbos, dbos-ts, inngest,
+    cloudflare) a watcher reports each park, naming the server, the node
+    and the command that releases it. ``interactive`` (a terminal on
+    both ends) additionally offers the browser login in place; without
+    it nothing ever prompts or opens a browser.
     """
+    from rote.mcp.parked import watch_factory
+
+    park_watch = watch_factory(interactive)
     if target.runtime not in RUNNABLE_RUNTIMES:
         raise TargetError(
             f"`rote run` cannot orchestrate the `{target.runtime}` runtime yet — "
@@ -402,6 +412,7 @@ def run_pipeline(
             signals=signals or {},
             gate_order=gate_order or sorted(signals or {}),
             timeout_seconds=timeout_seconds,
+            park_watch=park_watch,
         )
     elif target.runtime == "inngest":
         if pipeline is None:
@@ -420,6 +431,7 @@ def run_pipeline(
             signals=signals or {},
             gate_order=gate_order or sorted(signals or {}),
             timeout_seconds=timeout_seconds,
+            park_watch=park_watch,
         )
     elif target.runtime == "dbos-ts":
         from rote.runners.dbos_ts import run_dbos_ts
@@ -429,6 +441,7 @@ def run_pipeline(
             input_payload,
             signals=signals or {},
             timeout_seconds=timeout_seconds,
+            park_watch=park_watch,
         )
     elif target.runtime == "temporal":
         from rote.runners.temporal import run_temporal
@@ -445,5 +458,6 @@ def run_pipeline(
             input_payload,
             signals=signals or None,
             timeout_seconds=timeout_seconds,
+            park_watch=park_watch,
         )
     return PipelineRunOutcome(run=run, runtime=target.runtime, app_dir=target.path)

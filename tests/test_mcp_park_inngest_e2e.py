@@ -38,6 +38,7 @@ from rote.adapters.inngest import InngestAdapter
 from rote.app_registry import record_app
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPolicy
 from rote.mcp import clear_token_file, write_token_file
+from rote.mcp.parked import parse_auth_park_markers
 from rote.mcp.release import release_parked_workflows
 
 pytest.importorskip("fastmcp")
@@ -242,6 +243,13 @@ def test_inngest_run_parks_and_broadcast_release_completes_it(
                 f"run reached {status!r} instead of parking;\napp log:\n{app_log_path.read_text()}"
             )
             time.sleep(1)
+        # The park announced itself, which is what `rote run` watches for
+        # (the v1 run status reads Running either way). Replays may print
+        # it again; the wait id is what makes it one park.
+        parks = parse_auth_park_markers(app_log_path.read_text(encoding="utf-8"))
+        assert {(m["server"], m["node"], m["wait"]) for m in parks} == {
+            ("vendor", "enrich", "enrich-auth-wait-1")
+        }, app_log_path.read_text(encoding="utf-8")
 
         # ── Release precision: the wrong server's broadcast wakes nothing ──
         monkeypatch.setenv("ROTE_INNGEST_EVENT_URL", f"http://127.0.0.1:{dev_port}/e/dev")

@@ -108,7 +108,8 @@ opens a browser) — the step raises `RoteMcpAuthNeeded` and the workflow
 1. The step's `should_retry` predicate exempts `RoteMcpAuthNeeded` from
    the retry budget — no number of retries produces a credential.
 2. The workflow advertises what it's blocked on via the
-   `rote_auth_status` workflow event (`{"awaiting": "<server>"}`).
+   `rote_auth_status` workflow event
+   (`{"awaiting": "<server>", "node": "<node id>"}`).
    DBOS has no distinct WAITING status — a parked workflow is just
    PENDING, so it must say what it's waiting for.
 3. It blocks on `DBOS.recv(topic="rote:auth:<server>")` (30-day
@@ -232,6 +233,57 @@ The park e2e also closed a long-standing gap: the post-release retry
 drives `callMcpTool` through the real `@modelcontextprotocol/sdk`
 streamable-HTTP client **inside workerd** against a live server — the
 Workers MCP output was previously only ever typechecked.
+
+## Seeing a park from `rote run`
+
+Unattended, a park is the right behavior. Under `rote run` it used to
+look like a hang. The run-side watcher (`rote.mcp.parked`) closes that
+gap on all four parking runtimes:
+
+| Runtime | How the runner sees the park | How it releases this run |
+| --- | --- | --- |
+| dbos, dbos-ts | the `rote_auth_status` event (server + node) | `DBOSClient.send` on `rote:auth:<server>`, portable |
+| inngest | a `rote-auth-park {json}` line in the app log | broadcast `<pipeline>/rote.auth.<server>` to the run's own dev server |
+| cloudflare | the same line in the `wrangler dev` log | it does not (see below) |
+
+The marker line exists because neither local dev server reports a
+truthful "waiting on event X" status. Both runtimes replay workflow
+code, so the line can print again after a release; its `wait` field
+(the wait's own step id) de-duplicates it.
+
+Each park prints once, naming the node, the server, and the command
+that fixes it (read from the registry: `rote mcp login`, or `rote mcp
+add` first for an unregistered server, or a header update for a
+static-header one). Then:
+
+- **On a terminal** (stdin and stderr both TTYs), the runner offers to
+  run the browser login right there. Accepting runs the same OAuth dance
+  as `rote mcp login` and releases the run. Time spent in the prompt and
+  the browser extends `--timeout`.
+- **Off a terminal** nothing prompts and no browser opens. The runner
+  watches the server's token file and registry entry, and when either
+  changes (a `rote mcp login` in another terminal, say) it releases its
+  own run. A change counts only once the token file holds an access
+  token: a login writes its client registration first, and releasing on
+  that write re-parks the run. On DBOS it also waits a few seconds,
+  because `rote mcp login` already releases registered DBOS apps itself.
+  On Inngest the runner is the only releaser there is: the registry-wide
+  release targets the default Inngest port, which a `rote run` dev
+  server never uses.
+- **Cloudflare is visibility only.** A Worker reads its own secrets, not
+  the local token store, so a login on this machine changes nothing it
+  can see. The runner prints the real fix (`rote mcp login`, then
+  `rote mcp export <server> >> .dev.vars`, then re-run), offers no
+  login, does not self-release, and keeps its HITL gate payloads for
+  real gates (an auth park looks parked to the stability heuristic too).
+
+Emitted code stays never-interactive; all of this is CLI-side.
+`rote mcp parked [server]` lists parked DBOS workflows across the
+registered apps without releasing them (Inngest and Cloudflare offer no
+"which runs wait on which event" query, so they are reported as
+skipped). Proven live in `tests/test_mcp_park_e2e.py`: a piped `rote
+run` that resumes on a credential fix, and a `rote run` on a pty that
+logs in against a real OAuth-protected server and completes.
 
 ## eval --run
 

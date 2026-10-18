@@ -37,6 +37,7 @@ from urllib.error import URLError
 
 from rote.eval.empirical import EmpiricalError, MeasuredRun
 from rote.ir import Pipeline
+from rote.mcp.parked import AuthPark, LogMarkerChannel, ParkWatchFactory, app_parks_on_auth
 from rote.runners._node import (
     ensure_npm_install,
     find_free_port,
@@ -138,6 +139,7 @@ def run_inngest(
     signals: dict[str, Any],
     gate_order: list[str],
     timeout_seconds: float = 600.0,
+    park_watch: ParkWatchFactory | None = None,
 ) -> MeasuredRun:
     """Run an emitted Inngest app once against a managed dev server.
 
@@ -145,8 +147,14 @@ def run_inngest(
     ``<pipeline>/run.requested`` and each gate waits on
     ``<pipeline>/<signal>``. The measured wall clock covers trigger →
     terminal, not toolchain startup.
+
+    ``park_watch`` reports MCP auth parks from the marker the emitted
+    park prints to the app log, and releases them by broadcasting the
+    pipeline's ``rote.auth.<server>`` event to THIS dev server (the
+    registry-wide ``rote mcp login`` release targets the default port,
+    which a ``rote run`` dev server never uses).
     """
-    from rote.adapters.inngest import gate_event_name, trigger_event_name
+    from rote.adapters.inngest import auth_event_name, gate_event_name, trigger_event_name
 
     cli = _ensure_toolchain(app_dir)
     signal_events = {
@@ -220,8 +228,25 @@ def run_inngest(
                 else:
                     time.sleep(0.5)
 
+            watcher = None
+            if park_watch is not None and app_parks_on_auth(app_dir):
+
+                def release(park: AuthPark) -> None:
+                    http_json(
+                        "POST",
+                        f"{dev_base}/e/dev",
+                        {
+                            "name": auth_event_name(pipeline, park.server),
+                            "data": {"server": park.server, "released_by": "rote run"},
+                        },
+                    )
+
+                watcher = park_watch(LogMarkerChannel(app_log_path, release, run_id=run_id))
+
             pending = [(g, signals[g]) for g in gate_order if g in signals]
             while True:
+                if watcher is not None:
+                    deadline += watcher.tick()
                 if time.monotonic() > deadline:
                     return MeasuredRun(
                         wall_seconds=time.monotonic() - started,

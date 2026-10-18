@@ -131,9 +131,23 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                 // refreshed the KV token cache); park on the second
                 // consecutive failure. Fresh step names per attempt.
                 if (target_research_attempt % 2 === 1) {
+                    const target_research_wait =
+                        `target_research auth wait ${target_research_attempt}`;
+                    const target_research_event = authEventType(err, "rote_auth_airweave");
+                    // Tells `rote run` the instance is parked and on what.
+                    // It can print again on replay; the wait name
+                    // de-duplicates it.
+                    console.error(
+                        "rote-auth-park " +
+                            JSON.stringify({
+                                server: target_research_event.slice("rote_auth_".length),
+                                node: "target_research",
+                                wait: target_research_wait,
+                            }),
+                    );
                     await step.waitForEvent<any>(
-                        `target_research auth wait ${target_research_attempt}`,
-                        { type: authEventType(err, "rote_auth_airweave"), timeout: "30 days" },
+                        target_research_wait,
+                        { type: target_research_event, timeout: "30 days" },
                     );
                 }
             }
@@ -176,9 +190,23 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                 // refreshed the KV token cache); park on the second
                 // consecutive failure. Fresh step names per attempt.
                 if (lead_generation_loop_attempt % 2 === 1) {
+                    const lead_generation_loop_wait =
+                        `lead_generation_loop auth wait ${lead_generation_loop_attempt}`;
+                    const lead_generation_loop_event = authEventType(err, "rote_auth_airweave");
+                    // Tells `rote run` the instance is parked and on what.
+                    // It can print again on replay; the wait name
+                    // de-duplicates it.
+                    console.error(
+                        "rote-auth-park " +
+                            JSON.stringify({
+                                server: lead_generation_loop_event.slice("rote_auth_".length),
+                                node: "lead_generation_loop",
+                                wait: lead_generation_loop_wait,
+                            }),
+                    );
                     await step.waitForEvent<any>(
-                        `lead_generation_loop auth wait ${lead_generation_loop_attempt}`,
-                        { type: authEventType(err, "rote_auth_airweave"), timeout: "30 days" },
+                        lead_generation_loop_wait,
+                        { type: lead_generation_loop_event, timeout: "30 days" },
                     );
                 }
             }
