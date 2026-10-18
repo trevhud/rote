@@ -10,6 +10,22 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **The scorecard prices Cloudflare Workflows infrastructure.** Steps
+  and storage started billing on 2026-08-10. For a `cloudflare` or
+  `rote-cloud` pipeline, `rote eval` and `rote compile`'s scorecard now
+  add a per-run table of steps, requests, CPU and storage at the paid
+  plan's marginal rates, plus how many runs a month fit in the included
+  steps. Prices come live from the table in
+  `cloudflare/cloudflare-docs@production:src/content/partials/workflows/workflows-pricing.mdx`
+  with the model catalog's 24h cache, and the scorecard cites the file
+  and fetch time. A missing row or a cell outside the known grammar is a
+  loud `PricingError`, never a guessed number. Steps per run come from
+  the IR, with the same fan widths as the token estimate. Gates count as
+  a step (a stated, conservative assumption). CPU per step, state bytes
+  per step and retention (30 days, the Workers Paid account maximum)
+  are stated priors, each overridable with `--prior`. `rote eval
+  --runtime` picks the runtime; a `compile --out` dir with one emitted
+  runtime is detected.
 - **A free first run.** `examples/expense-audit/` is a month-end expense
   audit skill with a hand-compiled pipeline whose extracted modules are
   working code, so `rote emit` + `rote run` finish end to end with no

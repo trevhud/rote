@@ -910,6 +910,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 compiled_dir / "pipeline.yaml",
                 skill_path,
                 provider="anthropic",
+                # Infrastructure is priced for where this run is headed:
+                # rote cloud when it auto-deploys there, else the emit.
+                runtime="rote-cloud" if auto_deploy else args.runtime,
             )
             scorecard_path = compiled_dir / "scorecard.md"
             scorecard_md = scorecard.to_markdown() + "\n"
@@ -3096,6 +3099,20 @@ def _resolve_eval_skill_dir(
     return None
 
 
+def _single_emitted_runtime(target: Path) -> str | None:
+    """The runtime a ``rote compile --out`` directory was emitted for.
+
+    That layout nests the emit under ``runtime/<name>/``. With exactly one
+    there, the scorecard can price that runtime without a flag; with zero
+    or several it has no basis to pick, and ``--runtime`` decides.
+    """
+    runtime_dir = target / "runtime"
+    if not runtime_dir.is_dir():
+        return None
+    names = sorted(p.name for p in runtime_dir.iterdir() if p.is_dir())
+    return names[0] if len(names) == 1 else None
+
+
 def _cmd_eval(args: argparse.Namespace) -> int:
     """Static before/after scorecard: speed, cost, determinism.
 
@@ -3145,7 +3162,12 @@ def _cmd_eval(args: argparse.Namespace) -> int:
 
     try:
         scorecard = build_scorecard_for(
-            pipeline, pipeline_yaml, skill_dir, args.provider, priors=priors
+            pipeline,
+            pipeline_yaml,
+            skill_dir,
+            args.provider,
+            priors=priors,
+            runtime=args.runtime or _single_emitted_runtime(target),
         )
     except PricingError as e:
         print(f"error: could not fetch live prices: {e}", file=sys.stderr)
@@ -4175,6 +4197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--provider",
         default="anthropic",
         help="LLM provider whose current model lineup to price (default: anthropic)",
+    )
+    eval_cmd.add_argument(
+        "--runtime",
+        default=None,
+        choices=[*sorted(ADAPTERS), "rote-cloud"],
+        help=(
+            "Where the pipeline runs, for runtime infrastructure cost: "
+            "cloudflare and rote-cloud price Cloudflare Workflows steps, "
+            "requests, CPU and storage at live rates (default: the runtime "
+            "of a compile --out dir, if it holds exactly one)"
+        ),
     )
     eval_cmd.add_argument(
         "--prior",

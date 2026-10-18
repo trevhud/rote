@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, fields
 from typing import TYPE_CHECKING
 
 from rote.eval.estimate import AgentRunEstimate, PipelineEstimate, Range
+from rote.eval.infra_pricing import InfraCost
 from rote.eval.pricing import ModelPrice
 from rote.eval.priors import Priors
 
@@ -79,6 +80,8 @@ class Scorecard:
     costs: list[CostRow]
     priors: Priors
     generated_at: str
+    infrastructure: InfraCost | None = None
+    """Per-run runtime cost, when the target runtime bills for it."""
 
     def to_dict(self) -> dict[str, object]:
         """JSON-ready form, for programmatic consumers."""
@@ -149,6 +152,7 @@ class Scorecard:
                 }
                 for row in self.costs
             ],
+            "infrastructure": _infra_dict(self.infrastructure),
             "priors": asdict(self.priors),
         }
 
@@ -238,6 +242,9 @@ class Scorecard:
         )
         lines.append("")
 
+        if self.infrastructure is not None:
+            lines += _infra_markdown(self.infrastructure)
+
         # ── Node detail ──
         lines += ["## Pipeline node detail", ""]
         lines.append("| Node | Kind | Calls | LLM in/call | LLM out/call | Wall s/call |")
@@ -291,6 +298,7 @@ def build_scorecard(
     prices: list[ModelPrice],
     priors: Priors,
     generated_at: str,
+    infrastructure: InfraCost | None = None,
 ) -> Scorecard:
     """Assemble a scorecard: apply each live price to both estimates."""
     costs = [
@@ -310,7 +318,17 @@ def build_scorecard(
         costs=costs,
         priors=priors,
         generated_at=generated_at,
+        infrastructure=infrastructure,
     )
+
+
+#: Runtimes that bill infrastructure per run, and how the scorecard names
+#: them. rote cloud runs the cloudflare emit on Cloudflare Dynamic
+#: Workflows, so it pays the same Workflows rates.
+INFRA_RUNTIMES = {
+    "cloudflare": "Cloudflare Workflows",
+    "rote-cloud": "rote cloud (Cloudflare Dynamic Workflows)",
+}
 
 
 def build_scorecard_for(
@@ -319,6 +337,7 @@ def build_scorecard_for(
     skill_dir: Path | None,
     provider: str,
     priors: Priors | None = None,
+    runtime: str | None = None,
 ) -> Scorecard:
     """End-to-end eval flow: estimate both sides, fetch live prices, assemble.
 
@@ -328,8 +347,11 @@ def build_scorecard_for(
     both sides, samples live model prices for ``provider``, and returns
     an assembled :class:`Scorecard`.
 
-    Raises :class:`~rote.eval.pricing.PricingError` when the live price
-    source is unreachable — callers decide whether that's fatal
+    ``runtime`` adds that runtime's per-run infrastructure cost when it
+    bills one (see :data:`INFRA_RUNTIMES`); other runtimes add nothing.
+
+    Raises :class:`~rote.eval.pricing.PricingError` when a live price
+    source is unreachable or no longer parses — callers decide whether that's fatal
     (``rote eval``) or a warning (``rote compile``'s auxiliary scorecard).
     """
     from datetime import UTC, datetime
@@ -363,6 +385,18 @@ def build_scorecard_for(
             skill_dir, counter, priors, sidecar=sidecar, data_payload_tokens=data_payload
         )
 
+    infrastructure = None
+    if runtime in INFRA_RUNTIMES:
+        from rote.eval.infra_pricing import cloudflare_infra_cost, fetch_workflows_pricing
+
+        infrastructure = cloudflare_infra_cost(
+            pipeline,
+            fetch_workflows_pricing(),
+            priors,
+            runtime_label=INFRA_RUNTIMES[runtime],
+            fan_out_widths=pipeline_estimate.fan_out_widths,
+        )
+
     return build_scorecard(
         pipeline_name=pipeline.name,
         pipeline_estimate=pipeline_estimate,
@@ -370,7 +404,98 @@ def build_scorecard_for(
         prices=prices,
         priors=priors,
         generated_at=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        infrastructure=infrastructure,
     )
+
+
+def _infra_dict(infra: InfraCost | None) -> dict[str, object] | None:
+    if infra is None:
+        return None
+
+    def _r(r: Range) -> dict[str, float]:
+        return {"low": r.low, "high": r.high}
+
+    return {
+        "runtime": infra.runtime_label,
+        "steps_per_run": _r(infra.steps_per_run),
+        "usd_per_run": _r(infra.usd),
+        "runs_within_included_steps_per_month": _r(infra.runs_within_included_steps),
+        "fan_out_widths": [
+            {"node": w.node_id, "elements": _r(w.elements), "source": w.source}
+            for w in infra.fan_out_widths
+        ],
+        "lines": [
+            {
+                "label": line.label,
+                "quantity": _r(line.quantity),
+                "unit": line.unit,
+                "usd": _r(line.usd),
+                "included_per_month": line.rate.included_per_month,
+                "usd_per_unit": line.rate.usd_per_unit,
+                "published_as": line.rate.cell,
+            }
+            for line in infra.lines
+        ],
+        "price_source": infra.pricing.source,
+        "fetched_at": infra.pricing.fetched_at,
+    }
+
+
+def _usd6(r: Range) -> str:
+    if r.low == r.high:
+        return f"${r.low:.6f}"
+    return f"${r.low:.6f} – ${r.high:.6f}"
+
+
+def _qty(r: Range) -> str:
+    if r.low == r.high:
+        return f"{r.low:,.6g}"
+    return f"{r.low:,.6g}–{r.high:,.6g}"
+
+
+def _infra_markdown(infra: InfraCost) -> list[str]:
+    priors = infra.priors
+    lines = [
+        f"## Infrastructure per run ({infra.runtime_label}, Workers Paid)",
+        "",
+        "| Unit | Per run | Published rate | Cost per run |",
+        "|---|---|---|---|",
+    ]
+    for line in infra.lines:
+        lines.append(
+            f"| {line.label} | {_qty(line.quantity)} {line.unit} | {line.rate.cell} | "
+            f"{_usd6(line.usd)} |"
+        )
+    widths = "; ".join(
+        f"`{w.node_id}` {_count(w.elements)} ({w.source})" for w in infra.fan_out_widths
+    )
+    lines += [
+        f"| **Total** | | | **{_usd6(infra.usd)}** |",
+        "",
+        "Add this to every After figure in the cost table above. These are the "
+        "marginal rates past the monthly allowances. "
+        f"{_qty(infra.runs_within_included_steps)} runs a month fit inside the "
+        f"included {infra.pricing.steps.included_per_month:,.0f} steps.",
+        "",
+        f"Prices fetched {infra.pricing.fetched_at} from `{infra.pricing.source}` "
+        "(the table both Cloudflare pricing pages render). Never hardcoded.",
+        "",
+        f"- Steps: {_qty(infra.steps_per_run)} from the IR: one `step.do` per node and "
+        "one per fan_out element"
+        + (f" (widths: {widths})" if widths else "")
+        + ". Retries are not billed as steps.",
+        "- HITL gates: each `waitForEvent` is counted as one step. A conservative "
+        "assumption: Cloudflare's pricing docs do not say whether waiting bills a step.",
+        "- Requests: the one invocation that starts the run.",
+        f"- CPU: `cloudflare_cpu_ms_per_step` = {priors.cloudflare_cpu_ms_per_step:g} ms "
+        "per step (estimate; waiting on the network is not CPU time).",
+        f"- Storage (stated estimate): `cloudflare_state_bytes_per_step` = "
+        f"{priors.cloudflare_state_bytes_per_step:,.0f} bytes per step, kept "
+        f"`cloudflare_retention_days` = {priors.cloudflare_retention_days:g} days "
+        "(the account maximum the emitted wrangler.jsonc inherits).",
+        "",
+    ]
+    return lines
 
 
 # ───────── Formatting helpers ─────────
