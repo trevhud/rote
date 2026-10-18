@@ -114,6 +114,42 @@ _AGENT_SYSTEM_PROMPT = (
     "confirmation, and stop as soon as the task is done."
 )
 
+#: Context isolation shared by every ``claude -p`` this helper spawns,
+#: judge and agent loop alike. One tuple rather than two copies, because
+#: the agent-loop copy is the one that drifted every time before. Each
+#: entry was measured on Claude Code 2.1.302 by removing it from a real
+#: "say hi" judge call (input + cache_write + cache_read on the envelope):
+#:
+#: * ``--setting-sources ""`` keeps the user's and project's settings,
+#:   CLAUDE.md files, hooks and plugins out. Without it: 25.6k tokens.
+#: * ``--strict-mcp-config`` loads only servers passed in ``--mcp-config``.
+#:   Without it the user's claude.ai connectors and plugin MCP servers
+#:   ride along: 30.3k tokens and $0.183 a cold call, and the judge can see
+#:   (if not call) tools like Gmail's send_message. Connectors load
+#:   asynchronously, so the overhead also varies call to call.
+#: * ``autoMemoryEnabled: false`` keeps the auto-memory index of whatever
+#:   repository the pipeline runs from out of the prompt: 1.8k tokens of
+#:   someone's private notes (one judge greeted the developer by name).
+#:   ``--setting-sources ""`` does not cover it; ``--settings`` does.
+#: * ``--tools ""`` removes the built-in coding tools. It does not touch
+#:   MCP tools, so an agent loop keeps the servers it declared. Without it
+#:   the loop carried 31 built-in tools: 31k tokens on every turn.
+#:
+#: With all four a judge costs 1.25k tokens and an agent loop 1.4k a
+#: turn. The empty VALUE after ``--tools`` is required, not decorative:
+#: the flag is variadic (``--tools <tools...>``), so a bare ``--tools`` is
+#: rejected outright ("option '--tools <tools...>' argument missing",
+#: exit 1, on every call).
+_CLI_ISOLATION_FLAGS = (
+    "--setting-sources",
+    "",
+    "--strict-mcp-config",
+    "--settings",
+    '{"autoMemoryEnabled": false}',
+    "--tools",
+    "",
+)
+
 
 # ───────── subscription environment ─────────
 
@@ -309,9 +345,49 @@ def _durable_error(exc: Exception, *, node_id: str, provider: str, model: str) -
 # ───────── usage log ─────────
 
 
-def _log_usage(
-    *, node_id: str, provider: str, model: str, input_tokens: Any, output_tokens: Any
-) -> None:
+def _usage_field(usage: Any, name: str) -> Any:
+    """One usage field from a dict (CLI envelope) or an SDK object."""
+    value = usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _anthropic_usage(usage: Any) -> dict[str, Any]:
+    """The four token buckets of an Anthropic-shaped ``usage``.
+
+    All four, because a prompt-cached call reports almost nothing in
+    ``input_tokens``: ``claude -p`` always caches, and a measured judge
+    call reported ``input_tokens: 3`` beside 30k cache tokens. Logging the
+    plain pair alone made the subscription lane look ~10,000x cheaper
+    than it was. ``input_tokens`` keeps the vendor's meaning (uncached
+    input only), so the four buckets add up to the whole prompt.
+    """
+    return {
+        "input_tokens": _usage_field(usage, "input_tokens"),
+        "output_tokens": _usage_field(usage, "output_tokens"),
+        "cache_write_tokens": _usage_field(usage, "cache_creation_input_tokens"),
+        "cache_read_tokens": _usage_field(usage, "cache_read_input_tokens"),
+    }
+
+
+def _openai_usage(usage: Any) -> dict[str, Any]:
+    """The same four buckets from an OpenAI chat-completions ``usage``.
+
+    OpenAI counts cached tokens *inside* ``prompt_tokens`` and has no
+    separate write charge, so they are split out to match the Anthropic
+    meaning: ``input_tokens`` is the uncached remainder.
+    """
+    prompt = _usage_field(usage, "prompt_tokens")
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached = _usage_field(details, "cached_tokens") or 0
+    return {
+        "input_tokens": None if prompt is None else prompt - cached,
+        "output_tokens": _usage_field(usage, "completion_tokens"),
+        "cache_write_tokens": 0,
+        "cache_read_tokens": cached,
+    }
+
+
+def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, Any]) -> None:
     """Append token usage as JSONL to ``$ROTE_USAGE_LOG``, if set.
 
     What lets ``rote eval --run`` measure a graduated pipeline's actual
@@ -319,7 +395,9 @@ def _log_usage(
     observability tap in production. The provider is recorded next to
     the tokens because the same token count costs differently per
     billing lane — a subscription trial and a key trial are not
-    interchangeable data points. A logging failure never breaks the call.
+    interchangeable data points. ``usage`` carries the four buckets from
+    :func:`_anthropic_usage` / :func:`_openai_usage`. A logging failure
+    never breaks the call.
     """
     path = os.environ.get("ROTE_USAGE_LOG")
     if not path:
@@ -329,8 +407,10 @@ def _log_usage(
             "node": node_id,
             "provider": provider,
             "model": model,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "cache_write_tokens": usage.get("cache_write_tokens"),
+            "cache_read_tokens": usage.get("cache_read_tokens"),
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
@@ -373,7 +453,7 @@ def _call_anthropic(
     tool_description: str,
     sampling: dict[str, Any],
     max_tokens: int,
-) -> tuple[dict[str, Any], Any, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     import anthropic
 
     endpoint, token = _sdk_target(provider, "anthropic", base_url)
@@ -399,14 +479,9 @@ def _call_anthropic(
         )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
-    usage = getattr(response, "usage", None)
     for block in response.content:
         if block.type == "tool_use":
-            return (
-                dict(block.input),
-                getattr(usage, "input_tokens", None),
-                getattr(usage, "output_tokens", None),
-            )
+            return dict(block.input), _anthropic_usage(getattr(response, "usage", None))
     raise RuntimeError(f"LLM did not return a tool_use block for {node_id}")
 
 
@@ -419,7 +494,7 @@ def _call_openai(
     prompt: str,
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
-) -> tuple[dict[str, Any], Any, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     import openai
 
     endpoint, token = _sdk_target(provider, "openai", base_url)
@@ -443,12 +518,7 @@ def _call_openai(
     content = response.choices[0].message.content
     if not content:
         raise RuntimeError(f"OpenAI returned no content for {node_id}")
-    usage = getattr(response, "usage", None)
-    return (
-        json.loads(content),
-        getattr(usage, "prompt_tokens", None),
-        getattr(usage, "completion_tokens", None),
-    )
+    return json.loads(content), _openai_usage(getattr(response, "usage", None))
 
 
 # ───────── transport: claude -p subprocess ─────────
@@ -471,7 +541,7 @@ def _call_claude_cli(
     prompt: str,
     output_schema: dict[str, Any],
     timeout: float,
-) -> tuple[dict[str, Any], Any, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """One schema-locked judge call through the Claude Code CLI.
 
     ``--json-schema`` makes this a *forced tool call* under the hood
@@ -497,19 +567,8 @@ def _call_claude_cli(
         "--system-prompt",
         _CLI_SYSTEM_PROMPT,
         # A judge reasons over its prompt and answers; it must not read
-        # files, run commands, or inherit the user's settings. Both flags
-        # also cut the request from ~37k tokens to ~740.
-        #
-        # The empty VALUE is required, not decorative: the flag is
-        # declared variadic (`--tools <tools...>`), so a bare `--tools`
-        # is rejected outright — "error: option '--tools <tools...>'
-        # argument missing", exit 1, on every call. Verified against
-        # Claude Code 2.1.220; `--tools ""` still loads no tools (167
-        # input tokens on a one-line prompt).
-        "--tools",
-        "",
-        "--setting-sources",
-        "",
+        # files, run commands, or see anything of the user's setup.
+        *_CLI_ISOLATION_FLAGS,
     ]
     try:
         completed = subprocess.run(
@@ -550,8 +609,7 @@ def _call_claude_cli(
             f"claude -p returned no structured output for {node_id}; "
             f"got: {str(envelope.get('result'))[:200]}"
         )
-    usage = envelope.get("usage") or {}
-    return payload, usage.get("input_tokens"), usage.get("output_tokens")
+    return payload, _anthropic_usage(envelope.get("usage"))
 
 
 # ───────── the one entry point emitted judges call ─────────
@@ -580,7 +638,7 @@ def call_judge(
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
 
     if provider == "claude-cli":
-        payload, tokens_in, tokens_out = _call_claude_cli(
+        payload, usage = _call_claude_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -588,7 +646,7 @@ def call_judge(
             timeout=timeout,
         )
     elif client == "anthropic":
-        payload, tokens_in, tokens_out = _call_anthropic(
+        payload, usage = _call_anthropic(
             node_id=node_id,
             provider=provider,
             model=model,
@@ -600,7 +658,7 @@ def call_judge(
             max_tokens=max_tokens,
         )
     elif client == "openai":
-        payload, tokens_in, tokens_out = _call_openai(
+        payload, usage = _call_openai(
             node_id=node_id,
             provider=provider,
             model=model,
@@ -616,8 +674,7 @@ def call_judge(
         node_id=node_id,
         provider=provider,
         model=_cli_model(model) if provider == "claude-cli" else model,
-        input_tokens=tokens_in,
-        output_tokens=tokens_out,
+        usage=usage,
     )
     return payload
 
@@ -706,13 +763,15 @@ def _run_agent_via_cli(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, Any, Any, int | None]:
+) -> tuple[str, dict[str, Any], int | None]:
     """A bounded agent loop on the Claude subscription.
 
-    Unlike the judge path this one *keeps* tools — that is the entire
-    point — but still replaces the coding-agent system prompt and ignores
-    the user's settings files, so the loop gets the pipeline's tools and
-    nothing else.
+    Unlike the judge path this one *keeps* its declared MCP tools (that
+    is the entire point) but gets the same isolation otherwise: no
+    built-in coding tools, no user settings, memory or connectors. With
+    ``--strict-mcp-config`` the servers in ``--mcp-config`` are the only
+    ones it can see, so the loop gets the pipeline's tools and nothing
+    else. With no server resolved it gets no MCP at all.
     """
     binary = shutil.which("claude")
     if binary is None:  # pragma: no cover — select_provider checks first
@@ -727,19 +786,13 @@ def _run_agent_via_cli(
         _cli_model(model),
         "--system-prompt",
         _AGENT_SYSTEM_PROMPT,
-        "--setting-sources",
-        "",
+        *_CLI_ISOLATION_FLAGS,
         "--max-turns",
         str(max_iterations),
     ]
     if allowed:
         command += ["--allowedTools", ",".join(allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
-    else:
-        # Empty VALUE, not a bare flag — see the judge path above. An
-        # agent loop reaches this branch whenever no MCP server resolves,
-        # which is the common case on a machine with no registry.
-        command += ["--tools", ""]
 
     try:
         completed = subprocess.run(
@@ -764,11 +817,9 @@ def _run_agent_via_cli(
     if envelope.get("is_error"):
         reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
         raise RuntimeError(f"claude -p agent loop failed for {node_id}: {str(reason)[:400]}")
-    usage = envelope.get("usage") or {}
     return (
         str(envelope.get("result") or ""),
-        usage.get("input_tokens"),
-        usage.get("output_tokens"),
+        _anthropic_usage(envelope.get("usage")),
         _cli_turns(envelope),
     )
 
@@ -796,7 +847,7 @@ def _run_agent_via_sdk(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, Any, Any, int]:
+) -> tuple[str, dict[str, Any], int]:
     """A bounded agent loop on the vendor SDK's own tool runner.
 
     ``anthropic.lib.tools`` ships a tool loop, so this needs no agent
@@ -842,15 +893,13 @@ def _run_agent_via_sdk(
     # only the final request. until_done() on the drained runner sends
     # nothing more and returns the turn the run ended on.
     turns = 0
-    tokens_in: int | None = None
-    tokens_out: int | None = None
+    usage: dict[str, Any] = _anthropic_usage(None)
     try:
         runner = client.beta.messages.tool_runner(**kwargs)
         for message in runner:
             turns += 1
-            usage = getattr(message, "usage", None)
-            tokens_in = _add_tokens(tokens_in, getattr(usage, "input_tokens", None))
-            tokens_out = _add_tokens(tokens_out, getattr(usage, "output_tokens", None))
+            turn_usage = _anthropic_usage(getattr(message, "usage", None))
+            usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
         final = runner.until_done()
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
@@ -858,7 +907,7 @@ def _run_agent_via_sdk(
     text = "\n".join(
         b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
     )
-    return text, tokens_in, tokens_out, turns
+    return text, usage, turns
 
 
 def _add_tokens(total: int | None, more: Any) -> int | None:
@@ -908,7 +957,7 @@ def run_agent_loop(
     )
 
     if provider == "claude-cli":
-        text, tokens_in, tokens_out, turns = _run_agent_via_cli(
+        text, usage, turns = _run_agent_via_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -918,7 +967,7 @@ def run_agent_loop(
             timeout=timeout,
         )
     else:
-        text, tokens_in, tokens_out, turns = _run_agent_via_sdk(
+        text, usage, turns = _run_agent_via_sdk(
             node_id=node_id,
             provider=provider,
             model=model,
@@ -935,7 +984,6 @@ def run_agent_loop(
         node_id=node_id,
         provider=provider,
         model=_cli_model(model) if provider == "claude-cli" else model,
-        input_tokens=tokens_in,
-        output_tokens=tokens_out,
+        usage=usage,
     )
     return {"result": text, "provider": provider, "iterations": turns}

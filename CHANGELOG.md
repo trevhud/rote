@@ -66,6 +66,28 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   three judges. Current Claude models reject the parameter, and the
   rubric already forbids it. A test now keeps every `expected/` IR free
   of it; historical `runs/` snapshots stay as compiled.
+- **The subscription lane no longer carries the user's own Claude Code
+  setup.** Emitted judges and agent loops on `claude-cli` still loaded the
+  user's claude.ai connectors and plugin MCP servers, and the auto-memory
+  index of the repository they ran from, despite `--tools ""
+  --setting-sources ""`. Measured on Claude Code 2.1.302, a one-line judge
+  was 30.3k tokens and $0.183 a cold call; with `--strict-mcp-config` and
+  auto memory off it is 1.25k. Agent loops take the same flags plus their
+  own `--mcp-config`, and now also `--tools ""` (it removes only built-in
+  tools), so a loop sees its declared servers and nothing else: a
+  two-turn loop went from 120k tokens / $0.38 to 2.8k / $0.012 with its
+  MCP tool still bound. Both paths share one flag tuple.
+- **`rote compile` with the claude driver passes `--strict-mcp-config`.**
+  The driver wires no MCP, yet the user's connectors put 357 tools in the
+  first request, past 200k tokens, and a subscription without usage
+  credits rejected the compile before it started. Strict, the request is
+  70.7k tokens.
+- **`$ROTE_USAGE_LOG` records all four token buckets**
+  (`input_tokens`, `output_tokens`, `cache_write_tokens`,
+  `cache_read_tokens`), and `rote eval --run` prices all four at live
+  rates. A prompt-cached `claude -p` judge used to log 3 input tokens.
+  A cache bucket with no published rate marks the model unpriced instead
+  of guessing. `rote run`'s judge-usage line counts cache tokens as input.
 
 ### Changed
 - **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5

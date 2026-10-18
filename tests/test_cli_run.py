@@ -177,6 +177,28 @@ def test_run_pipeline_json_flag_wraps_result(
     assert "judge usage: 1 call(s), 10 in / 5 out tokens" in captured.err
 
 
+def test_run_pipeline_judge_usage_counts_the_cache_buckets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A prompt-cached claude -p judge reports 3 plain input tokens beside
+    ~30k cached ones; printing the plain field alone said "3 in"."""
+    app = _emitted_dbos_dir(tmp_path)
+    row = {
+        "model": "m",
+        "input_tokens": 3,
+        "output_tokens": 92,
+        "cache_write_tokens": 1220,
+        "cache_read_tokens": 28474,
+    }
+    monkeypatch.setattr(
+        "rote.runners.run_pipeline_trial",
+        lambda *a, **k: MeasuredRun(wall_seconds=0.4, output={"answer": 1}, judge_usage=(row,)),
+    )
+    rc = cli_main(["run", str(app), "--input", "{}"])
+    assert rc == 0
+    assert "judge usage: 1 call(s), 29697 in / 92 out tokens" in capsys.readouterr().err
+
+
 def test_run_skill_dispatch_and_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

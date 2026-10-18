@@ -374,6 +374,16 @@ class ClaudeDriver(CompilerDriver):
             str(work_dir),
             "--allowedTools",
             self.allowed_tools,
+            # This driver wires no MCP servers (live compile-time MCP is
+            # the in-process drivers' job), so the only MCP a run could
+            # see is the user's own: claude.ai connectors and plugin
+            # servers, none of them allowlisted. Measured on Claude Code
+            # 2.1.302, those put 357 tools into the first request and
+            # pushed it past 200k tokens, which a subscription without
+            # usage credits rejects outright ("Usage credits are required
+            # for long context requests"): the compile never started.
+            # With this flag the same request is 70.7k tokens.
+            "--strict-mcp-config",
             "--output-format",
             "stream-json",
             "--verbose",

@@ -2652,7 +2652,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"rote run ({p_outcome.runtime}): {status}", file=sys.stderr)
         print(f"  {run.wall_seconds:.1f}s", file=sys.stderr)
         if run.judge_usage:
-            tokens_in = sum(r.get("input_tokens") or 0 for r in run.judge_usage)
+            # Cache buckets fold into "in": a prompt-cached claude -p judge
+            # reports ~3 plain input tokens beside ~1k-30k cached ones.
+            tokens_in = sum(
+                (r.get("input_tokens") or 0)
+                + (r.get("cache_write_tokens") or 0)
+                + (r.get("cache_read_tokens") or 0)
+                for r in run.judge_usage
+            )
             tokens_out = sum(r.get("output_tokens") or 0 for r in run.judge_usage)
             print(
                 f"  judge usage: {len(run.judge_usage)} call(s), "

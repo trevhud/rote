@@ -295,6 +295,33 @@ async def test_happy_path_args_env_and_metadata(
     assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "sk-ant-oat01-should-pass-through"
 
 
+@pytest.mark.asyncio
+async def test_compile_never_loads_the_users_own_mcp_servers(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """This driver wires no MCP, so the user's connectors must not load.
+
+    Measured on Claude Code 2.1.302: without `--strict-mcp-config` the
+    user's claude.ai connectors and plugin servers put 357 tools into the
+    first request, which passed 200k tokens and was rejected before the
+    compile did anything. Strict mode with no `--mcp-config` means zero
+    MCP servers, which is exactly what this driver uses.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok")),
+        returncode=0,
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+
+    await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+
+    args = list(recorder.calls[0]["args"])
+    assert "--strict-mcp-config" in args
+    assert "--mcp-config" not in args
+
+
 def test_model_usage_includes_all_models_and_overrides_main_loop_usage() -> None:
     result = {
         "usage": {"input_tokens": 1, "output_tokens": 2},

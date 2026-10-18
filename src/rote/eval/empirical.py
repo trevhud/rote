@@ -592,6 +592,17 @@ def measured_pipeline_cost_usd(
 
     Returns (mean cost per run in USD, list of model ids that had no
     price in the catalog — their tokens are excluded and flagged).
+
+    All four usage buckets are priced. A ``claude -p`` judge is always
+    prompt-cached, so its ``input_tokens`` is a handful of tokens and the
+    real volume sits in ``cache_write_tokens`` / ``cache_read_tokens``;
+    pricing the plain pair alone reported such a call at a few hundredths
+    of a cent. A row that used the cache for a model with no published
+    cache rate counts as unpriced, the same as a model with no price at
+    all: billing cache reads at the plain input rate would overstate them
+    roughly tenfold, and dropping them understates the run by orders of
+    magnitude. Rows from emitted apps that predate the cache buckets
+    simply have none.
     """
     unpriced: set[str] = set()
     per_run: list[float] = []
@@ -599,13 +610,20 @@ def measured_pipeline_cost_usd(
         total = 0.0
         for row in run.judge_usage:
             model = str(row.get("model", ""))
-            price = catalog.price_for(model)
-            if price is None:
+            rates = catalog.rates_for(model)
+            if rates is None:
                 unpriced.add(model)
                 continue
-            in_rate, out_rate = price
+            in_rate, out_rate, read_rate, write_rate = rates
+            cache_write = row.get("cache_write_tokens") or 0
+            cache_read = row.get("cache_read_tokens") or 0
+            if (cache_write and write_rate is None) or (cache_read and read_rate is None):
+                unpriced.add(model)
+                continue
             total += (row.get("input_tokens") or 0) * in_rate / 1_000_000
             total += (row.get("output_tokens") or 0) * out_rate / 1_000_000
+            total += cache_write * (write_rate or 0.0) / 1_000_000
+            total += cache_read * (read_rate or 0.0) / 1_000_000
         per_run.append(total)
     return (mean(per_run) if per_run else 0.0, sorted(unpriced))
 
