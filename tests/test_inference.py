@@ -9,7 +9,10 @@ from __future__ import annotations
 import json
 import pickle
 import sys
+import threading
 import types
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -750,3 +753,139 @@ def test_agent_loop_cli_surfaces_the_envelopes_error(
             tools=["bright_data_search"],
             max_iterations=6,
         )
+
+
+# ───────── iterations: the turns that ran, not the cap ─────────
+
+
+def test_agent_loop_cli_reports_the_envelopes_turn_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`num_turns` is the CLI's own count, in the unit `--max-turns` caps."""
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    _capture_cli(monkeypatch, _agent_envelope(num_turns=4))
+
+    result = helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        max_iterations=9,
+    )
+
+    assert result["iterations"] == 4
+
+
+def test_agent_loop_cli_without_a_turn_count_reports_none_not_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unknown is None, the TS Workers AI lane's answer. A 0 would read as
+    a loop that never ran."""
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    envelope = json.loads(_agent_envelope())
+    del envelope["num_turns"]
+    _capture_cli(monkeypatch, json.dumps(envelope))
+
+    result = helper.run_agent_loop(
+        node_id="target_research",
+        description="Research the account.",
+        task='{"account": "acme"}',
+        model="claude-sonnet-4-6",
+        max_iterations=9,
+    )
+
+    assert result["iterations"] is None
+
+
+class _ToolLoopStub(BaseHTTPRequestHandler):
+    """A Messages endpoint that asks for ``lookup`` twice, then answers."""
+
+    requests: list[dict[str, Any]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
+        payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
+        type(self).requests.append(payload)
+        turn = len(type(self).requests)
+        message: dict[str, Any] = {
+            "id": f"msg_{turn}",
+            "type": "message",
+            "role": "assistant",
+            "model": payload["model"],
+            "usage": {"input_tokens": 100 * turn, "output_tokens": 10 * turn},
+        }
+        if turn <= 2:
+            message["stop_reason"] = "tool_use"
+            message["content"] = [
+                {
+                    "type": "tool_use",
+                    "id": f"toolu_{turn}",
+                    "name": "lookup",
+                    "input": {"account": f"acct-{turn}"},
+                }
+            ]
+        else:
+            message["stop_reason"] = "end_turn"
+            message["content"] = [{"type": "text", "text": "Looked up 2 accounts."}]
+        raw = json.dumps(message).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *args: object) -> None:
+        return
+
+
+@pytest.fixture()
+def tool_loop_stub() -> Iterator[str]:
+    _ToolLoopStub.requests = []
+    server = HTTPServer(("127.0.0.1", 0), _ToolLoopStub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_agent_loop_sdk_reports_turns_run_and_usage_of_every_turn(
+    monkeypatch: pytest.MonkeyPatch, tool_loop_stub: str, tmp_path: Path
+) -> None:
+    """The SDK lane used to return ``max_iterations`` as the turn count, so
+    every loop looked saturated, and logged only the last request's usage.
+
+    The real tool runner drives three turns against a local endpoint under
+    a cap of ten, so the cap and the count cannot coincide.
+    """
+    monkeypatch.setenv("ROTE_INFERENCE", "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    usage_log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(usage_log))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    looked_up: list[str] = []
+
+    def lookup(account: str) -> str:
+        """Look up one account."""
+        looked_up.append(account)
+        return json.dumps({"account": account, "tier": "gold"})
+
+    result = helper.run_agent_loop(
+        node_id="lead_gen",
+        description="Look up the accounts.",
+        task='{"accounts": ["acct-1", "acct-2"]}',
+        model="claude-sonnet-4-6",
+        local_tools={"lookup": lookup},
+        max_iterations=10,
+        base_url=tool_loop_stub,
+    )
+
+    assert result["provider"] == "api"
+    assert result["result"] == "Looked up 2 accounts."
+    assert looked_up == ["acct-1", "acct-2"]
+    assert len(_ToolLoopStub.requests) == 3
+    assert result["iterations"] == 3
+    record = json.loads(usage_log.read_text(encoding="utf-8"))
+    assert record["input_tokens"] == 100 + 200 + 300
+    assert record["output_tokens"] == 10 + 20 + 30

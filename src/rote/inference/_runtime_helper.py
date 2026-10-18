@@ -706,7 +706,7 @@ def _run_agent_via_cli(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, Any, Any, int]:
+) -> tuple[str, Any, Any, int | None]:
     """A bounded agent loop on the Claude subscription.
 
     Unlike the judge path this one *keeps* tools — that is the entire
@@ -769,8 +769,19 @@ def _run_agent_via_cli(
         str(envelope.get("result") or ""),
         usage.get("input_tokens"),
         usage.get("output_tokens"),
-        int(envelope.get("num_turns") or 0),
+        _cli_turns(envelope),
     )
+
+
+def _cli_turns(envelope: Mapping[str, Any]) -> int | None:
+    """Turns the CLI loop actually ran, in the same unit as ``--max-turns``.
+
+    ``num_turns`` is on every result envelope today. When it is missing the
+    count is unknown, and unknown is None (as on the TS Workers AI lane),
+    not 0: a zero would read as a loop that never ran.
+    """
+    turns = envelope.get("num_turns")
+    return None if turns is None else int(turns)
 
 
 def _run_agent_via_sdk(
@@ -823,8 +834,23 @@ def _run_agent_via_sdk(
     }
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
+    # Drive the runner ourselves before until_done(): each yielded item is
+    # one assistant message, i.e. one turn that actually ran. That count is
+    # what the result reports, never the cap, which would make every loop
+    # look saturated (the TS twin counts the same thing). Usage is summed
+    # over every turn for the same reason: the final message's usage covers
+    # only the final request. until_done() on the drained runner sends
+    # nothing more and returns the turn the run ended on.
+    turns = 0
+    tokens_in: int | None = None
+    tokens_out: int | None = None
     try:
         runner = client.beta.messages.tool_runner(**kwargs)
+        for message in runner:
+            turns += 1
+            usage = getattr(message, "usage", None)
+            tokens_in = _add_tokens(tokens_in, getattr(usage, "input_tokens", None))
+            tokens_out = _add_tokens(tokens_out, getattr(usage, "output_tokens", None))
         final = runner.until_done()
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
@@ -832,13 +858,14 @@ def _run_agent_via_sdk(
     text = "\n".join(
         b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
     )
-    usage = getattr(final, "usage", None)
-    return (
-        text,
-        getattr(usage, "input_tokens", None),
-        getattr(usage, "output_tokens", None),
-        max_iterations,
-    )
+    return text, tokens_in, tokens_out, turns
+
+
+def _add_tokens(total: int | None, more: Any) -> int | None:
+    """Sum a per-turn token count, keeping "never reported" as None."""
+    if more is None:
+        return total
+    return (total or 0) + int(more)
 
 
 def run_agent_loop(

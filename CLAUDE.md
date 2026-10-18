@@ -349,8 +349,11 @@ Related, same file: report the turns that actually ran, not the cap.
 (`runner.params.messages.filter(m => m.role === "assistant").length`) and
 is `number | null` — the Workers AI lane returns null because
 `runWithTools` genuinely does not report it. Echoing back
-`maxIterations` made every loop look saturated. (The Python
-`_run_agent_via_sdk` still has this defect; separate fix.)
+`maxIterations` made every loop look saturated. The Python
+`_run_agent_via_sdk` has no public `params` accessor, so it drives the
+runner's iterator itself and counts each yielded message, summing usage
+over every turn. Then `until_done()` on the drained runner returns the
+final turn without another request.
 
 ### An agent_loop's tools carry no server — `tool_servers` supplies it
 
