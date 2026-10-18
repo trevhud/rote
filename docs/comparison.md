@@ -32,38 +32,44 @@ before relying on a detail.
 
 On 2026-10-18 we compiled
 [`examples/ops-report/skill`](../examples/ops-report/skill/SKILL.md)
-with rote. The skill pulls three Google Drive files and one Gmail label
-over MCP, asks a duty manager for three numbers, then applies fixed
-thresholds and renders a report. Both tools were meant to run with
-`claude-sonnet-4-6` through the `claude` CLI.
-
-The calcifier side was not run. The compile command was stopped by a
-local permission check before it started, so this table has no
-calcifier numbers. It will be filled in from a real run, not estimated.
+with both tools. The skill pulls three Google Drive files and one Gmail
+label over MCP, asks a duty manager for three numbers, then applies
+fixed thresholds and renders a report. Both tools used
+`claude-sonnet-4-6` through the `claude` CLI and got the same input.
 
 | | rote 0.14.0.dev0 | calcifier 0.1.1 |
 | --- | --- | --- |
-| Command | `rote compile examples/ops-report/skill --local --runtime dbos --agent claude --yes` | `calcifier calcify SKILL.md --agent-config agents.json` (both roles on the `claude` builtin, Sonnet 4.6) |
-| Compile wall time | 747 s | not run |
-| Compile cost | $2.43 (Claude CLI estimate, 37 turns: 51k output, 133k cache-write, 2.89M cache-read tokens) | not run |
-| Output | 359-line `pipeline.yaml` with 11 nodes (4 MCP `external_call`, 6 `pure_function`, 1 `hitl_gate`, 0 `llm_judge`), a 538-line DBOS `main.py`, 5 extracted modules | not run |
-| Runs as compiled | No. The 6 functions the workflow calls (4 parsers, 1 validator, 1 renderer) are `NotImplementedError` stubs with typed docstrings. The first run stopped earlier, on the missing MCP endpoints: `no endpoint for MCP server 'gmail' ... set ROTE_MCP_GMAIL_URL` | not run |
-| Durability | DBOS workflow with SQLite system database. Steps are checkpointed and the run survives a process restart | not run |
-| Human input | `DBOS.recv` on topic `duty_manager_data_submitted`, 4 h timeout from the IR, survives restarts | not run |
-| Model calls per run afterwards | 0 (no `llm_judge` or `agent_loop` nodes). `rote eval` estimates the skill as an agent at $0.20 to $0.29 per run on the current mid-tier Sonnet. That number is an estimate, not a measurement | not run |
+| Command | `rote compile examples/ops-report/skill --local --runtime dbos --agent claude --yes` | `calcifier calcify SKILL.md --agent-config agents.json` (both roles on the `claude` builtin) |
+| Compile wall time | 747 s | 162 s |
+| Compile cost | $2.43 (Claude CLI estimate, 37 turns) | $0.33 (Claude CLI estimate, 2 of 5 allowed compiler calls) |
+| Compile result | Valid IR, code emitted for DBOS | `compiled` (the baseline was replaced), and calcifier's own dry run passed |
+| Output | 359-line `pipeline.yaml` with 11 nodes (4 MCP `external_call`, 6 `pure_function`, 1 `hitl_gate`, 0 `llm_judge`), a 538-line DBOS `main.py`, 5 extracted modules | One 131-line `recipe.py` with 2 steps: `pull_auto_data` makes the 4 tool calls in plain Python with the file IDs and query as constants (lines 27 to 44). `generate_report` puts all raw data and the duty-manager inputs in one prompt to a single worker agent, with SKILL.md as context (lines 47 to 93) |
+| Where the report logic lives | In code: parsers, threshold checks, and the renderer are separate `pure_function` nodes | In the model: the prompt tells the agent to "Apply every threshold, color-code label, and flag condition specified in SKILL.md" (lines 85 to 86) |
+| Model calls per run | 0 | 1 worker agent call (budget allows 2, line 100) |
+| Fixed context per run | None | About 1k tokens of instructions (3.3 KB SKILL.md plus the prompt), plus all four raw data payloads, plus the CLI agent's own system prompt, which we did not measure |
+| Durability | DBOS workflow with a SQLite system database. Steps are checkpointed and the run survives a process restart | None. A failed run starts over |
+| Human input | `DBOS.recv` on topic `duty_manager_data_submitted` with the IR's 4 h timeout. The run parks until the values arrive | The three values are optional recipe parameters (lines 104 to 108). If one is empty, the report marks it as pending |
+| Runs end to end | Not measured. The 6 functions the workflow calls are `NotImplementedError` stubs with typed docstrings, and the first run stopped before them on the example's fictional MCP endpoints (`no endpoint for MCP server 'gmail'`) | Not measured. The example's file IDs are fictional, and running it would have reached real Drive and Gmail tools |
 
-Two results here count against rote:
+What this shows, for each side:
 
-- **Compile cost.** $2.43 for a 50-line skill is about three times
-  what the README quotes for the much larger BDR skill. Ten of the 37
-  turns went to small edits of `compile-report.md`, each of which
-  re-reads the full context.
-- **Nothing runs until you write code.** The compiler classified every
-  step correctly but did not implement the parsing, threshold, and
-  rendering functions, even though the skill states each rule exactly.
-  Calcifier's design accepts a recipe only after a whole-recipe dry run
-  with stub agents, so a calcifier output that passes compilation does
-  execute.
+- **calcifier compiled about 4.6 times faster and about 7 times
+  cheaper**, and produced a file that its own dry run accepts. It moved
+  the data fetching into Python and kept one agent for the rest.
+- **calcifier's per-run cost and variance stay close to the original
+  skill's**, because the report logic (every count, threshold, and
+  color code) is still decided by one agent call over the whole skill
+  and all the raw data.
+- **rote's compile is slower and more expensive.** Ten of its 37 turns
+  went to small edits of `compile-report.md`, each of which re-reads
+  the full context. $2.43 is about three times what the README quotes
+  for the larger BDR skill.
+- **rote's output makes no model calls per run and has a durable
+  approval gate, but nothing runs until you write code.** The compiler
+  classified every step and left the parsing, threshold, and rendering
+  functions as stubs, even though the skill states each rule exactly. A
+  change that has the compiler implement fully specified pure functions
+  is in progress and not yet released.
 
 ## rote
 
