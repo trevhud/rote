@@ -1055,9 +1055,18 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
        may also reference nodes *without* an edge (shared context, e.g.
        BDR's ``intel``), which is what makes "the only node-bound
        param" too naive;
-    3. else the only node-bound param.
+    3. else the only node-bound param;
+    4. else, when NO param is node-bound, the only param bound to a
+       pipeline-input field that can hold a list
+       (``invoice: pipeline.input.invoices``) — a field the input schema
+       declares with a non-array type is excluded, an undeclared or
+       untyped one is not. Fanning over a list the caller passes in is a
+       legitimate shape, and before this tier it crashed ``rote compile``
+       after the agent had already been paid. It only applies when no
+       node-bound param exists, so a pipeline-input list bound as shared
+       context next to a fanned node output keeps resolving as before.
 
-    Ambiguity after all three is an emit-time error, never a guess:
+    Ambiguity after all four is an emit-time error, never a guess:
     dispatching over the wrong list would silently judge the wrong
     things.
 
@@ -1091,6 +1100,22 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
         matching = sorted(p for p, src in node_bound.items() if src in sources)
         if len(matching) == 1:
             return matching[0]
+    if not node_bound:
+        input_lists = sorted(
+            param
+            for param, ref in node.inputs.items()
+            if _pipeline_input_field_may_be_list(parse_input_ref(ref), pipeline)
+        )
+        if len(input_lists) == 1:
+            return input_lists[0]
+        raise ValueError(
+            f"fan_out node {node.id!r}: cannot identify the element param — no input "
+            f"is bound to an upstream node, and the pipeline-input fields that could "
+            f"hold the list ({input_lists or 'none'}) don't single one out. Bind "
+            f"exactly one param to the list (`<param>: pipeline.input.<list_field>`), "
+            f"declare that field `type: array` in input.input_schema, and give any "
+            f"other pipeline-input field a non-array type"
+        )
     if len(node_bound) != 1:
         raise ValueError(
             f"fan_out node {node.id!r}: cannot identify the element param — "
@@ -1099,6 +1124,26 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
             f"with `fan_out: true`"
         )
     return next(iter(node_bound))
+
+
+def _pipeline_input_field_may_be_list(ref: InputRef, pipeline: Pipeline) -> bool:
+    """Whether ``ref`` names a pipeline-input field a fan could iterate.
+
+    Only ``pipeline.input.<field>`` qualifies (the whole input is an
+    object). The input schema can rule a field out by giving it a
+    non-array ``type``; it cannot rule one in that it does not describe,
+    because ``input_schema`` is optional and most IRs leave it partial.
+    """
+    if ref.node_id is not None or ref.field is None:
+        return False
+    schema = pipeline.input.input_schema or {}
+    props = schema.get("properties")
+    field_schema = props.get(ref.field) if isinstance(props, dict) else None
+    if not isinstance(field_schema, dict) or "type" not in field_schema:
+        return True
+    declared = field_schema["type"]
+    types = declared if isinstance(declared, list) else [declared]
+    return "array" in types
 
 
 def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:

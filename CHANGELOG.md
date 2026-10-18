@@ -89,6 +89,111 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runtime to confirm that each file outside `unimplemented_stubs`
   (generated agent-loop modules included) is on the skill's do-not-edit
   list.
+- **The compiler writes real code for `pure_function` nodes, with tests.**
+  A parser, validator, or renderer the skill spells out is implemented,
+  and `tests/test_<module>.py` checks it against cases built from the
+  skill's own rules and examples. A pure_function stays a stub only when
+  the skill leaves a fact unstated, and the stub's `NotImplementedError`
+  message says which. Vendor calls in `external_call` modules stay stubs
+  unless an `mcp:` binding (or probe ground truth) makes them real.
+- **`rote compile` checks the deliverable before calling it done, and the
+  agent repairs what fails.** After the agent stops, rote validates the
+  IR, checks every module the IR names (it defines the function, accepts
+  the node's payload, and parses on Python 3.11), requires every
+  pure_function to be implemented and tested or an explained stub, and
+  runs the generated tests. Problems go back into the same conversation,
+  verbatim, for up to two repair rounds. The `claude` driver now repairs
+  too, through `claude -p --resume`. A deliverable that still fails is
+  kept, and `rote compile` exits 1 and skips the rote cloud deploy.
+  The summary prints how many impl nodes were implemented and every
+  stub with its reason (`verification` in `--json`).
+- `rote.contracts` reports syntax that parses on the running Python but
+  not on 3.11 (`needs_newer_python`). `ast.parse(feature_version=...)`
+  misses PEP 701 f-strings, and a real compile on 3.12 wrote a backslash
+  inside an f-string expression that 3.11 cannot import.
+
+### Changed
+- The `claude` compiler driver runs isolated from the invoking user's
+  Claude Code setup: `--setting-sources ""`, `--strict-mcp-config`,
+  `--tools` set to the allowlist, and the work dir as its cwd. A user's
+  prose-lint hook had cost a real compile 12 of its 48 turns in one-line
+  report edits, the same settings granted Bash, and run from a repo the
+  agent read that repo's earlier compiled output of the same skill.
+- The compiler rubric writes `compile-report.md` once, in one Write at
+  the end, and never spends a turn on a progress marker alone.
+- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
+  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
+  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
+  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
+  and exposes `launch()`, which runs `DBOS.launch()` and then
+  `DBOS.register_queue`. Anything that runs an emitted app in-process
+  must call `launch()` instead of a bare `DBOS.launch()`, or runs
+  enqueued by `rote serve` stay `ENQUEUED`. The removed
+  `run_admin_server` key is gone from both runtimes' config, and the
+  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
+  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
+  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
+  against an app installed today. Apps emitted for 2.x need a re-emit.
+- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
+  system database the way the v5 SDK does. v5 stopped reading
+  `dbos-config.yaml` at launch, so a `system_database_url` key there no
+  longer counts, and the default database name follows the SDK's
+  `toDbName()` (lowercased, leading digit prefixed).
+- A new `Newest dependencies` workflow installs every extra at the top
+  of its range with no lock or cache, daily and on PRs that touch
+  dependencies or DBOS code, and runs the fast suite plus the DBOS
+  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
+  turns CI red instead of reaching fresh installs first.
+- **fastmcp 4.** The `mcp` and `serve` extras now require
+  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
+  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
+  and five hosted servers on both protocol eras. Emitted DBOS READMEs
+  print the same range. Supersedes the blind `<5` bump in #92.
+- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
+  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
+  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
+  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
+  server at all (`-32022`), and v2's default `legacy` mode behaves the
+  same, so the mode is set explicitly. A 401 is now read from
+  `SdkHttpError.status`. Proven against legacy stateless, legacy
+  sessionful, dual-era and modern-only TS SDK servers, from both helper
+  languages, in `tests/test_mcp_era_matrix_e2e.py`.
+- `rote mcp headers` (and any refresh outside `login`) never opens a
+  browser or registers a client: it refreshes or fails with the login
+  hint.
+- **Breaking: an impl must accept its node's constants.** The Python
+  runtimes (dbos, python, temporal) now pass a `pure_function` /
+  `external_call` node's IR `constants` to its `impl` as keyword
+  arguments, merged in the step body so every caller gets them: the DAG,
+  each fan_out element, and an agent loop calling a `loop_body` sub-node
+  as a tool. Before, no step received them, so nodes sharing one `impl`
+  with different constants (ops-report's three fetch nodes, each with its
+  own `file_id`) all got the same empty payload. An `extracted/`
+  function that takes neither the constant nor `**kwargs` would raise
+  TypeError mid-run, so emission now refuses it up front, naming the node
+  and parameter, and `rote emit` reports it as a `constant_not_accepted`
+  contract finding. Most committed `examples/*/runs/` hard-code their
+  constants and no longer emit on a Python runtime until recompiled. The
+  BDR and expense-audit example modules take theirs as keyword
+  parameters, and expense-audit's now apply them, so editing a constant
+  in its pipeline.yaml changes the rule. The refusal names the full path
+  of the file to fix, and `rote compile` exits 1 with the `rote emit`
+  retry command instead of a traceback.
+- A constant reaches an MCP tool only when `mcp.args` names it, the same
+  on every runtime. A constant that reuses an input's name is an IR
+  validation error for impl-backed kinds. The stub for a shared `impl`
+  lists every calling node's constants.
+- **Breaking (TS): the TS runtimes pass each node's constants to its
+  impl, as the Python runtimes do.** Cloudflare, Inngest and DBOS-TS add
+  a `pure_function` / `external_call` node's IR constants to the impl's
+  input after its inputs, on DAG calls, on each fan_out element and on an
+  agent loop's loop_body tool calls (the model's tool schema never shows
+  them). Before, they only appeared in the stub's doc comment, so a TS
+  impl had to hard-code them and an edit in pipeline.yaml did nothing. An
+  MCP-backed step still sends a tool a constant only when `mcp.args`
+  names it. A typed TS impl whose input type does not declare its node's
+  constants now fails `tsc` with an excess-property error; add them to
+  the input type.
 
 ### Fixed
 - A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
@@ -292,6 +397,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags
   three mandatory nodes, not four.
+- A `fan_out` node can fan over a pipeline-input list
+  (`invoice: pipeline.input.invoices`). The element resolver only knew
+  upstream node outputs, so emission raised, and `rote compile` crashed
+  with a traceback after the agent had been paid.
+- No failure after a paid agent run loses the IR. An emission error
+  prints the cause and the `rote emit` command that retries it, and an
+  IR the validator rejects is kept in the output dir (an update's goes to
+  `<out>.rejected`, leaving the previous output alone) instead of being
+  deleted with the temp work dir.
 - Emitted Python agent loops report the turns that actually ran. The
   vendor-SDK lane returned `max_iterations` as `iterations`, so every loop
   looked saturated, and it logged only the final request's tokens to
@@ -438,81 +552,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   been delivered"; the runner waits for the run's real outcome, reports
   the newest step error, and still fails fast on a gate that never
   consumes its payload while nothing is retrying.
-
-### Changed
-- **Breaking (TS): the TS runtimes pass each node's constants to its
-  impl, as the Python runtimes do.** Cloudflare, Inngest and DBOS-TS add
-  a `pure_function` / `external_call` node's IR constants to the impl's
-  input after its inputs, on DAG calls, on each fan_out element and on an
-  agent loop's loop_body tool calls (the model's tool schema never shows
-  them). Before, they only appeared in the stub's doc comment, so a TS
-  impl had to hard-code them and an edit in pipeline.yaml did nothing. An
-  MCP-backed step still sends a tool a constant only when `mcp.args`
-  names it. A typed TS impl whose input type does not declare its node's
-  constants now fails `tsc` with an excess-property error; add them to
-  the input type.
-- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
-  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
-  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
-  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
-  server at all (`-32022`), and v2's default `legacy` mode behaves the
-  same, so the mode is set explicitly. A 401 is now read from
-  `SdkHttpError.status`. Proven against legacy stateless, legacy
-  sessionful, dual-era and modern-only TS SDK servers, from both helper
-  languages, in `tests/test_mcp_era_matrix_e2e.py`.
-- `rote mcp headers` (and any refresh outside `login`) never opens a
-  browser or registers a client: it refreshes or fails with the login
-  hint.
-- **Breaking: an impl must accept its node's constants.** The Python
-  runtimes (dbos, python, temporal) now pass a `pure_function` /
-  `external_call` node's IR `constants` to its `impl` as keyword
-  arguments, merged in the step body so every caller gets them: the DAG,
-  each fan_out element, and an agent loop calling a `loop_body` sub-node
-  as a tool. Before, no step received them, so nodes sharing one `impl`
-  with different constants (ops-report's three fetch nodes, each with its
-  own `file_id`) all got the same empty payload. An `extracted/`
-  function that takes neither the constant nor `**kwargs` would raise
-  TypeError mid-run, so emission now refuses it up front, naming the node
-  and parameter, and `rote emit` reports it as a `constant_not_accepted`
-  contract finding. Most committed `examples/*/runs/` hard-code their
-  constants and no longer emit on a Python runtime until recompiled. The
-  BDR and expense-audit example modules take theirs as keyword
-  parameters, and expense-audit's now apply them, so editing a constant
-  in its pipeline.yaml changes the rule. The refusal names the full path
-  of the file to fix, and `rote compile` exits 1 with the `rote emit`
-  retry command instead of a traceback.
-- A constant reaches an MCP tool only when `mcp.args` names it, the same
-  on every runtime. A constant that reuses an input's name is an IR
-  validation error for impl-backed kinds. The stub for a shared `impl`
-  lists every calling node's constants.
-- **fastmcp 4.** The `mcp` and `serve` extras now require
-  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
-  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
-  and five hosted servers on both protocol eras. Emitted DBOS READMEs
-  print the same range. Supersedes the blind `<5` bump in #92.
-- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
-  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
-  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
-  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
-  and exposes `launch()`, which runs `DBOS.launch()` and then
-  `DBOS.register_queue`. Anything that runs an emitted app in-process
-  must call `launch()` instead of a bare `DBOS.launch()`, or runs
-  enqueued by `rote serve` stay `ENQUEUED`. The removed
-  `run_admin_server` key is gone from both runtimes' config, and the
-  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
-  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
-  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
-  against an app installed today. Apps emitted for 2.x need a re-emit.
-- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
-  system database the way the v5 SDK does. v5 stopped reading
-  `dbos-config.yaml` at launch, so a `system_database_url` key there no
-  longer counts, and the default database name follows the SDK's
-  `toDbName()` (lowercased, leading digit prefixed).
-- A new `Newest dependencies` workflow installs every extra at the top
-  of its range with no lock or cache, daily and on PRs that touch
-  dependencies or DBOS code, and runs the fast suite plus the DBOS
-  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
-  turns CI red instead of reaching fresh installs first.
 
 ## [0.14.0] - 2026-10-18
 

@@ -331,3 +331,100 @@ def test_the_fan_out_edge_marker_beats_a_plain_edge() -> None:
         }
     )
     assert fan_out_element_param(judge, flipped) == "brief"
+
+
+# ───────── Fanning over a pipeline-input list ─────────
+#
+# A pipeline whose caller hands in the list (`invoices: [...]`) and whose
+# first node handles one element. Before the resolver learned this shape,
+# `rote compile` crashed with a raw traceback at emit time, after the
+# compiler agent had already been paid.
+
+
+def _input_fan_pipeline(input_schema: dict[str, object] | None = None) -> Pipeline:
+    return Pipeline(
+        name="input-fan",
+        input={
+            "type": "In",
+            "required": ["invoices", "currency"],
+            "optional": [],
+            "input_schema": input_schema,
+        },
+        nodes=[
+            Node(
+                id="price_invoice",
+                kind=NodeKind.PURE_FUNCTION,
+                description="price ONE invoice",
+                impl="pricing.py:price_invoice",
+                fan_out=True,
+                inputs={
+                    "invoice": "pipeline.input.invoices",
+                    "currency": "pipeline.input.currency",
+                },
+            ),
+        ],
+        edges=[],
+        entry_nodes=["price_invoice"],
+        exit_nodes=["price_invoice"],
+    )
+
+
+_TYPED_INPUT = {
+    "type": "object",
+    "properties": {
+        "invoices": {"type": "array", "items": {"type": "object"}},
+        "currency": {"type": "string"},
+    },
+}
+
+
+def test_a_typed_pipeline_input_list_is_the_element() -> None:
+    from rote.ir import fan_out_element_param
+
+    pipeline = _input_fan_pipeline(_TYPED_INPUT)
+    assert fan_out_element_param(pipeline.nodes[0], pipeline) == "invoice"
+
+
+def test_untyped_pipeline_input_lists_are_ambiguous() -> None:
+    """With no schema both fields could be the list, so refuse to guess."""
+    from rote.ir import fan_out_element_param
+
+    pipeline = _input_fan_pipeline(None)
+    with pytest.raises(ValueError, match=r"cannot identify the element param.*'currency'"):
+        fan_out_element_param(pipeline.nodes[0], pipeline)
+
+
+def test_the_whole_pipeline_input_is_never_the_list() -> None:
+    """`pipeline.input` (no field) is the input object, not a list."""
+    from rote.ir import fan_out_element_param
+
+    node = Node(
+        id="price_invoice",
+        kind=NodeKind.PURE_FUNCTION,
+        description="d",
+        impl="pricing.py:price_invoice",
+        fan_out=True,
+        inputs={"invoice": "pipeline.input.invoices", "everything": "pipeline.input"},
+    )
+    pipeline = _input_fan_pipeline(None).model_copy(update={"nodes": [node]})
+    assert fan_out_element_param(node, pipeline) == "invoice"
+
+
+@pytest.mark.parametrize("runtime", sorted(_EMITTERS))
+def test_every_runtime_fans_over_a_pipeline_input_list(runtime: str) -> None:
+    """Each runtime iterates the input list and shares the scalar field."""
+    fn, lang = _EMITTERS[runtime]
+    src = fn(_input_fan_pipeline(_TYPED_INPUT))
+    if lang == "py":
+        list_expr = 'pipeline_input["invoices"]'
+        assert re.search(r"_fan_out_list\(\s*" + re.escape(list_expr) + ",", src), src
+        assert '"invoice": _item' in src
+        assert f'"invoice": {list_expr}' not in src
+        assert '"currency": pipeline_input["currency"]' in src
+        ast.parse(src)
+    else:
+        list_expr = 'pipelineInput["invoices"]'
+        assert re.search(r"fanOutList\(\s*" + re.escape(list_expr) + ",", src), src
+        assert "invoice: _item" in src
+        assert f"invoice: {list_expr}" not in src
+        assert 'currency: pipelineInput["currency"]' in src

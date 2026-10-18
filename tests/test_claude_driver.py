@@ -940,3 +940,165 @@ async def test_cost_reads_total_cost_usd_and_ignores_an_invented_key(
     )
     result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["cost_usd"] is None
+
+
+# ───────── Isolation from the invoking user's Claude Code setup ─────────
+
+
+@pytest.mark.asyncio
+async def test_child_is_isolated_from_user_settings_and_the_callers_cwd(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """Values, not presence: each flag is checked for what it is set to.
+
+    A user's prose-lint hook cost a real compile 12 of 48 turns, and run
+    from a repo the agent read that repo's earlier compiled output of the
+    same skill. A bare `--tools` would swallow the next argv entry and
+    expose every tool, which is how the subscription lane once died.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok", session_id="s")),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+
+    args = list(recorder.calls[0]["args"])
+    assert args[args.index("--tools") + 1] == DEFAULT_ALLOWED_TOOLS
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert "Bash" not in args[args.index("--tools") + 1]
+    assert recorder.calls[0]["kwargs"]["cwd"] == work_dir.resolve()
+
+
+# ───────── Repair rounds via `claude -p --resume` ─────────
+
+
+class _SequencedRecorder:
+    """One canned (stdout, files) response per ``claude`` invocation, in order."""
+
+    def __init__(self, responses: list[tuple[str, dict[str, str]]], returncodes: list[int]) -> None:
+        self.responses = list(responses)
+        self.returncodes = list(returncodes)
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, *args: str, **kwargs: Any) -> _FakeProcess:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        stdout, files = self.responses.pop(0)
+        work_dir = _FakeSubprocessRecorder._extract_work_dir(args)
+        assert work_dir is not None
+        for rel, content in files.items():
+            (work_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (work_dir / rel).write_text(content, encoding="utf-8")
+        return _FakeProcess(stdout.encode(), b"", self.returncodes.pop(0))
+
+
+def _install_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[tuple[str, dict[str, str]]],
+    returncodes: list[int] | None = None,
+) -> _SequencedRecorder:
+    recorder = _SequencedRecorder(responses, returncodes or [0] * len(responses))
+    monkeypatch.setattr("rote.compiler.drivers.claude.asyncio.create_subprocess_exec", recorder)
+    return recorder
+
+
+def _result_with_session(cost: float, turns: int, cache_write: int) -> str:
+    # modelUsage is cumulative over a resumed session (measured on claude
+    # 2.1.302); num_turns and duration_ms are per invocation.
+    return _result_line(
+        result="ok",
+        session_id="sess-1",
+        total_cost_usd=cost,
+        num_turns=turns,
+        duration_ms=turns * 1000,
+        modelUsage={
+            "claude-sonnet-4-6": {
+                "inputTokens": 10,
+                "outputTokens": 100 * turns,
+                "cacheCreationInputTokens": cache_write,
+                "cacheReadInputTokens": 0,
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_resumes_the_same_session_until_the_callback_accepts(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            (_stream(_result_with_session(2.3, 2, 110_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    seen: list[str] = []
+
+    def repair(path: Path) -> str | None:
+        content = path.read_text()
+        seen.append(content)
+        return "FIX: the tests fail" if content == "v1" else None
+
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+
+    assert seen == ["v1", "v2"]
+    assert len(recorder.calls) == 2
+    first, second = (list(c["args"]) for c in recorder.calls)
+    assert "--resume" not in first
+    assert second[second.index("--resume") + 1] == "sess-1"
+    assert second[second.index("-p") + 1] == "FIX: the tests fail"
+    # Same isolation on the resumed leg, and the same cwd, which is where
+    # `--resume` looks the session up.
+    assert second[second.index("--tools") + 1] == DEFAULT_ALLOWED_TOOLS
+    assert recorder.calls[1]["kwargs"]["cwd"] == recorder.calls[0]["kwargs"]["cwd"]
+
+    meta = result.metadata
+    assert meta["repair_rounds"] == 1
+    assert meta["num_turns"] == 32  # per invocation: summed
+    assert meta["duration_ms"] == 32_000
+    assert meta["cost_usd"] == 2.3  # cumulative: the last result, not 4.3
+    assert meta["cache_write_tokens"] == 110_000  # not 210_000
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repair_round_keeps_the_deliverable(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repair leg that dies must not turn a produced deliverable into a failure."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            ("", {}),
+        ],
+        returncodes=[0, 1],
+    )
+    result = await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _p: "please fix"
+    )
+    assert result.pipeline_yaml_path.read_text() == "v1"
+    assert "exited with code 1" in result.metadata["repair_warning"]
+    assert "subprocess_warning" not in result.metadata
+
+
+@pytest.mark.asyncio
+async def test_no_session_id_means_no_resume(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = _install_sequence(
+        monkeypatch, [(_stream(_result_line(result="ok")), {"pipeline.yaml": "v1"})]
+    )
+    result = await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _p: "please fix"
+    )
+    assert len(recorder.calls) == 1
+    assert "no session_id" in result.metadata["repair_warning"]

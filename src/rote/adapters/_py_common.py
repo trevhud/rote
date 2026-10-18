@@ -1366,6 +1366,17 @@ def write_extracted_package(
     return written
 
 
+class ConstantsNotAccepted(ValueError):
+    """An emit refused because an impl cannot take its node's constants.
+
+    Raised before any file is written (:func:`require_constant_parameters`),
+    so the runtime dir is exactly as it was. A subclass of ``ValueError``
+    so existing handlers still catch it; its own type is what lets ``rote
+    compile`` say that nothing was written, which it cannot promise for
+    any other emit failure.
+    """
+
+
 def require_constant_parameters(
     pipeline: Pipeline,
     writer: EmitWriter,
@@ -1400,7 +1411,7 @@ def require_constant_parameters(
     problems = constants_not_accepted(pipeline, landed, origins)
     if problems:
         detail = "; ".join(problems)
-        raise ValueError(
+        raise ConstantsNotAccepted(
             f"extracted/ functions do not accept their node's constants, which every step "
             f"passes as keyword arguments: {detail}. In each file named, add each constant "
             f"as a keyword parameter (or **kwargs), then re-emit"

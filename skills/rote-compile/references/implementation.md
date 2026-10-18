@@ -2,20 +2,82 @@
 
 Phase 3 produces `extracted/*.py` modules. This file governs **how much
 of each module you implement** and how to prove what you wrote is
-right. The bar depends on what evidence you have.
+right. The bar depends on the node kind and on what evidence you have.
 
-## The two regimes
+## `pure_function` nodes: implement them
+
+A `pure_function` is code the skill already describes: parse this
+table, count rows where Refunded = FALSE, flag stores below 90%, render
+these three sections. The skill IS the spec, so write the real
+function, in every regime, with or without `probe-context/`. A compiled
+pipeline whose parsers and renderers are stubs never runs without a
+human writing the code the skill already spelled out, which defeats the
+point of compiling it.
+
+What "implement" means:
+
+1. **Every rule the skill states becomes code.** Thresholds compare
+   with the operator the prose implies (`>= 10`, `> 5%`, `below 90%`).
+   Lift each number into the node's `constants:` and a module-level
+   constant, and enforce it in code.
+2. **Input you cannot see is parsed by what the skill names.** A
+   pure_function that parses an MCP result whose exact format no
+   `probe-context/` shows still gets written. Accept the most direct
+   form the skill implies (sheet content as CSV/TSV text with a header
+   row, or a list of row dicts), find columns by the header names the
+   skill gives (case- and whitespace-insensitive), and raise
+   `ValueError` naming the missing column when one is absent. State the
+   assumed input shape in the docstring. Never return an empty result
+   for input you could not parse.
+3. **Stdlib only.** No third-party imports in a pure_function module.
+   It runs on every runtime and in the generated tests.
+4. **Python 3.11 syntax.** rote supports 3.11, and a module that only
+   parses on 3.12+ cannot be imported there. Inside an f-string's `{}`:
+   no backslash (`f"{'\n'.join(x)}"` is the classic: bind
+   `nl = "\n"` first, or build the string outside), no comment, no
+   reuse of the enclosing quote, no line break in a single-quoted
+   f-string. No `type X = ...` aliases, no `def f[T]()` generics.
+5. **Signature = the node's `inputs:` keys** (next section).
+
+### When a pure_function stays a stub
+
+Only when the logic depends on something the skill does not state: a
+business fact (a threshold "as agreed with finance", a mapping table
+that lives elsewhere) or an external system (the step secretly reads a
+database). Write the stub so the decision is reviewable: the first
+statement after the docstring is
+
+```python
+raise NotImplementedError(
+    "needs the carrier-to-region mapping: the skill says 'route by region' "
+    "but never lists the regions"
+)
+```
+
+The message names what is missing and why. rote reports every stub
+with this message, and rejects a pure_function stub without one. List
+each stub under **Open questions** in the compilation report. "The input
+format is not shown" is not a reason (rule 2 above), and "the rule is
+complex" is not a reason either.
+
+## `external_call` nodes: the two regimes
+
+An `external_call` talks to a vendor API. With an `mcp:` binding the
+default backend already emits a working call, and the `impl` is the
+direct-API alternative (`--backend api`).
 
 ### Regime 1 — No ground truth (default)
 
 No `probe-context/` directory exists in your work dir, and you have no
-web research tools. Emit **contract-documented stubs**: the function
-signature, a docstring stating the input/output contract as precisely
-as the skill text allows, and a `raise NotImplementedError(...)` body.
+web research tools. Emit **contract-documented stubs** for the vendor
+calls: the function signature, a docstring stating the input/output
+contract as precisely as the skill text allows, and a
+`raise NotImplementedError("<which API, and why it is a stub>")` body.
 Do NOT write vendor API calls from memory — SDK and endpoint shapes
 drift faster than any model's training data, and a plausible-but-wrong
 implementation is worse than an honest stub because it fails at
-runtime instead of at review.
+runtime instead of at review. This regime never applies to a
+pure_function.
 
 ### Regime 2 — Ground truth available (implement for real)
 
@@ -50,8 +112,30 @@ WebFetch. Now you are expected to write **working implementations**:
 
 ## Tests are part of the deliverable
 
-When you implement for real (Regime 2), also write
-`tests/test_extracted.py` in your work dir:
+Every function you implement gets tests, in `tests/test_<module>.py`
+in your work dir (one file per extracted module). Each test file imports
+what it tests as `from extracted.<module> import <fn>`: rote runs
+`python -m pytest tests` from the work dir root, which puts that root on
+`sys.path`, so no conftest is needed.
+
+For a **pure_function**, derive the cases from the skill itself:
+
+- **One test per stated rule, on both sides of every boundary.** "Flag
+  any store below 90% fill rate" is two cases: 89.9 flagged, 90.0 not.
+  "Returns >= 10 (Warning), >= 20 (Alert)" is 9, 10, 19,
+  20. Off-by-one at a threshold is the most likely bug, and the
+  only one a reviewer cannot spot by reading.
+- **The skill's own examples, verbatim.** A sample row, a sample
+  report line, a named store (`STORE-04`), a reason code ("Damaged in
+  Transit"): build the fixture from them.
+- **The empty and the malformed input.** No rows, and a table missing a
+  column the skill names (expect the `ValueError`).
+- **A renderer's output contains what the skill requires.** Every
+  section heading, KPI, and alert label the skill lists appears in the
+  rendered text for a fixture that should produce it, and the alert
+  labels are absent for one that should not.
+
+For a **Regime 2** implementation, add:
 
 - **Golden-fixture tests from observed payloads.** Every parse /
   transform / filter function gets called with a real observed payload
@@ -69,11 +153,29 @@ When you implement for real (Regime 2), also write
   sizes, thresholds, day windows) gets one assertion, so a silent edit
   fails a test instead of shipping.
 
-Structure the file so `pytest tests/` passes from the work dir root —
-imports as `from extracted.<module> import <fn>` with a conftest or
-sys.path line if needed. If a test would need something you can't
-provide deterministically, don't write a flaky approximation; note the
-gap in the compilation report instead.
+Tests use plain `pytest` and the stdlib, nothing else. If a test would
+need something you can't provide deterministically, don't write a flaky
+approximation. Note the gap in the compilation report instead.
+
+## What rote checks after you stop
+
+You have no shell, so you cannot run the tests yourself. rote runs
+these checks on your work dir when you end your turn:
+
+1. `pipeline.yaml` validates.
+2. Every module an `impl:` names parses on Python 3.11, defines the
+   function, and accepts the node's `inputs:` as keyword arguments.
+3. Every `pure_function` is implemented, or is a stub whose
+   `NotImplementedError` message says why.
+4. Every implemented `pure_function` is called from a file under
+   `tests/`.
+5. `python -m pytest tests` passes.
+
+If any check fails, the problems come back to you as the next message,
+verbatim, with the pytest output. Fix exactly what they name and end
+your turn again. When a test and the implementation disagree, re-read
+the skill: it decides which one is wrong. Never delete a test or loosen
+an assertion that encodes one of the skill's rules to get to green.
 
 ## Parameters are the node's `inputs:` keys
 
@@ -132,3 +234,22 @@ through their input schema (`llm-judge-extraction.md`).
   result payload verbatim, and `BATCH_SIZE == 10`.
 - Module docstring cites the ZoomInfo enrich doc URL fetched during
   implementation and lists `httpx` as the dependency.
+
+## Pure-function worked example
+
+A returns skill says of its Returns Log sheet: "Count all rows where
+Refunded = FALSE. Break down by store (STORE-04, STORE-11, etc.) and
+reason (Damaged in Transit, Wrong Item). Report the total open count."
+There is no probe-context and no format sample. It is still implemented:
+
+- `parse_returns_log(raw: str) -> dict` reads `raw` as CSV text with a
+  header row, locates the `Refunded`, `Store` and `Reason` columns by
+  name (case- and whitespace-insensitive), counts rows whose Refunded
+  cell is `FALSE` (case-insensitive), and returns
+  `{"total_open": int, "by_store": {...}, "by_reason": {...}}`. A
+  missing column raises `ValueError("Returns Log has no 'Refunded'
+  column; found [...]")`.
+- `tests/test_parsers.py`: a fixture with STORE-04 and STORE-11 rows
+  of both reasons, one of them refunded, asserting the exact totals and
+  breakdowns, the `TRUE`/`false`/`FALSE` spellings, a header-only
+  table (zero open), and a table without `Refunded` (the `ValueError`).

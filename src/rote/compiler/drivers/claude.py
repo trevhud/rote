@@ -30,6 +30,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from shutil import which
 from typing import Any
@@ -49,7 +51,7 @@ from rote.compiler.events import (
 # helper that ships into them verbatim. A second copy here is exactly
 # how the rule drifts back to API-key billing in one place and not the
 # other.
-from rote.inference import build_subscription_env
+from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS, build_subscription_env
 
 # ───────── Defaults ─────────
 
@@ -283,6 +285,17 @@ def _result_detail(result_obj: dict[str, Any] | None) -> str:
     return json.dumps(result_obj)[:2000]
 
 
+@dataclass(frozen=True)
+class _Invocation:
+    """One ``claude -p`` subprocess: the first run or a resumed repair round."""
+
+    result: dict[str, Any] | None
+    stderr: str
+    totals: dict[str, int]
+    returncode: int | None
+    turn: int
+
+
 class ClaudeDriver(CompilerDriver):
     name: str = "claude"
 
@@ -324,8 +337,17 @@ class ClaudeDriver(CompilerDriver):
         work_dir: Path,
         extra_instructions: str | None = None,
         on_event: EventCallback | None = None,
+        repair: Callable[[Path], str | None] | None = None,
     ) -> DriverResult:
         """Spawn ``claude -p`` and wait for it to produce pipeline.yaml.
+
+        ``repair`` is the orchestrator's verification callback. Once the
+        agent has produced pipeline.yaml, it is called with that path; a
+        string return is sent back into the same conversation with
+        ``claude -p --resume <session_id>`` and the loop repeats until it
+        returns ``None``. Resuming keeps the model that wrote the code,
+        with the skill and its own reasoning still in context, as the one
+        that fixes it.
 
         Runs the CLI in ``stream-json`` mode and consumes its NDJSON
         stdout incrementally: each ``assistant`` message becomes a
@@ -358,52 +380,111 @@ class ClaudeDriver(CompilerDriver):
 
         env = self._build_child_env()
 
-        args = [
-            self.claude_executable,
-            "-p",
-            user_prompt,
-            "--model",
-            self.model,
-            "--append-system-prompt",
-            system_prompt,
-            "--add-dir",
-            str(skill_dir),
-            "--add-dir",
-            str(compiler_skill_dir),
-            "--add-dir",
-            str(work_dir),
-            "--allowedTools",
-            self.allowed_tools,
-            # This driver wires no MCP servers (live compile-time MCP is
-            # the in-process drivers' job), so the only MCP a run could
-            # see is the user's own: claude.ai connectors and plugin
-            # servers, none of them allowlisted. Measured on Claude Code
-            # 2.1.302, those put 357 tools into the first request and
-            # pushed it past 200k tokens, which a subscription without
-            # usage credits rejects outright ("Usage credits are required
-            # for long context requests"): the compile never started.
-            # With this flag the same request is 70.7k tokens.
-            "--strict-mcp-config",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--max-turns",
-            str(self.max_turns),
-        ]
+        def args_for(prompt: str, resume: str | None = None) -> list[str]:
+            args = [
+                self.claude_executable,
+                "-p",
+                prompt,
+                "--model",
+                self.model,
+                "--append-system-prompt",
+                system_prompt,
+                "--add-dir",
+                str(skill_dir),
+                "--add-dir",
+                str(compiler_skill_dir),
+                "--add-dir",
+                str(work_dir),
+                "--allowedTools",
+                self.allowed_tools,
+                # Isolation from the invoking user's Claude Code setup, the
+                # same flags the emitted judge and agent-loop lanes use (one
+                # definition, in the helper, so the copies cannot drift).
+                # Each was found by a real compile: the user's connectors put
+                # 357 tools into the first request (past 200k tokens, which a
+                # subscription rejected before the compile started); a
+                # prose-lint hook in the user's settings cost 12 of 48 turns
+                # in one-line compile-report.md edits; and the same settings
+                # granted Bash, which the allowlist deliberately omits.
+                *CLI_CONTEXT_ISOLATION_FLAGS,
+                # The compiler's own tool surface: exactly the allowlist.
+                # A VALUE is required, as for the judges' empty one: the flag
+                # is variadic, and a bare `--tools` is rejected outright.
+                "--tools",
+                self.allowed_tools,
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                "--max-turns",
+                str(self.max_turns),
+            ]
+            if resume is not None:
+                args += ["--resume", resume]
+            return args
 
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            limit=_STREAM_LINE_LIMIT,
-        )
+        async def invoke(prompt: str, resume: str | None, start_turn: int) -> _Invocation:
+            proc = await asyncio.create_subprocess_exec(
+                *args_for(prompt, resume),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                limit=_STREAM_LINE_LIMIT,
+                # The work dir, not the caller's cwd: run from a repo, the
+                # agent globbed its way into that repo's earlier compiled
+                # output of the same skill and read it as a template, so the
+                # result depended on where `rote compile` was typed. It is
+                # also where `--resume` looks the session up, so every
+                # invocation of one compile must share it.
+                cwd=work_dir,
+            )
+            async with ProgressFileWatcher(work_dir, on_event):
+                result_obj, stderr, totals, turn = await self._consume_stream(
+                    proc, on_event, work_dir, start_turn=start_turn
+                )
+            await proc.wait()
+            return _Invocation(result_obj, stderr, totals, proc.returncode, turn)
 
-        async with ProgressFileWatcher(work_dir, on_event):
-            result_obj, stderr, totals = await self._consume_stream(proc, on_event, work_dir)
-        await proc.wait()
+        first = await invoke(user_prompt, None, 0)
+        invocations = [first]
+        result_obj, stderr = first.result, first.stderr
+        # The first run's exit status decides recovery: a repair round that
+        # dies is reported as a repair_warning, not a failed compilation.
+        returncode = first.returncode
 
         pipeline_yaml = work_dir / "pipeline.yaml"
+        repair_warning: str | None = None
+        while repair is not None and pipeline_yaml.is_file():
+            instruction = repair(pipeline_yaml)
+            if instruction is None:
+                break
+            last = invocations[-1]
+            session_id = last.result.get("session_id") if isinstance(last.result, dict) else None
+            if not isinstance(session_id, str) or not session_id:
+                repair_warning = (
+                    "the deliverable needed repair but the claude CLI reported no "
+                    "session_id to resume, so it was left as the agent wrote it"
+                )
+                break
+            repaired = await invoke(instruction, session_id, last.turn)
+            invocations.append(repaired)
+            if repaired.returncode != 0:
+                repair_warning = (
+                    f"a repair round exited with code {repaired.returncode}; the "
+                    f"deliverable is whatever it had written by then"
+                )
+                break
+        if len(invocations) > 1:
+            # A resumed run's result reports the WHOLE session: total_cost_usd
+            # and modelUsage are cumulative (measured on claude 2.1.302: a
+            # resume's cost was the first run's plus its own, and its
+            # cacheCreationInputTokens the sum of both). num_turns and
+            # duration_ms are per invocation. So the last result carries the
+            # usage, and only turns and wall time are summed below.
+            last_result = next(
+                (inv.result for inv in reversed(invocations) if inv.result is not None), None
+            )
+            if last_result is not None:
+                result_obj = last_result
 
         # The agent's deliverable is a file on disk, not a clean exit
         # code. A real-world failure mode: the agent writes a complete
@@ -415,9 +496,9 @@ class ClaudeDriver(CompilerDriver):
         # missing.
         if not pipeline_yaml.is_file():
             detail = stderr or _result_detail(result_obj) or "(no output)"
-            if proc.returncode != 0:
+            if returncode != 0:
                 raise DriverError(
-                    f"claude CLI exited with code {proc.returncode}",
+                    f"claude CLI exited with code {returncode}",
                     details=detail,
                 )
             raise DriverError(
@@ -425,10 +506,26 @@ class ClaudeDriver(CompilerDriver):
                 details=detail,
             )
 
+        # Stream tallies only cover what each invocation streamed (a resume
+        # replays nothing), so they sum. They are the fallback anyway: a
+        # final result's usage replaces them in _parse_metadata.
+        totals = dict(_EMPTY_TOTALS)
+        for inv in invocations:
+            for bucket, value in inv.totals.items():
+                totals[bucket] = totals.get(bucket, 0) + value
         metadata = self._parse_metadata(result_obj, totals)
-        if proc.returncode != 0:
+        if len(invocations) > 1:
+            metadata["repair_rounds"] = len(invocations) - 1
+            per_run = [inv.result for inv in invocations if isinstance(inv.result, dict)]
+            for key in ("num_turns", "duration_ms"):
+                values = [r.get(key) for r in per_run]
+                if values and all(isinstance(v, int) for v in values):
+                    metadata[key] = sum(v for v in values if isinstance(v, int))
+        if repair_warning is not None:
+            metadata["repair_warning"] = repair_warning
+        if returncode != 0:
             metadata["subprocess_warning"] = (
-                f"claude CLI exited with code {proc.returncode} but "
+                f"claude CLI exited with code {returncode} but "
                 f"pipeline.yaml was produced. Treating as success."
             )
 
@@ -492,9 +589,9 @@ class ClaudeDriver(CompilerDriver):
             f"reference files under {compiler_skill_dir}/references/, "
             f"then follow the procedure it describes.\n\n"
             f"Your final deliverable is {work_dir}/pipeline.yaml. Write "
-            f"any extracted Python modules to {work_dir}/extracted/ and "
-            f"any signature stubs to {work_dir}/signatures/, as the "
-            f"rubric instructs."
+            f"any extracted Python modules to {work_dir}/extracted/, "
+            f"their tests to {work_dir}/tests/, and any signature stubs "
+            f"to {work_dir}/signatures/, as the rubric instructs."
         )
 
     async def _consume_stream(
@@ -502,22 +599,25 @@ class ClaudeDriver(CompilerDriver):
         proc: asyncio.subprocess.Process,
         on_event: EventCallback | None,
         work_dir: Path,
-    ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
+        start_turn: int = 0,
+    ) -> tuple[dict[str, Any] | None, str, dict[str, int], int]:
         """Drain the subprocess's stream-json stdout and its stderr.
 
         Reads stdout line-by-line, mapping each to progress events via
         :func:`_map_stream_line` and firing them through ``on_event``.
         stderr is drained concurrently (a full pipe would otherwise
         deadlock the child). Returns the final ``result`` object (for
-        metadata), the decoded stderr text (for error details), and the
-        deduplicated input/cache tally. Output is supplied by the final
-        result rather than the assistant records' placeholders.
+        metadata), the decoded stderr text (for error details), the
+        deduplicated input/cache tally, and the last turn number (a
+        resumed run continues the count from ``start_turn``). Output is
+        supplied by the final result rather than the assistant records'
+        placeholders.
         """
         assert proc.stdout is not None
         assert proc.stderr is not None
 
         result_obj: dict[str, Any] | None = None
-        turn = 0
+        turn = start_turn
         totals: dict[str, int] = dict(_EMPTY_TOTALS)
         message_turns: dict[str, int] = {}
 
@@ -538,7 +638,7 @@ class ClaudeDriver(CompilerDriver):
 
         _, stderr_bytes = await asyncio.gather(read_stdout(), read_stderr())
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-        return result_obj, stderr, totals
+        return result_obj, stderr, totals, turn
 
     def _parse_metadata(
         self, result: dict[str, Any] | None, totals: dict[str, int]

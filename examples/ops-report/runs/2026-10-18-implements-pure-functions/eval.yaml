@@ -1,0 +1,85 @@
+version: 1
+source_skill: ../../skill
+
+steps:
+  - description: "Fetch Shipment Containers spreadsheet from Google Drive"
+    node_id: fetch_shipment_containers
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Parse facility summary table, flag sites below 75% completion"
+    node_id: parse_shipment_containers
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Fetch Dock Pending Log spreadsheet from Google Drive"
+    node_id: fetch_dock_pending_log
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Count open dock pending rows, break down by site and issue type"
+    node_id: parse_dock_pending_log
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Search Gmail for dock-activity threads (label:dock-activity newer_than:1d)"
+    node_id: fetch_dock_emails
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 3}
+
+  - description: "Read each email thread and count Approved vs. Requested appointments"
+    node_id: classify_dock_email
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 1, high: 5}
+
+  - description: "Fetch Dwell Ticket Log spreadsheet (Dwell Log - Form Responses tab)"
+    node_id: fetch_dwell_tickets
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 1, high: 1}
+
+  - description: "Filter open dwell tickets and apply missort/misload thresholds"
+    node_id: parse_dwell_tickets
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Ask duty manager for dock appointment completion counts, sorter metrics, current dwell"
+    node_id: duty_manager_data_gate
+    phase: "Manual data"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Apply all numeric thresholds to manually-supplied data (fail rate, volume drop, dwell alerts)"
+    node_id: apply_manual_thresholds
+    phase: "Manual data"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Render full executive report: KPI header + 3 sections + artifact reminder"
+    node_id: render_ops_report
+    phase: "Report format"
+    estimated_turns: {low: 2, high: 5}
+    estimated_tool_calls: {low: 0, high: 0}
+
+totals:
+  low: 12
+  high: 25
+
+notes: >-
+  This is a structured report skill with no per-item loops. All four data pulls
+  run sequentially in an agent (1 turn each), followed by inline parsing (1-2
+  turns each). The email classification is the highest-variance step: an agent
+  may read threads one by one or batch them, and it may re-read the skill
+  instructions to verify the approval/request classification rubric. The HITL
+  gate is a natural wait that appears as 1-3 turns of task setup and
+  confirmation. Report rendering is typically 2-5 turns for a report of this
+  complexity. The compiled pipeline replaces ~8 of these turns with
+  deterministic code (all parse steps, thresholds, rendering), and parallelizes
+  the 4 data pulls — yielding an estimated 50-60% turn reduction.

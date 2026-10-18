@@ -1219,6 +1219,57 @@ rather than treated as fatal. Don't undo this — losing $2 runs to a
 network blip is unacceptable. See
 `tests/test_claude_driver.py::test_nonzero_exit_with_pipeline_yaml_recovers_run`.
 
+### The compile verifies its deliverable, and the agent repairs it
+
+`rote.compiler.verify.verify_deliverable` runs on every natural stop of
+the agent and once more at the end: IR validation, `check_contracts`
+(symbol, payload signature, Python 3.11 parse), the compile-only rules
+(every `pure_function` implemented and named by a test, or a stub whose
+`NotImplementedError` message says why), and `python -m pytest tests`
+from the work dir. Failures go back into the SAME conversation as one
+user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
+
+- **The compile-only rules stay out of `check_contracts`.** That one
+  also runs at `rote emit` on hand-written and older IRs, where an
+  unwritten module is the documented stub path. Moving the rules into
+  it would flag every expected/ example on every emit.
+- **`ast.parse(feature_version=(3, 11))` does not catch PEP 701
+  f-strings** (a backslash, comment, or reused quote inside `{}`): that
+  changed the tokenizer, not the grammar. `newer_syntax_problems` walks
+  the 3.12+ token stream instead. Its corpus test is differential across
+  the CI matrix: on 3.11 it checks the labels against the real parser.
+- **Generated tests run with `PYTHONDONTWRITEBYTECODE=1`.** A repair
+  can rewrite a module within the same second at the same size, and a
+  stale `.pyc` then makes the fixed code test red.
+- **An update verifies an overlay** of the previous output's code under
+  the work dir, because an update's work dir holds only what changed.
+- **A deliverable that still fails is returned, not raised.** It is the
+  output of a paid run. The CLI exits 1 and skips the cloud deploy.
+
+### The claude driver repairs by resuming, and a resumed result is cumulative
+
+`ClaudeDriver` sends a repair as `claude -p <instruction> --resume
+<session_id>` with the same flags. Measured on claude 2.1.302: a resumed
+run's `total_cost_usd` and `modelUsage` cover the WHOLE session (the
+first run's plus its own), while `num_turns` and `duration_ms` are per
+invocation. So usage comes from the last result and only turns and wall
+time are summed. Summing cost would double-bill every repaired compile.
+`--resume` looks the session up by cwd, so every invocation of one
+compile runs with `cwd=work_dir`.
+
+### The compiler's `claude -p` child is isolated from the user's setup
+
+`--setting-sources ""`, `--strict-mcp-config`, `--tools <allowlist>`, and
+`cwd=work_dir`. Each one was found by a real compile: a user's Vale
+prose hook (em dashes in `compile-report.md`) cost 12 of 48 turns in
+one-line edits. The same user settings granted Bash despite the
+allowlist. And run from this repo, the agent globbed into
+`examples/<skill>/runs/` and read an earlier compile of the same skill as
+a template, so the output depended on where the command was typed.
+`--tools` takes a VALUE here, as in the judge helper. When measuring the
+compiler, run it against a copy of the skill outside the repo anyway:
+an older installed rote has none of this.
+
 ---
 
 ## Canonical examples to imitate
@@ -1552,15 +1603,20 @@ Don't waste time debugging stubs. These are intentional.
 
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
-  code; the compiler produces scaffolding, not production code
+  code. The compiler leaves vendor calls (`external_call` impls) as
+  contract-documented stubs unless an `mcp:` binding or probe ground
+  truth makes them real. `pure_function` nodes are NOT in this column:
+  the compiler implements and tests them (see the verification gotcha).
+
 **Working end-to-end:**
 
 - `fan_out` on ALL SIX runtimes: a node marked `fan_out: true` is
   invoked once per element of its bound list, and the result binds as a
   list in input order. Which input is the list is resolved by
   `rote.ir.fan_out_element_param` (fan_out edge marker >
-  incoming-edge source > only node-bound param; ambiguity is an
-  emit-time error, never a guess). It lives in the IR module on
+  incoming-edge source > only node-bound param > with no node-bound
+  param at all, the only pipeline-input field that can hold a list;
+  ambiguity is an emit-time error, never a guess). It lives in the IR module on
   purpose: two adapters disagreeing about which input is the list would
   make one pipeline mean two different things, and the judge-binding
   validator must agree with them too. Per

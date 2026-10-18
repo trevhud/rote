@@ -56,8 +56,11 @@ phase entered so far, in order:
 ```
 
 Rewrite the whole file each time (append the new phase's line to the
-ones already there). This file is machine-read for live progress
-display; it is not a deliverable and never affects the IR.
+ones already there). Send that Write in the same turn as the phase's
+first real tool call, never in a turn of its own: each turn re-reads the
+whole conversation, so a marker-only turn costs as much as real work.
+This file is machine-read for live progress display; it is not a
+deliverable and never affects the IR.
 
 ### Phase 1: Intake
 
@@ -101,11 +104,15 @@ justification per row.
 
 Read `references/crystallization-heuristics.md` and
 `references/implementation.md` before starting this phase. The second
-file governs how far to take each extracted module: contract-documented
-stubs by default, **working implementations plus golden-fixture tests**
-when ground truth is available (a `probe-context/` directory of observed
-MCP traffic in your work dir, and/or web research tools to verify
-current vendor API shapes).
+file governs how far to take each extracted module. **Every
+`pure_function` gets a real implementation plus tests derived from the
+skill's own rules and examples**: the skill is the spec, so a parser,
+validator, or renderer it describes is never left as a stub (the one
+exception, a fact the skill does not state, is marked in the stub
+itself). Vendor calls in `external_call` modules stay contract-documented
+stubs unless ground truth is available (a `probe-context/` directory of
+observed MCP traffic in your work dir, and/or web research tools to
+verify current vendor API shapes).
 
 For each node classified as `pure_function` or `external_call`, surface every
 codification opportunity:
@@ -197,8 +204,12 @@ Checklist before declaring Phase 5 done:
   matching `mcp:` binding (see ir-schema.md — and cross-check against
   `probe-context/observed-tools.json` when it exists: observed traffic
   with no binding is a compilation bug).
-- If you wrote working implementations, `tests/test_extracted.py`
-  exists, is deterministic and offline, and you believe it passes.
+- Every `pure_function` is implemented (or is a stub whose
+  `NotImplementedError` message says what the skill leaves unstated),
+  parses on Python 3.11, and is called from a `tests/test_<module>.py`
+  that is deterministic and offline. rote runs the tests after you
+  stop and sends any failure back to you (implementation.md, "What
+  rote checks after you stop").
 - Every `llm_judge` node has a `signature:` pointing at a real file
   you created in Phase 4.
 - Every `llm_judge` node's `inputs:` keys match the top-level
@@ -211,8 +222,9 @@ Checklist before declaring Phase 5 done:
 - Every `hitl_gate` node has a `signal:`.
 - Every node mentioned in `entry_nodes`, `exit_nodes`, `edges.from`,
   `edges.to`, and `loop_body` exists in `nodes:`.
-- `rote.ir.load_pipeline(pipeline.yaml)` loads without validation
-  errors. If you can call this function, run it as a dry check.
+- `pipeline.yaml` would pass `rote.ir.load_pipeline`. You have no
+  shell to run it: rote validates it after you stop and sends the
+  errors back to you if it fails.
 
 The `rote emit <pipeline.yaml> --runtime temporal --out <dir>` CLI
 command (or its programmatic equivalent) takes it from there. You do
@@ -228,7 +240,13 @@ agent trajectory.
 
 ### Phase 7: Compilation Report
 
-Produce a human-readable Markdown report in `compile-report.md` covering:
+Write `compile-report.md` **once, with a single Write, as the last file
+you produce**. Do not create it earlier, and do not Edit it afterwards to
+polish wording: every extra turn re-reads the whole conversation, and a
+real compile spent a quarter of its turns on one-line report edits. The
+phase outputs above (the classification table, the extraction records)
+are working notes in your reasoning, not files; this report is where
+they land, in one pass. Cover:
 
 - **Summary metrics**: total nodes, breakdown by kind, estimated token cost
   reduction per run, list of HITL gates and what they block on.
@@ -236,7 +254,8 @@ Produce a human-readable Markdown report in `compile-report.md` covering:
   with before/after snippets.
 - **Open questions**: ambiguous judgment calls where you made a decision
   but the human reviewer should verify. Be explicit about what you chose
-  and why.
+  and why. List every `pure_function` you left as a stub, with the
+  fact the skill did not state.
 - **Suggested next steps**: what to dogfood first, which evals to run,
   which node to recompile after the first production run reveals new
   information.
