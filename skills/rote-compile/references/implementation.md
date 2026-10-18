@@ -75,6 +75,30 @@ sys.path line if needed. If a test would need something you can't
 provide deterministically, don't write a flaky approximation; note the
 gap in the compilation report instead.
 
+## Parameters are the node's `inputs:` keys
+
+Every adapter calls an impl as `fn(**payload)`, where the payload keys
+are exactly the node's `inputs:` keys. So the function's parameter
+names must be those keys, in every regime, stub or not. On a
+`fan_out` node the element param carries ONE whole item, so the
+function takes that item as one parameter and reads its fields:
+
+```python
+# WRONG (a real deal-monitor compile): the node binds
+# `thread: match_threads_to_opps.output.matched_opp_threads`, but the
+# function asks for the element's fields. Every call raises TypeError.
+def fetch_thread_content(thread_id: str, thread_url: str) -> dict: ...
+
+# RIGHT: one parameter per `inputs:` key. Fields come from the element.
+def fetch_thread_content(thread: dict) -> dict:
+    thread_id = thread["thread_id"]
+    ...
+```
+
+`rote compile` reports a mismatch as a `contract: ERROR` line naming
+the missing and unexpected parameters. Judges follow the same rule
+through their input schema (`llm-judge-extraction.md`).
+
 ## What NOT to do, in any regime
 
 - Do not write to `signatures/` from this file's rules — judge modules
