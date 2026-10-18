@@ -17,6 +17,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   produced (the TS twin's semantics) and sums usage over every turn. The
   `claude -p` lane reports `None` instead of `0` when the envelope carries
   no `num_turns`.
+- `uvx rote-cli ...` works. The wheel installed only a `rote` command,
+  and uvx runs the command named after the package, so `uvx rote-cli
+  serve` failed with executable not found. The package now installs
+  `rote-cli` as a second command for the same CLI.
 
 ## [0.14.0] - 2026-10-18
 
