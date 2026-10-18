@@ -290,7 +290,15 @@ fails both ways:
 
 The payload is `structured_content` (the wire value, with fastmcp's
 `{"result": ...}` wrapper removed only when the server marked it), else
-the parsed text blocks. Regressions: `tests/test_mcp_client.py::
+the parsed text blocks. Two things to keep: the marker is
+`_meta.fastmcp.wrap_result` on current fastmcp but only the
+`x-fastmcp-wrap-result` output-schema flag on 2.x/3.0 servers, so the
+schema is still needed; and the TS helpers apply the same rule through
+`_FASTMCP_UNWRAP_TS` (one source spliced into the Node and Workers
+helpers). The helper's explicit `list_tools()` is not an extra round
+trip, because the MCP SDK's `call_tool` lists tools itself on a fresh
+session to validate the result (measured, and pinned by
+`test_one_tools_list_per_step`). Regressions: `tests/test_mcp_client.py::
 test_result_payload_is_plain_json_from_a_real_fastmcp_server` and
 `tests/test_mcp_ts_server_e2e.py` (real TS-SDK servers, slow).
 

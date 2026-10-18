@@ -828,6 +828,43 @@ def emit_node_tsconfig() -> str:
 #: renamed packages); verified against npm 2026-07-10.
 MCP_SDK_NPM_VERSION = "^1.29.0"
 
+#: How every direct-client TS helper reads a structured tool result.
+#: Spliced into both :data:`ROTE_MCP_HELPER_TS` and
+#: :data:`ROTE_MCP_WORKERS_HELPER_TS` so the two cannot drift; the
+#: Python twin is ``rote.mcp._runtime_helper._result_payload``.
+_FASTMCP_UNWRAP_TS = """/**
+ * The tool's value from structured content. fastmcp servers wrap a
+ * non-object return as {"result": ...} and mark it: newer releases in
+ * _meta.fastmcp.wrap_result, older ones (2.x, 3.0) only with the
+ * x-fastmcp-wrap-result flag on the tool's output schema. The wrapper is
+ * removed only when marked, so a real object that happens to have a
+ * single "result" key passes through. Same rule as the Python helper's
+ * _result_payload (rote.mcp._runtime_helper); the schema is fetched only
+ * for the one ambiguous shape, so other results cost no extra request.
+ */
+async function unwrapFastmcpResult(
+    client: Client,
+    tool: string,
+    meta: Record<string, unknown> | undefined,
+    structured: Record<string, unknown>,
+): Promise<unknown> {
+    const keys = Object.keys(structured);
+    if (keys.length !== 1 || keys[0] !== "result") return structured;
+    const fastmcpMeta = meta?.fastmcp as { wrap_result?: unknown } | undefined;
+    if (fastmcpMeta?.wrap_result) return structured.result;
+    let cursor: string | undefined;
+    do {
+        const page = await client.listTools(cursor ? { cursor } : undefined);
+        const spec = page.tools.find((t) => t.name === tool);
+        if (spec) {
+            return spec.outputSchema?.["x-fastmcp-wrap-result"] ? structured.result : structured;
+        }
+        cursor = page.nextCursor;
+    } while (cursor);
+    return structured;
+}
+"""
+
 #: Source of ``src/extracted/_roteMcp.ts`` — the Node-side twin of
 #: ``rote.mcp._runtime_helper``. It reads the SAME registry and token
 #: files the rote CLI writes (the documented cross-language contract in
@@ -1096,17 +1133,20 @@ async function withMcpSession<T>(
     }
 }
 
+__FASTMCP_UNWRAP_TS__
 /**
  * Call one tool on an MCP server, authenticated from the rote credential
  * store. On a 401 (revoked/expired-early token) the call refreshes once
- * and retries with a fresh transport.
+ * and retries with a fresh transport. Returns the tool's JSON value: an
+ * object usually, but a wrapped fastmcp list or scalar comes back as
+ * itself.
  */
 export async function callMcpTool(
     server: string,
     pipelineUrl: string | null,
     tool: string,
     args: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
+): Promise<unknown> {
     return withMcpSession(server, pipelineUrl, async (client) => {
         const result = await client.callTool({ name: tool, arguments: args });
         if (result.isError) {
@@ -1116,12 +1156,17 @@ export async function callMcpTool(
             );
         }
         if (result.structuredContent) {
-            return result.structuredContent as Record<string, unknown>;
+            return unwrapFastmcpResult(
+                client,
+                tool,
+                result._meta,
+                result.structuredContent as Record<string, unknown>,
+            );
         }
         const text = (result.content as Array<{ type: string; text?: string }>).find(
             (block) => block.type === "text",
         )?.text;
-        return (text ? JSON.parse(text) : {}) as Record<string, unknown>;
+        return text ? JSON.parse(text) : {};
     });
 }
 
@@ -1162,7 +1207,7 @@ export interface BoundMcpTool {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
-    run: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    run: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
 /**
@@ -1261,6 +1306,7 @@ function isUnauthorized(err: unknown): boolean {
         : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
 """
+ROTE_MCP_HELPER_TS = ROTE_MCP_HELPER_TS.replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
 
 
 def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
@@ -1318,8 +1364,10 @@ def emit_mcp_call_module(node: Node, *, generated_by: str) -> str:
         f"export async function {fn_name}(input: unknown): Promise<Record<string, unknown>> {{",
         "    const payload = (input ?? {}) as Record<string, unknown>;",
         args_line,
-        f"    return callMcpTool({json.dumps(binding.server)}, {url_literal}, "
-        f"{json.dumps(binding.tool)}, args);",
+        "    // The tool's JSON value; the workflow indexes it by the IR's",
+        "    // declared output keys, so the step keeps its object type.",
+        f"    return (await callMcpTool({json.dumps(binding.server)}, {url_literal}, "
+        f"{json.dumps(binding.tool)}, args)) as Record<string, unknown>;",
         "}",
         "",
     ]
@@ -1556,9 +1604,12 @@ async function withMcpSession<T>(
     }
 }
 
+__FASTMCP_UNWRAP_TS__
 /**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
+ * Returns the tool's JSON value (a wrapped fastmcp list or scalar comes
+ * back as itself).
  */
 export async function callMcpTool(
     env: RoteMcpEnv,
@@ -1566,7 +1617,7 @@ export async function callMcpTool(
     pipelineUrl: string | null,
     tool: string,
     args: Record<string, unknown>,
-): Promise<JsonObject> {
+): Promise<JsonValue> {
     return withMcpSession(env, server, pipelineUrl, async (client) => {
         const result = await client.callTool({ name: tool, arguments: args });
         if (result.isError) {
@@ -1576,12 +1627,17 @@ export async function callMcpTool(
             );
         }
         if (result.structuredContent) {
-            return result.structuredContent as JsonObject;
+            return (await unwrapFastmcpResult(
+                client,
+                tool,
+                result._meta,
+                result.structuredContent as Record<string, unknown>,
+            )) as JsonValue;
         }
         const text = (result.content as Array<{ type: string; text?: string }>).find(
             (block) => block.type === "text",
         )?.text;
-        return (text ? JSON.parse(text) : {}) as JsonObject;
+        return (text ? JSON.parse(text) : {}) as JsonValue;
     });
 }
 
@@ -1623,7 +1679,7 @@ export interface BoundMcpTool {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
-    run: (args: Record<string, unknown>) => Promise<JsonObject>;
+    run: (args: Record<string, unknown>) => Promise<JsonValue>;
 }
 
 /**
@@ -1711,6 +1767,9 @@ function isUnauthorizedWorkers(err: unknown): boolean {
         : /\\b401\\b|[Uu]nauthorized/.test(String(err));
 }
 """
+ROTE_MCP_WORKERS_HELPER_TS = ROTE_MCP_WORKERS_HELPER_TS.replace(
+    "__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS
+)
 
 
 def emit_workers_mcp_call_module(

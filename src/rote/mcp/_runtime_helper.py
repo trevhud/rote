@@ -436,14 +436,24 @@ async def call_mcp_tool(
     http_status = _HttpStatusWatch()
     try:
         async with mcp_client(server, pipeline_url, http_status=http_status) as client:
-            # Listing first costs nothing extra: fastmcp lists before the
-            # first call on a fresh client anyway, to learn output schemas,
-            # and reuses this listing. The schema says whether a fastmcp
-            # server wrapped the result.
+            # The listing is not an extra round trip. The MCP SDK's
+            # ClientSession.call_tool validates every successful result
+            # against the tool's output schema and lists tools to learn it
+            # whenever the session has not, which on a fresh client is
+            # every call, text-only results included (measured: exactly one
+            # tools/list per step either way; pinned by
+            # tests/test_mcp_ts_server_e2e.py). Listing first reuses that
+            # cache, gives _result_payload the wrap flag, and moves a
+            # listing failure ahead of the call instead of after the tool
+            # has already run its side effects.
             schemas = {t.name: t.output_schema for t in await client.list_tools()}
             result = await client.call_tool(tool, arguments)
             return _result_payload(result, schemas.get(tool))
-    except BaseException as exc:
+    except Exception as exc:
+        # Exception, not BaseException: a cancellation or interrupt that
+        # lands after a 401 must cancel the step, not park it. (A
+        # BaseExceptionGroup only arises when one of its members is a
+        # BaseException, so it falls through here too.)
         auth_needed = _find_auth_needed(exc)
         if auth_needed is exc:
             raise

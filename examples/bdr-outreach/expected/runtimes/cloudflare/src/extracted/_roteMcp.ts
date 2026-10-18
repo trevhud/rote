@@ -220,8 +220,42 @@ async function withMcpSession<T>(
 }
 
 /**
+ * The tool's value from structured content. fastmcp servers wrap a
+ * non-object return as {"result": ...} and mark it: newer releases in
+ * _meta.fastmcp.wrap_result, older ones (2.x, 3.0) only with the
+ * x-fastmcp-wrap-result flag on the tool's output schema. The wrapper is
+ * removed only when marked, so a real object that happens to have a
+ * single "result" key passes through. Same rule as the Python helper's
+ * _result_payload (rote.mcp._runtime_helper); the schema is fetched only
+ * for the one ambiguous shape, so other results cost no extra request.
+ */
+async function unwrapFastmcpResult(
+    client: Client,
+    tool: string,
+    meta: Record<string, unknown> | undefined,
+    structured: Record<string, unknown>,
+): Promise<unknown> {
+    const keys = Object.keys(structured);
+    if (keys.length !== 1 || keys[0] !== "result") return structured;
+    const fastmcpMeta = meta?.fastmcp as { wrap_result?: unknown } | undefined;
+    if (fastmcpMeta?.wrap_result) return structured.result;
+    let cursor: string | undefined;
+    do {
+        const page = await client.listTools(cursor ? { cursor } : undefined);
+        const spec = page.tools.find((t) => t.name === tool);
+        if (spec) {
+            return spec.outputSchema?.["x-fastmcp-wrap-result"] ? structured.result : structured;
+        }
+        cursor = page.nextCursor;
+    } while (cursor);
+    return structured;
+}
+
+/**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
+ * Returns the tool's JSON value (a wrapped fastmcp list or scalar comes
+ * back as itself).
  */
 export async function callMcpTool(
     env: RoteMcpEnv,
@@ -229,7 +263,7 @@ export async function callMcpTool(
     pipelineUrl: string | null,
     tool: string,
     args: Record<string, unknown>,
-): Promise<JsonObject> {
+): Promise<JsonValue> {
     return withMcpSession(env, server, pipelineUrl, async (client) => {
         const result = await client.callTool({ name: tool, arguments: args });
         if (result.isError) {
@@ -239,12 +273,17 @@ export async function callMcpTool(
             );
         }
         if (result.structuredContent) {
-            return result.structuredContent as JsonObject;
+            return (await unwrapFastmcpResult(
+                client,
+                tool,
+                result._meta,
+                result.structuredContent as Record<string, unknown>,
+            )) as JsonValue;
         }
         const text = (result.content as Array<{ type: string; text?: string }>).find(
             (block) => block.type === "text",
         )?.text;
-        return (text ? JSON.parse(text) : {}) as JsonObject;
+        return (text ? JSON.parse(text) : {}) as JsonValue;
     });
 }
 
@@ -286,7 +325,7 @@ export interface BoundMcpTool {
     name: string;
     description: string;
     parameters: Record<string, unknown>;
-    run: (args: Record<string, unknown>) => Promise<JsonObject>;
+    run: (args: Record<string, unknown>) => Promise<JsonValue>;
 }
 
 /**

@@ -44,6 +44,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   keys. It now returns the wire `structured_content` (unwrapping
   fastmcp's `{"result": ...}` wrapper only when marked), else the parsed
   text content.
+- **TypeScript MCP steps read fastmcp results the way Python does.** The
+  Node and Workers helpers returned `structuredContent` as-is, so a
+  list-returning fastmcp tool was a list in Python and `{result: [...]}`
+  in TypeScript. Both now remove the marked wrapper through one spliced
+  function; a cross-runtime test runs both helpers against one server.
+- A cancellation or interrupt that arrives after a 401 now cancels the
+  MCP step instead of parking it as an auth failure.
 - `rote mcp login` and token refresh no longer end on `ping`, which the
   sessionless 2026-07-28 protocol does not route.
 - `rote serve` keeps live tool-list updates on fastmcp 4: handshake-era

@@ -81,6 +81,10 @@ logger = logging.getLogger(__name__)
 #: How often the background watcher checks the registry file for changes.
 DEFAULT_POLL_INTERVAL_S = 1.0
 
+#: Where an MCP SDK v2 ``ServerSession`` keeps its ``Connection``. Private
+#: to the SDK; see ConnectionTrackingMiddleware._track.
+_SESSION_CONNECTION_ATTR = "_connection"
+
 STATUS_TOOL_SUFFIX = "_status"
 SIGNAL_TOOL_SUFFIX = "_signal"
 
@@ -340,6 +344,7 @@ class ConnectionTrackingMiddleware(Middleware):
 
     def __init__(self, provider: RegistryProvider) -> None:
         self._provider = provider
+        self._warned = False
 
     async def on_request(
         self,
@@ -352,12 +357,29 @@ class ConnectionTrackingMiddleware(Middleware):
             request_context is not None
             and request_context.protocol_version not in MODERN_PROTOCOL_VERSIONS
         ):
-            # The SDK exposes the Connection on neither the per-request
-            # ServerSession nor ServerRequestContext, so this reads the
-            # session's private reference. The legacy-era notification
-            # tests in tests/test_serve_server.py fail if it moves.
-            self._provider.connections.add(request_context.session._connection)
+            self._track(request_context.session)
         return await call_next(context)
+
+    def _track(self, session: Any) -> None:
+        # The SDK exposes the Connection on neither the per-request
+        # ServerSession nor ServerRequestContext, so this reads the
+        # session's private reference. If an SDK release moves it, only
+        # push notifications degrade: every request still runs, the
+        # failure is logged once, and the legacy-era notification tests
+        # in tests/test_serve_server.py fail so the move is caught.
+        connection = getattr(session, _SESSION_CONNECTION_ATTR, None)
+        if isinstance(connection, Connection):
+            self._provider.connections.add(connection)
+        elif not self._warned:
+            self._warned = True
+            logger.warning(
+                "cannot track handshake-era MCP connections: %s has no %r Connection "
+                "(the MCP SDK changed). Tool calls are unaffected, but registry "
+                "changes will not be pushed to connected 2025-era clients; they "
+                "see new pipelines when they re-list.",
+                type(session).__name__,
+                _SESSION_CONNECTION_ATTR,
+            )
 
 
 # ───────── Server construction ─────────

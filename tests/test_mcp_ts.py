@@ -97,6 +97,26 @@ def test_helper_not_emitted_without_bindings(runtime: str, tmp_path: Path) -> No
     assert "@modelcontextprotocol/sdk" not in package["dependencies"]
 
 
+@pytest.mark.parametrize("runtime", ["dbos-ts", "inngest", "cloudflare"])
+def test_every_direct_client_helper_carries_the_fastmcp_unwrap(
+    runtime: str, tmp_path: Path
+) -> None:
+    """Both direct-client TS helpers (Node and Workers) read structured
+    results through the one spliced unwrap, so a list-returning fastmcp
+    tool yields the list on every runtime, as it does in Python. The
+    Node copy runs for real in tests/test_mcp_ts_server_e2e.py; this
+    pins that the Workers copy is the same source."""
+    from rote.adapters._ts_common import _FASTMCP_UNWRAP_TS
+
+    get_adapter(runtime).emit(_bound_pipeline(), tmp_path)
+    helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
+    assert _FASTMCP_UNWRAP_TS in helper
+    assert "__FASTMCP_UNWRAP_TS__" not in helper
+    assert "return unwrapFastmcpResult(" in helper or "await unwrapFastmcpResult(" in helper
+    # The old pass-through is gone.
+    assert "return result.structuredContent as" not in helper
+
+
 def test_cloudflare_emits_the_workers_helper_not_the_node_one(tmp_path: Path) -> None:
     """Workers have no filesystem — Cloudflare gets the provisioned-secrets
     + KV helper, never the Node token-store reader."""

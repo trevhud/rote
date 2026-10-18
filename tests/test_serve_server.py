@@ -308,6 +308,39 @@ async def test_register_mid_session_notifies_and_updates_tool_list(
 
 
 @pytest.mark.asyncio
+async def test_sdk_moving_the_connection_degrades_only_notifications(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Connection tracking reads a private MCP SDK attribute. If a release
+    moves it, legacy-era tool calls must keep working and the server must
+    say why notifications stopped, once, instead of failing every
+    request in the middleware."""
+    from rote.serve import server as server_module
+
+    async def fake_start(entry: RegistryEntry, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"workflow_id": "wf-1", "status": "started", "runtime": "temporal"}
+
+    monkeypatch.setattr(backends, "start_workflow", fake_start)
+    monkeypatch.setattr(server_module, "_SESSION_CONNECTION_ATTR", "_moved_in_a_future_sdk")
+    server = build_server(registry_path, poll_interval=3600.0)
+
+    with caplog.at_level("WARNING", logger="rote.serve.server"):
+        async with Client(server, mode="legacy") as client:
+            assert "bdr-campaign" in {t.name for t in await client.list_tools()}
+            result = await client.call_tool(
+                "bdr-campaign", {"drug_brand": "ExampleDrug", "target_quota": 25}
+            )
+            assert result.structured_content == {
+                "workflow_id": "wf-1",
+                "status": "started",
+                "runtime": "temporal",
+            }
+
+    warnings = [r for r in caplog.records if "cannot track handshake-era" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
 async def test_tool_list_fresh_without_notification(registry_path: Path) -> None:
     """Even with the watcher effectively disabled, the provider re-reads the
     registry per request — clients that re-list always see current tools."""

@@ -498,6 +498,47 @@ def test_call_mcp_tool_maps_a_real_401_to_auth_needed(status: int) -> None:
         server.close()
 
 
+@pytest.mark.parametrize("interrupt", [asyncio.CancelledError, KeyboardInterrupt])
+def test_cancellation_after_a_401_cancels_instead_of_parking(
+    monkeypatch: pytest.MonkeyPatch, interrupt: type[BaseException]
+) -> None:
+    """A cancel or Ctrl-C that lands after the server answered 401 must
+    propagate as itself. Mapping it to RoteMcpAuthNeeded would park a
+    workflow somebody was trying to stop."""
+    from rote.mcp import _runtime_helper as helper
+
+    def _client_seeing_401_then(*a: Any, http_status: Any = None, **kw: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                http_status.unauthorized = True  # the transport hook saw a 401
+                raise interrupt()
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+        return _Ctx()
+
+    monkeypatch.setattr(helper, "mcp_client", _client_seeing_401_then)
+    with pytest.raises(interrupt):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+    # Negative half: the same 401 with an ordinary failure still parks.
+    def _client_seeing_401_then_error(*a: Any, http_status: Any = None, **kw: Any) -> Any:
+        class _Ctx:
+            async def __aenter__(self) -> Any:
+                http_status.unauthorized = True
+                raise RuntimeError("Server returned an error response")
+
+            async def __aexit__(self, *exc: Any) -> None:
+                return None
+
+        return _Ctx()
+
+    monkeypatch.setattr(helper, "mcp_client", _client_seeing_401_then_error)
+    with pytest.raises(helper.RoteMcpAuthNeeded, match="401"):
+        asyncio.run(helper.call_mcp_tool("slack", "https://mcp.example.com/slack", "t", {}))
+
+
 def test_call_mcp_tool_unwraps_auth_needed_from_the_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
