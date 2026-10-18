@@ -766,6 +766,16 @@ class PipelineInput(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_required_and_optional_are_disjoint(self) -> Self:
+        """A field cannot be both: emitted workflows would have to pick one."""
+        both = sorted(set(self.required) & set(self.optional))
+        if both:
+            raise ValueError(
+                f"pipeline input field(s) {', '.join(both)} are both required and optional"
+            )
+        return self
+
 
 class Pipeline(BaseModel):
     """A compiled skill, ready to be emitted into a runtime adapter."""
@@ -933,6 +943,64 @@ class Pipeline(BaseModel):
         for warnings or ignore it.
         """
         return any(n.kind is NodeKind.HITL_GATE for n in self.nodes)
+
+    @property
+    def optional_input_fields(self) -> frozenset[str]:
+        """Pipeline input fields a run may omit.
+
+        A field is optional when ``input.optional`` lists it, or when
+        ``input.input_schema`` declares it as a property without listing it
+        in the schema's ``required``. Declaring it required anywhere wins:
+        the validator on :class:`PipelineInput` rejects a field that is
+        listed both ways, so "wins" only settles the schema-only case.
+        """
+        schema = self.input.input_schema or {}
+        schema_required = set(schema.get("required") or [])
+        schema_optional = set(schema.get("properties") or {}) - schema_required
+        declared_required = set(self.input.required) | schema_required
+        return frozenset((set(self.input.optional) | schema_optional) - declared_required)
+
+    @property
+    def required_input_fields(self) -> tuple[str, ...]:
+        """Pipeline input fields every run must supply, sorted.
+
+        The declared ones (``input.required`` and the schema's
+        ``required``) plus any field a node reads that nothing declares
+        optional. Derived, never stored: emitted workflows check these on
+        entry so a missing field fails naming itself, and they read every
+        pipeline input field without raising, and an omitted optional one
+        is simply left out of a step's payload.
+        """
+        schema = self.input.input_schema or {}
+        fields = set(self.input.required) | set(schema.get("required") or [])
+        optional = self.optional_input_fields
+        for node in self.nodes:
+            for ref in (node.inputs or {}).values():
+                parsed = parse_input_ref(ref)
+                if (
+                    parsed.node_id is None
+                    and parsed.field is not None
+                    and parsed.field not in optional
+                ):
+                    fields.add(parsed.field)
+        return tuple(sorted(fields))
+
+    @property
+    def needs_input_check(self) -> bool:
+        """Whether emitted workflows check the pipeline input on entry.
+
+        True when a field is required, or when any node reads a pipeline
+        input field: a run started with no payload at all (or a non-object
+        one) must fail naming the problem, not with a TypeError inside
+        generated code.
+        """
+        if self.required_input_fields:
+            return True
+        return any(
+            parse_input_ref(ref).node_id is None and parse_input_ref(ref).field is not None
+            for node in self.nodes
+            for ref in (node.inputs or {}).values()
+        )
 
     @property
     def required_mcp_servers(self) -> dict[str, list[str]]:

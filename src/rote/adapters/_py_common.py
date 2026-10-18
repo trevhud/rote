@@ -76,12 +76,20 @@ def _ref_to_python_expr(ref: str) -> str:
     | Reference                  | Expression                      |
     |----------------------------|---------------------------------|
     | ``pipeline.input``         | ``pipeline_input``              |
-    | ``pipeline.input.f``       | ``pipeline_input["f"]``         |
+    | ``pipeline.input.f``       | ``pipeline_input.get("f")``     |
     | ``foo.output``             | ``foo_result``                  |
     | ``foo.output.f``           | ``foo_result["f"]``             |
+
+    A pipeline input field is read with ``.get`` so an omitted optional
+    field is None rather than a KeyError. Required fields are checked on
+    entry by :func:`required_inputs_guard`, so ``.get`` never hides one.
     """
     parsed = parse_input_ref(ref)
-    base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+    if parsed.node_id is None:
+        if parsed.field is None:
+            return "pipeline_input"
+        return f'pipeline_input.get("{parsed.field}")'
+    base = f"{parsed.node_id}_result"
     if parsed.field is None:
         return base
     return f'{base}["{parsed.field}"]'
@@ -165,9 +173,22 @@ def _payload_literal(node: Node, indent: str) -> str:
     inner = indent + "    "
     lines = ["{"]
     for param, ref in node.inputs.items():
-        lines.append(f'{inner}"{param}": {_ref_to_python_expr(ref)},')
+        lines.append(f"{inner}{_payload_entry(param, ref)},")
     lines.append(indent + "}")
     return "\n".join(lines)
+
+
+def _payload_entry(param: str, ref: str) -> str:
+    """One entry of a payload dict literal.
+
+    A pipeline input field is spread in through ``_input_field`` so that
+    an omitted one is left out rather than set to None. Required fields go
+    the same way; the entry check has already proven they are there.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None and parsed.field is not None:
+        return f"**_input_field(pipeline_input, {json.dumps(param)}, {json.dumps(parsed.field)})"
+    return f"{json.dumps(param)}: {_ref_to_python_expr(ref)}"
 
 
 _FAN_OUT_LIST_HELPER_PY = '''\
@@ -332,12 +353,70 @@ def has_legacy_judges(pipeline: Pipeline) -> bool:
     return any(n.kind is NodeKind.LLM_JUDGE and n.signature_spec is None for n in pipeline.nodes)
 
 
+_MISSING_INPUTS_HELPER_PY = '''\
+def _missing_inputs_error(pipeline_input: object, required: tuple[str, ...]) -> str | None:
+    """Why ``pipeline_input`` cannot start a run, or None when it can.
+
+    A step's payload simply leaves out an omitted optional field, so the
+    impl's own default applies. A missing required field would be left out
+    the same way and fail later, somewhere unrelated, so the run checks
+    those first and fails naming them. A run started with no payload at
+    all is reported the same way. The TypeScript runtimes emit the same
+    check (`missingInputsError`), so a bad input reports identically on
+    every target.
+    """
+    if not isinstance(pipeline_input, dict):
+        return (
+            "pipeline input must be a JSON object, got " + type(pipeline_input).__name__
+        )
+    missing = [name for name in required if name not in pipeline_input]
+    if not missing:
+        return None
+    return "pipeline input is missing required field(s): " + ", ".join(missing)
+
+
+def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
+    """``{key: value}`` when the run supplied ``field``, else nothing.
+
+    Spread into a step's payload, so an omitted optional field is absent,
+    not None: a Python default (``def f(d="today")``) or a schema default
+    on a judge's input then applies, the same as on the TS runtimes, where
+    an undefined field is dropped from the JSON payload.
+    """
+    return {key: pipeline_input[field]} if field in pipeline_input else {}
+'''
+
+
+def missing_inputs_helper(pipeline: Pipeline) -> str:
+    """The input-check helpers, or "" when no node reads the pipeline input."""
+    return _MISSING_INPUTS_HELPER_PY if pipeline.needs_input_check else ""
+
+
+def required_inputs_guard(pipeline: Pipeline, raise_stmt: str, indent: str = "    ") -> str:
+    """The entry check that fails a run missing a required input field.
+
+    ``raise_stmt`` is the runtime's way to fail the run with the message in
+    ``_input_error`` (Temporal needs a non-retryable ``ApplicationError``;
+    a plain exception there would retry the workflow task forever).
+    Returns "" when no node reads the pipeline input.
+    """
+    if not pipeline.needs_input_check:
+        return ""
+    names = "".join(f"{json.dumps(name)}, " for name in pipeline.required_input_fields)
+    return (
+        f"{indent}_input_error = _missing_inputs_error(pipeline_input, ({names.rstrip()}))\n"
+        f"{indent}if _input_error is not None:\n"
+        f"{indent}    {raise_stmt}\n"
+    )
+
+
 def fan_out_binding(
     node: Node, pipeline: Pipeline, indent: str = ""
 ) -> tuple[str, str, dict[str, str]]:
     """``(element_param, list_expr, scalar_exprs)`` for a ``fan_out`` node.
 
-    ``scalar_exprs`` is every payload key but the element.
+    ``scalar_exprs`` maps every payload key but the element to its
+    complete dict-literal entry (see :func:`_payload_entry`).
 
     The Python rendering of :func:`fan_out_element_param` — which input
     is the list is a language-neutral property of the IR, so it is
@@ -350,7 +429,7 @@ def fan_out_binding(
     # Narrowing only: fan_out_element_param raises on a node with no
     # inputs, so reaching here means there is something to fan over.
     assert node.inputs is not None
-    scalars = {p: _ref_to_python_expr(r) for p, r in node.inputs.items() if p != element_param}
+    scalars = {p: _payload_entry(p, r) for p, r in node.inputs.items() if p != element_param}
     ref = node.inputs[element_param]
     inner = indent + "    "
     # json.dumps, not !r: emitted Python uses double quotes throughout

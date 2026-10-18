@@ -131,6 +131,20 @@ def _run_output(dev_base: str, run_id: str) -> dict[str, Any]:
     return result if isinstance(result, dict) else {"result": result}
 
 
+def _failure_summary(run_data: dict[str, Any]) -> str:
+    """``": <ErrorName>: <message>"`` for a failed run, or "".
+
+    The dev server's v1 run carries the thrown error's name and message in
+    ``output`` once the run has failed. The log tail alone often holds only
+    the end of a stack trace, which hid what actually went wrong.
+    """
+    output = run_data.get("output")
+    if not isinstance(output, dict) or not output.get("message"):
+        return ""
+    name = output.get("name")
+    return f": {name}: {output['message']}" if name else f": {output['message']}"
+
+
 def run_inngest(
     app_dir: Path,
     input_payload: dict[str, Any],
@@ -253,7 +267,8 @@ def run_inngest(
                         output=None,
                         error=f"timed out after {timeout_seconds:g}s (run {run_id})",
                     )
-                status = http_json("GET", f"{dev_base}/v1/runs/{run_id}")["data"]["status"]
+                run_data = http_json("GET", f"{dev_base}/v1/runs/{run_id}")["data"]
+                status = run_data["status"]
                 if status == "Completed":
                     return MeasuredRun(
                         wall_seconds=time.monotonic() - started,
@@ -264,7 +279,7 @@ def run_inngest(
                         wall_seconds=time.monotonic() - started,
                         output=None,
                         error=(
-                            f"run {status.lower()}; app log tail:\n"
+                            f"run {status.lower()}{_failure_summary(run_data)}; app log tail:\n"
                             f"{app_log_path.read_text(encoding='utf-8', errors='replace')[-500:]}"
                         ),
                     )

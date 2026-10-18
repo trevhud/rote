@@ -112,7 +112,22 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   now, `tests/test_committed_snapshots.py` diffs a fresh emission
   against each snapshot, and the suite fails if anything under
   `examples/` changes during a run.
-
+- An optional pipeline input can be omitted on every runtime. The
+  Python runtimes read input fields as `pipeline_input["f"]`, so
+  ops-report's optional `report_date` raised `KeyError` when a caller
+  left it out. An omitted optional field is now left out of the step's
+  payload, so the impl's default (or a judge schema's default) applies,
+  as on the TS runtimes. Every runtime now checks the input on entry and
+  fails with `pipeline input is missing required field(s): ...`, or
+  `pipeline input must be a JSON object` for a run with no payload, where
+  TS used to pass `undefined` through. Temporal raises a non-retryable
+  `ApplicationError` and Inngest a `NonRetriableError`, so a bad input
+  fails once instead of retrying. New derived IR properties
+  `Pipeline.required_input_fields` / `optional_input_fields` define the
+  split, and a field listed as both required and optional is rejected.
+  `rote run` on Inngest now shows a failed run's error message, and a
+  long Node failure excerpt (DBOS-TS) keeps the `Error: ...` line that a
+  Node stack prints above its frames.
 - An agent loop's local tools now return their result to the model as
   JSON text. The SDK tool runner iterated a dict result, so the model saw
   only its keys.

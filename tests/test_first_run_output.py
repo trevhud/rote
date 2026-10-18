@@ -97,6 +97,17 @@ def test_failure_excerpt_keeps_the_end_of_long_output() -> None:
     assert len(text) < 1700
 
 
+def test_failure_excerpt_keeps_a_node_errors_message_above_its_stack() -> None:
+    """Node prints the message first and the stack after, so the tail of a
+    long DBOS-TS failure held only `at ...` frames and never said why."""
+    frames = "\n".join(f"    at frame{i} (/app/node_modules/x.js:{i}:1)" for i in range(80))
+    stderr = "startup\nError: pipeline input is missing required field(s): region\n" + frames
+    text = failure_excerpt(stderr)
+    assert text.startswith("Error: pipeline input is missing required field(s): region\n")
+    assert "earlier characters omitted" in text
+    assert text.endswith("x.js:79:1)")
+
+
 def test_failure_excerpt_short_output_is_untouched() -> None:
     assert failure_excerpt("boom\n") == "boom"
 

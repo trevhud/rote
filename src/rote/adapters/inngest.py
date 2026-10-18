@@ -115,6 +115,7 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
@@ -129,6 +130,7 @@ from rote.adapters._ts_common import (
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 from rote.mcp.parked import AUTH_PARK_MARKER
@@ -671,8 +673,11 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
         if n.inputs
         for ref in n.inputs.values()
     )
-    if needs_pipeline_input:
+    if needs_pipeline_input or pipeline.needs_input_check:
         lines.append("        const pipelineInput = event.data as Record<string, unknown>;")
+        # NonRetriableError: Inngest retries are function-level, so a plain
+        # throw here would re-run the same bad input `retries` times.
+        lines.extend(required_inputs_ts_guard(pipeline, "NonRetriableError", indent=" " * 8))
 
     # Node ids whose results are bound by the time each wave starts —
     # used to reject inputs that reference a later wave at emit time.
@@ -799,7 +804,7 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
     loops_reach_mcp = any(_loop_reaches_mcp(n) for n in pipeline.nodes)
     inngest_imports = (
         'import { NonRetriableError } from "inngest";\n'
-        if (has_gates or mcp_backed or loops_reach_mcp)
+        if (has_gates or mcp_backed or loops_reach_mcp or pipeline.needs_input_check)
         else ""
     ) + 'import { inngest } from "./client";\n'
     if mcp_backed:
@@ -848,6 +853,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(_FAIL_FAST_ON_MCP_CONFIG_HELPER.rstrip("\n"))
     if any(n.fan_out for n in pipeline.nodes):
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
+    if pipeline.needs_input_check:
+        sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
     sections.append(function_block)
     return "\n\n".join(sections)
 

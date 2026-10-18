@@ -244,11 +244,40 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
     return value;
 }
 
+/** Why `pipelineInput` cannot start a run, or null when it can.
+ *
+ * An omitted optional field reads as undefined, which is what the input
+ * schema allows. A missing required field would read as undefined too and
+ * surface much later as some unrelated error, so the run checks those
+ * first and fails naming them. A run started with no payload at all is
+ * reported the same way. The Python runtimes emit the same check
+ * (`_missing_inputs_error`), so a bad input reports identically on every
+ * target. */
+function missingInputsError(pipelineInput: unknown, required: string[]): string | null {
+    if (pipelineInput === null || Array.isArray(pipelineInput)) {
+        const got = pipelineInput === null ? "null" : "array";
+        return `pipeline input must be a JSON object, got ${got}`;
+    }
+    if (typeof pipelineInput !== "object") {
+        return `pipeline input must be a JSON object, got ${typeof pipelineInput}`;
+    }
+    const missing = required.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(pipelineInput, name),
+    );
+    return missing.length > 0
+        ? `pipeline input is missing required field(s): ${missing.join(", ")}`
+        : null;
+}
+
 /**
  * End-to-end BDR outreach campaign workflow for pharma/biotech research
  */
 export const runPipeline = DBOS.registerWorkflow(
     async (pipelineInput: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        const inputError = missingInputsError(pipelineInput, ["campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area"]);
+        if (inputError !== null) {
+            throw new Error(inputError);
+        }
         // ─── Wave 1 ───
         // Parallel fan-out: run every step in the wave concurrently
         // and settle them all — Promise.allSettled per the DBOS docs

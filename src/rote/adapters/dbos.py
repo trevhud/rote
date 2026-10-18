@@ -96,8 +96,10 @@ from rote.adapters._py_common import (
     has_legacy_judges,
     impl_kwargs_expr,
     mcp_arguments_line,
+    missing_inputs_helper,
     needs_call_impl,
     require_constant_parameters,
+    required_inputs_guard,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -538,9 +540,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
 
         for node in fan_out_nodes:
             element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
-            payload_items = "".join(
-                f', "{param}": {expr}' for param, expr in sorted(scalars.items())
-            )
+            payload_items = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
             lines.append(f"    # fan_out: {node.id} runs once per element of the bound")
             lines.append("    # list, each as its own enqueued durable step.")
             lines.append(f"    {node.id}_payloads = [")
@@ -693,6 +693,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
     if any(n.fan_out for n in pipeline.nodes):
         header += "\n\n" + fan_out_list_helper()
+    if pipeline.needs_input_check:
+        header += "\n\n" + missing_inputs_helper(pipeline)
 
     has_impls = needs_call_impl(pipeline)
     if has_impls or mcp_backed or has_legacy_judges(pipeline):
@@ -841,6 +843,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         f"\n\n@DBOS.workflow(name={json.dumps(workflow_name)})\n"
         f"def run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
+        f"{required_inputs_guard(pipeline, 'raise ValueError(_input_error)')}"
         f"{_emit_workflow_body(pipeline, cfg)}\n"
     )
 

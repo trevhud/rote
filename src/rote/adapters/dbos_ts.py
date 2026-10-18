@@ -106,6 +106,7 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
@@ -120,6 +121,7 @@ from rote.adapters._ts_common import (
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
@@ -729,6 +731,11 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     unwrap_block = f"\n{_UNWRAP_HELPER.rstrip(chr(10))}\n" if uses_unwrap else ""
     if any(n.fan_out for n in pipeline.nodes):
         unwrap_block += f"\n{FAN_OUT_LIST_HELPER_TS.rstrip(chr(10))}\n"
+    if pipeline.needs_input_check:
+        unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
+    guard = "".join(
+        "\n" + line for line in required_inputs_ts_guard(pipeline, "Error", indent=" " * 8)
+    )
 
     workflow_block = (
         "// ───────── Workflow ─────────\n"
@@ -740,6 +747,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         "export const runPipeline = DBOS.registerWorkflow(\n"
         "    async (pipelineInput: Record<string, unknown>): "
         "Promise<Record<string, unknown>> => {"
+        f"{guard}"
         f"{body}\n"
         "    },\n"
         f"    {{ name: {json.dumps(workflow_name)} }},\n"

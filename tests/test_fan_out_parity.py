@@ -141,7 +141,9 @@ def test_non_element_inputs_are_shared_by_every_invocation(
     """`brief` is not the fanned list, so every element gets it verbatim."""
     src, lang = emitted[runtime]
     expected = (
-        '"brief": pipeline_input["brief"]' if lang == "py" else 'brief: pipelineInput["brief"]'
+        '**_input_field(pipeline_input, "brief", "brief")'
+        if lang == "py"
+        else 'brief: pipelineInput["brief"]'
     )
     assert expected in src, f"{runtime}: shared input 'brief' missing from the fan_out payload"
 
