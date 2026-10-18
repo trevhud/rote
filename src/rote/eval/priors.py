@@ -141,6 +141,24 @@ class Priors:
     compiler's ``eval.yaml`` records no ``iterations`` for that node. The
     list is data, so the IR cannot say. Every element is its own call."""
 
+    # ── Cloudflare Workflows infrastructure (cloudflare / rote-cloud) ──
+    cloudflare_cpu_ms_per_step: float = 5.0
+    """CPU milliseconds one step burns. Judges and API calls mostly wait
+    on the network, and Cloudflare bills CPU time, not wall time."""
+
+    cloudflare_state_bytes_per_step: float = 16_384.0
+    """Persisted state per step (its serialized result). A stated
+    estimate: real results range from bytes to the 1 MiB step cap."""
+
+    cloudflare_retention_days: float = 30.0
+    """How long finished instance state is kept, and so billed as storage.
+    The emitted wrangler.jsonc sets no ``default_retention``, and the
+    Workflows limits page (limits.mdx, footnote 2) and the Workers API
+    reference say state is then kept for the account maximum: 30 days on
+    Workers Paid. The 2026-09-10 changelog says seven days for Workflows
+    created after that date; the docs disagree, so this takes the larger,
+    conservative figure. Override with ``--prior`` for a shorter one."""
+
     chars_per_token: float = 3.8
     """Fallback tokenizer approximation used only when no API key is
     available for the exact ``count_tokens`` endpoint; the scorecard

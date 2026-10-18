@@ -1023,6 +1023,34 @@ a baked-in table). Two things you will get wrong if you touch it:
    LiteLLM was dropped and why the cross-check annotates the
    scorecard's `source` string with a WARNING on >2% disagreement
    instead of trusting either side silently.
+3. **Cloudflare Workflows infrastructure has no price API.** Steps and
+   storage started billing on 2026-08-10. `rote.eval.infra_pricing`
+   fetches the one table both Cloudflare pricing pages render, the raw
+   `src/content/partials/workflows/workflows-pricing.mdx` from
+   `cloudflare/cloudflare-docs@production`. It caches the raw file for
+   24h in `~/.cache/rote/` and re-parses it on every load. The parser is
+   strict, and both halves of that matter. A missing row or a missing
+   `Workers Paid` column raises `PricingError`, because a skipped row
+   prices that unit at nothing. Each cell must also match a closed
+   grammar anchored at both ends. A prefix match read "per additional
+   100K steps" as a per of 100, overstating the price 1000x. The
+   wording has already changed once (2026-09-09). Steps per run
+   (`cloudflare_steps_per_run`) are a Range: one per node, the fan width
+   per fan_out node, one per HITL gate, none for `loop_body` sub-nodes.
+   The fan width is the token estimate's own `fan_out_widths` (eval.yaml
+   iterations, else the prior), so steps and LLM dollars never assume
+   different element counts. Counting a gate's wait as a step is labeled
+   a conservative assumption, since the docs don't say. Retention
+   defaults to 30 days: the emitted wrangler.jsonc sets no
+   `default_retention`, so the account maximum applies (limits.mdx
+   footnote 2). The 2026-09-10 changelog's seven-day default for new
+   Workflows contradicts that page, and this takes the larger figure.
+   CPU and state size are stated priors. `rote eval --runtime
+   cloudflare|rote-cloud` adds the section, as does a `compile --out` dir
+   holding only `runtime/cloudflare`, or a compile that emits for
+   cloudflare. Regressions in `tests/test_eval_infra_pricing.py`:
+   `test_a_table_missing_any_row_is_rejected`,
+   `test_an_unknown_unit_phrase_is_rejected_not_misread`.
 
 Related invariant: the eval sidecar (`eval.yaml`, per-step agent-turn
 estimates written by the compiler) is deliberately NOT part of the IR
