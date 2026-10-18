@@ -47,9 +47,9 @@ def _validated_backend(options: dict[str, Any]) -> Literal["mcp", "api"] | None:
 def _temporal_adapter_factory(**options: Any) -> Adapter:
     # Lazy import so users who don't use Temporal don't pay the
     # temporalio import cost just for launching the CLI.
-    from rote.adapters.temporal import TemporalAdapter
+    from rote.adapters.temporal import TemporalAdapter, TemporalAdapterConfig
 
-    return TemporalAdapter()
+    return TemporalAdapter(TemporalAdapterConfig(extracted_source_dir=_source_dir(options)))
 
 
 def _cloudflare_adapter_factory(**options: Any) -> Adapter:

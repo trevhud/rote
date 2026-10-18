@@ -46,11 +46,15 @@ from rote.adapters._py_common import (
     agent_loop_call,
     fan_out_binding,
     fan_out_list_helper,
+    write_extracted_package,
     write_signature_package,
 )
 from rote.ir import Node, NodeKind, Pipeline
 
 # ───────── Adapter configuration ─────────
+
+#: The package name the adapter emits extracted/ modules under.
+EMITTED_EXTRACTED_MODULE = "extracted"
 
 
 @dataclass(frozen=True)
@@ -59,17 +63,26 @@ class TemporalAdapterConfig:
 
     These knobs are project-specific and should be set by the caller (or
     eventually by an adapter config file in the source skill bundle).
-    Defaults match the BDR example so the adapter is usable out of the
-    box.
     """
 
     # Python import paths used by the emitted code. ``signatures_module``
-    # only applies to the *legacy* ``signature: path:Class`` form —
+    # only applies to the *legacy* ``signature: path:Class`` form;
     # judges with a ``signature_spec`` import from the generated
     # ``signatures/`` package emitted alongside activities.py.
     types_module: str = "expected.types"
-    extracted_module: str = "expected.extracted"
+    # The default, ``extracted``, is the package this adapter emits beside
+    # activities.py (see ``extracted_source_dir``). Any other value points
+    # the activities at a user-maintained package instead, and no
+    # extracted/ is emitted: the BDR example does this with
+    # ``expected.extracted``.
+    extracted_module: str = EMITTED_EXTRACTED_MODULE
     signatures_module: str = "expected.signatures"
+    # Directory holding the compilation's pipeline.yaml. When its
+    # extracted/<module>.py exists (the agent's real, test-verified
+    # implementation), emission uses that file verbatim instead of an
+    # IR-derived NotImplementedError stub. Same contract as the dbos and
+    # python adapters.
+    extracted_source_dir: Path | None = None
 
     # Default activity timeouts when the IR doesn't specify one.
     default_activity_timeout: str = "5m"
@@ -143,7 +156,7 @@ def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) 
         mandatory_marker
         + constants_block
         + f"    from {cfg.extracted_module}.{module_name} import {func_name}\n"
-        + f"    result = await {func_name}(**payload)\n"
+        + f"    result = await _call_impl({func_name}, payload)\n"
         + "    return _serialize(result)\n"
     )
 
@@ -249,6 +262,9 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
         n.kind is NodeKind.LLM_JUDGE and n.signature_spec is not None for n in pipeline.nodes
     )
     has_agent_loops = any(n.kind is NodeKind.AGENT_LOOP for n in pipeline.nodes)
+    has_impls = any(
+        n.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL) for n in pipeline.nodes
+    )
 
     preamble = textwrap.dedent(
         f'''
@@ -273,10 +289,15 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
         from temporalio import activity
         '''
     ).lstrip("\n")
-    if has_spec_judges or has_agent_loops:
+    if has_spec_judges or has_agent_loops or has_impls:
         preamble = preamble.replace(
             "from typing import Any",
             "import asyncio\nfrom typing import Any",
+        )
+    if has_impls:
+        preamble = preamble.replace(
+            "from typing import Any",
+            "import inspect\nfrom typing import Any",
         )
     if has_agent_loops:
         # The agent-loop activity renders its task payload as JSON and
@@ -309,6 +330,25 @@ def emit_activities(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None
             '''
         )
     )
+    if has_impls:
+        parts.append(
+            textwrap.dedent(
+                '''
+
+                async def _call_impl(fn: Any, payload: dict) -> Any:
+                    """Call an extracted function with the step payload.
+
+                    A coroutine function is awaited. A plain one, which is what
+                    the shared stubs and most agent-written modules are, runs
+                    in a worker thread so it cannot block the activity's event
+                    loop.
+                    """
+                    if inspect.iscoroutinefunction(fn):
+                        return await fn(**payload)
+                    return await asyncio.to_thread(fn, **payload)
+                '''
+            )
+        )
 
     # Emit one activity per non-HITL node (including loop_body sub-nodes
     # so they can be tested in isolation).
@@ -603,6 +643,10 @@ class TemporalAdapter:
     def emit(self, pipeline: Pipeline, output_dir: str | Path) -> dict[str, Path]:
         """Write activities.py + workflow.py + __init__.py into output_dir.
 
+        With the default ``extracted_module`` it also writes ``extracted/``:
+        the agent's real modules from ``extracted_source_dir`` where they
+        exist, IR-derived stubs otherwise.
+
         Judges carrying a ``signature_spec`` additionally get a generated
         ``signatures/<id>.py`` (shared Python signature emitter) that
         their activity imports; legacy ``signature: path:Class`` judges
@@ -621,6 +665,20 @@ class TemporalAdapter:
                 content=f'"""Emitted Temporal artifacts for {pipeline.name}."""\n',
             ),
         }
+
+        if self.config.extracted_module == EMITTED_EXTRACTED_MODULE:
+            written.update(
+                write_extracted_package(
+                    writer,
+                    pipeline,
+                    source_dir=self.config.extracted_source_dir,
+                    generated_by="rote.adapters.temporal",
+                    caller_note=(
+                        "the activities in activities.py call these\n"
+                        "with the step payload as keyword arguments."
+                    ),
+                )
+            )
 
         written.update(
             write_signature_package(
