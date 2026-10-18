@@ -295,7 +295,7 @@ export const runPipeline = DBOS.registerWorkflow(
         // ─── Wave 4 ───
         const hubspot_upsert_result = await hubspotUpsertStep(
             {
-                contacts: (contact_review_gate_result as unknown as Record<string, unknown>)["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"],
             },
         );
 
@@ -303,28 +303,28 @@ export const runPipeline = DBOS.registerWorkflow(
         const hubspot_create_list_result = await hubspotCreateListStep(
             {
                 campaign_name: pipelineInput["drug_brand"],
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             },
         );
 
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await exclusionCheckDncStep(
             {
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             },
         );
 
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await exclusionCheckRecentStep(
             {
-                contacts: (exclusion_check_dnc_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_dnc_result["passed"],
             },
         );
 
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await exclusionCheckSequenceStep(
             {
-                contacts: (exclusion_check_recent_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_recent_result["passed"],
             },
         );
 
@@ -333,7 +333,7 @@ export const runPipeline = DBOS.registerWorkflow(
         // each as its own durable step.
         const personalize_email_settled = await Promise.allSettled(
             fanOutList(
-                (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
+                exclusion_check_sequence_result["passed"],
                 "personalize_email",
                 "exclusion_check_sequence.output.passed",
             ).map((_item) => personalizeEmailStep({ contact: _item, intel: target_research_result, campaign_type: pipelineInput["campaign_type"] })),
@@ -352,9 +352,9 @@ export const runPipeline = DBOS.registerWorkflow(
         const pre_enrollment_report_result = await preEnrollmentReportStep(
             {
                 campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
-                exclusions: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["excluded"],
-                template_ids: (create_sales_template_result as unknown as Record<string, unknown>)["template_ids"],
+                passed_contacts: exclusion_check_sequence_result["passed"],
+                exclusions: exclusion_check_sequence_result["excluded"],
+                template_ids: create_sales_template_result["template_ids"],
             },
         );
 

@@ -13,7 +13,12 @@ Record (TS2352). The field-access casts had the same hole for an
 This suite emits one pipeline covering every output shape the IR
 allows, replaces each stub with an implementation typed the way a user
 would write it, and runs ``tsc --noEmit``. The stubs are compiled too,
-so a fix for real types can't regress the scaffold.
+so a fix for real types can't regress the scaffold. The negative half
+renames one field ``render`` reads and requires tsc to reject exactly
+that: a cast at the field-access site would compile and hand the next
+node ``undefined``. On Inngest it is the only half that catches a
+restored ``as Record`` field cast, because ``step.run`` returns
+``Jsonify<T>``, an anonymous object type that overlaps a Record.
 
 | Node         | Shape                              | Referenced as            |
 |--------------|------------------------------------|--------------------------|
@@ -210,19 +215,60 @@ def emitted(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFac
     return out
 
 
-def test_stubs_and_typed_implementations_compile(emitted: Path) -> None:
-    stubs = _tsc(emitted)
-    assert stubs.returncode == 0, f"tsc failed on the emitted stubs:\n{stubs.stdout}"
+#: The emitted stubs, captured before any test overwrites them.
+_STUBS: dict[Path, dict[str, str]] = {}
 
-    for node_id, source in _IMPLEMENTATIONS.items():
-        path = emitted / "src" / "extracted" / f"{node_id}.ts"
+
+@pytest.fixture
+def fresh(emitted: Path) -> Path:
+    """The emitted dir with its original stubs back in place, so each test
+    starts from the scaffold regardless of what an earlier one wrote."""
+    extracted = emitted / "src" / "extracted"
+    if emitted not in _STUBS:
+        _STUBS[emitted] = {n: (extracted / f"{n}.ts").read_text() for n in _IMPLEMENTATIONS}
+    for node_id, stub in _STUBS[emitted].items():
         # Replace the real stub, not a file the workflow never imports.
-        stub = path.read_text()
         assert f"export async function {_to_camel_case(node_id)}(" in stub
         assert "Promise<never>" in stub
-        path.write_text(textwrap.dedent(source))
+        (extracted / f"{node_id}.ts").write_text(stub)
+    return emitted
 
-    typed = _tsc(emitted)
+
+def _write_implementations(emitted: Path, overrides: dict[str, str] | None = None) -> None:
+    for node_id, source in {**_IMPLEMENTATIONS, **(overrides or {})}.items():
+        (emitted / "src" / "extracted" / f"{node_id}.ts").write_text(textwrap.dedent(source))
+
+
+def test_stubs_and_typed_implementations_compile(fresh: Path) -> None:
+    stubs = _tsc(fresh)
+    assert stubs.returncode == 0, f"tsc failed on the emitted stubs:\n{stubs.stdout}"
+
+    _write_implementations(fresh)
+    typed = _tsc(fresh)
     assert typed.returncode == 0, (
         f"tsc failed once the stubs were replaced by typed implementations:\n{typed.stdout}"
     )
+
+
+# `render` reads `summarize.output.total`; this implementation names the
+# field `sum`. Everything else is the positive fixture, so the field name
+# is the only thing that can fail.
+_DRIFTED_SUMMARIZE = _IMPLEMENTATIONS["summarize"].replace("total", "sum")
+
+
+def test_a_field_the_implementation_lacks_fails_tsc(fresh: Path) -> None:
+    """The negative half: drift between the IR and the user's type must be
+    a compile error, not an ``undefined`` handed to the next node at run
+    time. Any cast at the field-access site, through ``unknown`` or not,
+    silences exactly this."""
+    assert "sum:" in _DRIFTED_SUMMARIZE
+    assert "total" not in _DRIFTED_SUMMARIZE
+    _write_implementations(fresh, {"summarize": _DRIFTED_SUMMARIZE})
+    drifted = _tsc(fresh)
+    assert drifted.returncode != 0, "tsc accepted a field the implementation does not declare"
+    # Failing for the right reason: the missing field, and nothing else.
+    # TS7053 is bracket indexing with an absent key under the emitted
+    # tsconfig's `strict` (noImplicitAny).
+    errors = [line for line in drifted.stdout.splitlines() if "error TS" in line]
+    assert errors, drifted.stdout
+    assert all("error TS7053" in e and "'\"total\"'" in e for e in errors), drifted.stdout

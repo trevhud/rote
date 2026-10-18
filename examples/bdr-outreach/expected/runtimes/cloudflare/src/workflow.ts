@@ -228,7 +228,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "hubspot_upsert",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "60 seconds" },
             async () => hubspotUpsert({
-                contacts: (contact_review_gate_result as unknown as Record<string, unknown>)["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"],
             }),
         );
 
@@ -238,7 +238,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
             async () => hubspotCreateList({
                 campaign_name: pipelineInput["drug_brand"],
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             }),
         );
 
@@ -247,7 +247,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_dnc",
             { timeout: "10 minutes" },
             async () => exclusionCheckDnc({
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             }),
         );
 
@@ -256,7 +256,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_recent",
             { timeout: "10 minutes" },
             async () => exclusionCheckRecent({
-                contacts: (exclusion_check_dnc_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_dnc_result["passed"],
             }),
         );
 
@@ -265,7 +265,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_sequence",
             { timeout: "10 minutes" },
             async () => exclusionCheckSequence({
-                contacts: (exclusion_check_recent_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_recent_result["passed"],
             }),
         );
 
@@ -275,7 +275,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // Cloudflare caches step results by name).
         const personalize_email_result = await Promise.all(
             fanOutList(
-                (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
+                exclusion_check_sequence_result["passed"],
                 "personalize_email",
                 "exclusion_check_sequence.output.passed",
             ).map((_item, _index) =>
@@ -303,9 +303,9 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             { timeout: "10 minutes" },
             async () => preEnrollmentReport({
                 campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
-                exclusions: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["excluded"],
-                template_ids: (create_sales_template_result as unknown as Record<string, unknown>)["template_ids"],
+                passed_contacts: exclusion_check_sequence_result["passed"],
+                exclusions: exclusion_check_sequence_result["excluded"],
+                template_ids: create_sales_template_result["template_ids"],
             }),
         );
 

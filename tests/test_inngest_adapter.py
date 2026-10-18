@@ -402,16 +402,18 @@ def test_entry_nodes_receive_pipeline_input(pipeline_src: str) -> None:
 
 def test_downstream_nodes_receive_upstream_results(pipeline_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
-    rec = "as unknown as Record<string, unknown>"
+    # Indexed directly, never cast: tsc then checks the IR field name
+    # against the implementation's declared type (see ref_to_ts_expr).
+    assert "_result as " not in pipeline_src
     # HITL gate resume payload → downstream step payload.
-    assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in pipeline_src
+    assert 'contacts: contact_review_gate_result["approved_contacts"],' in pipeline_src
     # Node output fields chain through the exclusion checks.
-    assert f'contacts: (hubspot_upsert_result {rec})["upserted"],' in pipeline_src
-    assert f'contacts: (exclusion_check_dnc_result {rec})["passed"],' in pipeline_src
+    assert 'contacts: hubspot_upsert_result["upserted"],' in pipeline_src
+    assert 'contacts: exclusion_check_dnc_result["passed"],' in pipeline_src
     # Pipeline input field selection.
     assert 'target_quota: pipelineInput["target_quota"],' in pipeline_src
     # Fan-in on the report node.
-    assert f'template_ids: (create_sales_template_result {rec})["template_ids"],' in pipeline_src
+    assert 'template_ids: create_sales_template_result["template_ids"],' in pipeline_src
 
 
 def test_exit_nodes_shape_the_return(pipeline_src: str, bdr_pipeline: Pipeline) -> None:

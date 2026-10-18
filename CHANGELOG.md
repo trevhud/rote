@@ -279,13 +279,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `tsc` with TS2352 as soon as its implementation returned
   `Promise<string>`. Field access (`foo.output.f`) had the same hole for
   an `interface` result, and a `fan_out` exit failed even against the
-  stubs. Exit results are now returned uncast and field access goes
-  through `unknown`, from one shared helper. It compiled before only
-  because stubs return `Promise<never>`, and `rote run` passed because
-  casts are erased at runtime. A new slow suite
+  stubs. Exit results are now returned uncast and field access indexes
+  the result directly, from shared helpers. With no cast, tsc also checks
+  each IR field reference against the implementation's declared type, so
+  a renamed field is a compile error instead of `undefined` at run time.
+  It compiled before only because stubs return `Promise<never>`, and
+  `rote run` passed because casts are erased at runtime. A new slow suite
   (`tests/test_ts_typed_impls_e2e.py`) replaces the stubs with typed
   implementations of every output shape and runs `tsc` on all three
-  runtimes.
+  runtimes, plus a drift case that must fail.
 - Python runtime emission keeps input and output signature definitions in
   separate namespaces. Schemas may reuse a `$defs` name with different
   definitions; generated model names remain unique without changing the

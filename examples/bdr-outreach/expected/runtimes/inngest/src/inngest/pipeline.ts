@@ -131,28 +131,28 @@ export const runPipeline = inngest.createFunction(
         // IR timeout 60s: Inngest v4 has no per-step timeout —
         // enforce inside the implementation (AbortSignal.timeout) if needed.
         const hubspot_upsert_result = await step.run("hubspot_upsert", async () => hubspotUpsert({
-                contacts: (contact_review_gate_result as unknown as Record<string, unknown>)["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"],
             }));
 
         // ─── Wave 5 ───
         const hubspot_create_list_result = await step.run("hubspot_create_list", async () => hubspotCreateList({
                 campaign_name: pipelineInput["drug_brand"],
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             }));
 
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await step.run("exclusion_check_dnc", async () => exclusionCheckDnc({
-                contacts: (hubspot_upsert_result as unknown as Record<string, unknown>)["upserted"],
+                contacts: hubspot_upsert_result["upserted"],
             }));
 
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await step.run("exclusion_check_recent", async () => exclusionCheckRecent({
-                contacts: (exclusion_check_dnc_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_dnc_result["passed"],
             }));
 
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await step.run("exclusion_check_sequence", async () => exclusionCheckSequence({
-                contacts: (exclusion_check_recent_result as unknown as Record<string, unknown>)["passed"],
+                contacts: exclusion_check_recent_result["passed"],
             }));
 
         // ─── Wave 9 ───
@@ -161,7 +161,7 @@ export const runPipeline = inngest.createFunction(
         // unique within the run).
         const personalize_email_result = await Promise.all(
             fanOutList(
-                (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
+                exclusion_check_sequence_result["passed"],
                 "personalize_email",
                 "exclusion_check_sequence.output.passed",
             ).map((_item, _index) =>
@@ -186,9 +186,9 @@ export const runPipeline = inngest.createFunction(
         // ─── Wave 11 ───
         const pre_enrollment_report_result = await step.run("pre_enrollment_report", async () => preEnrollmentReport({
                 campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["passed"],
-                exclusions: (exclusion_check_sequence_result as unknown as Record<string, unknown>)["excluded"],
-                template_ids: (create_sales_template_result as unknown as Record<string, unknown>)["template_ids"],
+                passed_contacts: exclusion_check_sequence_result["passed"],
+                exclusions: exclusion_check_sequence_result["excluded"],
+                template_ids: create_sales_template_result["template_ids"],
             }));
 
         // ─── Wave 12 ───

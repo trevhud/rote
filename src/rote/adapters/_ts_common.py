@@ -548,17 +548,17 @@ def ref_to_ts_expr(ref: str) -> str:
     | ``pipeline.input``         | ``pipelineInput``                                   |
     | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
     | ``foo.output``             | ``foo_result``                                      |
-    | ``foo.output.f``           | ``(foo_result as unknown as Record<string, unknown>)["f"]`` |
+    | ``foo.output.f``           | ``foo_result["f"]``                                 |
 
-    Node-output field access goes through ``unknown`` on its way to the
-    Record: a node's result is typed by whatever its implementation
-    declares, and a single ``as Record<string, unknown>`` only compiles
-    when that type overlaps a Record. ``never`` (the stub) and an
-    anonymous object type do; an ``interface`` (no implicit index
-    signature), an array, or a scalar fails TS2352 the moment a user
-    fills the stub in. Going through ``unknown`` is valid from every
-    type, and the value lands in a payload whose stub contract is
-    ``unknown`` anyway.
+    Node-output field access indexes the result directly, with no cast.
+    Indexing ``never`` (the stub) is legal, so the scaffold compiles; once
+    a user types the implementation, tsc checks the IR's field name
+    against their type. That check is the point: a cast (through
+    ``unknown`` or not) would let ``summarize.output.total`` compile
+    against an interface that names the field ``sum`` and hand the next
+    node ``undefined`` at run time. A single ``as Record<string,
+    unknown>`` was worse still: it fails TS2352 on any ``interface``
+    result (no implicit index signature).
     """
     parsed = parse_input_ref(ref)
     if parsed.node_id is None:
@@ -568,7 +568,7 @@ def ref_to_ts_expr(ref: str) -> str:
     base = f"{parsed.node_id}_result"
     if parsed.field is None:
         return base
-    return f"({base} as unknown as Record<string, unknown>)[{json.dumps(parsed.field)}]"
+    return f"{base}[{json.dumps(parsed.field)}]"
 
 
 def exit_return_ts_lines(pipeline: Pipeline) -> list[str]:
