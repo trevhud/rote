@@ -174,13 +174,22 @@ class PricingCatalog:
 # ───────── Fetching ─────────
 
 
-def _get_json(url: str, timeout: float) -> Any:
+def get_text(url: str, timeout: float) -> str:
+    """GET ``url`` as text, raising :class:`PricingError` on any failure."""
     request = urllib.request.Request(url, headers={"User-Agent": "rote-eval"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return json.loads(response.read().decode("utf-8"))
+            return str(response.read().decode("utf-8"))
     except Exception as e:
         raise PricingError(f"fetch of {url} failed: {e}") from e
+
+
+def _get_json(url: str, timeout: float) -> Any:
+    text = get_text(url, timeout)
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        raise PricingError(f"{url} did not return JSON: {e}") from e
 
 
 def _parse_release_date(raw: object) -> date | None:
@@ -441,8 +450,13 @@ def build_catalog(
 # ───────── Disk cache + entry point ─────────
 
 
+def default_cache_dir() -> Path:
+    """Where every live price source caches its last fetch."""
+    return Path.home() / ".cache" / "rote"
+
+
 def _default_cache_path() -> Path:
-    return Path.home() / ".cache" / "rote" / "pricing.json"
+    return default_cache_dir() / "pricing.json"
 
 
 def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog | None:
