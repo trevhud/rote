@@ -28,6 +28,43 @@ before relying on a detail.
 | Compile-time checks | Pydantic IR validation, deterministic emission, emitted code tested per runtime in CI | Ruff, ty, semantic and taint checks, and a whole-recipe dry run with stub agents | A V8 parse gate plus three review agents | Schema contradictions caught before an agent starts | Your CI |
 | License | Apache-2.0 | MIT | MIT | Part of Claude Code | n/a |
 
+## Measured: compiling the same skill
+
+On 2026-10-18 we compiled
+[`examples/ops-report/skill`](../examples/ops-report/skill/SKILL.md)
+with rote. The skill pulls three Google Drive files and one Gmail label
+over MCP, asks a duty manager for three numbers, then applies fixed
+thresholds and renders a report. Both tools were meant to run with
+`claude-sonnet-4-6` through the `claude` CLI.
+
+The calcifier side was not run. The compile command was stopped by a
+local permission check before it started, so this table has no
+calcifier numbers. It will be filled in from a real run, not estimated.
+
+| | rote 0.14.0.dev0 | calcifier 0.1.1 |
+| --- | --- | --- |
+| Command | `rote compile examples/ops-report/skill --local --runtime dbos --agent claude --yes` | `calcifier calcify SKILL.md --agent-config agents.json` (both roles on the `claude` builtin, Sonnet 4.6) |
+| Compile wall time | 747 s | not run |
+| Compile cost | $2.43 (Claude CLI estimate, 37 turns: 51k output, 133k cache-write, 2.89M cache-read tokens) | not run |
+| Output | 359-line `pipeline.yaml` with 11 nodes (4 MCP `external_call`, 6 `pure_function`, 1 `hitl_gate`, 0 `llm_judge`), a 538-line DBOS `main.py`, 5 extracted modules | not run |
+| Runs as compiled | No. The 6 functions the workflow calls (4 parsers, 1 validator, 1 renderer) are `NotImplementedError` stubs with typed docstrings. The first run stopped earlier, on the missing MCP endpoints: `no endpoint for MCP server 'gmail' ... set ROTE_MCP_GMAIL_URL` | not run |
+| Durability | DBOS workflow with SQLite system database. Steps are checkpointed and the run survives a process restart | not run |
+| Human input | `DBOS.recv` on topic `duty_manager_data_submitted`, 4 h timeout from the IR, survives restarts | not run |
+| Model calls per run afterwards | 0 (no `llm_judge` or `agent_loop` nodes). `rote eval` estimates the skill as an agent at $0.20 to $0.29 per run on the current mid-tier Sonnet. That number is an estimate, not a measurement | not run |
+
+Two results here count against rote:
+
+- **Compile cost.** $2.43 for a 50-line skill is about three times
+  what the README quotes for the much larger BDR skill. Ten of the 37
+  turns went to small edits of `compile-report.md`, each of which
+  re-reads the full context.
+- **Nothing runs until you write code.** The compiler classified every
+  step correctly but did not implement the parsing, threshold, and
+  rendering functions, even though the skill states each rule exactly.
+  Calcifier's design accepts a recipe only after a whole-recipe dry run
+  with stub agents, so a calcifier output that passes compilation does
+  execute.
+
 ## rote
 
 rote reads a skill and classifies every step into one of five node
