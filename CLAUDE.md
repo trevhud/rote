@@ -685,11 +685,23 @@ TS2352 at the data-flow reference sites.
 
 **The fix:** emitted stubs declare `Promise<never>` (honest for an
 always-throwing stub; `never` satisfies any constraint and casts to
-anything), and the workflow emits node-output field access as
-`(<id>_result as Record<string, unknown>)["field"]` so it compiles
-against both the stubs and whatever concrete type the user fills in
-later. Verified by `tests/test_cloudflare_e2e.py::test_emitted_typescript_compiles`
-— run it after touching the Cloudflare emitter's typing story.
+anything).
+
+**The trap that fix sets:** because `never` casts to anything, a
+reference-site cast that is wrong for real types compiles against the
+stubs and fails only once the user types an implementation. All three TS
+runtimes shipped `"<exit>": <exit>_result as Record<string, unknown>`,
+which is TS2352 the moment the node returns `Promise<string>` (found by
+an eval on ops-report; `rote run` passed because casts are erased). A
+single `as Record<string, unknown>` only compiles from a type that
+overlaps a Record: an anonymous object type does, an `interface` (no
+implicit index signature), an array, or a scalar does not. So exit
+results are returned uncast (`exit_return_ts_lines`) and field access is
+`(<id>_result as unknown as Record<string, unknown>)["field"]`
+(`ref_to_ts_expr`), both in `_ts_common.py`. Checking the stubs compile
+proves nothing here; `tests/test_ts_typed_impls_e2e.py` replaces them
+with typed implementations of every output shape and runs `tsc` on all
+three runtimes. Run it after touching any TS emitter's typing story.
 
 ### A parallel wave is not automatically parallel in the emitted code
 

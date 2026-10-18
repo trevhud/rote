@@ -402,7 +402,7 @@ def test_entry_nodes_receive_pipeline_input(pipeline_src: str) -> None:
 
 def test_downstream_nodes_receive_upstream_results(pipeline_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
-    rec = "as Record<string, unknown>"
+    rec = "as unknown as Record<string, unknown>"
     # HITL gate resume payload → downstream step payload.
     assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in pipeline_src
     # Node output fields chain through the exclusion checks.
@@ -416,7 +416,10 @@ def test_downstream_nodes_receive_upstream_results(pipeline_src: str) -> None:
 
 def test_exit_nodes_shape_the_return(pipeline_src: str, bdr_pipeline: Pipeline) -> None:
     for exit_id in bdr_pipeline.exit_nodes:
-        assert f'"{exit_id}": {exit_id}_result as Record<string, unknown>,' in pipeline_src
+        # Returned as-is: a cast breaks the moment an implementation
+        # returns a scalar (see exit_return_ts_lines).
+        assert f'"{exit_id}": {exit_id}_result,' in pipeline_src
+        assert f"{exit_id}_result as " not in pipeline_src
 
 
 def test_node_without_inputs_gets_empty_payload() -> None:

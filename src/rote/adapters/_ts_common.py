@@ -12,8 +12,9 @@ What lives here:
   dispatching to ``emit_signature_anthropic`` / ``emit_signature_openai``)
   plus the runtime prompt-interpolation helper they embed
   (``_INTERPOLATE_HELPER``),
-* data-flow rendering (``ref_to_ts_expr`` / ``payload_ts_literal``) and
-  the workflow-file import block (``module_imports``),
+* data-flow rendering (``ref_to_ts_expr`` / ``payload_ts_literal`` /
+  ``exit_return_ts_lines``) and the workflow-file import block
+  (``module_imports``),
 * the Node-process helpers shared by the non-Workers TS runtimes
   (``judge_env_arg``, ``REQUIRE_ENV_HELPER``, ``emit_node_tsconfig``).
 
@@ -547,13 +548,17 @@ def ref_to_ts_expr(ref: str) -> str:
     | ``pipeline.input``         | ``pipelineInput``                                   |
     | ``pipeline.input.f``       | ``pipelineInput["f"]``                              |
     | ``foo.output``             | ``foo_result``                                      |
-    | ``foo.output.f``           | ``(foo_result as Record<string, unknown>)["f"]``    |
+    | ``foo.output.f``           | ``(foo_result as unknown as Record<string, unknown>)["f"]`` |
 
-    Node-output field access goes through a Record cast: on Cloudflare,
-    ``step.do``'s ``Rpc.Serializable`` constraint widens inferred result
-    types so direct indexing doesn't compile, and on every runtime the
-    cast stays valid for whatever concrete return type the user gives a
-    stub later.
+    Node-output field access goes through ``unknown`` on its way to the
+    Record: a node's result is typed by whatever its implementation
+    declares, and a single ``as Record<string, unknown>`` only compiles
+    when that type overlaps a Record. ``never`` (the stub) and an
+    anonymous object type do; an ``interface`` (no implicit index
+    signature), an array, or a scalar fails TS2352 the moment a user
+    fills the stub in. Going through ``unknown`` is valid from every
+    type, and the value lands in a payload whose stub contract is
+    ``unknown`` anyway.
     """
     parsed = parse_input_ref(ref)
     if parsed.node_id is None:
@@ -563,7 +568,26 @@ def ref_to_ts_expr(ref: str) -> str:
     base = f"{parsed.node_id}_result"
     if parsed.field is None:
         return base
-    return f"({base} as Record<string, unknown>)[{json.dumps(parsed.field)}]"
+    return f"({base} as unknown as Record<string, unknown>)[{json.dumps(parsed.field)}]"
+
+
+def exit_return_ts_lines(pipeline: Pipeline) -> list[str]:
+    """Render the workflow's closing ``return { <exit>: <exit>_result }``.
+
+    Exit results are returned as-is, never cast. Every TS runtime's
+    workflow return accepts them without one (Cloudflare's ``run`` is
+    ``Promise<unknown>``, DBOS-TS declares ``Promise<Record<string,
+    unknown>>``, Inngest infers), and a cast is exactly what breaks: an
+    ``as Record<string, unknown>`` on a node whose implementation
+    returns ``Promise<string>`` fails TS2352. It compiled against the
+    ``Promise<never>`` stubs, which is why nothing caught it before a
+    user filled one in.
+    """
+    lines = ["        return {"]
+    for exit_id in pipeline.exit_nodes:
+        lines.append(f"            {json.dumps(exit_id)}: {exit_id}_result,")
+    lines.append("        };")
+    return lines
 
 
 def payload_ts_literal(node: Node, indent: str) -> str:
@@ -2644,10 +2668,6 @@ def emit_agent_loop_module(
         call = f"{sub_fn}(args)" if extra is None else f"{sub_fn}(args, {extra})"
         local_tools.extend(_local_tool_literal(sub, call, "        "))
 
-    # The return type is an anonymous object type, never an interface:
-    # TypeScript grants implicit index signatures to the former only, and
-    # the workflow's data-flow references cast node results to
-    # Record<string, unknown> (see ref_to_ts_expr).
     body = [
         "",
         f"export async function {fn_name}(",

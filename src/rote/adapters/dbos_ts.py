@@ -112,6 +112,7 @@ from rote.adapters._ts_common import (
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    exit_return_ts_lines,
     fan_out_ts_binding,
     judge_env_arg,
     llm_clients,
@@ -524,12 +525,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
         available.update(n.id for n in wave)
 
     lines.append("")
-    lines.append("        return {")
-    for exit_id in pipeline.exit_nodes:
-        lines.append(
-            f"            {json.dumps(exit_id)}: {exit_id}_result as Record<string, unknown>,"
-        )
-    lines.append("        };")
+    lines.extend(exit_return_ts_lines(pipeline))
     return "\n".join(lines), uses_unwrap
 
 

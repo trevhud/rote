@@ -201,7 +201,10 @@ def test_loop_body_nodes_excluded_from_workflow(main_src: str) -> None:
 
 def test_workflow_returns_exit_nodes(main_src: str, bdr_pipeline: Pipeline) -> None:
     for exit_id in bdr_pipeline.exit_nodes:
-        assert f'"{exit_id}": {exit_id}_result as Record<string, unknown>,' in main_src
+        # Returned as-is: a cast breaks the moment an implementation
+        # returns a scalar (see exit_return_ts_lines).
+        assert f'"{exit_id}": {exit_id}_result,' in main_src
+        assert f"{exit_id}_result as " not in main_src
 
 
 def test_mandatory_nodes_marked_unconditional(main_src: str) -> None:
@@ -231,7 +234,7 @@ def test_entry_nodes_receive_pipeline_input(main_src: str) -> None:
 
 def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
-    rec = "as Record<string, unknown>"
+    rec = "as unknown as Record<string, unknown>"
     # HITL gate resume payload (DBOS.recv result) → downstream step payload.
     assert f'contacts: (contact_review_gate_result {rec})["approved_contacts"],' in main_src
     # Node output field chains through the exclusion checks.
