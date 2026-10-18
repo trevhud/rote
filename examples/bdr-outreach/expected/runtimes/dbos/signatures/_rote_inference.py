@@ -835,6 +835,25 @@ def _cli_turns(envelope: Mapping[str, Any]) -> int | None:
     return None if turns is None else int(turns)
 
 
+def _text_result(fn: Any) -> Any:
+    """``fn`` as a tool whose result reaches the model as JSON text.
+
+    Pipeline steps return dicts. The SDK's tool runner does not serialize
+    a dict result: it iterates it, so the model saw only the keys and none
+    of the values. The TS twin JSON-stringifies non-string results the
+    same way. ``functools.wraps`` keeps the step's signature and docstring,
+    which is what the tool's schema and description are derived from.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def tool(*args: Any, **kwargs: Any) -> str:
+        result = fn(*args, **kwargs)
+        return result if isinstance(result, str) else json.dumps(result, default=str)
+
+    return tool
+
+
 def _run_agent_via_sdk(
     *,
     node_id: str,
@@ -869,7 +888,7 @@ def _run_agent_via_sdk(
     # the emitted step's own signature, so the contract the agent sees and
     # the contract the step enforces are the same object — as rich as the
     # IR's input_schema made that step, no richer and no staler.
-    bound = [beta_tool(name=name)(fn) for name, fn in local_tools.items()]
+    bound = [beta_tool(name=name)(_text_result(fn)) for name, fn in local_tools.items()]
     servers, _allowed = _mcp_config_for(tools, tool_servers)
     mcp_servers = [
         {"type": "url", "url": config["url"], "name": name} for name, config in servers.items()

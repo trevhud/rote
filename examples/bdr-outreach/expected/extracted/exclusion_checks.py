@@ -64,10 +64,14 @@ async def check_do_not_contact(
 
 async def check_recently_emailed(
     contacts: list[HubSpotContact],
+    *,
+    days_back: int,
+    direction: str,
 ) -> tuple[list[HubSpotContact], list[ExclusionRecord]]:
     """Filter out contacts emailed in the last 30 days (outbound).
 
-    Uses the ``RECENT_EMAIL_DAYS`` constant — same value as the source
+    ``days_back`` and ``direction`` are the node's constants, passed by
+    the step. ``RECENT_EMAIL_DAYS`` holds the same value as the source
     skill's prose, but enforced in code so it cannot drift.
 
     Returns:

@@ -304,44 +304,101 @@ def test_path_beyond_the_described_schema_is_accepted() -> None:
 # ───────── Regression: the canonical snapshot ─────────
 
 
-def test_committed_bdr_snapshot_has_the_two_known_contract_breaks() -> None:
-    """The newest committed BDR compile carries two real breaks, both of
-    which crash on the first run:
+def test_committed_bdr_snapshot_has_its_known_contract_breaks() -> None:
+    """The newest committed BDR compile carries real breaks, all of which
+    crash on the first run:
 
     * `hubspot_create_list` binds `contacts`, but `create_campaign_list`
       takes only `campaign_name`.
     * `check_do_not_contact` requires a `dnc_list_id` that no node
-      produces — its own docstring says "the workflow obtains it during
+      produces: its own docstring says "the workflow obtains it during
       setup", and the IR has no such step.
+    * Six impls hard-code their node's constants instead of accepting them,
+      which every step now passes as keyword arguments.
 
     Pinned deliberately. When the rubric is fixed and the snapshot
-    recompiled, this test should fail and be updated to assert zero —
+    recompiled, this test should fail and be updated to assert zero:
     that is the signal the fix landed.
     """
     run = REPO_ROOT / "examples" / "bdr-outreach" / "runs" / "2026-07-18-mcp-bindings"
     from rote.ir import load_pipeline
 
     findings = check_contracts(load_pipeline(run / "pipeline.yaml"), run)
-    by_node = {f.node_id: f.kind for f in findings}
-    assert by_node == {
-        "hubspot_create_list": "unexpected_argument",
-        "exclusion_check_dnc": "missing_argument",
+    assert {(f.node_id, f.kind) for f in findings} == {
+        ("conf_enrich_batch", "constant_not_accepted"),
+        ("enrich_contact_batch", "constant_not_accepted"),
+        ("exclusion_check_dnc", "constant_not_accepted"),
+        ("exclusion_check_dnc", "missing_argument"),
+        ("exclusion_check_recent", "constant_not_accepted"),
+        ("hubspot_add_to_list", "constant_not_accepted"),
+        ("hubspot_create_list", "unexpected_argument"),
+        ("hubspot_upsert", "constant_not_accepted"),
     }
 
 
-def test_healthy_snapshots_report_nothing() -> None:
-    """Three real compiles with no contract breaks. If a change here starts
-    reporting on these, it is producing false positives."""
+def test_snapshots_that_predate_constant_arguments_report_only_that() -> None:
+    """Three real compiles that were otherwise clean. They hard-code their
+    constants, written before steps passed constants as arguments. Any
+    other finding here would be a false positive."""
     from rote.ir import load_pipeline
 
-    clean = [
-        REPO_ROOT / "examples" / "deal-monitor" / "runs" / "2026-07-18-rubric-v2",
-        REPO_ROOT / "examples" / "ops-report" / "runs" / "2026-07-18-rubric-v2",
-        REPO_ROOT / "examples" / "invoice-push" / "runs" / "2026-07-18-first-agent-run",
-    ]
-    for run in clean:
+    expected = {
+        "deal-monitor/runs/2026-07-18-rubric-v2": {
+            "filter_and_extract_opps",
+            "match_opps_to_threads",
+            "search_gmail_fixed",
+        },
+        "ops-report/runs/2026-07-18-rubric-v2": {
+            "fetch_dock_activity_emails",
+            "fetch_dock_pending_log",
+            "fetch_dwell_tickets",
+            "fetch_shipment_containers",
+            "parse_dwell_tickets",
+            "parse_shipment_containers",
+            "validate_manager_data",
+        },
+        "invoice-push/runs/2026-07-18-first-agent-run": {
+            "calculate_date_window",
+            "check_row_eligibility",
+            "push_invoice",
+            "save_report_to_drive",
+            "set_page_size",
+        },
+    }
+    for rel, nodes in expected.items():
+        run = REPO_ROOT / "examples" / rel
         findings = check_contracts(load_pipeline(run / "pipeline.yaml"), run)
-        assert findings == [], f"{run.name}: {[f.message for f in findings]}"
+        assert {f.kind for f in findings} == {"constant_not_accepted"}, rel
+        assert {f.node_id for f in findings} == nodes, rel
+
+
+def test_an_impl_that_accepts_its_constants_reports_nothing(tmp_path: Path) -> None:
+    from rote.ir import Pipeline
+
+    (tmp_path / "extracted").mkdir()
+    (tmp_path / "extracted" / "drive.py").write_text(
+        "def fetch(region, *, file_id): ...\n", encoding="utf-8"
+    )
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "ok",
+            "input": {"type": "In", "required": ["region"], "optional": []},
+            "nodes": [
+                {
+                    "id": "fetch_sheet",
+                    "kind": "external_call",
+                    "description": "fetch",
+                    "impl": "extracted/drive.py:fetch",
+                    "constants": {"file_id": "F-1"},
+                    "inputs": {"region": "pipeline.input.region"},
+                }
+            ],
+            "edges": [],
+            "entry_nodes": ["fetch_sheet"],
+            "exit_nodes": ["fetch_sheet"],
+        }
+    )
+    assert check_contracts(pipeline, tmp_path) == []
 
 
 # ───────── Differential: the checker vs the interpreter ─────────

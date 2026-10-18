@@ -41,6 +41,7 @@ from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
     _to_camel_case,
     _to_pascal_case,
+    mcp_tool_arguments,
     override_env_vars,
     safe_block_comment_line,
     temperature_env_var,
@@ -1462,6 +1463,19 @@ def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
     return [n for n in pipeline.nodes if n.mcp is not None]
 
 
+def mcp_args_ts_line(node: Node) -> str:
+    """``const args = ...`` for an MCP-bound step (see ``mcp_tool_arguments``)."""
+    sources = mcp_tool_arguments(node)
+    if sources is None:
+        return "    const args = payload; // tool arg names match the threaded payload keys"
+    items = ", ".join(
+        f"{json.dumps(tool_arg)}: "
+        + (json.dumps(value) if origin == "constant" else f"payload[{json.dumps(value)}]")
+        for tool_arg, origin, value in sources
+    )
+    return f"    const args = {{ {items} }};"
+
+
 def emit_mcp_call_module(node: Node, *, generated_by: str) -> str:
     """Emit ``src/extracted/<id>.ts`` as a WORKING MCP-backed call.
 
@@ -1475,14 +1489,7 @@ def emit_mcp_call_module(node: Node, *, generated_by: str) -> str:
     fn_name = _to_camel_case(node.id)
     desc_first = safe_block_comment_line(node.description, fallback=node.id)
     url_literal = json.dumps(binding.url) if binding.url is not None else "null"
-    if binding.args:
-        arg_items = ", ".join(
-            f"{json.dumps(tool_arg)}: payload[{json.dumps(payload_key)}]"
-            for tool_arg, payload_key in binding.args.items()
-        )
-        args_line = f"    const args = {{ {arg_items} }};"
-    else:
-        args_line = "    const args = payload; // tool arg names match the threaded payload keys"
+    args_line = mcp_args_ts_line(node)
     mandatory_lines = (
         [
             " *",
@@ -1940,14 +1947,7 @@ def emit_workers_mcp_call_module(
     fn_name = _to_camel_case(node.id)
     desc_first = safe_block_comment_line(node.description, fallback=node.id)
     url_literal = json.dumps(binding.url) if binding.url is not None else "null"
-    if binding.args:
-        arg_items = ", ".join(
-            f"{json.dumps(tool_arg)}: payload[{json.dumps(payload_key)}]"
-            for tool_arg, payload_key in binding.args.items()
-        )
-        args_line = f"    const args = {{ {arg_items} }};"
-    else:
-        args_line = "    const args = payload; // tool arg names match the threaded payload keys"
+    args_line = mcp_args_ts_line(node)
     mandatory_lines = (
         [
             " *",

@@ -870,7 +870,25 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
-    written = adapter.emit(pipeline, runtime_dir)
+    try:
+        written = adapter.emit(pipeline, runtime_dir)
+    except ValueError as e:
+        # The compile already paid for its pipeline.yaml and extracted/
+        # modules; they stay in compiled/. (The constants check in
+        # particular refuses before writing any file, so that refusal leaves
+        # no half-new app in the runtime dir.)
+        if progress_sink is not None:
+            progress_sink.close()
+        print(f"rote compile: emitting the {args.runtime} runtime failed: {e}", file=sys.stderr)
+        print(
+            f"rote compile: the compiled pipeline is kept in {compiled_dir}. Fix the file the "
+            f"error names (an agent-written module under {compiled_dir / 'extracted'}, or "
+            f"your own edit under {runtime_dir / 'extracted'}), then run "
+            f"`rote emit {compiled_dir / 'pipeline.yaml'} --runtime {args.runtime} "
+            f"--out {runtime_dir}`",
+            file=sys.stderr,
+        )
+        return 1
 
     from rote.app_registry import record_app
 

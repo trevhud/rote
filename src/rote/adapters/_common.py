@@ -17,6 +17,7 @@ import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
@@ -110,6 +111,28 @@ def judge_override_readme(pipeline: Pipeline) -> str:
 
 
 # ───────── Prose → safe code comment/docstring ─────────
+
+
+def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
+    """How an MCP-bound step builds its tool arguments, on every runtime.
+
+    ``None`` means the threaded payload is the arguments as-is: the node's
+    inputs, never its constants, because a tool rejects arguments it does
+    not declare (FastMCP raises "Unexpected keyword argument"). With
+    ``mcp.args`` each entry is ``(tool_arg, "payload", key)`` or
+    ``(tool_arg, "constant", value)``: a key that names one of the node's
+    constants forwards that constant, which is the only way a constant
+    reaches a tool. Language-neutral on purpose, so every runtime sends a
+    tool the identical arguments.
+    """
+    assert node.mcp is not None
+    if not node.mcp.args:
+        return None
+    constants = node.constants or {}
+    return [
+        (tool_arg, "constant", constants[key]) if key in constants else (tool_arg, "payload", key)
+        for tool_arg, key in node.mcp.args.items()
+    ]
 
 
 def safe_docstring_line(text: str, fallback: str = "") -> str:
@@ -225,6 +248,22 @@ class EmitWriter:
     @staticmethod
     def _hash(data: bytes) -> str:
         return hashlib.sha256(data).hexdigest()
+
+    def landed_content(self, *parts: str, content: str) -> str:
+        """What ``write(*parts, content=content)`` would leave at the target.
+
+        The fresh ``content``, unless the guard would preserve a file the
+        user edited, in which case that file's text. Writes nothing, so a
+        check can refuse an emit before any file changes.
+        """
+        target = resolve_within(self.output_dir, *parts)
+        if not target.exists():
+            return content
+        rel = target.relative_to(self._root).as_posix()
+        on_disk = target.read_bytes()
+        if self._hash(on_disk) in (self._hash(content.encode("utf-8")), self._previous.get(rel)):
+            return content
+        return on_disk.decode("utf-8")
 
     def write(self, *parts: str, content: str) -> Path:
         """Write ``content`` at ``output_dir/<parts...>`` under the hash guard.

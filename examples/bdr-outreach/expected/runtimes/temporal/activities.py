@@ -142,11 +142,12 @@ async def enrich_contact_batch(payload: dict) -> dict:
     Compiled from MCP tool call → deterministic API call. See
     ``extracted.zoominfo`` for implementation.
     """
-    # Constants from the IR (extracted from the source skill prose):
+    # Constants from the IR (extracted from the source skill prose),
+    # merged into the impl's keyword arguments below:
     #   batch_size = 10
     #   output_fields = ['firstName', 'lastName', 'jobTitle', 'email', 'phone', 'mobilePhone', 'contactAccuracyScore', 'companyName', 'externalUrls', 'employmentHistory', 'directPhoneDoNotCall', 'mobilePhoneDoNotCall', 'validDate']
     from extracted.zoominfo import enrich_batch
-    result = await _call_impl(enrich_batch, payload)
+    result = await _call_impl(enrich_batch, {**payload, "batch_size": 10, "output_fields": ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"]})
     return _serialize(result)
 
 @activity.defn(name="vet_contact")
@@ -169,10 +170,11 @@ async def hubspot_upsert(payload: dict) -> dict:
     Compiled from MCP tool call → deterministic API call. See
     ``extracted.hubspot`` for implementation.
     """
-    # Constants from the IR (extracted from the source skill prose):
+    # Constants from the IR (extracted from the source skill prose),
+    # merged into the impl's keyword arguments below:
     #   batch_size = 100
     from extracted.hubspot import batch_upsert_contacts
-    result = await _call_impl(batch_upsert_contacts, payload)
+    result = await _call_impl(batch_upsert_contacts, {**payload, "batch_size": 100})
     return _serialize(result)
 
 @activity.defn(name="hubspot_create_list")
@@ -182,10 +184,11 @@ async def hubspot_create_list(payload: dict) -> dict:
     Compiled from MCP tool call → deterministic API call. See
     ``extracted.hubspot`` for implementation.
     """
-    # Constants from the IR (extracted from the source skill prose):
+    # Constants from the IR (extracted from the source skill prose),
+    # merged into the impl's keyword arguments below:
     #   add_batch_size = 250
     from extracted.hubspot import create_campaign_list
-    result = await _call_impl(create_campaign_list, payload)
+    result = await _call_impl(create_campaign_list, {**payload, "add_batch_size": 250})
     return _serialize(result)
 
 @activity.defn(name="exclusion_check_dnc")
@@ -210,11 +213,12 @@ async def exclusion_check_recent(payload: dict) -> dict:
     """
     # MANDATORY: this node was marked mandatory in the source
     # skill. The workflow always calls it; do not make it conditional.
-    # Constants from the IR (extracted from the source skill prose):
+    # Constants from the IR (extracted from the source skill prose),
+    # merged into the impl's keyword arguments below:
     #   days_back = 30
     #   direction = 'OUTBOUND'
     from extracted.exclusion_checks import check_recently_emailed
-    result = await _call_impl(check_recently_emailed, payload)
+    result = await _call_impl(check_recently_emailed, {**payload, "days_back": 30, "direction": "OUTBOUND"})
     return _serialize(result)
 
 @activity.defn(name="exclusion_check_sequence")

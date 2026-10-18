@@ -34,11 +34,12 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rote.ir import Node, NodeKind, Pipeline
+from rote.ir import CONSTANT_ARGUMENT_KINDS, Node, NodeKind, Pipeline
 
 #: ``{{ dotted.path }}`` — must stay in step with the ``_interpolate``
 #: helper emitted by ``_py_common`` / ``_ts_common``.
@@ -315,16 +316,92 @@ def _check_symbol(
             )
         ]
 
+    if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+        return []
+    constants = set(node.constants or {}) if node.kind in CONSTANT_ARGUMENT_KINDS else set()
+    # Every caller, loop-body tool calls included, gets the node's constants
+    # merged into its keyword arguments, so this holds even where the rest
+    # of the signature check does not apply.
+    findings: list[ContractFinding] = []
+    rejected = _rejected_constants(stmt, constants)
+    if rejected:
+        findings.append(
+            ContractFinding(
+                node_id=node.id,
+                kind="constant_not_accepted",
+                severity="error",
+                message=(
+                    f"{symbol}() does not accept the node's constant(s) "
+                    f"[{', '.join(sorted(rejected))}], which every call passes as keyword "
+                    f"arguments; the call raises TypeError"
+                ),
+                path=rel,
+            )
+        )
+
     # Signature checking only applies to a generated `**payload` call site.
     # Judges are instantiated and driven through forward(); loop-body
     # sub-nodes are called by hand-written loop code.
     if not check_signature or node.kind is NodeKind.LLM_JUDGE or node.id in loop_body_ids:
-        return []
-    if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
-        return []
+        return findings
 
-    payload_keys = set(node.inputs or {})
-    return [
+    # Rejected constants are reported above, not again as unexpected inputs.
+    payload_keys = set(node.inputs or {}) | (constants - rejected)
+    return findings + [
         ContractFinding(node_id=node.id, kind=kind, severity="error", message=message, path=rel)
         for kind, message in _check_call_signature(stmt, payload_keys)
     ]
+
+
+def _rejected_constants(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, constants: set[str]
+) -> set[str]:
+    """Constants ``fn`` cannot receive by keyword (none, if it takes ``**kwargs``)."""
+    if fn.args.kwarg is not None:
+        return set()
+    accepted = {p.arg for p in fn.args.args} | {p.arg for p in fn.args.kwonlyargs}
+    return constants - accepted
+
+
+def constants_not_accepted(
+    pipeline: Pipeline,
+    sources: Mapping[str, str],
+    origins: Mapping[str, Path] | None = None,
+) -> list[str]:
+    """``"node X: <file> f() takes no a, b"`` for every impl that would reject its constants.
+
+    ``sources`` maps an ``extracted/`` module name to the text an emitted
+    Python runtime will import; ``origins`` maps it to the file that text
+    came from, so the message names the file to fix. Every step merges its node's constants into
+    the impl's keyword arguments, loop_body sub-nodes included, so this
+    holds for every caller.
+    """
+    parsed: dict[str, ast.Module | None] = {}
+    problems: list[str] = []
+    for node in pipeline.nodes:
+        if node.kind not in CONSTANT_ARGUMENT_KINDS or not node.constants or node.impl is None:
+            continue
+        rel, symbol = _split_ref(node.impl)
+        module = Path(rel).stem
+        if module not in sources:
+            continue
+        if module not in parsed:
+            try:
+                parsed[module] = ast.parse(sources[module])
+            except SyntaxError:
+                parsed[module] = None  # check_contracts reports the syntax error
+        tree = parsed[module]
+        stmt = _toplevel_defs(tree).get(symbol) if tree is not None else None
+        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        rejected = _rejected_constants(stmt, set(node.constants))
+        if rejected:
+            where = (
+                str(origins[module])
+                if origins and module in origins
+                else (f"extracted/{module}.py")
+            )
+            problems.append(
+                f"node {node.id!r}: {where} {symbol}() takes no {', '.join(sorted(rejected))}"
+            )
+    return problems

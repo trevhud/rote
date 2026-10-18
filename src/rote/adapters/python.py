@@ -80,7 +80,9 @@ from rote.adapters._py_common import (
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
+    impl_kwargs_expr,
     needs_call_impl,
+    require_constant_parameters,
     serialize_helper,
     write_extracted_package,
     write_signature_package,
@@ -229,7 +231,7 @@ def _emit_node_pure_or_external(node: Node) -> str:
         f"{_timeout_comment(node)}"
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
-        f"{_emit_return(node, f'_serialize(_call_impl({func_name}, payload))')}"
+        f"{_emit_return(node, f'_serialize(_call_impl({func_name}, {impl_kwargs_expr(node)}))')}"
     )
 
 
@@ -643,6 +645,11 @@ class PythonAdapter:
         refuse_mcp_only_nodes(pipeline, "python")
 
         writer = EmitWriter(output_dir)
+        require_constant_parameters(
+            pipeline,
+            writer,
+            self.config.extracted_source_dir,
+        )
 
         written: dict[str, Path] = {}
 

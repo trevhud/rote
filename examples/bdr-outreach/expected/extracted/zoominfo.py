@@ -52,11 +52,19 @@ OUTPUT_FIELDS: tuple[str, ...] = (
 )
 
 
-async def enrich_batch(contacts: list[RawContact]) -> list[EnrichedContact]:
+async def enrich_batch(
+    contacts: list[RawContact],
+    *,
+    batch_size: int,
+    output_fields: list[str],
+) -> list[EnrichedContact]:
     """Enrich up to 10 contacts in a single ZoomInfo API call.
 
     Args:
         contacts: A batch of 1–10 raw contacts to enrich.
+        batch_size: The node's ``batch_size`` constant, passed by the step.
+        output_fields: The node's ``output_fields`` constant, passed by the
+            step. The same list as ``OUTPUT_FIELDS``.
 
     Returns:
         EnrichedContact objects in the same order as the input. Contacts
@@ -68,9 +76,9 @@ async def enrich_batch(contacts: list[RawContact]) -> list[EnrichedContact]:
         NotImplementedError: stub for v0. Production calls
             ``POST https://api.zoominfo.com/enrich/contact``.
     """
-    if len(contacts) > BATCH_SIZE:
+    if len(contacts) > batch_size:
         raise ValueError(
-            f"ZoomInfo enrich batch size is {BATCH_SIZE} (got {len(contacts)})"
+            f"ZoomInfo enrich batch size is {batch_size} (got {len(contacts)})"
         )
     raise NotImplementedError(
         "zoominfo.enrich_batch: implement against ZoomInfo Enrichment API"

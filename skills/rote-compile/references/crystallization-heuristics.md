@@ -63,8 +63,21 @@ run-over-run; they're API limits or policy thresholds.
 
 **What to do:**
 - Lift the constant into the node's `constants:` field in the IR.
-- In the extracted Python module, define it as a module-level constant
-  (so it shows up once and is trivially overridable if policy changes).
+- The emitted step passes a `pure_function` / `external_call` node's
+  constants to its `impl` as keyword arguments, next to its `inputs`,
+  on every call (an agent loop calling a `loop_body` sub-node too). So
+  the extracted function takes each one as a keyword parameter
+  (`def batch_upsert_contacts(contacts, *, batch_size)`), or emission
+  refuses it. That is what lets several nodes share one function: three
+  fetch nodes calling `fetch_file_content` each pass their own
+  `file_id`. A constant may not reuse the name of one of the node's
+  inputs.
+- An MCP-bound node's constants do not reach the tool unless `mcp.args`
+  names them (`args: {days: email_window_days}`), because a tool rejects
+  arguments it does not declare.
+- In the extracted Python module you may also keep a module-level
+  constant with the same value for reference, but the parameter is
+  what the pipeline sets.
 - Enforce it in code — the extracted function should *reject* inputs
   that violate the constraint, not just document it.
 

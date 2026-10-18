@@ -97,6 +97,7 @@ jobs:
             tests/test_dbos_serve_e2e.py \
             tests/test_eval_empirical_dbos.py \
             tests/test_expense_audit_example.py \
+            tests/test_constants_parity.py \
             tests/test_serve_server.py
 
   ts-e2e:

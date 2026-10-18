@@ -230,19 +230,20 @@ def test_compile_metrics_survive_adapter_failure(
 
     monkeypatch.setattr("rote.cli.get_adapter", lambda *args, **kwargs: FailingAdapter())
     output = tmp_path / "compiled-run"
-    with pytest.raises(ValueError, match="schema collision"):
-        main(
-            [
-                "compile",
-                str(fake_skill_dir),
-                "--local",
-                "--runtime",
-                "dbos",
-                "--no-eval",
-                "--out",
-                str(output),
-            ]
-        )
+    # A refused emit is a clean exit 1 now, not a traceback.
+    rc = main(
+        [
+            "compile",
+            str(fake_skill_dir),
+            "--local",
+            "--runtime",
+            "dbos",
+            "--no-eval",
+            "--out",
+            str(output),
+        ]
+    )
+    assert rc == 1
     metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
     assert metrics == {
         "schema_version": 1,

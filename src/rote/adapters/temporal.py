@@ -47,6 +47,8 @@ from rote.adapters._py_common import (
     call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
+    impl_kwargs_expr,
+    require_constant_parameters,
     write_extracted_package,
     write_signature_package,
 )
@@ -132,7 +134,8 @@ def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) 
     constants_block = ""
     if node.constants:
         constants_block = (
-            "    # Constants from the IR (extracted from the source skill prose):\n"
+            "    # Constants from the IR (extracted from the source skill prose),\n"
+            "    # merged into the impl's keyword arguments below:\n"
             + "".join(f"    #   {k} = {v!r}\n" for k, v in node.constants.items())
         )
 
@@ -157,7 +160,7 @@ def _emit_activity_for_pure_or_external(node: Node, cfg: TemporalAdapterConfig) 
         mandatory_marker
         + constants_block
         + f"    from {cfg.extracted_module}.{module_name} import {func_name}\n"
-        + f"    result = await _call_impl({func_name}, payload)\n"
+        + f"    result = await _call_impl({func_name}, {impl_kwargs_expr(node)})\n"
         + "    return _serialize(result)\n"
     )
 
@@ -640,6 +643,8 @@ class TemporalAdapter:
         refuse_mcp_only_nodes(pipeline, "temporal")
 
         writer = EmitWriter(output_dir)
+        if self.config.extracted_module == EMITTED_EXTRACTED_MODULE:
+            require_constant_parameters(pipeline, writer, self.config.extracted_source_dir)
 
         written = {
             "activities": writer.write("activities.py", content=self.emit_activities(pipeline)),
