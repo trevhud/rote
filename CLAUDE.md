@@ -1054,6 +1054,40 @@ values; touch either converter and run it.
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
 
+### Optional pipeline inputs are left out; required ones fail on entry
+
+`Pipeline.optional_input_fields` (listed in `input.optional`, or a schema
+property the schema's `required` omits) and `required_input_fields`
+(everything else a node reads, plus the declared required) are derived,
+never stored. Emitted code relies on the pair:
+
+- **An omitted optional field is absent from the payload, not None.**
+  Python used to emit `pipeline_input["f"]`, so ops-report's optional
+  `report_date` raised `KeyError` whenever a caller left it out. Reading
+  it with `.get` was the obvious fix and the wrong one: an explicit None
+  overrides the impl's own default (`def f(d="today")`) and fails a
+  judge input field that has a schema `default`. Python payloads now
+  spread each input field in with the emitted `_input_field`, which adds
+  the key only when the run supplied it. TS gets the same effect for free,
+  since an undefined field is dropped from the JSON payload.
+- **Every runtime checks the input on entry** with the emitted
+  `_missing_inputs_error` / `missingInputsError`. The check names missing
+  required fields, and it reports a non-object input (a run started with
+  no payload at all) instead of a TypeError inside generated code. It is
+  emitted whenever a node reads the pipeline input (`needs_input_check`).
+  The failure must not retry. Temporal raises
+  `ApplicationError(..., non_retryable=True)`, because a plain exception
+  in workflow code fails the workflow task and Temporal retries that
+  forever. Inngest throws `NonRetriableError`, because its retries are
+  function-level.
+
+`tests/test_pipeline_input_parity.py` runs the Python runtimes for real
+both ways. `tests/test_pipeline_input_ts_e2e.py` runs the missing-input
+case live on Inngest, Cloudflare and DBOS-TS, and proves Inngest fails on
+the first attempt. The Inngest runner now reports the failed run's error
+name and message from the dev server, where it used to show only a log
+tail that held the end of a stack trace.
+
 ### An undefined fanned list must name the node, on every runtime
 
 Emitted code routes the fanned list through a guard — `fanOutList` in

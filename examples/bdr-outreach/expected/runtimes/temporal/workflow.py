@@ -21,6 +21,7 @@ from datetime import timedelta
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ApplicationError
 
 
 def _parse_minutes(s: str) -> float:
@@ -57,6 +58,38 @@ def _fan_out_list(value: object, node_id: str, ref: str) -> list:
         )
     return value
 
+
+def _missing_inputs_error(pipeline_input: object, required: tuple[str, ...]) -> str | None:
+    """Why ``pipeline_input`` cannot start a run, or None when it can.
+
+    A step's payload simply leaves out an omitted optional field, so the
+    impl's own default applies. A missing required field would be left out
+    the same way and fail later, somewhere unrelated, so the run checks
+    those first and fails naming them. A run started with no payload at
+    all is reported the same way. The TypeScript runtimes emit the same
+    check (`missingInputsError`), so a bad input reports identically on
+    every target.
+    """
+    if not isinstance(pipeline_input, dict):
+        return (
+            "pipeline input must be a JSON object, got " + type(pipeline_input).__name__
+        )
+    missing = [name for name in required if name not in pipeline_input]
+    if not missing:
+        return None
+    return "pipeline input is missing required field(s): " + ", ".join(missing)
+
+
+def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
+    """``{key: value}`` when the run supplied ``field``, else nothing.
+
+    Spread into a step's payload, so an omitted optional field is absent,
+    not None: a Python default (``def f(d="today")``) or a schema default
+    on a judge's input then applies, the same as on the TS runtimes, where
+    an undefined field is dropped from the JSON payload.
+    """
+    return {key: pipeline_input[field]} if field in pipeline_input else {}
+
 @workflow.defn(name="BdrCampaign_ada0f771")
 class BdrCampaignWorkflow:
     """Compiled workflow for bdr-campaign."""
@@ -78,6 +111,9 @@ class BdrCampaignWorkflow:
     @workflow.run
     async def run(self, pipeline_input: dict) -> dict:
         """End-to-end BDR outreach campaign workflow for pharma/biotech research"""
+        _input_error = _missing_inputs_error(pipeline_input, ("campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area",))
+        if _input_error is not None:
+            raise ApplicationError(_input_error, non_retryable=True)
 
         # ─── Wave 1 ───
         (
@@ -108,7 +144,7 @@ class BdrCampaignWorkflow:
                 "brief": pipeline_input,
                 "intel": target_research_result,
                 "taxonomy": taxonomy_lookup_result,
-                "target_quota": pipeline_input["target_quota"],
+                **_input_field(pipeline_input, "target_quota", "target_quota"),
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("15m")),
         )
@@ -137,7 +173,7 @@ class BdrCampaignWorkflow:
         hubspot_create_list_result = await workflow.execute_activity(
             "hubspot_create_list",
             {
-                "campaign_name": pipeline_input["drug_brand"],
+                **_input_field(pipeline_input, "campaign_name", "drug_brand"),
                 "contacts": hubspot_upsert_result["upserted"],
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
@@ -179,7 +215,7 @@ class BdrCampaignWorkflow:
                 *(
                     workflow.execute_activity(
                         "personalize_email",
-                        {"contact": _item, "campaign_type": pipeline_input["campaign_type"], "intel": target_research_result},
+                        {"contact": _item, **_input_field(pipeline_input, "campaign_type", "campaign_type"), "intel": target_research_result},
                         start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
                     )
                     for _item in _fan_out_list(
@@ -195,7 +231,7 @@ class BdrCampaignWorkflow:
         create_sales_template_result = await workflow.execute_activity(
             "create_sales_template",
             {
-                "campaign_name": pipeline_input["drug_brand"],
+                **_input_field(pipeline_input, "campaign_name", "drug_brand"),
                 "personalizations": personalize_email_result,
             },
             start_to_close_timeout=timedelta(minutes=_parse_minutes("5m")),
@@ -206,7 +242,7 @@ class BdrCampaignWorkflow:
         pre_enrollment_report_result = await workflow.execute_activity(
             "pre_enrollment_report",
             {
-                "campaign_name": pipeline_input["drug_brand"],
+                **_input_field(pipeline_input, "campaign_name", "drug_brand"),
                 "passed_contacts": exclusion_check_sequence_result["passed"],
                 "exclusions": exclusion_check_sequence_result["excluded"],
                 "template_ids": create_sales_template_result["template_ids"],

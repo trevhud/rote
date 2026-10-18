@@ -8,6 +8,7 @@ inside a template string failed only that adapter's test).
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -183,3 +184,25 @@ def count_ts_step_attempts(module: Path, node_id: str) -> None:
 def attempts_in(text: str, node_id: str) -> int:
     """How many times :func:`count_ts_step_attempts`'s marker was printed."""
     return text.count(f"{ATTEMPT_MARKER} {node_id}")
+
+
+def payload_dict_keys(payload: ast.Dict) -> set[str]:
+    """The keys an emitted payload dict literal can carry.
+
+    A pipeline input field is spread in as
+    ``**_input_field(pipeline_input, "<key>", "<field>")``, so its key is
+    the call's second argument rather than a literal dict key.
+    """
+    keys: set[str] = set()
+    for key, value in zip(payload.keys, payload.values, strict=True):
+        if isinstance(key, ast.Constant):
+            keys.add(key.value)
+        elif (
+            key is None
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_input_field"
+            and isinstance(value.args[1], ast.Constant)
+        ):
+            keys.add(value.args[1].value)
+    return keys

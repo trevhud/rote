@@ -34,7 +34,7 @@ from rote.adapters.dbos import (
     emit_signature_module,
 )
 from rote.ir import Edge, Node, NodeKind, Pipeline
-from tests._helpers import mini_pipeline
+from tests._helpers import mini_pipeline, payload_dict_keys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -275,7 +275,7 @@ def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
     assert '"contacts": hubspot_upsert_result["upserted"],' in main_src
     assert '"contacts": exclusion_check_dnc_result["passed"],' in main_src
     # Pipeline input field selection.
-    assert '"target_quota": pipeline_input["target_quota"],' in main_src
+    assert '**_input_field(pipeline_input, "target_quota", "target_quota"),' in main_src
     # Fan-in: the report node pulls from several sources.
     assert '"template_ids": create_sales_template_result["template_ids"],' in main_src
     # The placeholder TODO is gone for good.
@@ -323,9 +323,7 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
         assert isinstance(payload_arg, ast.Dict), (
             f"payload for {step_name!r} must be a dict literal"
         )
-        payload_keys_by_node[step_name] = {
-            k.value for k in payload_arg.keys if isinstance(k, ast.Constant)
-        }
+        payload_keys_by_node[step_name] = {k for k in payload_dict_keys(payload_arg)}
 
     nested_ids = {sub for n in bdr_pipeline.nodes if n.loop_body for sub in n.loop_body}
     for node in bdr_pipeline.nodes:
@@ -950,7 +948,7 @@ def test_fan_out_node_dispatches_per_element() -> None:
     src = emit_main(_fan_out_pipeline(), DbosAdapterConfig())
     ast.parse(src)
 
-    assert '{"post": _item, "brief": pipeline_input["brief"]}' in src, (
+    assert '{"post": _item, **_input_field(pipeline_input, "brief", "brief")}' in src, (
         "element param bound per item, scalars shared"
     )
     # The bound list goes through the _fan_out_list guard, which names
@@ -1009,8 +1007,8 @@ def test_fan_out_binding_edge_disambiguates_multiple_node_refs() -> None:
         ")"
     )
     assert scalars == {
-        "intel": "research_result",
-        "campaign": 'pipeline_input["campaign"]',
+        "intel": '"intel": research_result',
+        "campaign": '**_input_field(pipeline_input, "campaign", "campaign")',
     }
 
     # Two node-bound params, both edge-fed, no fan_out edge marker →
