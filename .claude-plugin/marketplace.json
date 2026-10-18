@@ -2,15 +2,18 @@
   "name": "rote",
   "owner": {
     "name": "Trevor Hudson",
-    "email": "trevhud@gmail.com"
+    "email": "trevhud@gmail.com",
+    "url": "https://github.com/trevhud"
   },
   "description": "Compile AI agent skills into cheap, fast, deterministic pipelines that run without an LLM in the loop",
   "plugins": [
     {
       "name": "rote",
       "source": "./plugin",
-      "description": "Compile an Anthropic-style skill into a deterministic pipeline (Temporal, Cloudflare Workflows, or DBOS) from inside Claude Code, then trigger the deployed workflows over MCP.",
-      "version": "0.14.0"
+      "description": "Compile an AI agent skill into a deterministic workflow for DBOS, Temporal, Cloudflare Workflows, Inngest, or plain Python with /rote:compile, then trigger the deployed workflows from Claude over MCP with /rote:serve.",
+      "version": "0.14.0",
+      "category": "development",
+      "tags": ["workflow", "durable-execution", "mcp", "agent-skills", "token-cost"]
     }
   ]
 }
