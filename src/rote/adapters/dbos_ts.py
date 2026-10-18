@@ -285,11 +285,11 @@ def emit_extracted_module(node: Node) -> str:
 
     doc.append(" */")
 
-    # Stubs declare Promise<never> — honest for a function that always
-    # throws, and the one type the workflow's data-flow casts
-    # (`(<id>_result as Record<...>)["field"]`) always accept. Replace
-    # the annotation with your concrete output type when you fill in
-    # the implementation.
+    # Stubs declare Promise<never>, honest for a function that always
+    # throws. The workflow's reference sites index results directly
+    # (`<id>_result["field"]`), which is legal on `never` and checks the
+    # field name once you replace the annotation with your concrete
+    # output type (see `ref_to_ts_expr`).
     if node.kind is NodeKind.AGENT_LOOP:
         msg = f'"{STUB_SENTINEL} agent_loop {node.id}: requires an agent runtime — implement me"'
     else:
