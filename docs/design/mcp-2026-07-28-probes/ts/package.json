@@ -1,0 +1,11 @@
+{
+  "name": "rote-mcp-2026-07-28-probes",
+  "private": true,
+  "description": "TS SDK probes for docs/design/mcp-2026-07-28.md. Versions are exact so reruns are comparable.",
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/server": "2.3.1",
+    "zod": "4.6.7"
+  }
+}

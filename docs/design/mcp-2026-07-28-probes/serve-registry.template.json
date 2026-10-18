@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "bdr-campaign",
+      "description": "Probe entry: BDR pipeline registered against an unreachable Temporal.",
+      "pipeline_yaml": "__REPO__/examples/bdr-outreach/expected/pipeline.yaml",
+      "input_schema": {"type": "object", "properties": {"company": {"type": "string"}}},
+      "trigger": {
+        "runtime": "temporal",
+        "address": "127.0.0.1:1",
+        "namespace": "default",
+        "task_queue": "bdr-campaign",
+        "workflow_name": "BdrCampaign_probe"
+      },
+      "registered_at": "2026-10-18T00:00:00+00:00"
+    }
+  ]
+}
