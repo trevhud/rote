@@ -3,8 +3,8 @@ name: implement
 description: >-
   Fill in the stub modules of a pipeline emitted by rote, so it actually runs.
   Use after `rote emit` or `rote compile` when the emitted app still has
-  extracted/* stubs that raise NotImplementedError (Python) or throw "stub
-  not implemented" (TypeScript), or when the user says "implement the
+  extracted/* stubs that raise a "[rote stub]" error or a bare
+  NotImplementedError, or when the user says "implement the
   stubs", "fill in the extracted modules", "make the compiled pipeline run",
   "wire up the real API calls", or `rote run` fails on a stub. Reads each
   node's IR contract (inputs, declared output keys, constants, description,
@@ -65,8 +65,13 @@ uvx --from rote-cli rote emit <pipeline.yaml> --runtime <runtime> --out <dir> --
 
 Read three keys from the JSON:
 
-- `unimplemented_stubs`: absolute paths still carrying a stub marker.
-  This is the TODO list. A file you have filled in drops off it.
+- `unimplemented_stubs`: absolute paths of modules that still have a
+  stub function. This is the TODO list. A module drops off it once none
+  of its functions is a stub. In Python that means no function raises
+  with the `[rote stub]` sentinel and none has a body that is only
+  `raise NotImplementedError`. In TypeScript it means `[rote stub]`
+  appears nowhere outside a comment. The full rule, with examples, is in
+  [references/runtimes.md](references/runtimes.md#what-counts-as-a-stub).
 - `preserved_new_files`: `.new` siblings parked next to files the user
   already edited. Handle these before anything else (section 6).
 - `contract_findings`: IR promises the implementations beside the
@@ -225,6 +230,12 @@ uvx --from 'rote-cli[dbos]' rote run <dir> --json \
   --input '{"report_date": "2026-07-18"}' \
   --signal manual_data_provided='{"sorter_metrics": [], ...}'
 ```
+
+`rote run` refuses to start while any module on step 2's list is still a
+stub, and names them. Fix those first. Pass `--allow-stubs` only when
+the run cannot reach the remaining stubs (they sit on a branch this input
+does not take), and say so in your report. A stub the run does reach
+still raises.
 
 A zero exit with `"error": null` and an `output` keyed by the exit nodes
 is a pass. On failure, read the error, fix the implementation, and run

@@ -73,9 +73,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   IR contract and its source SKILL.md section, writes real code in
   user-owned files only, handles `.new` siblings from re-emit, and
   verifies with `rote run`. `tests/test_plugin_skills.py` checks every
-  plugin skill's frontmatter and links, keeps the skill's stub markers
-  equal to the CLI's (now `rote.cli.STUB_MARKERS`), and emits every
-  runtime to confirm each rote-owned file is on the skill's do-not-edit
+  plugin skill's frontmatter and links, runs each stub and non-stub
+  example in the skill through rote's own stub detector, and emits every
+  runtime to confirm that each file outside `unimplemented_stubs`
+  (generated agent-loop modules included) is on the skill's do-not-edit
   list.
 
 ### Fixed

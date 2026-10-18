@@ -2,7 +2,7 @@
 
 The plugin's skills are prose an agent follows, so the failure mode is
 drift: a skill names a file rote no longer writes, links a reference
-that moved, or lists stub markers the CLI stopped using. Nothing else in
+that moved, or describes a stub rule rote no longer applies. Nothing else in
 the suite reads these files, so these tests are the only thing that
 notices.
 """
@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from rote.adapters import get_adapter
-from rote.cli import STUB_MARKERS, _unimplemented_stubs
+from rote.adapters._common import STUB_SENTINEL, _is_stub_module, unimplemented_stubs
 from rote.ir import NodeKind, Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +30,8 @@ SKILL_FILES = sorted(SKILLS_DIR.glob("*/SKILL.md"))
 # the skill listing (code.claude.com/docs/en/skills).
 _DESCRIPTION_LIMIT = 1536
 
-_LINK = re.compile(r"\]\(([^)#\s]+)\)")
+# The path of a relative link, with any ``#anchor`` dropped.
+_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)\s]*)?\)")
 
 
 def _split_frontmatter(path: Path) -> tuple[dict[str, object], str]:
@@ -69,14 +70,41 @@ def test_relative_links_resolve(skill_md: Path) -> None:
             assert (md.parent / target).is_file(), f"{md}: broken link {target}"
 
 
-def test_implement_lists_the_cli_stub_markers() -> None:
-    """The skill tells the agent which strings keep a file on the TODO
-    list. If the CLI changes its markers, the agent would leave a marker
-    in finished code, or chase one that no longer means anything."""
+#: A fenced example in the stub section, opened by ```` ```python stub ````
+#: or ```` ```ts not-stub ````, which the test runs through rote's detector.
+_STUB_EXAMPLE = re.compile(r"^```(python|ts) (stub|not-stub)\n(.*?)^```", re.MULTILINE | re.DOTALL)
+
+
+def _stub_section() -> str:
     text = (IMPLEMENT / "references" / "runtimes.md").read_text(encoding="utf-8")
-    section = text.split("## Stub markers", 1)[1]
-    listed = set(re.findall(r"^- `([^`]+)`", section, flags=re.MULTILINE))
-    assert listed == set(STUB_MARKERS)
+    return text.split("## What counts as a stub", 1)[1].split("\n## ", 1)[0]
+
+
+def test_implement_documents_the_stub_rule() -> None:
+    """The skill tells the agent what keeps a module on the TODO list. It
+    must name rote's sentinel and the bare ``raise NotImplementedError``
+    body, plus the ``--allow-stubs`` escape, and not the retired marker
+    list, under which any mention of ``NotImplementedError`` kept a module
+    listed."""
+    section = _stub_section()
+    assert f"`{STUB_SENTINEL}`" in section
+    assert "one `raise NotImplementedError`" in section
+    assert "`rote run --allow-stubs`" in section
+    for retired in ("- `NotImplementedError`", "- `stub not implemented`"):
+        assert retired not in section
+
+
+def test_implement_stub_examples_match_the_detector() -> None:
+    """Every example the skill labels as a stub or not is classified that
+    way by the per-module check ``unimplemented_stubs`` runs, so the prose
+    cannot drift from the rule it describes."""
+    examples = _STUB_EXAMPLE.findall(_stub_section())
+    seen = {(lang, label) for lang, label, _ in examples}
+    # Non-degenerate: both verdicts in both languages.
+    assert seen == {(lang, label) for lang in ("python", "ts") for label in ("stub", "not-stub")}
+    for lang, label, body in examples:
+        path = Path("extracted") / ("example.py" if lang == "python" else "example.ts")
+        assert _is_stub_module(path, body) is (label == "stub"), f"{lang} {label}:\n{body}"
 
 
 # Files rote writes that the skill deliberately lets the user amend:
@@ -120,8 +148,8 @@ def test_implement_names_every_rote_owned_file(example: str, runtime: str, tmp_p
     entrypoint, or generated agent-loop module cannot quietly become
     something the agent edits.
 
-    The user's files are exactly what the CLI reports as stubs
-    (``_unimplemented_stubs``, the same list the skill starts from), not a
+    The user's files are exactly what rote reports as stubs
+    (``unimplemented_stubs``, the same list the skill starts from), not a
     path guess: ``src/extracted/<loop>.ts`` sits beside the stubs but is
     working generated code. BDR exercises judges, agent loops, MCP bindings
     and gates, which pulls in every verbatim helper; invoice-push is
@@ -136,7 +164,8 @@ def test_implement_names_every_rote_owned_file(example: str, runtime: str, tmp_p
     def rel(path: str | Path) -> str:
         return Path(path).resolve().relative_to(root).as_posix()
 
-    user_files = {rel(p) for p in _unimplemented_stubs(written)}
+    user_files = {rel(p) for p in unimplemented_stubs(out)}
+    assert user_files, "no stubs reported; every extracted module would count as rote's"
     owned = {rel(p) for p in written.values()} - user_files
     owned = {r for r in owned if r.rsplit("/", 1)[-1] not in _USER_AMENDABLE}
     owned.add(".rote-manifest.json")
