@@ -27,7 +27,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,13 +43,26 @@ def registry_path() -> Path:
     return base / "rote" / "mcp.json"
 
 
+#: The registry is shared by every rote version on the machine (a cached
+#: ``uvx --from rote-cli`` beside a newer install, the plugin's ``uv
+#: run``). From this version on, unknown fields are kept, not rejected:
+#: a newer version's field must neither fail this one nor be dropped when
+#: this one writes the file back. Released versions up to 0.14.0 still
+#: reject unknown fields, which is why learned auth lives in a sidecar
+#: (rote.mcp.learned) rather than here.
+_FORWARD_COMPATIBLE = ConfigDict(extra="allow")
+
+
 class McpServerConfig(BaseModel):
     """One registered MCP server."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _FORWARD_COMPATIBLE
 
     url: str
-    transport: Literal["streamable-http", "sse"] = "streamable-http"
+    #: "streamable-http" or "sse" from this version's `rote mcp add`; kept
+    #: as a plain string so a transport a newer rote adds loads here and
+    #: is treated as unsupported rather than rejected.
+    transport: str = "streamable-http"
     client_id: str | None = Field(
         default=None,
         description=(
@@ -85,7 +97,7 @@ class McpServerConfig(BaseModel):
 
 
 class McpRegistry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _FORWARD_COMPATIBLE
 
     version: int = 1
     servers: dict[str, McpServerConfig] = Field(default_factory=dict)

@@ -172,6 +172,38 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   retries, and emitted steps work when called from inside a running
   loop. Temporal shares the same helper's async form, which now also
   awaits a coroutine returned by a plain function.
+- `rote emit` (and `analyze`/`compile`) no longer warns "not
+  authenticated, the run will park" for an MCP server that needs no
+  auth. rote now learns each server's requirement and keeps it in
+  `mcp-auth-learned.json` beside the registry (0600, atomic writes),
+  keyed by server name and normalized URL so repointing a name
+  invalidates it. `rote mcp login` records it: a server whose
+  `tools/list` succeeds with no challenge (the OAuth provider discovered
+  nothing) is `none`. Login used to fail there with "completed without
+  storing a token", and still does when a challenge happened but no
+  token landed. `rote mcp add --auth oauth|none` sets it explicitly. A
+  server learned as `none` reports "no auth required" (dated in
+  `mcp list` and `doctor`) with no recommendation, and live compiler MCP
+  tools include it. A tokenless server with nothing learned reports
+  "auth unknown", worded as "if it needs auth, the run will park". Only
+  a server known to need OAuth gets "will park". Evidence overrides a
+  learned `none`: a token for the endpoint wins, and an observed auth
+  park records `oauth`. A token file left by the endpoint a name used to
+  point at no longer counts as a login, in `login` or in the status. The
+  advisory's `"unknown"` state for an unreadable registry is now
+  `"registry unreadable"`.
+- **Version compatibility of `~/.config/rote/mcp.json`.** Released rote
+  versions up to 0.14.0 load the registry with unknown fields rejected,
+  so a field a newer rote writes breaks every older rote on the same
+  machine (a cached `uvx --from rote-cli`, the plugin's `uv run`). That
+  is why learned auth lives in its own file and the registry schema is
+  unchanged by it. `rote mcp add --client-id ... --issuer ...` (new in
+  this release) does write an `issuer` field, so a registry with an
+  issuer-bound client is unreadable to 0.14.0 and older until that
+  entry is removed. From this release on, the registry and the sidecar
+  keep fields they do not know and read unknown `transport`/`auth`
+  values as unsupported or unknown instead of rejecting them, and every
+  writer keeps a higher `version` than its own.
 - README and AGENTS.md accuracy: the compiler skill has six reference
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags

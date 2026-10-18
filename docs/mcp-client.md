@@ -36,7 +36,18 @@ One durable credential layer, four consumers:
   optional pre-registered `client_id`/`client_secret` (see
   [Client registration](#client-registration)), optional scopes,
   optional static headers (API-key schemes). Written `0600`;
-  overridable via `ROTE_MCP_CONFIG`.
+  overridable via `ROTE_MCP_CONFIG`. Unknown fields are kept, because
+  every rote version on the machine shares the file.
+- **Learned auth** (`mcp-auth-learned.json` beside the registry,
+  `rote.mcp.learned`): whether each server needs a login at all
+  (`oauth` or `none`), keyed by name and normalized URL so a repoint
+  invalidates it. `rote mcp login` records it (a server whose
+  `tools/list` succeeds with no challenge is `none`), `rote mcp add
+  --auth` sets it, and a token for the endpoint or an observed auth park
+  overrides a learned `none`. Nothing learned reads as "auth unknown",
+  and `rote emit` only says a run "will park" for a server known to
+  need OAuth. It is a separate file because rote 0.14.0 and older reject
+  unknown registry fields.
 - **Token store**: one JSON file per server name, `0600`, holding the
   SDK-shaped `tokens`, the `client_info` the login used (so registration
   never repeats), an absolute `expires_at`, and the `token_endpoint` and
