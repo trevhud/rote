@@ -12,6 +12,76 @@ from rote.ir import Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
+EXAMPLES_DIR = REPO_ROOT / "examples"
+
+# ───────── The committed examples/ tree is read-only to the suite ─────────
+#
+# Five adapter suites used to emit straight into
+# examples/bdr-outreach/expected/runtimes/<runtime>/, three of them after
+# an rmtree. Emitting without the example's extracted/ sources replaced
+# the committed real implementations with stubs, so running pytest left a
+# dirty tree, and on the merge-queue worktree that blocked merges. Tests
+# emit into tmp_path and diff against the snapshot instead
+# (tests/test_committed_snapshots.py). This guard fails the session if
+# anything under examples/ changed, so the pattern cannot come back.
+
+#: Install and import artifacts, never committed, created by tooling
+#: rather than by the code under test.
+_EXAMPLES_IGNORED_PARTS = frozenset({"__pycache__", "node_modules"})
+
+
+def examples_fingerprint(root: Path) -> dict[str, str]:
+    """``{relative path: sha256}`` for every file under ``root``."""
+    import hashlib
+
+    prints: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or _EXAMPLES_IGNORED_PARTS.intersection(path.parts):
+            continue
+        prints[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return prints
+
+
+def fingerprint_changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Human-readable lines for every file added, removed, or modified."""
+    lines = [f"added: {p}" for p in sorted(after.keys() - before.keys())]
+    lines += [f"removed: {p}" for p in sorted(before.keys() - after.keys())]
+    lines += [
+        f"modified: {p}" for p in sorted(before.keys() & after.keys()) if before[p] != after[p]
+    ]
+    return lines
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    session.config.stash[_EXAMPLES_BEFORE] = examples_fingerprint(EXAMPLES_DIR)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    before = session.config.stash.get(_EXAMPLES_BEFORE, None)
+    if before is None:
+        return
+    changes = fingerprint_changes(before, examples_fingerprint(EXAMPLES_DIR))
+    if not changes:
+        return
+    session.config.stash[_EXAMPLES_CHANGES] = changes
+    session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    changes = terminalreporter.config.stash.get(_EXAMPLES_CHANGES, None)
+    if not changes:
+        return
+    terminalreporter.section("committed examples/ changed during the run", red=True)
+    terminalreporter.line(
+        "A test wrote into the committed examples/ tree. Emit into tmp_path instead "
+        "(compare against the snapshot from there). Restore with: git checkout -- examples/"
+    )
+    for line in changes:
+        terminalreporter.line(f"  {line}")
+
+
+_EXAMPLES_BEFORE = pytest.StashKey[dict[str, str]]()
+_EXAMPLES_CHANGES = pytest.StashKey[list[str]]()
 
 
 @pytest.fixture(autouse=True)

@@ -38,7 +38,6 @@ from tests._helpers import mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
-BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes" / "dbos"
 
 
 # ───────── Fixtures ─────────
@@ -50,9 +49,16 @@ def adapter() -> DbosAdapter:
 
 
 @pytest.fixture(scope="module")
-def emit_result(adapter: DbosAdapter, bdr_pipeline: Pipeline) -> dict[str, Path]:
-    """Emit into the expected runtimes dir once per module (committed snapshot)."""
-    return adapter.emit(bdr_pipeline, BDR_EMIT_DIR)
+def emit_result(
+    adapter: DbosAdapter, bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
+) -> dict[str, Path]:
+    """Emit the BDR pipeline once per module, into a temp dir.
+
+    Never into the committed snapshot: tests/test_committed_snapshots.py
+    diffs a fresh emission against it, and the conftest guard fails the
+    session if anything under examples/ changes.
+    """
+    return adapter.emit(bdr_pipeline, tmp_path_factory.mktemp("dbos-bdr"))
 
 
 @pytest.fixture(scope="module")

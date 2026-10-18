@@ -27,6 +27,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   noted.
 
 ### Fixed
+- Running the test suite no longer rewrites committed files. Five
+  adapter suites emitted the BDR pipeline straight into
+  `examples/bdr-outreach/expected/runtimes/`, and the dbos and temporal
+  ones replaced the example's real `extracted/` implementations with
+  stubs, so every `pytest` left a dirty tree. They emit into temp dirs
+  now, `tests/test_committed_snapshots.py` diffs a fresh emission
+  against each snapshot, and the suite fails if anything under
+  `examples/` changes during a run.
 - Stub detection no longer refuses a filled-in module that only mentions
   the `[rote stub]` marker in a comment or docstring: the marker counts
   in Python only as a `raise` argument, and in TypeScript only outside
