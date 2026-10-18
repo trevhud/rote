@@ -75,8 +75,10 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
+    needs_call_impl,
     serialize_helper,
     write_extracted_package,
     write_signature_package,
@@ -225,7 +227,7 @@ def _emit_node_pure_or_external(node: Node) -> str:
         f"{_timeout_comment(node)}"
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
-        f"{_emit_return(node, f'_serialize({func_name}(**payload))')}"
+        f"{_emit_return(node, f'_serialize(_call_impl({func_name}, payload))')}"
     )
 
 
@@ -460,6 +462,8 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     )
     if any(n.fan_out for n in pipeline.nodes):
         serialize_block += "\n\n" + fan_out_list_helper()
+    if needs_call_impl(pipeline):
+        serialize_block += "\n\n" + call_impl_helper()
 
     node_parts: list[str] = []
     for node in pipeline.nodes:

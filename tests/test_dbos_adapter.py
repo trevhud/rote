@@ -497,7 +497,20 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
     """BDR judges carry both legacy signature and signature_spec; the DBOS
     step must import the *generated* module, not the legacy path."""
     assert "from signatures.vet_contact import VetContact, VetContactInput" in main_src
-    assert "asyncio.run" not in main_src
+    # The legacy path drives an async forward() with asyncio.run; the
+    # generated one is synchronous. (_call_impl also uses asyncio.run, for
+    # async extracted functions, so scope the check to the judge steps.)
+    tree = ast.parse(main_src)
+    judge_steps = {"vet_contact", "personalize_email"}
+    bodies = [
+        ast.get_source_segment(main_src, fn)
+        for fn in tree.body
+        if isinstance(fn, ast.FunctionDef) and fn.name in judge_steps
+    ]
+    assert len(bodies) == len(judge_steps)
+    for body in bodies:
+        assert body is not None
+        assert "asyncio.run" not in body
 
 
 # ───────── Legacy signature path + openai client (synthetic pipelines) ─────────

@@ -131,6 +131,52 @@ def fan_out_list_helper() -> str:
     return _FAN_OUT_LIST_HELPER_PY
 
 
+_CALL_IMPL_HELPER_PY = '''\
+def _call_impl(fn: Any, payload: dict) -> Any:
+    """Call an extracted function with the step payload.
+
+    Extracted modules may be plain or ``async def``: the IR-derived stubs
+    are plain, while hand-written clients are often async. Calling an
+    async function without awaiting it returns a coroutine, which then
+    fails far from here when the result is serialized. So an awaitable
+    result runs to completion on a fresh event loop. Steps here are
+    synchronous and run with no loop of their own, so that is safe in
+    worker threads too.
+    """
+    import asyncio
+    import inspect
+
+    result = fn(**payload)
+    if inspect.isawaitable(result):
+
+        async def _await() -> Any:
+            return await result
+
+        result = asyncio.run(_await())
+    return result
+'''
+
+
+def call_impl_helper() -> str:
+    """The ``_call_impl`` function emitted into synchronous Python runtimes.
+
+    python and dbos steps are plain functions, so an ``async def``
+    extracted implementation has to be driven to completion rather than
+    returned as a coroutine. (Temporal's activities are async and emit
+    their own awaiting variant.) Behavioral emitted code like
+    ``_serialize``: both runtimes must accept the same two forms.
+    """
+    return _CALL_IMPL_HELPER_PY
+
+
+def needs_call_impl(pipeline: Pipeline) -> bool:
+    """Whether any node in ``pipeline`` calls an extracted ``impl``."""
+    return any(
+        n.kind in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL) and n.impl is not None
+        for n in pipeline.nodes
+    )
+
+
 def fan_out_binding(
     node: Node, pipeline: Pipeline, indent: str = ""
 ) -> tuple[str, str, dict[str, str]]:

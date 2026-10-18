@@ -89,8 +89,10 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
+    needs_call_impl,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -267,7 +269,7 @@ def _emit_step_pure_or_external(node: Node) -> str:
         f"{_timeout_comment(node)}"
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
-        f"    return _serialize({func_name}(**payload))\n"
+        f"    return _serialize(_call_impl({func_name}, payload))\n"
     )
 
 
@@ -681,6 +683,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
     if any(n.fan_out for n in pipeline.nodes):
         header += "\n\n" + fan_out_list_helper()
+
+    if needs_call_impl(pipeline):
+        header += "\n\n" + call_impl_helper()
 
     if mcp_backed:
         header += "\n\n" + textwrap.dedent(

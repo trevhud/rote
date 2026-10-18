@@ -112,17 +112,27 @@ def _write_test_overlay(out_dir: Path, pipeline: Pipeline, record_path: Path) ->
     # the way the adapter grouped them. Agent loops are NOT here —
     # _extracted_layout skips them deliberately, because the adapter
     # inlines run_agent_loop into main.py rather than scaffolding a stub.
+    #
+    # Every other mock is `async def`, like BDR's hand-written clients, so
+    # the run proves the emitted steps drive coroutine functions to
+    # completion as well as calling plain ones.
+    index = 0
+    forms: set[str] = set()
     for module_name, nodes in _extracted_layout(pipeline).items():
         src = _RECORDER_PRELUDE.format(record_path=str(record_path))
         for node in nodes:
             assert node.impl is not None
             _, func = _impl_path_parts(node.impl)
+            prefix = "async def" if index % 2 else "def"
+            forms.add(prefix)
+            index += 1
             src += (
-                f"\n\ndef {func}(**payload):\n"
+                f"\n\n{prefix} {func}(**payload):\n"
                 f'    _record("{node.id}", payload)\n'
                 f"    return {_mock_output(node.id)!r}\n"
             )
         (out_dir / "extracted" / f"{module_name}.py").write_text(src, encoding="utf-8")
+    assert forms == {"def", "async def"}
 
     # Agent loops: the adapter emits `return run_agent_loop(...)` inline,
     # so the seam is the inference helper, not an extracted module. Left
