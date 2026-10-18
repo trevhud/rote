@@ -270,6 +270,21 @@ Two regimes, don't mix them up:
   reconstruct as plain `Error`s). See
   [`docs/mcp-client.md`](docs/mcp-client.md).
 
+### Sync Python runtimes run async work on ONE background loop
+
+python and dbos steps are plain functions, so every coroutine they need
+(an `async def` extracted function, a dbos MCP step, a legacy async
+judge) goes through the emitted `_run_async`, which submits it to one
+daemon-thread event loop per process. Do not "simplify" it back to
+`asyncio.run`: that makes and closes a loop per call, so a module-level
+`httpx.AsyncClient` fails from its second call on ("Event loop is
+closed"), which is every fan_out element and every retry; and it raises
+inside a running loop, where `run_pipeline` lands when async code
+imports it. `_call_impl` comes in two forms from one place
+(`_py_common.call_impl_helper`, `is_async=True` for temporal), and both
+check the *result* for awaitability, so a plain wrapper returning a
+coroutine works on every runtime (`tests/test_call_impl_helper.py`).
+
 ### Never return fastmcp's `result.data` from an MCP step
 
 `_result_payload` in `rote.mcp._runtime_helper` must NOT be
@@ -1267,6 +1282,22 @@ place; confirm the claim empirically before writing one off, since
 "probably equivalent" is exactly what a real gap looks like.
 
 ---
+
+### The suite never writes into examples/
+
+The committed runtime snapshots under
+`examples/bdr-outreach/expected/runtimes/<runtime>/` are compared, not
+regenerated: adapter suites emit into `tmp_path`, and
+`tests/test_committed_snapshots.py` checks that a fresh emission (with
+the same `extracted/` sources `rote emit` reads) reproduces each one
+byte for byte. The suites used to emit straight into those dirs, so every
+pytest run rewrote committed files, and without the example's sources it
+replaced the real implementations with stubs. That dirtied the
+merge-queue worktree and blocked merges. A session hook in
+`tests/conftest.py` now fails the run if anything under `examples/`
+changed (`__pycache__` and `node_modules` excepted). When an adapter
+change is intended, regenerate with the `rote emit` command the failing
+snapshot test prints, and commit the result.
 
 ## Workflow expectations
 

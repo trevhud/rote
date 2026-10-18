@@ -13,9 +13,11 @@ What it proves, empirically:
    nodes, node outputs chain downstream (whole-output and field
    references), and the fan-in exit node receives values from three
    different sources.
-4. The emitted retry loop actually retries: a stub seeded to fail twice
+4. ``async def`` and plain extracted functions both work: two overlays
+   are coroutine functions and their results thread downstream.
+5. The emitted retry loop actually retries: a stub seeded to fail twice
    is called exactly three times and the run still succeeds.
-5. Every import in the emitted+overlaid directory resolves from the
+6. Every import in the emitted+overlaid directory resolves from the
    stdlib or the emitted files themselves — the script is genuinely
    dependency-free once the judge is mocked.
 
@@ -76,8 +78,11 @@ def fetch_profile(**payload):
         raise RuntimeError("transient upstream error (seeded by the e2e test)")
     return {"profile": {"id": "p1"}}
 """,
+    # `async def`, like BDR's hand-written clients: the emitted step must
+    # drive it to completion, not serialize the coroutine. Sync and async
+    # modules sit side by side here on purpose.
     "extracted/brief.py": """\
-def normalize_brief(**payload):
+async def normalize_brief(**payload):
     _record("normalize_brief", payload)
     return {"topic": payload["topic"].strip().lower()}
 
@@ -101,7 +106,7 @@ def run_agent_loop(**kwargs):
     return {"findings": ["f1", "f2"]}
 """,
     "extracted/report.py": """\
-def build_report(**payload):
+async def build_report(**payload):
     _record("final_report", payload)
     return {"report": payload}
 """,

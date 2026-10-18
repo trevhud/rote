@@ -38,7 +38,6 @@ from tests._helpers import mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
-BDR_EMIT_DIR = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "runtimes" / "dbos"
 
 
 # ───────── Fixtures ─────────
@@ -50,9 +49,16 @@ def adapter() -> DbosAdapter:
 
 
 @pytest.fixture(scope="module")
-def emit_result(adapter: DbosAdapter, bdr_pipeline: Pipeline) -> dict[str, Path]:
-    """Emit into the expected runtimes dir once per module (committed snapshot)."""
-    return adapter.emit(bdr_pipeline, BDR_EMIT_DIR)
+def emit_result(
+    adapter: DbosAdapter, bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
+) -> dict[str, Path]:
+    """Emit the BDR pipeline once per module, into a temp dir.
+
+    Never into the committed snapshot: tests/test_committed_snapshots.py
+    diffs a fresh emission against it, and the conftest guard fails the
+    session if anything under examples/ changes.
+    """
+    return adapter.emit(bdr_pipeline, tmp_path_factory.mktemp("dbos-bdr"))
 
 
 @pytest.fixture(scope="module")
@@ -497,7 +503,8 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
     """BDR judges carry both legacy signature and signature_spec; the DBOS
     step must import the *generated* module, not the legacy path."""
     assert "from signatures.vet_contact import VetContact, VetContactInput" in main_src
-    assert "asyncio.run" not in main_src
+    # The legacy path's marker: it bridges an async forward() on the loop.
+    assert "_run_async(judge.forward" not in main_src
 
 
 # ───────── Legacy signature path + openai client (synthetic pipelines) ─────────
@@ -505,7 +512,7 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
 
 def test_legacy_signature_path_fallback() -> None:
     """A judge with only the legacy path form imports the user-maintained
-    module and bridges its async forward with asyncio.run."""
+    module and bridges its async forward with _run_async."""
     judge = Node(
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
@@ -514,7 +521,7 @@ def test_legacy_signature_path_fallback() -> None:
     )
     src = emit_main(mini_pipeline(judge), DbosAdapterConfig())
     assert "from signatures.grade_essay import (" in src
-    assert "asyncio.run(judge.forward(GradeEssayInput(**payload)))" in src
+    assert "_run_async(judge.forward(GradeEssayInput(**payload)))" in src
 
 
 def test_openai_client_signature_module() -> None:

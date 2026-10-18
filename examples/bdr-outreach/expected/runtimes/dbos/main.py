@@ -21,6 +21,8 @@ calls during the rote emission step.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import sys
@@ -104,6 +106,61 @@ def _fan_out_list(value: object, node_id: str, ref: str) -> list:
     return value
 
 
+_ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
+_ASYNC_LOOP_THREAD: threading.Thread | None = None
+_ASYNC_LOOP_LOCK = threading.Lock()
+
+
+def _run_async(awaitable: Any) -> Any:
+    """Run ``awaitable`` to completion on this process's background event loop.
+
+    Steps here are synchronous, so async work (an ``async def`` extracted
+    function, an MCP call, a legacy async judge) needs a loop to run on.
+    It gets one loop for the life of the process, on a daemon thread,
+    rather than ``asyncio.run`` per call: an async client that a module
+    keeps at module level (an ``httpx.AsyncClient``, say) binds to the
+    loop it first ran on, and ``asyncio.run`` closes that loop, so every
+    later call (each fan_out element, each retry) failed with "Event loop
+    is closed". ``asyncio.run`` also refuses to start inside a running
+    loop, which is where ``run_pipeline`` lands when async code imports it.
+    """
+    global _ASYNC_LOOP, _ASYNC_LOOP_THREAD
+    with _ASYNC_LOOP_LOCK:
+        if _ASYNC_LOOP is None:
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(target=loop.run_forever, name="rote-async", daemon=True)
+            thread.start()
+            _ASYNC_LOOP, _ASYNC_LOOP_THREAD = loop, thread
+    if threading.current_thread() is _ASYNC_LOOP_THREAD:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()  # never awaited; closing it skips the "never awaited" warning
+        raise RuntimeError(
+            "a step blocked on async work from inside the background event loop, "
+            "which would deadlock; await it instead"
+        )
+
+    async def _await() -> Any:
+        return await awaitable
+
+    return asyncio.run_coroutine_threadsafe(_await(), _ASYNC_LOOP).result()
+
+
+def _call_impl(fn: Any, payload: dict) -> Any:
+    """Call an extracted function with the step payload.
+
+    Extracted modules may be plain or ``async def``: the IR-derived stubs
+    are plain, while hand-written clients are often async. The check is
+    on the result, not the function, so a plain wrapper that returns a
+    coroutine is driven to completion too. Awaitables run on the one
+    background loop (``_run_async``).
+    """
+    result = fn(**payload)
+    if inspect.isawaitable(result):
+        result = _run_async(result)
+    return result
+
+
 @DBOS.step(name="target_research", retries_allowed=True, max_attempts=3, backoff_rate=2.0)
 def target_research(payload: dict) -> dict:
     """Run external research (Bright Data web search, ClinicalTrials.gov)
@@ -148,7 +205,7 @@ def taxonomy_lookup(payload: dict) -> dict:
     """
     from extracted.taxonomy import resolve_taxonomy_ids
 
-    return _serialize(resolve_taxonomy_ids(**payload))
+    return _serialize(_call_impl(resolve_taxonomy_ids, payload))
 
 
 @DBOS.step(name="lead_generation_loop")
@@ -198,7 +255,7 @@ def enrich_contact_batch(payload: dict) -> dict:
     # primitive; enforce inside the implementation if required.
     from extracted.zoominfo import enrich_batch
 
-    return _serialize(enrich_batch(**payload))
+    return _serialize(_call_impl(enrich_batch, payload))
 
 
 @DBOS.step(name="vet_contact")
@@ -225,7 +282,7 @@ def hubspot_upsert(payload: dict) -> dict:
     # primitive; enforce inside the implementation if required.
     from extracted.hubspot import batch_upsert_contacts
 
-    return _serialize(batch_upsert_contacts(**payload))
+    return _serialize(_call_impl(batch_upsert_contacts, payload))
 
 
 @DBOS.step(name="hubspot_create_list", retries_allowed=True, max_attempts=6, backoff_rate=2.0)
@@ -237,7 +294,7 @@ def hubspot_create_list(payload: dict) -> dict:
     """
     from extracted.hubspot import create_campaign_list
 
-    return _serialize(create_campaign_list(**payload))
+    return _serialize(_call_impl(create_campaign_list, payload))
 
 
 @DBOS.step(name="exclusion_check_dnc")
@@ -251,7 +308,7 @@ def exclusion_check_dnc(payload: dict) -> dict:
     # skill. The workflow always calls it; do not make it conditional.
     from extracted.exclusion_checks import check_do_not_contact
 
-    return _serialize(check_do_not_contact(**payload))
+    return _serialize(_call_impl(check_do_not_contact, payload))
 
 
 @DBOS.step(name="exclusion_check_recent")
@@ -265,7 +322,7 @@ def exclusion_check_recent(payload: dict) -> dict:
     # skill. The workflow always calls it; do not make it conditional.
     from extracted.exclusion_checks import check_recently_emailed
 
-    return _serialize(check_recently_emailed(**payload))
+    return _serialize(_call_impl(check_recently_emailed, payload))
 
 
 @DBOS.step(name="exclusion_check_sequence")
@@ -279,7 +336,7 @@ def exclusion_check_sequence(payload: dict) -> dict:
     # skill. The workflow always calls it; do not make it conditional.
     from extracted.exclusion_checks import check_active_sequence
 
-    return _serialize(check_active_sequence(**payload))
+    return _serialize(_call_impl(check_active_sequence, payload))
 
 
 @DBOS.step(name="personalize_email")
@@ -304,7 +361,7 @@ def create_sales_template(payload: dict) -> dict:
     """
     from extracted.hubspot import upsert_sales_template
 
-    return _serialize(upsert_sales_template(**payload))
+    return _serialize(_call_impl(upsert_sales_template, payload))
 
 
 @DBOS.step(name="pre_enrollment_report")
@@ -316,7 +373,7 @@ def pre_enrollment_report(payload: dict) -> dict:
     """
     from extracted.report import generate_pre_enrollment_report
 
-    return _serialize(generate_pre_enrollment_report(**payload))
+    return _serialize(_call_impl(generate_pre_enrollment_report, payload))
 
 
 @DBOS.workflow(name="BdrCampaign_ada0f771")

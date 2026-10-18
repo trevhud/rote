@@ -89,8 +89,12 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    async_runner_helper,
+    call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
+    has_legacy_judges,
+    needs_call_impl,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -267,7 +271,7 @@ def _emit_step_pure_or_external(node: Node) -> str:
         f"{_timeout_comment(node)}"
         f"    from extracted.{module_name} import {func_name}\n"
         f"\n"
-        f"    return _serialize({func_name}(**payload))\n"
+        f"    return _serialize(_call_impl({func_name}, payload))\n"
     )
 
 
@@ -316,14 +320,12 @@ def _emit_step_mcp(node: Node) -> str:
         f"{mandatory_marker}"
         f"{_retry_on_comment(node)}"
         f"{_timeout_comment(node)}"
-        f"    import asyncio\n"
-        f"\n"
         f"    from extracted._rote_mcp import call_mcp_tool\n"
         f"\n"
         f"{args_line}"
         f"\n"
         f"    return _serialize(\n"
-        f"        asyncio.run(\n"
+        f"        _run_async(\n"
         f"            call_mcp_tool(\n"
         f"                {binding.server!r},\n"
         f"                {url_literal},\n"
@@ -353,8 +355,6 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
         pascal_parts = _signature_path_parts(node.signature)
         module_name, class_name = pascal_parts
         import_line = (
-            f"    import asyncio\n"
-            f"\n"
             f"    from {cfg.legacy_signatures_module}.{module_name} import (\n"
             f"        {class_name},\n"
             f"        {class_name}Input,\n"
@@ -362,7 +362,7 @@ def _emit_step_llm_judge(node: Node, cfg: DbosAdapterConfig) -> str:
         )
         call_lines = (
             f"    judge = {class_name}()\n"
-            f"    result = asyncio.run(judge.forward({class_name}Input(**payload)))\n"
+            f"    result = _run_async(judge.forward({class_name}Input(**payload)))\n"
             f"    return result.model_dump(by_alias=True)\n"
         )
     return (
@@ -681,6 +681,14 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
     if any(n.fan_out for n in pipeline.nodes):
         header += "\n\n" + fan_out_list_helper()
+
+    has_impls = needs_call_impl(pipeline)
+    if has_impls or mcp_backed or has_legacy_judges(pipeline):
+        header = header.replace("import json\n", "import asyncio\nimport json\n", 1)
+        header += "\n\n" + async_runner_helper()
+    if has_impls:
+        header = header.replace("import json\n", "import inspect\nimport json\n", 1)
+        header += "\n\n" + call_impl_helper()
 
     if mcp_backed:
         header += "\n\n" + textwrap.dedent(
