@@ -1,0 +1,60 @@
+version: 1
+source_skill: ../skill
+
+# Hand-written estimates of how many agent turns each step of the source
+# skill takes when an agent runs it from SKILL.md, for the "before" side
+# of `rote eval`. Not part of the IR.
+steps:
+  - description: "Read SKILL.md, the policy, the FX table, and the report format"
+    phase: "setup"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 3, high: 4}
+
+  - description: "Convert every line to USD at the month-end rate"
+    node_id: convert_to_usd
+    phase: "convert"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 2}
+
+  - description: "Check for duplicate submissions (MANDATORY)"
+    node_id: find_duplicates
+    phase: "checks"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+
+  - description: "Check for late submissions (MANDATORY)"
+    node_id: find_late_submissions
+    phase: "checks"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+
+  - description: "Group lines by employee"
+    node_id: group_by_employee
+    phase: "audit"
+    estimated_turns: {low: 1, high: 1}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Audit one employee's report against every policy rule"
+    node_id: audit_report
+    phase: "audit"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+    iterations: {low: 5, high: 5}
+
+  - description: "Summarize the batch and build the review queue"
+    node_id: summarize_audit
+    phase: "summarize"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 1}
+
+  - description: "Post the queue and wait for the controller's decisions"
+    node_id: controller_review
+    phase: "review"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 1, high: 2}
+
+  - description: "Apply decisions, render, and file the audit report"
+    node_id: file_report
+    phase: "file"
+    estimated_turns: {low: 2, high: 4}
+    estimated_tool_calls: {low: 1, high: 3}

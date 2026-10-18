@@ -9,7 +9,28 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **A free first run.** `examples/expense-audit/` is a month-end expense
+  audit skill with a hand-compiled pipeline whose extracted modules are
+  working code, so `rote emit` + `rote run` finish end to end with no
+  credentials and no tokens on python (`pipeline-draft.yaml`, no gate),
+  dbos, and temporal (`pipeline.yaml`, with a `controller_review` HITL
+  gate). It covers a three-node parallel entry wave, a `fan_out` audit
+  per employee, mandatory checks, and policy constants lifted out of
+  prose. The README opens with it as "Try it free in 60 seconds", and
+  `tests/test_expense_audit_example.py` runs it on python in the fast
+  suite and on dbos and temporal in the slow suite (now in CI). The
+  example also carries a measured `rote eval --run` scorecard (agent
+  42.9 s and $0.22 per run vs pipeline 9.8 s and $0, identical output
+  only on the pipeline side) and a snapshot of a real `rote compile` of
+  the skill under `runs/`, with its differences from the hand-written IR
+  noted.
+
 ### Fixed
+- README and AGENTS.md accuracy: the compiler skill has six reference
+  files, not four; `rote run` executes all six runtimes (AGENTS.md said
+  python/dbos only); the slow e2e suites do run in CI; the BDR run flags
+  three mandatory nodes, not four.
 - Emitted Python agent loops report the turns that actually ran. The
   vendor-SDK lane returned `max_iterations` as `iterations`, so every loop
   looked saturated, and it logged only the final request's tokens to

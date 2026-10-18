@@ -1,0 +1,199 @@
+{
+    "input": {
+        "period": "2026-09",
+        "submissions": [
+            {
+                "id": "EXP-2401",
+                "employee": "Ana Ruiz",
+                "department": "Sales",
+                "date": "2026-09-03",
+                "category": "airfare",
+                "merchant": "Iberia",
+                "amount": 612.4,
+                "currency": "EUR",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2402",
+                "employee": "Ana Ruiz",
+                "department": "Sales",
+                "date": "2026-09-04",
+                "category": "lodging",
+                "merchant": "Hotel Urban Madrid",
+                "amount": 540.0,
+                "currency": "EUR",
+                "nights": 2,
+                "receipt": true
+            },
+            {
+                "id": "EXP-2403",
+                "employee": "Ana Ruiz",
+                "department": "Sales",
+                "date": "2026-09-04",
+                "category": "meals",
+                "merchant": "Casa Lucio",
+                "amount": 118.0,
+                "currency": "EUR",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2404",
+                "employee": "Ana Ruiz",
+                "department": "Sales",
+                "date": "2026-09-05",
+                "category": "ground_transport",
+                "merchant": "Cabify",
+                "amount": 23.5,
+                "currency": "EUR",
+                "receipt": false
+            },
+            {
+                "id": "EXP-2410",
+                "employee": "Ben Okafor",
+                "department": "Engineering",
+                "date": "2026-09-08",
+                "category": "software",
+                "merchant": "JetBrains",
+                "amount": 249.0,
+                "currency": "USD",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2411",
+                "employee": "Ben Okafor",
+                "department": "Engineering",
+                "date": "2026-09-12",
+                "category": "ground_transport",
+                "merchant": "Lyft",
+                "amount": 38.2,
+                "currency": "USD",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2412",
+                "employee": "Ben Okafor",
+                "department": "Engineering",
+                "date": "2026-09-12",
+                "category": "ground_transport",
+                "merchant": "lyft",
+                "amount": 38.2,
+                "currency": "USD",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2413",
+                "employee": "Ben Okafor",
+                "department": "Engineering",
+                "date": "2026-06-30",
+                "category": "meals",
+                "merchant": "Sweetgreen",
+                "amount": 18.75,
+                "currency": "USD",
+                "receipt": false
+            },
+            {
+                "id": "EXP-2420",
+                "employee": "Chloe Martin",
+                "department": "Marketing",
+                "date": "2026-09-15",
+                "category": "entertainment",
+                "merchant": "Dishoom",
+                "amount": 340.0,
+                "currency": "GBP",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2421",
+                "employee": "Chloe Martin",
+                "department": "Marketing",
+                "date": "2026-09-16",
+                "category": "lodging",
+                "merchant": "Premier Inn",
+                "amount": 189.0,
+                "currency": "GBP",
+                "nights": 1,
+                "receipt": true
+            },
+            {
+                "id": "EXP-2422",
+                "employee": "Chloe Martin",
+                "department": "Marketing",
+                "date": "2026-09-16",
+                "category": "meals",
+                "merchant": "Pret",
+                "amount": 12.4,
+                "currency": "GBP",
+                "receipt": false
+            },
+            {
+                "id": "EXP-2430",
+                "employee": "Dev Patel",
+                "department": "Operations",
+                "date": "2026-09-21",
+                "category": "airfare",
+                "merchant": "Air Canada",
+                "amount": 486.0,
+                "currency": "CAD",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2431",
+                "employee": "Dev Patel",
+                "department": "Operations",
+                "date": "2026-09-22",
+                "category": "lodging",
+                "merchant": "Fairmont Royal York",
+                "amount": 410.0,
+                "currency": "CAD",
+                "nights": 1,
+                "receipt": true
+            },
+            {
+                "id": "EXP-2432",
+                "employee": "Dev Patel",
+                "department": "Operations",
+                "date": "2026-09-22",
+                "category": "meals",
+                "merchant": "Pai",
+                "amount": 64.0,
+                "currency": "CAD",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2440",
+                "employee": "Emi Tanaka",
+                "department": "Design",
+                "date": "2026-09-25",
+                "category": "office_supplies",
+                "merchant": "Itoya",
+                "amount": 15400,
+                "currency": "JPY",
+                "receipt": true
+            },
+            {
+                "id": "EXP-2441",
+                "employee": "Emi Tanaka",
+                "department": "Design",
+                "date": "2026-09-26",
+                "category": "meals",
+                "merchant": "Ichiran",
+                "amount": 2980,
+                "currency": "JPY",
+                "receipt": false
+            }
+        ]
+    },
+    "signals": {
+        "controller_review": {
+            "reviewer": "Priya Shah",
+            "approved_ids": [
+                "EXP-2403",
+                "EXP-2413",
+                "EXP-2420"
+            ],
+            "rejected_ids": [
+                "EXP-2410"
+            ]
+        }
+    }
+}

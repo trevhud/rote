@@ -146,7 +146,10 @@ scaffolds that `raise NotImplementedError`:
 To run a compiled pipeline locally once stubs are filled:
 `rote run <out-dir> --input '{"your": "input"}'` — it resolves the
 emitted runtime (`--runtime` disambiguates when several were emitted),
-executes `python`/`dbos` in-process, and delivers HITL gate payloads
+executes it on any of the six runtimes (`python`/`dbos` as a subprocess,
+`temporal` on a managed local dev server, `cloudflare` under
+`wrangler dev`, `inngest` against a managed dev server, `dbos-ts`
+against Postgres or a throwaway Docker one), and delivers HITL gate payloads
 passed as `--signal <gate>='{...}'` (non-interactive runs **must** pass
 one per gate or the command exits 2 listing them). The run's output JSON
 is stdout; status is stderr. `rote run <skill-dir>` runs the *raw skill*

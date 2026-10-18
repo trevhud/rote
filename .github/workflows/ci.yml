@@ -86,7 +86,7 @@ jobs:
       # only test_mcp_e2e ran here, which left the DBOS Python runtime,
       # park-on-auth, the OAuth flow and the MCP-trigger server proven
       # only on a maintainer's laptop.
-      - name: Python e2e (MCP backend, DBOS, park-on-auth, OAuth, serve)
+      - name: Python e2e (MCP backend, DBOS, park-on-auth, OAuth, serve, free example)
         run: |
           pytest -m slow -v \
             tests/test_mcp_e2e.py \
@@ -95,6 +95,7 @@ jobs:
             tests/test_dbos_e2e.py \
             tests/test_dbos_serve_e2e.py \
             tests/test_eval_empirical_dbos.py \
+            tests/test_expense_audit_example.py \
             tests/test_serve_server.py
 
   ts-e2e:
