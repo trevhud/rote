@@ -118,6 +118,10 @@ class Scorecard:
                 "total_steps": self.pipeline.sampling.total_steps,
                 "schema_constrained_steps": self.pipeline.sampling.schema_constrained_steps,
                 "sampled_output_tokens": _range(self.pipeline.sampling.sampled_output_tokens),
+                "fan_out_widths": [
+                    {"node": w.node_id, "elements": _range(w.elements), "source": w.source}
+                    for w in self.pipeline.fan_out_widths
+                ],
                 "nodes": [
                     {
                         "id": n.node_id,
@@ -264,6 +268,11 @@ class Scorecard:
                 "at cache-write price, re-reads at cache-read price."
             )
         lines.append("- HITL gate waits are human time and excluded from wall-clock on both sides.")
+        for width in self.pipeline.fan_out_widths:
+            lines.append(
+                f"- fan_out `{width.node_id}`: {_count(width.elements)} elements per run "
+                f"({width.source}); each element is a call, run concurrently."
+            )
         lines.append(
             "- Priors (calibrated on the BDR runs in `examples/bdr-outreach/runs/`; "
             "every value overridable):"
@@ -341,12 +350,12 @@ def build_scorecard_for(
     # Anthropic endpoint exists, so other providers get the heuristic.
     count_model = prices[-1].model_id if provider == "anthropic" else None
     counter = pick_token_counter(priors, model=count_model)
-    pipeline_estimate = estimate_pipeline(pipeline, counter, priors)
+    sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
+    sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
+    pipeline_estimate = estimate_pipeline(pipeline, counter, priors, sidecar=sidecar)
 
     skill_estimate = None
     if skill_dir is not None:
-        sidecar_path = pipeline_yaml.parent / EVAL_SIDECAR_FILENAME
-        sidecar = load_eval_estimates(sidecar_path) if sidecar_path.is_file() else None
         # The agent pulls the same sources the pipeline's external_call nodes
         # bind to; use that footprint to size the before-side context payload.
         data_payload = external_call_payload_tokens(pipeline, priors)
