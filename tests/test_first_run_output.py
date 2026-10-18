@@ -393,6 +393,106 @@ def test_emit_json_reports_whether_stubs_are_tracked(
     assert json.loads(capsys.readouterr().out)["stubs_tracked"] is True
 
 
+def _emitted_module(tmp_path: Path, runtime: str, rel: str) -> tuple[Path, Path]:
+    out = tmp_path / runtime
+    _emit(BDR_PIPELINE if runtime == "cloudflare" else OPS_PIPELINE, runtime, out)
+    return out, out.resolve() / rel
+
+
+def test_python_marker_in_a_comment_or_docstring_is_not_a_stub(tmp_path: Path) -> None:
+    out, mod = _emitted_module(tmp_path, "dbos", "extracted/google_drive.py")
+    assert mod in unimplemented_stubs(out)
+    mod.write_text(
+        '"""Was a [rote stub]; now calls Drive directly."""\n\n\n'
+        "# TODO: this used to be a [rote stub]\n"
+        "def fetch_file_content(**payload):\n"
+        '    """Replaces the [rote stub] that rote emitted."""\n'
+        '    note = "see [rote stub] history in git"\n'
+        "    return {'content': note}\n",
+        encoding="utf-8",
+    )
+    assert mod not in unimplemented_stubs(out)
+
+
+def test_python_marker_inside_a_raise_is_a_stub(tmp_path: Path) -> None:
+    """Rote's template moved into a branch: still a stub, because the
+    sentinel is a raise argument (and the body is no longer bare)."""
+    out, mod = _emitted_module(tmp_path, "dbos", "extracted/google_drive.py")
+    mod.write_text(
+        "def fetch_file_content(**payload):\n"
+        "    if payload:\n"
+        "        raise NotImplementedError('[rote stub] google_drive: implement me')\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+    assert mod in unimplemented_stubs(out)
+
+
+def test_python_stub_method_on_a_class_is_a_stub(tmp_path: Path) -> None:
+    """Agent-written modules wrap vendor clients in classes."""
+    out, mod = _emitted_module(tmp_path, "dbos", "extracted/google_drive.py")
+    mod.write_text(
+        "class DriveClient:\n"
+        "    def __init__(self):\n"
+        "        self.base = 'https://www.googleapis.com/drive/v3'\n\n"
+        "    def fetch(self, file_id):\n"
+        '        """Download one file."""\n'
+        "        raise NotImplementedError('call the Drive API')\n\n\n"
+        "def fetch_file_content(**payload):\n"
+        "    return DriveClient().fetch(payload['file_id'])\n",
+        encoding="utf-8",
+    )
+    assert mod in unimplemented_stubs(out)
+
+
+def test_python_abstract_method_is_not_a_stub(tmp_path: Path) -> None:
+    out, mod = _emitted_module(tmp_path, "dbos", "extracted/google_drive.py")
+    mod.write_text(
+        "import abc\n\n\n"
+        "class Source(abc.ABC):\n"
+        "    @abc.abstractmethod\n"
+        "    def fetch(self, file_id):\n"
+        "        raise NotImplementedError\n\n\n"
+        "class Drive(Source):\n"
+        "    def fetch(self, file_id):\n"
+        "        return {'content': file_id}\n\n\n"
+        "def fetch_file_content(**payload):\n"
+        "    return Drive().fetch(payload['file_id'])\n",
+        encoding="utf-8",
+    )
+    assert mod not in unimplemented_stubs(out)
+
+
+def test_typescript_marker_in_a_comment_is_not_a_stub(tmp_path: Path) -> None:
+    out, mod = _emitted_module(tmp_path, "cloudflare", "src/extracted/hubspot_upsert.ts")
+    assert mod in unimplemented_stubs(out)
+    mod.write_text(
+        "// TODO was a [rote stub]\n"
+        "/* the [rote stub] that rote emitted\n   is gone */\n"
+        "/** Upserts contacts. Replaces the [rote stub]. */\n"
+        "export async function hubspotUpsert(_input: unknown) {\n"
+        '    const url = "https://api.hubapi.com/crm/v3"; // not a [rote stub]\n'
+        "    return { url };\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert mod not in unimplemented_stubs(out)
+
+
+def test_strip_ts_comments_keeps_strings() -> None:
+    from rote.adapters._common import strip_ts_comments
+
+    src = (
+        'const u = "https://x"; // gone\n'
+        'const t = `a//b`; /* gone */ throw new Error("[rote stub] y");'
+    )
+    cleaned = strip_ts_comments(src)
+    assert "gone" not in cleaned
+    assert '"https://x"' in cleaned
+    assert "`a//b`" in cleaned
+    assert '"[rote stub] y"' in cleaned
+
+
 def test_stub_detection_without_a_manifest_finds_nothing(tmp_path: Path) -> None:
     (tmp_path / "extracted").mkdir()
     (tmp_path / "extracted" / "x.py").write_text("raise NotImplementedError\n", encoding="utf-8")

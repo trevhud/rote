@@ -27,6 +27,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   noted.
 
 ### Fixed
+- Stub detection no longer refuses a filled-in module that only mentions
+  the `[rote stub]` marker in a comment or docstring: the marker counts
+  in Python only as a `raise` argument, and in TypeScript only outside
+  comments. Agent-written stubs that are class methods (a body of only
+  `raise NotImplementedError`) are now detected; `@abstractmethod`s are
+  not stubs.
 - README and AGENTS.md accuracy: the compiler skill has six reference
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags

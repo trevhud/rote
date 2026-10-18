@@ -283,6 +283,26 @@ class EmitWriter:
 STUB_SENTINEL = "[rote stub]"
 
 
+#: A JS/TS string literal (any quote style, template literals included), a
+#: block comment, or a line comment. One alternation, scanned left to
+#: right, so a ``//`` inside a string (a URL) is never read as a comment
+#: and a quote inside a comment never opens a string.
+_TS_TOKEN = re.compile(
+    r'(?P<string>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\]|\\.)*`)'
+    r"|(?P<comment>/\*[\s\S]*?\*/|//[^\n]*)"
+)
+
+
+def strip_ts_comments(src: str) -> str:
+    """``src`` with every TypeScript comment replaced by a space.
+
+    String literals are kept intact. Shared by stub detection (a comment
+    that mentions :data:`STUB_SENTINEL` must not keep a filled-in module
+    listed) and the tests' MCP scan (comments may explain MCP history).
+    """
+    return _TS_TOKEN.sub(lambda m: m.group("string") or " ", src)
+
+
 def _raises_not_implemented(stmt: ast.stmt) -> bool:
     if not isinstance(stmt, ast.Raise) or stmt.exc is None:
         return False
@@ -290,23 +310,48 @@ def _raises_not_implemented(stmt: ast.stmt) -> bool:
     return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
 
 
-def _python_module_is_stub(text: str) -> bool:
-    """Whether a Python module still has a top-level stub function.
+def _raises_with_sentinel(node: ast.AST) -> bool:
+    """A ``raise X("... [rote stub] ...")``: the marker as a raise argument,
+    not in a comment, docstring, or unrelated string."""
+    if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+        return False
+    return any(
+        isinstance(arg, ast.Constant) and isinstance(arg.value, str) and STUB_SENTINEL in arg.value
+        for arg in node.exc.args
+    )
 
-    A stub function's whole body (after its docstring) is one ``raise
-    NotImplementedError``. That covers rote's own templates and the stubs
-    a compile agent writes beside the pipeline (sourced verbatim, so they
-    carry no sentinel). It deliberately does not match a real
-    implementation that raises ``NotImplementedError`` on one unsupported
-    branch: a substring match flagged those, and ``rote run`` refused to
-    start working code.
+
+def _is_abstract(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for dec in func.decorator_list:
+        name = dec.attr if isinstance(dec, ast.Attribute) else getattr(dec, "id", None)
+        if name == "abstractmethod":
+            return True
+    return False
+
+
+def _python_module_is_stub(text: str) -> bool:
+    """Whether a Python module still has a stub function anywhere in it.
+
+    Two shapes count, at any depth (module functions and class methods
+    alike, since agent-written modules wrap vendor clients in classes):
+
+    * a ``raise`` whose argument carries :data:`STUB_SENTINEL` (rote's own
+      templates). A comment or docstring mentioning the marker does not
+      count, so a filled-in module that keeps a note about it is not
+      refused;
+    * a function whose whole body (after its docstring) is one ``raise
+      NotImplementedError``, the shape a compile agent writes. A real
+      implementation that raises it on one unsupported branch does not
+      match, nor does an ``@abstractmethod``, which is meant to raise.
     """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return False
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+    for node in ast.walk(tree):
+        if _raises_with_sentinel(node):
+            return True
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or _is_abstract(node):
             continue
         body = node.body
         if (
@@ -322,9 +367,9 @@ def _python_module_is_stub(text: str) -> bool:
 
 
 def _is_stub_module(path: Path, text: str) -> bool:
-    if STUB_SENTINEL in text:
-        return True
-    return path.suffix == ".py" and _python_module_is_stub(text)
+    if path.suffix == ".py":
+        return _python_module_is_stub(text)
+    return STUB_SENTINEL in strip_ts_comments(text)
 
 
 def unimplemented_stubs(output_dir: str | Path) -> list[Path]:

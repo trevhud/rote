@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from rote.adapters._common import strip_ts_comments
 from rote.ir import Node, Pipeline
 
 # ───────── MCP invariant scan (TS) ─────────
@@ -21,8 +22,6 @@ from rote.ir import Node, Pipeline
 # including backtick template literals — before scanning.
 
 _JS_STRING = re.compile(r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`')
-_BLOCK_COMMENT = re.compile(r"/\*[\s\S]*?\*/")
-_LINE_COMMENT = re.compile(r"//[^\n]*")
 
 
 def assert_no_mcp_in_ts(
@@ -51,9 +50,7 @@ def assert_no_mcp_in_ts(
             )
             continue
         src = path.read_text(encoding="utf-8")
-        cleaned = _BLOCK_COMMENT.sub(" ", src)
-        cleaned = _LINE_COMMENT.sub(" ", cleaned)
-        cleaned = _JS_STRING.sub('""', cleaned)
+        cleaned = _JS_STRING.sub('""', strip_ts_comments(src))
         assert "mcp" not in cleaned.lower(), (
             f"{label} ({path.name}) contains forbidden substring 'mcp' in executable code"
         )
