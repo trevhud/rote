@@ -28,7 +28,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from dbos import DBOS, DBOSConfig, Queue
+from dbos import DBOS, DBOSConfig
 
 # ───────── DBOS configuration ─────────
 #
@@ -43,15 +43,31 @@ config: DBOSConfig = {
         "DBOS_SYSTEM_DATABASE_URL",
         f"sqlite:///{_APP_DIR / 'bdr-campaign.dbos.sqlite'}",
     ),
-    # The admin server (port 3001) is opt-in; enable it when you
-    # want the DBOS console / management API.
-    "run_admin_server": False,
 }
 DBOS(config=config)
 
 # Parallel waves fan out onto this queue; each enqueued step runs as
-# a one-step workflow with its own durable handle.
-queue = Queue("bdr-campaign-queue")
+# a one-step workflow with its own durable handle. Externally
+# triggered runs (`rote serve` / DBOSClient.enqueue) land here too.
+# DBOS 3 persists queues in the system database and registers them
+# only after DBOS.launch(), so launch() below does both.
+QUEUE_NAME = "bdr-campaign-queue"
+
+
+def _enqueue(step: Any, payload: dict) -> Any:
+    """Run one step as its own durable one-step workflow on QUEUE_NAME."""
+    return DBOS.enqueue_workflow(QUEUE_NAME, step, payload)
+
+
+def launch() -> None:
+    """Launch DBOS, then register this app's queue.
+
+    Anything that runs this module's workflows in-process must call
+    this instead of a bare DBOS.launch(): a workflow enqueued on an
+    unregistered queue stays ENQUEUED forever.
+    """
+    DBOS.launch()
+    DBOS.register_queue(QUEUE_NAME)
 
 
 def _serialize(obj: Any) -> Any:
@@ -311,13 +327,13 @@ def run_pipeline(pipeline_input: dict) -> dict:
     # Parallel fan-out: enqueue every node in the wave, then
     # join. Each enqueued step runs as its own one-step
     # workflow; get_result() blocks durably.
-    target_research_handle = queue.enqueue(
+    target_research_handle = _enqueue(
         target_research,
         {
             "brief": pipeline_input,
         },
     )
-    taxonomy_lookup_handle = queue.enqueue(
+    taxonomy_lookup_handle = _enqueue(
         taxonomy_lookup,
         {
             "brief": pipeline_input,
@@ -398,7 +414,7 @@ def run_pipeline(pipeline_input: dict) -> dict:
             "exclusion_check_sequence.output.passed",
         )
     ]
-    personalize_email_handles = [queue.enqueue(personalize_email, _p) for _p in personalize_email_payloads]
+    personalize_email_handles = [_enqueue(personalize_email, _p) for _p in personalize_email_payloads]
     personalize_email_result = [_h.get_result() for _h in personalize_email_handles]
 
     # ─── Wave 10 ───
@@ -455,7 +471,7 @@ if __name__ == "__main__":
     #
     # HITL gates are resumed from another process either way — see
     # README.md.
-    DBOS.launch()
+    launch()
     try:
         if "--serve" in sys.argv[1:]:
             print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)

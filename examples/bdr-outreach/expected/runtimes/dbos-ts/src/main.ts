@@ -392,9 +392,6 @@ export async function main(): Promise<void> {
         // which matches `npx dbos postgres start`. The TS SDK is
         // Postgres-only — unlike DBOS Python there is no SQLite mode.
         systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
-        // The admin server (port 3001) is opt-in; enable it when you
-        // want the DBOS console / management API.
-        runAdminServer: false,
     });
     await DBOS.launch();
     try {

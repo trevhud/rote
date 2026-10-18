@@ -3,7 +3,7 @@
   "files": {
     "README.md": "e53e78fd5891ea8f26a3002e668ae1a9b54898c93db0ead45a93c5cf313edabc",
     "dbos-config.yaml": "86666ea15b0722fc57e70d4fa09812ede6cffe785090118e968ed555bc060ea6",
-    "package.json": "e227ce56e03244b881c8ca1e66882bd49dba7ed3e6241af5de3bdcc72adee9a2",
+    "package.json": "3f04b720df0fb2925745dd2c74a5c4d5bc0616ee2ae213d1923c1c12fc95ed16",
     "src/extracted/_roteMcp.ts": "95b7c7edf4c36e8ae280b109b9bf597b180296b113a047c8c692500b6f934220",
     "src/extracted/create_sales_template.ts": "72d319c5aeb05102cf200b64d77ca19146bdf76d5ea3fd99eb60f4f7cc5157cf",
     "src/extracted/enrich_contact_batch.ts": "f718e15a3ed8a33e42888e5f63430ddc64a1b4c463efc2e34ba7aaf44eaa6c1e",
@@ -16,7 +16,7 @@
     "src/extracted/pre_enrollment_report.ts": "900e205e7ab818c5059db4fa5e9b669ce355f59ca4be364a1cedb90d5ed27dae",
     "src/extracted/target_research.ts": "007cbf0cee3c1fc5f30554c107120c21dbb235ae654474a1b008d8b6e74e8599",
     "src/extracted/taxonomy_lookup.ts": "2957ddacc25475f96a63e3e6fecc779f81a8a8b987093464a4edd0e01e0ec6a5",
-    "src/main.ts": "062450041e627884edcb769bf3536bc2a970afbceb7530f882ada90c911a5d21",
+    "src/main.ts": "a0ef7649f14a223653bd0408424b105800a2b5e71a0a14ae0165a42a8a928839",
     "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
     "src/signatures/personalize_email.ts": "cff8a6f39d10141d1318ec0ddf169f52cc2b8a85b140e579064278b414b2d9d1",
     "src/signatures/vet_contact.ts": "a91199a2ed230c33027b6c212a748ac7b8327ffd4ec68508aa4873e1ef56b28a",

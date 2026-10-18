@@ -179,17 +179,53 @@ def test_retry_on_categories_surface_as_comment(main_src: str) -> None:
 def test_parallel_wave_uses_queue_fan_out(main_src: str) -> None:
     """Wave 1 (target_research ∥ taxonomy_lookup) must enqueue both nodes
     before joining either handle — otherwise the wave serializes."""
-    enq_a = main_src.index("target_research_handle = queue.enqueue(")
-    enq_b = main_src.index("taxonomy_lookup_handle = queue.enqueue(")
+    enq_a = main_src.index("target_research_handle = _enqueue(")
+    enq_b = main_src.index("taxonomy_lookup_handle = _enqueue(")
     join_a = main_src.index("target_research_result = target_research_handle.get_result()")
     join_b = main_src.index("taxonomy_lookup_result = taxonomy_lookup_handle.get_result()")
     assert max(enq_a, enq_b) < min(join_a, join_b)
 
 
+def test_queue_is_registered_after_launch_the_dbos_3_way(main_src: str) -> None:
+    """DBOS 3 rejects ``Queue(...)`` construction and only registers a
+    queue against a launched runtime, so the emitted module declares a
+    queue name and ``launch()`` registers it after ``DBOS.launch()``."""
+    tree = ast.parse(main_src)
+    # No Queue import or construction anywhere: DBOS 3 raises on import.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "dbos":
+            assert "Queue" not in {a.name for a in node.names}
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id != "Queue"
+    # The admin server and its config key are gone in DBOS 3.
+    assert "run_admin_server" not in main_src
+    assert 'QUEUE_NAME = "bdr-campaign-queue"' in main_src
+
+    launch_fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "launch"
+    )
+    calls = [ast.unparse(stmt) for stmt in launch_fn.body if isinstance(stmt, ast.Expr)]
+    assert calls[-2:] == ["DBOS.launch()", "DBOS.register_queue(QUEUE_NAME)"]
+
+    # The entrypoint goes through launch(), never a bare DBOS.launch()
+    # that would leave externally enqueued runs ENQUEUED forever.
+    main_guard = next(
+        n for n in tree.body if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)
+    )
+    guard_src = ast.unparse(main_guard)
+    assert "launch()" in guard_src
+    assert "DBOS.launch()" not in guard_src
+
+    enqueue_fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_enqueue"
+    )
+    assert "DBOS.enqueue_workflow(QUEUE_NAME, step, payload)" in ast.unparse(enqueue_fn)
+
+
 def test_single_node_waves_call_step_directly(main_src: str) -> None:
     assert "lead_generation_loop_result = lead_generation_loop(" in main_src
-    assert "queue.enqueue(\n        lead_generation_loop" not in main_src
-    assert "queue.enqueue(lead_generation_loop" not in main_src
+    assert "_enqueue(\n        lead_generation_loop" not in main_src
+    assert "_enqueue(lead_generation_loop" not in main_src
 
 
 def test_loop_body_nodes_excluded_from_workflow(main_src: str) -> None:
@@ -255,8 +291,8 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
         if not isinstance(call, ast.Call):
             continue
         func = call.func
-        if isinstance(func, ast.Attribute) and func.attr == "enqueue":
-            # queue.enqueue(<step>, <payload>)
+        if isinstance(func, ast.Name) and func.id == "_enqueue":
+            # _enqueue(<step>, <payload>)
             assert len(call.args) == 2, "enqueue must receive (step, payload)"
             name_arg, payload_arg = call.args
             assert isinstance(name_arg, ast.Name)
@@ -269,7 +305,7 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
         else:
             continue
         if step_name in fan_out_ids and isinstance(payload_arg, ast.Name):
-            # fan_out enqueues per element: queue.enqueue(<step>, _p)
+            # fan_out enqueues per element: _enqueue(<step>, _p)
             # where _p iterates the <id>_payloads comprehension. The
             # dict-literal shape lives in that comprehension instead.
             assert payload_arg.id == "_p", (
@@ -917,7 +953,7 @@ def test_fan_out_node_dispatches_per_element() -> None:
         '            "filter_posts.output.published_posts",\n'
         "        )"
     ) in src
-    assert "judge_content_handles = [queue.enqueue(judge_content, _p)" in src
+    assert "judge_content_handles = [_enqueue(judge_content, _p)" in src
     assert "judge_content_result = [_h.get_result() for _h in judge_content_handles]" in src
     # The whole-list single-call shape must be gone.
     assert "judge_content_result = judge_content(" not in src

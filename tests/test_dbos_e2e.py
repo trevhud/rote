@@ -214,9 +214,9 @@ def dbos_app(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory): 
         sys.modules["bdr_dbos_main"] = main_module
         spec.loader.exec_module(main_module)
 
-        from dbos import DBOS
-
-        DBOS.launch()
+        # The emitted launch(), not a bare DBOS.launch(): DBOS 3 only
+        # registers the fan-out queue against a launched runtime.
+        main_module.launch()
         yield main_module, record_path
     finally:
         from dbos import DBOS

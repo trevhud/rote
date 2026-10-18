@@ -472,7 +472,7 @@ def test_dbos_ts_parses_trailing_json_after_sdk_banner() -> None:
 
     stdout = (
         "Running DBOS system database migrations...\n"
-        "Initializing DBOS (v4.23.6)\n"
+        "Initializing DBOS (v5.3.0)\n"
         "System Database URL: postgresql://postgres:***@localhost:5432/x\n"
         '{\n  "gate": {\n    "ok": true\n  }\n}\n'
     )

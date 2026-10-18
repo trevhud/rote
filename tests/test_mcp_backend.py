@@ -181,7 +181,7 @@ def test_parallel_mcp_wave_joins_through_auth_park() -> None:
     )
     src = emit_main(pipeline, DbosAdapterConfig())
     assert "enrich_a_payload = {" in src
-    assert "lambda: queue.enqueue(enrich_a, enrich_a_payload)" in src
+    assert "lambda: _enqueue(enrich_a, enrich_a_payload)" in src
     assert "_join_with_auth_park(" in src
     ast.parse(src)
 
