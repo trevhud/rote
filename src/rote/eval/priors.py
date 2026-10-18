@@ -136,6 +136,11 @@ class Priors:
     output; the real fix is bounding the node in the IR.
     """
 
+    fan_out_elements_per_run: int = 10
+    """Elements a ``fan_out`` node runs over in one run, used when the
+    compiler's ``eval.yaml`` records no ``iterations`` for that node. The
+    list is data, so the IR cannot say. Every element is its own call."""
+
     chars_per_token: float = 3.8
     """Fallback tokenizer approximation used only when no API key is
     available for the exact ``count_tokens`` endpoint; the scorecard

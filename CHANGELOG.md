@@ -112,6 +112,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   dependencies or DBOS code, and runs the fast suite plus the DBOS
   Python and DBOS-TS e2e suites. An upstream major that breaks rote now
   turns CI red instead of reaching fresh installs first.
+### Fixed
+- `rote eval` prices a `fan_out` node per element. The estimator gave
+  every non-loop node one call per run, so a fanned judge (BDR's
+  `personalize_email`, deal-monitor's `classify_thread_step`)
+  understated the after-side dollars by the fan width. The width comes
+  from the compiler's `eval.yaml` (`iterations` on the node's step)
+  when it records one, else from the new `fan_out_elements_per_run`
+  prior (default 10, `--prior` to override). The scorecard's
+  Assumptions section lists each fanned node's width and source. Elements
+  run concurrently, so they multiply tokens and dollars but not wall time.
 
 ## [0.14.0] - 2026-10-18
 
