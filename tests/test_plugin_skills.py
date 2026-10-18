@@ -17,8 +17,8 @@ import pytest
 import yaml
 
 from rote.adapters import get_adapter
-from rote.cli import STUB_MARKERS
-from rote.ir import load_pipeline
+from rote.cli import STUB_MARKERS, _unimplemented_stubs
+from rote.ir import NodeKind, Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILLS_DIR = REPO_ROOT / "plugin" / "skills"
@@ -31,7 +31,6 @@ SKILL_FILES = sorted(SKILLS_DIR.glob("*/SKILL.md"))
 _DESCRIPTION_LIMIT = 1536
 
 _LINK = re.compile(r"\]\(([^)#\s]+)\)")
-_BACKTICKED = re.compile(r"`([^`\s]+)`")
 
 
 def _split_frontmatter(path: Path) -> tuple[dict[str, object], str]:
@@ -85,19 +84,23 @@ def test_implement_lists_the_cli_stub_markers() -> None:
 _USER_AMENDABLE = {"package.json", "requirements.txt"}
 
 
-def _owned_patterns() -> list[str]:
-    """Every backticked path in the skill's "Never edit" section."""
+#: Placeholder the skill uses for files named after an agent_loop node.
+_LOOP_PLACEHOLDER = "<agent_loop node id>"
+
+
+def _owned_patterns(pipeline: Pipeline) -> list[str]:
+    """Every backticked path in the skill's "Never edit" section, with the
+    agent-loop placeholder expanded to this pipeline's loop node ids."""
     text = (IMPLEMENT / "SKILL.md").read_text(encoding="utf-8")
     section = text.split("## 5. Never edit rote-owned files", 1)[1].split("\n## ", 1)[0]
-    return _BACKTICKED.findall(section)
-
-
-def _is_user_stub(rel: str) -> bool:
-    parts = rel.split("/")
-    if "extracted" not in parts:
-        return False
-    name = parts[-1]
-    return not name.startswith("_") and name not in {"__init__.py"}
+    loop_ids = [n.id for n in pipeline.nodes if n.kind is NodeKind.AGENT_LOOP]
+    patterns: list[str] = []
+    for token in re.findall(r"`([^`]+)`", section):
+        if _LOOP_PLACEHOLDER in token:
+            patterns.extend(token.replace(_LOOP_PLACEHOLDER, i) for i in loop_ids)
+        elif " " not in token:
+            patterns.append(token)
+    return patterns
 
 
 @pytest.mark.parametrize(
@@ -112,31 +115,36 @@ def _is_user_stub(rel: str) -> bool:
     ],
 )
 def test_implement_names_every_rote_owned_file(example: str, runtime: str, tmp_path: Path) -> None:
-    """Every file rote emits outside the user's stub modules must be
-    covered by the skill's "Never edit" list, so a new emitted helper or
-    entrypoint cannot quietly become something the agent edits.
+    """Every file rote emits, other than the stubs the user fills in, must be
+    covered by the skill's "Never edit" list, so a new emitted helper,
+    entrypoint, or generated agent-loop module cannot quietly become
+    something the agent edits.
 
-    BDR exercises judges, agent loops, MCP bindings and gates, which pulls
-    in every verbatim helper; invoice-push is HITL-free, which the python
-    adapter requires.
+    The user's files are exactly what the CLI reports as stubs
+    (``_unimplemented_stubs``, the same list the skill starts from), not a
+    path guess: ``src/extracted/<loop>.ts`` sits beside the stubs but is
+    working generated code. BDR exercises judges, agent loops, MCP bindings
+    and gates, which pulls in every verbatim helper; invoice-push is
+    HITL-free, which the python adapter requires.
     """
     pipeline = load_pipeline(REPO_ROOT / "examples" / example / "expected" / "pipeline.yaml")
-    written = get_adapter(runtime).emit(pipeline, tmp_path / runtime)
-    root = (tmp_path / runtime).resolve()
-    patterns = _owned_patterns()
+    out = tmp_path / runtime
+    written = get_adapter(runtime).emit(pipeline, out)
+    root = out.resolve()
+    patterns = _owned_patterns(pipeline)
 
-    owned = set()
-    for path in written.values():
-        rel = path.resolve().relative_to(root).as_posix()
-        if _is_user_stub(rel) or rel.rsplit("/", 1)[-1] in _USER_AMENDABLE:
-            continue
-        owned.add(rel)
+    def rel(path: str | Path) -> str:
+        return Path(path).resolve().relative_to(root).as_posix()
+
+    user_files = {rel(p) for p in _unimplemented_stubs(written)}
+    owned = {rel(p) for p in written.values()} - user_files
+    owned = {r for r in owned if r.rsplit("/", 1)[-1] not in _USER_AMENDABLE}
     owned.add(".rote-manifest.json")
-    assert owned, "emit produced no rote-owned files; the check would be vacuous"
+    assert len(owned) > 1, "emit produced no rote-owned files; the check would be vacuous"
 
-    def covered(rel: str) -> bool:
-        name = rel.rsplit("/", 1)[-1]
-        return any(fnmatch.fnmatch(rel, p) or p == name for p in patterns)
+    def covered(r: str) -> bool:
+        name = r.rsplit("/", 1)[-1]
+        return any(fnmatch.fnmatch(r, p) or p == name for p in patterns)
 
-    uncovered = sorted(rel for rel in owned if not covered(rel))
+    uncovered = sorted(r for r in owned if not covered(r))
     assert not uncovered, f"implement skill's Never-edit list misses: {uncovered}"

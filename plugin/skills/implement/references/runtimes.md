@@ -5,21 +5,24 @@ different shape. Confirm against the generated workflow file every time.
 That file is the contract the emitter actually wrote, and this page can
 drift from it.
 
-## Python runtimes
-
-### dbos, python
+## Python runtimes (dbos, python, temporal)
 
 - **Stubs:** `extracted/<module>.py`, one module per `impl` path. Several
   nodes can share one function (an IR `impl` of
   `extracted/google_drive.py:fetch_file_content` on three nodes is one
   function called three times).
-- **Call shape:** `main.py` calls `func(**payload)`. The payload keys are
-  the node's `inputs:` parameter names, plus the node's constants. Read
-  the step body in `main.py` for the exact keys. Give the function
-  explicit keyword parameters rather than `**payload`, so a contract
-  change fails loudly.
-- **Sync, not async.** DBOS steps and the python script call the
-  function directly.
+- **Call shape:** the generated step calls `func(**payload)`. The payload
+  keys are the node's `inputs:` parameter names plus its IR `constants`.
+  Read the payload literal in `main.py` (dbos, python) or `workflow.py`
+  (temporal) for the exact keys per node. Give the function explicit
+  keyword parameters rather than `**payload`, so a contract change fails
+  loudly. When nodes sharing a function send different constant sets
+  (one sends `tab_name`, the others do not), the extra parameter needs a
+  default.
+- **Sync or async:** check how the step calls your function. When it
+  goes through the emitted `_call_impl`, both plain and `async def`
+  functions work. When it calls the function directly, write a plain
+  function, because a coroutine would come back unawaited.
 - **Return value:** a single-type `output` (`output: raw_content str`)
   is returned bare, and downstream receives exactly that value. A map
   `output` is a dict with those keys. Pydantic models are fine because
@@ -27,28 +30,14 @@ drift from it.
 - **IR-adjacent source:** if `extracted/<module>.py` exists beside the
   `pipeline.yaml`, emission copies it into the runtime dir verbatim.
   Write there and re-emit when that directory exists.
-- **Run:** `uvx --from 'rote-cli[dbos]' rote run <dir> --input ... --signal ...`.
-  DBOS uses a local SQLite file by default, so no infrastructure is
-  needed. The python runtime refuses pipelines with HITL gates at emit
-  time.
-
-### temporal
-
-- **Stubs:** none are emitted. `activities.py` imports
-  `from <package>.extracted.<module> import <func>`, where `<package>`
-  is the adapter's configured module path (`expected` by default).
-  Create that package on the import path (`<package>/__init__.py`,
-  `<package>/extracted/__init__.py`, `<package>/extracted/<module>.py`)
-  next to the emitted files.
-- **Async.** Activities `await func(**payload)`, so implementations must
-  be `async def`. Use an async HTTP client, or run blocking SDK calls in
-  `asyncio.to_thread`.
-- **Return value:** the same rules as dbos.
-- **Judges on the legacy path:** a `signature: 'path.py:Class'` judge
-  without `signature_spec` imports a class you write. A `signature_spec`
-  judge is emitted working.
-- **Run:** `uvx --from 'rote-cli[temporal]' rote run <dir> ...`. It
-  starts a local Temporal dev server itself.
+- **Judges on temporal's legacy path:** a `signature: 'path.py:Class'`
+  judge without `signature_spec` imports a class you write. A
+  `signature_spec` judge is emitted working on every runtime.
+- **Run:** `uvx --from 'rote-cli[dbos]' rote run <dir> --input ... --signal ...`
+  for dbos, which uses a local SQLite file by default.
+  `'rote-cli[temporal]'` for temporal, which starts a local Temporal dev
+  server itself. The python runtime refuses pipelines with HITL gates at
+  emit time.
 
 ## TypeScript runtimes (cloudflare, dbos-ts, inngest)
 
@@ -66,8 +55,12 @@ drift from it.
   instances. The workflow reads fields as
   `(<id>_result as Record<string, unknown>)["field"]`, so any concrete
   object type compiles.
-- **Constants:** read them off the input like the other keys, and check
-  the call site in the workflow file.
+- **Constants are not passed.** The workflow sends only the node's
+  `inputs:`. The stub's doc comment lists the node's constants under
+  "Constants from the source skill"; write them into the file as named
+  constants. One file serves one node, so there is no ambiguity.
+- **Agent-loop modules are not stubs.** `src/extracted/<loop node id>.ts`
+  is generated working code. Leave it alone.
 - **Python code does not carry over.** The compiler's
   `extracted/*.py` beside the IR is not used by TS runtimes. Port the
   logic.

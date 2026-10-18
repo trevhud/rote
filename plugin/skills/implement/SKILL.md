@@ -73,10 +73,9 @@ Read three keys from the JSON:
   `pipeline.yaml` break (missing function, wrong signature, syntax
   error). Treat any `error` as a defect to fix.
 
-Temporal is the exception: its emitter writes no `extracted/` modules at
-all, so the list comes back empty. Read the `from <package>.<module>
-import <func>` lines in `activities.py` instead. Each one names a module
-you must create. See [references/runtimes.md](references/runtimes.md).
+The list covers every runtime, temporal included. Files under
+`extracted/` that are not on it are rote's, even when they sit right
+next to the stubs (see section 5).
 
 ## 3. Read each node's contract
 
@@ -110,11 +109,16 @@ Read the generated call site in the workflow file to confirm it.
 
 Two rules that are easy to get wrong:
 
-- **Constants arrive with the call.** Each node's IR `constants` reach
-  the implementation at run time, so a function shared by several nodes
-  receives the values for the node that is calling it. Use what you
-  receive. Never hard-code one node's constant into a shared function.
-  Confirm against the generated call site.
+- **Constants: Python receives them, TypeScript does not.** On dbos,
+  python and temporal, each node's IR `constants` arrive as keyword
+  arguments next to its inputs. A function several nodes share
+  receives the calling node's values, so take each constant as a
+  keyword parameter and never hard-code one node's value. Every calling
+  node is listed in the stub's docstring with its constants. A constant
+  that only some callers send needs a default. The TypeScript runtimes
+  pass no constants. Each TS stub serves exactly one node, and its doc
+  comment lists that node's constants, so write them into that file as
+  named constants. Confirm either way against the generated call site.
 - **Optional pipeline inputs may be absent.** An `input_schema` field not
   in `required` can be missing or null. Apply the default the schema's
   description names (for example "omit to default to today") inside the
@@ -162,6 +166,10 @@ tests:
 - the workflow and wiring: `main.py` (dbos, python), `workflow.py`,
   `activities.py` and `__init__.py` (temporal), `src/workflow.ts`,
   `src/index.ts`, `src/main.ts`, `src/inngest/*`;
+- generated agent-loop modules on the TypeScript runtimes:
+  `src/extracted/<agent_loop node id>.ts`. They sit beside the stubs
+  but are working code that binds the loop's tools and calls the
+  inference helper;
 - the verbatim runtime helpers: `extracted/_rote_mcp.py`,
   `signatures/_rote_inference.py`, `src/extracted/_roteMcp.ts`,
   `src/signatures/_roteInference.ts`;
@@ -176,8 +184,8 @@ tests:
 If the bug is in one of these files, the fix belongs in the IR or in
 rote itself. Stop and tell the user. Do not patch emitted code.
 
-Your files are the stub modules from step 2 and any new modules you
-import from them.
+Your files are exactly the stub modules on step 2's list, plus any new
+modules you import from them.
 
 ## 6. Respect re-emit
 
@@ -196,8 +204,9 @@ fresh rote output lands next to it as `<name>.new`.
 - A `.new` next to a rote-owned file means someone edited that file.
   Show the user the diff. The usual answer is to move their change
   somewhere it belongs and accept the fresh file.
-- For dbos and python, emission copies `extracted/<module>.py` from
-  beside the `pipeline.yaml` into the runtime dir verbatim. When that
+- For dbos, python and temporal, emission copies
+  `extracted/<module>.py` from beside the `pipeline.yaml` into the
+  runtime dir verbatim. When that
   directory exists, it is the source of truth: write the implementation
   there and re-emit, so every Python runtime emitted from this IR gets
   the same code.
