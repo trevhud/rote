@@ -21,6 +21,8 @@ calls during the rote emission step.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import os
 import sys
@@ -104,27 +106,58 @@ def _fan_out_list(value: object, node_id: str, ref: str) -> list:
     return value
 
 
+_ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
+_ASYNC_LOOP_THREAD: threading.Thread | None = None
+_ASYNC_LOOP_LOCK = threading.Lock()
+
+
+def _run_async(awaitable: Any) -> Any:
+    """Run ``awaitable`` to completion on this process's background event loop.
+
+    Steps here are synchronous, so async work (an ``async def`` extracted
+    function, an MCP call, a legacy async judge) needs a loop to run on.
+    It gets one loop for the life of the process, on a daemon thread,
+    rather than ``asyncio.run`` per call: an async client that a module
+    keeps at module level (an ``httpx.AsyncClient``, say) binds to the
+    loop it first ran on, and ``asyncio.run`` closes that loop, so every
+    later call (each fan_out element, each retry) failed with "Event loop
+    is closed". ``asyncio.run`` also refuses to start inside a running
+    loop, which is where ``run_pipeline`` lands when async code imports it.
+    """
+    global _ASYNC_LOOP, _ASYNC_LOOP_THREAD
+    with _ASYNC_LOOP_LOCK:
+        if _ASYNC_LOOP is None:
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(target=loop.run_forever, name="rote-async", daemon=True)
+            thread.start()
+            _ASYNC_LOOP, _ASYNC_LOOP_THREAD = loop, thread
+    if threading.current_thread() is _ASYNC_LOOP_THREAD:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()  # never awaited; closing it skips the "never awaited" warning
+        raise RuntimeError(
+            "a step blocked on async work from inside the background event loop, "
+            "which would deadlock; await it instead"
+        )
+
+    async def _await() -> Any:
+        return await awaitable
+
+    return asyncio.run_coroutine_threadsafe(_await(), _ASYNC_LOOP).result()
+
+
 def _call_impl(fn: Any, payload: dict) -> Any:
     """Call an extracted function with the step payload.
 
     Extracted modules may be plain or ``async def``: the IR-derived stubs
-    are plain, while hand-written clients are often async. Calling an
-    async function without awaiting it returns a coroutine, which then
-    fails far from here when the result is serialized. So an awaitable
-    result runs to completion on a fresh event loop. Steps here are
-    synchronous and run with no loop of their own, so that is safe in
-    worker threads too.
+    are plain, while hand-written clients are often async. The check is
+    on the result, not the function, so a plain wrapper that returns a
+    coroutine is driven to completion too. Awaitables run on the one
+    background loop (``_run_async``).
     """
-    import asyncio
-    import inspect
-
     result = fn(**payload)
     if inspect.isawaitable(result):
-
-        async def _await() -> Any:
-            return await result
-
-        result = asyncio.run(_await())
+        result = _run_async(result)
     return result
 
 

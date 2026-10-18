@@ -61,9 +61,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   functions. Steps called every implementation directly, so an async one
   (BDR's hand-written clients are async) returned an unawaited coroutine
   and the run died downstream with `'coroutine' object is not
-  subscriptable`. Steps now go through an emitted `_call_impl` that
-  passes plain results through and runs awaitable ones to completion,
-  also inside parallel-wave worker threads.
+  subscriptable`. Steps now go through an emitted `_call_impl`, and all
+  async work in those runtimes (async impls, dbos MCP steps, legacy
+  async judges) runs on one background event loop per process instead
+  of `asyncio.run` per call. So a module-level async client (an
+  `httpx.AsyncClient`) keeps working across fan_out elements and
+  retries, and emitted steps work when called from inside a running
+  loop. Temporal shares the same helper's async form, which now also
+  awaits a coroutine returned by a plain function.
 - README and AGENTS.md accuracy: the compiler skill has six reference
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags

@@ -75,9 +75,11 @@ from rote.adapters._py_common import (
     _payload_literal,
     _signature_path_parts,
     agent_loop_call,
+    async_runner_helper,
     call_impl_helper,
     fan_out_binding,
     fan_out_list_helper,
+    has_legacy_judges,
     needs_call_impl,
     serialize_helper,
     write_extracted_package,
@@ -245,15 +247,13 @@ def _emit_node_llm_judge(node: Node, cfg: PythonAdapterConfig) -> str:
         assert node.signature is not None
         module_name, class_name = _signature_path_parts(node.signature)
         import_block = (
-            f"    import asyncio\n"
-            f"\n"
             f"    from {cfg.legacy_signatures_module}.{module_name} import (\n"
             f"        {class_name},\n"
             f"        {class_name}Input,\n"
             f"    )\n"
         )
         call_expr = (
-            f"asyncio.run({class_name}().forward({class_name}Input(**payload)))"
+            f"_run_async({class_name}().forward({class_name}Input(**payload)))"
             f".model_dump(by_alias=True)"
         )
     return (
@@ -400,7 +400,16 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     has_retry = _has_retry(pipeline)
     has_parallel = _has_parallel_wave(pipeline)
 
+    has_impls = needs_call_impl(pipeline)
+    needs_async_runner = has_impls or has_legacy_judges(pipeline)
+
     import_lines = ["import json", "import os", "import sys"]
+    if needs_async_runner:
+        import_lines = ["import asyncio", *import_lines]
+    if has_impls:
+        import_lines.insert(import_lines.index("import json") + 1, "import inspect")
+    if needs_async_runner:
+        import_lines.append("import threading")
     if has_retry:
         import_lines.append("import time")
     if has_parallel:
@@ -462,7 +471,9 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     )
     if any(n.fan_out for n in pipeline.nodes):
         serialize_block += "\n\n" + fan_out_list_helper()
-    if needs_call_impl(pipeline):
+    if needs_async_runner:
+        serialize_block += "\n\n" + async_runner_helper()
+    if has_impls:
         serialize_block += "\n\n" + call_impl_helper()
 
     node_parts: list[str] = []

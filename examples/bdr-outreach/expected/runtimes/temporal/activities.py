@@ -43,14 +43,19 @@ def _serialize(obj: Any) -> Any:
 async def _call_impl(fn: Any, payload: dict) -> Any:
     """Call an extracted function with the step payload.
 
-    A coroutine function is awaited. A plain one, which is what
-    the shared stubs and most agent-written modules are, runs
-    in a worker thread so it cannot block the activity's event
-    loop.
+    A coroutine function is awaited on this event loop. A plain one runs
+    in a worker thread so it cannot block the loop, and if what it
+    returns is awaitable (a plain wrapper around an async client), that
+    is awaited here too. The python and dbos runtimes emit the
+    synchronous twin of this helper and accept exactly the same forms.
     """
     if inspect.iscoroutinefunction(fn):
-        return await fn(**payload)
-    return await asyncio.to_thread(fn, **payload)
+        result = await fn(**payload)
+    else:
+        result = await asyncio.to_thread(fn, **payload)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
 
 @activity.defn(name="target_research")

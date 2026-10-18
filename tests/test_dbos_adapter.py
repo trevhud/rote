@@ -497,20 +497,8 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
     """BDR judges carry both legacy signature and signature_spec; the DBOS
     step must import the *generated* module, not the legacy path."""
     assert "from signatures.vet_contact import VetContact, VetContactInput" in main_src
-    # The legacy path drives an async forward() with asyncio.run; the
-    # generated one is synchronous. (_call_impl also uses asyncio.run, for
-    # async extracted functions, so scope the check to the judge steps.)
-    tree = ast.parse(main_src)
-    judge_steps = {"vet_contact", "personalize_email"}
-    bodies = [
-        ast.get_source_segment(main_src, fn)
-        for fn in tree.body
-        if isinstance(fn, ast.FunctionDef) and fn.name in judge_steps
-    ]
-    assert len(bodies) == len(judge_steps)
-    for body in bodies:
-        assert body is not None
-        assert "asyncio.run" not in body
+    # The legacy path's marker: it bridges an async forward() on the loop.
+    assert "_run_async(judge.forward" not in main_src
 
 
 # ───────── Legacy signature path + openai client (synthetic pipelines) ─────────
@@ -518,7 +506,7 @@ def test_main_prefers_signature_spec(main_src: str) -> None:
 
 def test_legacy_signature_path_fallback() -> None:
     """A judge with only the legacy path form imports the user-maintained
-    module and bridges its async forward with asyncio.run."""
+    module and bridges its async forward with _run_async."""
     judge = Node(
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
@@ -527,7 +515,7 @@ def test_legacy_signature_path_fallback() -> None:
     )
     src = emit_main(mini_pipeline(judge), DbosAdapterConfig())
     assert "from signatures.grade_essay import (" in src
-    assert "asyncio.run(judge.forward(GradeEssayInput(**payload)))" in src
+    assert "_run_async(judge.forward(GradeEssayInput(**payload)))" in src
 
 
 def test_openai_client_signature_module() -> None:
