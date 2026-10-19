@@ -96,9 +96,11 @@ Every outcome literal the code writes needs a marker: a label it
 returns, or a string it puts under a key, keyword, or variable whose
 name says outcome (`severity`, `status`, `category`, `level`,
 `alert`, `route`, `tier`, `decision`, `flag`, `label`, `priority`...).
-A marker covers the statement it is on, and the code below it up to the
-next blank line (10 lines at most), so one comment above an
-`if`/`elif` chain covers the chain. rote reports an outcome literal
+A marker covers the statement it is on, or sits in the comment block
+directly above that statement, or directly above the `if` that decides
+it. One comment above an `if`/`elif` chain, or above a ladder of `if`s
+that each `return`, covers the whole chain. It does not cover the next,
+independent check: give each decision its own marker. rote reports an outcome literal
 with no marker. When the skill does NOT state the outcome, choose one of
 two:
 

@@ -145,6 +145,25 @@ def test_a_marked_outcome_or_a_non_outcome_passes(source: str) -> None:
     assert unmarked_outcomes(source) == []
 
 
+def test_a_citation_for_one_check_does_not_cover_the_next() -> None:
+    """The real case: an expense-audit compile's over-cap severity sat in a
+    second, independent `if`, with an unrelated lodging-nights citation a
+    few lines up. Proximity "covered" it; the decision went unexamined."""
+    source = (
+        "def audit(line, findings):\n"
+        '    # skill: "Entertainment always needs a pre-approval id"\n'
+        '    if line["category"] == "entertainment":\n'
+        '        findings.append({"severity": "block"})\n'
+        '    if line["category"] in CAPS:\n'
+        '        if line["category"] == "lodging":\n'
+        '            # skill: "the cap is $325.00 times nights"\n'
+        '            cap = CAPS["lodging"] * line["nights"]\n'
+        '        if line["amount"] > cap:\n'
+        '            findings.append({"severity": "review"})\n'
+    )
+    assert [lit.value for lit in unmarked_outcomes(source)] == ["review"]
+
+
 def test_a_marker_does_not_reach_past_a_blank_line() -> None:
     source = (
         "def f(n):\n"

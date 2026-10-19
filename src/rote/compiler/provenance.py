@@ -64,9 +64,6 @@ OUTCOME_WORDS = frozenset(
     }
 )
 
-#: How far above an outcome's statement a covering marker may sit.
-MARKER_REACH_LINES = 10
-
 _CITATION_START = re.compile(r"#[ \t]*skill:[ \t]*")
 _ASSUMPTION_RE = re.compile(r"#\s*rote:\s*assumption:\s*(?P<text>.+)")
 _MARKER_RE = re.compile(r"#\s*(skill:|rote:\s*assumption:)")
@@ -248,24 +245,85 @@ def outcome_literals(tree: ast.Module) -> list[ast.Constant]:
     return found
 
 
-def _statement_spans(tree: ast.Module) -> list[tuple[int, int]]:
-    return [
-        (n.lineno, n.end_lineno or n.lineno)
-        for n in ast.walk(tree)
-        if isinstance(n, ast.stmt) and not isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-    ]
+def _parents(tree: ast.Module) -> dict[ast.AST, ast.AST]:
+    return {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _anchors(stmt: ast.stmt, parents: dict[ast.AST, ast.AST]) -> list[int]:
+    """The lines whose introducing comment may vouch for ``stmt``.
+
+    The statement itself, every compound statement enclosing it (up to its
+    function), and for each of those, the first of a run of sibling ``if``
+    statements that each return or raise: one comment above such a ladder
+    (``if n >= 41: return ...`` then ``if n >= 25: return ...``) describes
+    all of it. Independent checks that fall through are not a ladder, so a
+    citation for one does not cover the next (a real compile's cap check
+    was "covered" by the entertainment check's citation above it).
+    ``elif``/``else`` arms are already inside their ``if``.
+    """
+    anchors: list[int] = []
+    node: ast.AST | None = stmt
+    while node is not None and not isinstance(node, ast.Module):
+        if isinstance(node, ast.stmt):
+            anchors.append(node.lineno)
+            parent = parents.get(node)
+            for field in ("body", "orelse", "finalbody"):
+                siblings = getattr(parent, field, None)
+                if isinstance(siblings, list) and node in siblings:
+                    i = siblings.index(node)
+                    while isinstance(node, ast.If) and i > 0 and _returns(siblings[i - 1]):
+                        i -= 1
+                    anchors.append(siblings[i].lineno)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            break
+        node = parents.get(node)
+    return anchors
+
+
+def _returns(stmt: ast.stmt) -> bool:
+    """An ``if`` whose body ends by leaving: a rung of an early-return ladder."""
+    return (
+        isinstance(stmt, ast.If)
+        and bool(stmt.body)
+        and isinstance(stmt.body[-1], ast.Return | ast.Raise)
+    )
+
+
+def _comment_block_above(lines: list[str], line: int) -> range:
+    """Line numbers of the comment lines directly above ``line``."""
+    top = line
+    while top > 1 and lines[top - 2].lstrip().startswith("#"):
+        top -= 1
+    return range(top, line)
+
+
+def _span(node: ast.stmt) -> int:
+    return (node.end_lineno or node.lineno) - node.lineno
+
+
+def _innermost_statement(tree: ast.Module, lineno: int) -> ast.stmt | None:
+    best: ast.stmt | None = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.stmt)
+            and not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+            and node.lineno <= lineno <= (node.end_lineno or node.lineno)
+            and (best is None or _span(node) < _span(best))
+        ):
+            best = node
+    return best
 
 
 def unmarked_outcomes(source: str) -> list[ast.Constant]:
-    """Outcome literals with no citation or assumption marker covering them.
+    """Outcome literals no citation or assumption marker vouches for.
 
-    A marker covers the code below it up to the next blank line, the way a
-    comment above an ``if``/``elif`` chain describes the whole chain, and
-    the statement it trails, but reaches at most :data:`MARKER_REACH_LINES`
-    lines: one marker at the top of a long function does not vouch for
-    every label in it. So for each outcome literal: take the
-    innermost statement holding it, and look for a marker on its lines or
-    on any line above it with no blank line in between.
+    A marker vouches for a literal when it sits on the literal's own
+    statement, or in the comment block directly above that statement, or
+    directly above a compound statement enclosing it (the ``if`` that
+    decides it, or the first ``if`` of a ladder of them). Proximity is
+    not enough: a real compile's ``severity: "review"` was "covered" by
+    an unrelated lodging-nights comment six lines up, so a looser rule
+    would let the very decision this exists for pass unexamined.
     """
     try:
         tree = ast.parse(source)
@@ -273,17 +331,20 @@ def unmarked_outcomes(source: str) -> list[ast.Constant]:
         return []  # check_contracts reports it
     lines = source.splitlines()
     marked = {i + 1 for i, line in enumerate(lines) if _MARKER_RE.search(line)}
-    spans = _statement_spans(tree)
+    parents = _parents(tree)
     missing: list[ast.Constant] = []
     for literal in outcome_literals(tree):
-        holding = [s for s in spans if s[0] <= literal.lineno <= s[1]]
-        start, end = (
-            min(holding, key=lambda s: s[1] - s[0]) if holding else (literal.lineno, literal.lineno)
-        )
-        top = start
-        while top > 1 and start - top < MARKER_REACH_LINES and lines[top - 2].strip():
-            top -= 1
-        if not any(top <= line <= end for line in marked):
+        stmt = _innermost_statement(tree, literal.lineno)
+        if stmt is None:
+            own = range(literal.lineno, literal.lineno + 1)
+            anchors = [literal.lineno]
+        else:
+            own = range(stmt.lineno, (stmt.end_lineno or stmt.lineno) + 1)
+            anchors = _anchors(stmt, parents)
+        vouching = set(own)
+        for anchor in anchors:
+            vouching.update(_comment_block_above(lines, anchor))
+        if not vouching & marked:
             missing.append(literal)
     return missing
 
@@ -380,10 +441,8 @@ def provenance_findings(
                         "uncited_outcome",
                         f"{rel} line {literal.lineno}: {literal.value!r} is an outcome the "
                         f'code decides, with no # skill: "..." citation or '
-                        f"# rote: assumption: marker on its statement or in the comment "
-                        f"and code directly above it (up to a blank line, "
-                        f"{MARKER_REACH_LINES} lines "
-                        f"at most)",
+                        f"# rote: assumption: marker on its statement, or in the comment "
+                        f"directly above it or above the if that decides it",
                         rel,
                     )
                 )

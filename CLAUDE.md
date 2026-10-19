@@ -1302,8 +1302,10 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   (headings excluded), fragments match in order within one paragraph,
   the quote closes at the `"` ending a comment line (so it may contain
   quotes), every outcome literal in a pure_function module needs a
-  marker within reach (its statement, or up to a blank line above it,
-  10 lines max), and Open questions must have one entry per assumption.
+  marker on its statement or in the comment directly above it or above
+  the `if` that decides it (an early-return `if` ladder counts as one;
+  independent checks do not, because proximity let a real compile's
+  cap severity pass under an unrelated citation), and Open questions must have one entry per assumption.
   `tests/test_provenance.py` holds the gaming cases, each verified by a
   mutation.
 
