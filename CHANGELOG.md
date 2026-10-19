@@ -10,6 +10,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **`rote example [<name>]`: the free first run without a clone.** pip and
+  uv installs never got `examples/`, so the expense-audit run in the
+  README started with `git clone`. The wheel now carries the examples
+  that run with no credentials (only `expense-audit` for now), packaged
+  from `examples/` by pyproject's force-include rather than copied into
+  `src/`. `rote example` lists them. `rote example expense-audit` copies
+  the skill, both IRs, the working `extracted/` modules and the sample
+  inputs into `./expense-audit` (refusing an existing directory unless
+  `--force`), then prints the emit, run and eval commands for that copy.
+  `uvx --from rote-cli rote example expense-audit` works with nothing
+  installed.
 - **The scorecard prices Cloudflare Workflows infrastructure.** Steps
   and storage started billing on 2026-08-10. For a `cloudflare` or
   `rote-cloud` pipeline, `rote eval` and `rote compile`'s scorecard now

@@ -3126,6 +3126,35 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_example(args: argparse.Namespace) -> int:
+    """List the bundled examples, or copy one into ./<name> and say how to run it."""
+    from rote.examples import BUNDLED, ExampleError, copy_example, render_commands
+
+    if args.name is None:
+        print("Bundled examples (copy one with: rote example <name>):")
+        width = max(len(name) for name in BUNDLED)
+        for name, example in BUNDLED.items():
+            print(f"  {name.ljust(width)}  {example.summary}")
+        return 0
+    dest = Path.cwd() / args.name
+    try:
+        example = copy_example(args.name, dest, force=args.force)
+    except ExampleError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    print(f"rote example: copied {example.name} to ./{example.name}")
+    print("\nNext, from this directory:\n")
+    for line in render_commands(example, example.name):
+        print(f"  {line}" if line else "")
+    from rote.extras import DISTRIBUTION
+
+    print(
+        f"\nNo rote on PATH? Prefix each command with `uvx --from {DISTRIBUTION}`, "
+        f"or `uvx --from '{DISTRIBUTION}[dbos]'` for the dbos ones."
+    )
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a compilation set up to succeed before spending money?
 
@@ -4203,6 +4232,26 @@ def _build_parser() -> argparse.ArgumentParser:
             "Does not change the pipeline's emitted MCP bindings."
         ),
     )
+
+    # rote example
+    example_p = subparsers.add_parser(
+        "example",
+        help="List the bundled examples, or copy one here to run for free",
+        description=(
+            "With no name, list the examples bundled with rote. With a name, "
+            "copy that example (its skill, compiled pipeline, working "
+            "extracted/ modules and sample input) into ./<name> and print the "
+            "exact emit, run and eval commands for the copy. No clone, no "
+            "credentials, no tokens."
+        ),
+    )
+    example_p.add_argument("name", nargs="?", help="Example to copy (omit to list them)")
+    example_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Copy into ./<name> even if it exists, overwriting the example's own files",
+    )
+    example_p.set_defaults(func=_cmd_example)
 
     # rote doctor
     doctor = subparsers.add_parser(
