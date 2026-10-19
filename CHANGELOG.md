@@ -98,6 +98,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   - When rote sets aside a client from an older token file and the
     server no longer allows registration, the login error says so and
     names the `rote mcp add --client-id` fix.
+- python and dbos apps survive a fork after their first async step. The
+  background event loop added in this release lives on a thread, and a
+  forked child (gunicorn or uvicorn pre-fork workers serving an emitted
+  app) inherited the loop but not the thread, so its first async call
+  blocked forever. The child now resets the loop state through
+  `os.register_at_fork`, where the platform has it.
+- The TS MCP helpers (Node, Workers and the rote cloud binding) read a
+  text-only tool result by the Python helper's rules. They used to read
+  only the first text block, throw on text that wasn't JSON, and return
+  `{}` when there was no text, so one MCP step returned different values
+  on the TS and Python runtimes. Now every text block is parsed, non-JSON
+  text is kept verbatim, several blocks give a list, and no text gives
+  `null`, from one TS source spliced into all three helpers.
 - Running the test suite no longer rewrites committed files. Five
   adapter suites emitted the BDR pipeline straight into
   `examples/bdr-outreach/expected/runtimes/`, and the dbos and temporal

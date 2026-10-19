@@ -328,7 +328,14 @@ the parsed text blocks. Two things to keep: the marker is
 `x-fastmcp-wrap-result` output-schema flag on 2.x/3.0 servers, so the
 schema is still needed; and the TS helpers apply the same rule through
 `_FASTMCP_UNWRAP_TS` (one source spliced into the Node and Workers
-helpers). The helper's explicit `list_tools()` is not an extra round
+helpers). The text fallback is shared the same way: `_MCP_TEXT_PAYLOAD_TS`
+(spliced into the Node, Workers and binding helpers) applies
+`_result_payload`'s exact text rules, which are every text block parsed,
+non-JSON kept verbatim, several blocks as a list, and none as null. The
+TS helpers used to read only the first block, throw on non-JSON text and
+return `{}` for no text, so the same MCP step returned different values
+per runtime (`tests/test_mcp_text_payload_parity_e2e.py` runs both
+helpers against one real server). The helper's explicit `list_tools()` is not an extra round
 trip, because the MCP SDK's `call_tool` lists tools itself on a fresh
 session to validate the result (measured, and pinned by
 `test_one_tools_list_per_step`). Regressions: `tests/test_mcp_client.py::
