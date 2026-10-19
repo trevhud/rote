@@ -91,6 +91,27 @@ How a citation is written, and what rote accepts:
   (headings do not count), copied verbatim.
 - `...` elides text between fragments. The fragments must appear in
   that order within one paragraph of the skill.
+- A table row is cited whole, every cell, pipes included, since one
+  cell is too short to stand alone. A markdown link is cited by its
+  text. Formatting marks (`**`, backticks) may be dropped:
+
+```python
+# skill: "| Wrong Item | wrong_item | 30 days | Refund once the item is back in stock. |"
+WRONG_ITEM_WINDOW_DAYS = 30
+# skill: "Look up each store's region in references/stores.md"
+```
+
+Each assumption gets its own Open questions entry, one `###`
+sub-heading per assumption, naming the file it is marked in:
+
+```markdown
+## Open questions
+
+### OQ-1: Route for a damaged return
+`extracted/routing.py` marks it `# rote: assumption:`. The skill lists
+"Damaged in Transit" as a reason but not whether it is refunded at once
+or reviewed. Chosen: manual review, since the carrier must be billed.
+```
 
 Every outcome literal the code writes needs a marker: a label it
 returns (alone or in a tuple), or a string it puts under a key, keyword,

@@ -75,6 +75,16 @@ def test_fragments_must_come_from_one_paragraph(paragraphs: list[str]) -> None:
     assert citation_problem(across, paragraphs) is not None
 
 
+def test_a_whole_table_row_is_citable(tmp_path: Path) -> None:
+    """The rubric's worked example: cite a row whole, pipes included."""
+    (tmp_path / "SKILL.md").write_text(
+        "| Reason | Code | Window | Notes |\n| --- | --- | --- | --- |\n"
+        "| Wrong Item | `wrong_item` | 30 days | Refund once the item is back in stock. |\n"
+    )
+    row = "| Wrong Item | wrong_item | 30 days | Refund once the item is back in stock. |"
+    assert citation_problem(row, skill_paragraphs(tmp_path)) is None
+
+
 def test_a_markdown_link_is_cited_by_its_text(tmp_path: Path) -> None:
     (tmp_path / "SKILL.md").write_text(
         "Look up the period's month-end rates in\n"
