@@ -21,27 +21,33 @@ regression tested.
 
 ### Try it free in 60 seconds
 
-No API key, no subscription, no tokens. The
+No API key, no subscription, no tokens, no clone. The
 [`expense-audit`](examples/expense-audit/) example is a month-end expense
-audit skill whose compiled pipeline ships with working code, so you can
-emit it and run it before you compile anything of your own:
+audit skill whose compiled pipeline ships with working code, and it comes
+inside the package, so you can emit it and run it before you compile
+anything of your own:
 
 ```sh
 uv tool install 'rote-cli[dbos]'   # or: python3 -m venv .venv && . .venv/bin/activate && pip install 'rote-cli[dbos]'
-git clone https://github.com/trevhud/rote.git && cd rote
-rote doctor     # what's installed and authed; read-only, costs nothing
+rote example expense-audit         # copies the skill, IR, code and sample input to ./expense-audit
+                                   # (zero-install: uvx --from rote-cli rote example expense-audit)
 
 # IR -> a plain Python script, then run it on the sample batch
-rote emit examples/expense-audit/expected/pipeline-draft.yaml --runtime python --out /tmp/expense-audit
-rote run /tmp/expense-audit --input examples/expense-audit/input.json
+rote emit expense-audit/expected/pipeline-draft.yaml --runtime python --out expense-audit/app-python
+rote run expense-audit/app-python --input expense-audit/input.json
 ```
+
+`rote example` prints these commands (and the dbos and eval ones) for
+the copy it made. `rote example` alone lists what is bundled. Prefer the
+repo? `git clone https://github.com/trevhud/rote.git && cd rote`, then
+use `examples/expense-audit/` in place of `expense-audit/`.
 
 ```
 rote run (python): succeeded
   0.1s
 {
   "file_report": {
-    "report_path": "/tmp/expense-audit/reports/2026-09-expense-audit.md",
+    "report_path": "/home/you/expense-audit/app-python/reports/2026-09-expense-audit.md",
     "status": "draft",
     "reviewer": null,
     "reimbursable_usd": 2395.59,
@@ -62,8 +68,8 @@ skill also parks for the controller's approval, which needs a durable
 runtime:
 
 ```sh
-rote emit examples/expense-audit/expected/pipeline.yaml --out /tmp/expense-audit-dbos
-rote run /tmp/expense-audit-dbos --input examples/expense-audit/input.json \
+rote emit expense-audit/expected/pipeline.yaml --runtime dbos --out expense-audit/app-dbos
+rote run expense-audit/app-dbos --input expense-audit/input.json \
   --signal controller_review='{"reviewer": "Priya Shah", "approved_ids": ["EXP-2403", "EXP-2413", "EXP-2420"], "rejected_ids": ["EXP-2410"]}'
 # ... "status": "final", "reimbursable_usd": 2990.98, "returned_usd": 313.17
 ```
