@@ -258,7 +258,11 @@ def run_dbos_ts(
                 return MeasuredRun(
                     wall_seconds=time.monotonic() - started,
                     output=None,
-                    error=f"timed out after {timeout_seconds:g}s",
+                    error=f"timed out after {timeout_seconds:g}s:\n"
+                    + failure_excerpt(
+                        stderr_path.read_text(encoding="utf-8", errors="replace"),
+                        stdout_path.read_text(encoding="utf-8", errors="replace"),
+                    ),
                 )
             except BaseException:
                 # A parked workflow with no signal coming must not outlive
