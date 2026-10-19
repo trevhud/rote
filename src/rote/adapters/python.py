@@ -555,7 +555,7 @@ def emit_requirements(pipeline: Pipeline) -> str:
     # An agent loop runs on the SDK's own tool runner when it is not on
     # the subscription CLI, so the SDK is required even with no judges.
     if "anthropic" in clients or agent_loops:
-        lines.append("anthropic>=0.89")
+        lines.append("anthropic>=1.15")
     if "openai" in clients:
         lines.append("openai>=1.40")
     return "\n".join(lines) + "\n"

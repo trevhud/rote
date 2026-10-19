@@ -181,3 +181,13 @@ def test_output_schema_evidence_clears_the_note() -> None:
         "properties": {"invoice_results": {"type": "array", "items": {"type": "object"}}},
     }
     assert unchecked_output_notes(Pipeline.model_validate(data), types_module=None) == []
+
+
+def test_more_unions_than_the_strict_limit_falls_back_to_non_strict() -> None:
+    """Each nullable field is one anyOf; past 16 a strict request 400s."""
+    from rote.adapters._common import STRICT_UNION_LIMIT
+
+    at_limit = {f"f{i}": "str | null" for i in range(STRICT_UNION_LIMIT)}
+    over = {**at_limit, "one_more": "int | null"}
+    assert agent_loop_output(_loop(output=at_limit)).strict is True
+    assert agent_loop_output(_loop(output=over)).strict is False

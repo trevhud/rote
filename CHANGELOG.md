@@ -273,7 +273,10 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   ends without submitting gets one more turn with `tool_choice` forced to
   it. On the TS runtimes, a type the IR names but never defines
   (`InvoiceResult`) is an alias in a new user-editable `src/types.ts`,
-  `JsonValue` until narrowed, and `rote emit` notes each one.
+  `JsonValue` until narrowed, and `rote emit` notes each one. The
+  `anthropic` floor is now 1.15 (the `api` and `dev` extras, and the
+  python runtime's requirements.txt), and the lock moves from 0.116.0 to
+  1.15.0.
 - A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
   rows were logged under the requested model, often an alias (`sonnet`)
   that no price catalog lists, so `rote run` and `rote eval --run` could

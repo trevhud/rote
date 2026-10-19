@@ -405,7 +405,7 @@ def test_requirements_lists_only_needed_sdks(emit_result: dict[str, Path]) -> No
         for line in emit_result["requirements"].read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
-    assert lines == ["pydantic>=2.7", "anthropic>=0.89"]
+    assert lines == ["pydantic>=2.7", "anthropic>=1.15"]
 
 
 def test_requirements_includes_openai_when_needed() -> None:

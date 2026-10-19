@@ -63,7 +63,7 @@ temporal = [
     "temporalio>=1.7",
 ]
 api = [
-    "anthropic>=0.89",
+    "anthropic>=1.15",
 ]
 openai-api = [
     "openai>=2.45",
@@ -86,7 +86,7 @@ dev = [
     "mypy>=1.10",
     "types-pyyaml",
     "temporalio>=1.7",
-    "anthropic>=0.89",
+    "anthropic>=1.15",
     "openai>=2.45",
     "dbos>=3.3,<4",
     "fastmcp>=4.1.1,<5",

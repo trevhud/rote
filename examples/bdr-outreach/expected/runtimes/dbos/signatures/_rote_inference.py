@@ -1144,16 +1144,34 @@ def _run_agent_via_sdk(
     return text, usage, turns
 
 
+def _assistant_param(message: Any) -> dict[str, Any]:
+    """A response message as a request message param, on any SDK version.
+
+    ``Message.to_param()`` exists only in newer SDKs, and an emitted app
+    runs on whatever version it installed. A content block dumps to its
+    wire shape (``{"type": "tool_use", "id", "name", "input"}`` and so on);
+    ``parsed_output`` is the SDK's own parse of a text block, never sent.
+    """
+    return {
+        "role": message.role,
+        "content": [
+            block.model_dump(mode="json", exclude_none=True, exclude={"parsed_output"})
+            for block in message.content
+        ],
+    }
+
+
 def _force_submission(
     client: Any, runner: Any, final: Any, kwargs: Mapping[str, Any], bound: Sequence[Any]
 ) -> Any:
     """One request with ``tool_choice`` forced to the submit tool.
 
     The conversation is the runner's, read through its public
-    ``set_messages_params``. A turn that ended the loop normally is not in
-    it yet, so it is appended. A turn that hit the iteration cap already
-    is, with its tool results (the runner ran those calls before stopping),
-    so the nudge joins that last user message instead: nothing runs twice.
+    ``set_messages_params``. A turn that ended the loop normally
+    (``end_turn``) is not in it yet, so it is appended. A turn that hit the
+    iteration cap ended on ``tool_use``, and the runner has already run
+    those calls and appended the turn with their results, so the nudge
+    joins that last user message instead: nothing runs twice.
     """
     history: list[Any] = []
 
@@ -1163,14 +1181,13 @@ def _force_submission(
 
     runner.set_messages_params(_capture)
     nudge = {"type": "text", "text": f"Call {_SUBMIT_TOOL} now with the final answer."}
-    final_param = final.to_param()
-    if final_param in history and history and history[-1].get("role") == "user":
+    if getattr(final, "stop_reason", None) == "tool_use" and history[-1].get("role") == "user":
         last = history[-1]
         content = last["content"]
         blocks = list(content) if isinstance(content, list) else [{"type": "text", "text": content}]
         messages = [*history[:-1], {**last, "content": [*blocks, nudge]}]
     else:
-        messages = [*history, final_param, {"role": "user", "content": [nudge]}]
+        messages = [*history, _assistant_param(final), {"role": "user", "content": [nudge]}]
     request = {key: value for key, value in kwargs.items() if key not in ("max_iterations",)}
     request["tools"] = [tool.to_dict() for tool in bound]
     request["tool_choice"] = {"type": "tool", "name": _SUBMIT_TOOL}

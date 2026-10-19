@@ -874,19 +874,40 @@ def ir_type(type_name: str, named: set[str] | None = None) -> tuple[dict[str, An
     return schema, "JsonValue"
 
 
+#: Anthropic caps a strict request at this many ``anyOf`` and type-array
+#: parameters; every nullable field (``str | null``) is one. Past it the
+#: request is a 400, so such a loop stays non-strict.
+STRICT_UNION_LIMIT = 16
+
+
+def _union_count(schema: Any) -> int:
+    """``anyOf`` and type-array parameters in ``schema``, nested included."""
+    if isinstance(schema, list):
+        return sum(_union_count(item) for item in schema)
+    if not isinstance(schema, dict):
+        return 0
+    own = int("anyOf" in schema) + int(isinstance(schema.get("type"), list))
+    return own + sum(_union_count(value) for value in schema.values())
+
+
 def strict_compatible(schema: Any) -> bool:
     """True when ``schema`` fits Anthropic's strict tool-input subset.
 
     Strict tool use constrains sampling to the schema, so every leaf needs
     a type and every object ``additionalProperties: false``. A named type
     the IR does not define is a description-only schema, which that
-    subset does not cover, so its loop's submit tool stays non-strict and
+    subset does not cover, and a schema past :data:`STRICT_UNION_LIMIT`
+    unions would 400. Either way the submit tool stays non-strict and
     rote's own validation (every lane) is what holds the line.
     """
+    return _union_count(schema) <= STRICT_UNION_LIMIT and _strict_shape(schema)
+
+
+def _strict_shape(schema: Any) -> bool:
     if not isinstance(schema, dict):
         return False
     if "anyOf" in schema:
-        return all(strict_compatible(s) for s in schema["anyOf"])
+        return all(_strict_shape(s) for s in schema["anyOf"])
     kind = schema.get("type")
     if kind is None:
         return False
@@ -895,10 +916,10 @@ def strict_compatible(schema: Any) -> bool:
         return (
             schema.get("additionalProperties") is False
             and isinstance(properties, dict)
-            and all(strict_compatible(s) for s in properties.values())
+            and all(_strict_shape(s) for s in properties.values())
         )
     if kind == "array":
-        return "items" in schema and strict_compatible(schema["items"])
+        return "items" in schema and _strict_shape(schema["items"])
     return True
 
 

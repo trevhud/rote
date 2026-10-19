@@ -632,11 +632,15 @@ derivation, all six runtimes):
   has already run that turn's tools, so the nudge joins the trailing
   user message rather than re-running anything (the Python runner does
   not append a normally-ended final turn; the TS one does, hence the
-  check on both sides).
+  check on both sides). The helper builds the assistant message param by
+  hand: `Message.to_param()` exists only in newer SDKs, and an emitted app
+  runs on whatever version it installed.
 - **Every lane validates the same way.** The submit tool is `strict: true`
   (Anthropic's grammar-constrained tool input, no beta header) when the
-  schema fits that subset: every leaf typed, every object closed. A named
-  type is description-only, so its loop stays non-strict. Either way,
+  schema fits that subset: every leaf typed, every object closed, and at
+  most 16 `anyOf` / type-array parameters (each nullable field is one;
+  past that the request is a 400). A named type is description-only, so
+  its loop stays non-strict. Either way,
   `_schema_errors` / `schemaErrors` check types, required keys and extra
   keys on every lane, and every failure reads `agent loop <id>
   (<provider>) did not hand back its declared output: <reason>`. Workers
