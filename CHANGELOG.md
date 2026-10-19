@@ -214,6 +214,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the input type.
 
 ### Fixed
+- **A failed `claude -p` compile reports what it cost, and the output cap
+  no longer ends it.** A real invoice-push compile died after 28 minutes
+  on "Claude's response exceeded the 32000 output token maximum" and
+  reported no cost anywhere. The failure's usage and cost are now in the
+  error and in progress.jsonl. The compiler's CLI child gets
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` unless the caller set one, and a
+  run that still hits the cap is resumed once with an instruction to
+  write large files in pieces.
 - **Generated tests run under a uv-managed Python.** CI's setup-uv
   interpreter lives in `~/.local/share/uv/python`, and every sandboxed
   generated-test run died with "No module named 'encodings'": the child
