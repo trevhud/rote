@@ -49,7 +49,7 @@ from rote.compiler.update import (
     build_update_plan,
     render_update_brief,
 )
-from rote.compiler.verify import Verification, verify_deliverable
+from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline
@@ -202,6 +202,7 @@ class Compiler:
         driver_kwargs: dict[str, Any] | None = None,
         run_generated_tests: bool = True,
         trust_skill: bool = False,
+        emit_target: EmitTarget | None = None,
     ) -> None:
         """
         Parameters
@@ -238,6 +239,11 @@ class Compiler:
             Run the generated tests without an OS sandbox (``--trust-skill``).
             By default they run under one, and are skipped (the deliverable
             is unverified) when none is available.
+        emit_target
+            The runtime the caller will emit for. Verification then dry-emits
+            the deliverable with that adapter, so an IR it refuses goes back
+            to the agent instead of failing after the compile (``None``:
+            no emit check, for callers that do not emit).
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -246,6 +252,7 @@ class Compiler:
         self.driver_kwargs = driver_kwargs
         self.run_generated_tests = run_generated_tests
         self.trust_skill = trust_skill
+        self.emit_target = emit_target
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -486,6 +493,7 @@ class Compiler:
                 run_tests=self.run_generated_tests,
                 trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
+                emit_target=self.emit_target,
             )
             self._emit_verification(verification)
 
@@ -588,6 +596,7 @@ class Compiler:
                 run_tests=self.run_generated_tests,
                 trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
+                emit_target=self.emit_target,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:

@@ -10,7 +10,10 @@ that are cheap to check and expensive to discover later:
   (:func:`rote.contracts.check_contracts`);
 * every ``pure_function`` is either implemented or a stub that says why
   it is one, and every implemented one is exercised by a generated test;
-* the generated tests pass.
+* the generated tests pass;
+* the target runtime's adapter emits it (:func:`emit_findings`, a dry
+  emit into a throwaway dir), so a compile never declares success on an
+  IR that ``rote emit`` then refuses.
 
 The orchestrator runs this on every natural stop of the agent and feeds
 the rendered problems back into the SAME conversation
@@ -332,6 +335,65 @@ def _deliverable_findings(
     return findings
 
 
+@dataclass(frozen=True)
+class EmitTarget:
+    """The runtime a compile will emit for, so verification can emit it first."""
+
+    runtime: str
+    external_backend: str | None = None
+
+    def __post_init__(self) -> None:
+        from rote.adapters import ADAPTERS
+
+        if self.runtime not in ADAPTERS:
+            raise ValueError(
+                f"Unknown runtime {self.runtime!r}. Available: {', '.join(sorted(ADAPTERS))}"
+            )
+
+
+def emit_findings(
+    pipeline: Pipeline, artifact_dir: Path, target: EmitTarget | None
+) -> list[ContractFinding]:
+    """What the target adapter refuses, found by emitting into a temp dir.
+
+    An adapter enforces rules no validator states: the python adapter
+    refuses a hitl_gate, an MCP-incapable adapter refuses an mcp-only
+    node, and emission is template code over an LLM-written IR that can
+    fail in ways nobody anticipated. A dry emit runs exactly what
+    ``rote emit`` will run, with the same extracted sources, so the repair
+    loop sees the refusal while the agent can still fix it. A real
+    bdr-outreach compile ($4.46) passed verification and then exited 1 at
+    emit; that rule is now IR validation too, and this is what catches
+    the next one.
+    """
+    if target is None:
+        return []
+    from rote.adapters import get_adapter
+
+    adapter = get_adapter(
+        target.runtime,
+        external_backend=target.external_backend,
+        extracted_source_dir=artifact_dir,
+    )
+    with tempfile.TemporaryDirectory(prefix="rote-dry-emit-") as out:
+        try:
+            adapter.emit(pipeline, Path(out) / "runtime")
+        except Exception as e:  # noqa: BLE001 (every refusal is the agent's to fix)
+            return [
+                ContractFinding(
+                    node_id="(pipeline)",
+                    kind="emit_refused",
+                    severity="error",
+                    message=(
+                        f"`rote emit --runtime {target.runtime}` refuses this "
+                        f"pipeline: {type(e).__name__}: {e}"
+                    ),
+                    path="pipeline.yaml",
+                )
+            ]
+    return []
+
+
 #: The rubric's write-once rules, restated in every repair turn. A resumed
 #: conversation is far from the rubric, and a real ops-report repair round
 #: spent three turns on separate Edits to compile-report.md, each one
@@ -417,6 +479,7 @@ def verify_deliverable(
     run_tests: bool = True,
     skill_dir: Path | str | None = None,
     trust_skill: bool = False,
+    emit_target: EmitTarget | None = None,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -430,9 +493,14 @@ def verify_deliverable(
     ``skill_dir`` is the source skill. With it, every ``# skill: "..."``
     citation in the extracted modules must quote text the skill actually
     contains (see :mod:`rote.compiler.provenance`).
+
+    ``emit_target`` is the runtime the compile emits for. With it, the
+    deliverable must also survive that adapter's emit (:func:`emit_findings`).
     """
     try:
-        return _verify_or_raise(artifact_dir, base_dir, run_tests, skill_dir, trust_skill)
+        return _verify_or_raise(
+            artifact_dir, base_dir, run_tests, skill_dir, trust_skill, emit_target
+        )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
         # DriverError is caught, and before the work dir leaves its temp
@@ -458,11 +526,16 @@ def _verify_or_raise(
     run_tests: bool,
     skill_dir: Path | str | None,
     trust_skill: bool,
+    emit_target: EmitTarget | None,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
         return _verify(
-            Path(artifact_dir), run_tests=run_tests, skill_dir=skill, trust_skill=trust_skill
+            Path(artifact_dir),
+            run_tests=run_tests,
+            skill_dir=skill,
+            trust_skill=trust_skill,
+            emit_target=emit_target,
         )
     import shutil
     import tempfile
@@ -479,11 +552,22 @@ def _verify_or_raise(
         produced = Path(artifact_dir) / "pipeline.yaml"
         if produced.is_file():
             shutil.copy2(produced, overlay / "pipeline.yaml")
-        return _verify(overlay, run_tests=run_tests, skill_dir=skill, trust_skill=trust_skill)
+        return _verify(
+            overlay,
+            run_tests=run_tests,
+            skill_dir=skill,
+            trust_skill=trust_skill,
+            emit_target=emit_target,
+        )
 
 
 def _verify(
-    root: Path, *, run_tests: bool, skill_dir: Path | None, trust_skill: bool
+    root: Path,
+    *,
+    run_tests: bool,
+    skill_dir: Path | None,
+    trust_skill: bool,
+    emit_target: EmitTarget | None,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -494,6 +578,7 @@ def _verify(
         check_contracts(pipeline, root)
         + _deliverable_findings(pipeline, root, implementations)
         + provenance_findings(pipeline, root, skill_dir)
+        + emit_findings(pipeline, root, emit_target)
     )
     tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
     return Verification(

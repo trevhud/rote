@@ -62,8 +62,8 @@ corroborates):
   result (including HITL gate resume payloads) as ``<id>_result``, and
   builds each step's payload from the node's ``inputs:`` bindings via
   the shared reference grammar (:func:`rote.ir.parse_input_ref`).
-  Forward references are rejected at emit time by
-  :func:`rote.adapters._common.check_input_refs_available`.
+  Forward references never reach the adapter: IR validation rejects
+  them (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Typed LLM signatures as Zod + vendor SDK modules.** Emitted via
   :mod:`rote.adapters._ts_common` — the same shared machinery as the
@@ -96,7 +96,6 @@ from rote.adapters._common import (
     _seconds_literal,
     _to_camel_case,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     judge_override_readme,
     safe_block_comment_line,
@@ -442,18 +441,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
     lines: list[str] = []
     uses_unwrap = False
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    # HITL gates count: their DBOS.recv payload binds `<id>_result`, so
-    # gate resume payloads participate as that gate's result downstream.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
@@ -541,8 +531,6 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.extend(exit_return_ts_lines(pipeline))

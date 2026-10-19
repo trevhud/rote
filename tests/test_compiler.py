@@ -839,6 +839,87 @@ async def test_repair_gives_up_after_two_attempts_with_the_last_error(
     assert not any("(attempt 3)" in m for m in messages)
 
 
+#: Valid IR the python adapter refuses at emit: a plain script cannot park
+#: on a human gate. No validator states that rule; only the adapter does.
+GATED_YAML = VALID_YAML.replace(
+    "edges: []\nentry_nodes: [only_node]\nexit_nodes: [only_node]\n",
+    "  - id: approve\n"
+    "    kind: hitl_gate\n"
+    "    description: A human approves.\n"
+    "    signal: approve\n"
+    "edges:\n"
+    "  - {from: only_node, to: approve}\n"
+    "entry_nodes: [only_node]\n"
+    "exit_nodes: [approve]\n",
+)
+
+
+@pytest.mark.parametrize(
+    ("runtime", "repaired"),
+    [("python", True), ("dbos", False), (None, False)],
+)
+@pytest.mark.asyncio
+async def test_an_ir_the_target_adapter_refuses_is_repaired_not_shipped(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+    runtime: str | None,
+    repaired: bool,
+) -> None:
+    """Verification dry-emits for the compile's runtime. A real bdr-outreach
+    compile ($4.46) passed verification and then exited 1 at emit. The
+    dbos and no-target rows are the negative half: the same IR is fine for
+    a durable runtime, and without a target nothing dry-emits."""
+    from rote.compiler.verify import EmitTarget
+
+    assert "hitl_gate" in GATED_YAML
+    driver = _RepairableDriver([GATED_YAML, VALID_YAML])
+    compiler = Compiler(
+        compiler_skill_dir=fake_compiler_skill_dir,
+        emit_target=EmitTarget(runtime) if runtime else None,
+    )
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "output")
+
+    if repaired:
+        [instruction] = driver.repair_instructions
+        assert "`rote emit --runtime python` refuses this pipeline" in instruction
+        assert "hitl_gate" in instruction
+        assert [n.id for n in result.pipeline.nodes] == ["only_node"]
+    else:
+        assert driver.repair_instructions == []
+        assert {n.id for n in result.pipeline.nodes} == {"only_node", "approve"}
+    assert result.verification is not None and result.verification.ok
+
+
+def test_rote_compile_dry_emits_for_its_runtime_and_then_emits(
+    tmp_path: Path, fake_skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI hands the compile its --runtime, so the refusal is repaired
+    inside the run and the command exits 0 with an emitted runtime."""
+    from rote.cli import main
+
+    driver = _RepairableDriver([GATED_YAML, VALID_YAML])
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    out = tmp_path / "run"
+    rc = main(
+        ["compile", str(fake_skill_dir), "--local", "--runtime", "python", "--no-eval"]
+        + ["--out", str(out)]
+    )
+    assert rc == 0
+    [instruction] = driver.repair_instructions
+    assert "`rote emit --runtime python` refuses" in instruction
+    assert (out / "runtime" / "python" / "main.py").is_file()
+
+
+def test_an_unknown_emit_target_fails_before_any_run() -> None:
+    from rote.compiler.verify import EmitTarget
+
+    with pytest.raises(ValueError, match="Unknown runtime 'nope'"):
+        EmitTarget("nope")
+
+
 @pytest.mark.asyncio
 async def test_repair_callback_not_passed_to_drivers_without_the_parameter(
     fake_skill_dir: Path,

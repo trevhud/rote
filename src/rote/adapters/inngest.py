@@ -75,8 +75,8 @@ are the source of truth; inngest.com/docs corroborates):
   result (including gate resume payloads) as ``<id>_result``, and each
   step's payload comes from the node's ``inputs:`` bindings via the
   shared reference grammar (:func:`rote.ir.parse_input_ref`). Forward
-  references are rejected at emit time by
-  :func:`rote.adapters._common.check_input_refs_available`.
+  references never reach the adapter: IR validation rejects them
+  (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Typed LLM signatures as Zod + vendor SDK modules.** Emitted via
   :mod:`rote.adapters._ts_common` — identical machinery to the
@@ -106,7 +106,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    check_input_refs_available,
     fan_out_nodes,
     safe_block_comment_line,
 )
@@ -677,17 +676,9 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
         # throw here would re-run the same bad input `retries` times.
         lines.extend(required_inputs_ts_guard(pipeline, "NonRetriableError", indent=" " * 8))
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    # HITL gates count: their resume payload binds `<id>_result`.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
@@ -736,8 +727,6 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.extend(exit_return_ts_lines(pipeline))

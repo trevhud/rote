@@ -219,10 +219,31 @@ retry trigger conditions.
 An `agent_loop` node can declare a `loop_body: [node_id, ...]`
 listing sub-nodes invoked per iteration. Those sub-nodes also
 exist as top-level entries in the `nodes:` list (so they can be
-tested in isolation) but the adapter's `_execution_waves` function
-filters them out of the top-level DAG — otherwise the workflow
-would dispatch them twice. See `rote.adapters.temporal._execution_waves`
-for the reference implementation.
+tested in isolation) but `Pipeline.execution_waves()` (in `rote.ir`;
+the adapters' `_execution_waves` just calls it) filters them out of
+the top-level DAG, otherwise the workflow would dispatch them twice.
+
+### Valid IR is emittable IR: reachability lives in `rote.ir`
+
+A node's `inputs:` may only name a node in an earlier wave, never a
+same-wave sibling and never a `loop_body` sub-node (it has no top-level
+result). That rule used to be checked only inside each adapter at emit
+time, after `rote compile` had verified the deliverable as clean: a real
+bdr-outreach compile paid $4.46 for an IR whose `email_template_loop`
+bound its own body sub-node `personalize_email` as an input, then exited
+1 at emit. It is now `Pipeline._validate_input_reachability`, so the
+compile's repair loop sends it back like any validation error, and the
+six adapters' copies are gone. Cycles are a validation error for the
+same reason. Loop-body sub-nodes' own `inputs:` are exempt (they
+describe, they do not bind).
+
+For the rules no validator states (python refusing a `hitl_gate`, an
+MCP-incapable adapter refusing an mcp-only node, an emitter crash),
+verification dry-emits the deliverable for the compile's runtime
+(`verify.EmitTarget` / `emit_findings`, wired from `--runtime`), and an
+`emit_refused` finding goes back to the agent. Don't add an emit-time
+check to an adapter when it can be IR validation; when it can't, the
+dry emit already covers it.
 
 ### Driver factories accept `**kwargs`
 

@@ -397,7 +397,9 @@ tool forced, then fails naming the node.
 top-level nodes in the `nodes:` list. They're referenced from the
 loop_body but also emitted as standalone activities (so they can be
 tested in isolation and reused elsewhere). The adapter excludes them
-from top-level execution waves to prevent double-dispatch.
+from top-level execution waves to prevent double-dispatch, which is
+also why no top-level node, the loop itself included, may bind one as
+an input (validation rule 10).
 
 ### `hitl_gate`
 
@@ -484,6 +486,16 @@ these constraints in mind:
    ['account_name'], which inputs: does not bind`. A pipeline input
    the judge needs (a rubric, a campaign brief) is bound like any other
    param: `scoring_rubric: pipeline.input.scoring_rubric`.
+10. **A node's `inputs:` may only name nodes that finish before it.**
+    The source must sit upstream through `edges:` (same wave is not
+    upstream), and must not be a `loop_body` sub-node: the loop calls
+    it per iteration, so it never has a top-level result. In
+    particular, a loop never takes its own body sub-node as an input.
+    Wrong: `email_template_loop` with `loop_body: [personalize_email]`
+    and `inputs: {personalized_emails: personalize_email.output}`.
+    Right: drop that input; the body's work comes back as the loop's
+    `output`, and downstream nodes bind `email_template_loop.output`.
+    A cycle in `edges:` is rejected too.
 
 ## Duration strings
 

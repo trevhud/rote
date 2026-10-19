@@ -50,6 +50,7 @@ from rote.adapters._common import stubs_tracked
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
+from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
@@ -846,6 +847,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         driver_kwargs=driver_kwargs or None,
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
+        # Verification dry-emits for the runtime emitted below, so an IR
+        # this adapter refuses is repaired inside the paid run, not
+        # reported after it.
+        emit_target=EmitTarget(args.runtime, args.backend),
     )
 
     try:

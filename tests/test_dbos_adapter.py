@@ -16,7 +16,6 @@ so the fast suite stays runnable in environments without the extra.
 from __future__ import annotations
 
 import ast
-import copy
 import sys
 import types
 from pathlib import Path
@@ -345,40 +344,6 @@ def test_node_without_inputs_gets_empty_payload() -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
     src = emit_main(mini_pipeline(node), DbosAdapterConfig())
     assert "only_result = only({})" in src
-
-
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as a NameError inside a running workflow."""
-    pipeline = Pipeline(
-        name="forward-ref",
-        input={"type": "X", "required": [], "optional": []},
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(pipeline, DbosAdapterConfig())
-
-
-def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    pipeline = copy.deepcopy(bdr_pipeline)
-    node = pipeline.node_by_id("hubspot_upsert")
-    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(pipeline, DbosAdapterConfig())
 
 
 def test_dbos_config_yaml_is_valid(emit_result: dict[str, Path]) -> None:

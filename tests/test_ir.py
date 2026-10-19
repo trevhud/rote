@@ -9,8 +9,10 @@ most optional fields.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from rote.ir import (
     Edge,
@@ -1001,3 +1003,105 @@ def test_expected_irs_never_set_judge_temperature(path: str) -> None:
         if n.signature_spec is not None and n.signature_spec.temperature is not None
     ]
     assert offenders == []
+
+
+# ───────── Input reachability: valid IR is emittable IR ─────────
+
+
+def _bdr_raw() -> dict[str, Any]:
+    import yaml
+
+    raw: dict[str, Any] = yaml.safe_load(BDR_PIPELINE.read_text(encoding="utf-8"))
+    return raw
+
+
+def _node(raw: dict[str, Any], node_id: str) -> dict[str, Any]:
+    return next(n for n in raw["nodes"] if n["id"] == node_id)
+
+
+def _bdr_with_email_loop(*, loop_takes_its_body: bool) -> dict[str, Any]:
+    """The shape a real bdr-outreach compile produced ($4.46, then exit 1 at
+    emit): ``personalize_email`` moved into an ``email_template_loop``'s
+    loop_body, and the loop ALSO bound it as an input."""
+    raw = _bdr_raw()
+    loop: dict[str, Any] = {
+        "id": "email_template_loop",
+        "kind": "agent_loop",
+        "description": "Draft one personalized email per contact.",
+        "tools": ["hubspot_create_template"],
+        "loop_body": ["personalize_email"],
+        "termination": {"condition": "every contact has a draft", "max_iterations": 5},
+        "inputs": {"contacts": "exclusion_check_sequence.output.passed"},
+    }
+    if loop_takes_its_body:
+        loop["inputs"]["personalized_emails"] = "personalize_email.output"
+    raw["nodes"].append(loop)
+    _node(raw, "create_sales_template")["inputs"]["personalizations"] = "email_template_loop.output"
+    raw["edges"] += [
+        {"from": "exclusion_check_sequence", "to": "email_template_loop"},
+        {"from": "email_template_loop", "to": "create_sales_template"},
+    ]
+    return raw
+
+
+def test_a_loop_cannot_take_its_own_body_sub_node_as_an_input() -> None:
+    with pytest.raises(ValidationError) as exc:
+        Pipeline.model_validate(_bdr_with_email_loop(loop_takes_its_body=True))
+    message = str(exc.value)
+    assert "'email_template_loop' input 'personalized_emails'" in message
+    assert "in 'email_template_loop''s own loop_body" in message
+    assert "Remove this input" in message
+
+
+def test_the_same_loop_without_that_input_is_valid_and_emits(tmp_path: Path) -> None:
+    """The positive control: the repair the error asks for is enough."""
+    from rote.adapters import get_adapter
+
+    pipeline = Pipeline.model_validate(_bdr_with_email_loop(loop_takes_its_body=False))
+    get_adapter("dbos").emit(pipeline, tmp_path / "out")
+    assert (tmp_path / "out" / "main.py").is_file()
+
+
+def test_another_loops_body_sub_node_points_at_the_loop() -> None:
+    raw = _bdr_raw()
+    _node(raw, "hubspot_upsert")["inputs"] = {"contacts": "vet_contact.output"}
+    with pytest.raises(ValidationError, match="loop_body sub-node of 'lead_generation_loop'"):
+        Pipeline.model_validate(raw)
+
+
+def test_a_forward_reference_names_the_missing_ordering() -> None:
+    raw = _bdr_raw()
+    _node(raw, "target_research")["inputs"]["late"] = "pre_enrollment_report.output"
+    with pytest.raises(ValidationError) as exc:
+        Pipeline.model_validate(raw)
+    assert "'pre_enrollment_report' has no result available" in str(exc.value)
+    assert "does not run before 'target_research'" in str(exc.value)
+
+
+def test_a_same_wave_reference_is_a_forward_reference() -> None:
+    """target_research and taxonomy_lookup share wave 1: neither result exists
+    when the other starts."""
+    raw = _bdr_raw()
+    _node(raw, "taxonomy_lookup").setdefault("inputs", {})["intel"] = "target_research.output"
+    with pytest.raises(ValidationError, match="does not run before 'taxonomy_lookup'"):
+        Pipeline.model_validate(raw)
+
+
+def test_every_problem_is_reported_at_once() -> None:
+    raw = _bdr_with_email_loop(loop_takes_its_body=True)
+    _node(raw, "hubspot_upsert")["inputs"] = {"contacts": "vet_contact.output"}
+    message = str(pytest.raises(ValidationError, Pipeline.model_validate, raw).value)
+    assert "personalized_emails" in message and "vet_contact" in message
+
+
+def test_a_loop_body_sub_nodes_own_inputs_describe_and_are_not_checked() -> None:
+    raw = _bdr_raw()
+    _node(raw, "vet_contact").setdefault("inputs", {})["later"] = "pre_enrollment_report.output"
+    Pipeline.model_validate(raw)
+
+
+def test_a_cycle_is_a_validation_error() -> None:
+    raw = _bdr_raw()
+    raw["edges"].append({"from": "pre_enrollment_report", "to": "target_research"})
+    with pytest.raises(ValidationError, match="Cycle detected"):
+        Pipeline.model_validate(raw)

@@ -15,7 +15,6 @@ Three levels of validation:
 from __future__ import annotations
 
 import ast
-import copy
 from pathlib import Path
 
 import pytest
@@ -27,7 +26,7 @@ from rote.adapters.python import (
     emit_main,
     emit_requirements,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline
+from rote.ir import Node, NodeKind, Pipeline
 from tests._helpers import mini_pipeline, payload_dict_keys
 from tests._python_fixture import build_gateless_pipeline
 
@@ -360,39 +359,6 @@ def test_node_without_inputs_gets_empty_payload() -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
     src = emit_main(mini_pipeline(node))
     assert "only_result = only({})" in src
-
-
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as a NameError inside the running script."""
-    forward = Pipeline(
-        name="forward-ref",
-        input={"type": "X", "required": [], "optional": []},
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(forward)
-
-
-def test_emit_rejects_reference_to_loop_body_node(pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    broken = copy.deepcopy(pipeline)
-    broken.node_by_id("grade").inputs = {"findings": "score_item.output"}
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(broken)
 
 
 # ───────── requirements.txt ─────────

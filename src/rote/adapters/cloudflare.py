@@ -42,7 +42,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    check_input_refs_available,
     fan_out_nodes,
     override_env_vars,
     pipeline_identity,
@@ -635,10 +634,6 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         body_lines.extend(required_inputs_ts_guard(pipeline, "Error", indent=" " * 8))
         body_lines.append("")
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
-
     def _is_parkable(node: Node) -> bool:
         # MCP-backed calls read credentials from env (Worker secrets + the
         # KV token cache) and park the instance durably when the
@@ -672,9 +667,6 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         fanned_parkable, parkable = fan_out_nodes(parkable)
         fanned_plain, plain = fan_out_nodes(plain)
 
-        for node in plain + parkable + fanned_plain + fanned_parkable:
-            check_input_refs_available(node, available)
-
         if len(plain) > 1:
             body_lines.append(_emit_parallel_step_calls(plain, cfg).rstrip("\n"))
         elif plain:
@@ -701,7 +693,6 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
             body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
 
         body_lines.append("")
-        available.update(n.id for n in wave)
 
     body_lines.extend(exit_return_ts_lines(pipeline))
 
