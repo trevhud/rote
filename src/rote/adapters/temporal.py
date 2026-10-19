@@ -118,6 +118,11 @@ def _retry_policy_args(node: Node) -> str:
         parts.append("backoff_coefficient=2.0")
     elif backoff == "linear":
         parts.append("backoff_coefficient=1.0")
+    if node.kind is NodeKind.AGENT_LOOP and node.tools:
+        # Its tool servers resolve at run time. A missing endpoint raises
+        # RoteMcpConfigError (Temporal matches by class name), and no
+        # attempt can fix configuration.
+        parts.append('non_retryable_error_types=["RoteMcpConfigError"]')
     return f"RetryPolicy({', '.join(parts)})"
 
 

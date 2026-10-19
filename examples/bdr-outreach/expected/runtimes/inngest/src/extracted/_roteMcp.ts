@@ -54,11 +54,36 @@ export class RoteMcpAuthNeeded extends Error {
  * (cause chains from step wrappers, `errors` arrays from retry
  * exhaustion / AggregateError). */
 export function isRoteMcpAuthNeeded(err: unknown): boolean {
+    return errorTreeHas(err, "RoteMcpAuthNeeded");
+}
+
+/**
+ * The app is not configured to reach an MCP server (no endpoint).
+ *
+ * The configuration does not change between retry attempts, so emitted
+ * steps fail at once on this instead of spending their retry budget. It
+ * does not park either: the fix is setting the variable the message
+ * names and starting again. Detect with isRoteMcpConfigError(), never
+ * `instanceof`, for the same reason as RoteMcpAuthNeeded.
+ */
+export class RoteMcpConfigError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "RoteMcpConfigError";
+    }
+}
+
+/** True if a RoteMcpConfigError hides anywhere in the error tree. */
+export function isRoteMcpConfigError(err: unknown): boolean {
+    return errorTreeHas(err, "RoteMcpConfigError");
+}
+
+function errorTreeHas(err: unknown, name: string): boolean {
     let node: unknown = err;
     for (let depth = 0; node != null && depth < 16; depth++) {
         const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
-        if (e.name === "RoteMcpAuthNeeded") return true;
-        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpAuthNeeded(sub))) {
+        if (e.name === name) return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => errorTreeHas(sub, name))) {
             return true;
         }
         node = e.cause;
@@ -163,9 +188,10 @@ export function resolveUrl(server: string, pipelineUrl: string | null): string {
     const entry = registryServers()[server];
     if (entry?.url) return entry.url;
     if (pipelineUrl) return pipelineUrl;
-    throw new Error(
-        `no endpoint for MCP server '${server}' — register it ` +
-            `(rote mcp add ${server} <url>) or set ROTE_MCP_${server.toUpperCase()}_URL`,
+    throw new RoteMcpConfigError(
+        `no endpoint for MCP server '${server}': set ROTE_MCP_${server.toUpperCase()}_URL, ` +
+            `or register it with "rote mcp add ${server} <url>". ` +
+            "This is configuration, so the step is not retried.",
     );
 }
 
@@ -200,9 +226,14 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
             "the token store has no token_endpoint (written by rote mcp login)",
         );
     }
+    // id and secret from ONE source: the client the login stored, else the
+    // registry's pre-registered one. Mixing them would send the registry's
+    // secret with a dynamically registered client's id, to whichever server
+    // issued that id.
     const entry = registryServers()[server];
-    const clientId = doc.client_info?.client_id ?? entry?.client_id;
-    const clientSecret = doc.client_info?.client_secret ?? entry?.client_secret;
+    const client = doc.client_info?.client_id ? doc.client_info : entry;
+    const clientId = client?.client_id;
+    const clientSecret = client?.client_secret;
     if (!clientId) {
         throw new RoteMcpAuthNeeded(server, "no client_id is stored for the refresh grant");
     }
@@ -253,6 +284,18 @@ function normalizeServerUrl(raw: string): string {
     return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
 }
 
+/** Whether a stored login URL names `url`. False when the stored one
+ * does not parse (`new URL` throws on a bad port or host). */
+function sameServerUrl(stored: string, url: string): boolean {
+    let normalized: string;
+    try {
+        normalized = normalizeServerUrl(stored);
+    } catch {
+        return false;
+    }
+    return normalized === normalizeServerUrl(url);
+}
+
 export async function freshHeaders(
     server: string,
     url: string,
@@ -266,8 +309,9 @@ export async function freshHeaders(
     const access = doc?.tokens?.access_token;
     if (!doc || !access) return null;
     // The file is keyed by server name, and the name may now point at a
-    // new endpoint: the old endpoint's bearer token must not go there.
-    if (doc.server_url && normalizeServerUrl(doc.server_url) !== normalizeServerUrl(url)) {
+    // new endpoint: the old endpoint's bearer token must not go there. A
+    // stored URL that does not parse belongs to no endpoint either.
+    if (doc.server_url && !sameServerUrl(doc.server_url, url)) {
         throw new RoteMcpAuthNeeded(
             server,
             `the stored login is for ${doc.server_url}, not ${url}`,
@@ -561,10 +605,15 @@ export async function bindAgentTools(
         const detail = failures
             .map((err) => (err instanceof Error ? err.message : String(err)))
             .join("; ");
-        throw new Error(
+        const message =
             `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
-                (detail ? ` (unreachable: ${detail})` : ""),
-        );
+            (detail ? ` (unreachable: ${detail})` : "");
+        // A server with no endpoint stays unreachable on every attempt, so
+        // when that explains the gap the step must not spend its retries.
+        if (failures.some((err) => isRoteMcpConfigError(err))) {
+            throw new RoteMcpConfigError(message);
+        }
+        throw new Error(message);
     }
     return [...bound.values()];
 }

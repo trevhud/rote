@@ -91,6 +91,7 @@ jobs:
           pytest -m slow -v \
             tests/test_mcp_e2e.py \
             tests/test_mcp_park_e2e.py \
+            tests/test_mcp_config_error_e2e.py \
             tests/test_mcp_oauth_e2e.py \
             tests/test_mcp_oauth_registration_e2e.py \
             tests/test_dbos_e2e.py \

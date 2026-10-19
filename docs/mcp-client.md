@@ -101,7 +101,9 @@ metadata advertises CIMD, the login fetches the document URL once per
 process and offers it only if it returns 200 and equals the packaged
 copy with `client_id` set to the URL. Otherwise it prints one line and
 registers with DCR. Servers that do not advertise CIMD never trigger
-the fetch.
+the fetch. The fetch has a 5 second total deadline, not just httpx's
+per-read timeout, so a host that answers one byte at a time cannot hold
+the login open.
 
 ### The pre-registered client path (GitHub-class servers)
 
@@ -122,7 +124,12 @@ A pre-registered client is bound to an issuer from the start:
 `rote mcp add --client-id` records the authorization server the
 resource's protected-resource metadata names at that moment (or
 `--issuer <url>`, which wins), and after a login the token file's
-`issuer` is the binding. If the server's protected-resource
+`issuer` is the binding. What gets recorded decides which server the
+client secret is later offered to, so discovery accepts only a document
+whose `resource` is this URL (RFC 9728 section 3.3; on a shared host the
+origin-level document describes some other resource), and only HTTPS
+for both the resource and the issuer, loopback excepted. `--issuer`
+must be HTTPS too. Anything else records nothing and says why. If the server's protected-resource
 metadata later names a different authorization server, the login stops
 with an error before the browser opens instead of offering that client
 to the new server, or quietly switching to CIMD or DCR there (spec:

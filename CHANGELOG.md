@@ -80,6 +80,24 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   list.
 
 ### Fixed
+- **MCP auth hardening.**
+  - The client metadata document check has a 5 second total deadline.
+    httpx's timeout is per read, so a host sending a byte every few
+    seconds held the login open indefinitely.
+  - `rote mcp add --client-id` records an issuer only from metadata that
+    describes this resource (RFC 9728 section 3.3) and only over HTTPS
+    (loopback excepted), for both the resource and the issuer. An
+    origin-level document on a shared host, or a plain-HTTP answer a
+    network attacker could write, no longer chooses which server the
+    client secret is offered to. `--issuer` must be HTTPS too.
+  - The TS refresh grant and `rote mcp export` take the client id and
+    secret from the same source, so a stored dynamically registered
+    client is never paired with the registry's pre-registered secret.
+  - A stored login URL that does not parse (a bad port) parks the run
+    on both Python and TS instead of crashing it.
+  - When rote sets aside a client from an older token file and the
+    server no longer allows registration, the login error says so and
+    names the `rote mcp add --client-id` fix.
 - Running the test suite no longer rewrites committed files. Five
   adapter suites emitted the BDR pipeline straight into
   `examples/bdr-outreach/expected/runtimes/`, and the dbos and temporal
@@ -345,6 +363,30 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     pipeline's real judges, or say there are none, instead of a
     `ROTE_MODEL_VET_CONTACT` example on pipelines with no judges.
   - `rote config` columns line up for every key, including `inference`.
+- A missing MCP endpoint (no `ROTE_MCP_<SERVER>_URL`, no registry entry,
+  no URL in the IR) now fails the step at once on every MCP runtime,
+  naming the variable to set. It used to be retried like a network
+  error: DBOS ran all 4 attempts and reported only
+  `DBOSMaxStepRetriesExceeded`. The helpers raise a new
+  `RoteMcpConfigError`, which `should_retry` (DBOS Python),
+  `shouldRetry` (DBOS-TS), `NonRetriableError` (Inngest) and
+  `NonRetryableError` (Cloudflare) now exclude from the retry budget,
+  the same way they already excluded auth failures. It does not park:
+  the fix is the variable and a restart, not a login. Agent loops get
+  the same treatment: tool discovery that cannot reach a pinned server
+  for lack of an endpoint raises `RoteMcpConfigError` (TS and Python),
+  and each runtime's loop step skips its retries on it (temporal via
+  `non_retryable_error_types`). The Python loop also wires a pinned
+  server that resolves from its `ROTE_MCP_<SERVER>_URL` alone, which
+  it used to ignore.
+- `rote run` on a Cloudflare app reports the step error that failed the
+  run. Local dev's status only says `WorkflowFatalError`, so the runner
+  now reads the real error back from the wrangler log. A step sleeping
+  between retry attempts after the last gate payload was delivered is
+  no longer mistaken for a park and failed with "every gate payload has
+  been delivered"; the runner waits for the run's real outcome, reports
+  the newest step error, and still fails fast on a gate that never
+  consumes its payload while nothing is retrying.
 
 ## [0.14.0] - 2026-10-18
 

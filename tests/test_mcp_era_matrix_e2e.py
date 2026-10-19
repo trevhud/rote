@@ -31,11 +31,14 @@ Slow: npm installs, tsc, and real node servers.
 from __future__ import annotations
 
 import asyncio
+import http.server
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
+import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -454,7 +457,7 @@ def test_a_modern_era_401_still_means_auth_needed(
 # ───────── a stored login belongs to one endpoint ─────────
 
 
-def _store_login(server_url: str) -> None:
+def _store_login(server_url: str, **overrides: Any) -> None:
     from rote.mcp import write_token_file
 
     write_token_file(
@@ -465,6 +468,7 @@ def _store_login(server_url: str) -> None:
             "expires_at": None,
             "client_info": {"client_id": "c"},
             "token_endpoint": None,
+            **overrides,
         },
     )
 
@@ -493,3 +497,74 @@ def test_both_helpers_send_a_login_only_to_its_own_endpoint(
     assert out["error"] == "RoteMcpAuthNeeded", out
     assert "stored login is for http://old.example.com/mcp" in out["message"]
     assert server.eras() == set(), "no request may reach the new endpoint"
+
+
+def test_emitted_ts_helper_parks_on_an_unparseable_stored_url(
+    modern_only_with_auth: Running, ts_app: Path
+) -> None:
+    """`new URL` throws a TypeError on a bad port: that crashed the run
+    instead of parking it."""
+    _store_login("http://old.example.com:99999/mcp")
+    out = _ts_call(ts_app, modern_only_with_auth.url, "echo", {"text": "x"})
+    assert out["error"] == "RoteMcpAuthNeeded", out
+
+
+class _FormRecorder(http.server.BaseHTTPRequestHandler):
+    bodies: list[dict[str, list[str]]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 (http.server API)
+        length = int(self.headers.get("content-length", 0))
+        _FormRecorder.bodies.append(urllib.parse.parse_qs(self.rfile.read(length).decode()))
+        self.send_response(400)
+        self.end_headers()
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("client_info", "sent_id", "sent_secret"),
+    [
+        # A stored (dynamically registered) client: its own id, no secret,
+        # never the registry's pre-registered secret.
+        ({"client_id": "dcr-1"}, "dcr-1", None),
+        # No stored client: the registry's id and secret, together.
+        (None, "pre", "pre-secret"),
+    ],
+)
+def test_emitted_ts_refresh_takes_client_id_and_secret_from_one_source(
+    ts_app: Path,
+    modern_only: Running,
+    client_info: dict[str, str] | None,
+    sent_id: str,
+    sent_secret: str | None,
+) -> None:
+    from rote.mcp import McpRegistry, McpServerConfig, save_registry
+
+    recorder = http.server.HTTPServer(("127.0.0.1", 0), _FormRecorder)
+    threading.Thread(target=recorder.serve_forever, daemon=True).start()
+    _FormRecorder.bodies = []
+    try:
+        save_registry(
+            McpRegistry(
+                servers={
+                    "era": McpServerConfig(
+                        url=modern_only.url, client_id="pre", client_secret="pre-secret"
+                    )
+                }
+            )
+        )
+        _store_login(
+            modern_only.url,
+            tokens={"access_token": "old", "token_type": "Bearer", "refresh_token": "r"},
+            expires_at=1.0,
+            client_info=client_info,
+            token_endpoint=f"http://127.0.0.1:{recorder.server_port}/token",
+        )
+        out = _ts_call(ts_app, modern_only.url, "echo", {"text": "x"})
+    finally:
+        recorder.shutdown()
+    assert out["error"] == "RoteMcpAuthNeeded", out  # the recorder refuses the grant
+    [form] = _FormRecorder.bodies
+    assert form["client_id"] == [sent_id]
+    assert form.get("client_secret") == ([sent_secret] if sent_secret else None)

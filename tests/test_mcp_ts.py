@@ -208,15 +208,18 @@ def test_dbos_ts_parks_on_auth(tmp_path: Path) -> None:
     get_adapter("dbos-ts").emit(_bound_pipeline_with_retry_and_parallel(), tmp_path)
     main = (tmp_path / "src" / "main.ts").read_text(encoding="utf-8")
     assert (
-        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";'
-        in main
+        "import { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired } "
+        'from "./extracted/_roteMcp";' in main
     )
     assert "runWithAuthPark(" in main
-    # Neither auth nor a mid-call input request is fixed by a retry.
-    assert "return !isRoteMcpAuthNeeded(error) && !isRoteMcpInputRequired(error);" in main
+    # No retry fixes auth, a mid-call input request, or a missing endpoint.
+    assert (
+        "        !isRoteMcpAuthNeeded(error) &&\n"
+        "        !isRoteMcpInputRequired(error) &&\n"
+        "        !isRoteMcpConfigError(error)\n"
+    ) in main
     assert "`rote:auth:${server}`" in main
     assert '{ serializationType: "portable" }' in main
-    # Retried MCP steps exempt auth failures from the retry budget.
     assert "shouldRetry: mcpShouldRetry" in main
     # Parallel wave: payload bound once, settled rejection re-run through
     # the park wrapper.
@@ -226,7 +229,9 @@ def test_dbos_ts_parks_on_auth(tmp_path: Path) -> None:
     # The helper carries the typed error both sides detect by NAME.
     helper = (tmp_path / "src" / "extracted" / "_roteMcp.ts").read_text(encoding="utf-8")
     assert "class RoteMcpAuthNeeded extends Error" in helper
-    assert 'e.name === "RoteMcpAuthNeeded"' in helper
+    assert 'return errorTreeHas(err, "RoteMcpAuthNeeded");' in helper
+    assert 'this.name = "RoteMcpConfigError";' in helper
+    assert "throw new RoteMcpConfigError(" in helper
 
 
 def test_dbos_ts_api_backend_emits_no_park_machinery(tmp_path: Path) -> None:
@@ -250,11 +255,16 @@ def test_inngest_parks_on_auth(tmp_path: Path) -> None:
     get_adapter("inngest").emit(_bound_pipeline(), tmp_path)
     src = (tmp_path / "src" / "inngest" / "pipeline.ts").read_text(encoding="utf-8")
     assert (
-        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "../extracted/_roteMcp";'
-        in src
+        "import { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired } "
+        'from "../extracted/_roteMcp";' in src
     )
     assert 'runParkable(step, "pull_data", "ts_mcp_demo/rote.auth.vendor", "vendor"' in src
-    assert "if (isRoteMcpAuthNeeded(err) || isRoteMcpInputRequired(err)) {" in src
+    # Auth, a mid-call input request and a missing endpoint skip the budget.
+    assert (
+        "                            isRoteMcpAuthNeeded(err) ||\n"
+        "                            isRoteMcpInputRequired(err) ||\n"
+        "                            isRoteMcpConfigError(err)\n"
+    ) in src
     assert "new NonRetriableError(" in src
     assert "-auth-wait-" in src  # fresh waitForEvent id per park
     assert 'timeout: "30d"' in src
@@ -281,12 +291,15 @@ def test_cloudflare_parks_on_auth(tmp_path: Path) -> None:
     src = (tmp_path / "src" / "workflow.ts").read_text(encoding="utf-8")
     assert 'import { NonRetryableError } from "cloudflare:workflows";' in src
     assert (
-        'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "./extracted/_roteMcp";' in src
+        "import { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired } "
+        'from "./extracted/_roteMcp";' in src
     )
     assert 'const pull_data_event = "rote_auth_vendor";' in src
     assert '{ type: pull_data_event, timeout: "30 days" }' in src
+    # Auth, a mid-call input request and a missing endpoint skip the budget.
     assert "throw (isRoteMcpAuthNeeded(err) ||\n" in src
-    assert "isRoteMcpInputRequired(err))\n" in src
+    assert "isRoteMcpInputRequired(err) ||\n" in src
+    assert "isRoteMcpConfigError(err))\n" in src
     assert "auth retry" in src  # fresh step names per attempt
     assert "function stepNeedsAuth" in src
     # Binding-less nodes keep the plain step.do.
@@ -319,7 +332,9 @@ def test_cloudflare_binding_mode_delegates_to_the_service_binding(tmp_path: Path
     # error the park loop already detects by name.
     assert '"ROTE_MCP_AUTH_NEEDED:"' in helper
     assert "class RoteMcpAuthNeeded extends Error" in helper
-    assert 'e.name === "RoteMcpAuthNeeded"' in helper
+    assert 'return errorTreeHas(err, "RoteMcpAuthNeeded");' in helper
+    # Same exported surface: the workflow imports the config-error check.
+    assert "export function isRoteMcpConfigError(" in helper
     # No token machinery in this variant: no OAuth grant, no KV cache,
     # no MCP SDK client.
     assert "grant_type" not in helper

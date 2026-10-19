@@ -27,6 +27,9 @@ What it does, mirroring the rote CLI's behavior exactly:
   failure: no login can answer it, so parking on auth would wait forever.
 - **Protocol era**: fastmcp 4 negotiates MCP 2026-07-28 and falls back to
   the 2025 handshake for servers that do not speak it.
+- **Configuration errors fail fast**: no resolvable endpoint raises
+  :class:`RoteMcpConfigError`, which the emitted steps exclude from their
+  retry budget. It does not park either: no login supplies an endpoint.
 """
 
 from __future__ import annotations
@@ -103,7 +106,15 @@ def stored_for_url(doc: Mapping[str, Any], url: str) -> bool:
     document that records no URL predates the field and is taken as is.
     """
     stored = doc.get("server_url")
-    return not stored or normalize_server_url(str(stored)) == normalize_server_url(url)
+    if not stored:
+        return True
+    try:
+        normalized = normalize_server_url(str(stored))
+    except ValueError:
+        # An unparseable stored URL (a bad port) names no endpoint at all,
+        # so it is not this one: the caller treats the login as elsewhere.
+        return False
+    return normalized == normalize_server_url(url)
 
 
 def _with_bound_issuer(doc: Mapping[str, Any], client_info: Any) -> Any:
@@ -172,8 +183,24 @@ class RoteMcpInputRequired(RuntimeError):
         return (type(self), (self.server, self.tool, self.requests))
 
 
+class RoteMcpConfigError(RuntimeError):
+    """The app is not configured to reach an MCP server.
+
+    A missing endpoint is a deployment fact, not a transient failure: the
+    process environment and the registry do not change between retry
+    attempts, so the emitted steps fail at once on this instead of
+    spending their retry budget. Unlike an auth failure it does not park
+    either, because the fix is a restart with the variable set, not a
+    signal to the running workflow. The message names the variable.
+
+    Single-argument, so default exception pickling round-trips it (DBOS
+    serializes step errors).
+    """
+
+
 def resolve_url(server: str, pipeline_url: str | None) -> str:
-    env_url = os.environ.get(f"ROTE_MCP_{server.upper()}_URL")
+    env_var = f"ROTE_MCP_{server.upper()}_URL"
+    env_url = os.environ.get(env_var)
     if env_url:
         return env_url
     entry = _registry_servers().get(server)
@@ -181,9 +208,10 @@ def resolve_url(server: str, pipeline_url: str | None) -> str:
         return str(entry["url"])
     if pipeline_url:
         return pipeline_url
-    raise RuntimeError(
-        f"no endpoint for MCP server {server!r} — register it "
-        f"(rote mcp add {server} <url>) or set ROTE_MCP_{server.upper()}_URL"
+    raise RoteMcpConfigError(
+        f"no endpoint for MCP server {server!r}: set {env_var}, or register "
+        f'it with "rote mcp add {server} <url>". This is configuration, so '
+        "the step is not retried."
     )
 
 

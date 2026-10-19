@@ -443,9 +443,36 @@ def _step_call_expr(
         payload = payload_ts_literal(node, indent=payload_indent)
     if node.kind is NodeKind.LLM_JUDGE:
         call = f"{fn_name}({payload}, {judge_env_arg(node)})"
+    elif _loop_reaches_mcp(node):
+        call = f"failFastOnConfigError(() => {fn_name}({payload}))"
     else:
         call = f"{fn_name}({payload})"
     return f"step.run({step_id_expr or json.dumps(node.id)}, async () => {call})"
+
+
+def _loop_reaches_mcp(node: Node) -> bool:
+    """An agent loop that declares tools reaches MCP servers at run time."""
+    return node.kind is NodeKind.AGENT_LOOP and bool(node.tools)
+
+
+_FAIL_FAST_ON_MCP_CONFIG_HELPER = """\
+/** A missing MCP endpoint is configuration, not a transient failure: an
+ * agent loop that cannot reach its tool servers fails the run at once
+ * instead of spending the function-level retries. Matched by the error's
+ * name, the same way every runtime detects the MCP helper's errors. */
+async function failFastOnConfigError<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (err) {
+        if ((err as { name?: unknown } | null)?.name === "RoteMcpConfigError") {
+            throw new NonRetriableError(err instanceof Error ? err.message : String(err), {
+                cause: err instanceof Error ? err : undefined,
+            });
+        }
+        throw err;
+    }
+}
+"""
 
 
 def _parkable_call_expr(
@@ -538,7 +565,9 @@ function stepNeedsAuth(err: unknown): boolean {
  * Each attempt uses a fresh step id (`<id>`, `<id>-retry-1`, ...) so the
  * executor memoizes every attempt separately; auth failures are wrapped
  * in NonRetriableError inside the step so they skip the retry budget
- * (retrying cannot conjure a credential — the park can).
+ * (retrying cannot conjure a credential — the park can). A missing
+ * endpoint is wrapped the same way, but fails the run instead of
+ * parking: the fix is a variable and a restart, not a login.
  */
 async function runParkable(
     step: ParkableStep,
@@ -555,9 +584,13 @@ async function runParkable(
                     try {
                         return await fn();
                     } catch (err) {
-                        // No retry mints a credential or answers an input
-                        // request: both skip the budget.
-                        if (isRoteMcpAuthNeeded(err) || isRoteMcpInputRequired(err)) {
+                        // No retry mints a credential, answers an input
+                        // request or supplies an endpoint: all skip the budget.
+                        if (
+                            isRoteMcpAuthNeeded(err) ||
+                            isRoteMcpInputRequired(err) ||
+                            isRoteMcpConfigError(err)
+                        ) {
                             throw new NonRetriableError(
                                 err instanceof Error ? err.message : String(err),
                                 { cause: err instanceof Error ? err : undefined },
@@ -763,12 +796,16 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         """
     )
 
+    loops_reach_mcp = any(_loop_reaches_mcp(n) for n in pipeline.nodes)
     inngest_imports = (
-        'import { NonRetriableError } from "inngest";\n' if (has_gates or mcp_backed) else ""
+        'import { NonRetriableError } from "inngest";\n'
+        if (has_gates or mcp_backed or loops_reach_mcp)
+        else ""
     ) + 'import { inngest } from "./client";\n'
     if mcp_backed:
         inngest_imports += (
-            'import { isRoteMcpAuthNeeded, isRoteMcpInputRequired } from "../extracted/_roteMcp";\n'
+            "import { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired }"
+            ' from "../extracted/_roteMcp";\n'
         )
 
     imports_block = module_imports(pipeline, prefix="../")
@@ -807,6 +844,8 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(helper_block.strip("\n"))
     if mcp_backed:
         sections.append(_RUN_PARKABLE_HELPER.rstrip("\n"))
+    if loops_reach_mcp:
+        sections.append(_FAIL_FAST_ON_MCP_CONFIG_HELPER.rstrip("\n"))
     if any(n.fan_out for n in pipeline.nodes):
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
     sections.append(function_block)

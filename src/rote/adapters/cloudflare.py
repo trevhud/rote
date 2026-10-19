@@ -263,10 +263,12 @@ def _emit_step_call_mcp_parkable(
         f"                        try {{\n"
         f"                            return await {fn_name}({payload}, this.env);\n"
         f"                        }} catch (err) {{\n"
-        f"                            // No retry mints a credential or answers an\n"
-        f"                            // input request: both skip the budget.\n"
+        f"                            // No retry mints a credential, answers an\n"
+        f"                            // input request or supplies an endpoint: all\n"
+        f"                            // skip the budget. Only auth then parks.\n"
         f"                            throw (isRoteMcpAuthNeeded(err) ||\n"
-        f"                                isRoteMcpInputRequired(err))\n"
+        f"                                isRoteMcpInputRequired(err) ||\n"
+        f"                                isRoteMcpConfigError(err))\n"
         f"                                ? new NonRetryableError(\n"
         f"                                      err instanceof Error ? err.message : String(err),\n"
         f"                                  )\n"
@@ -536,12 +538,13 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         if cfg.mcp_client == "binding":
             # The Env interface names the platform proxy's structural type.
             imports += (
-                "\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired, type RoteMcpBinding } "
+                "\nimport { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired, "
+                "type RoteMcpBinding } "
                 'from "./extracted/_roteMcp";'
             )
         else:
             imports += (
-                "\nimport { isRoteMcpAuthNeeded, isRoteMcpInputRequired } "
+                "\nimport { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired } "
                 'from "./extracted/_roteMcp";'
             )
 

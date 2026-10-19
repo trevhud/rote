@@ -80,6 +80,9 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         active="a",
         preregistered={},
         cimd_document="served",
+        prm_path=True,
+        prm_origin_resource=None,
+        prm_issuer=None,
     )
     monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, fixture_server.cimd_url)
     monkeypatch.setenv("SSL_CERT_FILE", str(fixture_server.ca_pem))
@@ -453,3 +456,78 @@ def test_mcp_add_records_the_issuer_a_pre_registered_client_belongs_to(
     with pytest.raises(McpAuthError, match=r"--client-id"):
         asyncio.run(login("vendor", config))
     assert [e for e in fx.events("authorize") if e["issuer"] == fx.issuer("b")] == []
+
+
+# ───────── hardening ─────────
+
+
+def test_a_dribbling_document_host_cannot_hold_the_login_open(
+    fx: OAuthFixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """httpx's timeout is per read: a byte every half second never trips it.
+    The check needs a total deadline, then falls back to DCR."""
+    monkeypatch.setattr("rote.mcp.auth._DOCUMENT_CHECK_TIMEOUT_SECONDS", 1.0)
+    fx.configure(cimd_document="dribble")
+
+    async def bounded() -> dict:
+        # Bound the test itself so a regression fails instead of hanging.
+        return await asyncio.wait_for(login("vendor", _config(fx)), timeout=30)
+
+    started = time.monotonic()
+    doc = asyncio.run(bounded())
+    assert time.monotonic() - started < 15
+    assert doc["client_info"]["client_id"].startswith("dcr-")
+    assert "no complete answer within 1s" in capsys.readouterr().err
+
+
+def test_issuer_discovery_requires_metadata_for_this_resource(fx: OAuthFixture) -> None:
+    """RFC 9728 section 3.3: the document must name this resource. On a
+    shared host the origin-level document describes some other resource,
+    and its issuer would bind the client to the wrong server."""
+    from rote.mcp.auth import discover_issuer
+
+    assert asyncio.run(discover_issuer(fx.mcp_url)).issuer == fx.issuer("a")
+    fx.configure(prm_path=False, prm_origin_resource=f"{fx.base}/other")
+    found = asyncio.run(discover_issuer(fx.mcp_url))
+    assert found.issuer is None
+    assert f"{fx.base}/other" in (found.problem or "")
+    # The origin document is fine when it does describe this resource.
+    fx.configure(prm_origin_resource=fx.mcp_url + "/")
+    assert asyncio.run(discover_issuer(fx.mcp_url)).issuer == fx.issuer("a")
+
+
+def test_issuer_discovery_refuses_a_plain_http_issuer(fx: OAuthFixture) -> None:
+    from rote.cli import main as cli_main
+    from rote.mcp import load_registry
+    from rote.mcp.auth import discover_issuer
+
+    fx.configure(prm_issuer="http://auth.attacker.example/as")
+    found = asyncio.run(discover_issuer(fx.mcp_url))
+    assert found.issuer is None
+    assert "not HTTPS" in (found.problem or "")
+    assert cli_main(["mcp", "add", "vendor", fx.mcp_url, "--client-id", PRE_ID]) == 0
+    assert load_registry().servers["vendor"].issuer is None
+
+
+def test_a_v1_client_on_a_server_without_dcr_names_the_cause(fx: OAuthFixture) -> None:
+    """rote drops an unbound v1 client; when the server no longer allows
+    registration the login must say that is what happened, and the fix."""
+    fx.configure(cimd=False)
+    config = _config(fx)
+    asyncio.run(login("vendor", config))
+    v1 = read_token_file("vendor")
+    assert v1 is not None
+    old_client = v1["client_info"]["client_id"]
+    v1.pop("issuer")
+    v1["client_info"].pop("issuer", None)
+    v1["expires_at"] = time.time() - 10
+    v1["tokens"]["refresh_token"] = "revoked"
+    token_file("vendor").write_text(json.dumps({**v1, "version": 1}), encoding="utf-8")
+    fx.configure(dcr=False)
+
+    with pytest.raises(McpAuthError) as caught:
+        asyncio.run(login("vendor", config))
+    message = str(caught.value)
+    assert old_client in message
+    assert "older rote" in message
+    assert "rote mcp add vendor <url> --client-id" in message

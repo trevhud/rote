@@ -59,7 +59,7 @@ function requireEnv(name: string): string {
  */
 export const targetResearchStep = DBOS.registerStep(
     async (payload: Record<string, unknown>) => targetResearch(payload),
-    { name: "target_research", retriesAllowed: true, maxAttempts: 3, backoffRate: 2, timeoutMS: 300000 },
+    { name: "target_research", retriesAllowed: true, maxAttempts: 3, backoffRate: 2, shouldRetry: (error: unknown) => (error as { name?: unknown } | null)?.name !== "RoteMcpConfigError", timeoutMS: 300000 },
 );
 
 /**

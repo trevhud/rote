@@ -114,3 +114,72 @@ def fan_out_source_keys(pipeline: Pipeline) -> dict[str, dict[str, list[dict[str
             fan_out_element(i) for i in range(FAN_OUT_ELEMENTS)
         ]
     return extra
+
+
+# ───────── Unconfigured MCP endpoint (config-error e2e cases) ─────────
+#
+# A node bound to (or a loop pinned to) a server with no URL anywhere: no
+# IR url, no registry entry, no ROTE_MCP_VENDOR_URL. Every runtime must
+# run the step exactly ONCE and fail naming the variable. The count is
+# the assertion that matters: a message can be right while the step
+# still burned its retry budget.
+
+ATTEMPT_MARKER = "ROTE_E2E_ATTEMPT"
+
+
+def unconfigured_mcp_pipelines(name: str) -> dict[str, Pipeline]:
+    """One bound-step pipeline and one agent-loop pipeline, both with retries."""
+    from rote.ir import MCPBinding, NodeKind, PipelineInput, RetryPolicy, TerminationConfig
+
+    bound = Node(
+        id="lookup",
+        kind=NodeKind.EXTERNAL_CALL,
+        description="Look up a contact on the vendor MCP server.",
+        input={"contact_id": "str"},
+        inputs={"contact_id": "pipeline.input.contact_id"},
+        output="dict",
+        mcp=MCPBinding(server="vendor", tool="enrich_contact", args={"contact_id": "contact_id"}),
+        retry=RetryPolicy(max=3, backoff="exponential"),
+    )
+    loop = Node(
+        id="research",
+        kind=NodeKind.AGENT_LOOP,
+        description="Research the contact with the vendor's tools.",
+        input={"contact_id": "str"},
+        inputs={"contact_id": "pipeline.input.contact_id"},
+        output="dict",
+        tools=["enrich_contact"],
+        tool_servers={"enrich_contact": "vendor"},
+        termination=TerminationConfig(condition="the contact is enriched", max_iterations=3),
+        retry=RetryPolicy(max=3, backoff="exponential"),
+    )
+    return {
+        node.id: Pipeline(
+            name=f"{name}_{node.id}",
+            description="Unconfigured MCP endpoint e2e pipeline.",
+            input=PipelineInput(type="Req", required=["contact_id"]),
+            nodes=[node],
+            edges=[],
+            entry_nodes=[node.id],
+            exit_nodes=[node.id],
+        )
+        for node in (bound, loop)
+    }
+
+
+def count_ts_step_attempts(module: Path, node_id: str) -> None:
+    """Make an emitted TS node module log one marker line per invocation.
+
+    The marker goes first in the exported function, so it counts step
+    attempts whatever the step does next (bound call or tool discovery).
+    """
+    src = module.read_text(encoding="utf-8")
+    match = re.search(r"export async function \w+\([\s\S]*?\)[^\n]*\{\n", src)
+    assert match, f"no exported async function in {module}"
+    marker = f'    console.log("{ATTEMPT_MARKER} {node_id}");\n'
+    module.write_text(src[: match.end()] + marker + src[match.end() :], encoding="utf-8")
+
+
+def attempts_in(text: str, node_id: str) -> int:
+    """How many times :func:`count_ts_step_attempts`'s marker was printed."""
+    return text.count(f"{ATTEMPT_MARKER} {node_id}")
