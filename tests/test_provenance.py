@@ -366,6 +366,26 @@ def test_a_fenced_comment_does_not_end_the_open_questions() -> None:
     ]
 
 
+def test_a_citation_that_only_changes_the_quote_style_is_verbatim(tmp_path: Path) -> None:
+    """The real BDR case: inside its own double-quoted citation the agent
+    wrote the skill's "BDR do not contact" with single quotes, and the
+    compile failed on a citation that was verbatim but for the quote mark."""
+    (tmp_path / "SKILL.md").write_text(
+        '1. **Do-not-contact list** — search for "BDR do not contact" list, check each '
+        "contact's memberships\n"
+    )
+    paragraphs = skill_paragraphs(tmp_path)
+    quote = (
+        "Do-not-contact list — search for 'BDR do not contact' list, "
+        "check each contact's memberships"
+    )
+    assert citation_problem(quote, paragraphs) is None
+    curly = "search for “BDR do not contact” list, check each contact’s memberships"
+    assert citation_problem(curly, paragraphs) is None
+    # The negative half: a changed word is still not the skill.
+    assert citation_problem(quote.replace("each", "every"), paragraphs) is not None
+
+
 def test_open_questions_counts_subheadings_not_their_detail() -> None:
     report = "## Open questions\n\n### OQ-1\n- a\n- b\n\n### OQ-2\n- c\n\n## Next\n- d\n"
     assert len(open_questions(report)) == 2

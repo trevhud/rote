@@ -203,6 +203,7 @@ class Compiler:
         run_generated_tests: bool = True,
         trust_skill: bool = False,
         emit_target: EmitTarget | None = None,
+        strict_provenance: bool = False,
     ) -> None:
         """
         Parameters
@@ -244,6 +245,10 @@ class Compiler:
             the deliverable with that adapter, so an IR it refuses goes back
             to the agent instead of failing after the compile (``None``:
             no emit check, for callers that do not emit).
+        strict_provenance
+            ``--strict-provenance``: every unresolved provenance finding is an
+            error, review gaps included. By default only a citation the skill
+            does not contain fails; assumptions never do.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -253,6 +258,7 @@ class Compiler:
         self.run_generated_tests = run_generated_tests
         self.trust_skill = trust_skill
         self.emit_target = emit_target
+        self.strict_provenance = strict_provenance
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -501,6 +507,7 @@ class Compiler:
                 trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
                 emit_target=self.emit_target,
+                strict_provenance=self.strict_provenance,
             )
             self._emit_verification(verification)
 
@@ -569,6 +576,14 @@ class Compiler:
             self._emit("log", f"implemented {done} of {len(impls)} impl node(s)")
         for finding in verification.errors:
             self._emit("warning", f"unresolved: {finding.node_id}: {finding.message}")
+        for finding in verification.review_gaps:
+            self._emit("warning", f"provenance review: {finding.message}")
+        if verification.assumptions:
+            self._emit(
+                "log",
+                f"{len(verification.assumptions)} assumption(s) the skill does not state; "
+                f"listed for review in the compile output and compile-report.md",
+            )
         if verification.tests is not None and not verification.tests.passed:
             self._emit(
                 "warning",
@@ -604,6 +619,7 @@ class Compiler:
                 trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
                 emit_target=self.emit_target,
+                strict_provenance=self.strict_provenance,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
@@ -613,11 +629,13 @@ class Compiler:
                 what = "pipeline.yaml failed validation"
             else:
                 problems = len(verification.errors)
+                gaps = len(verification.review_gaps)
                 tests = verification.tests
                 red = tests is not None and tests.status == "failed"
                 what = (
                     f"the deliverable failed verification ({problems} contract "
-                    f"problem(s){', generated tests failing' if red else ''})"
+                    f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
+                    f"{', generated tests failing' if red else ''})"
                 )
             self._emit("warning", f"{what}; asking the compiler to repair (attempt {attempts})")
             return instruction

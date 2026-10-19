@@ -135,8 +135,12 @@ two:
    and give it its own entry under **Open questions** in the compilation
    report (a list item, or a `###` sub-heading per question). A test
    that pins the assumed outcome carries the same comment, so it reads
-   as an assumption, not a rule. rote rejects a deliverable with fewer
-   Open questions entries than recorded assumptions.
+   as an assumption, not a rule. Declaring is the point: assumptions
+   never fail the compile, however many there are; rote lists each one
+   for review. Fewer Open questions entries than recorded assumptions
+   is a gap rote sends back for you to close. A `# skill:` quote the
+   skill does not contain does fail the compile, so when the skill is
+   silent, assume and declare rather than cite.
 2. **Stub the function**, when the unstated fact is what the function is
    for (a whole mapping table, a threshold that drives every branch).
 
