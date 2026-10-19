@@ -39,6 +39,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -118,6 +119,52 @@ def test_emitted_typescript_compiles(emitted_dir: Path) -> None:
             f"tsc --noEmit reported errors in emitted DBOS TS code:\n"
             f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
         )
+
+
+def test_a_failed_launch_exits_instead_of_hanging(emitted_dir: Path) -> None:
+    """A launch that fails part way must end the process with the error.
+
+    Found in CI: an app that connected while the Postgres container was
+    restarting after its init phase failed in DBOS.launch() with
+    "Connection terminated unexpectedly", and then hung until the runner's
+    timeout, because the half-launched SDK kept pools and timers alive and
+    no shutdown ran. A server that drops every connection reproduces it.
+    """
+    build = subprocess.run(
+        ["npx", "--no-install", "tsc"], cwd=emitted_dir, capture_output=True, text=True, timeout=120
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    port = server.getsockname()[1]
+
+    def _drop_connections() -> None:
+        while True:
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            conn.close()
+
+    threading.Thread(target=_drop_connections, daemon=True).start()
+    try:
+        run = subprocess.run(
+            ["node", "dist/main.js", "{}"],
+            cwd=emitted_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={
+                **os.environ,
+                "DBOS_SYSTEM_DATABASE_URL": f"postgresql://postgres:dbos@127.0.0.1:{port}/x_dbos_sys",
+            },
+        )
+    finally:
+        server.close()
+    assert run.returncode == 1, run.stderr
+    # The drop reads as ECONNRESET or "Connection terminated unexpectedly".
+    assert "Unable to connect to system database" in run.stderr, run.stderr
 
 
 def test_node_modules_contains_expected_packages(emitted_dir: Path) -> None:
@@ -354,7 +401,7 @@ def postgres_url(tmp_path_factory: pytest.TempPathFactory):  # noqa: ANN201
         deadline = time.time() + 60
         while time.time() < deadline:
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                ["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
                 capture_output=True,
                 timeout=10,
             )

@@ -888,6 +888,22 @@ gained a sibling in its wave — and parallel fetch waves are exactly where
 the flaky network calls live. If you add a parallel branch to any
 adapter, diff it against the single-node branch field by field.
 
+### A Postgres container is "ready" over the socket before it is ready
+
+The `postgres` image's init phase runs a socket-only server, then
+restarts it. `pg_isready` over the socket says ready during that phase,
+so an app connecting right after it gets "Connection terminated
+unexpectedly". Check over TCP (`pg_isready -h 127.0.0.1`), which answers
+only once the final server is up. This only showed in CI, where nothing
+sat between readiness and the first connection.
+
+It turned into a hang because the emitted DBOS-TS `main()` called
+`DBOS.launch()` before its `try`. A launch that fails part way leaves
+pools and timers alive, so without the `finally` shutdown the process
+never exits and the runner reports a bare timeout. Launch stays inside
+the `try` (regression:
+`tests/test_dbos_ts_e2e.py::test_a_failed_launch_exits_instead_of_hanging`).
+
 ### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
 
 Three traps hit while building the Inngest adapter, all verified
@@ -1053,6 +1069,40 @@ values; touch either converter and run it.
 `tests/test_ir.py::test_every_committed_pipeline_validates` sweeps every
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
+
+### Optional pipeline inputs are left out; required ones fail on entry
+
+`Pipeline.optional_input_fields` (listed in `input.optional`, or a schema
+property the schema's `required` omits) and `required_input_fields`
+(everything else a node reads, plus the declared required) are derived,
+never stored. Emitted code relies on the pair:
+
+- **An omitted optional field is absent from the payload, not None.**
+  Python used to emit `pipeline_input["f"]`, so ops-report's optional
+  `report_date` raised `KeyError` whenever a caller left it out. Reading
+  it with `.get` was the obvious fix and the wrong one: an explicit None
+  overrides the impl's own default (`def f(d="today")`) and fails a
+  judge input field that has a schema `default`. Python payloads now
+  spread each input field in with the emitted `_input_field`, which adds
+  the key only when the run supplied it. TS gets the same effect for free,
+  since an undefined field is dropped from the JSON payload.
+- **Every runtime checks the input on entry** with the emitted
+  `_missing_inputs_error` / `missingInputsError`. The check names missing
+  required fields, and it reports a non-object input (a run started with
+  no payload at all) instead of a TypeError inside generated code. It is
+  emitted whenever a node reads the pipeline input (`needs_input_check`).
+  The failure must not retry. Temporal raises
+  `ApplicationError(..., non_retryable=True)`, because a plain exception
+  in workflow code fails the workflow task and Temporal retries that
+  forever. Inngest throws `NonRetriableError`, because its retries are
+  function-level.
+
+`tests/test_pipeline_input_parity.py` runs the Python runtimes for real
+both ways. `tests/test_pipeline_input_ts_e2e.py` runs the missing-input
+case live on Inngest, Cloudflare and DBOS-TS, and proves Inngest fails on
+the first attempt. The Inngest runner now reports the failed run's error
+name and message from the dev server, where it used to show only a log
+tail that held the end of a stack trace.
 
 ### An undefined fanned list must name the node, on every runtime
 

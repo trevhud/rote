@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -64,6 +65,10 @@ class EmpiricalError(RuntimeError):
 #: How much of a failed process's output an error message carries.
 FAILURE_EXCERPT_CHARS = 1500
 
+#: A JS error header line, ``Error: ...`` or ``NonRetryableError: ...``,
+#: which a Node stack prints before its ``    at ...`` frames.
+_NODE_ERROR_HEADER = re.compile(r"^(?:[A-Z]\w*)?Error: .+$", re.MULTILINE)
+
 
 def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_CHARS) -> str:
     """The useful part of a failed process's output, for an error message.
@@ -82,7 +87,15 @@ def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_
         newline = cut.find("\n")
         if 0 <= newline < len(cut) - 1:
             cut = cut[newline + 1 :]
-        text = f"[... {len(text) - len(cut)} earlier characters omitted ...]\n{cut}"
+        omitted = f"[... {len(text) - len(cut)} earlier characters omitted ...]"
+        # A Node error prints its message FIRST and the stack after it, so
+        # a long stack pushes the message out of the tail. Keep the last
+        # `Name: message` header line when the tail lost it.
+        headers = _NODE_ERROR_HEADER.findall(text)
+        if headers and headers[-1] not in cut:
+            text = f"{headers[-1]}\n{omitted}\n{cut}"
+        else:
+            text = f"{omitted}\n{cut}"
     missing = extra_for_missing_module(stderr or stdout)
     if missing is not None:
         module, extra = missing

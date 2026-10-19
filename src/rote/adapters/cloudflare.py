@@ -58,6 +58,7 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_BINDING_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
@@ -72,6 +73,7 @@ from rote.adapters._ts_common import (
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 from rote.mcp.parked import AUTH_PARK_MARKER
@@ -620,8 +622,9 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         if n.inputs
         for ref in n.inputs.values()
     )
-    if needs_pipeline_input:
+    if needs_pipeline_input or pipeline.needs_input_check:
         body_lines.append("        const pipelineInput = event.payload;")
+        body_lines.extend(required_inputs_ts_guard(pipeline, "Error", indent=" " * 8))
         body_lines.append("")
 
     # Node ids whose results are bound by the time each wave starts —
@@ -707,6 +710,8 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if parks_on_auth else ""
     if any(n.fan_out for n in pipeline.nodes):
         helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
+    if pipeline.needs_input_check:
+        helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
 
     return header + imports + "\n" + env_block + helper_block + class_block
 

@@ -48,7 +48,9 @@ from rote.adapters._py_common import (
     fan_out_binding,
     fan_out_list_helper,
     impl_kwargs_expr,
+    missing_inputs_helper,
     require_constant_parameters,
+    required_inputs_guard,
     write_extracted_package,
     write_signature_package,
 )
@@ -443,7 +445,7 @@ def _emit_fan_out_call(node: Node, pipeline: Pipeline, cfg: TemporalAdapterConfi
     guarantee the other adapters give.
     """
     element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 20)
-    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    shared = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
     payload = f'{{"{element_param}": _item{shared}}}'
     expr = _execute_activity_expr(node, cfg, payload, indent=" " * 20)
     return "\n".join(
@@ -486,6 +488,15 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
     ]
     desc = safe_docstring_line(pipeline.description, fallback=pipeline.name)
     body_lines.append(f'        """{desc}"""')
+    # Non-retryable on purpose: a plain exception in workflow code fails the
+    # workflow task, which Temporal retries forever on the same bad input.
+    guard = required_inputs_guard(
+        pipeline,
+        "raise ApplicationError(_input_error, non_retryable=True)",
+        indent=" " * 8,
+    )
+    if guard:
+        body_lines.append(guard.rstrip("\n"))
 
     # Node ids whose results are bound by the time each wave starts —
     # used to reject inputs that reference a later wave at emit time.
@@ -596,6 +607,13 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
 
     if any(n.fan_out for n in pipeline.nodes):
         parts.append("\n" + fan_out_list_helper() + "\n")
+    if pipeline.needs_input_check:
+        parts.append("\n" + missing_inputs_helper(pipeline) + "\n")
+        parts[0] = parts[0].replace(
+            "from temporalio.common import RetryPolicy\n",
+            "from temporalio.common import RetryPolicy\n"
+            "from temporalio.exceptions import ApplicationError\n",
+        )
 
     parts.append(
         textwrap.dedent(

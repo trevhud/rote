@@ -81,8 +81,10 @@ from rote.adapters._py_common import (
     fan_out_list_helper,
     has_legacy_judges,
     impl_kwargs_expr,
+    missing_inputs_helper,
     needs_call_impl,
     require_constant_parameters,
+    required_inputs_guard,
     serialize_helper,
     write_extracted_package,
     write_signature_package,
@@ -315,7 +317,7 @@ def _emit_fan_out_call(node: Node, pipeline: Pipeline) -> str:
     back against the list it came from.
     """
     element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
-    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    shared = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
     return "\n".join(
         [
             f"    # fan_out: {node.id} runs once per element of the bound list.",
@@ -478,6 +480,9 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     if has_impls:
         serialize_block += "\n\n" + call_impl_helper()
 
+    if pipeline.needs_input_check:
+        serialize_block += "\n\n" + missing_inputs_helper(pipeline)
+
     node_parts: list[str] = []
     for node in pipeline.nodes:
         node_parts.append("\n\n")
@@ -493,6 +498,7 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     pipeline_block = (
         f"\n\ndef run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
+        f"{required_inputs_guard(pipeline, 'raise ValueError(_input_error)')}"
         f"{_emit_pipeline_body(pipeline)}\n"
     )
 

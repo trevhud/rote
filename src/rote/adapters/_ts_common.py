@@ -631,6 +631,53 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
 """
 
 
+MISSING_INPUTS_HELPER_TS = """\
+/** Why `pipelineInput` cannot start a run, or null when it can.
+ *
+ * An omitted optional field reads as undefined, which is what the input
+ * schema allows. A missing required field would read as undefined too and
+ * surface much later as some unrelated error, so the run checks those
+ * first and fails naming them. A run started with no payload at all is
+ * reported the same way. The Python runtimes emit the same check
+ * (`_missing_inputs_error`), so a bad input reports identically on every
+ * target. */
+function missingInputsError(pipelineInput: unknown, required: string[]): string | null {
+    if (pipelineInput === null || Array.isArray(pipelineInput)) {
+        const got = pipelineInput === null ? "null" : "array";
+        return `pipeline input must be a JSON object, got ${got}`;
+    }
+    if (typeof pipelineInput !== "object") {
+        return `pipeline input must be a JSON object, got ${typeof pipelineInput}`;
+    }
+    const missing = required.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(pipelineInput, name),
+    );
+    return missing.length > 0
+        ? `pipeline input is missing required field(s): ${missing.join(", ")}`
+        : null;
+}
+"""
+
+
+def required_inputs_ts_guard(pipeline: Pipeline, error_class: str, indent: str) -> list[str]:
+    """Entry-check lines that fail a run missing a required input field.
+
+    ``error_class`` is the runtime's way to fail the whole run (Inngest
+    needs ``NonRetriableError``, or its function-level retries re-run the
+    same bad input). Empty when no node reads the pipeline input; the caller
+    must have bound ``pipelineInput`` otherwise.
+    """
+    if not pipeline.needs_input_check:
+        return []
+    names = ", ".join(json.dumps(name) for name in pipeline.required_input_fields)
+    return [
+        f"{indent}const inputError = missingInputsError(pipelineInput, [{names}]);",
+        f"{indent}if (inputError !== null) {{",
+        f"{indent}    throw new {error_class}(inputError);",
+        f"{indent}}}",
+    ]
+
+
 def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tuple[str, str]:
     """``(payload_literal, list_expr)`` for a ``fan_out`` node in TypeScript.
 
