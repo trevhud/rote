@@ -777,3 +777,135 @@ def refuse_mcp_only_nodes(pipeline: Pipeline, adapter: str) -> None:
 #: same loop compiled to TypeScript must agree on how many turns "no
 #: declared bound" means.
 DEFAULT_AGENT_MAX_ITERATIONS = 10
+
+
+# ───────── an agent loop's declared output ─────────
+
+#: The tool an agent loop calls once, at the end, to hand back its
+#: declared output. Its arguments are the declared output, so the keys
+#: downstream nodes read exist on every runtime and every lane.
+AGENT_SUBMIT_TOOL = "submit_result"
+
+#: The one key a single-type output (``output: IntelBrief``) is submitted
+#: under. The step returns the value itself, never the wrapper.
+AGENT_RESULT_KEY = "result"
+
+_JSON_OBJECT_TS = "{ [key: string]: JsonValue }"
+
+_IR_SCALARS: dict[str, tuple[dict[str, Any], str]] = {
+    "str": ({"type": "string"}, "string"),
+    "string": ({"type": "string"}, "string"),
+    "int": ({"type": "integer"}, "number"),
+    "integer": ({"type": "integer"}, "number"),
+    "float": ({"type": "number"}, "number"),
+    "number": ({"type": "number"}, "number"),
+    "bool": ({"type": "boolean"}, "boolean"),
+    "boolean": ({"type": "boolean"}, "boolean"),
+    "dict": ({"type": "object"}, _JSON_OBJECT_TS),
+    "object": ({"type": "object"}, _JSON_OBJECT_TS),
+    "list": ({"type": "array"}, "JsonValue[]"),
+    "array": ({"type": "array"}, "JsonValue[]"),
+}
+
+_NULL_NAMES = ("null", "None")
+
+
+def _split_top_level(text: str, sep: str) -> list[str]:
+    """Split on ``sep`` outside brackets: ``list[a | b] | null`` is 2 parts."""
+    parts: list[str] = []
+    depth, start = 0, 0
+    for i, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == sep and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts]
+
+
+def ir_type(type_name: str) -> tuple[dict[str, Any], str]:
+    """``(JSON Schema, TS type)`` for one IR type name.
+
+    IR types are free-form names (``list[InvoiceResult]``, ``str | null``).
+    Scalars, lists, optionals and plain dicts map exactly. A named type the
+    IR does not define (``InvoiceResult``) accepts any JSON value: the
+    schema cannot invent its fields, and the TS type is ``JsonValue``,
+    which every runtime can carry across a step boundary.
+    """
+    name = type_name.strip().strip("\"'")
+    alternatives = _split_top_level(name, "|")
+    if len(alternatives) > 1:
+        nullable = any(a in _NULL_NAMES for a in alternatives)
+        typed = [ir_type(a) for a in alternatives if a not in _NULL_NAMES]
+        schemas = [s for s, _ in typed] + ([{"type": "null"}] if nullable else [])
+        ts = " | ".join([t for _, t in typed] + (["null"] if nullable else []))
+        return {"anyOf": schemas}, ts
+    match = re.fullmatch(r"Optional\[(.*)\]", name)
+    if match:
+        return ir_type(f"{match.group(1)} | null")
+    match = re.fullmatch(r"(?:list|List|Sequence|set|tuple)\[(.*)\]", name)
+    if match:
+        item_schema, item_ts = ir_type(match.group(1))
+        wrapped = f"({item_ts})" if "|" in item_ts else item_ts
+        return {"type": "array", "items": item_schema}, f"{wrapped}[]"
+    if re.fullmatch(r"(?:dict|Dict|Mapping)\[.*\]", name):
+        return {"type": "object"}, _JSON_OBJECT_TS
+    if name in _IR_SCALARS:
+        schema, ts = _IR_SCALARS[name]
+        return dict(schema), ts
+    return {"description": f"Value of type {name}."}, "JsonValue"
+
+
+class AgentLoopOutput:
+    """What an agent loop must hand back, derived once from its IR node.
+
+    ``schema`` is the object schema of the ``submit_result`` arguments, or
+    None when the node declares no output (the step then returns
+    ``{"result": <final text>}``). ``unwrap_key`` is set for a single-type
+    output, whose value is the step's whole result. ``ts_type`` is the TS
+    return type of the emitted loop function.
+    """
+
+    def __init__(self, schema: dict[str, Any] | None, unwrap_key: str | None, ts_type: str):
+        self.schema = schema
+        self.unwrap_key = unwrap_key
+        self.ts_type = ts_type
+
+
+def agent_loop_output(node: Node) -> AgentLoopOutput:
+    """The declared-output contract of an ``agent_loop`` node.
+
+    Downstream nodes read the loop's declared ``output`` keys
+    (``process_invoices_loop.output.invoice_results``), so the loop must
+    produce exactly those keys, on every runtime. A node's
+    ``output_schema`` wins over its type names: it is evidence from real
+    payloads, a name is a guess.
+    """
+    assert node.kind is NodeKind.AGENT_LOOP
+    output = node.output
+    evidence = node.output_schema or {}
+    if isinstance(output, dict) and output:
+        typed = {key: ir_type(name) for key, name in output.items()}
+        observed = evidence.get("properties") if isinstance(evidence, dict) else None
+        properties = {key: (observed or {}).get(key, schema) for key, (schema, _) in typed.items()}
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": list(output),
+            "additionalProperties": False,
+        }
+        ts = "{ " + "; ".join(f"{json.dumps(k)}: {t}" for k, (_, t) in typed.items()) + " }"
+        return AgentLoopOutput(schema, None, ts)
+    if isinstance(output, str) and output.strip():
+        value_schema, ts = ir_type(output)
+        schema = {
+            "type": "object",
+            "properties": {AGENT_RESULT_KEY: evidence or value_schema},
+            "required": [AGENT_RESULT_KEY],
+            "additionalProperties": False,
+        }
+        return AgentLoopOutput(schema, AGENT_RESULT_KEY, ts)
+    return AgentLoopOutput(None, None, "{ result: string }")

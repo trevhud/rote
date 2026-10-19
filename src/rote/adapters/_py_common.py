@@ -32,6 +32,7 @@ from rote.adapters._common import (
     STUB_SENTINEL,
     EmitWriter,
     _to_pascal_case,
+    agent_loop_output,
     mcp_tool_arguments,
     safe_docstring_line,
 )
@@ -499,6 +500,27 @@ def _py_literal(value: Any) -> str:
         items = ", ".join(f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items())
         return "{" + items + "}"
     return repr(value)
+
+
+def _py_literal_block(value: Any, indent: str, width: int = 100) -> str:
+    """:func:`_py_literal`, wrapped one item per line when it overflows.
+
+    Emitted code is committed and ruff-linted at line-length 100. The first
+    line continues whatever precedes it (``output_schema=``), so the block
+    is fitted against ``width`` minus ``indent`` plus a margin for that.
+    """
+    flat = _py_literal(value)
+    if len(indent) + len(flat) + 24 <= width or not isinstance(value, (dict, list)) or not value:
+        return flat
+    inner = indent + "    "
+    if isinstance(value, dict):
+        items = [
+            f"{inner}{_py_literal(k)}: {_py_literal_block(v, inner, width)},"
+            for k, v in value.items()
+        ]
+        return "{\n" + "\n".join(items) + f"\n{indent}}}"
+    items = [f"{inner}{_py_literal_block(v, inner, width)}," for v in value]
+    return "[\n" + "\n".join(items) + f"\n{indent}]"
 
 
 def _literal_alias(name: str, values: list[Any]) -> str:
@@ -1072,6 +1094,15 @@ def agent_loop_call(
     if node.termination is not None:
         condition = _chunked_str_literal(node.termination.condition, deep)
         lines.append(f"{inner}termination={condition},")
+    # The same per-node endpoint override judges and the TS loops honor.
+    lines.append(f'{inner}base_url=os.environ.get("ROTE_BASE_URL_{node.id.upper()}"),')
+    contract = agent_loop_output(node)
+    if contract.schema is not None:
+        # The declared output, which downstream nodes index: the loop must
+        # hand back exactly these keys (rote.adapters._common).
+        lines.append(f"{inner}output_schema={_py_literal_block(contract.schema, inner)},")
+    if contract.unwrap_key is not None:
+        lines.append(f"{inner}unwrap_key={json.dumps(contract.unwrap_key)},")
     lines.append(f"{indent})")
     return "\n".join(lines) + "\n"
 

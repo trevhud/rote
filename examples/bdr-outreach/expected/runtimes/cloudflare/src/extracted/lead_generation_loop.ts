@@ -10,7 +10,7 @@
  * ROTE_MODEL_LEAD_GENERATION_LOOP / ROTE_BASE_URL_LEAD_GENERATION_LOOP override the model and endpoint.
  */
 
-import { runAgentLoop, type BoundTool, type WorkersAiLane } from "../signatures/_roteInference";
+import { runAgentLoop, type BoundTool, type JsonValue, type WorkersAiLane } from "../signatures/_roteInference";
 import { bindAgentTools, type RoteMcpEnv } from "./_roteMcp";
 import { enrichContactBatch } from "./enrich_contact_batch";
 import { vetContact } from "../signatures/vet_contact";
@@ -32,7 +32,7 @@ const TOOL_SERVERS: Record<string, string> = {"zoominfo_search_companies": "zoom
 export async function leadGenerationLoop(
     input: unknown,
     env: unknown, // the workflow's Env; cast below
-): Promise<{ result: string; provider: string; iterations: number | null }> {
+): Promise<{ "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue }> {
     const vars = env as Record<string, string | undefined>;
     const tools: BoundTool[] = await bindAgentTools(
         env as RoteMcpEnv,
@@ -64,7 +64,7 @@ export async function leadGenerationLoop(
             run: async (args) => vetContact(args, env as Parameters<typeof vetContact>[1]),
         },
     );
-    return runAgentLoop({
+    return (await runAgentLoop({
         nodeId: "lead_generation_loop",
         description: "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\nsearches (ideal persona, manufacturer's internal team, TA broad net).\nEnriches in batches of 10, vets each contact, backfills with new\ntargeted searches when discards create gaps. Loop terminates when the\nvetted-contact quota is met.\n",
         task: input,
@@ -75,5 +75,6 @@ export async function leadGenerationLoop(
         baseUrl: vars.ROTE_BASE_URL_LEAD_GENERATION_LOOP ?? null,
         env: vars,
         workersAi,
-    });
+        outputSchema: {"type": "object", "properties": {"vetted_contacts": {"type": "array", "items": {"description": "Value of type VettedContact."}}, "discarded_summary": {"description": "Value of type VettingSummary."}}, "required": ["vetted_contacts", "discarded_summary"], "additionalProperties": false},
+    })) as { "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue };
 }

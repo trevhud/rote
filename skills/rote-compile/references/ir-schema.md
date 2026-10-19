@@ -378,6 +378,17 @@ map is valid, and an unmapped tool is resolved at run time (more
 fragile, and impossible on Cloudflare, which has no local registry).
 Every key must also appear in `tools`.
 
+**Note on `output`:** declare the keys the next steps read, with real
+types. The emitted loop ends by calling a `submit_result` tool whose
+schema is this output, and the step returns exactly those keys, so
+`lead_generation_loop.output.vetted_contacts` is what the loop
+submitted. Scalar, list, and `X | null` types become exact schema
+types. A named type (`VettedContact`) accepts any JSON value unless
+`output_schema` spells it out, so add `output_schema` when the field
+shape matters downstream. A single type (`output: IntelBrief`) is
+returned as the bare value. A loop with no `output` returns
+`{result: <final text>}`.
+
 **Note on `loop_body`:** sub-nodes listed here must also exist as
 top-level nodes in the `nodes:` list. They're referenced from the
 loop_body but also emitted as standalone activities (so they can be

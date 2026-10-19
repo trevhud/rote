@@ -686,11 +686,13 @@ def test_extracted_stub_return_type_is_never(
     `unknown` isn't structurally serializable.)"""
     src = emit_result["extracted/hubspot_upsert"].read_text()
     assert "Promise<never> {" in src
-    # An agent_loop module is NOT a stub — it returns the loop's real
-    # result.
+    # An agent_loop module is NOT a stub — it returns the loop's declared
+    # output, typed by its keys.
     loop_src = emit_result["extracted/lead_generation_loop"].read_text()
     assert "Promise<never> {" not in loop_src
-    assert "iterations: number | null }> {" in loop_src
+    assert (
+        'Promise<{ "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue }> {' in loop_src
+    )
 
 
 # ───────── Custom config ─────────

@@ -295,12 +295,12 @@ def test_emitted_agent_loop_binds_mcp_tools_and_runs(
     assert proc.returncode == 0, f"driver failed:\n{proc.stdout}\n{proc.stderr}"
     result = json.loads(proc.stdout.strip().splitlines()[-1])
 
-    # The loop ran, on the lane the operator's credentials selected.
-    assert result["provider"] == "api"
-    assert result["result"] == "Found 1 hit for durable execution."
-    # Two turns actually ran — not the cap (5) echoed back. Reporting the
-    # bound as the count made every loop look saturated.
-    assert result["iterations"] == 2
+    # The loop declares no output, so its result is the final text.
+    assert result == {"result": "Found 1 hit for durable execution."}
+    # It ran on the lane the operator's credentials selected, and two turns
+    # actually ran, not the cap (5) echoed back. Reporting the bound as the
+    # count made every loop look saturated.
+    assert "rote: agent loop research_loop ran 2 turn(s) on the api lane" in proc.stderr
 
     # The tools reached the model as the SERVER declares them, schema and
     # all — so the agent's contract cannot drift from the server's.

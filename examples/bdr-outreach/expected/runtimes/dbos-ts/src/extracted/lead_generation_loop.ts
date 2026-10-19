@@ -10,7 +10,7 @@
  * ROTE_MODEL_LEAD_GENERATION_LOOP / ROTE_BASE_URL_LEAD_GENERATION_LOOP override the model and endpoint.
  */
 
-import { runAgentLoop, type BoundTool } from "../signatures/_roteInference";
+import { runAgentLoop, type BoundTool, type JsonValue } from "../signatures/_roteInference";
 import { bindAgentTools } from "./_roteMcp";
 import { enrichContactBatch } from "./enrich_contact_batch";
 import { vetContact } from "../signatures/vet_contact";
@@ -38,7 +38,7 @@ function requireEnv(name: string): string {
 
 export async function leadGenerationLoop(
     input: unknown,
-): Promise<{ result: string; provider: string; iterations: number | null }> {
+): Promise<{ "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue }> {
     const vars = process.env;
     const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
     // loop_body sub-nodes: real pipeline steps, driven per iteration.
@@ -60,7 +60,7 @@ export async function leadGenerationLoop(
     }),
         },
     );
-    return runAgentLoop({
+    return (await runAgentLoop({
         nodeId: "lead_generation_loop",
         description: "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\nsearches (ideal persona, manufacturer's internal team, TA broad net).\nEnriches in batches of 10, vets each contact, backfills with new\ntargeted searches when discards create gaps. Loop terminates when the\nvetted-contact quota is met.\n",
         task: input,
@@ -70,5 +70,6 @@ export async function leadGenerationLoop(
         termination: "vetted_count >= target_quota",
         baseUrl: vars.ROTE_BASE_URL_LEAD_GENERATION_LOOP ?? null,
         env: vars,
-    });
+        outputSchema: {"type": "object", "properties": {"vetted_contacts": {"type": "array", "items": {"description": "Value of type VettedContact."}}, "discarded_summary": {"description": "Value of type VettingSummary."}}, "required": ["vetted_contacts", "discarded_summary"], "additionalProperties": false},
+    })) as { "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue };
 }

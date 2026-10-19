@@ -252,6 +252,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
     warns on import (the emitted TypeScript is byte-identical).
   - The wheel-contents test builds with uv when available, then
     `python -m build`, then pip, so it runs in a uv-made venv.
+- **An agent loop now produces its declared output keys, on every
+  runtime.** Downstream nodes read a loop's declared `output` keys
+  (`process_invoices_loop.output.invoice_results`), but the loop returned
+  `{result, provider, iterations}`. The next step raised KeyError on the
+  Python runtimes, got `undefined` on Cloudflare (a run reported
+  `"undefined / NaN"`), and DBOS-TS and Inngest failed tsc with TS7053.
+  The loop now hands its output back through a `submit_result` tool whose
+  schema is the declared output (the CLI lane uses `--json-schema`), and
+  the step returns exactly those keys, failing with the node and the
+  missing keys when the agent does not deliver them. A single-type output
+  is returned bare, and a loop with no `output` still returns
+  `{result: <text>}`. Provider and turn count move to the usage log
+  (Python, `iterations`) and stderr (TS). The emitted TS loop functions
+  are typed by their declared keys. Python agent loops also honor
+  `ROTE_BASE_URL_<ID>` now, as the TS loops and every judge already did.
 - A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
   rows were logged under the requested model, often an alias (`sonnet`)
   that no price catalog lists, so `rote run` and `rote eval --run` could

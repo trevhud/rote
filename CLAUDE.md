@@ -513,11 +513,12 @@ this is easy to port wrong. Found by running it (rc=124, zero output);
 tsc and the SDK's types are both happy with the deadlocking version.
 
 Related, same file: report the turns that actually ran, not the cap.
-`AgentResult.iterations` counts assistant messages
-(`runner.params.messages.filter(m => m.role === "assistant").length`) and
-is `number | null` — the Workers AI lane returns null because
-`runWithTools` genuinely does not report it. Echoing back
-`maxIterations` made every loop look saturated. The Python
+The count is assistant messages
+(`runner.params.messages.filter(m => m.role === "assistant").length`),
+`number | null`, and goes to stderr (TS) or the usage log's `iterations`
+field (Python), since a loop's result is now its declared output. The
+Workers AI lane reports null because `runWithTools` genuinely does not
+report it. Echoing back `maxIterations` made every loop look saturated. The Python
 `_run_agent_via_sdk` has no public `params` accessor, so it drives the
 runner's iterator itself and counts each yielded message, summing usage
 over every turn. Then `until_done()` on the drained runner returns the
@@ -604,6 +605,45 @@ waits on. Traps, all found by running it:
   not spend a gate payload on it.
 - Non-TTY never prompts and never opens a browser. The browser login is
   offered only when stdin and stderr are both terminals.
+
+### An agent loop returns its declared output, through a submit tool
+
+Downstream nodes index an agent loop's declared `output` keys
+(`process_invoices_loop.output.invoice_results`), but the loop helper
+returned `{result, provider, iterations}` on every runtime, so none of the
+keys existed. Python raised KeyError in the next step, Cloudflare carried
+`undefined` on silently (a measured run reported `"undefined / NaN"`), and
+DBOS-TS and Inngest failed tsc with TS7053. No test had a downstream node
+reading a loop key.
+
+The contract now, from `rote.adapters._common.agent_loop_output` (one
+derivation, all six runtimes):
+
+- **A declared output is submitted, not parsed from prose.** The loop gets
+  a `submit_result` tool whose input schema is the declared output (keys
+  required, `additionalProperties: false`). The CLI lane uses
+  `--json-schema` instead, the same forced structured output a judge
+  uses. The step returns exactly the submitted keys, and a missing key or
+  no submission fails naming the node. A single-type output is submitted
+  as `{result: ...}` and returned bare. A loop with no `output` still
+  returns `{result: <final text>}`.
+- **Types:** scalars, lists and `X | null` map exactly. A named type the
+  IR does not define accepts any JSON value, and `output_schema` (evidence)
+  beats the type names.
+- **Metadata leaves the result.** Provider and turns go to the usage log
+  (Python) or stderr (TS). Putting them next to the declared keys would
+  break a single-type output and pollute any whole-output consumer.
+- **TS `JsonValue` is spelled out five levels deep, not recursive.**
+  Cloudflare's `step.do` checks results against `Rpc.Serializable`, which
+  fails TS2589 ("excessively deep") on a recursive type.
+- **Python agent loops honor `ROTE_BASE_URL_<ID>`** like the TS ones and
+  the judges. The Python loop used to ignore it, so a test pointing it at
+  a stub reached the real API.
+
+Regression: `tests/test_agent_loop_output_parity*.py` runs all six
+runtimes live against a stub Messages endpoint, with a downstream node
+reading two declared keys, and typechecks invoice-push on the three TS
+runtimes. All of it fails on the old helper.
 
 ### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
 

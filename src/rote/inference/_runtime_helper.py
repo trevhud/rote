@@ -434,7 +434,14 @@ def _openai_usage(usage: Any) -> dict[str, Any]:
     }
 
 
-def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, Any]) -> None:
+def _log_usage(
+    *,
+    node_id: str,
+    provider: str,
+    model: str,
+    usage: Mapping[str, Any],
+    iterations: int | None = None,
+) -> None:
     """Append token usage as JSONL to ``$ROTE_USAGE_LOG``, if set.
 
     What lets ``rote eval --run`` measure a graduated pipeline's actual
@@ -463,6 +470,10 @@ def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, A
             # The CLI's own estimate. It knows what a catalog cannot, such
             # as a 1h cache write billing at twice the 5m rate.
             record["cost_usd"] = usage["cost_usd"]
+        if iterations is not None:
+            # An agent loop's turns: its result is its declared output, so
+            # this log is where the count is observable.
+            record["iterations"] = iterations
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
@@ -799,20 +810,67 @@ def _mcp_config_for(
     return servers, allowed
 
 
+#: The tool an agent loop calls once, at the end, with its declared output
+#: (rote.adapters._common.AGENT_SUBMIT_TOOL; the TS twin uses the same name).
+_SUBMIT_TOOL = "submit_result"
+
+
 def _agent_task_prompt(
-    *, description: str, task: str, termination: str | None, local_tool_names: Sequence[str]
+    *,
+    description: str,
+    task: str,
+    termination: str | None,
+    local_tool_names: Sequence[str],
+    submit: str | None = None,
 ) -> str:
     parts = [description.strip(), "", task.strip()]
     if local_tool_names:
         parts += ["", "Pipeline steps available to you as tools: " + ", ".join(local_tool_names)]
     if termination:
         parts += ["", f"Stop when: {termination}"]
-    parts += [
-        "",
-        "When you are done, state your final answer as the last message. "
-        "Do not ask follow-up questions — nobody is available to answer.",
-    ]
+    if submit == "tool":
+        parts += [
+            "",
+            f"When you are done, call the {_SUBMIT_TOOL} tool exactly once with the "
+            "final answer: its arguments are this step's output, and the next steps "
+            "read them. Do not ask follow-up questions — nobody is available to answer.",
+        ]
+    elif submit == "schema":
+        parts += [
+            "",
+            "When you are done, give the final answer in the required structured "
+            "form: it is this step's output, and the next steps read it. Do not ask "
+            "follow-up questions — nobody is available to answer.",
+        ]
+    else:
+        parts += [
+            "",
+            "When you are done, state your final answer as the last message. "
+            "Do not ask follow-up questions — nobody is available to answer.",
+        ]
     return "\n".join(parts)
+
+
+def _declared_output(
+    node_id: str, provider: str, schema: Mapping[str, Any], answer: Any
+) -> dict[str, Any]:
+    """The loop's final answer, checked against its declared output keys.
+
+    Downstream nodes index these keys, so a missing one fails here, naming
+    the node and the keys, instead of as a KeyError in a later step.
+    """
+    if not isinstance(answer, dict):
+        raise RuntimeError(
+            f"agent loop {node_id} ({provider}) finished without its declared output: "
+            f"it never called {_SUBMIT_TOOL} with an object (got {type(answer).__name__})"
+        )
+    missing = [key for key in schema.get("required", []) if key not in answer]
+    if missing:
+        raise RuntimeError(
+            f"agent loop {node_id} ({provider}) submitted an output missing its "
+            f"declared key(s): {', '.join(missing)}"
+        )
+    return answer
 
 
 def _run_agent_via_cli(
@@ -824,7 +882,8 @@ def _run_agent_via_cli(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, list[tuple[str, dict[str, Any]]], int | None]:
+    output_schema: Mapping[str, Any] | None = None,
+) -> tuple[Any, list[tuple[str, dict[str, Any]]], int | None]:
     """A bounded agent loop on the Claude subscription.
 
     Unlike the judge path this one *keeps* its declared MCP tools (that
@@ -854,6 +913,11 @@ def _run_agent_via_cli(
     if allowed:
         command += ["--allowedTools", ",".join(allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
+    if output_schema is not None:
+        # The same forced structured output a judge uses: the CLI adds a
+        # final tool whose arguments are validated against the schema and
+        # returns them in `structured_output`.
+        command += ["--json-schema", json.dumps(output_schema)]
 
     try:
         completed = subprocess.run(
@@ -878,11 +942,12 @@ def _run_agent_via_cli(
     if envelope.get("is_error"):
         reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
         raise RuntimeError(f"claude -p agent loop failed for {node_id}: {str(reason)[:400]}")
-    return (
-        str(envelope.get("result") or ""),
-        _cli_usage_rows(envelope, model),
-        _cli_turns(envelope),
+    answer: Any = (
+        envelope.get("structured_output")
+        if output_schema is not None
+        else str(envelope.get("result") or "")
     )
+    return answer, _cli_usage_rows(envelope, model), _cli_turns(envelope)
 
 
 def _cli_turns(envelope: Mapping[str, Any]) -> int | None:
@@ -927,7 +992,8 @@ def _run_agent_via_sdk(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, dict[str, Any], int]:
+    output_schema: Mapping[str, Any] | None = None,
+) -> tuple[Any, dict[str, Any], int]:
     """A bounded agent loop on the vendor SDK's own tool runner.
 
     ``anthropic.lib.tools`` ships a tool loop, so this needs no agent
@@ -950,6 +1016,23 @@ def _run_agent_via_sdk(
     # the contract the step enforces are the same object — as rich as the
     # IR's input_schema made that step, no richer and no staler.
     bound = [beta_tool(name=name)(_text_result(fn)) for name, fn in local_tools.items()]
+    submitted: list[dict[str, Any]] = []
+    if output_schema is not None:
+
+        def submit(**answer: Any) -> str:
+            submitted.append(answer)
+            return "Recorded. The step is complete; end your turn."
+
+        bound.append(
+            beta_tool(
+                name=_SUBMIT_TOOL,
+                description=(
+                    "Hand back this step's final output. Call exactly once, when "
+                    "the task is done; the next pipeline steps read these fields."
+                ),
+                input_schema=dict(output_schema),
+            )(submit)
+        )
     servers, _allowed = _mcp_config_for(tools, tool_servers)
     mcp_servers = [
         {"type": "url", "url": config["url"], "name": name} for name, config in servers.items()
@@ -984,6 +1067,9 @@ def _run_agent_via_sdk(
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
 
+    if output_schema is not None:
+        # The last submission wins: a model that corrects itself means it.
+        return (submitted[-1] if submitted else None), usage, turns
     text = "\n".join(
         b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
     )
@@ -1009,8 +1095,20 @@ def run_agent_loop(
     max_iterations: int = 10,
     termination: str | None = None,
     base_url: str | None = None,
-) -> dict[str, Any]:
-    """Run one bounded, tool-restricted agent loop and return its result.
+    output_schema: Mapping[str, Any] | None = None,
+    unwrap_key: str | None = None,
+) -> Any:
+    """Run one bounded, tool-restricted agent loop and return its output.
+
+    The output is the node's declared output, the same as every other
+    node kind returns: ``output_schema`` is the object the loop's final
+    answer must be (``rote.adapters._common.agent_loop_output`` derives it
+    from the IR), and downstream nodes read its keys. On the SDK lane the
+    agent hands it back through a ``submit_result`` tool, on the CLI lane
+    as the CLI's forced structured output. ``unwrap_key`` marks a
+    single-type output, returned as the bare value. A node that declares
+    no output gets ``{"result": <final text>}``. The provider and the
+    turns that ran go to the usage log.
 
     This is what an ``agent_loop`` node executes. It is a real loop on
     both lanes — never a stub — because a pipeline that hands its one
@@ -1034,10 +1132,13 @@ def run_agent_loop(
         task=task,
         termination=termination,
         local_tool_names=sorted(local_tools),
+        submit=(
+            None if output_schema is None else "schema" if provider == "claude-cli" else "tool"
+        ),
     )
 
     if provider == "claude-cli":
-        text, rows, turns = _run_agent_via_cli(
+        answer, rows, turns = _run_agent_via_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -1045,9 +1146,10 @@ def run_agent_loop(
             tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
+            output_schema=output_schema,
         )
     else:
-        text, usage, turns = _run_agent_via_sdk(
+        answer, usage, turns = _run_agent_via_sdk(
             node_id=node_id,
             provider=provider,
             model=model,
@@ -1058,9 +1160,19 @@ def run_agent_loop(
             tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
+            output_schema=output_schema,
         )
         rows = [(model, usage)]
 
-    for row_model, row_usage in rows:
-        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
-    return {"result": text, "provider": provider, "iterations": turns}
+    for index, (row_model, row_usage) in enumerate(rows):
+        _log_usage(
+            node_id=node_id,
+            provider=provider,
+            model=row_model,
+            usage=row_usage,
+            iterations=turns if index == 0 else None,
+        )
+    if output_schema is None:
+        return {"result": answer}
+    declared = _declared_output(node_id, provider, output_schema, answer)
+    return declared[unwrap_key] if unwrap_key is not None else declared

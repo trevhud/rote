@@ -2,7 +2,7 @@
   "version": 1,
   "files": {
     "__init__.py": "cfa6a791a070311698e75a5901b74506b19622e90919a32e5c49fe504bc0e58f",
-    "activities.py": "068e06834b826c3c82e7b560bf9f2ce2d8ee1b8b9cd6bff87771f996eba15dc0",
+    "activities.py": "afb277b56b48ce99da82f9215f44d29c7c2c365dcdbbfb8f9fa42131ba2caffd",
     "extracted/__init__.py": "b45f4d98dce919704be69b3f087ab759257301612eab131e755bd473bb09723b",
     "extracted/_rote_mcp.py": "6c0ed6c8ab3974f8bb02999853cbd80ce15828152800042b20459b7770ff6c5e",
     "extracted/exclusion_checks.py": "9306a78d07e1649d72633f3cc0fcf9a7d7f602bbd90a46eb7f5874b1d8337e0f",
@@ -11,7 +11,7 @@
     "extracted/taxonomy.py": "b69d4ce23403f89ffc7dec921ed0ac7a375a851ad45bdb425d3fde277c632c59",
     "extracted/zoominfo.py": "fa1c524a3c98440dde9fb4c8861e2400b9d9919221f9cc21d48917e0f8ca74b5",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "72b75b519db36924a9f7088f67bfeacb8123e89e4be7d09a70f41e88dd5d0de8",
+    "signatures/_rote_inference.py": "fe89b02f0b4c2c44d848a9e351fdf6f57a2d6de7f238ab830b0364e829dda7b1",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",
     "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
     "workflow.py": "ff059af42358d0bb344ba41ae04ea8a097175e62f29b718dbf30663b75dc2800"
