@@ -75,9 +75,13 @@ run-over-run; they're API limits or policy thresholds.
 - An MCP-bound node's constants do not reach the tool unless `mcp.args`
   names them (`args: {days: email_window_days}`), because a tool rejects
   arguments it does not declare.
-- In the extracted Python module you may also keep a module-level
-  constant with the same value for reference, but the parameter is
-  what the pipeline sets.
+- The parameter has **no default** when every calling node sends the
+  constant (`*, batch_size: int`, not `batch_size: int = 250`). A
+  default that repeats the IR value turns a constant that stops
+  arriving into a silent fallback instead of a TypeError. Only a
+  constant that some callers of a shared function omit gets a default,
+  and that default is what those callers need, not a copy of another
+  node's value. Do not keep a module-level copy of the value either.
 - Enforce it in code — the extracted function should *reject* inputs
   that violate the constraint, not just document it.
 

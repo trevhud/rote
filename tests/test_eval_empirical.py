@@ -665,3 +665,24 @@ def test_pipeline_trial_kills_child_when_signaling_fails(
     time_mod.sleep(0.2)
     survivors = sp.run(["pgrep", "-f", str(app_dir / "main.py")], capture_output=True, text=True)
     assert survivors.stdout.strip() == "", f"orphaned pids: {survivors.stdout}"
+
+
+def test_judge_usage_cost_takes_the_cli_estimate_and_refuses_an_alias() -> None:
+    """A ``cost_usd`` row is taken as is (the CLI prices a 1h cache write
+    the catalog cannot). An alias the catalog does not list is unpriced,
+    never guessed. A concrete id is priced from the catalog."""
+    from rote.eval.empirical import judge_usage_cost_usd
+
+    cli_row = {"model": "claude-sonnet-5-5", "input_tokens": 2, "cost_usd": 0.006034}
+    alias_row = {"model": "sonnet", "input_tokens": 2, "output_tokens": 53}
+    priced_row = {"model": "claude-mid-9", "input_tokens": 1_000_000, "output_tokens": 100_000}
+
+    assert judge_usage_cost_usd([cli_row], None) == (pytest.approx(0.006034), set())
+    assert judge_usage_cost_usd([alias_row], CACHED_CATALOG) == (0.0, {"sonnet"})
+    # 1M in at $2 + 100k out at $10 = $3.00
+    assert judge_usage_cost_usd([priced_row], CACHED_CATALOG) == (pytest.approx(3.0), set())
+    # No catalog: only the rows that carry their own cost are priced.
+    assert judge_usage_cost_usd([cli_row, priced_row], None) == (
+        pytest.approx(0.006034),
+        {"claude-mid-9"},
+    )

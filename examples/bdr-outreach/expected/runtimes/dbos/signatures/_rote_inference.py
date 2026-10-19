@@ -369,6 +369,47 @@ def _anthropic_usage(usage: Any) -> dict[str, Any]:
     }
 
 
+def _cli_usage_rows(
+    envelope: Mapping[str, Any], requested_model: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """``(model, usage)`` per model a ``claude -p`` call actually ran.
+
+    The model asked for is often an alias (``sonnet``), which no price
+    catalog lists, so a row logged under it could never be priced. The
+    envelope's ``modelUsage`` names the concrete model per entry
+    (``claude-sonnet-5-5``) with its four buckets and the CLI's own cost
+    estimate, covering the whole query. Without ``modelUsage`` the row
+    keeps the requested id and the main-loop ``usage``, and pricing
+    refuses an alias rather than guess which model it meant.
+    """
+    by_model = envelope.get("modelUsage")
+    rows: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(by_model, dict):
+        for name, entry in by_model.items():
+            if not isinstance(entry, dict):
+                continue
+            cost = entry.get("costUSD")
+            rows.append(
+                (
+                    str(name),
+                    {
+                        "input_tokens": _usage_field(entry, "inputTokens"),
+                        "output_tokens": _usage_field(entry, "outputTokens"),
+                        "cache_write_tokens": _usage_field(entry, "cacheCreationInputTokens"),
+                        "cache_read_tokens": _usage_field(entry, "cacheReadInputTokens"),
+                        "cost_usd": (
+                            float(cost)
+                            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                            else None
+                        ),
+                    },
+                )
+            )
+    if rows:
+        return rows
+    return [(_cli_model(requested_model), _anthropic_usage(envelope.get("usage")))]
+
+
 def _openai_usage(usage: Any) -> dict[str, Any]:
     """The same four buckets from an OpenAI chat-completions ``usage``.
 
@@ -412,6 +453,10 @@ def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, A
             "cache_write_tokens": usage.get("cache_write_tokens"),
             "cache_read_tokens": usage.get("cache_read_tokens"),
         }
+        if usage.get("cost_usd") is not None:
+            # The CLI's own estimate. It knows what a catalog cannot, such
+            # as a 1h cache write billing at twice the 5m rate.
+            record["cost_usd"] = usage["cost_usd"]
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
@@ -541,7 +586,7 @@ def _call_claude_cli(
     prompt: str,
     output_schema: dict[str, Any],
     timeout: float,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """One schema-locked judge call through the Claude Code CLI.
 
     ``--json-schema`` makes this a *forced tool call* under the hood
@@ -609,7 +654,7 @@ def _call_claude_cli(
             f"claude -p returned no structured output for {node_id}; "
             f"got: {str(envelope.get('result'))[:200]}"
         )
-    return payload, _anthropic_usage(envelope.get("usage"))
+    return payload, _cli_usage_rows(envelope, model)
 
 
 # ───────── the one entry point emitted judges call ─────────
@@ -638,7 +683,7 @@ def call_judge(
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
 
     if provider == "claude-cli":
-        payload, usage = _call_claude_cli(
+        payload, rows = _call_claude_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -669,13 +714,11 @@ def call_judge(
         )
     else:
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")
+    if provider != "claude-cli":
+        rows = [(model, usage)]
 
-    _log_usage(
-        node_id=node_id,
-        provider=provider,
-        model=_cli_model(model) if provider == "claude-cli" else model,
-        usage=usage,
-    )
+    for row_model, row_usage in rows:
+        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
     return payload
 
 
@@ -775,7 +818,7 @@ def _run_agent_via_cli(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, dict[str, Any], int | None]:
+) -> tuple[str, list[tuple[str, dict[str, Any]]], int | None]:
     """A bounded agent loop on the Claude subscription.
 
     Unlike the judge path this one *keeps* its declared MCP tools (that
@@ -831,7 +874,7 @@ def _run_agent_via_cli(
         raise RuntimeError(f"claude -p agent loop failed for {node_id}: {str(reason)[:400]}")
     return (
         str(envelope.get("result") or ""),
-        _anthropic_usage(envelope.get("usage")),
+        _cli_usage_rows(envelope, model),
         _cli_turns(envelope),
     )
 
@@ -988,7 +1031,7 @@ def run_agent_loop(
     )
 
     if provider == "claude-cli":
-        text, usage, turns = _run_agent_via_cli(
+        text, rows, turns = _run_agent_via_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -1010,11 +1053,8 @@ def run_agent_loop(
             max_iterations=max_iterations,
             timeout=timeout,
         )
+        rows = [(model, usage)]
 
-    _log_usage(
-        node_id=node_id,
-        provider=provider,
-        model=_cli_model(model) if provider == "claude-cli" else model,
-        usage=usage,
-    )
+    for row_model, row_usage in rows:
+        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
     return {"result": text, "provider": provider, "iterations": turns}

@@ -136,7 +136,8 @@ def test_missing_module_outside_the_extras_gets_no_hint() -> None:
 
 def _emit(pipeline_yaml: Path, runtime: str, out: Path) -> dict[str, Path]:
     pipeline = load_pipeline(pipeline_yaml)
-    return dict(get_adapter(runtime).emit(pipeline, out))
+    # The real modules beside the IR, as `rote emit` sources them.
+    return dict(get_adapter(runtime, extracted_source_dir=pipeline_yaml.parent).emit(pipeline, out))
 
 
 def test_run_refuses_stubs_before_starting_the_app(

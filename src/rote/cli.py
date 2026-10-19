@@ -40,7 +40,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +56,7 @@ from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
 if TYPE_CHECKING:
+    from rote.eval.pricing import PricingCatalog
     from rote.mcp.learned import LearnedAuth
 
 # ───────── Subcommand: emit ─────────
@@ -2698,6 +2699,38 @@ def _export_inference_selection(flag_value: str | None) -> None:
         os.environ["ROTE_INFERENCE"] = resolved.value
 
 
+def _judge_price_catalog() -> PricingCatalog:
+    """The live price catalog for judge usage (a seam tests patch offline)."""
+    from rote.eval.pricing import fetch_catalog
+
+    return fetch_catalog(provider="anthropic")
+
+
+def _judge_cost_text(rows: Sequence[Mapping[str, Any]]) -> str:
+    """``"$0.0060"``, or why there is no dollar figure.
+
+    The price catalog is fetched only when a row lacks the CLI's own
+    estimate. No figure is printed when any row is unpriced: a partial sum
+    reads as the whole cost.
+    """
+    from rote.eval.empirical import judge_usage_cost_usd
+    from rote.eval.pricing import PricingError
+
+    catalog: PricingCatalog | None = None
+    offline = False
+    if any(r.get("cost_usd") is None for r in rows):
+        try:
+            catalog = _judge_price_catalog()
+        except PricingError:
+            offline = True
+    total, unpriced = judge_usage_cost_usd(rows, catalog)
+    if offline:
+        return "cost unknown (price catalog unreachable)"
+    if unpriced:
+        return f"cost unknown (no published price for {', '.join(sorted(unpriced))})"
+    return f"${total:.4f}"
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """One-off local execution of a skill or an emitted pipeline.
 
@@ -2838,7 +2871,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             tokens_out = sum(r.get("output_tokens") or 0 for r in run.judge_usage)
             print(
                 f"  judge usage: {len(run.judge_usage)} call(s), "
-                f"{tokens_in} in / {tokens_out} out tokens",
+                f"{tokens_in} in / {tokens_out} out tokens, {_judge_cost_text(run.judge_usage)}",
                 file=sys.stderr,
             )
         if args.json:

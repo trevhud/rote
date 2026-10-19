@@ -91,6 +91,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   list.
 
 ### Fixed
+- A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
+  rows were logged under the requested model, often an alias (`sonnet`)
+  that no price catalog lists, so `rote run` and `rote eval --run` could
+  never price the subscription lane. The emitted inference helper now
+  logs one row per model from the CLI envelope's `modelUsage`, under the
+  concrete id (`claude-sonnet-5-5`), with the CLI's own `cost_usd`.
+  Pricing takes that estimate as is, since it bills a 1h cache write at
+  twice the 5m rate a catalog publishes (a measured call: $0.0060 from
+  the CLI against $0.0040 from catalog rates). A row with no `modelUsage`
+  keeps the requested id, and an alias is still left unpriced rather than
+  guessed. `rote run`'s judge-usage line now ends with the dollar figure,
+  or says why there is none.
 - **`rote mcp login` holds its callback port from selection to callback.**
   The port was checked for being free, then bound later by fastmcp's
   callback server, after the browser had already been sent to it. Anything

@@ -3,7 +3,9 @@
 Every cap and threshold is a rule from references/expense-policy.md. The
 pipeline's IR carries them as the audit node's constants, and the step
 passes them on every call, so they live in code and config, never in
-prompt text. The module constants below are the defaults for a direct call.
+prompt text. They are required parameters with no default here: a copy of
+the IR value as a default would let a constant that stopped arriving fall
+back silently instead of failing.
 """
 
 from __future__ import annotations
@@ -14,19 +16,8 @@ from typing import Any
 from extracted.checks import expense_sort_key
 from extracted.fx import to_cents
 
-#: Per-line caps in USD. Lodging is per night (the line carries ``nights``).
-CATEGORY_CAPS_USD: dict[str, Decimal] = {
-    "airfare": Decimal("900.00"),
-    "lodging": Decimal("325.00"),
-    "meals": Decimal("75.00"),
-    "ground_transport": Decimal("150.00"),
-    "software": Decimal("100.00"),
-    "office_supplies": Decimal("250.00"),
-}
 #: No cap, but always needs a pre-approval id.
 PREAPPROVAL_CATEGORIES = frozenset({"entertainment"})
-RECEIPT_THRESHOLD_USD = Decimal("25.00")
-REPORT_LIMIT_USD = Decimal("2500.00")
 
 
 #: Prefix of a report-level finding's id. Each employee's gets its own id
@@ -111,11 +102,9 @@ def _line_findings(
     ]
 
 
-def _caps(category_caps_usd: dict[str, float] | None) -> dict[str, Decimal]:
-    """Per-line caps keyed by category. The IR names lodging's cap
+def _caps(category_caps_usd: dict[str, float]) -> dict[str, Decimal]:
+    """Per-line caps in USD keyed by category. The IR names lodging's cap
     ``lodging_per_night``, since a lodging line's cap scales with its nights."""
-    if category_caps_usd is None:
-        return dict(CATEGORY_CAPS_USD)
     return {
         ("lodging" if k == "lodging_per_night" else k): Decimal(str(v))
         for k, v in category_caps_usd.items()
@@ -127,23 +116,18 @@ def audit_report(
     duplicate_ids: list[str],
     late_ids: list[str],
     *,
-    receipt_threshold_usd: float | None = None,
-    report_limit_usd: float | None = None,
-    category_caps_usd: dict[str, float] | None = None,
+    receipt_threshold_usd: float,
+    report_limit_usd: float,
+    category_caps_usd: dict[str, float],
 ) -> dict[str, Any]:
     """Apply every policy rule to one employee's report.
 
     The keyword arguments are the audit node's IR constants, which the step
-    passes on every call; editing one in pipeline.yaml changes the rule.
-    Omitted, each falls back to this module's default.
+    passes on every call, so editing one in pipeline.yaml changes the rule.
     """
     caps = _caps(category_caps_usd)
-    receipt_threshold = (
-        RECEIPT_THRESHOLD_USD
-        if receipt_threshold_usd is None
-        else Decimal(str(receipt_threshold_usd))
-    )
-    report_limit = REPORT_LIMIT_USD if report_limit_usd is None else Decimal(str(report_limit_usd))
+    receipt_threshold = Decimal(str(receipt_threshold_usd))
+    report_limit = Decimal(str(report_limit_usd))
     duplicates, late = set(duplicate_ids), set(late_ids)
     findings: list[dict[str, str]] = []
     for expense in report["expenses"]:

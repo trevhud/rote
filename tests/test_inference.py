@@ -1023,3 +1023,71 @@ def test_openai_usage_splits_cached_tokens_out_of_prompt_tokens() -> None:
         "cache_write_tokens": 0,
         "cache_read_tokens": 800,
     }
+
+
+#: The ``modelUsage`` of a real ``claude -p --model sonnet`` judge call
+#: (2026-10-18): the alias resolves to a concrete id, with the CLI's own
+#: cost estimate. Its cache write is a 1h write, which bills at twice the
+#: 5m rate a catalog publishes.
+_REAL_MODEL_USAGE = {
+    "claude-sonnet-5-5": {
+        "inputTokens": 2,
+        "outputTokens": 53,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 1375,
+        "costUSD": 0.006034,
+        "canonicalModel": "claude-sonnet-5-5",
+    }
+}
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+def test_every_cli_path_logs_the_model_the_cli_actually_ran(
+    path: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A row logged under an alias (``sonnet``) can never be priced. The
+    envelope names the concrete model; log that, with the CLI's cost."""
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
+    make = _cli_envelope if path == "judge" else _agent_envelope
+    _run_cli_path(path, monkeypatch, make(modelUsage=_REAL_MODEL_USAGE))
+
+    (record,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert record["model"] == "claude-sonnet-5-5"
+    assert record["input_tokens"] == 2
+    assert record["output_tokens"] == 53
+    assert record["cache_write_tokens"] == 1375
+    assert record["cache_read_tokens"] == 0
+    assert record["cost_usd"] == 0.006034
+
+
+def test_cli_logs_one_row_per_model_it_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Each model is priced at its own rate, so a call that used two keeps
+    two rows rather than one summed under the requested name."""
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
+    usage = {
+        **_REAL_MODEL_USAGE,
+        "claude-haiku-5": {"inputTokens": 40, "outputTokens": 7, "costUSD": 0.0001},
+    }
+    _run_cli_path("judge", monkeypatch, _cli_envelope(modelUsage=usage))
+
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert [(r["model"], r["cost_usd"]) for r in records] == [
+        ("claude-sonnet-5-5", 0.006034),
+        ("claude-haiku-5", 0.0001),
+    ]
+
+
+def test_cli_without_model_usage_keeps_the_requested_id_and_no_cost(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No ``modelUsage``: nothing to resolve the alias from, so the row
+    keeps the requested id and carries no cost for pricing to trust."""
+    log = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
+    _run_cli_path("judge", monkeypatch, _cli_envelope())
+
+    (record,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert record["model"] == "claude-sonnet-4-6"
+    assert "cost_usd" not in record
