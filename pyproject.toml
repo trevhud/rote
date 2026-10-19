@@ -56,6 +56,10 @@ classifiers = [
 dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    # rote compile runs the tests its agent writes, in a sandbox, and feeds
+    # failures back for repair. Without pytest that silently did nothing for
+    # every user who installed rote-cli without the dev extra.
+    "pytest>=9.0,<10",
 ]
 
 [project.optional-dependencies]
@@ -80,7 +84,6 @@ mcp = [
     "httpx>=0.28",
 ]
 dev = [
-    "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "mypy>=1.10",

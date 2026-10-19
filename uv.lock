@@ -1699,6 +1699,7 @@ name = "rote-cli"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "pytest" },
     { name = "pyyaml" },
 ]
 
@@ -1716,7 +1717,6 @@ dev = [
     { name = "httpx" },
     { name = "mypy" },
     { name = "openai" },
-    { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "temporalio" },
@@ -1754,7 +1754,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'dev'", specifier = ">=2.45" },
     { name = "openai", marker = "extra == 'openai-api'", specifier = ">=2.45" },
     { name = "pydantic", specifier = ">=2.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest", specifier = ">=9.0,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

@@ -214,6 +214,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the input type.
 
 ### Fixed
+- **Compile-time test verification works on a normal install.** pytest
+  was only in the `dev` extra, so `pip install 'rote-cli[dbos]'` had no
+  test runner, the generated tests were silently skipped, and a compile
+  exited 0 with a failing generated test hidden from the repair loop.
+  pytest is now a dependency (`>=9.0,<10`), and a missing runner reports
+  the deliverable as unverified in the output and the compile report.
+- Repair rounds restate the rubric's write-once rules, so a repair no
+  longer rewrites compile-report.md in several one-line Edits.
 - **Fixes from an end-to-end newcomer pass over main.**
   - Stub detection counts a function whose last top-level statement is an
     unconditional `raise NotImplementedError` and that never returns a
