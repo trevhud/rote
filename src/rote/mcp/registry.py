@@ -12,12 +12,16 @@ per server, so the registry stays shareable and the secrets stay
 separate. ``client_secret`` is the one exception (it is registry
 config, not a token), which is why the file is written ``0600``.
 
-Resolution order for a server URL, everywhere in rote (the CLI, the
-eval harness, and the code emitted into runtimes):
+Resolution order for a server URL in the code emitted into runtimes
+(``resolve_url`` in :mod:`rote.mcp._runtime_helper` and the Node TS
+helper), which is what every step and agent loop uses:
 
-1. an explicit ``url`` on the IR binding (pipeline-pinned),
+1. the ``ROTE_MCP_<SERVER>_URL`` environment variable,
 2. the registry entry for the binding's logical server name,
-3. the ``ROTE_MCP_<SERVER>_URL`` environment variable.
+3. the ``url`` recorded on the IR binding at compilation time.
+
+Deployment context outranks compilation-time capture. Workers have no
+registry: the variable (a wrangler var or secret), then the IR ``url``.
 """
 
 from __future__ import annotations
@@ -127,18 +131,3 @@ def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
             os.unlink(tmp_name)
         raise
     return p
-
-
-def resolve_server_url(
-    server: str,
-    explicit_url: str | None = None,
-    registry: McpRegistry | None = None,
-) -> str | None:
-    """The one URL-resolution rule (binding → registry → env). None = unresolvable."""
-    if explicit_url:
-        return explicit_url
-    reg = registry if registry is not None else load_registry()
-    entry = reg.servers.get(server)
-    if entry is not None:
-        return entry.url
-    return os.environ.get(f"ROTE_MCP_{server.upper()}_URL")

@@ -307,3 +307,6 @@ def test_inngest_missing_endpoint_runs_the_step_once(
     assert run.error is not None, app_log
     assert attempts_in(app_log, node_id) == 1, app_log
     assert "ROTE_MCP_VENDOR_URL" in app_log
+    # The runner reports the real step error, not the tail of a stack trace.
+    assert run.error.startswith("run failed: RoteMcpConfigError: "), run.error
+    assert "no endpoint for MCP server 'vendor': set ROTE_MCP_VENDOR_URL" in run.error

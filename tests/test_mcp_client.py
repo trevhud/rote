@@ -25,7 +25,6 @@ from rote.mcp import (
     clear_token_file,
     load_registry,
     read_token_file,
-    resolve_server_url,
     save_registry,
     token_file,
     write_token_file,
@@ -48,21 +47,6 @@ def test_registry_round_trip_and_permissions() -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o600  # may hold client secrets
     loaded = load_registry()
     assert loaded == registry
-
-
-def test_resolve_server_url_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    save_registry(
-        McpRegistry(servers={"slack": McpServerConfig(url="https://registry.example/slack")})
-    )
-    monkeypatch.setenv("ROTE_MCP_SLACK_URL", "https://env.example/slack")
-    # Explicit binding URL wins over everything.
-    assert resolve_server_url("slack", "https://ir.example/slack") == "https://ir.example/slack"
-    # Registry beats env.
-    assert resolve_server_url("slack") == "https://registry.example/slack"
-    # Env is the fallback; unknown everywhere → None.
-    assert resolve_server_url("gmail") is None
-    monkeypatch.setenv("ROTE_MCP_GMAIL_URL", "https://env.example/gmail")
-    assert resolve_server_url("gmail") == "https://env.example/gmail"
 
 
 # ───────── Token store ─────────

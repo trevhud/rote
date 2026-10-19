@@ -325,15 +325,19 @@ class MCPBinding(BaseModel):
 
     The shape mirrors the official MCP registry's ``remotes[]`` entries
     (``url`` + ``transport``) so a resolved registry entry maps straight
-    onto it. ``server`` is a *logical* name; adapters resolve it to an
-    endpoint via the ``ROTE_MCP_<SERVER>_URL`` env var unless ``url`` is
-    set explicitly.
+    onto it. ``server`` is a *logical* name. At run time the endpoint is
+    the ``ROTE_MCP_<SERVER>_URL`` env var if set, else the rote registry
+    entry for ``server``, else ``url`` (the endpoint recorded at
+    compilation time).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     server: str = Field(
-        description="Logical MCP server name; resolves to ROTE_MCP_<SERVER>_URL unless url is set",
+        description=(
+            "Logical MCP server name; at run time ROTE_MCP_<SERVER>_URL, then the "
+            "rote registry, then url"
+        ),
     )
     tool: str = Field(
         description="MCP tool name to invoke, e.g. 'hubspot_get_contact_emails'",
@@ -347,7 +351,10 @@ class MCPBinding(BaseModel):
     )
     url: str | None = Field(
         default=None,
-        description="Explicit Streamable-HTTP endpoint; overrides the ROTE_MCP_<server>_URL lookup",
+        description=(
+            "Streamable-HTTP endpoint recorded at compilation time; used when neither "
+            "ROTE_MCP_<SERVER>_URL nor the rote registry names one"
+        ),
     )
     transport: Literal["streamable-http", "sse"] = Field(default="streamable-http")
 
