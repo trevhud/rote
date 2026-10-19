@@ -19,7 +19,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from rote.ir import Node, NodeKind, Pipeline
+from pydantic_core import PydanticSerializationError
+
+from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -119,20 +121,71 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     ``None`` means the threaded payload is the arguments as-is: the node's
     inputs, never its constants, because a tool rejects arguments it does
     not declare (FastMCP raises "Unexpected keyword argument"). With
-    ``mcp.args`` each entry is ``(tool_arg, "payload", key)`` or
-    ``(tool_arg, "constant", value)``: a key that names one of the node's
-    constants forwards that constant, which is the only way a constant
-    reaches a tool. Language-neutral on purpose, so every runtime sends a
-    tool the identical arguments.
+    ``mcp.args`` each entry is ``(tool_arg, "payload", key)``,
+    ``(tool_arg, "constant", value)`` or ``(tool_arg, "literal", value)``:
+    a key that names one of the node's constants forwards that constant,
+    which is the only way a constant reaches a tool, and ``{literal: v}``
+    sends ``v``. Constants and literals are both fixed values, so emitters
+    render them the same way: an escaped literal, never spliced code.
+    Language-neutral on purpose, so every runtime sends a tool the
+    identical arguments.
     """
     assert node.mcp is not None
     if not node.mcp.args:
         return None
     constants = node.constants or {}
-    return [
-        (tool_arg, "constant", constants[key]) if key in constants else (tool_arg, "payload", key)
-        for tool_arg, key in node.mcp.args.items()
-    ]
+    sources: list[tuple[str, str, Any]] = []
+    for tool_arg, source in node.mcp.args.items():
+        if isinstance(source, MCPLiteral):
+            sources.append((tool_arg, "literal", source.literal))
+        elif source in constants:
+            sources.append((tool_arg, "constant", constants[source]))
+        else:
+            sources.append((tool_arg, "payload", source))
+    return sources
+
+
+#: Characters that render invisibly or reorder what a reader sees: controls
+#: (Cc), format characters such as the bidi overrides and zero-width spaces
+#: (Cf), line and paragraph separators (Zl, Zp), and lone surrogates (Cs).
+#: Raw in emitted source they are the Trojan Source shape (CVE-2021-42574):
+#: the IR is untrusted, and the code would read differently than it runs.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+
+
+def escape_invisible(text: str) -> str:
+    """``text`` with every invisible character spelled ``\\uXXXX``.
+
+    Visible characters stay raw, emoji included, and so do the newline
+    and tab (prose such as a README keeps its lines; a literal has already
+    escaped both). The spelling is a valid escape in a Python string or a
+    JS/TS string, and readable text in a comment or a README, so the same
+    rule serves literals, docstrings, comments and docs.
+    """
+    import unicodedata
+
+    out: list[str] = []
+    for ch in text:
+        if ch not in "\n\t" and unicodedata.category(ch) in _INVISIBLE_CATEGORIES:
+            code = ord(ch)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def py_str_literal(text: str) -> str:
+    """``text`` as a Python string literal that round-trips it exactly.
+
+    ``json.dumps`` escapes the quote, the backslash and controls below
+    U+0020. With ``ensure_ascii`` (the default) it also spells a character
+    outside the BMP as a surrogate pair, which Python reads as two lone
+    surrogates, so raw non-ASCII is kept instead, and
+    :func:`escape_invisible` escapes what must never be raw in source. A
+    lone surrogate (PyYAML produces one from ``"\\ud800"``) becomes an
+    escape too, which also keeps the file encodable as UTF-8.
+    """
+    return escape_invisible(json.dumps(text, ensure_ascii=False))
 
 
 def safe_docstring_line(text: str, fallback: str = "") -> str:
@@ -148,7 +201,7 @@ def safe_docstring_line(text: str, fallback: str = "") -> str:
     """
     stripped = text.strip() if text else ""
     first = stripped.splitlines()[0] if stripped else fallback
-    return first.replace("\\", "\\\\").replace('"', '\\"')
+    return escape_invisible(first.replace("\\", "\\\\").replace('"', '\\"'))
 
 
 def safe_block_comment_line(text: str, fallback: str = "") -> str:
@@ -162,7 +215,8 @@ def safe_block_comment_line(text: str, fallback: str = "") -> str:
     """
     stripped = text.strip() if text else ""
     first = stripped.splitlines()[0] if stripped else fallback
-    return first.replace("*/", "* /")
+    # Invisible characters as escape text: a comment reads exactly as it is.
+    return escape_invisible(first.replace("*/", "* /"))
 
 
 # ───────── Output-path containment ─────────
@@ -546,11 +600,15 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     # lived): the latter is a filesystem path the compiler re-points per
     # output location, so hashing it would mint a new workflow type on
     # every re-compilation to a different directory.
-    payload = pipeline.model_dump_json(
-        by_alias=True,
-        exclude_none=True,
-        exclude={"source_skill": True, "nodes": {"__all__": {"source"}}},
-    )
+    exclude: Any = {"source_skill": True, "nodes": {"__all__": {"source"}}}
+    try:
+        payload = pipeline.model_dump_json(by_alias=True, exclude_none=True, exclude=exclude)
+    except PydanticSerializationError:
+        # A lone surrogate (PyYAML makes one from "\\ud800") is not UTF-8,
+        # so the JSON encoder refuses it. Escape it instead. No such
+        # pipeline ever emitted before, so this changes no existing hash.
+        data = pipeline.model_dump(mode="json", by_alias=True, exclude_none=True, exclude=exclude)
+        payload = json.dumps(data, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 

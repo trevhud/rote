@@ -10,6 +10,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- `mcp.args` takes fixed values: `{literal: "BDR do not contact"}`, or a
+  number or boolean, next to the existing references (a bare string,
+  which always names a payload key or a constant). A real BDR compile
+  wrote literal text there and the IR rejected it. The error now names the
+  `{literal: ...}` form. Types are strict and validated in the IR, and
+  every MCP runtime (dbos, dbos-ts, cloudflare, inngest) renders a literal
+  as an escaped value, never spliced code. The compile rubric tells the
+  agent to use literals for fixed tool arguments.
 - **`rote example [<name>]`: the free first run without a clone.** pip and
   uv installs never got `examples/`, so the expense-audit run in the
   README started with `git clone`. The wheel now carries the examples
@@ -235,6 +243,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   and is a warning if it survives. `--strict-provenance` (compile and
   analyze) fails on any of it, for CI. Citations now match regardless of
   quote style (`'`, `"`, curly quotes).
+- Python string literals in emitted code keep characters outside the BMP
+  intact. `json.dumps` spelled one as a surrogate pair, which Python reads
+  as two lone surrogates, so a constant like an emoji reached its impl or
+  tool changed.
+- Untrusted IR text never lands invisible in emitted source. A bidi
+  override, zero-width space, BOM or other control or format character
+  from a pipeline.yaml is written as an escape in Python literals,
+  docstrings, TS comments and the Cloudflare README (the Trojan Source
+  shape, CVE-2021-42574). A lone surrogate, which used to crash emit with
+  UnicodeEncodeError partway through writing files, now emits code that
+  round-trips it.
 - **A failed `claude -p` compile reports what it cost, and the output cap
   no longer ends it.** A real invoice-push compile died after 28 minutes
   on "Claude's response exceeded the 32000 output token maximum" and

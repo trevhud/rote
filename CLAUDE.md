@@ -438,6 +438,43 @@ Seven things, each with a test that fails when it is undone
   exempts it. Making it a `RoteMcpAuthNeeded` would park the run for 30
   days waiting for a login that answers nothing.
 
+### `mcp.args` literals are values, never code
+
+A real BDR compile wrote fixed tool arguments ('management-levels', 'BDR
+do not contact') into `mcp.args`, which held only references, and the IR
+rejected them. `{literal: <str|int|float|bool>}` (`rote.ir.MCPLiteral`)
+is the fixed-value form. It is a mapping so it can never be confused with
+a reference: a bare string is always a payload key or a constant name.
+Strict types, so `"3"` stays a string. No `null` (omit the argument) and
+no lists or objects (a constant, named by reference, already carries
+those).
+
+`mcp_tool_arguments` returns `(arg, "literal", value)` and every emitter
+renders it exactly as it renders a constant: `json.dumps` in TS,
+`_py_literal` in Python (invariant #7). Two traps the malicious-string
+parity test (`tests/test_mcp_args_literal_parity*.py`, the four MCP
+runtimes) found:
+
+- `json.dumps` escapes a character outside the BMP as a surrogate pair,
+  which JS reads correctly and Python reads as two lone surrogates. Python
+  string literals go through `py_str_literal`: raw non-ASCII, but every
+  character in Unicode category Cc, Cf, Zl, Zp or Cs escaped
+  (`escape_invisible`). Raw, a bidi override, zero-width space or BOM is
+  the Trojan Source shape (CVE-2021-42574), and a lone surrogate (PyYAML
+  makes one from `"\ud800"`) cannot be written as UTF-8 at all. The same
+  rule covers docstrings (`safe_docstring_line`), TS comments
+  (`safe_block_comment_line`) and the Cloudflare README; TS literals are
+  ASCII `json.dumps`, already safe. `_pipeline_hash` falls back to an
+  escaped encoding only when the JSON encoder refuses a lone surrogate, so
+  no existing workflow hash changes. Regression:
+  `tests/test_emitted_source_is_visible.py`.
+- `JSON.stringify` leaves those three raw, so the DBOS-TS runner's
+  trailing-JSON parser splits on `\n` only, or a valid result is cut
+  apart.
+
+python and temporal have no MCP backend and refuse an MCP-bound node
+without an `impl`, so `mcp.args` never reaches them.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

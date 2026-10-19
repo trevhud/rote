@@ -34,6 +34,7 @@ from rote.adapters._common import (
     _to_pascal_case,
     agent_loop_output,
     mcp_tool_arguments,
+    py_str_literal,
     safe_docstring_line,
 )
 from rote.ir import (
@@ -152,8 +153,10 @@ def mcp_arguments_line(node: Node, indent: str = "    ") -> str:
     items = ", ".join(
         f"{json.dumps(tool_arg)}: "
         + (
+            # A constant and a literal are both fixed values: an escaped
+            # Python literal, never spliced (invariant #7).
             _constant_literal(node, tool_arg, value)
-            if origin == "constant"
+            if origin in ("constant", "literal")
             else f"payload[{json.dumps(value)}]"
         )
         for tool_arg, origin, value in sources
@@ -491,7 +494,7 @@ def _py_literal(value: Any) -> str:
     containers recurse so nested strings get the same treatment.
     """
     if isinstance(value, str):
-        return json.dumps(value)
+        return py_str_literal(value)
     if isinstance(value, bool) or value is None:
         return repr(value)
     if isinstance(value, list):
@@ -771,7 +774,7 @@ def _str_chunks(text: str, indent: str) -> list[str]:
     current = ""
     for ch in text:
         current += ch
-        if len(json.dumps(current)) >= width:
+        if len(py_str_literal(current)) >= width:
             chunks.append(current)
             current = ""
     if current or not chunks:
@@ -783,8 +786,8 @@ def _chunked_str_literal(text: str, indent: str = "    ") -> str:
     """Render a long string as a parenthesized adjacent-literal expression."""
     chunks = _str_chunks(text, indent)
     if len(chunks) == 1:
-        return json.dumps(chunks[0])
-    body = "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+        return py_str_literal(chunks[0])
+    body = "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
     outer = indent[:-4] if len(indent) >= 4 else ""
     return f"(\n{body}\n{outer})"
 
@@ -797,7 +800,7 @@ def _chunked_call_arg(text: str, indent: str) -> str:
     UP034 (extraneous parentheses) quiet.
     """
     chunks = _str_chunks(text, indent)
-    return "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+    return "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
 
 
 # ───────── signatures/<id>.py emission ─────────

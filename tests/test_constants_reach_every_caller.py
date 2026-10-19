@@ -157,7 +157,14 @@ def test_a_loop_body_tool_call_receives_its_nodes_constants(
 # ───────── MCP tool arguments, identical on every runtime ─────────
 
 
-def _mcp_pipeline(args: dict[str, str] | None) -> Pipeline:
+#: A literal built to break whatever it is spliced into: both quote kinds,
+#: a backtick and ``${}`` (TS template), a newline, a backslash, the line
+#: breaks str.splitlines honors, a character outside the BMP, a statement
+#: end and a closing tag. It must reach the tool byte-identical.
+EVIL = "a\"b'c`d${process.exit(7)}e\n\\f\u2028g\x85h\U0001f600;</script>{{x}}"
+
+
+def _mcp_pipeline(args: dict[str, Any] | None) -> Pipeline:
     mcp: dict[str, Any] = {"server": "gmail", "tool": "search_threads"}
     if args is not None:
         mcp["args"] = args
@@ -202,7 +209,7 @@ def _ts_arguments(pipeline: Pipeline, tmp_path: Path, runtime: str) -> Any:
     out = tmp_path / runtime
     get_adapter(runtime).emit(pipeline, out)
     module = next(out.rglob("search_mail.ts")).read_text(encoding="utf-8")
-    match = re.search(r"const args = (.*?);", module)
+    match = re.search(r"^\s*const args = (.*);(?:\s*//.*)?$", module, re.MULTILINE)
     assert match is not None, module
     script = (
         f"const payload = {json.dumps(_PAYLOAD)}; console.log(JSON.stringify({match.group(1)}));"
@@ -219,6 +226,25 @@ def _ts_arguments(pipeline: Pipeline, tmp_path: Path, runtime: str) -> Any:
         (None, {"query": "invoices"}),
         # A mapping that names a constant forwards that constant.
         ({"q": "query", "days": "email_window_days"}, {"q": "invoices", "days": 7}),
+        # Literals: fixed values, typed, and escaped rather than spliced.
+        (
+            {
+                "q": "query",
+                "level": {"literal": "management-levels"},
+                "n": {"literal": 3},
+                "f": {"literal": 2.5},
+                "b": {"literal": True},
+                "evil": {"literal": EVIL},
+            },
+            {
+                "q": "invoices",
+                "level": "management-levels",
+                "n": 3,
+                "f": 2.5,
+                "b": True,
+                "evil": EVIL,
+            },
+        ),
     ],
 )
 def test_every_runtime_sends_a_tool_the_same_arguments(

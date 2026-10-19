@@ -156,8 +156,13 @@ def _parse_trailing_json(stdout: str) -> dict[str, Any] | None:
     emitted app's result JSON — found live, not in any doc. The result is
     the last JSON document starting at column 0, so scan backwards for a
     line opening a parseable document.
+
+    Lines are split on ``\\n`` only. ``JSON.stringify`` leaves U+2028,
+    U+2029 and U+0085 raw inside strings, and ``str.splitlines`` breaks on
+    all three, which cut a valid result apart (found by the ``mcp.args``
+    literal parity test).
     """
-    lines = stdout.splitlines()
+    lines = stdout.split("\n")
     for i in range(len(lines) - 1, -1, -1):
         if not lines[i].startswith(("{", "[")):
             continue

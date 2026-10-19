@@ -60,6 +60,14 @@ database, file system) with retry and timeout semantics.
 `zoominfo_enrich_contacts` with a fixed output field set and a hard batch
 size of 10. The parameters don't vary run-over-run.
 
+**Fixed tool arguments go in `mcp.args` as literals.** When the skill
+calls a tool with a value that never changes (a list named 'BDR do not
+contact', a level filter 'management-levels', a page size), write it as
+`{literal: <value>}` under `mcp.args`, not as bare text: a bare string
+there names a payload key or constant, and the IR rejects text that is
+not an identifier. A fixed list or object is a `constants:` entry the
+`args` map names. See `ir-schema.md`, MCP bindings.
+
 **Common mistake:** treating every tool call as an `external_call`. A tool
 call is only an `external_call` if the *semantics* of calling it are
 deterministic. If the agent decides which tool to call and what to pass
