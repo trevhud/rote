@@ -105,7 +105,9 @@ def current_layout() -> Layout:
     executable = Path(os.path.realpath(sys.executable))
     stdlib = Path(sysconfig.get_paths()["stdlib"]).resolve()
     read_dirs = {stdlib, *_site_dirs()}
-    read_files = {executable}
+    # The path the child is launched by (often a venv or toolcache symlink to
+    # the binary) must exist inside a bwrap namespace too, not just its target.
+    read_files = {executable, Path(os.path.abspath(sys.executable))}
     exec_files: set[Path] = set()
     ldlibrary = sysconfig.get_config_var("LDLIBRARY") or ""
     framework_prefix = sysconfig.get_config_var("PYTHONFRAMEWORKPREFIX") or ""
@@ -120,7 +122,11 @@ def current_layout() -> Layout:
             read_dirs.add(app)
             exec_files.add(app / "Contents" / "MacOS" / "Python")
     elif libdir and ldlibrary and Path(libdir, ldlibrary).exists():
-        read_files.add(Path(libdir, ldlibrary).resolve())
+        # libpython3.x.so is a symlink to the soname the loader asks for.
+        for name in {ldlibrary, sysconfig.get_config_var("INSTSONAME") or ldlibrary}:
+            lib = Path(libdir, name)
+            if lib.exists():
+                read_files.update({Path(os.path.abspath(lib)), lib.resolve()})
     venv_cfg = Path(sys.prefix) / "pyvenv.cfg"
     if venv_cfg.is_file():
         read_files.add(venv_cfg.resolve())
