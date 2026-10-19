@@ -86,6 +86,18 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         prm_origin_resource=None,
         prm_issuer=None,
     )
+    # The pre-registered client and the port-release tests need the first
+    # callback port. Something outside these tests holding it (found in
+    # CI: every test that needs 33418 failed for a whole run, then passed
+    # on re-run) must fail as itself, not as "the server rejected the
+    # static client credentials" nine tests later.
+    assert _port_is_released(CALLBACK_PORTS[0]), (
+        f"port {CALLBACK_PORTS[0]} was already in use when this test started. The "
+        "callback ports sit inside Linux's default ephemeral range "
+        "(net.ipv4.ip_local_port_range, 32768-60999), so an unrelated socket "
+        "with an OS-chosen port can hold one; CI reserves them with "
+        "net.ipv4.ip_local_reserved_ports"
+    )
     monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, fixture_server.cimd_url)
     monkeypatch.setenv("SSL_CERT_FILE", str(fixture_server.ca_pem))
     monkeypatch.setattr("webbrowser.open", fake_browser_open())
