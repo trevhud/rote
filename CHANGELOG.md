@@ -111,6 +111,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   first. No behavior changed for runs. `rote.mcp.resolve_server_url`,
   which encoded that wrong order and had no caller outside its own
   test, is removed.
+- An emitted DBOS-TS app whose `DBOS.launch()` fails now exits with the
+  error. It used to hang: the half-launched SDK kept its pools and timers
+  alive and no shutdown ran. `rote run`'s throwaway Postgres for dbos-ts
+  also checks readiness over TCP now. The socket answered during the
+  image's init phase, just before the server restarts, which is how CI
+  reached the hang. A runner timeout now carries the app's output too.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few
@@ -163,9 +169,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   fails once instead of retrying. New derived IR properties
   `Pipeline.required_input_fields` / `optional_input_fields` define the
   split, and a field listed as both required and optional is rejected.
-  `rote run` on Inngest now shows a failed run's error message, and a
-  long Node failure excerpt (DBOS-TS) keeps the `Error: ...` line that a
-  Node stack prints above its frames.
+  A long Node failure excerpt (DBOS-TS) keeps the `Error: ...` line that
+  a Node stack prints above its frames.
 - An agent loop's local tools now return their result to the model as
   JSON text. The SDK tool runner iterated a dict result, so the model saw
   only its keys.

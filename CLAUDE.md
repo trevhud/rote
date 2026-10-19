@@ -888,6 +888,22 @@ gained a sibling in its wave — and parallel fetch waves are exactly where
 the flaky network calls live. If you add a parallel branch to any
 adapter, diff it against the single-node branch field by field.
 
+### A Postgres container is "ready" over the socket before it is ready
+
+The `postgres` image's init phase runs a socket-only server, then
+restarts it. `pg_isready` over the socket says ready during that phase,
+so an app connecting right after it gets "Connection terminated
+unexpectedly". Check over TCP (`pg_isready -h 127.0.0.1`), which answers
+only once the final server is up. This only showed in CI, where nothing
+sat between readiness and the first connection.
+
+It turned into a hang because the emitted DBOS-TS `main()` called
+`DBOS.launch()` before its `try`. A launch that fails part way leaves
+pools and timers alive, so without the `finally` shutdown the process
+never exits and the runner reports a bare timeout. Launch stays inside
+the `try` (regression:
+`tests/test_dbos_ts_e2e.py::test_a_failed_launch_exits_instead_of_hanging`).
+
 ### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
 
 Three traps hit while building the Inngest adapter, all verified

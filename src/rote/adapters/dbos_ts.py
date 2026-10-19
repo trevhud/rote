@@ -767,8 +767,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
                 // Postgres-only — unlike DBOS Python there is no SQLite mode.
                 systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
             }});
-            await DBOS.launch();
+            // launch() inside the try: a launch that fails part way (a
+            // Postgres still restarting after its init phase) leaves pools
+            // and timers alive, so without the shutdown below the process
+            // never exits and the error is never seen.
             try {{
+                await DBOS.launch();
                 const pipelineInput = JSON.parse(
                     process.argv[2] ?? "{{}}",
                 ) as Record<string, unknown>;

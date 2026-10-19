@@ -108,7 +108,12 @@ def _start_throwaway_postgres(app_dir: Path) -> tuple[str, str]:
     deadline = time.monotonic() + PG_READY_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         ready = subprocess.run(
-            ["docker", "exec", name, "pg_isready", "-U", "postgres"],
+            # -h 127.0.0.1: TCP, not the socket. The image's init phase runs
+            # a socket-only server that pg_isready over the socket calls
+            # ready, then restarts it; an app connecting in that window
+            # gets "Connection terminated unexpectedly". TCP answers only
+            # once the final server is up.
+            ["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
             capture_output=True,
             timeout=10,
         )
@@ -258,7 +263,11 @@ def run_dbos_ts(
                 return MeasuredRun(
                     wall_seconds=time.monotonic() - started,
                     output=None,
-                    error=f"timed out after {timeout_seconds:g}s",
+                    error=f"timed out after {timeout_seconds:g}s:\n"
+                    + failure_excerpt(
+                        stderr_path.read_text(encoding="utf-8", errors="replace"),
+                        stdout_path.read_text(encoding="utf-8", errors="replace"),
+                    ),
                 )
             except BaseException:
                 # A parked workflow with no signal coming must not outlive
