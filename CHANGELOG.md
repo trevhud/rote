@@ -222,6 +222,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the deliverable as unverified in the output and the compile report.
 - Repair rounds restate the rubric's write-once rules, so a repair no
   longer rewrites compile-report.md in several one-line Edits.
+- A TypeScript impl typed with a closed input interface, which is what the
+  implement skill asks for, compiles on every TS runtime. DBOS-TS step
+  wrappers took `Record<string, unknown>`, and Cloudflare and Inngest
+  passed `unknown` values into the typed parameter, so following the
+  skill failed tsc. Each value is now asserted to the type the impl
+  declares for its key, and the DBOS-TS wrapper takes the impl's input
+  type, so a key the impl declares that the IR never sends, or the
+  reverse, still fails tsc.
 - **Fixes from an end-to-end newcomer pass over main.**
   - Stub detection counts a function whose last top-level statement is an
     unconditional `raise NotImplementedError` and that never returns a

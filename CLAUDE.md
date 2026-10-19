@@ -976,6 +976,27 @@ never exits and the runner reports a bare timeout. Launch stays inside
 the `try` (regression:
 `tests/test_dbos_ts_e2e.py::test_a_failed_launch_exits_instead_of_hanging`).
 
+### An impl's closed input type is checked, not cast away
+
+The implement skill tells users to replace a TS stub's `unknown` input
+with a real interface, and that broke the build on all three TS runtimes:
+DBOS-TS step wrappers took `Record<string, unknown>` (TS2345), and
+Cloudflare and Inngest passed `unknown` values (the pipeline input, a
+fanned element) straight into the typed parameter (TS2322). The
+typed-impls e2e only ever used `input: unknown`, so nothing caught it.
+
+Every call that reaches an impl now asserts each value to the impl's own
+declared type for that key (`expr as ImplInput<typeof fn>["key"]`, the
+`IMPL_INPUT_TYPE_TS` alias, emitted only when used), and the DBOS-TS
+wrapper takes `ImplInput<typeof fn>`. A stub's `unknown` input reads as
+an open record, so the scaffold compiles too. The assertion is per value,
+never on the object, so drift still fails both ways: a key the impl
+declares that the IR never sends (TS2741/TS2345), and a key the IR sends
+that the impl does not declare (TS2339 on the lookup). Judges, agent
+loops and MCP calls keep the open record. Regression:
+`tests/test_ts_typed_impls_e2e.py`, closed-input positive case plus both
+negative halves.
+
 ### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
 
 Three traps hit while building the Inngest adapter, all verified
