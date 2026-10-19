@@ -357,44 +357,6 @@ def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
     assert "            {}," in src
 
 
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as a NameError inside a running workflow."""
-    from rote.ir import Edge, Node, Pipeline, PipelineInput
-
-    pipeline = Pipeline(
-        name="forward-ref",
-        input=PipelineInput(type="X"),
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        TemporalAdapter().emit_workflow(pipeline)
-
-
-def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    import copy
-
-    pipeline = copy.deepcopy(bdr_pipeline)
-    node = pipeline.node_by_id("hubspot_upsert")
-    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
-    with pytest.raises(ValueError, match="no result available"):
-        TemporalAdapter().emit_workflow(pipeline)
-
-
 # ───────── Config variations ─────────
 
 

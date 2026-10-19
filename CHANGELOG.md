@@ -244,6 +244,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   property (no bind exposes the home's contents, planted secrets in the
   home and the venv root are unreadable) instead of "nothing under /home
   is bound", which failed on any in-tree venv.
+- **A compile no longer declares success on an IR `rote emit` refuses.**
+  A real bdr-outreach compile ($4.46) exited 1 at emit because
+  `email_template_loop` took its own `loop_body` sub-node
+  `personalize_email` as an input, a rule only the adapters checked.
+  Input reachability (no same-wave or later source, no loop-body
+  sub-node) and cycles are now IR validation errors, so the repair loop
+  sends them back. Verification also dry-emits for the compile's
+  `--runtime` and sends any refusal back (`emit_refused`), which covers
+  adapter-only rules such as python refusing a `hitl_gate`. The rubric
+  says a loop never binds its own body sub-node.
 - **Compile-time test verification works on a normal install.** pytest
   was only in the `dev` extra, so `pip install 'rote-cli[dbos]'` had no
   test runner, the generated tests were silently skipped, and a compile

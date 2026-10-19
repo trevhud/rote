@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
+from rote.ir import Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -654,75 +654,17 @@ def _seconds_literal(seconds: float) -> str:
 
 
 def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
-    """Topologically sort the pipeline into parallel-execution waves.
+    """The pipeline's parallel-execution waves (:meth:`Pipeline.execution_waves`).
 
-    A "wave" is a set of nodes whose dependencies have all been satisfied
-    by the time the wave starts; nodes within a wave can run in parallel.
-
-    Nodes that appear inside another node's ``loop_body`` are excluded
-    from the top-level waves — they're orchestrated from inside the
-    parent loop activity, not by the workflow.
+    Every adapter emits from these. The IR owns the definition because its
+    input-reachability validator is defined by it: a pipeline that loads
+    is one whose every node-output input is bound before its node runs,
+    so adapters need no emit-time check of their own.
     """
-    nested_ids: set[str] = set()
-    for n in pipeline.nodes:
-        if n.loop_body:
-            nested_ids.update(n.loop_body)
-
-    eligible = [n for n in pipeline.nodes if n.id not in nested_ids]
-    eligible_ids = {n.id for n in eligible}
-
-    in_degree: dict[str, int] = {n.id: 0 for n in eligible}
-    for edge in pipeline.edges:
-        if edge.from_ in eligible_ids and edge.to in eligible_ids:
-            in_degree[edge.to] += 1
-
-    waves: list[list[Node]] = []
-    remaining: set[str] = set(in_degree.keys())
-
-    while remaining:
-        # Sort by id for stable, deterministic emission order.
-        wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
-        if not wave_ids:
-            raise ValueError(
-                f"Cycle detected in pipeline {pipeline.name!r}; "
-                f"remaining nodes: {sorted(remaining)}"
-            )
-        waves.append([pipeline.node_by_id(nid) for nid in wave_ids])
-        for nid in wave_ids:
-            remaining.remove(nid)
-            for edge in pipeline.edges:
-                if edge.from_ == nid and edge.to in eligible_ids:
-                    in_degree[edge.to] -= 1
-
-    return waves
+    return pipeline.execution_waves()
 
 
 # ───────── Data-flow threading ─────────
-
-
-def check_input_refs_available(node: Node, available: set[str]) -> None:
-    """Emit-time guard: every node-output reference must already be bound.
-
-    Adapters emit nodes wave-by-wave, binding each node's result to a
-    local as they go. A node whose ``inputs`` reference a node in a
-    *later* wave (or a loop-body sub-node, which never binds a top-level
-    result) would produce code that references an undefined variable —
-    fail loudly at emit time instead.
-
-    IR validation already guarantees the referenced node *exists*; this
-    check is about emission ordering, which is an adapter concern.
-    """
-    if not node.inputs:
-        return
-    for param, ref in node.inputs.items():
-        parsed = parse_input_ref(ref)
-        if parsed.node_id is not None and parsed.node_id not in available:
-            raise ValueError(
-                f"Node {node.id!r} input {param!r} references {ref!r}, but node "
-                f"{parsed.node_id!r} has no result available at this point in the "
-                f"workflow (it runs in a later wave, or is a loop-body sub-node "
-                f"with no top-level result)."
-            )
 
 
 def fan_out_nodes(wave: Sequence[Node]) -> tuple[list[Node], list[Node]]:

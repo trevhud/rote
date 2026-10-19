@@ -34,7 +34,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     refuse_mcp_only_nodes,
     safe_docstring_line,
@@ -498,16 +497,9 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
     if guard:
         body_lines.append(guard.rstrip("\n"))
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         body_lines.append("")
         body_lines.append(f"        # ─── Wave {wave_idx} ───")
@@ -535,8 +527,6 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
 
         for h in hitl:
             body_lines.append(_emit_hitl_block(h).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     body_lines.append("")
     body_lines.append("        return {")

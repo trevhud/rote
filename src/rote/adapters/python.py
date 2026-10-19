@@ -39,8 +39,9 @@ Key design choices vs. the durable adapters:
   takes the pipeline input dict, binds every node's result as
   ``<id>_result``, and builds each payload from the node's ``inputs:``
   bindings via the shared reference grammar
-  (:func:`rote.ir.parse_input_ref`). Forward references are rejected at
-  emit time by :func:`rote.adapters._common.check_input_refs_available`.
+  (:func:`rote.ir.parse_input_ref`). Forward references never reach
+  the adapter: IR validation rejects them
+  (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Signatures and stubs are shared machinery.** ``signatures/*.py``
   and ``extracted/*.py`` come from :mod:`rote.adapters._py_common`, the
@@ -64,7 +65,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     judge_override_readme,
     refuse_mcp_only_nodes,
@@ -336,14 +336,7 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
-        for n in wave:
-            check_input_refs_available(n, available)
-
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
 
@@ -378,8 +371,6 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
 
         for node in fanned:
             lines.append(_emit_fan_out_call(node, pipeline))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.append("    return {")

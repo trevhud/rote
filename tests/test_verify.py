@@ -489,3 +489,22 @@ def test_the_summary_is_pytests_not_the_interpreters_last_words(tmp_path: Path) 
     assert result is not None and result.status == "passed", result.output
     assert "using dumb terminal settings." in result.output
     assert result.summary.startswith("1 passed"), result.summary
+
+
+def test_a_loop_bound_to_its_own_body_is_sent_back_for_repair(tmp_path: Path) -> None:
+    """The shape the real bdr-outreach compile shipped: it used to verify
+    clean and fail at emit. Now it is an IR error the repair turn names."""
+    import yaml
+
+    from tests.test_ir import _bdr_with_email_loop
+
+    (tmp_path / "pipeline.yaml").write_text(
+        yaml.safe_dump(_bdr_with_email_loop(loop_takes_its_body=True)), encoding="utf-8"
+    )
+    v = verify_deliverable(tmp_path, run_tests=False)
+    assert not v.ok and v.pipeline_error is not None
+    instruction = v.repair_instruction(tmp_path)
+    assert instruction is not None
+    assert "fails IR validation" in instruction
+    assert "'email_template_loop' input 'personalized_emails'" in instruction
+    assert "own loop_body" in instruction

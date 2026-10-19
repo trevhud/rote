@@ -928,6 +928,106 @@ class Pipeline(BaseModel):
             raise ValueError("\n".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_input_reachability(self) -> Self:
+        """Every node-output input must be bound before its node runs.
+
+        Adapters emit the DAG wave by wave and bind each node's result as
+        they go, so an input naming a node in the same or a later wave, or
+        a ``loop_body`` sub-node (which the loop calls per iteration and
+        which never binds a top-level result), would emit code reading an
+        undefined variable. This used to be checked only at emit time, in
+        every adapter, after the compile had already declared success: a
+        real bdr-outreach compile paid $4.46 for an IR whose loop took its
+        own body sub-node's output as an input, then failed to emit. Here
+        it is a validation error the compile's repair loop sends back.
+
+        Loop-body sub-nodes' own ``inputs:`` are not checked: their parent
+        loop calls them with model-chosen arguments, so those bindings
+        describe and do not bind (same scope rule as the judge check).
+        """
+        waves = self.execution_waves()
+        wave_of = {n.id: i for i, wave in enumerate(waves) for n in wave}
+        owners: dict[str, list[str]] = {}
+        for n in self.nodes:
+            for sub in n.loop_body or ():
+                owners.setdefault(sub, []).append(n.id)
+        errors: list[str] = []
+        for node in self.nodes:
+            if node.id in owners or not node.inputs:
+                continue
+            for param, ref in node.inputs.items():
+                source = parse_input_ref(ref).node_id
+                if source is None:
+                    continue
+                head = (
+                    f"Node {node.id!r} input {param!r} references {ref!r}, but node "
+                    f"{source!r} has no result available at this point in the workflow"
+                )
+                if source in owners:
+                    if node.id in owners[source]:
+                        errors.append(
+                            f"{head}: it is in {node.id!r}'s own loop_body. The loop "
+                            f"calls its body sub-nodes on each iteration, so no "
+                            f"sub-node result exists before the loop starts. Remove "
+                            f"this input; what the body produces comes back as the "
+                            f"loop's own output."
+                        )
+                    else:
+                        errors.append(
+                            f"{head}: it is a loop_body sub-node of "
+                            f"{', '.join(repr(o) for o in owners[source])}, which never "
+                            f"binds a top-level result. Reference the loop's output "
+                            f"instead."
+                        )
+                elif wave_of[source] >= wave_of[node.id]:
+                    errors.append(
+                        f"{head}: it does not run before {node.id!r}. Add an edge from "
+                        f"{source!r} to {node.id!r} (directly or through other nodes) "
+                        f"so it finishes first."
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
+    def execution_waves(self) -> list[list[Node]]:
+        """Topologically sort the top-level nodes into parallel waves.
+
+        A wave is a set of nodes whose dependencies have all finished by
+        the time it starts; nodes within a wave may run concurrently.
+        Nodes in another node's ``loop_body`` are excluded: they run
+        inside their parent loop, not as workflow steps. Ties sort by id,
+        so emission order is deterministic. Raises ``ValueError`` on a
+        cycle.
+
+        Lives on the IR, not in an adapter, because the reachability rule
+        above is defined by it and every adapter emits from it: one
+        definition, so "valid IR" and "emittable IR" cannot disagree.
+        """
+        nested = {sub for n in self.nodes for sub in (n.loop_body or ())}
+        eligible = [n for n in self.nodes if n.id not in nested]
+        eligible_ids = {n.id for n in eligible}
+        in_degree = {n.id: 0 for n in eligible}
+        for edge in self.edges:
+            if edge.from_ in eligible_ids and edge.to in eligible_ids:
+                in_degree[edge.to] += 1
+        waves: list[list[Node]] = []
+        remaining = set(in_degree)
+        while remaining:
+            wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
+            if not wave_ids:
+                raise ValueError(
+                    f"Cycle detected in pipeline {self.name!r}; "
+                    f"remaining nodes: {sorted(remaining)}"
+                )
+            waves.append([self.node_by_id(nid) for nid in wave_ids])
+            for nid in wave_ids:
+                remaining.remove(nid)
+                for edge in self.edges:
+                    if edge.from_ == nid and edge.to in eligible_ids:
+                        in_degree[edge.to] -= 1
+        return waves
+
     def node_by_id(self, node_id: str) -> Node:
         for n in self.nodes:
             if n.id == node_id:

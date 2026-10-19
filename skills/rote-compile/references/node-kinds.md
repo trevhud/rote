@@ -168,7 +168,9 @@ Both the number of iterations and the specific queries vary per campaign.
 
 **Required fields:** `tools` must be set on every `agent_loop` node (the
 tools the agent may call). `loop_body` is optional and lists the IDs of
-sub-nodes the loop invokes each iteration.
+sub-nodes the loop invokes each iteration. A body sub-node is never one
+of the loop's own `inputs:`: it has no result until the loop runs it,
+so the IR rejects that binding (ir-schema.md, validation rule 10).
 
 **Also set `tool_servers`** — tool name → the MCP server providing it —
 for every tool whose server you can identify from the skill (the same

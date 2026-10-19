@@ -33,7 +33,6 @@ from rote.adapters.inngest import (
     trigger_event_name,
 )
 from rote.ir import (
-    Edge,
     LLMSignature,
     Node,
     NodeKind,
@@ -437,28 +436,6 @@ def test_node_without_inputs_gets_empty_payload() -> None:
     src = InngestAdapter().emit_pipeline_ts(_minimal_pipeline())
     assert 'step.run("only", async () => only({}))' in src
     assert "pipelineInput" not in src
-
-
-def test_emit_rejects_forward_reference() -> None:
-    """Inputs referencing a later wave must fail at emit time, not as an
-    undefined-variable error inside the deployed function."""
-    pipeline = _minimal_pipeline(
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        InngestAdapter().emit_pipeline_ts(pipeline)
 
 
 # ───────── Signature-spec requirement ─────────

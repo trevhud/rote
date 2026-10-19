@@ -656,32 +656,6 @@ def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
     assert "pipelineInput" not in src
 
 
-def test_emit_rejects_forward_reference() -> None:
-    """Inputs referencing a later wave must fail at emit time, not as an
-    undefined-variable error inside the deployed worker."""
-    from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
-
-    pipeline = Pipeline(
-        name="forward-ref",
-        input=PipelineInput(type="X"),
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        CloudflareAdapter().emit_workflow(pipeline)
-
-
 def test_extracted_stub_return_type_is_never(
     emit_result: dict[str, Path],
 ) -> None:
