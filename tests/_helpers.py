@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import ast
 import re
+import socket
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from rote.adapters._common import strip_ts_comments
@@ -206,3 +209,36 @@ def payload_dict_keys(payload: ast.Dict) -> set[str]:
         ):
             keys.add(value.args[1].value)
     return keys
+
+
+@contextmanager
+def occupied_ports(*ports: int) -> Iterator[None]:
+    """Make ``ports`` unavailable to the login's callback-port selection.
+
+    The goal is the state "these ports are busy", not "this test owns
+    them". A port a previous test left in TIME_WAIT must not fail the setup
+    (SO_REUSEADDR, as uvicorn and the code under test both set), and a port
+    some other listener already holds is busy too, so it is kept as is
+    rather than raising EADDRINUSE. The precondition is then checked the
+    way the code under test sees it: it cannot bind any of them.
+    """
+    from rote.mcp.auth import bind_callback_sockets
+
+    held: list[socket.socket] = []
+    try:
+        for port in ports:
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                sock.listen()
+            except OSError:
+                sock.close()  # already held by a live listener: busy either way
+                continue
+            held.append(sock)
+        for port in ports:
+            assert bind_callback_sockets(port) is None, f"port {port} is still free"
+        yield
+    finally:
+        for sock in held:
+            sock.close()
