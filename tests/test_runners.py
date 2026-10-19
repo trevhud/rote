@@ -373,6 +373,165 @@ def test_cf_wait_times_out_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
         cf._wait_until_parked_or_complete(1, "id", deadline=cf.time.monotonic() + 0.2)
 
 
+#: What workerd actually prints for an uncaught step error (captured from a
+#: live `wrangler dev --local` run), ANSI colors included.
+_WRANGLER_STEP_ERROR_LOG = (
+    "[wrangler:info] Ready on http://localhost:55878\n"
+    "\x1b[31m✘ \x1b[41;31m[\x1b[41;97mERROR\x1b[41;31m]\x1b[0m \x1b[1mUncaught "
+    "NonRetryableError: no endpoint for MCP server 'vendor': set the "
+    "ROTE_MCP_VENDOR_URL variable (wrangler.jsonc vars, .dev.vars, or a secret). "
+    "This is configuration, so the step is not retried. Error\x1b[0m\n"
+    "      at null.<anonymous> (file:///app/src/workflow.ts:91:35)\n"
+)
+
+_GENERIC_FATAL = {
+    "name": "WorkflowFatalError",
+    "message": (
+        "The execution of the Workflow instance was terminated, as a step threw an "
+        "NonRetryableError and it was not handled"
+    ),
+}
+
+
+def _scripted_instance(monkeypatch: pytest.MonkeyPatch, states: list[dict[str, Any]]) -> list[str]:
+    """Serve ``states`` in order (the last one repeats); record posted events."""
+    from rote.runners import cloudflare as cf
+
+    remaining = list(states)
+    posted: list[str] = []
+
+    def _get(url: str, timeout: float = 10.0) -> dict[str, Any]:
+        return dict(remaining.pop(0) if len(remaining) > 1 else remaining[0])
+
+    def _post(url: str, payload: Any, timeout: float = 10.0) -> dict[str, Any]:
+        posted.append(url.rsplit("/", 1)[-1])
+        return {}
+
+    monkeypatch.setattr(cf, "http_get_json", _get)
+    monkeypatch.setattr(cf, "http_post_json", _post)
+    monkeypatch.setattr(cf.time, "sleep", lambda s: None)
+    return posted
+
+
+def test_cf_run_reports_the_step_error_from_the_wrangler_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local dev's status only says WorkflowFatalError; the message a user
+    needs (which variable to set) is in workerd's console output."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(_WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
+    _scripted_instance(monkeypatch, [{"status": "errored", "error": _GENERIC_FATAL}])
+    run = cf._drive_instance(
+        1, "id", [], started=cf.time.monotonic(), deadline=cf.time.monotonic() + 30, log_path=log
+    )
+    assert run.error is not None
+    assert run.error.startswith("workflow errored: WorkflowFatalError: The execution")
+    assert run.error.endswith(
+        "\nstep error: NonRetryableError: no endpoint for MCP server 'vendor': set the "
+        "ROTE_MCP_VENDOR_URL variable (wrangler.jsonc vars, .dev.vars, or a secret). "
+        "This is configuration, so the step is not retried."
+    )
+
+
+def test_cf_run_waits_out_a_retrying_step_after_the_last_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A step sleeping between retries looks parked. Once every gate payload
+    is out, that is not an error: wait for the real outcome and report it."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(_WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
+    quiet = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": []}
+    # Parked-looking long enough for the one gate, then again (retry
+    # backoff), and only then the step's retries run out.
+    states = [quiet] * 12 + [{"status": "errored", "error": _GENERIC_FATAL}]
+    posted = _scripted_instance(monkeypatch, states)
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("approve", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 30,
+        log_path=log,
+    )
+    assert posted == ["approve"]
+    assert run.error is not None
+    assert "every gate payload" not in run.error
+    assert "set the ROTE_MCP_VENDOR_URL variable" in run.error
+
+
+def test_cf_run_reports_the_newest_step_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An earlier step that failed once and recovered must not be reported
+    as the cause of a later fatal failure."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(
+        "\x1b[31m✘ [ERROR] Uncaught Error: upstream 503 from the search API\x1b[0m\n"
+        "[wrangler:info] GET /status/id 200 OK\n" + _WRANGLER_STEP_ERROR_LOG,
+        encoding="utf-8",
+    )
+    _scripted_instance(monkeypatch, [{"status": "errored", "error": _GENERIC_FATAL}])
+    run = cf._drive_instance(
+        1, "id", [], started=cf.time.monotonic(), deadline=cf.time.monotonic() + 30, log_path=log
+    )
+    assert run.error is not None
+    assert "\nstep error: NonRetryableError: no endpoint" in run.error
+    assert "upstream 503" not in run.error
+
+
+def test_cf_run_fails_fast_on_a_gate_that_never_consumes_its_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No step output after the last payload and nothing retrying: the gate
+    is stuck (a signal name that matches no waitForEvent), so waiting out
+    the whole timeout would only delay the same answer."""
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text("[wrangler:info] Ready on http://localhost:1\n", encoding="utf-8")
+    parked = {"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": [{"a": 1}]}
+    posted = _scripted_instance(monkeypatch, [parked])
+    run = cf._drive_instance(
+        1,
+        "id",
+        [("approve", {"ok": True})],
+        started=cf.time.monotonic(),
+        deadline=cf.time.monotonic() + 5,
+        log_path=log,
+    )
+    assert posted == ["approve"]
+    assert run.error is not None
+    assert "never consumed, and no step is retrying" in run.error
+
+
+def test_cf_run_timeout_after_the_last_gate_names_the_step_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.empirical import EmpiricalError
+    from rote.runners import cloudflare as cf
+
+    log = tmp_path / "wrangler-dev.log"
+    log.write_text(_WRANGLER_STEP_ERROR_LOG, encoding="utf-8")
+    _scripted_instance(monkeypatch, [{"status": "running", "__LOCAL_DEV_STEP_OUTPUTS": []}])
+    with pytest.raises(EmpiricalError) as info:
+        cf._drive_instance(
+            1,
+            "id",
+            [],
+            started=cf.time.monotonic(),
+            deadline=cf.time.monotonic() + 0.2,
+            log_path=log,
+        )
+    assert "did not finish" in str(info.value)
+    assert "step error: NonRetryableError: no endpoint" in str(info.value)
+
+
 # ───────── Inngest runner (unit level — live path in test_inngest_e2e) ─────────
 
 

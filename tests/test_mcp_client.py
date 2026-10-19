@@ -207,6 +207,23 @@ def test_helper_resolve_url_order(monkeypatch: pytest.MonkeyPatch) -> None:
         helper.resolve_url("nowhere", None)
 
 
+def test_helper_missing_endpoint_is_a_config_error_naming_the_variable() -> None:
+    """The emitted steps exclude RoteMcpConfigError from their retry
+    budget, so a missing endpoint must raise exactly that, name the env
+    var to set, and survive pickling (DBOS persists step errors)."""
+    import pickle
+
+    from rote.mcp import _runtime_helper as helper
+
+    with pytest.raises(helper.RoteMcpConfigError) as info:
+        helper.resolve_url("vendor", None)
+    assert "set ROTE_MCP_VENDOR_URL" in str(info.value)
+    assert not isinstance(info.value, helper.RoteMcpAuthNeeded)
+    restored = pickle.loads(pickle.dumps(info.value))
+    assert type(restored) is helper.RoteMcpConfigError
+    assert str(restored) == str(info.value)
+
+
 def test_helper_token_usability(monkeypatch: pytest.MonkeyPatch) -> None:
     import time
 

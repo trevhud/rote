@@ -112,7 +112,9 @@ def test_mcp_step_dispatch_parks_on_auth() -> None:
     a dead credential suspends the run durably instead of failing it,
     and `rote mcp login <server>` releases it."""
     src = emit_main(_pipeline(mcp=_BINDING), DbosAdapterConfig())
-    assert "from extracted._rote_mcp import RoteMcpAuthNeeded" in src
+    assert (
+        "from extracted._rote_mcp import (\n    RoteMcpAuthNeeded,\n    RoteMcpConfigError," in src
+    )
     assert "_run_with_auth_park(" in src
     # The park advertises what it waits for (CLI discovery) and blocks on
     # the rote:auth topic — the ':' makes IR-signal collisions impossible.

@@ -51,11 +51,36 @@ export class RoteMcpAuthNeeded extends Error {
 
 /** True if a RoteMcpAuthNeeded hides anywhere in the error tree. */
 export function isRoteMcpAuthNeeded(err: unknown): boolean {
+    return errorTreeHas(err, "RoteMcpAuthNeeded");
+}
+
+/**
+ * The app is not configured to reach an MCP server (no endpoint).
+ *
+ * The configuration does not change between retry attempts, so emitted
+ * steps fail at once on this instead of spending their retry budget. It
+ * does not park either: the fix is setting the variable the message
+ * names and starting again. Detect with isRoteMcpConfigError(), never
+ * `instanceof`, for the same reason as RoteMcpAuthNeeded.
+ */
+export class RoteMcpConfigError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = "RoteMcpConfigError";
+    }
+}
+
+/** True if a RoteMcpConfigError hides anywhere in the error tree. */
+export function isRoteMcpConfigError(err: unknown): boolean {
+    return errorTreeHas(err, "RoteMcpConfigError");
+}
+
+function errorTreeHas(err: unknown, name: string): boolean {
     let node: unknown = err;
     for (let depth = 0; node != null && depth < 16; depth++) {
         const e = node as { name?: unknown; errors?: unknown; cause?: unknown };
-        if (e.name === "RoteMcpAuthNeeded") return true;
-        if (Array.isArray(e.errors) && e.errors.some((sub) => isRoteMcpAuthNeeded(sub))) {
+        if (e.name === name) return true;
+        if (Array.isArray(e.errors) && e.errors.some((sub) => errorTreeHas(sub, name))) {
             return true;
         }
         node = e.cause;
@@ -139,9 +164,10 @@ export function resolveUrl(
 ): string {
     const bound = secret(env, server, "URL") ?? pipelineUrl;
     if (bound) return bound;
-    throw new Error(
-        `no endpoint for MCP server '${server}' — set the ` +
-            `ROTE_MCP_${server.toUpperCase()}_URL variable (wrangler.jsonc vars or secret)`,
+    throw new RoteMcpConfigError(
+        `no endpoint for MCP server '${server}': set the ` +
+            `ROTE_MCP_${server.toUpperCase()}_URL variable (wrangler.jsonc vars, .dev.vars, ` +
+            "or a secret). This is configuration, so the step is not retried.",
     );
 }
 
@@ -495,10 +521,15 @@ export async function bindAgentTools(
         const detail = failures
             .map((err) => (err instanceof Error ? err.message : String(err)))
             .join("; ");
-        throw new Error(
+        const message =
             `agent tools not provided by any reachable MCP server: ${missing.join(", ")}` +
-                (detail ? ` (unreachable: ${detail})` : ""),
-        );
+            (detail ? ` (unreachable: ${detail})` : "");
+        // A server with no endpoint stays unreachable on every attempt, so
+        // when that explains the gap the step must not spend its retries.
+        if (failures.some((err) => isRoteMcpConfigError(err))) {
+            throw new RoteMcpConfigError(message);
+        }
+        throw new Error(message);
     }
     return [...bound.values()];
 }

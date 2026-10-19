@@ -715,18 +715,30 @@ def _mcp_config_for(
             "missing; re-emit the pipeline"
         ) from None
 
+    pins = dict(tool_servers or {})
+    registry = _rote_mcp._registry_servers()
     servers: dict[str, Any] = {}
-    for name, entry in sorted(_rote_mcp._registry_servers().items()):
+    # Every registered server, plus each server the IR pinned a tool to:
+    # a pinned server may have no registry entry and resolve from its
+    # ROTE_MCP_<SERVER>_URL variable alone.
+    for name in sorted(set(registry) | set(pins.values())):
         try:
             url = _rote_mcp.resolve_url(name, None)
-        except Exception:  # unresolvable server: skip, the allowlist still binds
-            continue
+        except _rote_mcp.RoteMcpConfigError as exc:
+            needed = sorted(tool for tool, server in pins.items() if server == name)
+            if needed:
+                # The loop is known to need this server, and no attempt
+                # will find an endpoint that is not configured.
+                raise _rote_mcp.RoteMcpConfigError(
+                    f"agent loop tools {', '.join(needed)} are served by {name!r}: {exc}"
+                ) from None
+            continue  # not known to be needed; the allowlist still binds
         config: dict[str, Any] = {"type": "http", "url": url}
+        entry = registry.get(name)
         headers = entry.get("headers") if isinstance(entry, dict) else None
         if headers:
             config["headers"] = dict(headers)
         servers[name] = config
-    pins = dict(tool_servers or {})
     allowed = [
         f"mcp__{server}__{tool}"
         for server in sorted(servers)

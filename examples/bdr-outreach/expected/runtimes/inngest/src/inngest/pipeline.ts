@@ -42,6 +42,23 @@ function requireEnv(name: string): string {
     return value;
 }
 
+/** A missing MCP endpoint is configuration, not a transient failure: an
+ * agent loop that cannot reach its tool servers fails the run at once
+ * instead of spending the function-level retries. Matched by the error's
+ * name, the same way every runtime detects the MCP helper's errors. */
+async function failFastOnConfigError<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+        return await fn();
+    } catch (err) {
+        if ((err as { name?: unknown } | null)?.name === "RoteMcpConfigError") {
+            throw new NonRetriableError(err instanceof Error ? err.message : String(err), {
+                cause: err instanceof Error ? err : undefined,
+            });
+        }
+        throw err;
+    }
+}
+
 /** The list a fan_out node dispatches over.
  *
  * A bare `.map()` on a missing key fails with "Cannot read properties
@@ -90,9 +107,9 @@ export const runPipeline = inngest.createFunction(
         // IR timeout 5m: Inngest v4 has no per-step timeout —
         // enforce inside the implementation (AbortSignal.timeout) if needed.
         const [target_research_result, taxonomy_lookup_result] = await Promise.all([
-            step.run("target_research", async () => targetResearch({
+            step.run("target_research", async () => failFastOnConfigError(() => targetResearch({
                     brief: pipelineInput,
-                })),
+                }))),
             step.run("taxonomy_lookup", async () => taxonomyLookup({
                     brief: pipelineInput,
                 })),
@@ -101,12 +118,12 @@ export const runPipeline = inngest.createFunction(
         // ─── Wave 2 ───
         // IR timeout 15m: Inngest v4 has no per-step timeout —
         // enforce inside the implementation (AbortSignal.timeout) if needed.
-        const lead_generation_loop_result = await step.run("lead_generation_loop", async () => leadGenerationLoop({
+        const lead_generation_loop_result = await step.run("lead_generation_loop", async () => failFastOnConfigError(() => leadGenerationLoop({
                 brief: pipelineInput,
                 intel: target_research_result,
                 taxonomy: taxonomy_lookup_result,
                 target_quota: pipelineInput["target_quota"],
-            }));
+            })));
 
         // ─── Wave 3 ───
         // ─── HITL gate: contact_review_gate ───
