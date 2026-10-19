@@ -103,6 +103,20 @@ function missingInputsError(pipelineInput: unknown, required: string[]): string 
         : null;
 }
 
+/** The input type an impl declares, so a call can be checked against it.
+ *
+ * The implement skill says to replace a stub's `unknown` input with a real
+ * interface. Upstream values are `unknown` here (the pipeline input, a
+ * fanned element), so each one is asserted to the field type the impl
+ * declares: a key the impl does not declare, or a declared key the IR does
+ * not send, still fails tsc. A stub's `unknown` input reads as an open
+ * record, so the scaffold compiles too. */
+type ImplInput<F> = F extends (input: infer I, ...rest: never[]) => unknown
+    ? unknown extends I
+        ? Record<string, unknown>
+        : I
+    : never;
+
 /**
  * End-to-end BDR outreach campaign workflow for pharma/biotech research
  */
@@ -140,7 +154,7 @@ export const runPipeline = inngest.createFunction(
                     brief: pipelineInput,
                 }))),
             step.run("taxonomy_lookup", async () => taxonomyLookup({
-                    brief: pipelineInput,
+                    brief: pipelineInput as ImplInput<typeof taxonomyLookup>["brief"],
                 })),
         ]);
 
@@ -177,32 +191,32 @@ export const runPipeline = inngest.createFunction(
         // IR timeout 60s: Inngest v4 has no per-step timeout —
         // enforce inside the implementation (AbortSignal.timeout) if needed.
         const hubspot_upsert_result = await step.run("hubspot_upsert", async () => hubspotUpsert({
-                contacts: contact_review_gate_result["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"] as ImplInput<typeof hubspotUpsert>["contacts"],
                 batch_size: 100,
             }));
 
         // ─── Wave 5 ───
         const hubspot_create_list_result = await step.run("hubspot_create_list", async () => hubspotCreateList({
-                campaign_name: pipelineInput["drug_brand"],
-                contacts: hubspot_upsert_result["upserted"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof hubspotCreateList>["campaign_name"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof hubspotCreateList>["contacts"],
                 add_batch_size: 250,
             }));
 
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await step.run("exclusion_check_dnc", async () => exclusionCheckDnc({
-                contacts: hubspot_upsert_result["upserted"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof exclusionCheckDnc>["contacts"],
             }));
 
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await step.run("exclusion_check_recent", async () => exclusionCheckRecent({
-                contacts: exclusion_check_dnc_result["passed"],
+                contacts: exclusion_check_dnc_result["passed"] as ImplInput<typeof exclusionCheckRecent>["contacts"],
                 days_back: 30,
                 direction: "OUTBOUND",
             }));
 
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await step.run("exclusion_check_sequence", async () => exclusionCheckSequence({
-                contacts: exclusion_check_recent_result["passed"],
+                contacts: exclusion_check_recent_result["passed"] as ImplInput<typeof exclusionCheckSequence>["contacts"],
             }));
 
         // ─── Wave 9 ───
@@ -229,16 +243,16 @@ export const runPipeline = inngest.createFunction(
         // budget of 5 with managed exponential backoff + jitter.
         // Throw NonRetriableError inside the step to stop retries early.
         const create_sales_template_result = await step.run("create_sales_template", async () => createSalesTemplate({
-                campaign_name: pipelineInput["drug_brand"],
-                personalizations: personalize_email_result,
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof createSalesTemplate>["campaign_name"],
+                personalizations: personalize_email_result as ImplInput<typeof createSalesTemplate>["personalizations"],
             }));
 
         // ─── Wave 11 ───
         const pre_enrollment_report_result = await step.run("pre_enrollment_report", async () => preEnrollmentReport({
-                campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: exclusion_check_sequence_result["passed"],
-                exclusions: exclusion_check_sequence_result["excluded"],
-                template_ids: create_sales_template_result["template_ids"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof preEnrollmentReport>["campaign_name"],
+                passed_contacts: exclusion_check_sequence_result["passed"] as ImplInput<typeof preEnrollmentReport>["passed_contacts"],
+                exclusions: exclusion_check_sequence_result["excluded"] as ImplInput<typeof preEnrollmentReport>["exclusions"],
+                template_ids: create_sales_template_result["template_ids"] as ImplInput<typeof preEnrollmentReport>["template_ids"],
             }));
 
         // ─── Wave 12 ───

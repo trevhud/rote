@@ -111,6 +111,20 @@ function missingInputsError(pipelineInput: unknown, required: string[]): string 
         : null;
 }
 
+/** The input type an impl declares, so a call can be checked against it.
+ *
+ * The implement skill says to replace a stub's `unknown` input with a real
+ * interface. Upstream values are `unknown` here (the pipeline input, a
+ * fanned element), so each one is asserted to the field type the impl
+ * declares: a key the impl does not declare, or a declared key the IR does
+ * not send, still fails tsc. A stub's `unknown` input reads as an open
+ * record, so the scaffold compiles too. */
+type ImplInput<F> = F extends (input: infer I, ...rest: never[]) => unknown
+    ? unknown extends I
+        ? Record<string, unknown>
+        : I
+    : never;
+
 export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
     async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
         const pipelineInput = event.payload;
@@ -124,7 +138,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "taxonomy_lookup",
             { timeout: "10 minutes" },
             async () => taxonomyLookup({
-                brief: pipelineInput,
+                brief: pipelineInput as ImplInput<typeof taxonomyLookup>["brief"],
             }),
         );
         // ─── target_research (agent loop): park on dead credentials ───
@@ -265,7 +279,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "hubspot_upsert",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "60 seconds" },
             async () => hubspotUpsert({
-                contacts: contact_review_gate_result["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"] as ImplInput<typeof hubspotUpsert>["contacts"],
                 batch_size: 100,
             }),
         );
@@ -275,8 +289,8 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "hubspot_create_list",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
             async () => hubspotCreateList({
-                campaign_name: pipelineInput["drug_brand"],
-                contacts: hubspot_upsert_result["upserted"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof hubspotCreateList>["campaign_name"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof hubspotCreateList>["contacts"],
                 add_batch_size: 250,
             }),
         );
@@ -286,7 +300,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_dnc",
             { timeout: "10 minutes" },
             async () => exclusionCheckDnc({
-                contacts: hubspot_upsert_result["upserted"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof exclusionCheckDnc>["contacts"],
             }),
         );
 
@@ -295,7 +309,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_recent",
             { timeout: "10 minutes" },
             async () => exclusionCheckRecent({
-                contacts: exclusion_check_dnc_result["passed"],
+                contacts: exclusion_check_dnc_result["passed"] as ImplInput<typeof exclusionCheckRecent>["contacts"],
                 days_back: 30,
                 direction: "OUTBOUND",
             }),
@@ -306,7 +320,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_sequence",
             { timeout: "10 minutes" },
             async () => exclusionCheckSequence({
-                contacts: exclusion_check_recent_result["passed"],
+                contacts: exclusion_check_recent_result["passed"] as ImplInput<typeof exclusionCheckSequence>["contacts"],
             }),
         );
 
@@ -333,8 +347,8 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "create_sales_template",
             { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
             async () => createSalesTemplate({
-                campaign_name: pipelineInput["drug_brand"],
-                personalizations: personalize_email_result,
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof createSalesTemplate>["campaign_name"],
+                personalizations: personalize_email_result as ImplInput<typeof createSalesTemplate>["personalizations"],
             }),
         );
 
@@ -343,10 +357,10 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "pre_enrollment_report",
             { timeout: "10 minutes" },
             async () => preEnrollmentReport({
-                campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: exclusion_check_sequence_result["passed"],
-                exclusions: exclusion_check_sequence_result["excluded"],
-                template_ids: create_sales_template_result["template_ids"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof preEnrollmentReport>["campaign_name"],
+                passed_contacts: exclusion_check_sequence_result["passed"] as ImplInput<typeof preEnrollmentReport>["passed_contacts"],
+                exclusions: exclusion_check_sequence_result["excluded"] as ImplInput<typeof preEnrollmentReport>["exclusions"],
+                template_ids: create_sales_template_result["template_ids"] as ImplInput<typeof preEnrollmentReport>["template_ids"],
             }),
         );
 

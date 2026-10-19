@@ -118,6 +118,7 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
@@ -125,7 +126,7 @@ from rote.adapters._ts_common import (
     payload_ts_literal,
     required_inputs_ts_guard,
 )
-from rote.ir import Node, NodeKind, Pipeline
+from rote.ir import CONSTANT_ARGUMENT_KINDS, Node, NodeKind, Pipeline
 
 _GENERATED_BY = "rote.adapters.dbos_ts"
 
@@ -354,6 +355,11 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
         call = f"{fn_name}(payload, {judge_env_arg(node)})"
     else:
         call = f"{fn_name}(payload)"
+    # A step that calls an impl takes the impl's own input type, so an impl
+    # written against a closed interface (what the implement skill asks
+    # for) compiles. A judge, a loop or an MCP call keeps the open record.
+    calls_impl = node.kind in CONSTANT_ARGUMENT_KINDS and not _is_mcp_backed(node, cfg)
+    payload_type = f"ImplInput<typeof {fn_name}>" if calls_impl else "Record<string, unknown>"
 
     lines = doc
     retry_comment = _retry_on_comment(node)
@@ -362,7 +368,7 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
     lines.extend(
         [
             f"export const {fn_name}Step = DBOS.registerStep(",
-            f"    async (payload: Record<string, unknown>) => {call},",
+            f"    async (payload: {payload_type}) => {call},",
             f"    {config},",
             ");",
         ]
@@ -731,6 +737,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         unwrap_block += f"\n{FAN_OUT_LIST_HELPER_TS.rstrip(chr(10))}\n"
     if pipeline.needs_input_check:
         unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
+    impl_input = impl_input_type_block("\n".join([*step_blocks, body]))
+    if impl_input:
+        unwrap_block += f"\n{impl_input.rstrip(chr(10))}\n"
     guard = "".join(
         "\n" + line for line in required_inputs_ts_guard(pipeline, "Error", indent=" " * 8)
     )

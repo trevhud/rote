@@ -272,3 +272,100 @@ def test_a_field_the_implementation_lacks_fails_tsc(fresh: Path) -> None:
     errors = [line for line in drifted.stdout.splitlines() if "error TS" in line]
     assert errors, drifted.stdout
     assert all("error TS7053" in e and "'\"total\"'" in e for e in errors), drifted.stdout
+
+
+# The implement skill says to replace the stub's `unknown` input with a real
+# interface. These do that for every node that takes inputs: a fanned
+# element, a whole upstream output, field reads, and an optional pipeline
+# input. On DBOS-TS the step wrapper passed `Record<string, unknown>`, so
+# following the skill failed tsc (TS2345).
+_CLOSED_INPUTS: dict[str, str] = {
+    "score_item": """\
+        import type { Item } from "./list_items";
+
+        export interface Score {
+            name: string;
+            score: number;
+        }
+
+        export async function scoreItem(input: { item: Item }): Promise<Score> {
+            return { name: input.item.name, score: input.item.weight * 10 };
+        }
+        """,
+    "summarize": """\
+        import type { Score } from "./score_item";
+
+        export interface Summary {
+            names: string[];
+            total: number;
+        }
+
+        export interface SummarizeInput {
+            scores: Score[];
+            page: string;
+        }
+
+        export async function summarize(input: SummarizeInput): Promise<Summary> {
+            return {
+                names: input.scores.map((s) => s.name),
+                total: input.scores.reduce((sum, s) => sum + s.score, 0) + input.page.length,
+            };
+        }
+        """,
+    "render": """\
+        export interface RenderInput {
+            names: string[];
+            total: number;
+            page: string;
+            title?: string;
+        }
+
+        export async function render(input: RenderInput): Promise<string> {
+            return `# ${input.title ?? "Report"}\\n${input.names.join(", ")}: ${input.total}`;
+        }
+        """,
+}
+
+
+def test_implementations_with_closed_input_interfaces_compile(fresh: Path) -> None:
+    """Following the implement skill (a real interface for the input, not
+    ``unknown``) must compile on every TS runtime."""
+    _write_implementations(fresh, _CLOSED_INPUTS)
+    typed = _tsc(fresh)
+    assert typed.returncode == 0, (
+        f"tsc failed on implementations with closed input interfaces:\n{typed.stdout}"
+    )
+
+
+def test_an_input_the_ir_does_not_send_fails_tsc(fresh: Path) -> None:
+    """The negative half: asserting each value to the impl's declared type
+    must not hide drift. An interface that requires a key the IR never
+    binds is a compile error on every runtime (TS2741), not ``undefined``
+    at run time."""
+    extra = _CLOSED_INPUTS["summarize"].replace(
+        "    page: string;\n", "    page: string;\n    region: string;\n"
+    )
+    assert "region: string;" in extra
+    _write_implementations(fresh, {**_CLOSED_INPUTS, "summarize": extra})
+    drifted = _tsc(fresh)
+    assert drifted.returncode != 0, "tsc accepted an input the IR never sends"
+    errors = [line for line in drifted.stdout.splitlines() if "error TS" in line]
+    # One error, at the summarize call, naming the key.
+    assert len(errors) == 1, drifted.stdout
+    assert "Property 'region' is missing" in drifted.stdout, drifted.stdout
+
+
+def test_an_input_the_impl_does_not_declare_fails_tsc(fresh: Path) -> None:
+    """And the other direction: the IR binds ``page`` to ``summarize``, so
+    an interface without it fails (TS2339 on the declared-type lookup)."""
+    missing = (
+        _CLOSED_INPUTS["summarize"]
+        .replace("    page: string;\n", "")
+        .replace(" + input.page.length", "")
+    )
+    assert "page" not in missing
+    _write_implementations(fresh, {**_CLOSED_INPUTS, "summarize": missing})
+    drifted = _tsc(fresh)
+    assert drifted.returncode != 0, "tsc accepted an input the impl never declares"
+    errors = [line for line in drifted.stdout.splitlines() if "error TS" in line]
+    assert errors and all('"page"' in e or "'page'" in e for e in errors), drifted.stdout
