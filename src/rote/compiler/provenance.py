@@ -75,7 +75,10 @@ _MARKER_RE = re.compile(r"#\s*(skill:|rote:\s*assumption:)")
 
 
 def _normalized(text: str) -> str:
-    """Lowercase, markdown emphasis and code marks dropped, whitespace collapsed."""
+    """Lowercase, markdown links reduced to their text, emphasis and code
+    marks dropped, whitespace collapsed. A real compile quoted "rates in
+    references/fx-rates.md", which the skill writes as a markdown link."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
     return " ".join(re.sub(r"[*_`]", "", text).lower().split())
 
 
@@ -449,24 +452,37 @@ def open_questions(report: str) -> list[str]:
     report used), each sub-heading is one entry and the bullets beneath
     it are its detail. Otherwise each top-level list item is one. The
     section ends at the next heading of the same or a higher level.
+
+    Fenced code blocks are skipped: a real report quoted the
+    ``# rote: assumption:`` comment in a fence, and that ``#`` line read as
+    a top-level heading that ended the section halfway through. Bold
+    labels inside a sub-headed entry (``**What we chose:**``) are its
+    detail, not more entries.
     """
     subheadings: list[str] = []
+    bold_entries: list[str] = []
     items: list[str] = []
     level: int | None = None
+    in_fence = False
     for line in report.splitlines():
         stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         hashes = re.match(r"^(#+)\s+(.*)", stripped)
         bold = bool(re.fullmatch(r"\*\*[^*]+\*\*:?", stripped))
         if hashes or bold:
             this = len(hashes.group(1)) if hashes else _BOLD_HEADING_LEVEL
             if level is not None and this > level:
-                subheadings.append(stripped)
+                (subheadings if hashes else bold_entries).append(stripped)
                 continue
             level = this if "open question" in stripped.lower() else None
             continue
         if level is not None and re.match(r"^([-*+]|\d+[.)])\s+\S", line):
             items.append(stripped)
-    return subheadings or items
+    return subheadings or bold_entries or items
 
 
 # ───────── The check ─────────

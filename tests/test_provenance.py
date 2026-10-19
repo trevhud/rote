@@ -75,6 +75,15 @@ def test_fragments_must_come_from_one_paragraph(paragraphs: list[str]) -> None:
     assert citation_problem(across, paragraphs) is not None
 
 
+def test_a_markdown_link_is_cited_by_its_text(tmp_path: Path) -> None:
+    (tmp_path / "SKILL.md").write_text(
+        "Look up the period's month-end rates in\n"
+        "[references/fx-rates.md](references/fx-rates.md) and convert each line.\n"
+    )
+    quote = "month-end rates in references/fx-rates.md and convert each line"
+    assert citation_problem(quote, skill_paragraphs(tmp_path)) is None
+
+
 def test_a_short_fragment_inside_an_elision_is_rejected(paragraphs: list[str]) -> None:
     problem = citation_problem("A return over $50.00 ... review", paragraphs)
     assert problem is not None and "under 4 words" in problem
@@ -318,6 +327,21 @@ def test_one_assumption_marked_twice_is_one_question(tmp_path: Path) -> None:
 def test_a_punctuation_placeholder_is_not_an_outcome() -> None:
     source = 'def f(alert):\n    flag = "—" if alert is None else alert\n    return flag\n'
     assert unmarked_outcomes(source) == []
+
+
+def test_a_fenced_comment_does_not_end_the_open_questions() -> None:
+    """A real report quoted its `# rote: assumption:` line in a code fence;
+    read as a heading, it cut the section off after three of nine entries."""
+    report = (
+        "## Open questions\n\n### OQ-1: one\n**Assumption marked in code:**\n"
+        "```python\n# rote: assumption: something\n```\n\n"
+        "### OQ-2: two\n\n### OQ-3: three\n\n## Next steps\n"
+    )
+    assert [q.split(":")[0] for q in open_questions(report)] == [
+        "### OQ-1",
+        "### OQ-2",
+        "### OQ-3",
+    ]
 
 
 def test_open_questions_counts_subheadings_not_their_detail() -> None:
