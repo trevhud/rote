@@ -448,7 +448,14 @@ class Compiler:
                 )
             except DriverError as e:
                 detail = f"\n\n{e.details}" if getattr(e, "details", None) else ""
-                raise CompilerError(f"Driver {driver.name!r} failed: {e}{detail}") from e
+                spent = ""
+                usage = self._usage_summary(e.metadata) if e.metadata else ""
+                if usage:
+                    # A failed run is still a paid one: say what it cost, on
+                    # the progress feed and in the error the CLI prints.
+                    self._emit("log", f"usage before the failure: {usage}")
+                    spent = f" after spending {usage}"
+                raise CompilerError(f"Driver {driver.name!r} failed{spent}: {e}{detail}") from e
 
             try:
                 pipeline = load_pipeline(result.pipeline_yaml_path)
@@ -621,8 +628,13 @@ class Compiler:
         ``input_tokens`` field, so reporting that alone announced a
         22-minute compilation as ``in=113``.
         """
-        meta = result.metadata
-        parts = [f"compiled via {result.driver_name}"]
+        usage = Compiler._usage_summary(result.metadata)
+        return "; ".join([f"compiled via {result.driver_name}", *([usage] if usage else [])])
+
+    @staticmethod
+    def _usage_summary(meta: dict[str, Any]) -> str:
+        """``tokens ...; turns=N; cost=$X`` from what the driver reported ("" if nothing)."""
+        parts: list[str] = []
         in_tok = meta.get("input_tokens")
         out_tok = meta.get("output_tokens")
         cached = int(meta.get("cache_write_tokens") or 0) + int(meta.get("cache_read_tokens") or 0)
