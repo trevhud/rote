@@ -385,9 +385,13 @@ schema is this output, and the step returns exactly those keys, so
 submitted. Scalar, list, and `X | null` types become exact schema
 types. A named type (`VettedContact`) accepts any JSON value unless
 `output_schema` spells it out, so add `output_schema` when the field
-shape matters downstream. A single type (`output: IntelBrief`) is
+shape matters downstream (on the TS runtimes the user can also narrow
+its alias in `src/types.ts`). A single type (`output: IntelBrief`) is
 returned as the bare value. A loop with no `output` returns
-`{result: <final text>}`.
+`{result: <final text>}`. Calling `submit_result` does not end the loop:
+the loop runs until the model ends its turn, and the last submission
+wins. A loop that ends without one gets one more turn with the submit
+tool forced, then fails naming the node.
 
 **Note on `loop_body`:** sub-nodes listed here must also exist as
 top-level nodes in the `nodes:` list. They're referenced from the

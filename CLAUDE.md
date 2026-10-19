@@ -623,13 +623,34 @@ derivation, all six runtimes):
   a `submit_result` tool whose input schema is the declared output (keys
   required, `additionalProperties: false`). The CLI lane uses
   `--json-schema` instead, the same forced structured output a judge
-  uses. The step returns exactly the submitted keys, and a missing key or
-  no submission fails naming the node. A single-type output is submitted
-  as `{result: ...}` and returned bare. A loop with no `output` still
-  returns `{result: <final text>}`.
-- **Types:** scalars, lists and `X | null` map exactly. A named type the
-  IR does not define accepts any JSON value, and `output_schema` (evidence)
-  beats the type names.
+  uses. A single-type output is submitted as `{result: ...}` and returned
+  bare. A loop with no `output` still returns `{result: <final text>}`.
+- **Submitting does not end the loop.** It runs until the model ends its
+  turn, and the last submission wins. A loop that ends (or hits its cap)
+  without one gets ONE more request with `tool_choice` forced to
+  `submit_result`, the judge mechanism, then fails. At the cap the runner
+  has already run that turn's tools, so the nudge joins the trailing
+  user message rather than re-running anything (the Python runner does
+  not append a normally-ended final turn; the TS one does, hence the
+  check on both sides).
+- **Every lane validates the same way.** The submit tool is `strict: true`
+  (Anthropic's grammar-constrained tool input, no beta header) when the
+  schema fits that subset: every leaf typed, every object closed. A named
+  type is description-only, so its loop stays non-strict. Either way,
+  `_schema_errors` / `schemaErrors` check types, required keys and extra
+  keys on every lane, and every failure reads `agent loop <id>
+  (<provider>) did not hand back its declared output: <reason>`. Workers
+  AI cannot force a final call, and says so.
+- **Types:** scalars, lists and `X | null` map exactly, and
+  `output_schema` (evidence) beats the type names. A named type the IR
+  does not define (`InvoiceResult`) accepts any JSON value and, on TS, is
+  an alias in the user-editable `src/types.ts` (`export type InvoiceResult
+  = JsonValue`). The loop's return type, and so every downstream read,
+  uses the alias, so a typed reader compiles once the user narrows it.
+  EmitWriter keeps the edit. Cloudflare types the parked loop's result as
+  `Awaited<ReturnType<typeof loop>>`, not `Record<string, unknown>`, or the
+  alias would be erased at the read. `rote emit` prints one `note:` line
+  per unchecked type.
 - **Metadata leaves the result.** Provider and turns go to the usage log
   (Python) or stderr (TS). Putting them next to the declared keys would
   break a single-type output and pollute any whole-output consumer.

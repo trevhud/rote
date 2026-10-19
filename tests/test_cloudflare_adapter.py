@@ -691,8 +691,10 @@ def test_extracted_stub_return_type_is_never(
     loop_src = emit_result["extracted/lead_generation_loop"].read_text()
     assert "Promise<never> {" not in loop_src
     assert (
-        'Promise<{ "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue }> {' in loop_src
+        'Promise<{ "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary }> {'
+        in loop_src
     )
+    assert 'import type { VettedContact, VettingSummary } from "../types";' in loop_src
 
 
 # ───────── Custom config ─────────

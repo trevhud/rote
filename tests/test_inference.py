@@ -1220,7 +1220,11 @@ def test_sdk_loop_that_never_submits_fails_naming_the_node(submit_stub: str) -> 
 
 def test_sdk_loop_missing_a_declared_key_fails_naming_it(submit_stub: str) -> None:
     _SubmitStub.answer = {"summary": "acme is gold"}
-    with pytest.raises(RuntimeError, match="missing its declared key\\(s\\): score"):
+    with pytest.raises(
+        RuntimeError,
+        match="agent loop research \\(api\\) did not hand back its declared output: "
+        "output: missing key 'score'",
+    ):
         _loop(submit_stub)
 
 
@@ -1257,3 +1261,187 @@ def test_a_loop_without_declared_output_returns_its_text(monkeypatch: pytest.Mon
     )
     assert out == {"result": "Researched 3 accounts."}
     assert "--json-schema" not in seen["command"]
+
+
+class _ForceStub(BaseHTTPRequestHandler):
+    """A model that does not submit on its own.
+
+    ``first`` is the loop's first reply: ``"text"`` ends the turn, and
+    ``"tool"`` calls ``lookup`` (which hits a cap of 1). A request that
+    forces ``submit_result`` gets ``forced_answer``, or a text reply when
+    that is None.
+    """
+
+    requests: list[dict[str, Any]] = []
+    first = "text"
+    forced_answer: dict[str, Any] | None = None
+
+    def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
+        payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
+        type(self).requests.append(payload)
+        forced = payload.get("tool_choice", {}).get("name") == "submit_result"
+        if forced and type(self).forced_answer is not None:
+            content: list[dict[str, Any]] = [
+                {
+                    "type": "tool_use",
+                    "id": "t_submit",
+                    "name": "submit_result",
+                    "input": type(self).forced_answer,
+                }
+            ]
+        elif not forced and type(self).first == "tool":
+            content = [{"type": "tool_use", "id": "t_lookup", "name": "lookup", "input": {}}]
+        else:
+            content = [{"type": "text", "text": "Done, I think."}]
+        message = {
+            "id": f"msg_{len(type(self).requests)}",
+            "type": "message",
+            "role": "assistant",
+            "model": payload["model"],
+            "stop_reason": "tool_use" if content[0]["type"] == "tool_use" else "end_turn",
+            "content": content,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        raw = json.dumps(message).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *args: object) -> None:
+        return
+
+
+@pytest.fixture()
+def force_stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[str]:
+    monkeypatch.setenv("ROTE_INFERENCE", "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("ROTE_USAGE_LOG", str(tmp_path / "usage.jsonl"))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    _ForceStub.requests = []
+    _ForceStub.first = "text"
+    _ForceStub.forced_answer = None
+    server = HTTPServer(("127.0.0.1", 0), _ForceStub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_loop_that_ends_without_submitting_gets_one_forced_turn(
+    force_stub: str, tmp_path: Path
+) -> None:
+    """The judge mechanism: tool_choice forced to submit_result, once."""
+    _ForceStub.forced_answer = {"summary": "acme is gold", "score": 7}
+    assert _loop(force_stub) == {"summary": "acme is gold", "score": 7}
+
+    loop_turn, forced = _ForceStub.requests
+    assert "tool_choice" not in loop_turn
+    assert forced["tool_choice"] == {"type": "tool", "name": "submit_result"}
+    # The turn the loop ended on is in the forced request, then the nudge.
+    assert forced["messages"][-2]["content"][0]["text"] == "Done, I think."
+    assert forced["messages"][-1]["content"][-1]["text"].startswith("Call submit_result now")
+    (record,) = _logged(tmp_path / "usage.jsonl")
+    assert record["iterations"] == 2  # the forced turn counts
+
+
+def test_a_loop_at_its_cap_is_forced_without_rerunning_its_tools(force_stub: str) -> None:
+    """At the cap the runner already ran the last turn's tool calls; the
+    forced request carries their results and adds the nudge to that same
+    user message, so no call runs twice."""
+    _ForceStub.first = "tool"
+    _ForceStub.forced_answer = {"summary": "s", "score": 1}
+    calls: list[str] = []
+
+    def lookup() -> str:
+        """Look something up."""
+        calls.append("lookup")
+        return "found"
+
+    out = helper.run_agent_loop(
+        node_id="research",
+        description="Research.",
+        task="{}",
+        model="claude-sonnet-4-6",
+        max_iterations=1,
+        base_url=force_stub,
+        local_tools={"lookup": lookup},
+        output_schema=_DECLARED,
+    )
+    assert out == {"summary": "s", "score": 1}
+    assert calls == ["lookup"]
+    forced = _ForceStub.requests[-1]
+    roles = [m["role"] for m in forced["messages"]]
+    assert roles == ["user", "assistant", "user"]
+    last = forced["messages"][-1]["content"]
+    assert [block["type"] for block in last] == ["tool_result", "text"]
+
+
+def test_no_submission_even_when_forced_fails_with_the_shared_message(force_stub: str) -> None:
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"agent loop research \(api\) did not hand back its declared output: "
+            r"it never called submit_result, even when asked once more"
+        ),
+    ):
+        _loop(force_stub)
+    assert len(_ForceStub.requests) == 2
+
+
+@pytest.mark.parametrize(
+    ("answer", "reason"),
+    [
+        ({"summary": "s", "score": "7"}, "output.score: expected integer, got str"),
+        ({"summary": "s", "score": True}, "output.score: expected integer, got bool"),
+        ({"summary": "s", "score": 7, "extra": 1}, "output: unexpected key 'extra'"),
+        ({"summary": None, "score": 7}, "output.summary: expected string, got NoneType"),
+    ],
+)
+def test_a_submission_is_validated_against_the_declared_schema(
+    submit_stub: str, answer: dict[str, Any], reason: str
+) -> None:
+    _SubmitStub.answer = answer
+    with pytest.raises(RuntimeError) as excinfo:
+        _loop(submit_stub)
+    assert str(excinfo.value) == (
+        f"agent loop research (api) did not hand back its declared output: {reason}"
+    )
+
+
+def test_strict_marks_the_submit_tool_only_when_asked(submit_stub: str) -> None:
+    _SubmitStub.answer = {"summary": "s", "score": 1}
+    _loop(submit_stub, output_strict=True)
+    strict_tool = {t["name"]: t for t in _SubmitStub.requests[0]["tools"]}["submit_result"]
+    assert strict_tool["strict"] is True
+
+    _SubmitStub.requests = []
+    _loop(submit_stub)
+    open_tool = {t["name"]: t for t in _SubmitStub.requests[0]["tools"]}["submit_result"]
+    assert "strict" not in open_tool
+
+
+def test_cli_lane_without_structured_output_fails_with_the_shared_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    _capture_cli(monkeypatch, _agent_envelope())
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"agent loop research \(claude-cli\) did not hand back its declared output: "
+            r"the CLI returned no structured output"
+        ),
+    ):
+        helper.run_agent_loop(
+            node_id="research",
+            description="Research.",
+            task="{}",
+            model="claude-sonnet-4-6",
+            max_iterations=4,
+            output_schema=_DECLARED,
+        )

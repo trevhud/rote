@@ -86,11 +86,15 @@ SERVER = "research_tools"
 class MessagesStub(BaseHTTPRequestHandler):
     """Plays the model: turn 1 calls ``submit_result``, turn 2 ends.
 
-    ``POST /token`` answers a refresh grant, which the Workers MCP helper
-    needs before it will call even an unauthenticated server.
+    ``mode`` varies that: ``"forced"`` ends turn 1 with text and submits
+    only when a request forces ``submit_result``; ``"bad"`` submits a
+    score of the wrong type. ``POST /token`` answers a refresh grant, which
+    the Workers MCP helper needs before it will call even an
+    unauthenticated server.
     """
 
     requests: list[dict[str, Any]] = []
+    mode = "submit"
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
@@ -105,18 +109,17 @@ class MessagesStub(BaseHTTPRequestHandler):
             if isinstance(message.get("content"), list)
             for block in message["content"]
         )
-        content: list[dict[str, Any]] = (
-            [{"type": "text", "text": "Submitted."}]
-            if submitted
-            else [
-                {
-                    "type": "tool_use",
-                    "id": "toolu_submit",
-                    "name": "submit_result",
-                    "input": SUBMITTED,
-                }
-            ]
-        )
+        forced = payload.get("tool_choice", {}).get("name") == "submit_result"
+        answer = {**SUBMITTED, "score": "7"} if type(self).mode == "bad" else SUBMITTED
+        submit = [
+            {"type": "tool_use", "id": "toolu_submit", "name": "submit_result", "input": answer}
+        ]
+        content: list[dict[str, Any]]
+        if type(self).mode == "forced":
+            content = submit if forced else [{"type": "text", "text": "Done, I think."}]
+            submitted = not forced
+        else:
+            content = [{"type": "text", "text": "Submitted."}] if submitted else submit
         self._send(
             {
                 "id": f"msg_{len(type(self).requests)}",
@@ -144,6 +147,7 @@ class MessagesStub(BaseHTTPRequestHandler):
 @pytest.fixture()
 def messages_stub() -> Iterator[str]:
     MessagesStub.requests = []
+    MessagesStub.mode = "submit"
     server = HTTPServer(("127.0.0.1", 0), MessagesStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

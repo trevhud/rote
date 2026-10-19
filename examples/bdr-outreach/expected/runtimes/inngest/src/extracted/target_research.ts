@@ -10,7 +10,8 @@
  * ROTE_MODEL_TARGET_RESEARCH / ROTE_BASE_URL_TARGET_RESEARCH override the model and endpoint.
  */
 
-import { runAgentLoop, type BoundTool, type JsonValue } from "../signatures/_roteInference";
+import { runAgentLoop, type BoundTool } from "../signatures/_roteInference";
+import type { IntelBrief } from "../types";
 import { bindAgentTools } from "./_roteMcp";
 
 /** Tools the IR declared for this loop — the allowlist IS the boundary. */
@@ -28,7 +29,7 @@ const TOOL_SERVERS: Record<string, string> = {"airweave_search": "airweave", "br
 
 export async function targetResearch(
     input: unknown,
-): Promise<JsonValue> {
+): Promise<IntelBrief> {
     const vars = process.env;
     const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
     return (await runAgentLoop({
@@ -42,5 +43,5 @@ export async function targetResearch(
         env: vars,
         outputSchema: {"type": "object", "properties": {"result": {"description": "Value of type IntelBrief."}}, "required": ["result"], "additionalProperties": false},
         unwrapKey: "result",
-    })) as JsonValue;
+    })) as IntelBrief;
 }

@@ -67,6 +67,7 @@ from rote.adapters._ts_common import (
     constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
+    emit_types_module,
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
@@ -247,6 +248,11 @@ def _emit_step_call_mcp_parkable(
             "        // so `rote mcp release <server>` releases the right instances.\n"
         )
     label = "agent loop" if node.mcp is None else "MCP-backed"
+    # An agent loop's result is its declared output, typed by its keys, so
+    # a downstream read keeps that type. An MCP tool result is open.
+    result_type = (
+        f"Awaited<ReturnType<typeof {fn_name}>>" if node.mcp is None else "Record<string, unknown>"
+    )
     # A fan_out element's step names carry its index; every step name
     # must be unique within an instance or the elements collapse onto
     # one cached step.
@@ -254,7 +260,7 @@ def _emit_step_call_mcp_parkable(
     return (
         f"        // ─── {nid} ({label}): park on dead credentials ───\n"
         f"{release_hint}"
-        f"        let {nid}_result!: Record<string, unknown>;\n"
+        f"        let {nid}_result!: {result_type};\n"
         f"        for (let {nid}_attempt = 0; ; {nid}_attempt++) {{\n"
         f"            try {{\n"
         f"                {nid}_result = (await step.do(\n"
@@ -278,7 +284,7 @@ def _emit_step_call_mcp_parkable(
         f"                                : err;\n"
         f"                        }}\n"
         f"                    }},\n"
-        f"                )) as Record<string, unknown>;\n"
+        f"                )) as {result_type};\n"
         f"                break;\n"
         f"            }} catch (err) {{\n"
         f"                if (!stepNeedsAuth(err)) throw err;\n"
@@ -1444,6 +1450,10 @@ class CloudflareAdapter:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
+        # The IR's undefined named types, as aliases the user narrows once.
+        types_module = emit_types_module(pipeline)
+        if types_module is not None:
+            written["types"] = writer.write("src", "types.ts", content=types_module)
 
         written["wrangler"] = writer.write("wrangler.jsonc", content=emit_wrangler(pipeline, cfg))
         written["package.json"] = writer.write(

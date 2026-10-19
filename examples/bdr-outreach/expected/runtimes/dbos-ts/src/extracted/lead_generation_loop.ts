@@ -10,7 +10,8 @@
  * ROTE_MODEL_LEAD_GENERATION_LOOP / ROTE_BASE_URL_LEAD_GENERATION_LOOP override the model and endpoint.
  */
 
-import { runAgentLoop, type BoundTool, type JsonValue } from "../signatures/_roteInference";
+import { runAgentLoop, type BoundTool } from "../signatures/_roteInference";
+import type { VettedContact, VettingSummary } from "../types";
 import { bindAgentTools } from "./_roteMcp";
 import { enrichContactBatch } from "./enrich_contact_batch";
 import { vetContact } from "../signatures/vet_contact";
@@ -38,7 +39,7 @@ function requireEnv(name: string): string {
 
 export async function leadGenerationLoop(
     input: unknown,
-): Promise<{ "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue }> {
+): Promise<{ "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary }> {
     const vars = process.env;
     const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
     // loop_body sub-nodes: real pipeline steps, driven per iteration.
@@ -71,5 +72,5 @@ export async function leadGenerationLoop(
         baseUrl: vars.ROTE_BASE_URL_LEAD_GENERATION_LOOP ?? null,
         env: vars,
         outputSchema: {"type": "object", "properties": {"vetted_contacts": {"type": "array", "items": {"description": "Value of type VettedContact."}}, "discarded_summary": {"description": "Value of type VettingSummary."}}, "required": ["vetted_contacts", "discarded_summary"], "additionalProperties": false},
-    })) as { "vetted_contacts": JsonValue[]; "discarded_summary": JsonValue };
+    })) as { "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary };
 }

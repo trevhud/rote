@@ -1103,6 +1103,8 @@ def agent_loop_call(
         lines.append(f"{inner}output_schema={_py_literal_block(contract.schema, inner)},")
     if contract.unwrap_key is not None:
         lines.append(f"{inner}unwrap_key={json.dumps(contract.unwrap_key)},")
+    if contract.strict:
+        lines.append(f"{inner}output_strict=True,")
     lines.append(f"{indent})")
     return "\n".join(lines) + "\n"
 

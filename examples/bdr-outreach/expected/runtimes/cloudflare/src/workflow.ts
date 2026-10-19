@@ -130,7 +130,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── target_research (agent loop): park on dead credentials ───
         // Agent loop: the parked server names itself in the auth error,
         // so `rote mcp release <server>` releases the right instances.
-        let target_research_result!: Record<string, unknown>;
+        let target_research_result!: Awaited<ReturnType<typeof targetResearch>>;
         for (let target_research_attempt = 0; ; target_research_attempt++) {
             try {
                 target_research_result = (await step.do(
@@ -156,7 +156,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                                 : err;
                         }
                     },
-                )) as Record<string, unknown>;
+                )) as Awaited<ReturnType<typeof targetResearch>>;
                 break;
             } catch (err) {
                 if (!stepNeedsAuth(err)) throw err;
@@ -190,7 +190,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── lead_generation_loop (agent loop): park on dead credentials ───
         // Agent loop: the parked server names itself in the auth error,
         // so `rote mcp release <server>` releases the right instances.
-        let lead_generation_loop_result!: Record<string, unknown>;
+        let lead_generation_loop_result!: Awaited<ReturnType<typeof leadGenerationLoop>>;
         for (let lead_generation_loop_attempt = 0; ; lead_generation_loop_attempt++) {
             try {
                 lead_generation_loop_result = (await step.do(
@@ -219,7 +219,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                                 : err;
                         }
                     },
-                )) as Record<string, unknown>;
+                )) as Awaited<ReturnType<typeof leadGenerationLoop>>;
                 break;
             } catch (err) {
                 if (!stepNeedsAuth(err)) throw err;

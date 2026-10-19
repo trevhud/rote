@@ -39,6 +39,8 @@ export interface BoundTool {
     /** JSON Schema for the arguments — from the MCP server or the IR. */
     parameters: Record<string, unknown>;
     run: (args: Record<string, unknown>) => Promise<unknown>;
+    /** Grammar-constrained arguments (Anthropic strict tool use). */
+    strict?: boolean;
 }
 
 /**
@@ -104,8 +106,10 @@ interface LaneAnswer {
 function submitTool(
     outputSchema: Record<string, unknown>,
     submitted: Record<string, unknown>[],
+    strict: boolean,
 ): BoundTool {
     return {
+        ...(strict ? { strict: true } : {}),
         name: SUBMIT_TOOL,
         description:
             "Hand back this step's final output. Call exactly once, when the " +
@@ -118,29 +122,83 @@ function submitTool(
     };
 }
 
-/** The final answer, checked against the declared output keys. */
+/**
+ * Where `value` breaks `schema`: types, required keys, extra keys. The
+ * subset rote's agent-loop schemas use, the same as the Python twin's
+ * `_schema_errors`; a description-only schema (a named type the IR never
+ * defines) accepts anything.
+ */
+function schemaErrors(schema: Record<string, unknown>, value: unknown, path: string): string[] {
+    const anyOf = schema.anyOf as Record<string, unknown>[] | undefined;
+    if (anyOf) {
+        return anyOf.some((option) => schemaErrors(option, value, path).length === 0)
+            ? []
+            : [`${path}: matches none of its allowed types`];
+    }
+    const allowed = schema.enum as unknown[] | undefined;
+    if (allowed && !allowed.includes(value)) {
+        return [`${path}: ${JSON.stringify(value)} is not one of ${JSON.stringify(allowed)}`];
+    }
+    const kind = schema.type as string | undefined;
+    if (kind === undefined) return [];
+    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+    const ok: Record<string, boolean> = {
+        string: typeof value === "string",
+        integer: typeof value === "number" && Number.isInteger(value),
+        number: typeof value === "number",
+        boolean: typeof value === "boolean",
+        null: value === null,
+        object: isObject,
+        array: Array.isArray(value),
+    };
+    if (kind in ok && !ok[kind]) {
+        const got = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+        return [`${path}: expected ${kind}, got ${got}`];
+    }
+    const errors: string[] = [];
+    if (kind === "object") {
+        const record = value as Record<string, unknown>;
+        const properties = (schema.properties as Record<string, Record<string, unknown>>) ?? {};
+        for (const key of (schema.required as string[] | undefined) ?? []) {
+            if (!Object.prototype.hasOwnProperty.call(record, key)) {
+                errors.push(`${path}: missing key '${key}'`);
+            }
+        }
+        for (const [key, item] of Object.entries(record)) {
+            if (key in properties) {
+                errors.push(...schemaErrors(properties[key], item, `${path}.${key}`));
+            } else if (schema.additionalProperties === false) {
+                errors.push(`${path}: unexpected key '${key}'`);
+            }
+        }
+    }
+    const items = schema.items as Record<string, unknown> | undefined;
+    if (kind === "array" && items) {
+        (value as unknown[]).forEach((item, index) => {
+            errors.push(...schemaErrors(items, item, `${path}[${index}]`));
+        });
+    }
+    return errors;
+}
+
+/** The final answer, validated against the declared output on every lane. */
 function declaredOutput(
     nodeId: string,
     provider: Provider,
     outputSchema: Record<string, unknown>,
     answer: unknown,
 ): Record<string, unknown> {
-    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) {
+    const prefix = `agent loop ${nodeId} (${provider}) did not hand back its declared output: `;
+    if (answer === null || answer === undefined) {
         throw new Error(
-            `agent loop ${nodeId} (${provider}) finished without its declared output: ` +
-                `it never called ${SUBMIT_TOOL} with an object`,
+            prefix +
+                (provider === "workers-ai"
+                    ? `it never called ${SUBMIT_TOOL}, and this lane cannot force a final call`
+                    : `it never called ${SUBMIT_TOOL}, even when asked once more`),
         );
     }
-    const required = (outputSchema.required as string[] | undefined) ?? [];
-    const missing = required.filter(
-        (key) => !Object.prototype.hasOwnProperty.call(answer, key),
-    );
-    if (missing.length > 0) {
-        throw new Error(
-            `agent loop ${nodeId} (${provider}) submitted an output missing its ` +
-                `declared key(s): ${missing.join(", ")}`,
-        );
-    }
+    const errors = schemaErrors(outputSchema, answer, "output");
+    if (errors.length > 0) throw new Error(prefix + errors.join("; "));
     return answer as Record<string, unknown>;
 }
 
@@ -267,6 +325,7 @@ async function runViaAnthropic(
     // Schema, no Zod conversion, so an MCP server's advertised schema
     // reaches the model exactly as the server wrote it.
     const runnable = tools.map((tool) => ({
+        ...(tool.strict ? { strict: true } : {}),
         name: tool.name,
         description: tool.description,
         input_schema: tool.parameters as { type: "object"; [k: string]: unknown },
@@ -293,7 +352,49 @@ async function runViaAnthropic(
     // Iterations ACTUALLY run, not the cap. The runner accumulates the
     // conversation in its params, so one assistant message is one turn —
     // reporting the ceiling here would make every loop look saturated.
-    const iterations = runner.params.messages.filter((m) => m.role === "assistant").length;
+    let iterations = runner.params.messages.filter((m) => m.role === "assistant").length;
+    if (submitted && submitted.length === 0) {
+        // The loop ended (or hit its cap) without handing anything back.
+        // One more turn with the submit tool forced, the mechanism a judge
+        // uses, before failing. The runner's conversation already holds the
+        // turn it ended on, and at the cap that turn's tool results too, so
+        // the nudge joins a trailing user message: nothing runs twice.
+        const nudge = {
+            type: "text" as const,
+            text: `Call ${SUBMIT_TOOL} now with the final answer.`,
+        };
+        const history = [...runner.params.messages];
+        const last = history.at(-1);
+        const messages =
+            last?.role === "user"
+                ? [
+                      ...history.slice(0, -1),
+                      {
+                          ...last,
+                          content: [
+                              ...(Array.isArray(last.content)
+                                  ? last.content
+                                  : [{ type: "text" as const, text: last.content }]),
+                              nudge,
+                          ],
+                      },
+                  ]
+                : [...history, { role: "user" as const, content: [nudge] }];
+        const forced = await client.beta.messages.create({
+            model,
+            max_tokens: 4096,
+            system: SYSTEM_PROMPT,
+            tools: runnable.map(({ run: _run, parse: _parse, ...wire }) => wire),
+            tool_choice: { type: "tool", name: SUBMIT_TOOL },
+            messages,
+        });
+        iterations += 1;
+        for (const block of forced.content) {
+            if (block.type === "tool_use" && block.name === SUBMIT_TOOL) {
+                submitted.push(block.input as Record<string, unknown>);
+            }
+        }
+    }
     if (submitted) {
         // The last submission wins: a model that corrects itself means it.
         return { answer: submitted.at(-1) ?? null, provider, iterations };
@@ -377,6 +478,7 @@ export async function runAgentLoop(opts: {
     workersAi?: WorkersAiLane | null;
     outputSchema?: Record<string, unknown> | null;
     unwrapKey?: string | null;
+    outputStrict?: boolean;
 }): Promise<unknown> {
     const workersAi = opts.workersAi ?? null;
     const outputSchema = opts.outputSchema ?? null;
@@ -389,7 +491,14 @@ export async function runAgentLoop(opts: {
     );
     const submitted: Record<string, unknown>[] | null = outputSchema ? [] : null;
     const tools = submitted
-        ? [...opts.tools, submitTool(outputSchema as Record<string, unknown>, submitted)]
+        ? [
+              ...opts.tools,
+              submitTool(
+                  outputSchema as Record<string, unknown>,
+                  submitted,
+                  opts.outputStrict ?? false,
+              ),
+          ]
         : opts.tools;
 
     // Non-null by construction: selectProvider only returns workers-ai

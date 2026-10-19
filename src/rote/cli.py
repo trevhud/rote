@@ -239,6 +239,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     contract_findings = check_contracts(pipeline, pipeline_path.parent)
     stubs = _unimplemented_stubs(out_dir)
     tracked = stubs_tracked(out_dir, pipeline)
+    from rote.adapters._common import TS_TYPES_MODULE, unchecked_output_notes
+    from rote.runners import _TS_RUNTIMES
+
+    unchecked = unchecked_output_notes(
+        pipeline, types_module=TS_TYPES_MODULE if args.runtime in _TS_RUNTIMES else None
+    )
 
     if args.json:
         import json
@@ -253,6 +259,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
             "stubs_tracked": tracked,
             "mcp_servers": mcp_servers,
             "contract_findings": [f.as_dict() for f in contract_findings],
+            "unchecked_output_types": unchecked,
         }
         print(json.dumps(payload, indent=2))
         return 0
@@ -262,6 +269,8 @@ def _cmd_emit(args: argparse.Namespace) -> int:
     for finding in contract_findings:
         label = "ERROR" if finding.severity == "error" else "warning"
         print(f"  contract: {label} {finding.node_id}: {finding.message}")
+    for note in unchecked:
+        print(f"  note: {note}")
     if mcp_servers:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}")

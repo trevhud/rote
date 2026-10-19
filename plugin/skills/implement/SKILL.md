@@ -161,6 +161,12 @@ depend on it.
   working MCP call for it. Leave it alone.
 - Add any new dependency where the emitted app declares them
   (`requirements.txt`, `package.json`) and tell the user.
+- On the TypeScript runtimes, `src/types.ts` declares each type an agent
+  loop's output names but the IR never defines (`InvoiceResult`), as
+  `JsonValue`. Narrow it to the real shape once, an interface or an
+  import of your own, before typing a node that reads that output. rote
+  keeps your edit on re-emit. `rote emit` prints one `note:` line per
+  such type.
 
 If a node needs credentials or a service nobody has here, ask the user
 how they want to proceed. When they want a local run anyway, implement

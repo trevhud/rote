@@ -267,6 +267,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   (Python, `iterations`) and stderr (TS). The emitted TS loop functions
   are typed by their declared keys. Python agent loops also honor
   `ROTE_BASE_URL_<ID>` now, as the TS loops and every judge already did.
+  Every lane validates the submission against the declared schema
+  (types, required keys, no extra keys) and fails with one message, the
+  submit tool is a strict tool when the schema allows, and a loop that
+  ends without submitting gets one more turn with `tool_choice` forced to
+  it. On the TS runtimes, a type the IR names but never defines
+  (`InvoiceResult`) is an alias in a new user-editable `src/types.ts`,
+  `JsonValue` until narrowed, and `rote emit` notes each one.
 - A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
   rows were logged under the requested model, often an alias (`sonnet`)
   that no price catalog lists, so `rote run` and `rote eval --run` could

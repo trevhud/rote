@@ -851,26 +851,77 @@ def _agent_task_prompt(
     return "\n".join(parts)
 
 
+def _schema_errors(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
+    """Where ``value`` breaks ``schema``: types, required keys, extra keys.
+
+    The subset rote's agent-loop schemas use (``rote.adapters._common
+    .ir_type``): ``type``, ``properties`` / ``required`` /
+    ``additionalProperties: false``, ``items``, ``anyOf`` and ``enum``. A
+    description-only schema (a named type the IR never defines) accepts
+    anything. Stdlib only: this module ships verbatim in emitted apps.
+    """
+    if "anyOf" in schema:
+        options = [_schema_errors(option, value, path) for option in schema["anyOf"]]
+        if any(not errors for errors in options):
+            return []
+        return [f"{path}: matches none of its allowed types"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{path}: {value!r} is not one of {schema['enum']!r}"]
+    kind = schema.get("type")
+    checks = {
+        "string": lambda v: isinstance(v, str),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "null": lambda v: v is None,
+        "object": lambda v: isinstance(v, dict),
+        "array": lambda v: isinstance(v, list),
+    }
+    if kind is None:
+        return []
+    if kind in checks and not checks[kind](value):
+        return [f"{path}: expected {kind}, got {type(value).__name__}"]
+    errors: list[str] = []
+    if kind == "object":
+        properties = schema.get("properties", {})
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}: missing key {key!r}")
+        for key, item in value.items():
+            if key in properties:
+                errors.extend(_schema_errors(properties[key], item, f"{path}.{key}"))
+            elif schema.get("additionalProperties") is False:
+                errors.append(f"{path}: unexpected key {key!r}")
+    if kind == "array" and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            errors.extend(_schema_errors(schema["items"], item, f"{path}[{index}]"))
+    return errors
+
+
 def _declared_output(
     node_id: str, provider: str, schema: Mapping[str, Any], answer: Any
 ) -> dict[str, Any]:
-    """The loop's final answer, checked against its declared output keys.
+    """The loop's final answer, validated against its declared output.
 
-    Downstream nodes index these keys, so a missing one fails here, naming
-    the node and the keys, instead of as a KeyError in a later step.
+    Downstream nodes index these keys, so a missing key, a wrong type or an
+    undeclared key fails here, naming the node, rather than as a KeyError
+    or a bad value in a later step. Every lane ends here, with the same
+    message as the TS twin.
     """
-    if not isinstance(answer, dict):
+    if answer is None:
+        reason = f"it never called {_SUBMIT_TOOL}, even when asked once more"
+        if provider == "claude-cli":
+            reason = "the CLI returned no structured output"
         raise RuntimeError(
-            f"agent loop {node_id} ({provider}) finished without its declared output: "
-            f"it never called {_SUBMIT_TOOL} with an object (got {type(answer).__name__})"
+            f"agent loop {node_id} ({provider}) did not hand back its declared output: {reason}"
         )
-    missing = [key for key in schema.get("required", []) if key not in answer]
-    if missing:
+    errors = _schema_errors(schema, answer, "output")
+    if errors:
         raise RuntimeError(
-            f"agent loop {node_id} ({provider}) submitted an output missing its "
-            f"declared key(s): {', '.join(missing)}"
+            f"agent loop {node_id} ({provider}) did not hand back its declared output: "
+            + "; ".join(errors)
         )
-    return answer
+    return dict(answer)
 
 
 def _run_agent_via_cli(
@@ -993,6 +1044,7 @@ def _run_agent_via_sdk(
     max_iterations: int,
     timeout: float,
     output_schema: Mapping[str, Any] | None = None,
+    output_strict: bool = False,
 ) -> tuple[Any, dict[str, Any], int]:
     """A bounded agent loop on the vendor SDK's own tool runner.
 
@@ -1031,6 +1083,9 @@ def _run_agent_via_sdk(
                     "the task is done; the next pipeline steps read these fields."
                 ),
                 input_schema=dict(output_schema),
+                # Grammar-constrained arguments when the schema fits the
+                # strict subset (rote.adapters._common.strict_compatible).
+                strict=True if output_strict else None,
             )(submit)
         )
     servers, _allowed = _mcp_config_for(tools, tool_servers)
@@ -1064,6 +1119,19 @@ def _run_agent_via_sdk(
             turn_usage = _anthropic_usage(getattr(message, "usage", None))
             usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
         final = runner.until_done()
+        if output_schema is not None and not submitted:
+            # The loop ended (or hit its cap) without handing anything back.
+            # One more turn with the submit tool forced, the mechanism a
+            # judge uses, before failing.
+            forced = _force_submission(client, runner, final, kwargs, bound)
+            turns += 1
+            turn_usage = _anthropic_usage(getattr(forced, "usage", None))
+            usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
+            submitted.extend(
+                dict(block.input)
+                for block in getattr(forced, "content", [])
+                if getattr(block, "type", "") == "tool_use" and block.name == _SUBMIT_TOOL
+            )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
 
@@ -1074,6 +1142,40 @@ def _run_agent_via_sdk(
         b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
     )
     return text, usage, turns
+
+
+def _force_submission(
+    client: Any, runner: Any, final: Any, kwargs: Mapping[str, Any], bound: Sequence[Any]
+) -> Any:
+    """One request with ``tool_choice`` forced to the submit tool.
+
+    The conversation is the runner's, read through its public
+    ``set_messages_params``. A turn that ended the loop normally is not in
+    it yet, so it is appended. A turn that hit the iteration cap already
+    is, with its tool results (the runner ran those calls before stopping),
+    so the nudge joins that last user message instead: nothing runs twice.
+    """
+    history: list[Any] = []
+
+    def _capture(params: Any) -> Any:
+        history.extend(params["messages"])
+        return params
+
+    runner.set_messages_params(_capture)
+    nudge = {"type": "text", "text": f"Call {_SUBMIT_TOOL} now with the final answer."}
+    final_param = final.to_param()
+    if final_param in history and history and history[-1].get("role") == "user":
+        last = history[-1]
+        content = last["content"]
+        blocks = list(content) if isinstance(content, list) else [{"type": "text", "text": content}]
+        messages = [*history[:-1], {**last, "content": [*blocks, nudge]}]
+    else:
+        messages = [*history, final_param, {"role": "user", "content": [nudge]}]
+    request = {key: value for key, value in kwargs.items() if key not in ("max_iterations",)}
+    request["tools"] = [tool.to_dict() for tool in bound]
+    request["tool_choice"] = {"type": "tool", "name": _SUBMIT_TOOL}
+    request["messages"] = messages
+    return client.beta.messages.create(**request)
 
 
 def _add_tokens(total: int | None, more: Any) -> int | None:
@@ -1097,6 +1199,7 @@ def run_agent_loop(
     base_url: str | None = None,
     output_schema: Mapping[str, Any] | None = None,
     unwrap_key: str | None = None,
+    output_strict: bool = False,
 ) -> Any:
     """Run one bounded, tool-restricted agent loop and return its output.
 
@@ -1161,6 +1264,7 @@ def run_agent_loop(
             max_iterations=max_iterations,
             timeout=timeout,
             output_schema=output_schema,
+            output_strict=output_strict,
         )
         rows = [(model, usage)]
 

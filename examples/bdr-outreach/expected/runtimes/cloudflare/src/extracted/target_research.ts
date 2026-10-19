@@ -10,7 +10,8 @@
  * ROTE_MODEL_TARGET_RESEARCH / ROTE_BASE_URL_TARGET_RESEARCH override the model and endpoint.
  */
 
-import { runAgentLoop, type BoundTool, type JsonValue, type WorkersAiLane } from "../signatures/_roteInference";
+import { runAgentLoop, type BoundTool, type WorkersAiLane } from "../signatures/_roteInference";
+import type { IntelBrief } from "../types";
 import { bindAgentTools, type RoteMcpEnv } from "./_roteMcp";
 import { runWithTools } from "@cloudflare/ai-utils";
 
@@ -30,7 +31,7 @@ const TOOL_SERVERS: Record<string, string> = {"airweave_search": "airweave", "br
 export async function targetResearch(
     input: unknown,
     env: unknown, // the workflow's Env; cast below
-): Promise<JsonValue> {
+): Promise<IntelBrief> {
     const vars = env as Record<string, string | undefined>;
     const tools: BoundTool[] = await bindAgentTools(
         env as RoteMcpEnv,
@@ -59,5 +60,5 @@ export async function targetResearch(
         workersAi,
         outputSchema: {"type": "object", "properties": {"result": {"description": "Value of type IntelBrief."}}, "required": ["result"], "additionalProperties": false},
         unwrapKey: "result",
-    })) as JsonValue;
+    })) as IntelBrief;
 }

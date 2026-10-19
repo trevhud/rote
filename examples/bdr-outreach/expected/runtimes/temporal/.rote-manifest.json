@@ -11,7 +11,7 @@
     "extracted/taxonomy.py": "b69d4ce23403f89ffc7dec921ed0ac7a375a851ad45bdb425d3fde277c632c59",
     "extracted/zoominfo.py": "fa1c524a3c98440dde9fb4c8861e2400b9d9919221f9cc21d48917e0f8ca74b5",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "fe89b02f0b4c2c44d848a9e351fdf6f57a2d6de7f238ab830b0364e829dda7b1",
+    "signatures/_rote_inference.py": "c5a58fe11809d5a3273b7e6f8baf00484a1c3ca7e3d0d61df31864b1cf48afe6",
     "signatures/personalize_email.py": "904149801bb1f17eea6ae1db51885d790ae93bc5656fd2b51744e5db26b7df93",
     "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
     "workflow.py": "ff059af42358d0bb344ba41ae04ea8a097175e62f29b718dbf30663b75dc2800"

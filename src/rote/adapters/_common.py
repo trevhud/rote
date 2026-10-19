@@ -790,6 +790,11 @@ AGENT_SUBMIT_TOOL = "submit_result"
 #: under. The step returns the value itself, never the wrapper.
 AGENT_RESULT_KEY = "result"
 
+#: Where the TS runtimes declare the IR's undefined named types, relative
+#: to the app root. User-editable: the user narrows each alias once, and
+#: EmitWriter keeps that edit on re-emit.
+TS_TYPES_MODULE = "src/types.ts"
+
 _JSON_OBJECT_TS = "{ [key: string]: JsonValue }"
 
 _IR_SCALARS: dict[str, tuple[dict[str, Any], str]] = {
@@ -809,6 +814,10 @@ _IR_SCALARS: dict[str, tuple[dict[str, Any], str]] = {
 
 _NULL_NAMES = ("null", "None")
 
+#: A named type becomes a TS alias only when its name is a plain
+#: identifier; anything else stays ``JsonValue``.
+_TS_TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
 
 def _split_top_level(text: str, sep: str) -> list[str]:
     """Split on ``sep`` outside brackets: ``list[a | b] | null`` is 2 parts."""
@@ -826,29 +835,30 @@ def _split_top_level(text: str, sep: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
-def ir_type(type_name: str) -> tuple[dict[str, Any], str]:
+def ir_type(type_name: str, named: set[str] | None = None) -> tuple[dict[str, Any], str]:
     """``(JSON Schema, TS type)`` for one IR type name.
 
     IR types are free-form names (``list[InvoiceResult]``, ``str | null``).
     Scalars, lists, optionals and plain dicts map exactly. A named type the
     IR does not define (``InvoiceResult``) accepts any JSON value: the
-    schema cannot invent its fields, and the TS type is ``JsonValue``,
-    which every runtime can carry across a step boundary.
+    schema cannot invent its fields. Its TS type is the name itself, an
+    alias the TS runtimes declare in :data:`TS_TYPES_MODULE` as
+    ``JsonValue`` for the user to narrow; ``named`` collects those names.
     """
     name = type_name.strip().strip("\"'")
     alternatives = _split_top_level(name, "|")
     if len(alternatives) > 1:
         nullable = any(a in _NULL_NAMES for a in alternatives)
-        typed = [ir_type(a) for a in alternatives if a not in _NULL_NAMES]
+        typed = [ir_type(a, named) for a in alternatives if a not in _NULL_NAMES]
         schemas = [s for s, _ in typed] + ([{"type": "null"}] if nullable else [])
         ts = " | ".join([t for _, t in typed] + (["null"] if nullable else []))
         return {"anyOf": schemas}, ts
     match = re.fullmatch(r"Optional\[(.*)\]", name)
     if match:
-        return ir_type(f"{match.group(1)} | null")
+        return ir_type(f"{match.group(1)} | null", named)
     match = re.fullmatch(r"(?:list|List|Sequence|set|tuple)\[(.*)\]", name)
     if match:
-        item_schema, item_ts = ir_type(match.group(1))
+        item_schema, item_ts = ir_type(match.group(1), named)
         wrapped = f"({item_ts})" if "|" in item_ts else item_ts
         return {"type": "array", "items": item_schema}, f"{wrapped}[]"
     if re.fullmatch(r"(?:dict|Dict|Mapping)\[.*\]", name):
@@ -856,7 +866,40 @@ def ir_type(type_name: str) -> tuple[dict[str, Any], str]:
     if name in _IR_SCALARS:
         schema, ts = _IR_SCALARS[name]
         return dict(schema), ts
-    return {"description": f"Value of type {name}."}, "JsonValue"
+    schema = {"description": f"Value of type {name}."}
+    if _TS_TYPE_NAME_RE.fullmatch(name) and name != "JsonValue":
+        if named is not None:
+            named.add(name)
+        return schema, name
+    return schema, "JsonValue"
+
+
+def strict_compatible(schema: Any) -> bool:
+    """True when ``schema`` fits Anthropic's strict tool-input subset.
+
+    Strict tool use constrains sampling to the schema, so every leaf needs
+    a type and every object ``additionalProperties: false``. A named type
+    the IR does not define is a description-only schema, which that
+    subset does not cover, so its loop's submit tool stays non-strict and
+    rote's own validation (every lane) is what holds the line.
+    """
+    if not isinstance(schema, dict):
+        return False
+    if "anyOf" in schema:
+        return all(strict_compatible(s) for s in schema["anyOf"])
+    kind = schema.get("type")
+    if kind is None:
+        return False
+    if kind == "object":
+        properties = schema.get("properties")
+        return (
+            schema.get("additionalProperties") is False
+            and isinstance(properties, dict)
+            and all(strict_compatible(s) for s in properties.values())
+        )
+    if kind == "array":
+        return "items" in schema and strict_compatible(schema["items"])
+    return True
 
 
 class AgentLoopOutput:
@@ -866,13 +909,24 @@ class AgentLoopOutput:
     None when the node declares no output (the step then returns
     ``{"result": <final text>}``). ``unwrap_key`` is set for a single-type
     output, whose value is the step's whole result. ``ts_type`` is the TS
-    return type of the emitted loop function.
+    return type of the emitted loop function. ``named_types`` maps each
+    declared key (``"result"`` for a single type) to the IR names in it
+    that the IR does not define, whose shape nothing checks. ``strict`` says
+    whether the submit tool can be a strict tool.
     """
 
-    def __init__(self, schema: dict[str, Any] | None, unwrap_key: str | None, ts_type: str):
+    def __init__(
+        self,
+        schema: dict[str, Any] | None,
+        unwrap_key: str | None,
+        ts_type: str,
+        named_types: dict[str, list[str]],
+    ):
         self.schema = schema
         self.unwrap_key = unwrap_key
         self.ts_type = ts_type
+        self.named_types = named_types
+        self.strict = schema is not None and strict_compatible(schema)
 
 
 def agent_loop_output(node: Node) -> AgentLoopOutput:
@@ -888,8 +942,14 @@ def agent_loop_output(node: Node) -> AgentLoopOutput:
     output = node.output
     evidence = node.output_schema or {}
     if isinstance(output, dict) and output:
-        typed = {key: ir_type(name) for key, name in output.items()}
         observed = evidence.get("properties") if isinstance(evidence, dict) else None
+        typed: dict[str, tuple[dict[str, Any], str]] = {}
+        named: dict[str, list[str]] = {}
+        for key, name in output.items():
+            found: set[str] = set()
+            typed[key] = ir_type(name, found)
+            if found and key not in (observed or {}):
+                named[key] = sorted(found)
         properties = {key: (observed or {}).get(key, schema) for key, (schema, _) in typed.items()}
         schema = {
             "type": "object",
@@ -898,14 +958,51 @@ def agent_loop_output(node: Node) -> AgentLoopOutput:
             "additionalProperties": False,
         }
         ts = "{ " + "; ".join(f"{json.dumps(k)}: {t}" for k, (_, t) in typed.items()) + " }"
-        return AgentLoopOutput(schema, None, ts)
+        return AgentLoopOutput(schema, None, ts, named)
     if isinstance(output, str) and output.strip():
-        value_schema, ts = ir_type(output)
+        found = set()
+        value_schema, ts = ir_type(output, found)
         schema = {
             "type": "object",
             "properties": {AGENT_RESULT_KEY: evidence or value_schema},
             "required": [AGENT_RESULT_KEY],
             "additionalProperties": False,
         }
-        return AgentLoopOutput(schema, AGENT_RESULT_KEY, ts)
-    return AgentLoopOutput(None, None, "{ result: string }")
+        named = {AGENT_RESULT_KEY: sorted(found)} if found and not evidence else {}
+        return AgentLoopOutput(schema, AGENT_RESULT_KEY, ts, named)
+    return AgentLoopOutput(None, None, "{ result: string }", {})
+
+
+def agent_loop_named_types(pipeline: Pipeline) -> list[str]:
+    """Every undefined named type the pipeline's agent loops declare, sorted."""
+    names: set[str] = set()
+    for node in pipeline.nodes:
+        if node.kind is NodeKind.AGENT_LOOP:
+            for found in agent_loop_output(node).named_types.values():
+                names.update(found)
+    return sorted(names)
+
+
+def unchecked_output_notes(pipeline: Pipeline, *, types_module: str | None) -> list[str]:
+    """One line per agent-loop output key whose type the IR never defines.
+
+    Its value reaches the next node unchecked, so emit says where to fix
+    that: ``output_schema`` in the IR, and on TS the alias in
+    ``types_module`` the user can narrow.
+    """
+    notes: list[str] = []
+    for node in pipeline.nodes:
+        if node.kind is not NodeKind.AGENT_LOOP:
+            continue
+        for key, names in agent_loop_output(node).named_types.items():
+            for name in names:
+                where = (
+                    f"narrow it in {types_module}"
+                    if types_module
+                    else "declare its fields in the node's output_schema"
+                )
+                notes.append(
+                    f"{node.id}.{key}: type {name} is not defined in the IR; "
+                    f"shape unchecked, {where}"
+                )
+    return notes
