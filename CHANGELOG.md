@@ -99,6 +99,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   The login now binds the port while selecting it (33418 to 33421, both
   IPv4 and IPv6 localhost), runs the callback server on those sockets, and
   releases them on every path, so sequential logins never leak a port.
+- `rote run` on an Inngest app reports the error that failed the run
+  (for example `RoteMcpConfigError: no endpoint for MCP server 'vendor':
+  set ROTE_MCP_VENDOR_URL ...`), read from the dev server's run record
+  with its cause chain, instead of the last 500 characters of the app
+  log, which were a stack trace with the message cut off above them.
+- The MCP URL resolution order is documented as the code runs it:
+  `ROTE_MCP_<SERVER>_URL`, then the registry, then the IR `url`
+  (Workers: the variable, then the IR `url`). The registry module, the
+  IR field descriptions and docs/mcp-client.md said the IR `url` came
+  first. `resolve_server_url`, a helper nothing in the run path calls,
+  keeps its own order and now says so. No behavior changed.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few
@@ -318,71 +329,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   rates. A prompt-cached `claude -p` judge used to log 3 input tokens.
   A cache bucket with no published rate marks the model unpriced instead
   of guessing. `rote run`'s judge-usage line counts cache tokens as input.
-
-### Changed
-- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
-  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
-  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
-  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
-  server at all (`-32022`), and v2's default `legacy` mode behaves the
-  same, so the mode is set explicitly. A 401 is now read from
-  `SdkHttpError.status`. Proven against legacy stateless, legacy
-  sessionful, dual-era and modern-only TS SDK servers, from both helper
-  languages, in `tests/test_mcp_era_matrix_e2e.py`.
-- `rote mcp headers` (and any refresh outside `login`) never opens a
-  browser or registers a client: it refreshes or fails with the login
-  hint.
-- **Breaking: an impl must accept its node's constants.** The Python
-  runtimes (dbos, python, temporal) now pass a `pure_function` /
-  `external_call` node's IR `constants` to its `impl` as keyword
-  arguments, merged in the step body so every caller gets them: the DAG,
-  each fan_out element, and an agent loop calling a `loop_body` sub-node
-  as a tool. Before, no step received them, so nodes sharing one `impl`
-  with different constants (ops-report's three fetch nodes, each with its
-  own `file_id`) all got the same empty payload. An `extracted/`
-  function that takes neither the constant nor `**kwargs` would raise
-  TypeError mid-run, so emission now refuses it up front, naming the node
-  and parameter, and `rote emit` reports it as a `constant_not_accepted`
-  contract finding. Most committed `examples/*/runs/` hard-code their
-  constants and no longer emit on a Python runtime until recompiled. The
-  BDR and expense-audit example modules take theirs as keyword
-  parameters, and expense-audit's now apply them, so editing a constant
-  in its pipeline.yaml changes the rule. The refusal names the full path
-  of the file to fix, and `rote compile` exits 1 with the `rote emit`
-  retry command instead of a traceback.
-- A constant reaches an MCP tool only when `mcp.args` names it, the same
-  on every runtime. A constant that reuses an input's name is an IR
-  validation error for impl-backed kinds. The stub for a shared `impl`
-  lists every calling node's constants.
-- **fastmcp 4.** The `mcp` and `serve` extras now require
-  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
-  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
-  and five hosted servers on both protocol eras. Emitted DBOS READMEs
-  print the same range. Supersedes the blind `<5` bump in #92.
-- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
-  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
-  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
-  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
-  and exposes `launch()`, which runs `DBOS.launch()` and then
-  `DBOS.register_queue`. Anything that runs an emitted app in-process
-  must call `launch()` instead of a bare `DBOS.launch()`, or runs
-  enqueued by `rote serve` stay `ENQUEUED`. The removed
-  `run_admin_server` key is gone from both runtimes' config, and the
-  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
-  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
-  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
-  against an app installed today. Apps emitted for 2.x need a re-emit.
-- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
-  system database the way the v5 SDK does. v5 stopped reading
-  `dbos-config.yaml` at launch, so a `system_database_url` key there no
-  longer counts, and the default database name follows the SDK's
-  `toDbName()` (lowercased, leading digit prefixed).
-- A new `Newest dependencies` workflow installs every extra at the top
-  of its range with no lock or cache, daily and on PRs that touch
-  dependencies or DBOS code, and runs the fast suite plus the DBOS
-  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
-  turns CI red instead of reaching fresh installs first.
-### Fixed
 - `rote eval` prices a `fan_out` node per element. The estimator gave
   every non-loop node one call per run, so a fanned judge (BDR's
   `personalize_email`, deal-monitor's `classify_thread_step`)
@@ -451,6 +397,70 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   been delivered"; the runner waits for the run's real outcome, reports
   the newest step error, and still fails fast on a gate that never
   consumes its payload while nothing is retrying.
+
+### Changed
+- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
+  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
+  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
+  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
+  server at all (`-32022`), and v2's default `legacy` mode behaves the
+  same, so the mode is set explicitly. A 401 is now read from
+  `SdkHttpError.status`. Proven against legacy stateless, legacy
+  sessionful, dual-era and modern-only TS SDK servers, from both helper
+  languages, in `tests/test_mcp_era_matrix_e2e.py`.
+- `rote mcp headers` (and any refresh outside `login`) never opens a
+  browser or registers a client: it refreshes or fails with the login
+  hint.
+- **Breaking: an impl must accept its node's constants.** The Python
+  runtimes (dbos, python, temporal) now pass a `pure_function` /
+  `external_call` node's IR `constants` to its `impl` as keyword
+  arguments, merged in the step body so every caller gets them: the DAG,
+  each fan_out element, and an agent loop calling a `loop_body` sub-node
+  as a tool. Before, no step received them, so nodes sharing one `impl`
+  with different constants (ops-report's three fetch nodes, each with its
+  own `file_id`) all got the same empty payload. An `extracted/`
+  function that takes neither the constant nor `**kwargs` would raise
+  TypeError mid-run, so emission now refuses it up front, naming the node
+  and parameter, and `rote emit` reports it as a `constant_not_accepted`
+  contract finding. Most committed `examples/*/runs/` hard-code their
+  constants and no longer emit on a Python runtime until recompiled. The
+  BDR and expense-audit example modules take theirs as keyword
+  parameters, and expense-audit's now apply them, so editing a constant
+  in its pipeline.yaml changes the rule. The refusal names the full path
+  of the file to fix, and `rote compile` exits 1 with the `rote emit`
+  retry command instead of a traceback.
+- A constant reaches an MCP tool only when `mcp.args` names it, the same
+  on every runtime. A constant that reuses an input's name is an IR
+  validation error for impl-backed kinds. The stub for a shared `impl`
+  lists every calling node's constants.
+- **fastmcp 4.** The `mcp` and `serve` extras now require
+  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
+  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
+  and five hosted servers on both protocol eras. Emitted DBOS READMEs
+  print the same range. Supersedes the blind `<5` bump in #92.
+- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
+  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
+  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
+  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
+  and exposes `launch()`, which runs `DBOS.launch()` and then
+  `DBOS.register_queue`. Anything that runs an emitted app in-process
+  must call `launch()` instead of a bare `DBOS.launch()`, or runs
+  enqueued by `rote serve` stay `ENQUEUED`. The removed
+  `run_admin_server` key is gone from both runtimes' config, and the
+  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
+  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
+  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
+  against an app installed today. Apps emitted for 2.x need a re-emit.
+- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
+  system database the way the v5 SDK does. v5 stopped reading
+  `dbos-config.yaml` at launch, so a `system_database_url` key there no
+  longer counts, and the default database name follows the SDK's
+  `toDbName()` (lowercased, leading digit prefixed).
+- A new `Newest dependencies` workflow installs every extra at the top
+  of its range with no lock or cache, daily and on PRs that touch
+  dependencies or DBOS code, and runs the fast suite plus the DBOS
+  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
+  turns CI red instead of reaching fresh installs first.
 
 ## [0.14.0] - 2026-10-18
 

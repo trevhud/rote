@@ -206,17 +206,23 @@ caller parks on a credential that was fine. The CLI and the emitted
 Python helper send the refresh to the token file's `token_endpoint`
 instead (`retarget_token_request`). The TS helpers always did.
 
-## URL resolution — the one rule
+## URL resolution
 
-Everywhere (CLI, eval, emitted code):
+What every emitted step and agent loop does (`resolve_url` in
+`rote/mcp/_runtime_helper.py`, and `resolveUrl` in the Node TS helper):
 
-1. explicit `url` on the IR binding (pipeline-pinned),
+1. `ROTE_MCP_<SERVER>_URL` environment variable,
 2. registry entry for the logical server name,
-3. `ROTE_MCP_<SERVER>_URL` environment variable.
+3. the `url` recorded on the IR binding at compilation time.
 
-Exception: *at workflow runtime* the env var outranks the IR-recorded
-URL (deployment context beats compilation-time capture) — see
-`rote/mcp/_runtime_helper.py:resolve_url`.
+Deployment context beats compilation-time capture. Cloudflare Workers
+have no registry: the `ROTE_MCP_<SERVER>_URL` var or secret, then the IR
+`url`. Nothing resolving is a `RoteMcpConfigError`, which fails the step
+without retries.
+
+`rote.mcp.registry.resolve_server_url` keeps an older order (binding >
+registry > env). It is a public helper that nothing in the run path
+calls; it is documented as such rather than changed here.
 
 ## The token-file contract (version 2)
 

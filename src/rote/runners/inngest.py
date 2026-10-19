@@ -119,6 +119,37 @@ def _force_registration(app_port: int) -> None:
     raise EmpiricalError("the emitted app never registered with the inngest dev server")
 
 
+def _root_error(output: object) -> tuple[str, str] | None:
+    """``(name, message)`` of the innermost error in a failed run's output.
+
+    The REST run record carries the error the function threw, serialized
+    with its ``cause`` chain. The innermost cause is the real one: the
+    outer error is typically the NonRetriableError wrapper that stopped
+    the retries.
+    """
+    found: tuple[str, str] | None = None
+    node = output
+    for _ in range(16):
+        if not isinstance(node, dict):
+            break
+        message = node.get("message")
+        if isinstance(message, str) and message:
+            name = node.get("name")
+            found = (name if isinstance(name, str) and name else "Error", message)
+        node = node.get("cause")
+    return found
+
+
+def _failure_message(status: str, output: object, app_log_path: Path) -> str:
+    """The run's real error, falling back to the app log when it has none."""
+    root = _root_error(output)
+    if root is not None:
+        name, message = root
+        return f"run {status.lower()}: {name}: {message} (app log: {app_log_path})"
+    tail = app_log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+    return f"run {status.lower()}; app log tail:\n{tail}"
+
+
 def _run_output(dev_base: str, run_id: str) -> dict[str, Any]:
     """The function's return value via GraphQL (v1 REST output is empty)."""
     query = f"{{ run(runID: {json.dumps(run_id)}) {{ status output }} }}"
@@ -253,7 +284,8 @@ def run_inngest(
                         output=None,
                         error=f"timed out after {timeout_seconds:g}s (run {run_id})",
                     )
-                status = http_json("GET", f"{dev_base}/v1/runs/{run_id}")["data"]["status"]
+                run_data = http_json("GET", f"{dev_base}/v1/runs/{run_id}")["data"]
+                status = run_data["status"]
                 if status == "Completed":
                     return MeasuredRun(
                         wall_seconds=time.monotonic() - started,
@@ -263,10 +295,7 @@ def run_inngest(
                     return MeasuredRun(
                         wall_seconds=time.monotonic() - started,
                         output=None,
-                        error=(
-                            f"run {status.lower()}; app log tail:\n"
-                            f"{app_log_path.read_text(encoding='utf-8', errors='replace')[-500:]}"
-                        ),
+                        error=_failure_message(status, run_data.get("output"), app_log_path),
                     )
                 # Re-broadcast every pending gate payload — consumed when
                 # its waitForEvent is active, dropped otherwise.

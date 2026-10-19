@@ -535,6 +535,33 @@ def test_cf_run_timeout_after_the_last_gate_names_the_step_error(
 # ───────── Inngest runner (unit level — live path in test_inngest_e2e) ─────────
 
 
+def test_inngest_failure_reports_the_innermost_error(tmp_path: Path) -> None:
+    """The shape the dev server's /v1/runs record carries for a failed run
+    (captured live): the NonRetriableError wrapper outside, the real error
+    as its cause."""
+    from rote.runners.inngest import _failure_message
+
+    output = {
+        "__serialized": True,
+        "name": "NonRetriableError",
+        "message": "no endpoint for MCP server 'vendor': set ROTE_MCP_VENDOR_URL",
+        "cause": {
+            "__serialized": True,
+            "name": "RoteMcpConfigError",
+            "message": "no endpoint for MCP server 'vendor': set ROTE_MCP_VENDOR_URL",
+            "stack": "RoteMcpConfigError: ...\n    at resolveUrl (...)",
+        },
+    }
+    log = tmp_path / "rote-run-app.log"
+    log.write_text("      at step.fn (engine.cjs:1424:35)\n", encoding="utf-8")
+    assert _failure_message("Failed", output, log) == (
+        "run failed: RoteMcpConfigError: no endpoint for MCP server 'vendor': "
+        f"set ROTE_MCP_VENDOR_URL (app log: {log})"
+    )
+    # No error object at all (a cancelled run): the log tail is all there is.
+    assert _failure_message("Cancelled", None, log).startswith("run cancelled; app log tail:\n")
+
+
 def test_run_pipeline_inngest_requires_pipeline(tmp_path: Path) -> None:
     target = RunTarget(kind="pipeline", path=tmp_path, runtime="inngest")
     with pytest.raises(TargetError, match="pipeline.yaml"):
