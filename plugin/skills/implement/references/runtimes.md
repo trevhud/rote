@@ -59,7 +59,10 @@ drift from it.
   calling the node as a tool. The stub types it `_input: unknown`.
   Replace that with a real interface for the input that declares both
   the inputs and the constant keys, or `tsc` rejects the call's extra
-  properties.
+  properties. The workflow asserts each value to the type your interface
+  declares for that key, so a closed interface compiles on all three
+  runtimes, and `tsc` still fails on a key you declare that the IR does
+  not send, or a key the IR sends that you do not declare.
 - **Return type:** the stub declares `Promise<never>` because it always
   throws. Replace it with a concrete type. On Cloudflare the return
   value must satisfy `Rpc.Serializable`, so return plain objects,

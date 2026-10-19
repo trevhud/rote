@@ -629,17 +629,54 @@ def constants_doc_ts(node: Node) -> list[str]:
     ]
 
 
+IMPL_INPUT_TYPE_TS = """\
+/** The input type an impl declares, so a call can be checked against it.
+ *
+ * The implement skill says to replace a stub's `unknown` input with a real
+ * interface. Upstream values are `unknown` here (the pipeline input, a
+ * fanned element), so each one is asserted to the field type the impl
+ * declares: a key the impl does not declare, or a declared key the IR does
+ * not send, still fails tsc. A stub's `unknown` input reads as an open
+ * record, so the scaffold compiles too. */
+type ImplInput<F> = F extends (input: infer I, ...rest: never[]) => unknown
+    ? unknown extends I
+        ? Record<string, unknown>
+        : I
+    : never;
+"""
+
+
+def impl_input_type_block(source: str) -> str:
+    """:data:`IMPL_INPUT_TYPE_TS` when ``source`` uses it, else "".
+
+    Keyed on the rendered workflow rather than re-deriving which calls
+    reach an impl: the payload builders below are the one place that
+    decides, and an unused type alias would only be noise.
+    """
+    return IMPL_INPUT_TYPE_TS if "ImplInput<" in source else ""
+
+
+def _impl_typed(node: Node, value: str, param: str, *, calls_impl: bool) -> str:
+    """``value`` asserted to the impl's declared type for ``param``."""
+    if not calls_impl or node.kind not in CONSTANT_ARGUMENT_KINDS:
+        return value
+    return f"{value} as ImplInput<typeof {_to_camel_case(node.id)}>[{json.dumps(param)}]"
+
+
 def payload_ts_literal(node: Node, indent: str, *, with_constants: bool) -> str:
     """Render the step payload object for a node's data-flow bindings.
 
-    ``with_constants`` adds the node's impl constants after the inputs
-    (:func:`impl_constant_entries_ts`). Pass False where the call reaches
-    an MCP tool rather than an impl. A node with neither inputs nor
-    constants gets the empty payload. ``indent`` is the indentation of
-    the line the literal starts on; entries are indented one level deeper.
+    ``with_constants`` means the call reaches the node's impl: it adds the
+    impl constants after the inputs (:func:`impl_constant_entries_ts`) and
+    asserts each input to the type the impl declares for it
+    (:data:`IMPL_INPUT_TYPE_TS`). Pass False where the call reaches an MCP
+    tool rather than an impl. A node with neither inputs nor constants gets
+    the empty payload. ``indent`` is the indentation of the line the
+    literal starts on; entries are indented one level deeper.
     """
     entries = [
-        f"{param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)}: {ref_to_ts_expr(ref)}"
+        f"{param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)}: "
+        + _impl_typed(node, ref_to_ts_expr(ref), param, calls_impl=with_constants)
         for param, ref in (node.inputs or {}).items()
     ]
     if with_constants:
@@ -748,7 +785,7 @@ def fan_out_ts_binding(
     for param, input_ref in node.inputs.items() if node.inputs else []:
         key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
         value = "_item" if param == element_param else ref_to_ts_expr(input_ref)
-        entries.append(f"{key}: {value}")
+        entries.append(f"{key}: {_impl_typed(node, value, param, calls_impl=with_constants)}")
     if with_constants:
         entries += impl_constant_entries_ts(node)
     payload = "{ " + ", ".join(entries) + " }"

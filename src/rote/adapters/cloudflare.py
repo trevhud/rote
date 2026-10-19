@@ -71,6 +71,7 @@ from rote.adapters._ts_common import (
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     llm_clients,
     mcp_backed_nodes,
     module_imports,
@@ -719,6 +720,9 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
     if pipeline.needs_input_check:
         helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
+    impl_input = impl_input_type_block(class_block)
+    if impl_input:
+        helper_block += f"{impl_input}\n"
 
     return header + imports + "\n" + env_block + helper_block + class_block
 

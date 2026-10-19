@@ -127,6 +127,7 @@ from rote.adapters._ts_common import (
     emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
@@ -852,6 +853,9 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
     if pipeline.needs_input_check:
         sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
+    impl_input = impl_input_type_block(function_block)
+    if impl_input:
+        sections.append(impl_input.rstrip("\n"))
     sections.append(function_block)
     return "\n\n".join(sections)
 

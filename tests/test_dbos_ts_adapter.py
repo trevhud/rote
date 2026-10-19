@@ -240,16 +240,17 @@ def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
     # Indexed directly, never cast: tsc then checks the IR field name
     # against the implementation's declared type (see ref_to_ts_expr).
-    assert "_result as " not in main_src
+    # The one assertion allowed is a value's, to the impl's declared type.
+    assert re.search(r"_result as (?!ImplInput<)", main_src) is None
     # HITL gate resume payload (DBOS.recv result) → downstream step payload.
-    assert 'contacts: contact_review_gate_result["approved_contacts"],' in main_src
+    assert _binds("contacts", 'contact_review_gate_result["approved_contacts"]', main_src)
     # Node output field chains through the exclusion checks.
-    assert 'contacts: hubspot_upsert_result["upserted"],' in main_src
-    assert 'contacts: exclusion_check_dnc_result["passed"],' in main_src
+    assert _binds("contacts", 'hubspot_upsert_result["upserted"]', main_src)
+    assert _binds("contacts", 'exclusion_check_dnc_result["passed"]', main_src)
     # Pipeline input field selection.
-    assert 'target_quota: pipelineInput["target_quota"],' in main_src
+    assert _binds("target_quota", 'pipelineInput["target_quota"]', main_src)
     # Fan-in: the report node pulls from several sources.
-    assert 'template_ids: create_sales_template_result["template_ids"],' in main_src
+    assert _binds("template_ids", 'create_sales_template_result["template_ids"]', main_src)
 
 
 def test_node_without_inputs_gets_empty_payload() -> None:
@@ -509,3 +510,11 @@ def test_readme_flush_left_with_gates(emit_result: dict[str, Path], bdr_pipeline
     assert re.search(r"silence\s+is not approval", src)
     # The TS SDK's Postgres-only story is documented.
     assert "npx dbos postgres start" in src
+
+
+def _binds(param: str, expr: str, src: str) -> bool:
+    """``param: expr`` in a payload, with or without the impl-type assertion
+    an impl call adds (``expr as ImplInput<typeof fn>["param"]``)."""
+    key = re.escape('"' + param + '"')
+    pattern = rf"{re.escape(param)}: {re.escape(expr)}( as ImplInput<typeof \w+>\[{key}\])?,"
+    return re.search(pattern, src) is not None

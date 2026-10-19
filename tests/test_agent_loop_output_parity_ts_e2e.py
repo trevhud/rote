@@ -259,21 +259,7 @@ export async function report(input: {
 _NARROWED = "export interface Finding {\n    title: string;\n}\n"
 
 
-@pytest.mark.parametrize(
-    "runtime",
-    [
-        "cloudflare",
-        "inngest",
-        pytest.param(
-            "dbos-ts",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="DBOS-TS steps take Record<string, unknown>, so a closed input "
-                "fails (fix/dbos-ts-typed-step-inputs)",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("runtime", ["cloudflare", "dbos-ts", "inngest"])
 def test_a_typed_reader_compiles_once_the_named_type_is_narrowed(
     runtime: str, tmp_path: Path
 ) -> None:
