@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from rote.compiler.provenance import REPORT_FILENAME, provenance_findings
 from rote.contracts import (
     ContractFinding,
     NodeImplementation,
@@ -269,128 +270,6 @@ def _deliverable_findings(
     return findings
 
 
-REPORT_FILENAME = "compile-report.md"
-
-#: ``# skill: "<verbatim text>"``: the skill sentence that determines the
-#: value or branch next to it (implementation.md).
-_CITATION_RE = re.compile(r'#\s*skill:\s*"(?P<quote>[^"]+)"')
-#: ``# rote: assumption: <what was chosen>``: an outcome the skill does
-#: not state, decided by the agent and owed to the report's Open questions.
-_ASSUMPTION_RE = re.compile(r"#\s*rote:\s*assumption:\s*(?P<text>.+)")
-
-
-def _normalized(text: str) -> str:
-    """Lowercase, markdown emphasis and code marks dropped, whitespace collapsed."""
-    return " ".join(re.sub(r"[*_`]", "", text).lower().split())
-
-
-def _skill_text(skill_dir: Path) -> str:
-    parts = [
-        p.read_text(encoding="utf-8", errors="replace") for p in sorted(skill_dir.rglob("*.md"))
-    ]
-    return _normalized("\n".join(parts))
-
-
-#: A bold line standing in for a heading (``**Open questions:**``).
-_BOLD_HEADING_LEVEL = 99
-
-
-def _open_questions(report: str) -> list[str]:
-    """The entries under the report's Open questions heading.
-
-    An entry is a list item or a sub-heading (``### OQ-1: ...``). A real
-    report used one sub-heading per question, which an items-only reading
-    took for an empty section: the agent was sent back twice to fix a
-    report that was fine, and the compile failed. The section ends at the
-    next heading of the same or a higher level.
-    """
-    items: list[str] = []
-    level: int | None = None  # the Open questions heading's level, while inside
-    for line in report.splitlines():
-        stripped = line.strip()
-        hashes = re.match(r"^(#+)\s+(.*)", stripped)
-        bold = stripped.startswith("**") and stripped.rstrip(":").endswith("**")
-        if hashes or bold:
-            this = len(hashes.group(1)) if hashes else _BOLD_HEADING_LEVEL
-            if level is not None and this > level:
-                items.append(stripped)
-                continue
-            level = this if "open question" in stripped.lower() else None
-            continue
-        if level is not None and re.match(r"^([-*+]|\d+[.)])\s+\S", stripped):
-            items.append(stripped)
-    return items
-
-
-def _provenance_findings(root: Path, skill_dir: Path | None) -> list[ContractFinding]:
-    """Every outcome traces to the skill, or is declared as an assumption.
-
-    A real compile decided that an expense over its category cap is a
-    ``block``. The skill lists the rule but never says block or review,
-    the hand-written reference says review, and the agent's own tests
-    encoded its choice, so they passed. Two checks make such a choice
-    visible instead:
-
-    * a ``# skill: "..."`` citation must quote text the skill contains,
-      so a citation cannot be invented to cover a guess;
-    * a ``# rote: assumption:`` comment means the report's Open questions
-      must not be empty, so the guess reaches a reviewer.
-    """
-    findings: list[ContractFinding] = []
-    skill = _skill_text(skill_dir) if skill_dir is not None and skill_dir.is_dir() else None
-    assumptions: list[tuple[str, str]] = []
-    for path in sorted((root / "extracted").rglob("*.py")) if (root / "extracted").is_dir() else []:
-        rel = str(path.relative_to(root))
-        text = path.read_text(encoding="utf-8", errors="replace")
-        assumptions += [(rel, m.group("text").strip()) for m in _ASSUMPTION_RE.finditer(text)]
-        if skill is None:
-            continue
-        for m in _CITATION_RE.finditer(text):
-            # "..." (or an ellipsis) elides text between verbatim fragments.
-            # A long quote wraps across comment lines; the "#" that starts
-            # each continuation line is not part of the skill's text.
-            raw = re.sub(r"\n\s*#\s?", " ", m.group("quote")).replace("…", "...")
-            fragments = [_normalized(f) for f in raw.split("...")]
-            if not all(f in skill for f in fragments if f):
-                findings.append(
-                    ContractFinding(
-                        node_id="(provenance)",
-                        kind="citation_not_in_skill",
-                        severity="error",
-                        message=(
-                            f'{rel} cites the skill as "{m.group("quote")}", but the skill '
-                            f"contains no such text. Quote it verbatim, or if the skill does "
-                            f"not state this outcome, mark it '# rote: assumption: ...' and "
-                            f"list it under Open questions"
-                        ),
-                        path=rel,
-                    )
-                )
-    if assumptions:
-        report = root / REPORT_FILENAME
-        listed = (
-            _open_questions(report.read_text(encoding="utf-8", errors="replace"))
-            if report.is_file()
-            else []
-        )
-        if not listed:
-            sample = "; ".join(f"{rel}: {text}" for rel, text in assumptions[:3])
-            findings.append(
-                ContractFinding(
-                    node_id="(provenance)",
-                    kind="unlisted_assumption",
-                    severity="error",
-                    message=(
-                        f"the extracted code records {len(assumptions)} assumption(s) the "
-                        f"skill does not state ({sample}), but {REPORT_FILENAME} lists no "
-                        f"Open questions. Add one entry per assumption"
-                    ),
-                    path=REPORT_FILENAME,
-                )
-            )
-    return findings
-
-
 @dataclass(frozen=True)
 class Verification:
     """The verdict on one deliverable directory."""
@@ -475,7 +354,7 @@ def verify_deliverable(
 
     ``skill_dir`` is the source skill. With it, every ``# skill: "..."``
     citation in the extracted modules must quote text the skill actually
-    contains (see :func:`_provenance_findings`).
+    contains (see :mod:`rote.compiler.provenance`).
     """
     try:
         return _verify_or_raise(artifact_dir, base_dir, run_tests, skill_dir)
@@ -534,7 +413,7 @@ def _verify(root: Path, *, run_tests: bool, skill_dir: Path | None) -> Verificat
     findings = (
         check_contracts(pipeline, root)
         + _deliverable_findings(pipeline, root, implementations)
-        + _provenance_findings(root, skill_dir)
+        + provenance_findings(pipeline, root, skill_dir)
     )
     tests = run_generated_tests(root) if run_tests else None
     return Verification(

@@ -80,17 +80,36 @@ if ret["amount"] > RECEIPT_REQUIRED_OVER and not ret["receipt"]:
     return {"route": "manual_review"}
 ```
 
-Quote short fragments, joined with `...` if you elide text between
-them. rote checks that every quoted fragment appears in the skill's
-files. When the skill does NOT state the outcome, choose one of two:
+How a citation is written, and what rote accepts:
+
+- It opens with `# skill: "` and closes at the `"` that ends a comment
+  line, so the quote may itself contain quotes:
+  `# skill: "Returns marked "Damaged in Transit" are refunded at once"`.
+  A long quote may continue on the next comment lines.
+- It quotes the sentence that decides the outcome, not a word or a
+  heading. Each fragment is at least 4 words of the skill's prose
+  (headings do not count), copied verbatim.
+- `...` elides text between fragments. The fragments must appear in
+  that order within one paragraph of the skill.
+
+Every outcome literal the code writes needs a marker: a label it
+returns, or a string it puts under a key, keyword, or variable whose
+name says outcome (`severity`, `status`, `category`, `level`,
+`alert`, `route`, `tier`, `decision`, `flag`, `label`, `priority`...).
+A marker covers the statement it is on, and the code below it up to the
+next blank line (10 lines at most), so one comment above an
+`if`/`elif` chain covers the chain. rote reports an outcome literal
+with no marker. When the skill does NOT state the outcome, choose one of
+two:
 
 1. **Decide, and declare it.** Write the branch with the outcome you
    think is most defensible, mark it
    `# rote: assumption: <the outcome you chose, and what the skill leaves open>`,
-   and list it under **Open questions** in the compilation report. A
-   test that pins the assumed outcome carries the same comment, so it
-   reads as an assumption, not a rule. rote rejects a deliverable whose
-   code records assumptions while the report's Open questions are empty.
+   and give it its own entry under **Open questions** in the compilation
+   report (a list item, or a `###` sub-heading per question). A test
+   that pins the assumed outcome carries the same comment, so it reads
+   as an assumption, not a rule. rote rejects a deliverable with fewer
+   Open questions entries than recorded assumptions.
 2. **Stub the function**, when the unstated fact is what the function is
    for (a whole mapping table, a threshold that drives every branch).
 
@@ -203,9 +222,10 @@ these checks on your work dir when you end your turn:
    function, and accepts the node's `inputs:` as keyword arguments.
 3. Every `pure_function` is implemented, or is a stub whose
    `NotImplementedError` message says why.
-4. Every `# skill: "..."` citation quotes the skill's own text, and if
-   any `# rote: assumption:` exists, the report's Open questions list
-   is not empty.
+4. Every `# skill: "..."` citation quotes the skill's prose (4+ words
+   per fragment, in order, one paragraph), every outcome literal in a
+   pure_function module has a marker, and the report has at least one
+   Open questions entry per `# rote: assumption:`.
 5. Every implemented `pure_function` is called from a file under
    `tests/`.
 6. `python -m pytest tests` passes. It runs with no credentials in its

@@ -1269,11 +1269,18 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   a stub is for both `rote run`'s preflight and the compile's per-node
   status (whole body after the docstring is one `raise
   NotImplementedError`). Two predicates disagreed once.
-- **Outcomes cite the skill or are declared.** `# skill: "..."` comments
-  must quote text the skill contains, and any `# rote: assumption:`
-  requires a non-empty Open questions list in compile-report.md. Found by
-  a real compile that chose block over review for a rule whose severity
-  the skill never states, then wrote tests that encoded the choice.
+- **Outcomes cite the skill or are declared** (`rote.compiler.provenance`).
+  Found by a real compile that chose block over review for a rule whose
+  severity the skill never states, then wrote tests that encoded the
+  choice. Every rule in it exists because a review got a guess past a
+  looser version, so keep them: a citation fragment is 4+ words of prose
+  (headings excluded), fragments match in order within one paragraph,
+  the quote closes at the `"` ending a comment line (so it may contain
+  quotes), every outcome literal in a pure_function module needs a
+  marker within reach (its statement, or up to a blank line above it,
+  10 lines max), and Open questions must have one entry per assumption.
+  `tests/test_provenance.py` holds the gaming cases, each verified by a
+  mutation.
 
 ### The claude driver repairs by resuming, and a resumed result is cumulative
 

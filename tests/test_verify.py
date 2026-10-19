@@ -277,7 +277,7 @@ def test_a_verbatim_citation_passes(tmp_path: Path) -> None:
 def test_an_elided_citation_passes_when_each_fragment_is_verbatim(tmp_path: Path) -> None:
     module = _CITED.replace(
         '"A missing receipt on a line of $25.00 or more is a block"',
-        '"Lines under $25.00 don\'t need a receipt ... is a block"',
+        '"Lines under $25.00 don\'t need a receipt ... line of $25.00 or more is a block"',
     )
     root = _provenance_case(tmp_path, module, None)
     v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
