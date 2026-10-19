@@ -1290,6 +1290,15 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
     in the compile output and in a `## rote verification` section rote
     appends to compile-report.md. `--trust-skill` runs them with the env
     allowlist only; `--no-verify-tests` never runs them.
+  - **pytest is a runtime dependency of rote-cli, not a dev one.** It was
+    dev-only, so every plain install skipped verification with a quiet
+    `unavailable` and a real expense-audit compile exited 0 while a
+    generated test failed. A missing runner is now `unverified`, loud in
+    the output and the report like a missing sandbox. Regression:
+    `tests/test_packaging.py::test_the_package_requires_pytest_without_any_extra`.
+  - **Repair prompts restate the write-once rules** (`verify.WRITE_ONCE_RULES`):
+    a real repair round made three separate one-line Edits to
+    compile-report.md, each re-reading the whole context.
   - Not isolated: file metadata on macOS (above), CPU and memory (only the
     120 s timeout), writes inside the work dir (a test can modify the
     deliverable it tests).

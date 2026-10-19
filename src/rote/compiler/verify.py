@@ -64,9 +64,11 @@ GENERATED_TESTS_TIMEOUT_SECONDS = 120.0
 #: failure summary; the whole log would re-bill every line on each turn.
 _TEST_OUTPUT_CHARS = 6000
 
-#: ``unverified``: the tests exist but were deliberately not run, because
-#: no OS sandbox is available and the user did not pass ``--trust-skill``.
-TestStatus = Literal["passed", "failed", "unavailable", "unverified"]
+#: ``unverified``: the tests exist but were not run, because no OS sandbox
+#: is available (and the user did not pass ``--trust-skill``) or pytest
+#: cannot be imported. Either way the deliverable is unverified, said loudly,
+#: never a quiet pass.
+TestStatus = Literal["passed", "failed", "unverified"]
 
 
 @dataclass(frozen=True)
@@ -145,9 +147,11 @@ def run_generated_tests(
     with only the environment allowlist and an empty HOME between them and
     the user's machine.
 
-    ``unavailable`` (pytest is not installed alongside rote) and
-    ``unverified`` are reported, never treated as a pass, and never sent
-    to the agent: it cannot fix the environment.
+    ``unverified`` (no sandbox, or no pytest) is reported in the compile
+    output and the report, never treated as a pass, and never sent to the
+    agent: it cannot fix the environment. pytest is a runtime dependency of
+    rote-cli; it was dev-only once, and verification was silently off for
+    every user, hiding a failing generated test from the repair loop.
     """
     from rote.compiler import sandbox
 
@@ -157,8 +161,11 @@ def run_generated_tests(
         return None
     if not _pytest_available():
         return GeneratedTests(
-            status="unavailable",
-            summary=f"pytest is not installed for {sys.executable}; generated tests not run",
+            status="unverified",
+            summary=(
+                f"unverified: pytest not available for {sys.executable}, so the generated "
+                f"tests were NOT run. Reinstall rote-cli (pytest is a dependency)"
+            ),
         )
     box: sandbox.Sandbox | None = None
     if not trust_skill:
@@ -320,6 +327,19 @@ def _deliverable_findings(
     return findings
 
 
+#: The rubric's write-once rules, restated in every repair turn. A resumed
+#: conversation is far from the rubric, and a real ops-report repair round
+#: spent three turns on separate Edits to compile-report.md, each one
+#: re-reading the whole context, though SKILL.md says to write it once.
+WRITE_ONCE_RULES = (
+    "Write-once rules still hold in a repair round: leave compile-report.md "
+    "alone unless a problem below names it or a decision it records changed, "
+    "and then rewrite it with ONE Write after your other fixes, never a series "
+    "of Edits. Do not touch progress.ndjson. Send independent fixes as parallel "
+    "tool calls in one turn."
+)
+
+
 @dataclass(frozen=True)
 class Verification:
     """The verdict on one deliverable directory."""
@@ -353,7 +373,7 @@ class Verification:
             return (
                 f"The pipeline.yaml you wrote fails IR validation. Fix "
                 f"{artifact_dir / 'pipeline.yaml'} so it validates; change only what "
-                f"the errors name, then end your turn.\n\n"
+                f"the errors name, then end your turn. {WRITE_ONCE_RULES}\n\n"
                 f"Validation errors:\n{self.pipeline_error}"
             )
         if self.ok:
@@ -364,8 +384,7 @@ class Verification:
             f"weaken an assertion that encodes a rule from the skill, and do not turn "
             f"a working implementation into a stub to silence a failure: if a test "
             f"and the implementation disagree, the skill decides which is wrong. "
-            f"Leave compile-report.md alone unless a problem below names it or a "
-            f"decision it records changed."
+            f"{WRITE_ONCE_RULES}"
         ]
         if self.errors:
             parts.append(

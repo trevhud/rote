@@ -202,6 +202,21 @@ def test_any_crash_inside_verification_becomes_a_finding(
     assert v.repair_instruction(root) is not None
 
 
+def test_every_repair_prompt_restates_the_write_once_rules(tmp_path: Path) -> None:
+    """A real repair round re-edited compile-report.md three times, one turn
+    each. Both prompt shapes (invalid IR, failed checks) carry the rule."""
+    from rote.compiler.verify import WRITE_ONCE_RULES
+
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "pipeline.yaml").write_text("name: x\nnodes: [{id: a, kind: nope}]\n")
+    invalid = verify_deliverable(tmp_path / "bad").repair_instruction(tmp_path / "bad")
+    root = _deliverable(tmp_path / "red", {"extracted/vendor.py": VENDOR_STUB})
+    failing = verify_deliverable(root).repair_instruction(root)
+    for prompt in (invalid, failing):
+        assert prompt is not None and WRITE_ONCE_RULES in prompt
+    assert "ONE Write" in WRITE_ONCE_RULES and "compile-report.md" in WRITE_ONCE_RULES
+
+
 def test_an_invalid_pipeline_short_circuits_with_the_validation_text(tmp_path: Path) -> None:
     (tmp_path / "pipeline.yaml").write_text("name: x\nnodes: [{id: a, kind: nope}]\n")
     v = verify_deliverable(tmp_path)
@@ -409,14 +424,35 @@ def test_generated_tests_cannot_see_credentials_or_the_users_home(
     assert "2 passed" in result.summary
 
 
-def test_missing_pytest_is_reported_not_passed(
+def test_missing_pytest_is_unverified_not_passed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """With no test runner the deliverable is unverified, said the same way
+    a missing sandbox is. It used to be a quiet 'unavailable' that a real
+    compile exited 0 on while a generated test was failing."""
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_x.py").write_text("def test_x():\n    assert True\n")
+    (tmp_path / "tests" / "test_x.py").write_text("def test_x():\n    assert False\n")
     monkeypatch.setattr("rote.compiler.verify._pytest_available", lambda: False)
     result = run_generated_tests(tmp_path)
-    assert result is not None and result.status == "unavailable" and not result.passed
+    assert result is not None and result.status == "unverified" and not result.passed
+    assert result.summary.startswith("unverified: pytest not available")
+
+
+def test_the_compile_report_says_unverified_when_pytest_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import argparse
+
+    from rote.cli import _record_verification_in_report
+
+    root = _deliverable(tmp_path, {"extracted/logic.py": REAL, "tests/test_logic.py": GOOD_TEST})
+    (root / "compile-report.md").write_text("# Report\n")
+    monkeypatch.setattr("rote.compiler.verify._pytest_available", lambda: False)
+    v = verify_deliverable(root)
+    args = argparse.Namespace(no_verify_tests=False, trust_skill=False)
+    _record_verification_in_report(root, v, v.tests, args)
+    report = (root / "compile-report.md").read_text()
+    assert "UNVERIFIED: unverified: pytest not available" in report
 
 
 def test_the_committed_ops_report_compile_still_verifies() -> None:

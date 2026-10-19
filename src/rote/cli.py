@@ -946,7 +946,6 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         status = {
             "passed": "passed",
             "failed": "FAILED",
-            "unavailable": "NOT RUN",
             "unverified": "NOT RUN, deliverable UNVERIFIED",
         }[tests_run.status]
         print(
