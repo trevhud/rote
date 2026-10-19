@@ -181,26 +181,49 @@ def callback_redirect_uris() -> list[str]:
     ]
 
 
-def _port_is_free(port: int) -> bool:
-    # Bind every address the callback host resolves to: uvicorn binds
-    # "localhost" the same way, and a port free on 127.0.0.1 but taken on
-    # ::1 would fail there instead of here.
-    for family, _, _, _, address in socket.getaddrinfo(
-        CALLBACK_HOST, port, type=socket.SOCK_STREAM
-    ):
-        with socket.socket(family, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(address)
-            except OSError:
-                return False
-    return True
+def bind_callback_sockets(port: int) -> list[socket.socket] | None:
+    """Listening sockets for ``port`` on every address localhost resolves to.
+
+    None when any of them is taken. Binding *is* the check: checking first
+    and binding later (as fastmcp's callback server would) lets another
+    login, or anything else, take the port in between, and the callback
+    server then dies with EADDRINUSE after the browser was sent there.
+    The sockets stay bound until the callback server takes them over.
+
+    SO_REUSEADDR matches what uvicorn sets: a TIME_WAIT left by an earlier
+    login on this port must not block the next, while a live listener
+    still does. Every resolved address is bound because a browser may
+    reach ``localhost`` on either ::1 or 127.0.0.1.
+    """
+    sockets: list[socket.socket] = []
+    try:
+        seen: set[tuple[int, Any]] = set()
+        for family, _, _, _, address in socket.getaddrinfo(
+            CALLBACK_HOST, port, type=socket.SOCK_STREAM
+        ):
+            if (family, address) in seen:
+                continue
+            seen.add((family, address))
+            sock = socket.socket(family, socket.SOCK_STREAM)
+            sockets.append(sock)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind(address)
+            sock.listen(128)
+    except OSError:
+        for sock in sockets:
+            sock.close()
+        return None
+    return sockets
 
 
-def select_callback_port() -> int:
-    """The first free port of :data:`CALLBACK_PORTS`."""
+def select_callback_port() -> tuple[int, list[socket.socket]]:
+    """The first free port of :data:`CALLBACK_PORTS`, already bound."""
     for port in CALLBACK_PORTS:
-        if _port_is_free(port):
-            return port
+        sockets = bind_callback_sockets(port)
+        if sockets is not None:
+            return port, sockets
     ports = ", ".join(str(p) for p in CALLBACK_PORTS)
     raise McpAuthError(
         f"every OAuth callback port rote publishes is in use ({ports}). "
@@ -318,6 +341,7 @@ def _oauth_class() -> type[Any]:
             stored_issuer: str | None,
             token_endpoint: str | None,
             drop_unbound_client: bool,
+            callback_sockets: list[socket.socket],
             **kwargs: Any,
         ) -> None:
             self._rote_server = server
@@ -327,6 +351,7 @@ def _oauth_class() -> type[Any]:
             self._rote_stored_issuer = stored_issuer
             self._rote_token_endpoint = token_endpoint
             self._rote_drop_unbound_client = drop_unbound_client
+            self._rote_callback_sockets = callback_sockets
             self._rote_dropped_client_id: str | None = None
             super().__init__(**kwargs)
 
@@ -387,6 +412,69 @@ def _oauth_class() -> type[Any]:
                 await self._announce(authorization_url)
                 return
             await super().redirect_handler(authorization_url)
+
+        def close_callback_sockets(self) -> None:
+            """Release the callback port, whether or not a callback ran."""
+            for sock in self._rote_callback_sockets:
+                sock.close()
+            self._rote_callback_sockets = []
+
+        async def callback_handler(self) -> Any:
+            """fastmcp's callback server, run on the sockets bound at selection.
+
+            The redirect URI already names ``redirect_port``, so the server must
+            listen exactly there. fastmcp's own handler binds the port itself,
+            which can fail after the browser was already sent to it.
+            """
+            import functools
+
+            import anyio
+            from fastmcp.client.oauth_callback import (
+                OAuthCallbackResult,
+                create_oauth_callback_server,
+            )
+            from mcp.shared.auth import AuthorizationCodeResult
+
+            sockets = self._rote_callback_sockets or bind_callback_sockets(self.redirect_port)
+            self._rote_callback_sockets = []
+            if not sockets:
+                # Only on a second flow in one login (fastmcp retries once
+                # with a fresh registration): the first released the port.
+                raise McpAuthError(
+                    f"the OAuth callback port {self.redirect_port} was taken during the "
+                    f"login. Retry: rote mcp login {self._rote_server}"
+                )
+            result = OAuthCallbackResult()
+            ready = anyio.Event()
+            server = create_oauth_callback_server(
+                port=self.redirect_port,
+                host=self._callback_host,
+                server_url=self.mcp_url,
+                result_container=result,
+                result_ready=ready,
+            )
+            try:
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(functools.partial(server.serve, sockets=sockets))
+                    try:
+                        with anyio.fail_after(self._callback_timeout):
+                            await ready.wait()
+                        if result.error:
+                            raise result.error
+                        return AuthorizationCodeResult(
+                            code=result.code or "", state=result.state, iss=result.iss
+                        )
+                    except TimeoutError as e:
+                        raise TimeoutError(
+                            f"OAuth callback timed out after {self._callback_timeout} seconds"
+                        ) from e
+                    finally:
+                        server.should_exit = True
+                        await anyio.sleep(0.1)  # let the server finish its response
+                        tg.cancel_scope.cancel()
+            finally:
+                for sock in sockets:
+                    sock.close()
 
         async def _announce(self, authorization_url: str) -> None:
             # fastmcp's own pre-flight GET, kept: it is how a stale cached
@@ -527,9 +615,18 @@ def build_oauth(
     """
     _require_fastmcp()
     metadata_url = client_metadata_url()
-    if callback_port is None:
-        callback_port = select_callback_port() if interactive else CALLBACK_PORTS[0]
-    elif callback_port not in CALLBACK_PORTS and metadata_url is not None:
+    callback_sockets: list[socket.socket] = []
+    if not interactive:
+        # A refresh never takes a callback; the port is only a name.
+        callback_port = callback_port or CALLBACK_PORTS[0]
+    elif callback_port is None:
+        callback_port, callback_sockets = select_callback_port()
+    else:
+        bound = bind_callback_sockets(callback_port)
+        if bound is None:
+            raise McpAuthError(f"the OAuth callback port {callback_port} is in use")
+        callback_sockets = bound
+    if callback_port not in CALLBACK_PORTS and metadata_url is not None:
         # The document lists only CALLBACK_PORTS, so a CIMD server would
         # reject this redirect URI. Offering CIMD would fail the login on
         # exactly the servers that support it.
@@ -560,6 +657,7 @@ def build_oauth(
         stored_issuer=stored_issuer,
         token_endpoint=stored.get("token_endpoint"),
         drop_unbound_client=interactive,
+        callback_sockets=callback_sockets,
         mcp_url=config.url,
         scopes=config.scopes,
         client_name="rote",
@@ -668,7 +766,12 @@ async def login(
         callback_port=callback_port,
         announce_url=announce_url,
     )
-    await _list_tools(server, config.url, oauth)
+    try:
+        await _list_tools(server, config.url, oauth)
+    finally:
+        # Released on every path: a login whose stored token was still good
+        # never starts the callback server, and a failed one may not either.
+        oauth.close_callback_sockets()
 
     doc = read_token_file(server)
     if doc is not None and not stored_for_url(doc, config.url):

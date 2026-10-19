@@ -407,7 +407,10 @@ def test_announced_login_always_prints_the_url_and_says_when_no_browser_opened(
     oauth = build_oauth("vendor", McpServerConfig(url="http://127.0.0.1:9/mcp"), announce_url=True)
     oauth.httpx_client_factory = _FakeHttpx
     url = "http://127.0.0.1:9/authorize?state=abc"
-    asyncio.run(oauth.redirect_handler(url))
+    try:
+        asyncio.run(oauth.redirect_handler(url))
+    finally:
+        oauth.close_callback_sockets()  # build_oauth holds the callback port
 
     err = capsys.readouterr().err
     assert f"  {url}\n" in err

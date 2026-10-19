@@ -382,7 +382,10 @@ Seven things, each with a test that fails when it is undone
   `tests/test_mcp_client.py::test_cimd_document_matches_what_the_login_offers`
   pins `docs/oauth/rote-cli.json` to the code, and the copy served by
   rote-cloud's marketing site must match it too. Add ports to the
-  document before the CLI uses them, never after.
+  document before the CLI uses them, never after. Selecting a port must
+  bind it (`bind_callback_sockets`), and the callback server must run on
+  those sockets: a check now and a bind later lost the port to a
+  concurrent login in CI after the redirect URI already named it.
 - **rote refuses registrations the SDK would send on its own.** Without
   a `registration_endpoint` the SDK POSTs a guessed
   `<resource-origin>/register` (GitHub: not its authorization server).

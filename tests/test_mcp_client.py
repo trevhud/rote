@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import stat
 from pathlib import Path
 from typing import Any
@@ -1004,17 +1005,47 @@ def test_client_metadata_url_override_and_opt_out(monkeypatch: pytest.MonkeyPatc
     assert client_metadata_url() is None
 
 
-def test_login_errors_when_every_published_callback_port_is_taken(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _hold(port: int) -> socket.socket:
+    held = socket.socket()
+    held.bind(("127.0.0.1", port))
+    held.listen()
+    return held
+
+
+def test_selecting_a_callback_port_binds_it_and_skips_taken_ones() -> None:
+    """The bind is the check, and the port stays held: nothing can take it
+    between selection and the callback server starting."""
     from rote.mcp import auth
 
-    monkeypatch.setattr(auth, "_port_is_free", lambda port: False)
-    with pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"):
-        auth.select_callback_port()
-    taken = {auth.CALLBACK_PORTS[0], auth.CALLBACK_PORTS[1]}
-    monkeypatch.setattr(auth, "_port_is_free", lambda port: port not in taken)
-    assert auth.select_callback_port() == auth.CALLBACK_PORTS[2]
+    held = [_hold(port) for port in auth.CALLBACK_PORTS[:2]]
+    try:
+        port, sockets = auth.select_callback_port()
+        try:
+            assert port == auth.CALLBACK_PORTS[2]
+            assert {sock.getsockname()[1] for sock in sockets} == {port}
+            assert auth.bind_callback_sockets(port) is None  # held by us
+        finally:
+            for sock in sockets:
+                sock.close()
+        again = auth.bind_callback_sockets(port)  # released
+        assert again is not None
+        for sock in again:
+            sock.close()
+    finally:
+        for sock in held:
+            sock.close()
+
+
+def test_login_errors_naming_the_ports_when_every_published_one_is_taken() -> None:
+    from rote.mcp import auth
+
+    held = [_hold(port) for port in auth.CALLBACK_PORTS]
+    try:
+        with pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"):
+            auth.select_callback_port()
+    finally:
+        for sock in held:
+            sock.close()
 
 
 def test_input_required_error_pickles_and_is_not_an_auth_error() -> None:
