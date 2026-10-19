@@ -14,6 +14,9 @@ This plugin adds skills to Claude. Each one lives in its own folder under
 - **compile** (`/rote:compile`): confirms the skill directory with you, asks
   which runtime you want, runs the rote CLI in the background, and explains
   the emitted pipeline.
+- **implement** (`/rote:implement`): fills in the stub modules an emitted
+  pipeline leaves for you, against each node's IR contract, without touching
+  rote's own files, then checks the result with `rote run`.
 - **serve** (`/rote:serve`): registers a compiled, deployed pipeline and wires
   `rote serve` into Claude as an MCP server, so Claude can start a run, poll
   it, and deliver approvals at human-in-the-loop gates.

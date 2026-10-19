@@ -66,6 +66,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   capability the client did not declare) fails the step with the server,
   tool, and requested inputs named, on all four MCP runtimes. It is not
   an auth failure: it never parks, and it skips the retry budget.
+- **`/rote:implement` plugin skill.** After `rote emit` or `rote compile`,
+  the Claude Code plugin can now fill in the emitted `extracted/*` stubs
+  without spending compilation tokens. The skill finds the TODO list
+  through `rote emit --json`'s `unimplemented_stubs`, reads each node's
+  IR contract and its source SKILL.md section, writes real code in
+  user-owned files only, handles `.new` siblings from re-emit, and
+  verifies with `rote run`. `tests/test_plugin_skills.py` checks every
+  plugin skill's frontmatter and links, runs each stub and non-stub
+  example in the skill through rote's own stub detector, and emits every
+  runtime to confirm that each file outside `unimplemented_stubs`
+  (generated agent-loop modules included) is on the skill's do-not-edit
+  list.
 
 ### Fixed
 - **MCP auth hardening.**
