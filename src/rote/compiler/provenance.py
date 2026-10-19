@@ -192,7 +192,9 @@ def _labels(value: ast.expr | None) -> list[ast.Constant]:
     if (
         isinstance(value, ast.Constant)
         and isinstance(value.value, str)
-        and value.value.strip()
+        # A placeholder with no letters or digits ("—", "-") is display
+        # punctuation, not a decided label.
+        and any(ch.isalnum() for ch in value.value)
         and "\n" not in value.value
         and len(value.value) <= 80
     ):
@@ -446,6 +448,9 @@ def provenance_findings(
                         rel,
                     )
                 )
+    # One assumption marked at two call sites is one question, not two: a
+    # real report listed it once and was bounced twice for the duplicate.
+    distinct = {_normalized(text) for _, text in assumptions}
     if assumptions:
         report = root / REPORT_FILENAME
         listed = (
@@ -453,12 +458,12 @@ def provenance_findings(
             if report.is_file()
             else []
         )
-        if len(listed) < len(assumptions):
+        if len(listed) < len(distinct):
             sample = "; ".join(f"{rel}: {text}" for rel, text in assumptions[:3])
             findings.append(
                 _finding(
                     "unlisted_assumption",
-                    f"the extracted code records {len(assumptions)} assumption(s) the skill "
+                    f"the extracted code records {len(distinct)} distinct assumption(s) the skill "
                     f"does not state ({sample}), but {REPORT_FILENAME} lists "
                     f"{len(listed)} Open question(s). Give each assumption its own entry",
                     REPORT_FILENAME,

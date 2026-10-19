@@ -1,76 +1,86 @@
 version: 1
 source_skill: ../../skill
-
 steps:
-  - description: "Fetch shipment containers file from Google Drive (read_file_content)"
+  - description: "Fetch Shipment Containers from Google Drive (single fixed file ID)"
     node_id: fetch_shipment_containers
     phase: "Data sources"
     estimated_turns: {low: 1, high: 2}
     estimated_tool_calls: {low: 1, high: 1}
 
-  - description: "Fetch dock pending log from Google Drive (read_file_content)"
+  - description: "Fetch Dock Pending Log from Google Drive (single fixed file ID)"
     node_id: fetch_dock_pending_log
     phase: "Data sources"
     estimated_turns: {low: 1, high: 2}
     estimated_tool_calls: {low: 1, high: 1}
 
-  - description: "Search Gmail dock-activity threads (search_threads, newer_than:1d)"
+  - description: "Search Gmail for dock-activity threads (fixed query, last 1 day)"
     node_id: fetch_dock_activity_emails
     phase: "Data sources"
     estimated_turns: {low: 1, high: 2}
     estimated_tool_calls: {low: 1, high: 1}
 
-  - description: "Fetch dwell ticket log from Google Drive, tab Dwell Log - Form Responses"
+  - description: "Fetch Dwell Ticket Log from Google Drive (single fixed file ID)"
     node_id: fetch_dwell_tickets
     phase: "Data sources"
     estimated_turns: {low: 1, high: 2}
     estimated_tool_calls: {low: 1, high: 1}
 
-  - description: "Parse and annotate all four data pulls (count rows, apply flags, identify sites)"
+  - description: "Parse Shipment Containers: extract facility table, flag sites below 75%"
+    node_id: parse_shipment_containers
     phase: "Data sources"
-    estimated_turns: {low: 2, high: 4}
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 0}
 
-  - description: "Ask duty manager for dock appointment completion counts (Green/Red/Grey/other)"
-    node_id: request_manual_data_gate
+  - description: "Parse Dock Pending Log: count unresolved rows by site and issue type"
+    node_id: parse_dock_pending_log
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Parse dock-activity Gmail threads: count approved vs. requested"
+    node_id: parse_dock_activity_emails
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: "Parse Dwell Ticket Log: filter open rows, apply alert thresholds"
+    node_id: parse_dwell_tickets
+    phase: "Data sources"
+    estimated_turns: {low: 1, high: 3}
+    estimated_tool_calls: {low: 0, high: 0}
+
+  - description: >-
+      Present auto-pulled data to duty manager and wait for manual input
+      (dock appointment counts, sorter metrics, current BI dwell snapshot)
+    node_id: duty_manager_data_gate
     phase: "Manual data"
-    estimated_turns: {low: 1, high: 1}
+    estimated_turns: {low: 2, high: 5}
+    estimated_tool_calls: {low: 0, high: 0}
 
-  - description: "Ask duty manager for sorter metrics (volume + fail rate per site)"
-    phase: "Manual data"
-    estimated_turns: {low: 1, high: 1}
-
-  - description: "Ask duty manager for BI dashboard dwell data (brand/carrier/site/packages)"
-    phase: "Manual data"
-    estimated_turns: {low: 1, high: 1}
-
-  - description: "Apply thresholds to manual data — appointment non-compliant flag, sorter flags, dwell color-coding"
+  - description: "Validate duty manager input: apply escalation and sorter threshold rules"
+    node_id: validate_manual_data
     phase: "Manual data"
     estimated_turns: {low: 1, high: 2}
+    estimated_tool_calls: {low: 0, high: 0}
 
-  - description: "Compose KPI header and Section 1 (Dock Compliance)"
-    node_id: render_report
+  - description: >-
+      Render three-section executive report with KPI header, color-coded dwell
+      alerts, and live artifact reminder
+    node_id: render_ops_report
     phase: "Report format"
-    estimated_turns: {low: 2, high: 3}
-
-  - description: "Compose Section 2 (Missort & Loss)"
-    phase: "Report format"
-    estimated_turns: {low: 2, high: 3}
-
-  - description: "Compose Section 3 (Dwell) and finalize report with artifact reminder"
-    phase: "Report format"
-    estimated_turns: {low: 2, high: 3}
+    estimated_turns: {low: 2, high: 5}
+    estimated_tool_calls: {low: 0, high: 0}
 
 totals:
-  low: 12
-  high: 22
+  low: 13
+  high: 31
 
 notes: >-
-  This skill is a structured daily report with no per-item loops; all steps
-  are sequential (or batched parallel). The biggest variance is in how many
-  tool calls the agent batches in a single turn (all four data pulls could be
-  1-2 turns if the agent calls them concurrently, or up to 8 turns if
-  strictly sequential). The HITL wait for manual data is not counted in turns
-  (it is human think-time). Report assembly dominates: the agent must read
-  seven data structures and produce a three-section Markdown document, which
-  typically takes 3-5 passes to get the formatting right. Range: 12-22 turns
-  for a competent run.
+  This is a structured data-pull + HITL + render skill with no iterative search
+  loops, so the whole-run turn count is modest. The dominant variable is (a) the
+  HITL gate — an agent may ask clarifying follow-up questions about the duty
+  manager's input, adding 1–3 turns — and (b) report rendering, where the agent
+  may revise formatting across 2–3 passes. The four data-pull steps are fixed
+  single-tool-call operations; an agent running them sequentially rather than in
+  parallel adds 0 turns but ~4× wall-clock time. Compiled pipeline runs all four
+  in the same execution wave.

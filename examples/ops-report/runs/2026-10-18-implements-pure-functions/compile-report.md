@@ -1,8 +1,8 @@
-# ops-report — Compilation Report
+# Compilation Report — ops-report
 
 **Compiled:** 2026-10-18  
 **Source skill:** `skills/ops-report/skill/SKILL.md`  
-**Work directory:** `rote-compile-homj7048/`
+**Work directory:** `/rote-compile-tez5se3h/`
 
 ---
 
@@ -10,266 +10,245 @@
 
 | Metric | Value |
 |---|---|
-| Total nodes | 13 |
-| `pure_function` | 8 |
+| Total nodes | 11 |
 | `external_call` | 4 |
+| `pure_function` | 6 |
+| `hitl_gate` | 1 |
 | `llm_judge` | 0 |
 | `agent_loop` | 0 |
-| `hitl_gate` | 1 |
-| Codifiable nodes (non-HITL) | 12 / 12 = **100%** |
-| HITL gates | 1 (`request_manual_data_gate`) |
-| LLM calls in compiled pipeline | **0** |
+| Codifiable % | **100%** (all non-gate nodes are deterministic code) |
+| Estimated token reduction per run | **~85%** (no LLM invoked in the compiled path) |
+| Signatures produced | 0 |
+| HITL gates | 1 |
 
-**Estimated token cost reduction per run:** 12–22 agent turns eliminated (≈ 24,000–44,000 tokens/run). At daily cadence this is roughly 8–16 M tokens/year. The LLM is not in the hot path at all — the entire report is produced by deterministic code after one HITL pause.
+### HITL Gates
 
-**HITL gates and what they block:**
-- `request_manual_data_gate` — blocks report render until the duty manager supplies three manual data sets: dock appointment completion color counts, sorter metrics per site, and current BI dashboard dwell data. Timeout: 4 h.
+| Gate | Signal | Timeout | Blocks on |
+|---|---|---|---|
+| `duty_manager_data_gate` | `duty_manager_data_provided` | 4h | Duty manager supplying dock appointment counts, sorter metrics, and current BI-dashboard dwell snapshot |
 
----
-
-## Phase 2: Node Classification
+### Node Classification Table
 
 | Step | Kind | Justification |
 |---|---|---|
-| Fetch shipment containers (Drive MCP) | `external_call` | Fixed file ID, fixed tool, no reasoning needed; retry/timeout semantics required |
-| Fetch dock pending log (Drive MCP) | `external_call` | Same as above, different file ID |
-| Fetch dock activity emails (Gmail MCP) | `external_call` | Fixed search query `label:dock-activity newer_than:1d`; deterministic call |
-| Fetch dwell ticket log (Drive MCP) | `external_call` | Fixed file ID and tab name |
-| Parse shipment containers | `pure_function` | CSV parse + threshold comparison (75%); fully deterministic on typed inputs |
-| Parse dock pending log | `pure_function` | Row filter (Resolved=FALSE) + group-by; purely deterministic |
-| Parse dock activity emails | `pure_function` | Keyword count over thread subjects; deterministic given the input |
-| Parse dwell tickets | `pure_function` | Row filter + three numeric threshold comparisons |
-| Request manual data gate | `hitl_gate` | Skill explicitly says "ask the duty manager to provide" — real human input required |
-| Apply appointment flags | `pure_function` | Pure boolean (other > 0 → escalate); fully deterministic |
-| Apply sorter flags | `pure_function` | Two numeric comparisons (> 5%, > 15%); no judgment needed |
-| Apply dwell thresholds | `pure_function` | Tiered numeric threshold on package count; no judgment needed |
-| Render report | `pure_function` | Fixed three-section template with KPI header; the skill shows the exact structure |
+| Fetch Shipment Containers (Drive) | `external_call` | Fixed file ID, single deterministic MCP tool call |
+| Fetch Dock Pending Log (Drive) | `external_call` | Fixed file ID, single deterministic MCP tool call |
+| Fetch Dock Activity Emails (Gmail) | `external_call` | Fixed search query, single deterministic MCP tool call |
+| Fetch Dwell Tickets (Drive) | `external_call` | Fixed file ID, single deterministic MCP tool call |
+| Parse Shipment Containers | `pure_function` | Fixed CSV parsing + numeric threshold (75%) with no LLM |
+| Parse Dock Pending Log | `pure_function` | Fixed row filter (Resolved = FALSE) + group-by; no LLM |
+| Parse Dock Activity Emails | `pure_function` | Keyword matching on snippet/subject; bounded, no LLM |
+| Parse Dwell Tickets | `pure_function` | Fixed row filter + three numeric thresholds; no LLM |
+| Duty Manager Data Gate | `hitl_gate` | Skill explicitly says "ask the duty manager to provide" three data items |
+| Validate Manual Data | `pure_function` | Fixed threshold checks (escalation, fail rate, volume drop, dwell alerts); no LLM |
+| Render Ops Report | `pure_function` | Fixed three-section template with fill-in-the-blank values; no LLM |
 
-**Parallelism win (Pattern 8):** All four data-pull steps share no outputs — the skill lists them sequentially only because an agent executes one tool call at a time. In the compiled pipeline they all fire in wave 1 simultaneously (`entry_nodes` lists all four). Typical wall-clock speedup over a raw agent: 3–4× on the data-pull phase.
+**Pattern 8 applied:** The skill lists the four data pulls sequentially in prose, but no pull consumes another's output. All four are declared as `entry_nodes` and run in the same execution wave (concurrent). This is the single biggest wall-clock win available — a sequential agent takes ~4× longer on I/O alone.
 
 ---
 
-## Phase 3: Crystallization Log
+## Crystallization Log
 
-Every extraction below moves a MANDATORY data rule from prose into code.
+Every prose-to-code extraction, with source location and before/after.
 
-### Extraction 1 — Completion threshold (Pattern 2 + Pattern 3)
-**Source:** `SKILL.md:21` — "Flag any site below 75% completion"  
-**Before:** The LLM reads this rule and applies it to each row in its head.  
-**After:**
-```python
-# extracted/parsers.py
-COMPLETION_THRESHOLD: float = 75.0
-# ...
-flagged = completion_pct < completion_threshold  # skill: "Flag any site below 75% completion"
+### 1. File ID constants (SKILL.md lines 21, 26, 33)
+
+**Before:** Three File IDs embedded in prose instructions the agent re-reads every run.  
+**After:** Three `file_id` constants on their respective `external_call` nodes.
+
+```yaml
+# fetch_shipment_containers
+constants:
+  file_id: "1ExampleShipmentContainersFileId00000000000"
+
+# fetch_dock_pending_log
+constants:
+  file_id: "1ExampleDockPendingLogFileId0000000000000000"
+
+# fetch_dwell_tickets
+constants:
+  file_id: "1ExampleDwellTicketLogFileId0000000000000000"
 ```
-**Constant lifted to IR:** `parse_shipment_containers.constants.completion_threshold: 75.0`
 
----
+### 2. Gmail search query constant (SKILL.md line 30)
 
-### Extraction 2 — Dwell package thresholds (Pattern 2 + Pattern 3)
-**Source:** `SKILL.md:33` — "Flag packages >= 25 (Missort Warning), >= 41 (Missort Alert), carrier >= 80 (Possible Misload Alert)"  
-**Before:** LLM applies three nested rules to every open ticket row.  
+**Before:** `Search query: label:dock-activity newer_than:1d` in prose.  
 **After:**
-```python
-# extracted/parsers.py
-DWELL_PACKAGES_WARNING: int = 25
-DWELL_PACKAGES_ALERT: int = 41
-DWELL_CARRIER_ALERT: int = 80
 
-def _classify_dwell_packages(packages, *, packages_warning_threshold,
-                              packages_alert_threshold, carrier_alert_threshold) -> str:
-    if packages >= carrier_alert_threshold:   # skill: "carrier >= 80 (Possible Misload Alert)"
-        return "Possible Misload Alert"
-    if packages >= packages_alert_threshold:  # skill: ">= 41 (Missort Alert)"
-        return "Missort Alert"
-    if packages >= packages_warning_threshold: # skill: ">= 25 (Missort Warning)"
-        return "Missort Warning"
-    return ""
+```yaml
+constants:
+  query: "label:dock-activity newer_than:1d"
 ```
-**Constants lifted to IR:** `parse_dwell_tickets.constants.{packages_warning_threshold: 25, packages_alert_threshold: 41, carrier_alert_threshold: 80}`  
-Same three constants also lifted to `apply_dwell_thresholds.constants.{brand_warning_threshold: 25, brand_alert_threshold: 41, carrier_alert_threshold: 80}`.
 
----
+### 3. Completion threshold (SKILL.md line 24)
 
-### Extraction 3 — Resolved = FALSE filter (Pattern 3)
-**Source:** `SKILL.md:26` — "Count all rows where Resolved = FALSE"  
-**Before:** LLM counts rows by reading prose instruction.  
-**After:**
+**Before:** "Flag any site below 75% completion"  
+**After:** `COMPLETION_THRESHOLD = 75.0` in `parse_shipment_containers.py`, passed as `completion_threshold: 75.0` constant on the node.
+
 ```python
-resolved_val = row[resolved_col].strip().upper()
-if resolved_val in ("FALSE", "0", "NO", "N"):  # skill: "Count all rows where Resolved = FALSE"
+# skill: "Flag any site below 75% completion"
+flagged = completion_pct < completion_threshold
+```
+
+### 4. Resolved = FALSE filter (SKILL.md line 27)
+
+**Before:** "Count all rows where Resolved = FALSE"  
+**After:** `parse_dock_pending_log.py` with case-insensitive check:
+
+```python
+# skill: "Count all rows where Resolved = FALSE"
+if resolved_val in ("FALSE", "NO", "0", ""):
     total_open += 1
 ```
 
----
+### 5. Dwell ticket open/closed filter (SKILL.md line 34)
 
-### Extraction 4 — Non-Compliant escalation (Pattern 3 — MANDATORY)
-**Source:** `SKILL.md:38` — "Non-Compliant must be escalated"  
-**Before:** Prose rule; an agent could miss it under prompt drift.  
+**Before:** "Filter rows where Open/Closed column = 'Open'"  
 **After:**
+
 ```python
-# extracted/thresholds.py
-other = int(appointment_completion.get("other", 0))
+# skill: "Filter rows where Open/Closed column = 'Open'"
+if row[status_col].strip().lower() != "open":
+    continue
+```
+
+### 6. Dwell alert thresholds — three levels (SKILL.md lines 34, 40)
+
+**Before:** Three thresholds in prose, repeated twice (once in the data source section, once in the manual data section).  
+**After:** Named constants in both `parse_dwell_tickets.py` and `validate_manual_data.py`, declared as node constants in the IR. The same values appear in the `parse_dwell_tickets` node constants AND the `validate_manual_data` node constants.
+
+```python
+BRAND_WARNING_THRESHOLD = 25    # skill: "packages >= 25 (Missort Warning)"
+BRAND_ALERT_THRESHOLD   = 41    # skill: "packages >= 41 (Missort Alert)"
+CARRIER_ALERT_THRESHOLD = 80    # skill: "carrier >= 80 (Possible Misload Alert)"
+```
+
+### 7. Non-Compliant escalation (SKILL.md line 39)
+
+**Before:** "Non-Compliant must be escalated" — a prose MANDATORY check.  
+**After:** Hard boolean in `validate_manual_data.py`:
+
+```python
 # skill: "Non-Compliant must be escalated"
-"escalation_required": non_compliant_count > 0
+escalation_required = non_compliant > 0
 ```
-**IR flag:** `apply_appointment_flags.mandatory: true` — this node cannot be made conditional.
 
----
+### 8. Sorter fail rate threshold (SKILL.md line 40)
 
-### Extraction 5 — Sorter fail-rate flag (Pattern 2 + Pattern 3)
-**Source:** `SKILL.md:39` — "Flag if fail rate > 5% (action needed)"  
-**Before:** LLM applies this per-site rule.  
-**After:**
+**Before:** "Flag if fail rate > 5% (action needed)"  
+**After:** `SORTER_FAIL_RATE_THRESHOLD = 5.0`, enforced as a strict `>` comparison:
+
 ```python
-SORTER_FAIL_RATE_THRESHOLD: float = 5.0
-if fail_rate_pct > fail_rate_threshold:   # skill: "Flag if fail rate > 5% (action needed)"
-    flags.append("ACTION NEEDED")
+# skill: "Flag if fail rate > 5% (action needed)"
+fail_rate_flag = fail_rate > sorter_fail_rate_threshold
 ```
-**Constant lifted to IR:** `apply_sorter_flags.constants.fail_rate_threshold: 5.0`
 
----
+### 9. Sorter volume drop threshold (SKILL.md line 40)
 
-### Extraction 6 — Sorter volume-drop flag (Pattern 2 + Pattern 3)
-**Source:** `SKILL.md:39` — "volume dropped >15% day-over-day (divert adjustment may be needed)"  
-**Before:** LLM computes day-over-day % and compares.  
-**After:**
+**Before:** "volume dropped >15% day-over-day (divert adjustment may be needed)"  
+**After:** `SORTER_VOLUME_DROP_THRESHOLD = 15.0`:
+
 ```python
-SORTER_VOLUME_DROP_THRESHOLD: float = 15.0
-drop_pct = (prev_volume - volume) / prev_volume * 100.0
-if drop_pct > volume_drop_threshold:  # skill: "volume dropped >15% day-over-day..."
-    flags.append("DIVERT ADJUSTMENT MAY BE NEEDED")
+# skill: "volume dropped >15% day-over-day (divert adjustment may be needed)"
+volume_drop_flag = drop > sorter_volume_drop_threshold
 ```
-**Constant lifted to IR:** `apply_sorter_flags.constants.volume_drop_threshold: 15.0`
+
+### 10. Fixed three-section report format (SKILL.md lines 44–49)
+
+**Before:** A bulleted list of section contents the agent was expected to format as markdown by hand each run.  
+**After:** `render_ops_report.py` — a pure string-formatting function producing KPI header + three sections + artifact reminder. No LLM, no ambiguity.
+
+### 11. Live artifact reminder (SKILL.md line 50)
+
+**Before:** "Also remind the duty manager to open the live artifact 'ops-report' for the interactive version with charts."  
+**After:** Hardcoded footer in `render_ops_report.py`:
+
+```python
+# skill: "Also remind the duty manager to open the live artifact 'ops-report' for the interactive version"
+lines.append("> **Reminder:** Open the live artifact **ops-report** ...")
+```
+
+### 12. Independent data pulls → parallel entry_nodes (Pattern 8)
+
+**Before:** Pulls listed sequentially in prose (1, 2, 3, 4). An agent runs them serially.  
+**After:** All four declared in `entry_nodes:` with no connecting edges → adapter runs them concurrently in one execution wave.
 
 ---
 
-### Extraction 7 — BI dashboard dwell thresholds (Pattern 2 + Pattern 7)
-**Source:** `SKILL.md:40` — "Brand 25-40 = Missort Warning (light red), 41+ = Missort Alert (bright red). Carrier 80+ missing = Possible Misload Alert (darkest red)"  
-**Before:** LLM reads rubric and classifies each row.  
-**After:** Same `_classify_dwell_row()` helper as Extraction 2, lifted to `extracted/thresholds.py`.
+## Open Questions
 
----
+The following judgment calls were made during compilation. Each should be verified before the first production run.
 
-### Extraction 8 — Fixed report template (Pattern 4)
-**Source:** `SKILL.md:44–48` — exact report structure with section names, KPI header columns, and three named sections.  
-**Before:** LLM assembles Markdown by reading the format spec.  
-**After:** `extracted/render.py:render_report` — a pure string formatter that takes typed dicts and produces the exact Markdown structure the skill prescribes.
+### OQ-1: Gmail approved/requested classification method
 
----
+**What the skill says:** "Count Approved vs. Requested appointments."  
+**What the skill doesn't say:** Which field, label, subject prefix, or pattern distinguishes an approved thread from a requested one.  
+**Decision taken:** Keyword matching on thread `snippet` and `Subject` header. A thread containing "approved" is approved; one containing "requested", "request", or "pending" (without "approved") is counted as outstanding.  
+**Where it appears:** `extracted/parse_dock_activity_emails.py`, marked `# rote: assumption:`.  
+**How to verify:** Inspect a sample of real dock-activity threads. If they use a structured subject prefix (e.g. `[APPROVED]`) or a Gmail label, update the parser accordingly. If the classification is genuinely ambiguous from text alone, consider upgrading this node to `llm_judge`.
 
-### Extraction 9 — Parallel data pulls (Pattern 8)
-**Source:** `SKILL.md:18–32` — four data sources listed sequentially  
-**Before:** Agent executes four tool calls one at a time (4–8 turns).  
-**After:** `entry_nodes` lists all four fetch nodes; adapter runs them in the same execution wave.
+### OQ-2: Carrier Impact column numeric vs. text in Dwell Log
 
----
+**What the skill says:** "carrier >= 80 (Possible Misload Alert)" in the context of dwell tickets.  
+**What the skill doesn't say:** Whether the "Carrier Impact" column in the Dwell Log Form Responses tab contains a numeric package count or free text (e.g. "FedEx — routing error").  
+**Decision taken:** Parse the column as an integer; treat non-numeric values as `carrier_packages = 0`. Carrier alerts will not fire from dwell-log data if the column is free text.  
+**Where it appears:** `extracted/parse_dwell_tickets.py`, marked `# rote: assumption:`.  
+**How to verify:** Inspect a sample row from the Dwell Log tab. If Carrier Impact is text, either (a) add a separate numeric column, or (b) remove the carrier threshold check from `parse_dwell_tickets` (it fires more reliably from the BI dashboard current-dwell data via the HITL gate).
 
-## Phase 4: LLM-Judge Extraction
+### OQ-3: Alert priority when both brand >= 41 and carrier >= 80
 
-**None.** Every decision in this skill is numeric threshold comparison or keyword detection — no step requires reading prose, job titles, or free-text to make a classification. The skill has no rubric-driven classification. All 12 non-HITL nodes are either `external_call` or `pure_function`.
+**What the skill says:** Three distinct alert levels with color codes (light red, bright red, darkest red).  
+**What the skill doesn't say:** What to display when a single dwell item triggers both "Missort Alert" (packages >= 41) and "Possible Misload Alert" (carrier >= 80) simultaneously.  
+**Decision taken:** Possible Misload Alert takes priority because "darkest red" implies highest severity in the skill's color scheme.  
+**Where it appears:** `_classify_alert` in `parse_dwell_tickets.py` and `_classify_dwell_alert` in `validate_manual_data.py`, both marked `# rote: assumption:`.  
+**How to verify:** Confirm with the duty manager whether these conditions can co-occur and which label the ops team expects to see.
 
----
+### OQ-4: Google Drive MCP `read_file_content` parameter name
 
-## Phase 6: Adapter Checklist
+**What the skill says:** "Google Drive MCP — read_file_content" with a File ID.  
+**What is unknown:** Whether the MCP tool's argument is named `file_id` (snake_case) or `fileId` (camelCase) or something else.  
+**Decision taken:** Used `file_id` in `mcp.args` as the most common convention.  
+**Where it appears:** `pipeline.yaml`, `mcp.args.file_id` on all three Drive nodes.  
+**How to verify:** Check the Google Drive MCP server's tool schema. Update `mcp.args` accordingly if the parameter name differs.
 
-- [x] Every `pure_function` / `external_call` node has an `impl:` pointing at a created file
-- [x] All four MCP data-pull nodes carry `mcp:` bindings (`server` + `tool` + `args`)
-- [x] All `pure_function` nodes are fully implemented (no `NotImplementedError` stubs)
-- [x] `external_call` stubs raise `NotImplementedError` with the API description (Regime 1 — no probe-context)
-- [x] No `llm_judge` nodes → no `signature:` requirements
-- [x] No `agent_loop` nodes → no `tools:` requirements
-- [x] `hitl_gate` has `signal: manual_data_provided`
-- [x] All edge `from`/`to` reference real node IDs
-- [x] `entry_nodes` and `exit_nodes` reference real node IDs
-- [x] No `mandatory: true` on agent_loop nodes (no agent_loop nodes exist)
-- [x] No YAML key named `on:` (used `on_signal:` throughout)
-- [x] All `inputs:` references use valid grammar forms and reference upstream nodes
-- [x] Every implemented `pure_function` is covered by a test file under `tests/`
-- [x] Every `# skill: "..."` citation quotes text that appears in `SKILL.md`
-- [x] Every `# rote: assumption:` has a corresponding Open question below
+### OQ-5: Google Drive `read_file_content` response shape
 
----
+**What is unknown:** The exact structure returned by the MCP tool. The `parse_*` functions expect `fetch_*.output.content` to be the CSV text string.  
+**Decision taken:** Assumed `{"content": str}` (the file text under a `content` key).  
+**Where it appears:** All three `parse_*` nodes, `inputs: raw_content: fetch_*.output.content`.  
+**How to verify:** Run an instrumented baseline pass to populate `probe-context/`. If the tool returns a different key (e.g. `text`, `body`), update the `output:` declarations on the fetch nodes and the `inputs:` bindings on the parse nodes.
 
-## Open questions
+### OQ-6: Gmail `search_threads` response shape
 
-### OQ-1: Google Drive MCP tab/sheet selection
-**The skill says:** `"Tab: Dwell Log - Form Responses"` for the dwell ticket file.  
-**What we chose:** We set `constants.tab: "Dwell Log - Form Responses"` but only mapped `file_id` in `mcp.args` because it is unknown whether the `google_drive.read_file_content` tool accepts a sheet/tab name argument.  
-**Action needed:** Verify the MCP tool's argument list. If `read_file_content` accepts a `sheet_name` or `tab` argument, add it to `fetch_dwell_tickets.mcp.args: {file_id: file_id, sheet_name: tab}`. If not, add a `pure_function` node after the fetch to filter the raw content to the correct tab before passing it to `parse_dwell_tickets`.
+**What is unknown:** The exact dict structure returned by the MCP tool.  
+**Decision taken:** Assumed `{"threads": [...], "resultSizeEstimate": N}` (standard Gmail API shape). The `parse_dock_activity_emails` function calls `.get("threads", [])` so it degrades gracefully to an empty list if the key differs.  
+**Where it appears:** `fetch_dock_activity_emails` output declaration in `pipeline.yaml`.  
+**How to verify:** Same instrumented baseline run as OQ-5.
 
----
+### OQ-7: Schedule hour and timezone
 
-### OQ-2: Gmail `search_threads` result shape
-**The skill says:** use `gmail.search_threads` with query `label:dock-activity newer_than:1d`.  
-**What we chose:** `parse_dock_activity_emails` assumes the result is `{"threads": [{subject: ..., snippet: ...}]}`. Appointment status is inferred by scanning thread subjects/snippets for the words "approved" / "request".  
-**What the skill does not state:** the actual email subject format. If dock-activity emails use a different scheme (e.g., a status field, a structured subject line, or a separate label per status), the keyword heuristic may over- or under-count.  
-**Action needed:** After first production run, compare `approved_count + requested_count` against `total_threads`. If many threads are uncategorized, inspect the actual subjects and update the keyword list or add a classification step.
-
----
-
-### OQ-3: Dwell threshold dimension ("Brand" vs "Carrier")
-**The skill says:** "Brand 25-40 = Missort Warning, 41+ = Missort Alert. Carrier 80+ missing = Possible Misload Alert."  
-**What we chose:** Both `parse_dwell_tickets` and `apply_dwell_thresholds` apply a single tiered threshold to the row's `packages` column: 80+ = Possible Misload Alert (takes precedence), 41–79 = Missort Alert, 25–40 = Missort Warning. We did not aggregate by carrier name because the ticket log and BI dashboard data each have only one package count per row, not separate brand-count and carrier-count columns.  
-**`# rote: assumption:`** in `extracted/parsers.py:_classify_dwell_packages` and `extracted/thresholds.py:_classify_dwell_row`.  
-**Action needed:** If the BI dashboard or ticket log has separate "brand packages" and "carrier packages" columns, rewrite both classifiers to use the appropriate column for each threshold. The current implementation would then need to be split into a brand check and a carrier check.
-
----
-
-### OQ-3a: Assumption — `_classify_dwell_packages` per-row interpretation (`extracted/parsers.py`)
-**Assumption text:** `"carrier >= 80 (Possible Misload Alert)" is applied to the raw # packages column of each open ticket row … The skill does not state whether this is per-row or aggregated by carrier name; per-row is chosen as the simpler/more actionable interpretation.`  
-**Skill gap:** The skill says "carrier >= 80 (Possible Misload Alert)" but does not say whether to apply the threshold per-row or to aggregate packages across all rows for each carrier before comparing. Per-row is assumed.  
-**Action needed:** Confirm with ops team whether the carrier alert should aggregate all dwelling packages for a carrier across sites before applying the 80-package threshold.
-
----
-
-### OQ-3b: Assumption — `_classify_dwell_packages` range priority (`extracted/parsers.py`)
-**Assumption text:** `thresholds are applied as ranges (not cumulative), with the highest threshold taking precedence: 80+ = Possible Misload Alert, 41-79 = Missort Alert, 25-40 = Missort Warning.`  
-**Skill gap:** The skill lists three thresholds (`>= 25`, `>= 41`, `>= 80`) without stating that they are mutually exclusive or that the highest wins. A row with 80 packages meets all three; the code returns only "Possible Misload Alert". If all three alerts should fire simultaneously, the implementation must return a list rather than a single string.  
-**Action needed:** Confirm whether a row with 80+ packages should show one alert (highest only) or all three.
-
----
-
-### OQ-3c: Assumption — Gmail `search_threads` result shape (`extracted/parsers.py`)
-**Assumption text:** `The Gmail MCP search_threads tool returns a JSON-serializable dict with a 'threads' key. Each thread has a 'subject' or 'snippet' field. Appointment status is inferred from the word 'approved' (→ Approved) or 'request'/'requested' (→ Requested) appearing in the thread subject/snippet.`  
-**Skill gap:** The skill specifies the Gmail search query but not the result structure or how "Approved" vs "Requested" is signalled in the emails. The keyword heuristic is the simplest defensible default; it may mis-classify if subject lines use different wording.  
-**Action needed:** (Same as OQ-2 — listed here to map to the specific `# rote: assumption:` marker in the code.)
-
----
-
-### OQ-3d: Assumption — `_classify_dwell_row` tiered threshold (`extracted/thresholds.py`)
-**Assumption text:** `"Brand 25-40 = Missort Warning, 41+ = Missort Alert, Carrier 80+ missing = Possible Misload Alert" is applied as a single tiered threshold on the packages column (highest threshold wins). The skill names Brand/Carrier as separate dimensions but does not provide separate package counts per dimension; a single per-row packages column is used.`  
-**Skill gap:** Identical to OQ-3 and OQ-3a but appearing in `thresholds.py:_classify_dwell_row` (applied to BI dashboard data) rather than `parsers.py:_classify_dwell_packages` (applied to ticket log data). Both functions share the same assumption; both need the same confirmation.  
-**Action needed:** (Same as OQ-3a — listed here to map to the specific `# rote: assumption:` marker in `extracted/thresholds.py`.)
-
----
-
-### OQ-4: Sorter metrics availability for non-automated sites
-**The skill says:** "for sites with automated divert lines" — implying some sites may have no sorter data.  
-**What we chose:** `apply_sorter_flags` accepts an empty `sorter_metrics` list and returns empty site lists (no flags), so sites without sorters simply produce no output in Section 2.  
-**Action needed:** Confirm with the duty manager team whether sites without sorters are expected to send `sorter_metrics: []` or to omit the key entirely. The current HITL gate output schema accepts an empty list; a missing key would cause a KeyError in `apply_sorter_flags` unless the gate's signal handler normalizes missing keys to `[]`.
-
----
-
-### OQ-5: File IDs are example values
-**The skill uses:** `1ExampleShipmentContainersFileId00000000000`, `1ExampleDockPendingLogFileId0000000000000000`, `1ExampleDwellTicketLogFileId0000000000000000`.  
-These are clearly placeholder IDs. Before deploying, replace all three `constants.file_id` values in `pipeline.yaml` with the real production Google Drive file IDs. The skill does not provide them.
+**What the skill says:** "Scheduled daily executive operations report."  
+**What the skill doesn't say:** The hour of day or timezone.  
+**Decision taken:** `schedule: "0 6 * * *"` (6 AM in the runtime's default timezone).  
+**Where it appears:** `pipeline.yaml`, `config.schedule`.  
+**How to verify:** Confirm with the ops team what time the report should run and in which timezone.
 
 ---
 
 ## Suggested Next Steps
 
-1. **Replace placeholder file IDs** (OQ-5) and run the pipeline once manually to verify the four fetch nodes return parseable content before scheduling.
+1. **Instrument a baseline run first.** Before running any production traffic, execute the skill as raw agent instructions once with MCP traffic logging enabled to populate `probe-context/observed-tools.json`. This resolves OQ-4, OQ-5, and OQ-6 in a single pass and unlocks real implementations for the four `external_call` stubs.
 
-2. **Verify Gmail thread shape** (OQ-2) by logging the first `search_threads` response in a dev run, then adjusting `parse_dock_activity_emails` if the subject/snippet heuristic is inaccurate.
+2. **Dog-food against today's data.** After the first instrumented run, point the compiled pipeline at the same data and diff the two reports. Any divergence surfaces a parsing assumption that needs correction.
 
-3. **Confirm Drive tab support** (OQ-1) by checking the MCP tool's declared arguments or testing a call with a `sheet_name` parameter.
+3. **Inspect dock-activity email format (OQ-1).** Pull five recent dock-activity threads and look at their subjects. If they follow a predictable pattern, the keyword-matching parser can be hardened to a regex or label check. If not, consider upgrading `parse_dock_activity_emails` to a lightweight `llm_judge` with a tight output schema (`{approved: bool, outstanding: bool, reason: str}`).
 
-4. **Run `python -m pytest tests/`** from the work directory — all tests are offline and should pass against the current implementations. Any failure points to a mis-stated skill rule.
+4. **Pin the report timezone.** Update `config.schedule` after confirming the ops team's preferred run time.
 
-5. **First production run dogfood:** after the first real run, compare `render_report` output against the existing human-authored report to validate the template matches expectations. The Section 3 dwell threshold interpretation (OQ-3) is the most likely source of discrepancy.
+5. **Run `rote emit pipeline.yaml --runtime temporal`** once the stubs are resolved. The IR is fully populated and the adapter has everything it needs to produce a working Temporal workflow.
 
-6. **DSPy/BAML compile not needed** — this skill has zero `llm_judge` nodes. The compiled pipeline never calls an LLM at runtime. Skip the signature-optimization phase entirely.
+## rote verification
 
-7. **Schedule tuning:** the pipeline is set to `0 6 * * *` (06:00 daily). Adjust to match the duty manager's shift start. The HITL gate timeout is 4 h; if the duty manager needs until end-of-shift, increase to `8h` or `10h`.
+- Generated tests: passed (96 passed in 0.07s), run in an OS sandbox.
+- Implemented impl nodes: 6 of 10.
+- Unresolved problems: 0.

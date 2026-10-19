@@ -245,6 +245,28 @@ def test_each_assumption_needs_its_own_open_question(tmp_path: Path, report: str
         assert kinds == ["unlisted_assumption"]
 
 
+def test_one_assumption_marked_twice_is_one_question(tmp_path: Path) -> None:
+    """A real report listed the "-" placeholder assumption once although the
+    renderer marked it at two call sites, and was bounced for it."""
+    twice = (
+        "def route(ret):\n"
+        "    # rote: assumption: an unlisted reason is manual review\n"
+        '    first = "manual_review"\n'
+        "    # rote: assumption: an unlisted  reason is Manual Review\n"
+        '    second = "manual_review"\n'
+        "    return first, second\n"
+    )
+    (tmp_path / "extracted").mkdir()
+    (tmp_path / "extracted" / "route.py").write_text(twice)
+    (tmp_path / "compile-report.md").write_text("## Open questions\n\n- Unlisted reasons.\n")
+    assert provenance_findings(_pipeline(), tmp_path, None) == []
+
+
+def test_a_punctuation_placeholder_is_not_an_outcome() -> None:
+    source = 'def f(alert):\n    flag = "—" if alert is None else alert\n    return flag\n'
+    assert unmarked_outcomes(source) == []
+
+
 def test_open_questions_counts_subheadings_not_their_detail() -> None:
     report = "## Open questions\n\n### OQ-1\n- a\n- b\n\n### OQ-2\n- c\n\n## Next\n- d\n"
     assert len(open_questions(report)) == 2
