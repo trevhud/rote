@@ -105,9 +105,10 @@ def current_layout() -> Layout:
     executable = Path(os.path.realpath(sys.executable))
     stdlib = Path(sysconfig.get_paths()["stdlib"]).resolve()
     read_dirs = {stdlib, *_site_dirs()}
-    # The path the child is launched by (often a venv or toolcache symlink to
-    # the binary) must exist inside a bwrap namespace too, not just its target.
-    read_files = {executable, Path(os.path.abspath(sys.executable))}
+    # The sandboxed child is launched by this resolved path (see
+    # :func:`launch_executable`), never through a venv or symlink, so no
+    # venv's pyvenv.cfg and no symlinked install path need to exist inside.
+    read_files = {executable}
     exec_files: set[Path] = set()
     ldlibrary = sysconfig.get_config_var("LDLIBRARY") or ""
     framework_prefix = sysconfig.get_config_var("PYTHONFRAMEWORKPREFIX") or ""
@@ -127,15 +128,27 @@ def current_layout() -> Layout:
             lib = Path(libdir, name)
             if lib.exists():
                 read_files.update({Path(os.path.abspath(lib)), lib.resolve()})
-    venv_cfg = Path(sys.prefix) / "pyvenv.cfg"
-    if venv_cfg.is_file():
-        read_files.add(venv_cfg.resolve())
     return Layout(
         executable=executable,
         read_dirs=tuple(sorted(read_dirs)),
         read_files=tuple(sorted(read_files)),
         exec_files=tuple(sorted(exec_files)),
     )
+
+
+def launch_executable() -> str:
+    """The interpreter path a sandboxed run is started with: the real binary.
+
+    Not ``sys.executable``. Launched through a venv, Python reads the venv's
+    ``pyvenv.cfg`` and finds its stdlib through the ``home`` recorded there,
+    and uv records a symlinked install path (``cpython-3.11-linux-...``, not
+    the versioned dir it resolves to). That path does not exist inside a bwrap
+    namespace, so every sandboxed run on a uv-managed Python died with "No
+    module named 'encodings'". The real binary finds its stdlib next to
+    itself, and the child runs with ``-S`` and an explicit PYTHONPATH, so it
+    needs nothing from the venv.
+    """
+    return str(current_layout().executable)
 
 
 def _homes() -> set[Path]:

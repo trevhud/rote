@@ -215,7 +215,7 @@ def run_generated_tests(
                 # hold pytest are passed explicitly instead.
                 env["PYTHONPATH"] = os.pathsep.join([str(root), *sandbox.import_path()])
                 argv, env = sandbox.wrap(
-                    box, [sys.executable, "-S", *pytest_args], root, scratch, env
+                    box, [sandbox.launch_executable(), "-S", *pytest_args], root, scratch, env
                 )
             proc = subprocess.run(
                 argv,
@@ -232,7 +232,12 @@ def run_generated_tests(
             output="The generated tests did not finish; look for an unbounded loop.",
         )
     text = (proc.stdout or "") + (proc.stderr or "")
-    lines = text.strip().splitlines()
+    # pytest's summary is the last line of stdout. The last line of the
+    # combined text was whatever the interpreter wrote to stderr on its way
+    # out: a uv-managed Python's ncurses, finding no terminfo inside the
+    # sandbox, prints "using dumb terminal settings." there. stderr is the
+    # summary only when pytest never got that far (a crash at startup).
+    lines = (proc.stdout or "").strip().splitlines() or text.strip().splitlines()
     return GeneratedTests(
         status="passed" if proc.returncode == 0 else "failed",
         summary=lines[-1] if lines else f"pytest exited {proc.returncode} with no output",

@@ -19,6 +19,8 @@ from __future__ import annotations
 import os
 import pwd
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -41,7 +43,27 @@ else:
     AGENT_SOCKET_DIR = f"/run/user/{os.getuid()}"
     SECRET_CLI = "/bin/sh"
 
-SNOOP = f"""\
+
+def _home_skeleton() -> set[str]:
+    """The names a bwrap namespace may show at the top of the real home.
+
+    bwrap creates every parent of a bind destination, so binding a
+    uv-managed Python under ``~/.local/share/uv/python`` makes an empty
+    ``~/.local`` appear inside, and a venv under ``~/work`` an empty
+    ``~/work``. Those names are paths to the dirs Python needs, not
+    contents of the home. Nothing else may be listed.
+    """
+    layout = sandbox.current_layout()
+    home = Path(REAL_HOME)
+    return {
+        path.relative_to(home).parts[0]
+        for path in (*layout.read_dirs, *layout.read_files, *layout.exec_files)
+        if path.is_relative_to(home) and path != home
+    }
+
+
+def _snoop(secret_files: list[str]) -> str:
+    return f"""\
 import os
 import pwd
 import socket
@@ -56,14 +78,26 @@ def test_the_work_dir_modules_import_and_run():
     assert double(21) == 42
 
 
-def test_the_real_home_cannot_be_read():
+def test_the_real_home_shows_no_contents():
     home = {REAL_HOME!r}
     try:
         home = pwd.getpwuid(os.getuid()).pw_dir
     except KeyError:
         pass
-    with pytest.raises(OSError):
-        os.listdir(home)
+    try:
+        listed = set(os.listdir(home))
+    except OSError:
+        return
+    assert listed <= {_home_skeleton()!r}, listed
+
+
+def test_the_users_files_cannot_be_read():
+    for path in {secret_files!r}:
+        with pytest.raises(OSError):
+            open(path).read()
+    for path in {[f"{REAL_HOME}/.ssh", f"{REAL_HOME}/.local/share/rote"]!r}:
+        with pytest.raises(OSError):
+            os.listdir(path)
 
 
 def test_the_network_is_unreachable():
@@ -82,30 +116,54 @@ def test_no_other_program_can_run():
 """
 
 
-def _deliverable(root: Path) -> Path:
+@pytest.fixture
+def planted() -> Iterator[list[str]]:
+    """Real secret files beside what the sandbox binds: one in the real
+    home, one in the venv root next to the site-packages it binds. Each
+    exists and is readable outside, so the denial is capable of failing."""
+    dirs = [REAL_HOME]
+    if sys.prefix != sys.base_prefix:
+        dirs.append(sys.prefix)
+    paths = []
+    try:
+        for d in dirs:
+            fd, path = tempfile.mkstemp(prefix=".rote-planted-secret-", dir=d)
+            os.write(fd, b"s3cret")
+            os.close(fd)
+            paths.append(path)
+        yield paths
+    finally:
+        for path in paths:
+            os.unlink(path)
+
+
+def _deliverable(root: Path, secret_files: list[str]) -> Path:
     (root / "extracted").mkdir(parents=True)
     (root / "tests").mkdir()
     (root / "extracted" / "logic.py").write_text("def double(x):\n    return x * 2\n")
-    (root / "tests" / "test_snoop.py").write_text(SNOOP)
+    (root / "tests" / "test_snoop.py").write_text(_snoop(secret_files))
     return root
 
 
 @needs_sandbox
-def test_the_sandbox_denies_home_network_agent_socket_and_exec(tmp_path: Path) -> None:
+def test_the_sandbox_denies_home_network_agent_socket_and_exec(
+    tmp_path: Path, planted: list[str]
+) -> None:
     assert BOX is not None, f"CI must have a working sandbox: {WHY}"
-    result = run_generated_tests(_deliverable(tmp_path / "work"))
+    result = run_generated_tests(_deliverable(tmp_path / "work", planted))
     assert result is not None
     assert result.status == "passed", result.output
-    assert "5 passed" in result.summary
+    assert "6 passed" in result.summary
 
 
 @needs_sandbox
-def test_without_the_sandbox_the_same_tests_fail(tmp_path: Path) -> None:
+def test_without_the_sandbox_the_same_tests_fail(tmp_path: Path, planted: list[str]) -> None:
     """The negative half: these assertions are capable of failing."""
-    result = run_generated_tests(_deliverable(tmp_path / "work"), trust_skill=True)
+    result = run_generated_tests(_deliverable(tmp_path / "work", planted), trust_skill=True)
     assert result is not None and result.status == "failed", result.output
     # The legitimate test still passes; it is the denials that fail.
-    assert "test_the_real_home_cannot_be_read" in result.output
+    assert "test_the_real_home_shows_no_contents" in result.output
+    assert "test_the_users_files_cannot_be_read" in result.output
     assert "test_no_other_program_can_run" in result.output
 
 
@@ -113,7 +171,7 @@ def test_no_sandbox_means_not_run_and_unverified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sandbox, "detect", lambda: (None, "nothing here"))
-    result = run_generated_tests(_deliverable(tmp_path / "work"))
+    result = run_generated_tests(_deliverable(tmp_path / "work", []))
     assert result is not None
     assert result.status == "unverified" and not result.passed
     assert "nothing here" in result.summary and "--trust-skill" in result.summary
@@ -130,12 +188,62 @@ def test_the_macos_profile_denies_by_default_and_allows_no_network(tmp_path: Pat
     assert str(Path(os.path.realpath(sys.executable))) in exec_rule
 
 
-def test_the_bwrap_namespace_has_no_network_and_no_home(tmp_path: Path) -> None:
-    argv = sandbox.bwrap_argv(tmp_path / "w", tmp_path / "t", sandbox.current_layout())
+def test_the_bwrap_namespace_has_no_network_and_no_home_contents(tmp_path: Path) -> None:
+    """A bind under the home is allowed, and is on CI: a venv in the
+    checkout, or a uv-managed Python under ~/.local/share/uv/python. What
+    must hold is that only the dirs this Python needs are bound there,
+    never the home, an ancestor of it, or anything holding ~/.ssh or
+    rote's own data."""
+    layout = sandbox.current_layout()
+    argv = sandbox.bwrap_argv(tmp_path / "w", tmp_path / "t", layout)
     assert "--unshare-all" in argv
-    bound = {argv[i + 2] for i, a in enumerate(argv) if a in ("--bind", "--ro-bind")}
-    assert REAL_HOME not in bound
-    assert not any(b.startswith("/home") or b == "/root" for b in bound)
+    bound = {
+        Path(argv[i + 2])
+        for i, a in enumerate(argv)
+        if a in ("--bind", "--ro-bind", "--ro-bind-try")
+    }
+    home = Path(REAL_HOME)
+    needed = {*layout.read_dirs, *layout.read_files, *layout.exec_files}
+    for path in bound:
+        assert not home.is_relative_to(path), f"{path} exposes the home"
+        for secret in (
+            home / ".ssh",
+            home / ".local" / "share" / "rote",
+            home / ".config" / "rote",
+        ):
+            assert not secret.is_relative_to(path), f"{path} exposes {secret}"
+        if path.is_relative_to(home):
+            assert path in needed, f"{path} is under the home and not part of this Python"
+    # The work and tmp dirs are writable, and nothing else is.
+    writable = {Path(argv[i + 2]) for i, a in enumerate(argv) if a == "--bind"}
+    assert writable == {tmp_path / "w", tmp_path / "t"}
+
+
+def test_a_uv_managed_python_under_home_is_bound_not_refused() -> None:
+    """setup-uv's interpreter lives under ~/.local/share/uv/python. Binding
+    that install read-only is fine; it holds nothing of the user's."""
+    home = Path("/home/runner")
+    install = home / ".local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu"
+    layout = sandbox.Layout(
+        executable=install / "bin/python3.11",
+        read_dirs=(
+            install / "lib/python3.11",
+            home / "work/rote/.venv/lib/python3.11/site-packages",
+        ),
+        read_files=(install / "bin/python3.11",),
+    )
+    assert sandbox.refusal(layout, {home}) is None
+    argv = sandbox.bwrap_argv(Path("/w"), Path("/t"), layout)
+    bound = {argv[i + 1] for i, a in enumerate(argv) if a == "--ro-bind"}
+    assert str(install / "lib/python3.11") in bound
+    assert not {str(home), str(home / ".local"), str(home / ".local/share")} & bound
+
+
+def test_the_child_is_launched_by_the_real_binary_not_the_venv() -> None:
+    """Through a venv, Python finds its stdlib via pyvenv.cfg's ``home``,
+    a path nothing binds; every uv-managed run died on 'encodings'."""
+    assert sandbox.launch_executable() == os.path.realpath(sys.executable)
+    assert Path(sandbox.launch_executable()) in sandbox.current_layout().read_files
 
 
 # ───────── An install that cannot be confined is refused, not loosened ─────────
@@ -193,7 +301,7 @@ def test_a_home_rooted_python_falls_back_to_unverified(
     try:
         box, why = sandbox.detect()
         assert box is None and "cannot be confined" in why
-        result = run_generated_tests(_deliverable(tmp_path / "work"))
+        result = run_generated_tests(_deliverable(tmp_path / "work", []))
         assert result is not None and result.status == "unverified"
     finally:
         sandbox.detect.cache_clear()
