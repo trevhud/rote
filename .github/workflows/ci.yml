@@ -141,6 +141,7 @@ jobs:
             tests/test_cloudflare_e2e.py \
             tests/test_inngest_e2e.py \
             tests/test_ts_agent_loop_e2e.py \
+            tests/test_constants_parity_ts_e2e.py \
             tests/test_judge_schema_parity_e2e.py \
             tests/test_ts_typed_impls_e2e.py \
             tests/test_mcp_ts_e2e.py \
@@ -183,4 +184,5 @@ jobs:
           pytest -m slow -v \
             tests/test_dbos_ts_e2e.py \
             tests/test_mcp_park_ts_e2e.py \
-            tests/test_pipeline_input_ts_e2e.py
+            tests/test_pipeline_input_ts_e2e.py \
+            tests/test_constants_parity_dbos_ts_e2e.py

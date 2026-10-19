@@ -47,7 +47,7 @@ export async function leadGenerationLoop(
             name: "enrich_contact_batch",
             description: "Batch enrich contacts via ZoomInfo. Always requests employmentHistory\nbecause vetting depends on it. Hard limit of 10 contacts per call\nfrom the ZoomInfo API.",
             parameters: {"type": "object", "additionalProperties": true},
-            run: async (args) => enrichContactBatch(args),
+            run: async (args) => enrichContactBatch({ ...(args as Record<string, unknown>), batch_size: 10, output_fields: ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"] }),
         },
         {
             name: "vet_contact",

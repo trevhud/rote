@@ -50,8 +50,12 @@ drift from it.
   (`parse_dock_pending` exports `parseDockPending`) that the workflow
   imports by that name.
 - **Call shape:** one object argument whose keys are the node's
-  `inputs:` parameter names. The stub types it `_input: unknown`.
-  Replace that with a real interface for the input.
+  `inputs:` parameter names plus its IR `constants`, merged last. Every
+  caller sends them: the DAG, each fan_out element, and an agent loop
+  calling the node as a tool. The stub types it `_input: unknown`.
+  Replace that with a real interface for the input that declares both
+  the inputs and the constant keys, or `tsc` rejects the call's extra
+  properties.
 - **Return type:** the stub declares `Promise<never>` because it always
   throws. Replace it with a concrete type. On Cloudflare the return
   value must satisfy `Rpc.Serializable`, so return plain objects,
@@ -59,10 +63,16 @@ drift from it.
   instances. The workflow reads fields as
   `(<id>_result as Record<string, unknown>)["field"]`, so any concrete
   object type compiles.
-- **Constants are not passed.** The workflow sends only the node's
-  `inputs:`. The stub's doc comment lists the node's constants under
-  "Constants from the source skill". Write them into the file as named
-  constants. One file serves one node, so there is no ambiguity.
+- **Constants are passed; read them from the input.** The stub's doc
+  comment lists the node's constants under "Constants from the source
+  skill". Use `input.<key>`, not a hard-coded copy: a copy makes the
+  pipeline.yaml value dead config, so editing it changes nothing. An
+  MCP-bound node is the exception. Its tool gets a constant only when
+  `mcp.args` names it.
+- **Type-check after implementing.** wrangler, esbuild and tsx bundle
+  without type-checking, and `rote run` won't show it either, so run
+  `npx tsc --noEmit` in the emitted dir. It catches a closed input type
+  that is missing one of the node's constants (TS2353, excess property).
 - **Agent-loop modules are not stubs.** `src/extracted/<loop node id>.ts`
   is generated working code. Leave it alone.
 - **Python code does not carry over.** The compiler's

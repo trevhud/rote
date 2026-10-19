@@ -64,6 +64,7 @@ from rote.adapters._ts_common import (
     ROTE_MCP_WORKERS_HELPER_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
+    constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
     emit_workers_mcp_call_module,
@@ -172,7 +173,7 @@ def _step_config_literal(node: Node, cfg: CloudflareAdapterConfig) -> str:
 def _emit_step_call(node: Node, cfg: CloudflareAdapterConfig, *, pass_env: bool) -> str:
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
-    payload = payload_ts_literal(node, indent=" " * 12)
+    payload = payload_ts_literal(node, indent=" " * 12, with_constants=True)
     args = f"{payload}, this.env" if pass_env else payload
     return (
         f"        const {node.id}_result = await step.do(\n"
@@ -223,7 +224,7 @@ def _emit_step_call_mcp_parkable(
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
     if payload is None:
-        payload = payload_ts_literal(node, indent=" " * 24)
+        payload = payload_ts_literal(node, indent=" " * 24, with_constants=False)
     nid = node.id
     if node.mcp is not None:
         # One binding, one server: the release event is known at emit time.
@@ -378,7 +379,7 @@ def _emit_parallel_step_calls(nodes: list[Node], cfg: CloudflareAdapterConfig) -
         pass_env = n.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
         # Closing brace lines up with its `async () =>`, as in the
         # single-node form (which passes its own call indent).
-        payload = payload_ts_literal(n, indent=" " * 16)
+        payload = payload_ts_literal(n, indent=" " * 16, with_constants=True)
         args = f"{payload}, this.env" if pass_env else payload
         lines.append("            step.do(")
         lines.append(f"                {json.dumps(n.id)},")
@@ -402,7 +403,7 @@ def _emit_fan_out_parallel(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
     element's result for all of them — the failure would look like a
     correct run with suspiciously uniform output.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12, with_constants=True)
     pass_env = node.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
     args = f"{payload}, this.env" if pass_env else payload
     return "\n".join(
@@ -431,7 +432,7 @@ def _emit_fan_out_parkable(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
     promise combinator is undocumented and whose timeout *throws*, which
     would reject every other element.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 8)
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 8, with_constants=False)
     inner = _emit_step_call_mcp_parkable(
         node, cfg, pipeline=pipeline, payload=payload, name_suffix="[${_index}]"
     )
@@ -850,14 +851,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -1355,6 +1349,7 @@ class CloudflareAdapter:
             default_model=cfg.anthropic_default_model,
             generated_by="rote.adapters.cloudflare",
             workers=True,
+            mcp_backed_ids=frozenset(mcp_ids),
             sub_node_env_arg=env_arg,
             workers_ai_model=WORKERS_AI_AGENT_MODEL,
         )

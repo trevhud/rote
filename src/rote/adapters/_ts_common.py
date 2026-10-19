@@ -47,6 +47,7 @@ from rote.adapters._common import (
     temperature_env_var,
 )
 from rote.ir import (
+    CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
     Node,
     NodeKind,
@@ -591,20 +592,61 @@ def exit_return_ts_lines(pipeline: Pipeline) -> list[str]:
     return lines
 
 
-def payload_ts_literal(node: Node, indent: str) -> str:
+def impl_constant_entries_ts(node: Node) -> list[str]:
+    """``key: value`` object entries for the constants a node's impl receives.
+
+    The TS twin of the Python ``impl_kwargs_expr``: a ``pure_function`` /
+    ``external_call`` impl gets its node's IR constants in its input
+    object, so several nodes can share one function and an edit to a
+    constant in pipeline.yaml changes the rule. Judges and agent loops get
+    none. A caller that reaches an MCP tool instead of an impl must not add
+    them: a constant reaches a tool only when ``mcp.args`` names it
+    (``mcp_tool_arguments``). Keys are IR-validated identifiers; values are
+    JSON, which is valid TypeScript.
+    """
+    if node.kind not in CONSTANT_ARGUMENT_KINDS or not node.constants:
+        return []
+    return [f"{key}: {json.dumps(value)}" for key, value in node.constants.items()]
+
+
+def constants_doc_ts(node: Node) -> list[str]:
+    """The stub doc-comment lines that list what constants the impl receives."""
+    entries = impl_constant_entries_ts(node)
+    if not entries:
+        return []
+    assert node.constants is not None
+    return [
+        " *",
+        " * Constants from the source skill (lifted into the IR). The workflow",
+        " * passes them in `input` next to the node's inputs on every call, so",
+        " * use these keys rather than hard-coding the values:",
+        *(
+            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
+            for k, v in node.constants.items()
+        ),
+    ]
+
+
+def payload_ts_literal(node: Node, indent: str, *, with_constants: bool) -> str:
     """Render the step payload object for a node's data-flow bindings.
 
-    Nodes without ``inputs`` keep the empty payload (back-compat).
-    ``indent`` is the indentation of the line the literal starts on;
-    entries are indented one level deeper.
+    ``with_constants`` adds the node's impl constants after the inputs
+    (:func:`impl_constant_entries_ts`). Pass False where the call reaches
+    an MCP tool rather than an impl. A node with neither inputs nor
+    constants gets the empty payload. ``indent`` is the indentation of
+    the line the literal starts on; entries are indented one level deeper.
     """
-    if not node.inputs:
+    entries = [
+        f"{param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)}: {ref_to_ts_expr(ref)}"
+        for param, ref in (node.inputs or {}).items()
+    ]
+    if with_constants:
+        entries += impl_constant_entries_ts(node)
+    if not entries:
         return "{}"
     inner = indent + "    "
     lines = ["{"]
-    for param, ref in node.inputs.items():
-        key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
-        lines.append(f"{inner}{key}: {ref_to_ts_expr(ref)},")
+    lines.extend(f"{inner}{entry}," for entry in entries)
     lines.append(indent + "}")
     return "\n".join(lines)
 
@@ -678,7 +720,9 @@ def required_inputs_ts_guard(pipeline: Pipeline, error_class: str, indent: str) 
     ]
 
 
-def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tuple[str, str]:
+def fan_out_ts_binding(
+    node: Node, pipeline: Pipeline, indent: str = "", *, with_constants: bool
+) -> tuple[str, str]:
     """``(payload_literal, list_expr)`` for a ``fan_out`` node in TypeScript.
 
     The payload is a one-line object binding the element param to the
@@ -703,6 +747,8 @@ def fan_out_ts_binding(node: Node, pipeline: Pipeline, indent: str = "") -> tupl
         key = param if _TS_IDENT_RE.fullmatch(param) else json.dumps(param)
         value = "_item" if param == element_param else ref_to_ts_expr(input_ref)
         entries.append(f"{key}: {value}")
+    if with_constants:
+        entries += impl_constant_entries_ts(node)
     payload = "{ " + ", ".join(entries) + " }"
     assert node.inputs is not None
     ref = node.inputs[element_param]
@@ -2926,6 +2972,7 @@ def emit_agent_loop_module(
     default_model: str,
     generated_by: str,
     workers: bool,
+    mcp_backed_ids: frozenset[str],
     sub_node_env_arg: Callable[[Node], str | None] | None = None,
     helpers: Sequence[str] = (),
     workers_ai_model: str | None = None,
@@ -3067,7 +3114,16 @@ def emit_agent_loop_module(
     for sub in sub_nodes:
         sub_fn = _to_camel_case(sub.id)
         extra = sub_node_env_arg(sub) if sub_node_env_arg is not None else None
-        call = f"{sub_fn}(args)" if extra is None else f"{sub_fn}(args, {extra})"
+        # A loop_body impl gets its constants on the model's call too, and
+        # the model never sees them in the tool's schema (Python merges the
+        # same way in the step body). An MCP-backed sub-node does not.
+        constants = [] if sub.id in mcp_backed_ids else impl_constant_entries_ts(sub)
+        call_args = (
+            "{ ...(args as Record<string, unknown>), " + ", ".join(constants) + " }"
+            if constants
+            else "args"
+        )
+        call = f"{sub_fn}({call_args})" if extra is None else f"{sub_fn}({call_args}, {extra})"
         local_tools.extend(_local_tool_literal(sub, call, "        "))
 
     body = [
@@ -3131,7 +3187,12 @@ def emit_agent_loop_module(
 
 
 def emit_node_agent_loop_module(
-    node: Node, pipeline: Pipeline, *, default_model: str, generated_by: str
+    node: Node,
+    pipeline: Pipeline,
+    *,
+    default_model: str,
+    generated_by: str,
+    mcp_backed_ids: frozenset[str],
 ) -> str:
     """An agent_loop module for the Node-process runtimes (DBOS-TS, Inngest).
 
@@ -3148,6 +3209,7 @@ def emit_node_agent_loop_module(
         default_model=default_model,
         generated_by=generated_by,
         workers=False,
+        mcp_backed_ids=mcp_backed_ids,
         sub_node_env_arg=lambda sub: judge_env_arg(sub) if sub.kind is NodeKind.LLM_JUDGE else None,
         helpers=[REQUIRE_ENV_HELPER] if NodeKind.LLM_JUDGE in sub_kinds else [],
     )

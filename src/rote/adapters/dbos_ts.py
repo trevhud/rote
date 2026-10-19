@@ -110,6 +110,7 @@ from rote.adapters._ts_common import (
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
+    constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
     emit_node_tsconfig,
@@ -290,14 +291,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -414,7 +408,9 @@ def _emit_fan_out(node: Node, pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> l
     order, so ``<id>_result[i]`` is element ``i``.
     """
     fn_name = _to_camel_case(node.id)
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(
+        node, pipeline, indent=" " * 12, with_constants=not _is_mcp_backed(node, cfg)
+    )
     call = f"{fn_name}Step({payload})"
     if _is_mcp_backed(node, cfg):
         assert node.mcp is not None
@@ -468,7 +464,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 # MCP-backed: run through the auth-park wrapper so a dead
                 # credential suspends the workflow instead of failing it.
                 assert node.mcp is not None
-                payload = payload_ts_literal(node, indent=" " * 12)
+                payload = payload_ts_literal(node, indent=" " * 12, with_constants=False)
                 lines.append(f"        const {node.id}_result = await runWithAuthPark(")
                 if payload == "{}":
                     lines.append(f"            () => {fn_name}Step({{}}),")
@@ -478,12 +474,13 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 lines.append(f"            {json.dumps(node.id)},")
                 lines.append("        );")
             else:
-                payload = payload_ts_literal(node, indent=" " * 8)
+                payload = payload_ts_literal(node, indent=" " * 8, with_constants=True)
                 if payload == "{}":
                     lines.append(f"        const {node.id}_result = await {fn_name}Step({{}});")
                 else:
                     lines.append(f"        const {node.id}_result = await {fn_name}Step(")
-                    lines.append(f"            {payload_ts_literal(node, indent=' ' * 12)},")
+                    nested = payload_ts_literal(node, indent=" " * 12, with_constants=True)
+                    lines.append(f"            {nested},")
                     lines.append("        );")
         elif len(non_hitl) > 1:
             uses_unwrap = True
@@ -495,7 +492,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 if _is_mcp_backed(node, cfg):
                     # Bind the payload so the auth-park re-run below can
                     # repeat the same call after the release signal.
-                    payload = payload_ts_literal(node, indent=" " * 8)
+                    payload = payload_ts_literal(node, indent=" " * 8, with_constants=False)
                     lines.append(f"        const {node.id}_payload = {payload};")
             settled_names = ", ".join(f"{n.id}_settled" for n in non_hitl)
             lines.append(f"        const [{settled_names}] = await Promise.allSettled([")
@@ -504,7 +501,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 if _is_mcp_backed(node, cfg):
                     lines.append(f"            {fn_name}Step({node.id}_payload),")
                     continue
-                payload = payload_ts_literal(node, indent=" " * 12)
+                payload = payload_ts_literal(node, indent=" " * 12, with_constants=True)
                 if payload == "{}":
                     lines.append(f"            {fn_name}Step({{}}),")
                 else:
@@ -1016,6 +1013,9 @@ class DbosTsAdapter:
             pipeline,
             default_model=self.config.anthropic_default_model,
             generated_by=_GENERATED_BY,
+            mcp_backed_ids=frozenset(
+                n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)
+            ),
         )
 
     def emit_main(self, pipeline: Pipeline) -> str:

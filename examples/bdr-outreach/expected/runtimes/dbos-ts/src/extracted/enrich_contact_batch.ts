@@ -7,7 +7,9 @@
  * are preferred over MCP wrappers — the rote compiler removes the MCP
  * layer at emit time, so production code calls the vendor APIs directly.
  *
- * Constants from the source skill (lifted into the IR):
+ * Constants from the source skill (lifted into the IR). The workflow
+ * passes them in `input` next to the node's inputs on every call, so
+ * use these keys rather than hard-coding the values:
  *   batch_size = 10
  *   output_fields = ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"]
  */

@@ -969,6 +969,16 @@ Three rules now, each learned the hard way:
   model cannot override a pinned value, and they never appear in the tool
   schema it sees. Judges are excluded: their input model rejects unknown
   keys.
+- **TS passes them the same way, at every call site.** Cloudflare,
+  Inngest and DBOS-TS call the impl directly, so there is no step body
+  to merge in. Instead `payload_ts_literal` / `fan_out_ts_binding` add
+  `impl_constant_entries_ts` after the inputs, and the agent-loop module
+  wraps a loop_body tool call as `{ ...args, <constants> }`. Both take a
+  required `with_constants` / `mcp_backed_ids`, so a new call site has to
+  decide, and an MCP-backed call passes False. A TS impl reads its
+  constants from `input`; hard-coding them makes the IR's value dead
+  config, as on Python. `tests/test_constants_parity_ts_e2e.py` runs the
+  Python parity fixture live on all three TS runtimes.
 - **A constant reaches an MCP tool only when `mcp.args` names it.**
   Without `args`, the step sends its payload as the tool arguments, and a
   tool rejects arguments it does not declare (FastMCP: "Unexpected

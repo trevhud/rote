@@ -8,7 +8,9 @@
  * layer at emit time, so production code calls Salesforce / HubSpot /
  * ZoomInfo / etc. directly.
  *
- * Constants from the source skill (lifted into the IR):
+ * Constants from the source skill (lifted into the IR). The workflow
+ * passes them in `input` next to the node's inputs on every call, so
+ * use these keys rather than hard-coding the values:
  *   add_batch_size = 250
  */
 

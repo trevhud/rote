@@ -481,7 +481,10 @@ def test_workflow_executes_through_hitl_gates(
 
     # The first gate's event payload flowed into hubspot_upsert via
     # `contacts: contact_review_gate.output.approved_contacts`.
-    assert _step_output(final, "hubspot_upsert")["received"] == {"contacts": [{"id": "test"}]}
+    assert _step_output(final, "hubspot_upsert")["received"] == {
+        "contacts": [{"id": "test"}],
+        "batch_size": 100,
+    }
 
     # A whole-output binding: create_sales_template received
     # personalize_email's full step result.

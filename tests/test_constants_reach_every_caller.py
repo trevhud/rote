@@ -230,6 +230,43 @@ def test_every_runtime_sends_a_tool_the_same_arguments(
         assert _ts_arguments(pipeline, tmp_path, runtime) == expected, runtime
 
 
+_TS_ENTRY_FILES = {
+    "cloudflare": "src/workflow.ts",
+    "dbos-ts": "src/main.ts",
+    "inngest": "src/inngest/pipeline.ts",
+}
+
+
+@pytest.mark.parametrize("runtime", sorted(_TS_ENTRY_FILES))
+def test_ts_workflows_keep_constants_out_of_an_mcp_steps_payload(
+    runtime: str, tmp_path: Path
+) -> None:
+    """The TS impl calls carry constants now, but an MCP-backed step's
+    payload is its tool arguments, so its constants must stay out."""
+    out = tmp_path / runtime
+    get_adapter(runtime).emit(_mcp_pipeline(None), out)
+    entry = (out / _TS_ENTRY_FILES[runtime]).read_text(encoding="utf-8")
+    assert 'query: pipelineInput["query"]' in entry
+    assert "email_window_days" not in entry
+    assert "fixed_queries" not in entry
+
+
+@pytest.mark.parametrize("runtime", sorted(_TS_ENTRY_FILES))
+def test_ts_loop_body_tool_calls_get_constants_the_model_never_sees(
+    runtime: str, tmp_path: Path
+) -> None:
+    out = tmp_path / runtime
+    get_adapter(runtime).emit(_LOOP_PIPELINE, out)
+    loop = next(out.rglob("research.ts")).read_text(encoding="utf-8")
+    call = (
+        "lookupAccount({ ...(args as Record<string, unknown>), batch_size: 25, "
+        'fields: ["tier", "owner"] })'
+    )
+    assert call in loop, loop
+    tool_block = loop[loop.index('name: "lookup_account"') : loop.index("run: async (args)")]
+    assert "batch_size" not in tool_block
+
+
 def test_a_judge_may_reuse_an_input_name_as_a_constant() -> None:
     """A judge's constants never reach a call, so the impl-only clash rule
     must not reject them."""

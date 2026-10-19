@@ -325,6 +325,7 @@ export const runPipeline = DBOS.registerWorkflow(
         const hubspot_upsert_result = await hubspotUpsertStep(
             {
                 contacts: contact_review_gate_result["approved_contacts"],
+                batch_size: 100,
             },
         );
 
@@ -333,6 +334,7 @@ export const runPipeline = DBOS.registerWorkflow(
             {
                 campaign_name: pipelineInput["drug_brand"],
                 contacts: hubspot_upsert_result["upserted"],
+                add_batch_size: 250,
             },
         );
 
@@ -347,6 +349,8 @@ export const runPipeline = DBOS.registerWorkflow(
         const exclusion_check_recent_result = await exclusionCheckRecentStep(
             {
                 contacts: exclusion_check_dnc_result["passed"],
+                days_back: 30,
+                direction: "OUTBOUND",
             },
         );
 

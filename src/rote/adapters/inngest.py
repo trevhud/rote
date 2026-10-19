@@ -119,6 +119,7 @@ from rote.adapters._ts_common import (
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
+    constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
     emit_node_tsconfig,
@@ -364,14 +365,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -442,7 +436,7 @@ def _step_call_expr(
     """
     fn_name = _to_camel_case(node.id)
     if payload is None:
-        payload = payload_ts_literal(node, indent=payload_indent)
+        payload = payload_ts_literal(node, indent=payload_indent, with_constants=True)
     if node.kind is NodeKind.LLM_JUDGE:
         call = f"{fn_name}({payload}, {judge_env_arg(node)})"
     elif _loop_reaches_mcp(node):
@@ -493,7 +487,7 @@ def _parkable_call_expr(
     assert node.mcp is not None
     fn_name = _to_camel_case(node.id)
     if payload is None:
-        payload = payload_ts_literal(node, indent=payload_indent)
+        payload = payload_ts_literal(node, indent=payload_indent, with_constants=False)
     release_event = auth_event_name(pipeline, node.mcp.server)
     return (
         f"runParkable(step, {step_id_expr or json.dumps(node.id)}, "
@@ -512,7 +506,9 @@ def _fan_out_lines(node: Node, pipeline: Pipeline, cfg: InngestAdapterConfig) ->
     ``.map`` preserves order, so ``<id>_result[i]`` corresponds to
     element ``i`` of the bound list.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(
+        node, pipeline, indent=" " * 12, with_constants=not _is_mcp_backed(node, cfg)
+    )
     step_id_expr = f"`{node.id}[${{_index}}]`"
     if _is_mcp_backed(node, cfg):
         expr = _parkable_call_expr(
@@ -1165,6 +1161,9 @@ class InngestAdapter:
             pipeline,
             default_model=self.config.anthropic_default_model,
             generated_by=_GENERATED_BY,
+            mcp_backed_ids=frozenset(
+                n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)
+            ),
         )
 
     def emit_pipeline_ts(self, pipeline: Pipeline) -> str:
