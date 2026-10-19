@@ -206,6 +206,25 @@ _ASYNC_LOOP_THREAD: threading.Thread | None = None
 _ASYNC_LOOP_LOCK = threading.Lock()
 
 
+def _reset_async_loop_after_fork() -> None:
+    """Forget the parent's loop in a forked child.
+
+    A child inherits these globals but not the loop's thread, so the
+    first ``_run_async`` there would submit to a loop nothing runs and
+    block on ``.result()`` forever. Pre-fork servers (gunicorn, uvicorn
+    workers) fork after the parent may already have run a step. The lock
+    is replaced too: another parent thread may have held it at the fork.
+    """
+    global _ASYNC_LOOP, _ASYNC_LOOP_THREAD, _ASYNC_LOOP_LOCK
+    _ASYNC_LOOP = None
+    _ASYNC_LOOP_THREAD = None
+    _ASYNC_LOOP_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):  # absent on platforms without fork()
+    os.register_at_fork(after_in_child=_reset_async_loop_after_fork)
+
+
 def _run_async(awaitable: Any) -> Any:
     """Run ``awaitable`` to completion on this process's background event loop.
 
@@ -282,7 +301,8 @@ async def _call_impl(fn: Any, payload: dict) -> Any:
 def async_runner_helper() -> str:
     """The ``_run_async`` function (and its loop state) for sync Python runtimes.
 
-    Needs ``asyncio``, ``threading`` and ``Any`` imported at module level.
+    Needs ``asyncio``, ``os``, ``threading`` and ``Any`` imported at
+    module level.
     """
     return _ASYNC_RUNNER_HELPER_PY
 
