@@ -129,10 +129,11 @@ def test_pipeline_trials_agree_perfectly(toy_app: Path) -> None:
 
 
 def test_pipeline_trial_reports_app_failure(toy_app: Path) -> None:
-    # Missing required input → the app raises → nonzero exit, captured.
+    # Missing required input → the app exits 2 with one usage line, and
+    # that line is the whole error (no traceback, no exit-code preamble).
     run = run_pipeline_trial(toy_app, {})
     assert not run.succeeded
-    assert run.error is not None and "exited" in run.error
+    assert run.error == "pipeline input is missing required field(s): numbers"
 
 
 def test_pipeline_trial_rejects_signals_for_plain_python(toy_app: Path) -> None:

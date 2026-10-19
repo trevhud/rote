@@ -61,8 +61,51 @@ class MissingExtraError(RuntimeError):
 
 
 def install_hint(extra: str) -> str:
-    """The exact command that installs ``extra``."""
+    """The exact command that installs ``extra`` into the running rote.
+
+    A uv tool install (``uv tool install rote-cli``) has no pip, and
+    pip-installing into it is not how uv manages it: re-running ``uv tool
+    install`` with the extras replaces the tool's environment, so the hint
+    keeps the extras it already has. Under ``uvx`` there is nothing to
+    install into; the next ``uvx`` call names the extra. Otherwise pip.
+    """
+    kind, existing = _install_context()
+    if kind == "uv-tool":
+        extras = ",".join(sorted({*existing, extra}))
+        return f"uv tool install '{DISTRIBUTION}[{extras}]'"
+    if kind == "uvx":
+        return f"uvx --from '{DISTRIBUTION}[{extra}]' rote ..."
     return f"pip install '{DISTRIBUTION}[{extra}]'"
+
+
+def _install_context() -> tuple[str, tuple[str, ...]]:
+    """``("uv-tool", extras)``, ``("uvx", ())`` or ``("pip", ())`` for this process.
+
+    uv writes ``uv-receipt.toml`` into every ``uv tool install`` environment
+    (its ``requirements`` carry the requested extras), and builds ``uvx``
+    environments under its cache's ``archive-v*`` directories.
+    """
+    import sys
+    import tomllib
+    from pathlib import Path
+
+    prefix = Path(sys.prefix)
+    receipt = prefix / "uv-receipt.toml"
+    if receipt.is_file():
+        try:
+            requirements = tomllib.loads(receipt.read_text(encoding="utf-8"))["tool"][
+                "requirements"
+            ]
+        except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+            return ("uv-tool", ())
+        for requirement in requirements:
+            if isinstance(requirement, dict) and requirement.get("name") == DISTRIBUTION:
+                extras = requirement.get("extras") or []
+                return ("uv-tool", tuple(str(e) for e in extras))
+        return ("uv-tool", ())
+    if any(part.startswith("archive-v") for part in prefix.parts):
+        return ("uvx", ())
+    return ("pip", ())
 
 
 def is_installed(extra: str) -> bool:

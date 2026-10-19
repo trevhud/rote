@@ -378,10 +378,8 @@ def _python_module_is_stub(text: str) -> bool:
       templates). A comment or docstring mentioning the marker does not
       count, so a filled-in module that keeps a note about it is not
       refused;
-    * a function whose whole body (after its docstring) is one ``raise
-      NotImplementedError``, the shape a compile agent writes. A real
-      implementation that raises it on one unsupported branch does not
-      match, nor does an ``@abstractmethod``, which is meant to raise.
+    * a function :func:`stub_raise` calls a stub, the one definition the
+      compile's per-node accounting uses too.
     """
     try:
         tree = ast.parse(text)
@@ -401,26 +399,37 @@ def stub_raise(func: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Raise | None
     The ONE definition of a compile-agent stub, shared by ``rote run``'s
     preflight (through :func:`_python_module_is_stub`) and the compile's
     per-node accounting (``rote.contracts.implementation_status``). Two
-    predicates once disagreed: ``total = len(rows); raise
-    NotImplementedError(...)`` was a stub at compile time and implemented
-    at run time. A stub is a function whose whole body, after its
-    docstring, is that one raise. An ``@abstractmethod`` is not one.
+    predicates once disagreed about the same function, so there is one.
+
+    A stub is a function that can only end in ``raise NotImplementedError``:
+    its last top-level statement is that raise, unconditionally, and it
+    never returns a value. A preamble before the raise is fine (BDR's
+    ``zoominfo.enrich_batch`` validates the batch size first, and a stub
+    like ``total = len(rows); raise NotImplementedError(...)`` computes
+    something it never returns). A raise on one branch of an ``if`` is a
+    deliberate unsupported case, and a function that returns on its other
+    paths is working code. An ``@abstractmethod`` is not a stub.
     """
-    if _is_abstract(func):
+    if _is_abstract(func) or not func.body:
         return None
-    body = func.body
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        body = body[1:]
-    if len(body) == 1 and _raises_not_implemented(body[0]):
-        stmt = body[0]
-        assert isinstance(stmt, ast.Raise)
-        return stmt
-    return None
+    last = func.body[-1]
+    if not _raises_not_implemented(last) or _returns_value(func):
+        return None
+    assert isinstance(last, ast.Raise)
+    return last
+
+
+def _returns_value(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether ``func`` itself (not a nested def or lambda) returns a value."""
+    pending: list[ast.AST] = list(func.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return) and node.value is not None:
+            return True
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return False
 
 
 def _is_stub_module(path: Path, text: str) -> bool:

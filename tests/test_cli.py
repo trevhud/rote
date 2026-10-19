@@ -1148,8 +1148,12 @@ def test_doctor_human_mode_renders_checklist_with_driver_reason(
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "✓ claude" in out
-    assert "✗ codex" in out
+    assert "✓ claude driver" in out
+    assert "✗ codex driver" in out
+    # "api" is both a driver and an extra; each line says which it is.
+    assert "Optional extras (runtime dependencies):" in out
+    assert out.count("[api] extra") == 1
+    assert "\n  ✓ api\n" not in out and "\n  ✗ api\n" not in out
     assert "codex not installed: brew install codex" in out  # reason shown inline
     assert "ready to compile" in out
     assert "only verified at run time" in out  # the CLI-subscription caveat

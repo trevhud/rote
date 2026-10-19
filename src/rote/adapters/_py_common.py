@@ -410,6 +410,25 @@ def required_inputs_guard(pipeline: Pipeline, raise_stmt: str, indent: str = "  
     )
 
 
+def cli_input_check(pipeline: Pipeline, indent: str) -> str:
+    """The ``__main__`` check that rejects a bad input before anything starts.
+
+    The same check as :func:`required_inputs_guard`, run where the script
+    reads argv: a missing field is a usage error, so it is one line on
+    stderr and exit status 2, not a traceback (DBOS's ran to ~5 KB). The
+    guard inside ``run_pipeline`` stays for callers that import it.
+    """
+    if not pipeline.needs_input_check:
+        return ""
+    names = "".join(f"{json.dumps(name)}, " for name in pipeline.required_input_fields)
+    return (
+        f"{indent}_input_error = _missing_inputs_error(pipeline_input, ({names.rstrip()}))\n"
+        f"{indent}if _input_error is not None:\n"
+        f'{indent}    print(f"error: {{_input_error}}", file=sys.stderr)\n'
+        f"{indent}    sys.exit(2)\n"
+    )
+
+
 def fan_out_binding(
     node: Node, pipeline: Pipeline, indent: str = ""
 ) -> tuple[str, str, dict[str, str]]:

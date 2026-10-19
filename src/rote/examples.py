@@ -33,6 +33,13 @@ class Example:
     #: Commands to print after copying, with ``{dir}`` for the copy's path.
     #: Each is ``(comment, command)``.
     commands: tuple[tuple[str, str], ...]
+    #: ``(repo text, copy text)`` replacements applied to README.md in the
+    #: copy, in order, with ``{dir}`` for the copy's path. The README is
+    #: written for the repo (``examples/<name>/`` paths, ``/tmp`` app
+    #: dirs); the copy's version must name the copy's own paths. A test
+    #: requires every repo text to occur, so a README edit cannot make a
+    #: rewrite silently stop applying.
+    readme_rewrites: tuple[tuple[str, str], ...] = ()
 
 
 _REVIEW = (
@@ -57,6 +64,8 @@ BUNDLED: dict[str, Example] = {
             "expected/pipeline-draft.yaml",
             "expected/eval.yaml",
             "expected/extracted",
+            "scorecard.md",
+            "runs",
         ),
         commands=(
             (
@@ -78,6 +87,20 @@ BUNDLED: dict[str, Example] = {
                 "The before/after scorecard (fetches live model prices, no inference)",
                 "rote eval {dir}/expected/pipeline.yaml",
             ),
+        ),
+        readme_rewrites=(
+            (
+                "From the repo root, after",
+                "From the directory you ran `rote example` in, after",
+            ),
+            (
+                "(`tests/test_expense_audit_example.py`)",
+                "(`tests/test_expense_audit_example.py` in the rote repo)",
+            ),
+            ("/tmp/expense-audit-dbos", "{dir}/app-dbos"),
+            ("/tmp/expense-audit-temporal", "{dir}/app-temporal"),
+            ("/tmp/expense-audit", "{dir}/app-python"),
+            ("examples/expense-audit/", "{dir}/"),
         ),
     ),
 }
@@ -132,7 +155,20 @@ def copy_example(name: str, dest: Path, *, force: bool = False) -> Example:
             shutil.copy2(src, target)
         else:
             raise ExampleError(f"bundled example {name!r} is missing {rel}")
+    readme = dest / "README.md"
+    if example.readme_rewrites and readme.is_file():
+        readme.write_text(
+            rewrite_readme(example, readme.read_text(encoding="utf-8"), dest.name),
+            encoding="utf-8",
+        )
     return example
+
+
+def rewrite_readme(example: Example, text: str, directory: str) -> str:
+    """``text`` (the repo's README) with the copy's paths in place."""
+    for old, new in example.readme_rewrites:
+        text = text.replace(old, new.replace("{dir}", directory))
+    return text
 
 
 def render_commands(example: Example, directory: str) -> list[str]:

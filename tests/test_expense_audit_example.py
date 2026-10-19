@@ -436,3 +436,26 @@ def test_gated_run_on_temporal(
     ).read_text()
     result = _run(app, capsys, "--signal", f"controller_review={json.dumps(REVIEW)}")
     _assert_final(result, report_dir)
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("_forget_app_modules")
+def test_temporal_writes_the_report_inside_the_app_dir_like_python_and_dbos(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With no EXPENSE_AUDIT_REPORT_DIR the report goes under the working
+    directory. python and dbos run with the app dir as theirs, so temporal,
+    whose worker runs in rote's own process, must too, not the shell's."""
+    pytest.importorskip("temporalio")
+    monkeypatch.delenv("EXPENSE_AUDIT_REPORT_DIR", raising=False)
+    shell = tmp_path / "shell"
+    shell.mkdir()
+    monkeypatch.chdir(shell)
+    app = tmp_path / "expense-audit-temporal"
+    _emit(GATED, "temporal", app, capsys)
+    result = _run(app, capsys, "--signal", f"controller_review={json.dumps(REVIEW)}")
+    assert result["report_path"] == str((app / "reports" / "2026-09-expense-audit.md").resolve())
+    assert not (shell / "reports").exists()
+    assert Path.cwd() == shell  # the runner restored the working directory

@@ -76,10 +76,8 @@ rote eval examples/expense-audit/expected/pipeline.yaml
 ```
 
 The run prints the totals as JSON and writes the markdown report to
-`reports/2026-09-expense-audit.md` under the process's working
-directory (the app dir for python and dbos, your shell's directory for
-temporal, which runs in-process). Set `EXPENSE_AUDIT_REPORT_DIR` to put
-it somewhere else.
+`reports/2026-09-expense-audit.md` under the app dir on every runtime.
+Set `EXPENSE_AUDIT_REPORT_DIR` to put it somewhere else.
 
 Expected results on `input.json`:
 

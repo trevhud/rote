@@ -110,16 +110,70 @@ def test_copy_then_the_printed_python_commands_reproduce_the_readme_totals(
     assert (result["review_items"], result["blocked_items"]) == (4, 2)
 
 
+def test_the_copied_readme_names_the_copys_own_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The README is written for the repo. The copy's version must not send
+    a reader to examples/... or /tmp/..., and every file its layout tree
+    names must be in the copy."""
+    from rote.examples import rewrite_readme
+
+    example = BUNDLED["expense-audit"]
+    source = (examples_root() / "expense-audit" / "README.md").read_text(encoding="utf-8")
+    for old, _new in example.readme_rewrites:
+        assert old in source, f"README no longer contains {old!r}; update readme_rewrites"
+
+    monkeypatch.chdir(tmp_path)
+    assert main(["example", "expense-audit"]) == 0
+    capsys.readouterr()
+    copy = tmp_path / "expense-audit"
+    readme = (copy / "README.md").read_text(encoding="utf-8")
+    assert readme == rewrite_readme(example, source, "expense-audit")
+    assert "examples/expense-audit" not in readme
+    assert "/tmp/" not in readme
+    assert "From the repo root" not in readme
+    assert "rote run expense-audit/app-python --input expense-audit/input.json" in readme
+
+    # Every name in the Layout tree exists in the copy.
+    tree = readme.split("## Layout")[1].split("```")[1]
+    stack: list[str] = []
+    for line in tree.splitlines()[2:]:  # skip the root line
+        entry = line.split("#")[0].rstrip()
+        if not entry.strip():
+            continue
+        name = entry.lstrip("│├└─ ").strip()
+        depth = (len(entry) - len(entry.lstrip("│├└─ "))) // 4 - 1
+        stack = [*stack[:depth], name.rstrip("/")]
+        assert (copy / "/".join(stack)).exists(), "/".join(stack)
+    assert (copy / "scorecard.md").is_file()
+    assert (copy / "runs" / "2026-10-18-first-agent-run" / "pipeline.yaml").is_file()
+
+
+def _build_wheel(out: Path) -> None:
+    """Build rote's wheel with whichever builder this environment has.
+
+    uv (the repo's dev setup), then `python -m build`, then pip (how CI
+    installs). A uv-made venv has no pip, so pip alone failed there.
+    """
+    import importlib.util
+    import shutil
+
+    if shutil.which("uv"):
+        command = ["uv", "build", "--wheel", "-o", str(out), str(REPO)]
+    elif importlib.util.find_spec("build") is not None:
+        command = [sys.executable, "-m", "build", "--wheel", "-o", str(out), str(REPO)]
+    elif importlib.util.find_spec("pip") is not None:
+        command = [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(out), str(REPO)]
+    else:
+        pytest.skip("no wheel builder: install uv, the `build` package, or pip")
+    built = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    assert built.returncode == 0, built.stdout + built.stderr
+
+
 @pytest.mark.slow
 def test_a_built_wheel_contains_the_bundled_example(tmp_path: Path) -> None:
-    """Build the real wheel (pip, the way CI installs) and look inside."""
-    built = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-deps", "-w", str(tmp_path), str(REPO)],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert built.returncode == 0, built.stdout + built.stderr
+    """Build the real wheel and look inside."""
+    _build_wheel(tmp_path)
     (wheel,) = tmp_path.glob("rote_cli-*.whl")
     names = set(zipfile.ZipFile(wheel).namelist())
     for name, example in BUNDLED.items():
@@ -134,4 +188,3 @@ def test_a_built_wheel_contains_the_bundled_example(tmp_path: Path) -> None:
                 assert inside in names, inside
     # Nothing beyond the bundled list: the other examples stay out.
     assert not any(n.startswith("rote/examples/bdr-outreach/") for n in names)
-    assert not any("/runs/" in n for n in names if n.startswith("rote/examples/"))

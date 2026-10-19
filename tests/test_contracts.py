@@ -556,14 +556,27 @@ _STUB_SHAPES = [
     ('def f(rows):\n    raise NotImplementedError("needs the region map")\n', True),
     ('def f(rows):\n    """Doc."""\n    raise NotImplementedError("needs the region map")\n', True),
     ("def f(rows):\n    raise NotImplementedError\n", True),
-    # Code before the raise: implemented as far as both readers are concerned.
+    # Code before an unconditional final raise, and no value returned: still
+    # a stub to both readers (BDR's zoominfo.enrich_batch validates first).
     (
         'def f(rows):\n    total = len(rows)\n    raise NotImplementedError("needs region map")\n',
-        False,
+        True,
     ),
+    (
+        "def f(rows):\n    if len(rows) > 10:\n        raise ValueError('too many')\n"
+        "    raise NotImplementedError('implement against the API')\n",
+        True,
+    ),
+    # The raise is one branch: implemented.
     (
         "def f(rows):\n    if not rows:\n        raise NotImplementedError('empty')\n"
         "    return len(rows)\n",
+        False,
+    ),
+    # Returns on its real path, falls through to the raise: implemented.
+    (
+        "def f(kind):\n    if kind == 'a':\n        return 1\n"
+        "    raise NotImplementedError(kind)\n",
         False,
     ),
     ("def f(rows):\n    return len(rows)\n", False),

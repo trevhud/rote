@@ -588,13 +588,18 @@ if __name__ == "__main__":
     #
     # HITL gates are resumed from another process either way — see
     # README.md.
+    if "--serve" not in sys.argv[1:]:
+        pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+        _input_error = _missing_inputs_error(pipeline_input, ("campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area",))
+        if _input_error is not None:
+            print(f"error: {_input_error}", file=sys.stderr)
+            sys.exit(2)
     launch()
     try:
         if "--serve" in sys.argv[1:]:
             print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)
             threading.Event().wait()
         else:
-            pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
             handle = DBOS.start_workflow(run_pipeline, pipeline_input)
             print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
             print(json.dumps(handle.get_result(), indent=2, default=str))

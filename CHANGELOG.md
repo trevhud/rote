@@ -214,6 +214,44 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the input type.
 
 ### Fixed
+- **Fixes from an end-to-end newcomer pass over main.**
+  - Stub detection counts a function whose last top-level statement is an
+    unconditional `raise NotImplementedError` and that never returns a
+    value, preamble allowed. BDR's `zoominfo.enrich_batch` validates its
+    batch size first and was missed, so `rote emit` reported three stub
+    modules instead of four and `rote run` would not refuse. A raise on
+    one branch, or a dispatch that returns on its real paths, is still
+    working code.
+  - A missing required input is one line on python and dbos, as on
+    temporal: the app checks the input where it reads argv, prints
+    `error: pipeline input is missing required field(s): ...` and exits
+    2 (dbos before it launches), and `rote run` reports just that line
+    instead of a traceback (about 5 KB on dbos).
+  - `rote emit`'s `next:` hint is a command that runs: it adds `--input`
+    with the `input.json` beside the pipeline (or one level up, the
+    examples' layout) when the pipeline has required inputs, and a
+    placeholder naming the fields when there is no file.
+  - `rote example` also copies `scorecard.md` and `runs/`, and rewrites
+    the copy's README so its commands and layout name the copy's own
+    paths, not `examples/...` and `/tmp/...`.
+  - Missing-extra hints follow the install: `uv tool install
+    'rote-cli[<extras>]'` (keeping the extras the tool already has) for a
+    uv tool install, `uvx --from 'rote-cli[<extra>]'` under uvx, pip
+    otherwise.
+  - The stub refusal's fix is worded per language: TypeScript apps are
+    told to implement the TypeScript files, not to put Python modules
+    beside the pipeline.
+  - `rote doctor` labels "api driver" and the "[api] extra" apart.
+  - Temporal runs use the app dir as their working directory, so
+    expense-audit's report lands in the app like on python and dbos, and
+    the dev server's own startup WARN ("Cluster Id ... not a valid uuid")
+    is no longer printed.
+  - The scorecard's sampled-steps row names its units (agent steps
+    before, pipeline nodes after) and says why the totals differ.
+  - An invalid `\/` escape in the Node MCP helper template no longer
+    warns on import (the emitted TypeScript is byte-identical).
+  - The wheel-contents test builds with uv when available, then
+    `python -m build`, then pip, so it runs in a uv-made venv.
 - A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
   rows were logged under the requested model, often an alias (`sonnet`)
   that no price catalog lists, so `rote run` and `rote eval --run` could

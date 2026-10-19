@@ -23,6 +23,7 @@ the emitted app's ``extracted.*`` / ``signatures.*`` modules.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import sys
 import time
@@ -93,7 +94,13 @@ async def _run_async(
     # The dev server bundles the Temporal Web UI; an explicit port lets
     # us print a working URL (ui_port=None would pick one we can't see).
     ui_port = find_free_port()
-    env = await WorkflowEnvironment.start_local(ui=True, ui_port=ui_port)
+    # dev_server_log_level="error": the dev server's own startup WARN
+    # ("Cluster Id in Cluster Metadata config is not a valid uuid") comes
+    # from its fresh in-memory persistence on every start, not from rote
+    # or the app, and reads like a failure to a first-time user.
+    env = await WorkflowEnvironment.start_local(
+        ui=True, ui_port=ui_port, dev_server_log_level="error"
+    )
     print(
         f"rote run: temporal dev UI: http://127.0.0.1:{ui_port} (live while the run lasts)",
         file=sys.stderr,
@@ -153,6 +160,11 @@ def run_temporal(
     preflight, the one place every runner's install hint comes from.
     """
     workflow_class, activities = _load_app_modules(app_dir)
-    return asyncio.run(
-        _run_async(workflow_class, activities, input_payload, signals, timeout_seconds)
-    )
+    # The python and dbos runners start the app with the app dir as its
+    # working directory, so a relative path an extracted module writes
+    # (expense-audit's reports/) lands inside the app. The temporal worker
+    # runs in this process, so it gets the same directory for the run.
+    with contextlib.chdir(app_dir):
+        return asyncio.run(
+            _run_async(workflow_class, activities, input_payload, signals, timeout_seconds)
+        )
