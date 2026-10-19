@@ -11,16 +11,17 @@
     "src/extracted/exclusion_check_sequence.ts": "112809cf0a5fecffb6c112428731005d7e5d1e3f439dde4558ab9a36e5e51bc1",
     "src/extracted/hubspot_create_list.ts": "45cf3e69e12cddf62261618a6fc1dec9d46731014944c06d7915367afda15844",
     "src/extracted/hubspot_upsert.ts": "9daa4fdbf6b8da58c0b5093e6a5ab67725b0ec15021179fc993a8cd94827c0e0",
-    "src/extracted/lead_generation_loop.ts": "759389872a7f561580535a804fd62ab70980e88ccba84128606c7be37bca0b66",
+    "src/extracted/lead_generation_loop.ts": "f91c29ed8e64bc8b3f65f83087138c6076bf9f8a6983122400dcea79321b830a",
     "src/extracted/pre_enrollment_report.ts": "fb76636f9b586901c2f9be122b474459c95dca8c7d465d745748afd751336c84",
-    "src/extracted/target_research.ts": "0ee3e12347e9bc18fc803b66a2da01941e35c6c2e90b5166300b2da8095de902",
+    "src/extracted/target_research.ts": "3ecdcc225ef217e2ff324e7faa3bdb8d5abf18c07367655eb76399f6dd3943a5",
     "src/extracted/taxonomy_lookup.ts": "4690d64d13d2f1b317ce27d20d0dfb2c416ee1475d82090560fa93e3076ec6aa",
     "src/index.ts": "e362bc56c1ea4d3d48f0efd9befb08b713d969cce7061b43b224f9f91d035dc1",
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
     "src/inngest/pipeline.ts": "019441bf241b0e6fb20fda99ad8a7827107d2bde994a527f0f6e9aa5e930b515",
-    "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
+    "src/signatures/_roteInference.ts": "ec99a6130a6e96fd807139e085b070e792ab52ddc8d8fbf8e8df8fd618cb45bc",
     "src/signatures/personalize_email.ts": "259ed4f1c775666e7668fe7600edead3f346f0348f1e54eb5a85e0aaea5c8a57",
     "src/signatures/vet_contact.ts": "23bbeba6416117887c2afbc8e70c584f57150dbad8c612b8f6c35a9fa32429b2",
+    "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }
 }

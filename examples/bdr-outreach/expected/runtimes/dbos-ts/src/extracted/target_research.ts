@@ -11,6 +11,7 @@
  */
 
 import { runAgentLoop, type BoundTool } from "../signatures/_roteInference";
+import type { IntelBrief } from "../types";
 import { bindAgentTools } from "./_roteMcp";
 
 /** Tools the IR declared for this loop — the allowlist IS the boundary. */
@@ -28,10 +29,10 @@ const TOOL_SERVERS: Record<string, string> = {"airweave_search": "airweave", "br
 
 export async function targetResearch(
     input: unknown,
-): Promise<{ result: string; provider: string; iterations: number | null }> {
+): Promise<IntelBrief> {
     const vars = process.env;
     const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
-    return runAgentLoop({
+    return (await runAgentLoop({
         nodeId: "target_research",
         description: "Run external research (Bright Data web search, ClinicalTrials.gov)\nand internal research (Airweave enterprise search, Salesforce account\nhistory, internal publications) in parallel. Compile a short intel\nbrief covering pipeline, RWE/HEOR signals, key programs/teams, prior\naccount interactions, and validated TA experience.\n",
         task: input,
@@ -40,5 +41,7 @@ export async function targetResearch(
         maxIterations: 10,
         baseUrl: vars.ROTE_BASE_URL_TARGET_RESEARCH ?? null,
         env: vars,
-    });
+        outputSchema: {"type": "object", "properties": {"result": {"description": "Value of type IntelBrief."}}, "required": ["result"], "additionalProperties": false},
+        unwrapKey: "result",
+    })) as IntelBrief;
 }

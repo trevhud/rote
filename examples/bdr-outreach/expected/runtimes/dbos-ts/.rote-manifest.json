@@ -12,14 +12,15 @@
     "src/extracted/exclusion_check_sequence.ts": "112809cf0a5fecffb6c112428731005d7e5d1e3f439dde4558ab9a36e5e51bc1",
     "src/extracted/hubspot_create_list.ts": "45cf3e69e12cddf62261618a6fc1dec9d46731014944c06d7915367afda15844",
     "src/extracted/hubspot_upsert.ts": "9daa4fdbf6b8da58c0b5093e6a5ab67725b0ec15021179fc993a8cd94827c0e0",
-    "src/extracted/lead_generation_loop.ts": "d78569be4d803805434f1224515ced6f6c42434fd2c33ea009dfeadf5a3cef6f",
+    "src/extracted/lead_generation_loop.ts": "5967873c764655ca1387ed01b19fb30776a596d377b9121191ce06fc37eeaf70",
     "src/extracted/pre_enrollment_report.ts": "fb76636f9b586901c2f9be122b474459c95dca8c7d465d745748afd751336c84",
-    "src/extracted/target_research.ts": "007cbf0cee3c1fc5f30554c107120c21dbb235ae654474a1b008d8b6e74e8599",
+    "src/extracted/target_research.ts": "7f4cab03391be57e0e4281f526a7c6f1aac194aa7d10d5c1b1f62797ace3c66d",
     "src/extracted/taxonomy_lookup.ts": "4690d64d13d2f1b317ce27d20d0dfb2c416ee1475d82090560fa93e3076ec6aa",
     "src/main.ts": "50e5b167f75afc1319d01e0b5991849ffbdd10273258f9eb891a4171d463cfc2",
-    "src/signatures/_roteInference.ts": "525c82572076a4a5be6a3611cf54fa8a3de17b22b23606ef9288eac694eebd74",
+    "src/signatures/_roteInference.ts": "ec99a6130a6e96fd807139e085b070e792ab52ddc8d8fbf8e8df8fd618cb45bc",
     "src/signatures/personalize_email.ts": "cff8a6f39d10141d1318ec0ddf169f52cc2b8a85b140e579064278b414b2d9d1",
     "src/signatures/vet_contact.ts": "a91199a2ed230c33027b6c212a748ac7b8327ffd4ec68508aa4873e1ef56b28a",
+    "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }
 }

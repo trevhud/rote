@@ -250,6 +250,14 @@ def target_research(payload: dict) -> dict:
         ],
         tool_servers={"airweave_search": "airweave", "bright_data_scrape": "brightdata", "bright_data_search": "brightdata", "clinical_trials_search": "clinicaltrials", "salesforce_query": "salesforce"},
         max_iterations=10,
+        base_url=os.environ.get("ROTE_BASE_URL_TARGET_RESEARCH"),
+        output_schema={
+            "type": "object",
+            "properties": {"result": {"description": "Value of type IntelBrief."}},
+            "required": ["result"],
+            "additionalProperties": False,
+        },
+        unwrap_key="result",
     )
 
 
@@ -296,6 +304,19 @@ def lead_generation_loop(payload: dict) -> dict:
         },
         max_iterations=10,
         termination="vetted_count >= target_quota",
+        base_url=os.environ.get("ROTE_BASE_URL_LEAD_GENERATION_LOOP"),
+        output_schema={
+            "type": "object",
+            "properties": {
+                "vetted_contacts": {
+                    "type": "array",
+                    "items": {"description": "Value of type VettedContact."},
+                },
+                "discarded_summary": {"description": "Value of type VettingSummary."},
+            },
+            "required": ["vetted_contacts", "discarded_summary"],
+            "additionalProperties": False,
+        },
     )
 
 

@@ -378,6 +378,21 @@ map is valid, and an unmapped tool is resolved at run time (more
 fragile, and impossible on Cloudflare, which has no local registry).
 Every key must also appear in `tools`.
 
+**Note on `output`:** declare the keys the next steps read, with real
+types. The emitted loop ends by calling a `submit_result` tool whose
+schema is this output, and the step returns exactly those keys, so
+`lead_generation_loop.output.vetted_contacts` is what the loop
+submitted. Scalar, list, and `X | null` types become exact schema
+types. A named type (`VettedContact`) accepts any JSON value unless
+`output_schema` spells it out, so add `output_schema` when the field
+shape matters downstream (on the TS runtimes the user can also narrow
+its alias in `src/types.ts`). A single type (`output: IntelBrief`) is
+returned as the bare value. A loop with no `output` returns
+`{result: <final text>}`. Calling `submit_result` does not end the loop:
+the loop runs until the model ends its turn, and the last submission
+wins. A loop that ends without one gets one more turn with the submit
+tool forced, then fails naming the node.
+
 **Note on `loop_body`:** sub-nodes listed here must also exist as
 top-level nodes in the `nodes:` list. They're referenced from the
 loop_body but also emitted as standalone activities (so they can be

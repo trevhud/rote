@@ -74,6 +74,16 @@ drift from it.
   not fall back either (`input.channel_id ?? "C0..."`): declare the key
   required in the input type. An MCP-bound node is the exception. Its tool gets a constant only when
   `mcp.args` names it.
+- **Agent-loop output types live in `src/types.ts`.** A loop's declared
+  output can name a type the IR never defines, and each one is an alias
+  there, `export type InvoiceResult = JsonValue;` at first. A node that
+  reads that output types its input with the alias, so narrow the alias
+  (an interface, or `import type` of your own) and the loop and every
+  reader follow. It is yours: re-emit keeps your edit and puts a fresh
+  copy beside it as `types.ts.new`. `JsonValue` is spelled out five
+  levels deep, not recursively (Cloudflare's step results cannot be
+  recursive types), so a literal you write that nests deeper fails tsc
+  until the alias is narrowed.
 - **Type-check after implementing.** wrangler, esbuild and tsx bundle
   without type-checking, and `rote run` won't show it either, so run
   `npx tsc --noEmit` in the emitted dir. It catches a closed input type

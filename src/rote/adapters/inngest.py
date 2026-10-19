@@ -124,6 +124,7 @@ from rote.adapters._ts_common import (
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
     judge_env_arg,
@@ -1229,6 +1230,10 @@ class InngestAdapter:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
+        # The IR's undefined named types, as aliases the user narrows once.
+        types_module = emit_types_module(pipeline)
+        if types_module is not None:
+            written["types"] = writer.write("src", "types.ts", content=types_module)
 
         written["package.json"] = writer.write(
             "package.json",
