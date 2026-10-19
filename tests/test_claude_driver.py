@@ -940,3 +940,240 @@ async def test_cost_reads_total_cost_usd_and_ignores_an_invented_key(
     )
     result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
     assert result.metadata["cost_usd"] is None
+
+
+# ───────── Isolation from the invoking user's Claude Code setup ─────────
+
+
+@pytest.mark.asyncio
+async def test_child_is_isolated_from_user_settings_and_the_callers_cwd(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+) -> None:
+    """Values, not presence: each flag is checked for what it is set to.
+
+    A user's prose-lint hook cost a real compile 12 of 48 turns, and run
+    from a repo the agent read that repo's earlier compiled output of the
+    same skill. A bare `--tools` would swallow the next argv entry and
+    expose every tool, which is how the subscription lane once died.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok", session_id="s")),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+
+    args = list(recorder.calls[0]["args"])
+    assert args[args.index("--tools") + 1] == DEFAULT_ALLOWED_TOOLS
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert json.loads(args[args.index("--settings") + 1]) == {"autoMemoryEnabled": False}
+    assert "Bash" not in args[args.index("--tools") + 1]
+    # One definition with the emitted judge lane, not a copy that drifts.
+    from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS
+
+    start = args.index(CLI_CONTEXT_ISOLATION_FLAGS[0])
+    assert tuple(args[start : start + len(CLI_CONTEXT_ISOLATION_FLAGS)]) == (
+        CLI_CONTEXT_ISOLATION_FLAGS
+    )
+    assert args.count("--tools") == 1
+    assert recorder.calls[0]["kwargs"]["cwd"] == work_dir.resolve()
+
+
+# ───────── Repair rounds via `claude -p --resume` ─────────
+
+
+class _SequencedRecorder:
+    """One canned (stdout, files) response per ``claude`` invocation, in order."""
+
+    def __init__(self, responses: list[tuple[str, dict[str, str]]], returncodes: list[int]) -> None:
+        self.responses = list(responses)
+        self.returncodes = list(returncodes)
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, *args: str, **kwargs: Any) -> _FakeProcess:
+        self.calls.append({"args": args, "kwargs": kwargs})
+        stdout, files = self.responses.pop(0)
+        work_dir = _FakeSubprocessRecorder._extract_work_dir(args)
+        assert work_dir is not None
+        for rel, content in files.items():
+            (work_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (work_dir / rel).write_text(content, encoding="utf-8")
+        return _FakeProcess(stdout.encode(), b"", self.returncodes.pop(0))
+
+
+def _install_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+    responses: list[tuple[str, dict[str, str]]],
+    returncodes: list[int] | None = None,
+) -> _SequencedRecorder:
+    recorder = _SequencedRecorder(responses, returncodes or [0] * len(responses))
+    monkeypatch.setattr("rote.compiler.drivers.claude.asyncio.create_subprocess_exec", recorder)
+    return recorder
+
+
+def _result_with_session(cost: float, turns: int, cache_write: int) -> str:
+    # modelUsage is cumulative over a resumed session (measured on claude
+    # 2.1.302); num_turns and duration_ms are per invocation.
+    return _result_line(
+        result="ok",
+        session_id="sess-1",
+        total_cost_usd=cost,
+        num_turns=turns,
+        duration_ms=turns * 1000,
+        modelUsage={
+            "claude-sonnet-4-6": {
+                "inputTokens": 10,
+                "outputTokens": 100 * turns,
+                "cacheCreationInputTokens": cache_write,
+                "cacheReadInputTokens": 0,
+            }
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_repair_resumes_the_same_session_until_the_callback_accepts(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            (_stream(_result_with_session(2.3, 2, 110_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    seen: list[str] = []
+
+    def repair(path: Path) -> str | None:
+        content = path.read_text()
+        seen.append(content)
+        return "FIX: the tests fail" if content == "v1" else None
+
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+
+    assert seen == ["v1", "v2"]
+    assert len(recorder.calls) == 2
+    first, second = (list(c["args"]) for c in recorder.calls)
+    assert "--resume" not in first
+    assert second[second.index("--resume") + 1] == "sess-1"
+    assert second[second.index("-p") + 1] == "FIX: the tests fail"
+    # Same isolation on the resumed leg, and the same cwd, which is where
+    # `--resume` looks the session up.
+    assert second[second.index("--tools") + 1] == DEFAULT_ALLOWED_TOOLS
+    assert recorder.calls[1]["kwargs"]["cwd"] == recorder.calls[0]["kwargs"]["cwd"]
+
+    meta = result.metadata
+    assert meta["repair_rounds"] == 1
+    assert meta["num_turns"] == 32  # per invocation: summed
+    assert meta["duration_ms"] == 32_000
+    assert meta["cost_usd"] == 2.3  # cumulative: the last result, not 4.3
+    assert meta["cache_write_tokens"] == 110_000  # not 210_000
+
+
+@pytest.mark.asyncio
+async def test_a_failed_repair_round_keeps_the_deliverable(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repair leg that dies must not turn a produced deliverable into a failure."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            ("", {}),
+        ],
+        returncodes=[0, 1],
+    )
+    result = await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _p: "please fix"
+    )
+    assert result.pipeline_yaml_path.read_text() == "v1"
+    assert "exited with code 1" in result.metadata["repair_warning"]
+    assert "subprocess_warning" not in result.metadata
+    # The dead round reported nothing, so the total cannot claim to be whole.
+    assert result.metadata["usage_complete"] is False
+    assert "1 of 2 claude invocations produced no result" in result.metadata["usage_note"]
+    assert result.metadata["cost_usd"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_non_cumulative_rounds_are_summed_not_taken_from_the_last(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a resumed round reports only itself (its cost is lower than the
+    previous round's), taking the last result would drop the first run's
+    $2 entirely. Sum instead, and say so."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    _install_sequence(
+        monkeypatch,
+        [
+            (_stream(_result_with_session(2.0, 30, 100_000)), {"pipeline.yaml": "v1"}),
+            (_stream(_result_with_session(0.3, 2, 10_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    seen: list[str] = []
+
+    def repair(path: Path) -> str | None:
+        seen.append(path.read_text())
+        return "fix" if len(seen) == 1 else None
+
+    result = await ClaudeDriver().run(skill_dir, compiler_dir, work_dir, repair=repair)
+    meta = result.metadata
+    assert meta["cost_usd"] == pytest.approx(2.3)
+    assert meta["cache_write_tokens"] == 110_000
+    assert meta["usage_basis"] == "summed_per_round"
+    assert "[2.0, 0.3]" in meta["usage_note"]
+    assert meta["usage_complete"] is True
+    assert meta["num_turns"] == 32
+
+
+@pytest.mark.asyncio
+async def test_no_session_id_means_no_resume(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skill_dir, compiler_dir, work_dir = fake_skills
+    recorder = _install_sequence(
+        monkeypatch, [(_stream(_result_line(result="ok")), {"pipeline.yaml": "v1"})]
+    )
+    result = await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, repair=lambda _p: "please fix"
+    )
+    assert len(recorder.calls) == 1
+    assert "no session_id" in result.metadata["repair_warning"]
+
+
+@pytest.mark.asyncio
+async def test_a_repair_round_does_not_replay_the_phases(
+    fake_skills: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real repaired compile printed Phase 1 to 7 again at every round,
+    which reads as a restart. Each phase is announced once per session."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    phases = '{"phase": 1, "name": "Intake"}\n{"phase": 2, "name": "Node Classification"}\n'
+    _install_sequence(
+        monkeypatch,
+        [
+            (
+                _stream(_result_with_session(2.0, 30, 100_000)),
+                {"pipeline.yaml": "v1", "progress.ndjson": phases},
+            ),
+            (_stream(_result_with_session(2.3, 2, 110_000)), {"pipeline.yaml": "v2"}),
+        ],
+    )
+    events: list[CompilationEvent] = []
+    rounds = iter(["fix it", None])
+    await ClaudeDriver().run(
+        skill_dir, compiler_dir, work_dir, on_event=events.append, repair=lambda _p: next(rounds)
+    )
+    assert [e.message for e in events if e.type == "phase"] == [
+        e.message for e in events if e.type == "phase"
+    ][:2]
+    assert sum(1 for e in events if e.type == "phase") == 2

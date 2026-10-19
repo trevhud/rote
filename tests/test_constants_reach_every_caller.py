@@ -369,6 +369,8 @@ def test_compile_refuses_cleanly_when_an_impl_rejects_its_constant(
     assert "Traceback" not in err
     agent_module = out / "compiled" / "extracted" / "drive.py"
     assert f"node 'fetch_sheet': {agent_module} fetch() takes no file_id" in err
+    # This refusal happens before any file is written, and only it says so.
+    assert f"Nothing in {out / 'runtime' / runtime} was written" in err
     assert f"rote emit {out / 'compiled' / 'pipeline.yaml'} --runtime {runtime}" in err
     assert (out / "compiled" / "pipeline.yaml").is_file()
     runtime_dir = out / "runtime" / runtime

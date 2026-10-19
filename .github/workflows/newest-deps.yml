@@ -70,6 +70,8 @@ jobs:
       - name: Record what resolved
         run: uv pip list --system
 
+      - uses: ./.github/actions/bubblewrap
+
       - name: Pytest (fast suite)
         run: pytest tests/
 

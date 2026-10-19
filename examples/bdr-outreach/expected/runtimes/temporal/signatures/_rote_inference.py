@@ -140,15 +140,21 @@ _AGENT_SYSTEM_PROMPT = (
 #: the flag is variadic (``--tools <tools...>``), so a bare ``--tools`` is
 #: rejected outright ("option '--tools <tools...>' argument missing",
 #: exit 1, on every call).
-_CLI_ISOLATION_FLAGS = (
+#:
+#: The first three flags are the context half, shared with rote's own
+#: compiler driver (``rote.compiler.drivers.claude``), which imports them
+#: from here for the same reason it imports ``build_subscription_env``: a
+#: second copy is how a fix lands in one place and not the other. Only the
+#: tool surface differs: judges and loops take ``--tools ""``, the compiler
+#: ``--tools <its allowlist>``.
+CLI_CONTEXT_ISOLATION_FLAGS = (
     "--setting-sources",
     "",
     "--strict-mcp-config",
     "--settings",
     '{"autoMemoryEnabled": false}',
-    "--tools",
-    "",
 )
+_CLI_ISOLATION_FLAGS = (*CLI_CONTEXT_ISOLATION_FLAGS, "--tools", "")
 
 
 # ───────── subscription environment ─────────

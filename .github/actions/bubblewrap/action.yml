@@ -1,0 +1,17 @@
+name: Install bubblewrap
+description: >-
+  Install bubblewrap and allow it to create user namespaces. rote runs
+  agent-written tests under bwrap on Linux, and tests/test_sandbox.py
+  fails (rather than skips) on CI when no sandbox works. Ubuntu 24.04
+  restricts unprivileged user namespaces through AppArmor, which bwrap
+  needs, so the job lifts that restriction.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq bubblewrap
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        bwrap --version
+        bwrap --unshare-all --ro-bind / / true

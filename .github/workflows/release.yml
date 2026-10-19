@@ -55,6 +55,8 @@ jobs:
             exit 1
           fi
 
+      - uses: ./.github/actions/bubblewrap
+
       - name: Pytest (fast suite)
         run: pytest tests/
 

@@ -805,6 +805,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         model=args.model,
         on_event=_on_event,
         driver_kwargs=driver_kwargs or None,
+        run_generated_tests=not args.no_verify_tests,
+        trust_skill=args.trust_skill,
     )
 
     try:
@@ -874,50 +876,75 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    # The agent has been paid and the IR is on disk in compiled_dir, so
+    # an emission failure must never surface as a raw traceback that
+    # reads like the whole run was lost. Any exception: emission is
+    # template code over an LLM-written IR, and an unanticipated shape
+    # can fail in more ways than the adapters' own ValueErrors.
     try:
         written = adapter.emit(pipeline, runtime_dir)
-    except ValueError as e:
-        # The compile already paid for its pipeline.yaml and extracted/
-        # modules; they stay in compiled/. (The constants check in
-        # particular refuses before writing any file, so that refusal leaves
-        # no half-new app in the runtime dir.)
+    except Exception as e:  # noqa: BLE001 (reported with the retry command)
         if progress_sink is not None:
             progress_sink.close()
-        print(f"rote compile: emitting the {args.runtime} runtime failed: {e}", file=sys.stderr)
-        print(
-            f"rote compile: the compiled pipeline is kept in {compiled_dir}. Fix the file the "
-            f"error names (an agent-written module under {compiled_dir / 'extracted'}, or "
-            f"your own edit under {runtime_dir / 'extracted'}), then run "
-            f"`rote emit {compiled_dir / 'pipeline.yaml'} --runtime {args.runtime} "
-            f"--out {runtime_dir}`",
-            file=sys.stderr,
-        )
+        _print_emit_failure_after_compile(e, compiled_dir, runtime_dir, args)
         return 1
 
     from rote.app_registry import record_app
 
     record_app(runtime_dir, args.runtime, pipeline.name)
 
-    # ── Generated-test verification ── the implementation rubric has the
-    # agent write deterministic, offline golden-fixture tests when it
-    # implements extracted modules for real. Run them now so the user
-    # learns immediately whether the agent's implementations hold against
-    # the observed payloads. Strictly non-fatal: a red test (or a missing
-    # pytest) is a report line, never a failed compilation.
-    verification = _run_generated_tests(compiled_dir)
-    if verification is not None:
-        status = "passed" if verification["passed"] else "FAILED"
+    # ── Deliverable verification ── the compiler already ran it (and fed
+    # failures back to the agent for repair); this reports the final
+    # verdict. A compiler that predates it (or a no-op update) leaves it
+    # unset, and then only the generated tests are run, as before.
+    from rote.compiler.verify import run_generated_tests
+
+    deliverable = result.verification
+    if args.no_verify_tests:
+        tests_run = None
         print(
-            f"rote compile: generated tests {status} ({verification['summary']})",
+            f"rote compile: generated tests NOT RUN (--no-verify-tests); review "
+            f"{compiled_dir / 'tests'} before running them",
             file=sys.stderr,
         )
-        if not verification["passed"]:
+    elif deliverable is not None:
+        tests_run = deliverable.tests
+    else:
+        tests_run = run_generated_tests(compiled_dir, trust_skill=args.trust_skill)
+    verification = tests_run.as_dict() if tests_run is not None else None
+    if tests_run is not None:
+        status = {
+            "passed": "passed",
+            "failed": "FAILED",
+            "unavailable": "NOT RUN",
+            "unverified": "NOT RUN, deliverable UNVERIFIED",
+        }[tests_run.status]
+        print(
+            f"rote compile: generated tests {status} ({tests_run.summary})",
+            file=sys.stderr,
+        )
+        if tests_run.status == "failed":
             print(
-                f"  review the agent's implementations against {compiled_dir / 'tests'} "
-                "— a red golden-fixture test means an implementation disagrees with "
-                "the observed payloads",
+                f"  review the agent's implementations against {compiled_dir / 'tests'}: "
+                "a red test means an implementation disagrees with the skill's rules "
+                "or the observed payloads",
                 file=sys.stderr,
             )
+    if deliverable is not None and deliverable.implementations:
+        impls = deliverable.implementations
+        done = [i for i in impls if i.status == "implemented"]
+        print(
+            f"rote compile: {len(done)} of {len(impls)} impl node(s) implemented",
+            file=sys.stderr,
+        )
+        for impl in impls:
+            if impl.status == "implemented":
+                continue
+            via = " (runs via its mcp binding)" if impl.mcp_bound else ""
+            reason = f": {impl.reason}" if impl.reason else ""
+            print(f"  {impl.status}: {impl.node_id}{via}{reason}", file=sys.stderr)
+    if deliverable is not None or tests_run is not None or args.no_verify_tests:
+        _record_verification_in_report(compiled_dir, deliverable, tests_run, args)
 
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
     # just-completed, real-money compilation run) ──
@@ -1056,6 +1083,27 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # disk and re-deployable without another agent run.
     deploy_entry: dict[str, object] | None = None
     exit_code = 0
+    # A deliverable that still fails verification after the repair rounds
+    # is kept (it is the output of a paid run, usually a small fix away)
+    # but is not a success: exit non-zero, and don't ship it to the cloud.
+    if deliverable is not None and not deliverable.ok:
+        exit_code = 1
+        rounds = result.driver_metadata.get("repair_rounds", 0)
+        print(
+            f"rote compile: the deliverable still fails verification after {rounds} "
+            f"repair round(s); see the lines above. Everything is kept in "
+            f"{compiled_dir}. Fix it there, then re-emit without an agent run: "
+            f"rote emit {compiled_dir / 'pipeline.yaml'} --runtime {args.runtime} "
+            f"--out {runtime_dir}",
+            file=sys.stderr,
+        )
+        if auto_deploy:
+            auto_deploy = False
+            print(
+                f"  skipped the rote cloud deploy; once fixed: "
+                f"rote deploy {out_dir} --target rote-cloud",
+                file=sys.stderr,
+            )
     if auto_deploy:
         from rote.deploy import DeployError
         from rote.deploy_rote_cloud import deploy_rote_cloud
@@ -1115,6 +1163,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         if verification is not None:
             payload["generated_tests"] = verification
         payload["contract_findings"] = [f.as_dict() for f in contract_findings]
+        if deliverable is not None:
+            payload["verification"] = {
+                "ok": deliverable.ok,
+                "errors": [f.as_dict() for f in deliverable.errors],
+                "implementations": [i.as_dict() for i in deliverable.implementations],
+            }
         if deploy_entry is not None:
             payload["deploy"] = deploy_entry
         print(json.dumps(payload, indent=2))
@@ -1158,6 +1212,88 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     return exit_code
 
 
+#: The heading rote owns at the end of compile-report.md. Everything above
+#: it is the agent's; the section is replaced, not appended, on a re-run.
+_VERIFICATION_HEADING = "## rote verification"
+
+
+def _record_verification_in_report(
+    compiled_dir: Path, deliverable: Any, tests_run: Any, args: argparse.Namespace
+) -> None:
+    """State in compile-report.md what rote checked, so the report cannot
+    read as verified when the generated tests never ran."""
+    report = compiled_dir / "compile-report.md"
+    if not report.is_file():
+        return
+    if args.no_verify_tests:
+        tests_line = "NOT RUN (--no-verify-tests). The deliverable is UNVERIFIED."
+    elif tests_run is None:
+        tests_line = "none were written."
+    elif tests_run.status == "unverified":
+        tests_line = f"NOT RUN. The deliverable is UNVERIFIED: {tests_run.summary}."
+    else:
+        where = "without a sandbox (--trust-skill)" if args.trust_skill else "in an OS sandbox"
+        tests_line = f"{tests_run.status} ({tests_run.summary}), run {where}."
+    lines = [_VERIFICATION_HEADING, "", f"- Generated tests: {tests_line}"]
+    if deliverable is not None:
+        impls = deliverable.implementations
+        done = sum(1 for i in impls if i.status == "implemented")
+        lines.append(f"- Implemented impl nodes: {done} of {len(impls)}.")
+        errors = deliverable.errors
+        lines.append(
+            f"- Unresolved problems: {len(errors)}"
+            + (": " + "; ".join(f"{f.node_id}: {f.kind}" for f in errors[:10]) if errors else ".")
+        )
+    text = report.read_text(encoding="utf-8")
+    at = text.find("\n" + _VERIFICATION_HEADING)
+    if at >= 0:
+        text = text[:at]
+    report.write_text(text.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _print_emit_failure_after_compile(
+    error: Exception, compiled_dir: Path, runtime_dir: Path, args: argparse.Namespace
+) -> None:
+    """Explain an emission failure that happened after a paid agent run.
+
+    The point is the second line: the compiled IR survived, and
+    ``rote emit`` retries the emission without spending on the agent
+    again.
+    """
+    import shlex
+
+    pipeline_yaml = compiled_dir / "pipeline.yaml"
+    retry = ["rote", "emit", str(pipeline_yaml), "--runtime", args.runtime]
+    if args.backend != "mcp":
+        retry += ["--backend", args.backend]
+    retry += ["--out", str(runtime_dir)]
+    from rote.adapters._py_common import ConstantsNotAccepted
+
+    print(
+        f"rote compile: the compilation succeeded, but emitting the {args.runtime} "
+        f"runtime failed: {type(error).__name__}: {error}",
+        file=sys.stderr,
+    )
+    if isinstance(error, ConstantsNotAccepted):
+        # The one emit failure known to refuse before writing anything.
+        where = (
+            f"Nothing in {runtime_dir} was written. Fix the file the error names (an "
+            f"agent-written module under {compiled_dir / 'extracted'}, or your own edit "
+            f"under {runtime_dir / 'extracted'})"
+        )
+    else:
+        where = (
+            f"{runtime_dir} may hold a partial emit, which the retry overwrites. Fix what "
+            f"the error names"
+        )
+    print(
+        f"  the compiled IR and extracted/ modules are kept in {compiled_dir}. {where}, "
+        f"then retry the emission (no agent run, no cost):\n"
+        f"    {shlex.join(retry)}",
+        file=sys.stderr,
+    )
+
+
 def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
     """Message for the first local-only flag set under cloud mode, else None.
 
@@ -1181,6 +1317,8 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
         ("--no-mcp", args.no_mcp),
+        ("--no-verify-tests", args.no_verify_tests),
+        ("--trust-skill", args.trust_skill),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2285,6 +2423,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         agent=agent,
         model=model,
         driver_kwargs={"mcp_servers": []} if args.no_mcp else None,
+        run_generated_tests=not args.no_verify_tests,
+        trust_skill=args.trust_skill,
     )
 
     out_ctx: Any = (
@@ -2549,45 +2689,6 @@ def _resolve_baseline_input(
         )
         return None
     return derived
-
-
-def _run_generated_tests(compiled_dir: Path) -> dict[str, object] | None:
-    """Run the agent-written test suite under a compilation's output, if any.
-
-    The implementation rubric asks the agent for deterministic, offline
-    tests in ``tests/`` (golden fixtures from observed payloads,
-    transport-stubbed network calls). ``None`` when there's nothing to
-    run; otherwise ``{"passed": bool, "summary": str}``. Degrades to a
-    "couldn't run" summary (never raises) when pytest is unavailable or
-    the run blows up — verification is advisory, the compilation already
-    materially succeeded.
-    """
-    import subprocess
-
-    tests_dir = compiled_dir / "tests"
-    if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
-        return None
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                str(tests_dir),
-                "-q",
-                "--no-header",
-                "-p",
-                "no:cacheprovider",
-            ],
-            cwd=compiled_dir,
-            capture_output=True,
-            text=True,
-            timeout=300.0,
-        )
-    except Exception as e:  # noqa: BLE001 — advisory check, never fatal
-        return {"passed": False, "summary": f"could not run pytest: {e}"}
-    tail = (proc.stdout or proc.stderr).strip().splitlines()
-    return {"passed": proc.returncode == 0, "summary": tail[-1] if tail else "no output"}
 
 
 def _cmd_baseline(args: argparse.Namespace) -> int:
@@ -3825,6 +3926,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     compile_p.set_defaults(func=_cmd_compile)
     compile_p.add_argument(
+        "--no-verify-tests",
+        action="store_true",
+        help=("Don't run the tests the compiler agent writes. Static checks still run."),
+    )
+    compile_p.add_argument(
+        "--trust-skill",
+        action="store_true",
+        help=(
+            "Run the agent-written tests even without an OS sandbox. By default they "
+            "run under one (sandbox-exec on macOS, bubblewrap on Linux): no network, "
+            "no reads outside the compile's work dir and the Python install, no "
+            "programs but Python, env limited to PATH and locale, an empty HOME. With "
+            "no sandbox available they are skipped and the deliverable is reported "
+            "unverified. With this flag they run with only the env limits and the "
+            "empty HOME, so they can read your files and reach the network."
+        ),
+    )
+    compile_p.add_argument(
         "--no-mcp",
         action="store_true",
         help=(
@@ -4345,6 +4464,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the analysis report as JSON instead of text.",
     )
     analyze.set_defaults(func=_cmd_analyze)
+    analyze.add_argument(
+        "--no-verify-tests",
+        action="store_true",
+        help="Don't run the tests the compiler agent writes (see rote compile --help)",
+    )
+    analyze.add_argument(
+        "--trust-skill",
+        action="store_true",
+        help="Run the agent-written tests even without an OS sandbox (see rote compile --help)",
+    )
     analyze.add_argument(
         "--no-mcp",
         action="store_true",

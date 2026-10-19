@@ -38,6 +38,8 @@ jobs:
       - name: Install package with dev extras
         run: python -m pip install -e ".[dev]"
 
+      - uses: ./.github/actions/bubblewrap
+
       - name: Pytest (fast suite)
         run: pytest tests/
 

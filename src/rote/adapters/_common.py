@@ -390,19 +390,37 @@ def _python_module_is_stub(text: str) -> bool:
     for node in ast.walk(tree):
         if _raises_with_sentinel(node):
             return True
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or _is_abstract(node):
-            continue
-        body = node.body
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            body = body[1:]
-        if len(body) == 1 and _raises_not_implemented(body[0]):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and stub_raise(node):
             return True
     return False
+
+
+def stub_raise(func: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Raise | None:
+    """The ``raise NotImplementedError`` that makes ``func`` a stub, if it is one.
+
+    The ONE definition of a compile-agent stub, shared by ``rote run``'s
+    preflight (through :func:`_python_module_is_stub`) and the compile's
+    per-node accounting (``rote.contracts.implementation_status``). Two
+    predicates once disagreed: ``total = len(rows); raise
+    NotImplementedError(...)`` was a stub at compile time and implemented
+    at run time. A stub is a function whose whole body, after its
+    docstring, is that one raise. An ``@abstractmethod`` is not one.
+    """
+    if _is_abstract(func):
+        return None
+    body = func.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    if len(body) == 1 and _raises_not_implemented(body[0]):
+        stmt = body[0]
+        assert isinstance(stmt, ast.Raise)
+        return stmt
+    return None
 
 
 def _is_stub_module(path: Path, text: str) -> bool:

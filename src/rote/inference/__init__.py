@@ -14,6 +14,7 @@ Design record: ``docs/inference-runtime.md``.
 from __future__ import annotations
 
 from rote.inference._runtime_helper import (
+    CLI_CONTEXT_ISOLATION_FLAGS,
     PROVIDERS,
     build_subscription_env,
     provider_availability,
@@ -27,6 +28,7 @@ from rote.inference._runtime_helper import (
 LOCAL_ONLY_PROVIDERS: frozenset[str] = frozenset({"claude-cli"})
 
 __all__ = [
+    "CLI_CONTEXT_ISOLATION_FLAGS",
     "LOCAL_ONLY_PROVIDERS",
     "PROVIDERS",
     "build_subscription_env",

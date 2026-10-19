@@ -188,6 +188,19 @@ representation (`pipeline.yaml`), extracted Python modules for the
 deterministic parts, typed signature stubs for the LLM-judge parts, and
 runnable code for the durable execution engine of your choice.
 
+The agent implements the deterministic `pure_function` steps the skill
+spells out and writes tests for them. Before the compile reports
+success, rote checks what the agent wrote and runs those tests, and any
+failure goes back to the agent to fix. The tests are code an LLM wrote
+from a skill you may not have written, so rote runs them in an OS
+sandbox (`sandbox-exec` on macOS, bubblewrap on Linux): no network, no
+reads outside the compile's work dir and the Python install, no programs
+other than Python, no API keys in the environment, an empty `HOME`. If
+no sandbox works on your machine, the tests are skipped and the compile
+says the deliverable is unverified. `--trust-skill` runs them without a
+sandbox, and `--no-verify-tests` never runs them; either way, review
+`<out>/compiled/tests/` before running them yourself.
+
 `rote` is a three-layer system; each layer has one job and contracts on
 a small interface.
 

@@ -990,26 +990,26 @@ def test_compile_threads_probe_dir_to_driver_instructions(
 
 
 def test_run_generated_tests_none_without_tests(tmp_path: Path) -> None:
-    from rote.cli import _run_generated_tests
+    from rote.compiler.verify import run_generated_tests
 
-    assert _run_generated_tests(tmp_path) is None
+    assert run_generated_tests(tmp_path) is None
     (tmp_path / "tests").mkdir()
-    assert _run_generated_tests(tmp_path) is None  # dir but no test files
+    assert run_generated_tests(tmp_path) is None  # dir but no test files
 
 
 def test_run_generated_tests_reports_pass_and_fail(tmp_path: Path) -> None:
-    from rote.cli import _run_generated_tests
+    from rote.compiler.verify import run_generated_tests
 
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_ok.py").write_text("def test_ok():\n    assert 1 + 1 == 2\n")
-    result = _run_generated_tests(tmp_path)
-    assert result is not None and result["passed"] is True
+    result = run_generated_tests(tmp_path)
+    assert result is not None and result.passed is True
 
     (tests / "test_bad.py").write_text("def test_bad():\n    assert False\n")
-    result = _run_generated_tests(tmp_path)
-    assert result is not None and result["passed"] is False
-    assert "failed" in str(result["summary"])
+    result = run_generated_tests(tmp_path)
+    assert result is not None and result.status == "failed"
+    assert "failed" in result.summary
 
 
 def test_compile_reports_generated_tests(

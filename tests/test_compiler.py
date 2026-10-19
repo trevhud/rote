@@ -145,8 +145,29 @@ class _RepairableDriver(CompilerDriver):
 
     name = "repairable"
 
-    def __init__(self, yaml_versions: list[str]) -> None:
+    def __init__(
+        self,
+        yaml_versions: list[str],
+        files: dict[str, str] | None = None,
+        file_fixes: list[dict[str, str]] | None = None,
+    ) -> None:
         self._versions = list(yaml_versions)
+        # The rest of the deliverable. VALID_YAML's only node is a
+        # pure_function, and verification holds a compile to writing it
+        # (or explaining a stub), so the default is an explained stub.
+        self._files = (
+            files
+            if files is not None
+            else {
+                "extracted/foo.py": (
+                    "def only_node():\n"
+                    "    raise NotImplementedError('needs the FakeInput schema, "
+                    "which the skill does not state')\n"
+                )
+            }
+        )
+        # One {path: content} rewrite per repair round, after the yaml ones.
+        self._file_fixes = list(file_fixes or [])
         self.repair_instructions: list[str] = []
 
     def is_available(self) -> tuple[bool, str]:
@@ -161,17 +182,25 @@ class _RepairableDriver(CompilerDriver):
         on_event: object = None,
         repair: object = None,
     ) -> DriverResult:
+        def write(files: dict[str, str]) -> None:
+            for rel, content in files.items():
+                (work_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+                (work_dir / rel).write_text(content, encoding="utf-8")
+
         pipeline_yaml = work_dir / "pipeline.yaml"
         pipeline_yaml.write_text(self._versions.pop(0), encoding="utf-8")
+        write(self._files)
         while repair is not None:
             instruction = repair(pipeline_yaml)  # type: ignore[operator]
             if instruction is None:
                 break
             self.repair_instructions.append(instruction)
-            # "Fix" the file the way the resumed agent would; with no
-            # versions left the file simply stays as it is.
+            # "Fix" the deliverable the way the resumed agent would; with
+            # no versions left it simply stays as it is.
             if self._versions:
                 pipeline_yaml.write_text(self._versions.pop(0), encoding="utf-8")
+            elif self._file_fixes:
+                write(self._file_fixes.pop(0))
         return DriverResult(
             pipeline_yaml_path=pipeline_yaml,
             work_dir=work_dir,
@@ -206,7 +235,13 @@ def test_compile_metrics_survive_adapter_failure(
     tmp_path: Path,
     fake_skill_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """An emit failure after the paid run keeps the IR and says how to retry.
+
+    It used to escape as a raw traceback (a fan over a pipeline-input
+    list did exactly this), which reads as if the whole run was lost.
+    """
     from rote.cli import main
 
     metadata = {
@@ -244,6 +279,18 @@ def test_compile_metrics_survive_adapter_failure(
         ]
     )
     assert rc == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "ValueError: schema collision after successful compilation" in err
+    retry = (
+        f"rote emit {output / 'compiled' / 'pipeline.yaml'} --runtime dbos "
+        f"--out {output / 'runtime' / 'dbos'}"
+    )
+    assert retry in err
+    # Only the constants check is known to refuse before writing; any other
+    # emit failure may have left a partial runtime dir, and says so.
+    assert "may hold a partial emit" in err
+    assert "Nothing in" not in err
     metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
     assert metrics == {
         "schema_version": 1,
@@ -807,3 +854,175 @@ async def test_repair_callback_not_passed_to_drivers_without_the_parameter(
 
     with pytest.raises(CompilerError, match="produced an invalid"):
         await compiler.compile(fake_skill_dir, output_dir)
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_ir_is_kept_after_the_paid_run(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """The temp work dir is deleted on exit, so a rejected IR used to vanish.
+
+    And it must not land on top of the previous run: a re-run into an
+    existing --out keeps the last good IR and the stubs the user filled in.
+    """
+    output_dir = tmp_path / "output"
+    (output_dir / "extracted").mkdir(parents=True)
+    (output_dir / "pipeline.yaml").write_text(VALID_YAML)
+    filled = "def only_node():\n    return {'filled': 'by the user'}\n"
+    (output_dir / "extracted" / "foo.py").write_text(filled)
+
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=INVALID_YAML)  # type: ignore[method-assign]
+
+    with pytest.raises(CompilerError) as excinfo:
+        await compiler.compile(fake_skill_dir, output_dir)
+    rejected = tmp_path / "output.rejected"
+    assert (rejected / "pipeline.yaml").read_text() == INVALID_YAML
+    assert f"rote emit {rejected / 'pipeline.yaml'}" in str(excinfo.value)
+    # The previous good output is exactly as it was.
+    assert (output_dir / "pipeline.yaml").read_text() == VALID_YAML
+    assert (output_dir / "extracted" / "foo.py").read_text() == filled
+
+
+_LOGIC_YAML = VALID_YAML.replace(
+    "    impl: extracted/foo.py:only_node\n",
+    "    impl: extracted/foo.py:only_node\n    inputs: {foo: pipeline.input.foo}\n",
+)
+_LOGIC_IMPL = "def only_node(foo):\n    return {'doubled': foo * 2}\n"
+_LOGIC_TEST = (
+    "from extracted.foo import only_node\n\n"
+    "def test_doubles():\n    assert only_node(3) == {'doubled': 6}\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_red_generated_tests_are_repaired_in_the_same_conversation(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    driver = _RepairableDriver(
+        [_LOGIC_YAML],
+        files={
+            "extracted/foo.py": _LOGIC_IMPL.replace("* 2", "+ 2"),  # wrong
+            "tests/test_foo.py": _LOGIC_TEST,
+        },
+        file_fixes=[{"extracted/foo.py": _LOGIC_IMPL}],
+    )
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "out")
+
+    [instruction] = driver.repair_instructions
+    assert "test_doubles" in instruction
+    assert "assert {'doubled': 5} == {'doubled': 6}" in instruction
+    assert result.verification is not None and result.verification.ok
+    assert result.verification.tests is not None and result.verification.tests.passed
+    assert (tmp_path / "out" / "tests" / "test_foo.py").is_file()
+
+
+@pytest.mark.asyncio
+async def test_an_unrepaired_deliverable_is_returned_and_marked_not_ok(
+    fake_skill_dir: Path,
+    fake_compiler_skill_dir: Path,
+    tmp_path: Path,
+) -> None:
+    """Exhausted repairs keep the paid artifacts; the verdict says they fail."""
+    driver = _RepairableDriver(
+        [_LOGIC_YAML],
+        files={
+            "extracted/foo.py": _LOGIC_IMPL.replace("* 2", "+ 2"),
+            "tests/test_foo.py": _LOGIC_TEST,
+        },
+    )
+    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "out")
+
+    assert len(driver.repair_instructions) == 2
+    assert result.verification is not None and not result.verification.ok
+    assert (tmp_path / "out" / "extracted" / "foo.py").is_file()
+
+
+def test_cli_exits_nonzero_when_the_deliverable_fails_verification(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A compile whose pure_function was never written is not a success.
+
+    Exit 0 here would be a wrong exit code that looks like success, the
+    failure mode the mutation sweeps keep finding. The artifacts and the
+    emitted runtime are still there.
+    """
+    from rote.cli import main
+
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _FakeDriver(VALID_YAML))
+    out = tmp_path / "run"
+    rc = main(
+        [
+            "compile",
+            str(fake_skill_dir),
+            "--local",
+            "--runtime",
+            "dbos",
+            "--no-eval",
+            "--out",
+            str(out),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "still fails verification" in err
+    assert "absent: only_node" in err
+    assert (out / "runtime" / "dbos" / "main.py").is_file()
+
+
+@pytest.mark.parametrize(
+    ("flags", "sandbox_ok", "expected"),
+    [
+        ([], False, "NOT RUN. The deliverable is UNVERIFIED: generated tests NOT run: no OS"),
+        (["--trust-skill"], False, "passed (1 passed"),
+        (["--no-verify-tests"], True, "NOT RUN (--no-verify-tests). The deliverable is UNVERIFIED"),
+    ],
+)
+def test_the_compile_report_says_whether_the_tests_ran(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    sandbox_ok: bool,
+    expected: str,
+) -> None:
+    """With no sandbox the tests are skipped, and the report must not read
+    as verified. The section is rote's, so a re-run replaces it."""
+    from rote.cli import main
+    from rote.compiler import sandbox
+
+    if not sandbox_ok:
+        monkeypatch.setattr(sandbox, "detect", lambda: (None, "no sandbox in this test"))
+
+    def driver() -> _RepairableDriver:
+        return _RepairableDriver(
+            [_LOGIC_YAML],
+            files={
+                "extracted/foo.py": _LOGIC_IMPL,
+                "tests/test_foo.py": _LOGIC_TEST,
+                "compile-report.md": "# Report\n\nThe agent's text.\n",
+            },
+        )
+
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver())
+    out = tmp_path / "run"
+    argv = ["compile", str(fake_skill_dir), "--local", "--runtime", "dbos", "--no-eval"]
+    for _ in range(2):  # twice: the section is replaced, not duplicated
+        assert main([*argv, *flags, "--out", str(out)]) == 0
+    report = (out / "compiled" / "compile-report.md").read_text()
+    assert report.startswith("# Report\n\nThe agent's text.")
+    assert report.count("## rote verification") == 1
+    assert expected in report
