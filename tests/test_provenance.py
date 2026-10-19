@@ -75,6 +75,18 @@ def test_fragments_must_come_from_one_paragraph(paragraphs: list[str]) -> None:
     assert citation_problem(across, paragraphs) is not None
 
 
+def test_a_heading_inside_a_fenced_template_is_citable(tmp_path: Path) -> None:
+    """A skill's report template in a markdown fence is content, not a
+    heading. A real compile was bounced for citing it."""
+    (tmp_path / "SKILL.md").write_text(
+        "# Returns triage\n\nThe report looks like this:\n\n"
+        "```markdown\n# Returns report: <week> by store\n\nStatus: final\n```\n"
+    )
+    assert citation_problem("# Returns report: <week> by store", skill_paragraphs(tmp_path)) is None
+    # The real heading outside the fence is still not citable prose.
+    assert citation_problem("Returns triage", skill_paragraphs(tmp_path)) is not None
+
+
 def test_a_whole_table_row_is_citable(tmp_path: Path) -> None:
     """The rubric's worked example: cite a row whole, pipes included."""
     (tmp_path / "SKILL.md").write_text(

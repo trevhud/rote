@@ -96,12 +96,21 @@ def skill_paragraphs(skill_dir: Path) -> list[str]:
     Headings are not prose and are left out, so a heading cannot be
     cited. A paragraph is a run of non-blank lines (a table or a list
     counts as one), which bounds how far apart cited fragments may be.
+
+    Inside a fenced block nothing is a heading: a skill's required output
+    template (``# Expense audit: <period>`` in a markdown fence) is exactly
+    the text a renderer should cite, and a real compile was sent back for
+    citing it.
     """
     paragraphs: list[str] = []
     for path in sorted(skill_dir.rglob("*.md")):
         current: list[str] = []
+        in_fence = False
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if not line.strip() or _is_heading(line):
+            if line.strip().startswith(("```", "~~~")):
+                in_fence = not in_fence
+                continue
+            if not line.strip() or (not in_fence and _is_heading(line)):
                 if current:
                     paragraphs.append(_normalized(" ".join(current)))
                 current = []
