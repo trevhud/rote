@@ -117,6 +117,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   also checks readiness over TCP now. The socket answered during the
   image's init phase, just before the server restarts, which is how CI
   reached the hang. A runner timeout now carries the app's output too.
+- Python no longer reads `NaN`, `Infinity` or `-Infinity` in an MCP text
+  result as a float. They are not JSON, the TS helpers' `JSON.parse`
+  rejects them, and a non-finite float would not survive a JSON step
+  boundary, so both runtimes now keep the raw text. The cross-runtime
+  payload test also covers empty content, an empty text block, an error
+  result, structured content next to text, and an embedded resource, and
+  runs the Workers helper itself. The TS integer-precision limit (past
+  2^53) is documented in `docs/mcp-client.md`.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few

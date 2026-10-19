@@ -534,6 +534,22 @@ client (`test_cloudflare_mcp_output_typechecks`); the park-on-auth e2e
 streamable-HTTP client through a live workerd run against a real
 server.
 
+**Reading a tool's result, the same on every runtime.** Structured
+content wins (fastmcp's `{"result": ...}` wrapper removed when marked).
+Otherwise each text block is JSON-parsed and kept verbatim when it is not
+JSON. One block gives its value, several give a list, and none gives
+`null`. Image,
+audio and embedded-resource blocks are skipped. `NaN`, `Infinity` and
+`-Infinity` are not JSON, so both sides keep that text as a string.
+Python refuses them through `parse_constant`, and TS `JSON.parse`
+rejects them anyway. `tests/test_mcp_text_payload_parity_e2e.py` holds
+the Python, Node and Workers helpers to one answer against a real
+server. One difference is left on purpose: **integers beyond 2^53 lose
+precision on TS.** `JSON.parse` reads every number as an IEEE double, so
+`12345678901234567890` comes back as `12345678901234567000`, where Python
+keeps it exact. A tool that returns large IDs as JSON numbers should
+return them as strings if a TS runtime will read them.
+
 ## Security posture
 
 File-backed store (`0600`, atomic writes) was chosen over OS keyrings
