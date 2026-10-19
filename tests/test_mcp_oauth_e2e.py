@@ -38,12 +38,14 @@ from rote.mcp import (  # noqa: E402
     McpRegistry,
     McpServerConfig,
     access_token_state,
+    auth_status,
     read_token_file,
     save_registry,
     token_file,
     write_token_file,
 )
 from rote.mcp.auth import fresh_access_token, login  # noqa: E402
+from rote.mcp.learned import learned_auth  # noqa: E402
 
 SERVER_SCRIPT = """\
 import sys
@@ -65,6 +67,20 @@ def whoami(name: str) -> dict:
     return {"hello": name, "authenticated": True}
 
 mcp.run(transport="http", host="127.0.0.1", port=port, show_banner=False)
+"""
+
+
+NO_AUTH_SERVER_SCRIPT = """\
+import sys
+from fastmcp import FastMCP
+
+mcp = FastMCP("open-vendor")
+
+@mcp.tool
+def whoami(name: str) -> dict:
+    return {"hello": name, "authenticated": False}
+
+mcp.run(transport="http", host="127.0.0.1", port=int(sys.argv[1]), show_banner=False)
 """
 
 
@@ -144,7 +160,11 @@ def test_full_oauth_dance_persists_reuses_and_refreshes(
     # 1. The dance: discovery → DCR → PKCE authorization-code → tokens
     #    land durably in rote's store.
     doc = asyncio.run(login("vendor", config))
+    assert doc is not None
     assert (doc["tokens"] or {}).get("access_token")
+    # What login learned is recorded, so `rote emit` knows runs need a token.
+    learned = learned_auth("vendor", protected_server)
+    assert learned is not None and learned.auth == "oauth"
     assert doc["client_info"] and doc["client_info"].get("client_id")  # DCR happened
     path = token_file("vendor")
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -209,3 +229,93 @@ def test_unauthenticated_client_is_rejected_by_the_server(protected_server: str)
 
     with pytest.raises(_runtime_helper.RoteMcpAuthNeeded, match="401"):
         asyncio.run(_runtime_helper.call_mcp_tool("vendor", protected_server, "whoami", {}))
+
+
+@pytest.fixture(scope="module")
+def open_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+    script = tmp_path_factory.mktemp("open-server") / "server.py"
+    script.write_text(NO_AUTH_SERVER_SCRIPT, encoding="utf-8")
+    port = _free_port()
+    proc = subprocess.Popen(
+        [sys.executable, str(script), str(port)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_port(port)
+        yield f"http://127.0.0.1:{port}/mcp"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+def test_login_against_a_server_that_needs_no_auth_records_it(open_server: str) -> None:
+    """The OAuth flow only starts on a 401, so a tools/list that succeeds
+    with no challenge (the provider discovered nothing) is proof the server
+    needs none. login used to raise
+    "completed without storing a token" here, leaving the server looking
+    unauthenticated, so `rote emit` warned that runs would park on it."""
+    config = McpServerConfig(url=open_server)
+    save_registry(McpRegistry(servers={"open": config}))
+    assert auth_status(config, None) == "auth unknown"
+
+    assert asyncio.run(login("open", config)) is None
+
+    learned = learned_auth("open", open_server)
+    assert learned is not None and learned.auth == "none"
+    assert auth_status(config, read_token_file("open"), learned.auth) == "no auth required"
+    assert read_token_file("open") is None
+
+
+def test_login_ignores_a_token_left_by_the_endpoint_the_name_used_to_point_at(
+    open_server: str,
+) -> None:
+    """The name was repointed from an OAuth server to one that needs no
+    auth. The old token file must not make the login report success and
+    record `oauth`, which would leave the name "not authenticated" forever."""
+    config = McpServerConfig(url=open_server)
+    save_registry(McpRegistry(servers={"open": config}))
+    write_token_file(
+        "open",
+        {
+            "server_url": "https://old-oauth.example/mcp",
+            "tokens": {"access_token": "old-token", "token_type": "Bearer"},
+            "expires_at": None,
+        },
+    )
+
+    assert asyncio.run(login("open", config)) is None
+    learned = learned_auth("open", open_server)
+    assert learned is not None and learned.auth == "none"
+    assert auth_status(config, read_token_file("open"), learned.auth) == "no auth required"
+
+
+def test_a_pre_registered_client_against_an_open_server_still_records_no_auth(
+    open_server: str,
+) -> None:
+    """A configured client_id changes how rote registers, not whether the
+    server challenges: with no 401 there is no flow, and none is recorded."""
+    config = McpServerConfig(url=open_server, client_id="pre-registered-client")
+    save_registry(McpRegistry(servers={"open": config}))
+
+    assert asyncio.run(login("open", config)) is None
+    learned = learned_auth("open", open_server)
+    assert learned is not None and learned.auth == "none"
+
+
+def test_a_challenged_login_with_no_stored_token_is_an_error_not_no_auth(
+    protected_server: str, headless_browser: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real 401 and dance whose tokens this store cannot see (the flow
+    was interrupted, or wrote elsewhere) must fail the login. Inferring
+    "no auth required" from the missing token would silence emit's
+    advisory and make live tools connect with no credentials."""
+    from rote.mcp import McpAuthError
+
+    config = McpServerConfig(url=protected_server, scopes=["data:read"])
+    save_registry(McpRegistry(servers={"vendor": config}))
+    monkeypatch.setattr("rote.mcp.auth.read_token_file", lambda server: None)
+
+    with pytest.raises(McpAuthError, match="without storing a token"):
+        asyncio.run(login("vendor", config))
+    assert learned_auth("vendor", protected_server) is None

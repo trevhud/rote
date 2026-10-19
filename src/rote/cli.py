@@ -42,7 +42,7 @@ import re
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rote import __version__
 from rote.adapters import ADAPTERS, get_adapter
@@ -54,6 +54,9 @@ from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
+
+if TYPE_CHECKING:
+    from rote.mcp.learned import LearnedAuth
 
 # ───────── Subcommand: emit ─────────
 
@@ -1674,11 +1677,20 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
         headers=headers or None,
     )
     path = save_registry(registry)
+    if args.auth is not None:
+        from rote.mcp.learned import record_auth
+
+        record_auth(args.name, args.url, args.auth, source="user")
     verb = "updated" if replacing else "added"
     print(f"rote mcp: {verb} {args.name!r} → {args.url} ({path})")
     if issuer:
         print(f"  client {args.client_id!r} bound to authorization server {issuer}")
-    if not headers:
+    if not headers and args.auth is None:
+        print(
+            f"  next: rote mcp login {args.name} (logs in, or records that the "
+            f"server needs no auth)"
+        )
+    elif not headers and args.auth == "oauth":
         print(f"  authenticate with: rote mcp login {args.name}")
     return 0
 
@@ -1687,14 +1699,22 @@ def _cmd_mcp_list(args: argparse.Namespace) -> int:
     import json as _json
 
     from rote.mcp import auth_status, load_registry, read_token_file
+    from rote.mcp.learned import learned_auth
 
     registry = load_registry()
     entries: list[dict[str, object]] = []
     for name, config in sorted(registry.servers.items()):
-        doc = read_token_file(name)
-        status = auth_status(config, doc)
+        learned = learned_auth(name, config.url)
         entries.append(
-            {"name": name, "url": config.url, "transport": config.transport, "auth": status}
+            {
+                "name": name,
+                "url": config.url,
+                "transport": config.transport,
+                "auth": auth_status(
+                    config, read_token_file(name), learned.auth if learned else None
+                ),
+                **_learned_fields(learned),
+            }
         )
 
     if args.json:
@@ -1705,7 +1725,7 @@ def _cmd_mcp_list(args: argparse.Namespace) -> int:
         return 0
     width = max(len(str(e["name"])) for e in entries)
     for e in entries:
-        print(f"  {str(e['name']).ljust(width)}  {e['auth']:<22}  {e['url']}")
+        print(f"  {str(e['name']).ljust(width)}  {_auth_label(e):<34}  {e['url']}")
     return 0
 
 
@@ -1745,6 +1765,13 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
     except McpAuthError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+    if doc is None:
+        print(
+            f"rote mcp: {args.name!r} answered without asking for auth; recorded "
+            f"as no auth required (runs connect unauthenticated)"
+        )
+        _release_parked_after_login(args.name)
+        return 0
     expires_at = doc.get("expires_at")
     refresh = " (refresh token stored)" if (doc.get("tokens") or {}).get("refresh_token") else ""
     print(f"rote mcp: authenticated {args.name!r}{refresh}")
@@ -1978,12 +2005,14 @@ def _mcp_requirements(pipeline: Pipeline) -> list[dict[str, object]]:
     Requirement detection is pure IR (``Pipeline.required_mcp_servers``);
     the ``auth`` column reads the local registry + token store — no
     network. A server the registry doesn't know reports ``"not
-    registered"``; registry/token read failures degrade to ``"unknown"``
+    registered"``; registry/token read failures degrade to
+    ``"registry unreadable"``
     rather than sinking the report (same posture as doctor). Nothing here
     gates anything — callers render recommendations, and park-on-auth
     remains the runtime backstop.
     """
     from rote.mcp import auth_status, load_registry, read_token_file
+    from rote.mcp.learned import learned_auth
 
     required = pipeline.required_mcp_servers
     if not required:
@@ -1999,22 +2028,29 @@ def _mcp_requirements(pipeline: Pipeline) -> list[dict[str, object]]:
             {n.mcp.tool for n in pipeline.nodes if n.mcp is not None and n.mcp.server == server}
         )
         if registry_servers is None:
-            auth = "unknown"
+            auth = "registry unreadable"
         elif server not in registry_servers:
             auth = "not registered"
         else:
             try:
-                auth = auth_status(registry_servers[server], read_token_file(server))
+                config = registry_servers[server]
+                learned = learned_auth(server, config.url)
+                auth = auth_status(
+                    config, read_token_file(server), learned.auth if learned else None
+                )
             except Exception:
-                auth = "unknown"
+                auth = "registry unreadable"
         report.append({"server": server, "nodes": node_ids, "tools": tools, "auth": auth})
     return report
 
 
-#: Auth states that mean a run would park on its first call to the server.
-#: "expired (refreshable)" recovers unattended and "static headers" never
-#: touches OAuth, so neither warrants a recommendation.
-_MCP_AUTH_NEEDS_ACTION = frozenset({"not registered", "not authenticated", "expired"})
+#: Auth states that warrant a recommendation. "expired (refreshable)"
+#: recovers unattended, and "static headers" and "no auth required" never
+#: touch OAuth, so none of those do. "not registered" and "auth unknown"
+#: are worded as unknown: a server that needs no auth runs fine there.
+_MCP_AUTH_NEEDS_ACTION = frozenset(
+    {"not registered", "auth unknown", "not authenticated", "expired"}
+)
 
 
 def _mcp_recommendation_lines(mcp_servers: list[dict[str, object]]) -> list[str]:
@@ -2031,8 +2067,17 @@ def _mcp_recommendation_lines(mcp_servers: list[dict[str, object]]) -> list[str]
         server = entry["server"]
         if auth == "not registered":
             lines.append(
-                f"  {server}: not in the rote registry — register and authenticate "
-                f"before running: rote mcp add {server} <url> && rote mcp login {server}"
+                f"  {server}: not in the rote registry, so whether it needs auth is "
+                f"unknown. If it does, the run will park at its first {server} call. "
+                f"Register it and check: rote mcp add {server} <url> && "
+                f"rote mcp login {server}"
+            )
+        elif auth == "auth unknown":
+            lines.append(
+                f"  {server}: auth unknown (no token stored, and rote has not "
+                f"recorded whether {server} needs one). If it does, the run will "
+                f"park at its first {server} call. Check with: rote mcp login "
+                f"{server} (records 'no auth required' if it needs none)"
             )
         else:
             lines.append(
@@ -2286,13 +2331,14 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def _doctor_mcp_servers() -> list[dict[str, object]]:
-    """Registered MCP servers with their five-state auth status.
+    """Registered MCP servers with their auth status.
 
     Degrades to an empty list on any read failure — the registry and
     token store are documented as optionally-absent, so a missing or
     malformed store is informational, never a doctor traceback.
     """
     from rote.mcp import auth_status, load_registry, read_token_file
+    from rote.mcp.learned import learned_auth
 
     try:
         registry = load_registry()
@@ -2304,8 +2350,41 @@ def _doctor_mcp_servers() -> list[dict[str, object]]:
             doc = read_token_file(name)
         except Exception:
             doc = None
-        servers.append({"name": name, "url": config.url, "auth": auth_status(config, doc)})
+        try:
+            learned = learned_auth(name, config.url)
+        except Exception:
+            learned = None
+        servers.append(
+            {
+                "name": name,
+                "url": config.url,
+                "auth": auth_status(config, doc, learned.auth if learned else None),
+                **_learned_fields(learned),
+            }
+        )
     return servers
+
+
+def _learned_fields(learned: LearnedAuth | None) -> dict[str, object]:
+    """The JSON fields describing what rote learned (or was told) about auth."""
+    return {
+        "auth_learned_at": learned.learned_at if learned else None,
+        "auth_source": learned.source if learned else None,
+    }
+
+
+def _auth_label(server: dict[str, object]) -> str:
+    """The auth column, with the date for a requirement rote learned.
+
+    "no auth required" is a fact rote observed once, not a credential it
+    can re-check, so it carries the date it was learned.
+    """
+    auth = str(server["auth"])
+    learned = server.get("auth_learned_at")
+    if auth == "no auth required" and learned:
+        verb = "set" if server.get("auth_source") == "user" else "learned"
+        return f"{auth} ({verb} {learned})"
+    return auth
 
 
 def _doctor_apps() -> list[dict[str, object]]:
@@ -2387,10 +2466,10 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     else:
         width = max(len(str(s["name"])) for s in servers)
         for server in servers:
-            healthy = server["auth"] in ("authenticated", "static headers")
+            healthy = server["auth"] in ("authenticated", "static headers", "no auth required")
             mark = "✓" if healthy else "✗"
             name = str(server["name"]).ljust(width)
-            lines.append(f"  {mark} {name}  {str(server['auth']):<22}  {server['url']}")
+            lines.append(f"  {mark} {name}  {_auth_label(server):<34}  {server['url']}")
     lines.append("")
 
     lines.append("Registered apps:")
@@ -4079,6 +4158,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="'Name: value'",
         help="Static auth header (API-key schemes) instead of OAuth (repeatable)",
+    )
+    mcp_add.add_argument(
+        "--auth",
+        choices=["oauth", "none"],
+        default=None,
+        help=(
+            "Whether the server requires auth. Omit to let `rote mcp login` find "
+            "out; 'none' tells rote that runs connect unauthenticated and never park"
+        ),
     )
     mcp_add.set_defaults(func=_cmd_mcp_add)
 

@@ -47,6 +47,7 @@ from rote.mcp._runtime_helper import (
     retarget_token_request,
     stored_for_url,
 )
+from rote.mcp.learned import record_auth
 from rote.mcp.registry import McpServerConfig
 from rote.mcp.tokens import (
     ServerTokenKV,
@@ -639,14 +640,19 @@ async def login(
     no_browser: bool = False,
     callback_port: int | None = None,
     announce_url: bool = False,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Run the full OAuth dance and persist tokens durably.
 
-    Returns the stored contract document. Also stamps ``token_endpoint``
-    and ``issuer`` (from the authorization server metadata the provider
-    validated) into the token file: refresh-only clients, the emitted
-    TypeScript runtimes, never re-run discovery, and the issuer is what
-    the credentials are bound to.
+    Returns the stored contract document, or None when the server
+    answered ``tools/list`` without a 401 (the provider discovered
+    nothing, see :func:`_saw_auth_challenge`), so it needs no
+    credentials. Either way the finding is recorded in the registry
+    (``auth: oauth`` or ``auth: none``), which is what lets ``rote emit``
+    stop warning that a no-auth server will park. After a real flow it
+    also stamps ``token_endpoint`` and ``issuer`` (from the authorization
+    server metadata the provider validated) into the token file:
+    refresh-only clients, the emitted TypeScript runtimes, never re-run
+    discovery, and the issuer is what the credentials are bound to.
     """
     if config.headers and not config.client_id:
         # Static-header servers don't need a dance; there is nothing to
@@ -665,11 +671,22 @@ async def login(
     await _list_tools(server, config.url, oauth)
 
     doc = read_token_file(server)
+    if doc is not None and not stored_for_url(doc, config.url):
+        # A login for the endpoint this name used to point at: the flow
+        # just now neither used nor replaced it, so it is no login here.
+        doc = None
     if doc is None or not (doc.get("tokens") or {}).get("access_token"):
+        if not _saw_auth_challenge(oauth):
+            record_auth(server, config.url, "none", source="login")
+            return None
+        # The server challenged (discovery ran) yet nothing usable landed
+        # in the store: an interrupted flow, or tokens written somewhere
+        # this store does not read. Never call that "no auth required".
         raise McpAuthError(
-            f"OAuth flow for {server!r} completed without storing a token — "
-            "the server may not require auth, or the flow was interrupted"
+            f"OAuth flow for {server!r} completed without storing a token; "
+            "the flow may have been interrupted. Retry: rote mcp login " + server
         )
+    record_auth(server, config.url, "oauth", source="login")
 
     metadata = getattr(oauth.context, "oauth_metadata", None)
     if metadata is None:
@@ -687,6 +704,23 @@ async def login(
     if json.dumps(doc, sort_keys=True) != before:
         write_token_file(server, doc)
     return doc
+
+
+def _saw_auth_challenge(oauth: Any) -> bool:
+    """Whether the OAuth provider ran discovery, i.e. the server sent a 401.
+
+    The SDK's provider discovers metadata only after a challenge, so with
+    nothing discovered the request went through unauthenticated. If the
+    provider's shape is not the one this reads, assume a challenge: the
+    caller then reports a failed login instead of recording ``none``.
+    """
+    context = getattr(oauth, "context", None)
+    if context is None or not hasattr(context, "protected_resource_metadata"):
+        return True
+    return any(
+        getattr(context, attr, None) is not None
+        for attr in ("protected_resource_metadata", "oauth_metadata", "auth_server_url")
+    )
 
 
 async def fresh_access_token(server: str, config: McpServerConfig) -> str:
