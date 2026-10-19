@@ -17,7 +17,6 @@ from rote.mcp.registry import (
     McpServerConfig,
     load_registry,
     registry_path,
-    resolve_server_url,
     save_registry,
 )
 from rote.mcp.tokens import (
@@ -44,7 +43,6 @@ __all__ = [
     "login",
     "read_token_file",
     "registry_path",
-    "resolve_server_url",
     "save_registry",
     "token_dir",
     "token_file",

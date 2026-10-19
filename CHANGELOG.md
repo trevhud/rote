@@ -108,8 +108,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `ROTE_MCP_<SERVER>_URL`, then the registry, then the IR `url`
   (Workers: the variable, then the IR `url`). The registry module, the
   IR field descriptions and docs/mcp-client.md said the IR `url` came
-  first. `resolve_server_url`, a helper nothing in the run path calls,
-  keeps its own order and now says so. No behavior changed.
+  first. No behavior changed for runs. `rote.mcp.resolve_server_url`,
+  which encoded that wrong order and had no caller outside its own
+  test, is removed.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few

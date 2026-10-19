@@ -220,10 +220,6 @@ have no registry: the `ROTE_MCP_<SERVER>_URL` var or secret, then the IR
 `url`. Nothing resolving is a `RoteMcpConfigError`, which fails the step
 without retries.
 
-`rote.mcp.registry.resolve_server_url` keeps an older order (binding >
-registry > env). It is a public helper that nothing in the run path
-calls; it is documented as such rather than changed here.
-
 ## The token-file contract (version 2)
 
 The store layout is a **cross-language contract**: Python writes it,

@@ -22,10 +22,6 @@ helper), which is what every step and agent loop uses:
 
 Deployment context outranks compilation-time capture. Workers have no
 registry: the variable (a wrangler var or secret), then the IR ``url``.
-
-:func:`resolve_server_url` below is a different, older rule (binding >
-registry > env) kept for its callers. Nothing in rote's run path calls
-it.
 """
 
 from __future__ import annotations
@@ -135,22 +131,3 @@ def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
             os.unlink(tmp_name)
         raise
     return p
-
-
-def resolve_server_url(
-    server: str,
-    explicit_url: str | None = None,
-    registry: McpRegistry | None = None,
-) -> str | None:
-    """Binding → registry → env. None = unresolvable.
-
-    Not the runtime order: emitted code resolves env → registry → IR
-    binding (see the module docstring). Kept as is for its callers.
-    """
-    if explicit_url:
-        return explicit_url
-    reg = registry if registry is not None else load_registry()
-    entry = reg.servers.get(server)
-    if entry is not None:
-        return entry.url
-    return os.environ.get(f"ROTE_MCP_{server.upper()}_URL")
