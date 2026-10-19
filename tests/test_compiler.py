@@ -287,6 +287,10 @@ def test_compile_metrics_survive_adapter_failure(
         f"--out {output / 'runtime' / 'dbos'}"
     )
     assert retry in err
+    # Only the constants check is known to refuse before writing; any other
+    # emit failure may have left a partial runtime dir, and says so.
+    assert "may hold a partial emit" in err
+    assert "Nothing in" not in err
     metrics = json.loads((output / "compiled" / "compile-metrics.json").read_text())
     assert metrics == {
         "schema_version": 1,

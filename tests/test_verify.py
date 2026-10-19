@@ -324,6 +324,15 @@ _ASSUMED = _CITED.replace(
             True,
         ),
         ("**Open questions:**\n\n1. Over-cap severity is assumed block.\n", True),
+        # One sub-heading per question, the shape a real ops-report report
+        # used; an items-only reading saw an empty section.
+        (
+            "## Open questions\n\n### OQ-1: Over-cap severity\n**We chose:** block.\n\n"
+            "## Next steps\n\n- ship it\n",
+            True,
+        ),
+        # A sub-heading AFTER the section ended is not an entry.
+        ("## Open questions\n\n## Next steps\n\n### Step 1\n- ship it\n", False),
     ],
 )
 def test_a_recorded_assumption_must_reach_the_open_questions(
@@ -421,7 +430,7 @@ def test_the_committed_ops_report_compile_still_verifies() -> None:
         Path(__file__).resolve().parent.parent
         / "examples/ops-report/runs/2026-10-18-implements-pure-functions"
     )
-    v = verify_deliverable(snapshot)
+    v = verify_deliverable(snapshot, skill_dir=snapshot.parent.parent / "skill")
     assert v.ok, (v.errors, v.tests and v.tests.output)
     assert v.tests is not None and v.tests.passed
     by_kind: dict[str, set[str]] = {}

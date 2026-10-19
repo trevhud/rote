@@ -1,229 +1,325 @@
-"""Tests for extracted/parsers.py — derived from skill rules and examples."""
+"""
+Tests for extracted/parsers.py.
 
+Derived from the ops-report SKILL.md rules — every stated threshold is
+tested on both sides of its boundary. Offline, stdlib only, no credentials.
+"""
+
+import json
 import pytest
+
 from extracted.parsers import (
-    COMPLETION_THRESHOLD_PCT,
-    MISSORT_WARNING_PACKAGES,
-    MISSORT_ALERT_PACKAGES,
-    MISLOAD_ALERT_CARRIER,
+    COMPLETION_THRESHOLD,
+    DWELL_PACKAGES_WARNING,
+    DWELL_PACKAGES_ALERT,
+    DWELL_CARRIER_ALERT,
     parse_shipment_containers,
     parse_dock_pending_log,
+    parse_dock_activity_emails,
     parse_dwell_tickets,
 )
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Constants pinned
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
+# Constant-pinning tests  (Pattern 2 — these fail if values drift)
+# ─────────────────────────────────────────────────────────────
 
 def test_completion_threshold_constant():
-    assert COMPLETION_THRESHOLD_PCT == 75.0
-
-def test_missort_warning_constant():
-    assert MISSORT_WARNING_PACKAGES == 25
-
-def test_missort_alert_constant():
-    assert MISSORT_ALERT_PACKAGES == 41
-
-def test_misload_alert_constant():
-    assert MISLOAD_ALERT_CARRIER == 80
+    assert COMPLETION_THRESHOLD == 75.0
 
 
-# ════════════════════════════════════════════════════════════════════════════
+def test_dwell_warning_constant():
+    assert DWELL_PACKAGES_WARNING == 25
+
+
+def test_dwell_alert_constant():
+    assert DWELL_PACKAGES_ALERT == 41
+
+
+def test_dwell_carrier_alert_constant():
+    assert DWELL_CARRIER_ALERT == 80
+
+
+# ─────────────────────────────────────────────────────────────
 # parse_shipment_containers
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
 
-_CONTAINERS_CSV = (
-    "Site,Active,Loaded,Staged,Shipped,Completion %\n"
-    "EAST1,10,5,3,2,80.0\n"      # above 75 — not flagged
-    "WEST2,8,4,2,1,74.9\n"       # just below 75 — flagged
-    "NORTH3,12,6,4,3,75.0\n"     # exactly 75 — NOT flagged (must be strictly below)
+SHIPMENT_CSV_BASIC = (
+    "SITE,ACTIVE,LOADED,STAGED,SHIPPED,COMPLETION %\n"
+    "EAST1,5,10,3,20,80.0\n"
+    "WEST2,2,8,1,15,74.9\n"
+    "NORTH3,0,12,4,30,75.0\n"
 )
 
-def test_containers_basic_counts():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
+SHIPMENT_CSV_WITH_TREND = (
+    "SITE,ACTIVE,LOADED,STAGED,SHIPPED,COMPLETION %,PREV COMPLETION %\n"
+    "EAST1,5,10,3,20,80.0,70.0\n"
+    "WEST2,2,8,1,15,60.0,65.0\n"
+)
+
+
+def test_parse_shipment_containers_counts():
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_BASIC)
     assert result["active_site_count"] == 3
-    assert result["total_active"] == 30
+    assert result["avg_completion_pct"] == round((80.0 + 74.9 + 75.0) / 3, 2)
 
-def test_containers_flagged_below_75():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
-    assert "WEST2" in result["flagged_sites"]
 
-def test_containers_not_flagged_at_75():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
-    assert "NORTH3" not in result["flagged_sites"]
+def test_parse_shipment_containers_site_fields():
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_BASIC)
+    east1 = next(s for s in result["sites"] if s["site"] == "EAST1")
+    assert east1["active"] == 5
+    assert east1["loaded"] == 10
+    assert east1["staged"] == 3
+    assert east1["shipped"] == 20
+    assert east1["completion_pct"] == 80.0
 
-def test_containers_not_flagged_above_75():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
+
+def test_parse_shipment_containers_flag_below_75():
+    # skill: "Flag any site below 75% completion"
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_BASIC)
+    assert "WEST2" in result["flagged_sites"]   # 74.9 < 75.0
     assert "EAST1" not in result["flagged_sites"]
 
-def test_containers_avg_completion():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
-    expected_avg = round((80.0 + 74.9 + 75.0) / 3, 1)
-    assert result["avg_completion_pct"] == expected_avg
 
-def test_containers_site_data():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
-    east = next(s for s in result["sites"] if s["site"] == "EAST1")
-    assert east["active"] == 10
-    assert east["loaded"] == 5
-    assert east["staged"] == 3
-    assert east["shipped"] == 2
-    assert east["completion_pct"] == 80.0
-    assert east["flagged"] is False
+def test_parse_shipment_containers_exactly_75_not_flagged():
+    # skill: "Flag any site below 75% completion" — boundary: 75.0 is NOT flagged
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_BASIC)
+    north3 = next(s for s in result["sites"] if s["site"] == "NORTH3")
+    assert north3["flagged"] is False
 
-def test_containers_wow_absent():
-    result = parse_shipment_containers(_CONTAINERS_CSV)
+
+def test_parse_shipment_containers_wow_trend():
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_WITH_TREND)
+    east1 = next(s for s in result["sites"] if s["site"] == "EAST1")
+    assert east1["wow_trend"] == 10.0   # 80.0 - 70.0
+    west2 = next(s for s in result["sites"] if s["site"] == "WEST2")
+    assert west2["wow_trend"] == -5.0   # 60.0 - 65.0
+
+
+def test_parse_shipment_containers_no_trend_without_prev_col():
+    result = parse_shipment_containers(raw=SHIPMENT_CSV_BASIC)
     for site in result["sites"]:
-        assert site["wow_trend_pct"] is None
+        assert site["wow_trend"] is None
 
-def test_containers_wow_present():
-    csv = (
-        "Site,Active,Loaded,Staged,Shipped,Completion %,Prior Week Completion %\n"
-        "EAST1,10,5,3,2,80.0,77.0\n"
+
+def test_parse_shipment_containers_empty_raises():
+    with pytest.raises(ValueError, match="empty"):
+        parse_shipment_containers(raw="")
+
+
+def test_parse_shipment_containers_missing_column_raises():
+    bad_csv = "SITE,ACTIVE\nEAST1,5\n"
+    with pytest.raises(ValueError):
+        parse_shipment_containers(raw=bad_csv)
+
+
+def test_parse_shipment_containers_skips_blank_rows():
+    csv_with_blank = (
+        "SITE,ACTIVE,LOADED,STAGED,SHIPPED,COMPLETION %\n"
+        "EAST1,5,10,3,20,80.0\n"
+        "\n"
+        "WEST2,2,8,1,15,70.0\n"
     )
-    result = parse_shipment_containers(csv)
-    assert result["sites"][0]["wow_trend_pct"] == 77.0
-
-def test_containers_empty_input():
-    result = parse_shipment_containers("")
-    assert result["sites"] == []
-    assert result["flagged_sites"] == []
-    assert result["active_site_count"] == 0
-
-def test_containers_header_only():
-    result = parse_shipment_containers("Site,Active,Loaded,Staged,Shipped,Completion %\n")
-    assert result["sites"] == []
-
-def test_containers_missing_column_raises():
-    csv = "Site,Active,Loaded,Staged,Shipped\n"  # missing Completion %
-    with pytest.raises(ValueError, match="(?i)completion"):
-        parse_shipment_containers(csv)
-
-def test_containers_tsv():
-    tsv = "Site\tActive\tLoaded\tStaged\tShipped\tCompletion %\nEAST1\t10\t5\t3\t2\t80.0\n"
-    result = parse_shipment_containers(tsv)
-    assert result["active_site_count"] == 1
+    result = parse_shipment_containers(raw=csv_with_blank)
+    assert result["active_site_count"] == 2
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
 # parse_dock_pending_log
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
 
-_PENDING_CSV = (
-    "Site,Issue Type,Resolved\n"
+DOCK_LOG_CSV = (
+    "SITE,ISSUE TYPE,RESOLVED\n"
     "EAST1,PO Number,FALSE\n"
     "EAST1,Pallet/Piece Count Discrepancy,FALSE\n"
-    "WEST2,PO Number,TRUE\n"       # resolved — should NOT be counted
+    "WEST2,PO Number,TRUE\n"
     "WEST2,PO Number,FALSE\n"
     "NORTH3,Pallet/Piece Count Discrepancy,FALSE\n"
 )
 
-def test_pending_total_open():
-    result = parse_dock_pending_log(_PENDING_CSV)
-    assert result["total_open"] == 4  # 3 EAST1+WEST2+NORTH3 unresolved
 
-def test_pending_excludes_resolved():
-    result = parse_dock_pending_log(_PENDING_CSV)
-    # WEST2 TRUE row should not be counted
-    assert result["by_site"].get("WEST2", 0) == 1
+def test_parse_dock_pending_log_total_open():
+    # skill: "Count all rows where Resolved = FALSE"
+    result = parse_dock_pending_log(raw=DOCK_LOG_CSV)
+    assert result["total_open"] == 4
 
-def test_pending_by_site():
-    result = parse_dock_pending_log(_PENDING_CSV)
+
+def test_parse_dock_pending_log_excludes_true():
+    result = parse_dock_pending_log(raw=DOCK_LOG_CSV)
+    assert result["total_open"] == 4   # the TRUE row for WEST2/PO Number is excluded
+
+
+def test_parse_dock_pending_log_by_site():
+    # skill: "Break down by site (EAST1, WEST2, etc.)"
+    result = parse_dock_pending_log(raw=DOCK_LOG_CSV)
     assert result["by_site"]["EAST1"] == 2
+    assert result["by_site"]["WEST2"] == 1
     assert result["by_site"]["NORTH3"] == 1
 
-def test_pending_by_issue_type():
-    result = parse_dock_pending_log(_PENDING_CSV)
+
+def test_parse_dock_pending_log_by_issue_type():
+    # skill: "issue type (PO Number, Pallet/Piece Count Discrepancy)"
+    result = parse_dock_pending_log(raw=DOCK_LOG_CSV)
     assert result["by_issue_type"]["PO Number"] == 2
     assert result["by_issue_type"]["Pallet/Piece Count Discrepancy"] == 2
 
-def test_pending_empty_input():
-    result = parse_dock_pending_log("")
+
+def test_parse_dock_pending_log_empty_raises():
+    with pytest.raises(ValueError, match="empty"):
+        parse_dock_pending_log(raw="")
+
+
+def test_parse_dock_pending_log_missing_column_raises():
+    with pytest.raises(ValueError):
+        parse_dock_pending_log(raw="SITE,ISSUE TYPE\nEAST1,PO Number\n")
+
+
+def test_parse_dock_pending_log_all_resolved_zero_open():
+    all_resolved = "SITE,ISSUE TYPE,RESOLVED\nEAST1,PO Number,TRUE\n"
+    result = parse_dock_pending_log(raw=all_resolved)
     assert result["total_open"] == 0
     assert result["by_site"] == {}
-    assert result["by_issue_type"] == {}
 
-def test_pending_all_resolved():
-    csv = "Site,Issue Type,Resolved\nEAST1,PO Number,TRUE\n"
-    result = parse_dock_pending_log(csv)
-    assert result["total_open"] == 0
 
-def test_pending_missing_column_raises():
-    csv = "Site,Issue Type\nEAST1,PO Number\n"
+# ─────────────────────────────────────────────────────────────
+# parse_dock_activity_emails
+# ─────────────────────────────────────────────────────────────
+
+def _make_gmail_payload(threads):
+    return {"threads": threads}
+
+
+def test_parse_dock_activity_emails_approved_count():
+    # skill: "Count Approved vs. Requested appointments"
+    payload = _make_gmail_payload([
+        {"subject": "Dock Appointment Approved - EAST1 08:00"},
+        {"subject": "Dock Appointment Approved - WEST2 10:00"},
+        {"subject": "Dock Appointment Requested - NORTH3 14:00"},
+    ])
+    result = parse_dock_activity_emails(raw=payload)
+    assert result["approved_count"] == 2
+    assert result["requested_count"] == 1
+
+
+def test_parse_dock_activity_emails_unapproved_requests():
+    # skill: "Flag any outstanding requests not yet approved"
+    payload = _make_gmail_payload([
+        {"subject": "Dock Appointment Approved - EAST1"},
+        {"subject": "Dock Appointment Requested - WEST2"},
+        {"subject": "Dock Appointment Requested - NORTH3"},
+    ])
+    result = parse_dock_activity_emails(raw=payload)
+    assert len(result["unapproved_requests"]) == 2
+    assert "WEST2" in result["unapproved_requests"][0]
+
+
+def test_parse_dock_activity_emails_accepts_json_string():
+    payload = json.dumps({"threads": [{"subject": "Approved - EAST1"}]})
+    result = parse_dock_activity_emails(raw=payload)
+    assert result["approved_count"] == 1
+
+
+def test_parse_dock_activity_emails_snippet_fallback():
+    payload = _make_gmail_payload([{"snippet": "Dock appointment requested for EAST1"}])
+    result = parse_dock_activity_emails(raw=payload)
+    assert result["requested_count"] == 1
+
+
+def test_parse_dock_activity_emails_empty_threads():
+    result = parse_dock_activity_emails(raw={"threads": []})
+    assert result["approved_count"] == 0
+    assert result["requested_count"] == 0
+    assert result["total_threads"] == 0
+
+
+def test_parse_dock_activity_emails_invalid_json_raises():
     with pytest.raises(ValueError):
-        parse_dock_pending_log(csv)
+        parse_dock_activity_emails(raw="not json at all")
 
 
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
 # parse_dwell_tickets
-# ════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────
 
-_DWELL_CSV = (
+DWELL_CSV = (
     "Open/Closed,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description\n"
-    "Open,2026-10-17,EAST1,24,ShipperA,CarrierA,Missort suspected\n"   # below 25 — no alert
-    "Open,2026-10-17,EAST1,25,ShipperB,CarrierB,Possible missort\n"    # exactly 25 — warning
-    "Open,2026-10-17,WEST2,40,ShipperC,CarrierC,Dwell issue\n"         # 40 — warning (below 41)
-    "Open,2026-10-17,WEST2,41,ShipperD,CarrierD,Missort alert\n"       # exactly 41 — alert
-    "Open,2026-10-17,NORTH3,80,ShipperE,CarrierE,Carrier dwell\n"      # 80 — misload alert
-    "Closed,2026-10-16,EAST1,50,ShipperF,CarrierF,Resolved issue\n"    # closed — excluded
+    "Open,2026-10-17,EAST1,24,Client A,Carrier X,Delay in processing\n"
+    "Open,2026-10-17,EAST1,25,Client B,Carrier Y,Package scan issue\n"
+    "Open,2026-10-17,WEST2,40,Client C,Carrier Z,Missing labels\n"
+    "Open,2026-10-17,WEST2,41,Client D,Carrier W,Sort error\n"
+    "Open,2026-10-17,NORTH3,80,Client E,Carrier V,Missort bulk\n"
+    "Closed,2026-10-16,EAST1,50,Client F,Carrier U,Resolved\n"
 )
 
-def test_dwell_total_open():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    assert result["total_open"] == 5  # 5 Open rows
 
-def test_dwell_excludes_closed():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    # ShipperF's ticket is closed
-    facilities = [t["facility"] for t in result["open_tickets"]]
-    assert facilities.count("NORTH3") == 1
+def test_parse_dwell_tickets_filters_open_only():
+    # skill: "Filter rows where Open/Closed column = 'Open'"
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    assert result["total_open"] == 5  # 5 Open rows, 1 Closed excluded
 
-def test_dwell_below_25_no_alert():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 24)
-    assert ticket["alert_level"] == "none"
 
-def test_dwell_exactly_25_warning():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 25)
-    assert ticket["alert_level"] == "missort_warning"
-    assert ticket in result["missort_warnings"]
+def test_parse_dwell_tickets_below_threshold_no_alert():
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = next(t for t in result["open_tickets"] if t["packages"] == 24)
+    assert t["alert_level"] == ""   # 24 < 25, no alert
 
-def test_dwell_40_still_warning():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 40)
-    assert ticket["alert_level"] == "missort_warning"
 
-def test_dwell_exactly_41_alert():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 41)
-    assert ticket["alert_level"] == "missort_alert"
-    assert ticket in result["missort_alerts"]
-    assert ticket not in result["missort_warnings"]
+def test_parse_dwell_tickets_warning_boundary():
+    # skill: "packages >= 25 (Missort Warning)" — boundary: 25 triggers warning
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = next(t for t in result["open_tickets"] if t["packages"] == 25)
+    assert t["alert_level"] == "Missort Warning"
 
-def test_dwell_misload_at_80():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 80)
-    assert ticket["misload_alert"] is True
-    assert ticket in result["misload_alerts"]
 
-def test_dwell_below_80_no_misload():
-    result = parse_dwell_tickets(_DWELL_CSV)
-    ticket = next(t for t in result["open_tickets"] if t["packages"] == 41)
-    assert ticket["misload_alert"] is False
+def test_parse_dwell_tickets_warning_upper_boundary():
+    # boundary: 40 is still warning (< 41)
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = next(t for t in result["open_tickets"] if t["packages"] == 40)
+    assert t["alert_level"] == "Missort Warning"
 
-def test_dwell_empty_input():
-    result = parse_dwell_tickets("")
+
+def test_parse_dwell_tickets_alert_boundary():
+    # skill: "packages >= 41 (Missort Alert)" — boundary: 41 triggers alert
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = next(t for t in result["open_tickets"] if t["packages"] == 41)
+    assert t["alert_level"] == "Missort Alert"
+
+
+def test_parse_dwell_tickets_carrier_alert_boundary():
+    # skill: "carrier >= 80 (Possible Misload Alert)" — boundary: 80 triggers alert
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = next(t for t in result["open_tickets"] if t["packages"] == 80)
+    assert t["alert_level"] == "Possible Misload Alert"
+
+
+def test_parse_dwell_tickets_fields():
+    result = parse_dwell_tickets(raw=DWELL_CSV)
+    t = result["open_tickets"][0]
+    assert "date" in t
+    assert "facility" in t
+    assert "packages" in t
+    assert "client_impact" in t
+    assert "carrier_impact" in t
+    assert "issue_description" in t
+    assert "alert_level" in t
+
+
+def test_parse_dwell_tickets_empty_raises():
+    with pytest.raises(ValueError, match="empty"):
+        parse_dwell_tickets(raw="")
+
+
+def test_parse_dwell_tickets_missing_column_raises():
+    bad = "Open/Closed,Date,Facility\nOpen,2026-10-17,EAST1\n"
+    with pytest.raises(ValueError):
+        parse_dwell_tickets(raw=bad)
+
+
+def test_parse_dwell_tickets_all_closed_returns_zero():
+    all_closed = (
+        "Open/Closed,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description\n"
+        "Closed,2026-10-17,EAST1,50,C,C,Resolved\n"
+    )
+    result = parse_dwell_tickets(raw=all_closed)
     assert result["total_open"] == 0
     assert result["open_tickets"] == []
-
-def test_dwell_header_only():
-    csv = "Open/Closed,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description\n"
-    result = parse_dwell_tickets(csv)
-    assert result["total_open"] == 0
-
-def test_dwell_missing_column_raises():
-    csv = "Open/Closed,Date,Facility,Client Impact,Carrier Impact,Issue Description\n"
-    with pytest.raises(ValueError):
-        parse_dwell_tickets(csv)

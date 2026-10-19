@@ -2,405 +2,380 @@ name: ops-report
 version: "0.1.0"
 source_skill: ../../skill
 description: |
-  Scheduled daily executive operations report for a parcel fulfillment network.
-  Pulls four data sources in parallel (three Google Drive spreadsheets + Gmail),
-  pauses for a HITL gate so the duty manager can supply dashboard-locked metrics,
-  applies all numeric thresholds deterministically, and renders a three-section
-  executive summary with a KPI header and color-coded dwell alerts.
+  Daily executive operations report for a parcel fulfillment network.
+  Auto-pulls four data sources from Google Drive and Gmail in parallel,
+  pauses at a HITL gate to collect three manual KPI inputs from the duty
+  manager, applies deterministic threshold classifiers, then renders a
+  three-section Markdown report with a KPI header and color-coded dwell
+  alerts.
 
 config:
-  schedule: "0 6 * * *"
+  schedule: "0 6 * * *"        # Daily at 06:00 — adjust to local ops timezone
   on_failure: notify_owner
   observability:
     traces: true
     eval_set_dir: ./evals/
   hitl:
-    default_timeout: 4h
+    default_timeout: 4h         # Duty manager expected to respond within shift
 
 input:
-  type: OpsReportRun
+  type: OpsReportInput
   required: []
   optional:
-    - run_date
+    - report_date
   input_schema:
     type: object
-    title: OpsReportRun
+    title: OpsReportInput
     properties:
-      run_date:
+      report_date:
         type: string
-        format: date
-        description: "ISO date for the report run; defaults to today when omitted"
+        description: "ISO 8601 date (YYYY-MM-DD). Defaults to today when omitted."
+    required: []
     additionalProperties: false
 
-# ── nodes ─────────────────────────────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────────────────────
+# NODES
+# ─────────────────────────────────────────────────────────────────────────────
 nodes:
 
-  # ── parallel data pulls (entry wave) ───────────────────────────────────────
+  # ── Wave 1: parallel data pulls (Pattern 8 — all four are independent) ───
 
   - id: fetch_shipment_containers
     kind: external_call
     phase: "Data sources"
     source:
       section: "Data sources to auto-pull"
-    description: |
-      Fetch the Shipment Containers spreadsheet from Google Drive.
-      File ID: 1ExampleShipmentContainersFileId00000000000
-    impl: extracted/google_drive.py:fetch_shipment_containers
+    description: >
+      Fetch the shipment containers spreadsheet from Google Drive.
+      Returns raw file content (CSV/TSV) for parse_shipment_containers.
+    impl: extracted/fetch.py:fetch_drive_file
+    inputs: {}
+    output: raw_content str
+    constants:
+      file_id: "1ExampleShipmentContainersFileId00000000000"
     mcp:
       server: google_drive
       tool: read_file_content
-    output:
-      raw_content: str
-    constants:
-      file_id: "1ExampleShipmentContainersFileId00000000000"
-    mandatory: true
+      args:
+        file_id: file_id
+    timeout: 30s
     retry:
       max: 3
       backoff: exponential
       retry_on: [rate_limit, network]
-    timeout: 30s
+    mandatory: true
 
   - id: fetch_dock_pending_log
     kind: external_call
     phase: "Data sources"
     source:
       section: "Data sources to auto-pull"
-    description: |
-      Fetch the Dock Pending Log spreadsheet from Google Drive.
-      File ID: 1ExampleDockPendingLogFileId0000000000000000
-    impl: extracted/google_drive.py:fetch_dock_pending_log
+    description: >
+      Fetch the dock pending log spreadsheet from Google Drive.
+      Returns raw file content (CSV/TSV) for parse_dock_pending_log.
+    impl: extracted/fetch.py:fetch_drive_file
+    inputs: {}
+    output: raw_content str
+    constants:
+      file_id: "1ExampleDockPendingLogFileId0000000000000000"
     mcp:
       server: google_drive
       tool: read_file_content
-    output:
-      raw_content: str
-    constants:
-      file_id: "1ExampleDockPendingLogFileId0000000000000000"
-    mandatory: true
+      args:
+        file_id: file_id
+    timeout: 30s
     retry:
       max: 3
       backoff: exponential
       retry_on: [rate_limit, network]
-    timeout: 30s
+    mandatory: true
 
-  - id: fetch_dock_emails
+  - id: fetch_dock_activity_emails
     kind: external_call
     phase: "Data sources"
     source:
       section: "Data sources to auto-pull"
-    description: |
+    description: >
       Search Gmail for dock-activity threads from the last 24 hours.
-      Query: label:dock-activity newer_than:1d
-    impl: extracted/gmail.py:fetch_dock_emails
+      Returns raw search result dict for parse_dock_activity_emails.
+    impl: extracted/fetch.py:fetch_gmail_threads
+    inputs: {}
+    output: raw_threads dict
+    constants:
+      search_query: "label:dock-activity newer_than:1d"
     mcp:
       server: gmail
       tool: search_threads
-    output:
-      threads: list
-    constants:
-      query: "label:dock-activity newer_than:1d"
-    mandatory: true
+      args:
+        query: search_query
+    timeout: 30s
     retry:
       max: 3
       backoff: exponential
       retry_on: [rate_limit, network]
-    timeout: 30s
+    mandatory: true
 
   - id: fetch_dwell_tickets
     kind: external_call
     phase: "Data sources"
     source:
       section: "Data sources to auto-pull"
-    description: |
-      Fetch the Dwell Ticket Log spreadsheet from Google Drive.
-      File ID: 1ExampleDwellTicketLogFileId0000000000000000
-      Tab: Dwell Log - Form Responses
-    impl: extracted/google_drive.py:fetch_dwell_tickets
-    mcp:
-      server: google_drive
-      tool: read_file_content
-    output:
-      raw_content: str
+    description: >
+      Fetch the dwell ticket log spreadsheet from Google Drive,
+      tab "Dwell Log - Form Responses". Returns raw CSV for parse_dwell_tickets.
+    impl: extracted/fetch.py:fetch_drive_file
+    inputs: {}
+    output: raw_content str
     constants:
       file_id: "1ExampleDwellTicketLogFileId0000000000000000"
       tab: "Dwell Log - Form Responses"
-    mandatory: true
+    mcp:
+      server: google_drive
+      tool: read_file_content
+      # open question: read_file_content may not support a sheet_name arg —
+      # see compile-report.md. The tab constant is surfaced here so the
+      # operator can verify and adjust the mcp.args mapping.
+      args:
+        file_id: file_id
+    timeout: 30s
     retry:
       max: 3
       backoff: exponential
       retry_on: [rate_limit, network]
-    timeout: 30s
+    mandatory: true
 
-  # ── parse wave ──────────────────────────────────────────────────────────────
+  # ── Wave 2: parse each raw pull (pure, deterministic) ────────────────────
 
   - id: parse_shipment_containers
     kind: pure_function
     phase: "Data sources"
     source:
-      section: "Data sources to auto-pull"
-    description: |
-      Parse the facility summary table. Report active/loaded/staged/shipped
-      counts and completion % by site. Flag any site below 75% completion.
-      Show week-over-week trend when the column is present.
+      section: "1. Shipment Containers (Google Drive MCP — read_file_content)"
+    description: >
+      Parse facility summary table; report active/loaded/staged/shipped
+      counts and completion % by site; flag sites below 75% completion;
+      surface week-over-week trend when the PREV COMPLETION % column exists.
     impl: extracted/parsers.py:parse_shipment_containers
     inputs:
-      raw_content: fetch_shipment_containers.output.raw_content
+      raw: fetch_shipment_containers.output
     output:
       sites: list
-      flagged_sites: list
       avg_completion_pct: float
-      total_active: int
       active_site_count: int
+      flagged_sites: list
     constants:
-      completion_threshold_pct: 75
+      completion_threshold: 75.0
     mandatory: true
-    timeout: 10s
 
   - id: parse_dock_pending_log
     kind: pure_function
     phase: "Data sources"
     source:
-      section: "Data sources to auto-pull"
-    description: |
-      Count all rows where Resolved = FALSE. Break down by site
-      (EAST1, WEST2, etc.) and issue type (PO Number, Pallet/Piece
-      Count Discrepancy). Report total open count.
+      section: "2. Dock Pending Log (Google Drive MCP — read_file_content)"
+    description: >
+      Count all rows where Resolved = FALSE; break down by site and issue type.
     impl: extracted/parsers.py:parse_dock_pending_log
     inputs:
-      raw_content: fetch_dock_pending_log.output.raw_content
+      raw: fetch_dock_pending_log.output
     output:
       total_open: int
       by_site: dict
       by_issue_type: dict
     mandatory: true
-    timeout: 10s
 
-  - id: classify_dock_email
-    kind: llm_judge
-    phase: "Data sources"
-    source:
-      section: "Data sources to auto-pull"
-    description: |
-      Classify a single Gmail dock-activity thread as an appointment
-      approval, request, or unrelated. Fan-out: one invocation per thread.
-    signature: signatures/classify_dock_email.py:ClassifyDockEmail
-    signature_spec:
-      input_schema:
-        type: object
-        properties:
-          thread:
-            type: object
-            description: "A single Gmail thread object returned by search_threads"
-        required:
-          - thread
-        additionalProperties: false
-      output_schema:
-        type: object
-        properties:
-          classification:
-            enum:
-              - appointment_approved
-              - appointment_requested
-              - other
-          appointment_ref:
-            anyOf:
-              - type: string
-              - type: "null"
-            default: null
-          thread_id:
-            type: string
-        required:
-          - classification
-          - thread_id
-        additionalProperties: false
-      prompt: |
-        You are classifying a dock-activity email thread for an ops report.
-
-        Classify this thread as one of:
-        - appointment_approved: The thread confirms/approves a dock appointment
-          (look for "approved", "confirmed", "confirmation" language).
-        - appointment_requested: The thread requests or is pending a dock
-          appointment (look for "request", "requesting", "pending", "submitted").
-        - other: Unrelated to appointment approval or requesting.
-
-        Also extract an appointment_ref — the appointment ID, confirmation
-        number, or subject line — so approvals can be matched to requests.
-        Return null if classification is "other".
-
-        Thread: {{ thread }}
-
-        Return your decision via the structured output tool.
-      client: anthropic
-      model: claude-sonnet-4-6
-    inputs:
-      thread: fetch_dock_emails.output.threads
-    output:
-      classification: str
-      appointment_ref: str
-      thread_id: str
-    fan_out: true
-    eval_set: evals/classify_dock_email.jsonl
-    mandatory: true
-    timeout: 30s
-
-  - id: aggregate_dock_emails
+  - id: parse_dock_activity_emails
     kind: pure_function
     phase: "Data sources"
     source:
-      section: "Data sources to auto-pull"
-    description: |
-      Aggregate per-thread classifications into approval and request counts.
-      Surface outstanding requests (requested but not yet approved).
-    impl: extracted/email_aggregator.py:aggregate_dock_emails
+      section: "3. Dock Activity Emails (Gmail MCP — search_threads)"
+    description: >
+      Count Approved vs. Requested dock appointments from Gmail threads;
+      collect unapproved request subjects for flagging.
+    impl: extracted/parsers.py:parse_dock_activity_emails
     inputs:
-      classified_threads: classify_dock_email.output
+      raw: fetch_dock_activity_emails.output
     output:
       approved_count: int
       requested_count: int
-      outstanding_requests: list
+      unapproved_requests: list
+      total_threads: int
     mandatory: true
-    timeout: 10s
 
   - id: parse_dwell_tickets
     kind: pure_function
     phase: "Data sources"
     source:
-      section: "Data sources to auto-pull"
-    description: |
-      Filter rows where Open/Closed = Open. Apply dwell thresholds:
-      packages >= 25 (Missort Warning), >= 41 (Missort Alert),
-      carrier_packages >= 80 (Possible Misload Alert).
+      section: "4. Open Dwell Tickets (Google Drive MCP — read_file_content)"
+    description: >
+      Filter open tickets; apply Missort Warning (>=25), Missort Alert (>=41),
+      and Possible Misload Alert (>=80) thresholds per ticket row.
     impl: extracted/parsers.py:parse_dwell_tickets
     inputs:
-      raw_content: fetch_dwell_tickets.output.raw_content
+      raw: fetch_dwell_tickets.output
     output:
       open_tickets: list
-      missort_warnings: list
-      missort_alerts: list
-      misload_alerts: list
       total_open: int
     constants:
-      missort_warning_threshold: 25
-      missort_alert_threshold: 41
-      misload_alert_threshold: 80
+      packages_warning_threshold: 25
+      packages_alert_threshold: 41
+      carrier_alert_threshold: 80
     mandatory: true
-    timeout: 10s
 
-  # ── HITL gate ───────────────────────────────────────────────────────────────
+  # ── Wave 3: HITL gate — collect manual KPIs from duty manager ────────────
 
-  - id: duty_manager_data_gate
+  - id: request_manual_data_gate
     kind: hitl_gate
     phase: "Manual data"
     source:
       section: "Manual data to request from user"
-    description: |
-      Pause and request three data items from the duty manager that live
-      behind interactive dashboards and cannot be auto-pulled:
-      1. Dock Appointment Completion (color counts from scheduler view)
-      2. Sorter Metrics (volume output + fail rate % per site)
-      3. Current Dwell (from BI dashboard filtered by site)
+    description: >
+      Pause workflow and ask the duty manager to supply three manual data sets:
+      (1) dock appointment completion color counts from the scheduler's view,
+      (2) sorter metrics (volume + fail rate) per site,
+      (3) current dwell data from the BI dashboard filtered by site.
+    input:
+      shipment_summary: dict
+      dock_pending_summary: dict
+      dock_email_summary: dict
+      dwell_ticket_summary: dict
     output:
-      dock_appointment_completion: object
+      appointment_completion: dict
       sorter_metrics: list
-      current_dwell: list
-    signal: duty_manager_data_provided
+      dwell_data: list
+    signal: manual_data_provided
     timeout: 4h
     notify:
       channel: slack
-      target: "#ops-duty"
-      message_template: |
-        Daily ops report is ready for manual inputs. Please provide:
-        1. Dock Appointment Completion (Green/Red/Grey/Other counts) for yesterday
-        2. Sorter Metrics (volume + fail rate %) for all active sites
-        3. Current Dwell from the BI dashboard (filtered by site)
-        Signal: duty_manager_data_provided
+      target: "#ops-duty-managers"
+      message_template: >
+        Daily ops report is ready for your manual inputs.
+        Please provide: dock appointment completion counts,
+        sorter metrics, and current BI dashboard dwell data.
+        Signal: manual_data_provided
 
-  # ── threshold enforcement ───────────────────────────────────────────────────
+  # ── Wave 4: apply threshold classifiers to manual data ───────────────────
 
-  - id: apply_manual_thresholds
+  - id: apply_appointment_flags
     kind: pure_function
     phase: "Manual data"
     source:
       section: "Manual data to request from user"
-    description: |
-      Apply all skill-defined thresholds to duty-manager-supplied data:
-      - Dock Non-Compliant (other color) → escalate flag
-      - Sorter fail rate > 5% → action needed flag
-      - Sorter volume drop > 15% day-over-day → divert adjustment flag
-      - Dwell brand 25-40 → Missort Warning
-      - Dwell brand 41+  → Missort Alert
-      - Dwell carrier 80+ → Possible Misload Alert
-    impl: extracted/thresholds.py:apply_manual_thresholds
+    description: >
+      Apply Non-Compliant escalation flag to duty-manager-supplied
+      dock appointment color counts. Any "other" count triggers escalation.
+    impl: extracted/thresholds.py:apply_appointment_flags
     inputs:
-      dock_appointment_completion: duty_manager_data_gate.output.dock_appointment_completion
-      sorter_metrics: duty_manager_data_gate.output.sorter_metrics
-      current_dwell: duty_manager_data_gate.output.current_dwell
+      appointment_completion: request_manual_data_gate.output.appointment_completion
     output:
-      appointment_summary: object
-      sorter_sites: list
-      flagged_sorter_sites: list
-      dwell_alerts: list
-      dwell_warning_entries: list
-      dwell_alert_entries: list
-      misload_alert_entries: list
-      non_compliant_appointments: int
-    constants:
-      sorter_fail_rate_threshold_pct: 5
-      sorter_volume_drop_threshold_pct: 15
-      dwell_warning_packages: 25
-      dwell_alert_packages: 41
-      dwell_misload_carrier: 80
+      green: int
+      red: int
+      grey: int
+      other: int
+      non_compliant_count: int
+      escalation_required: bool
     mandatory: true
-    timeout: 10s
 
-  # ── report renderer ─────────────────────────────────────────────────────────
+  - id: apply_sorter_flags
+    kind: pure_function
+    phase: "Manual data"
+    source:
+      section: "Manual data to request from user"
+    description: >
+      Apply action flags to sorter metrics: ACTION NEEDED if fail_rate > 5%,
+      DIVERT ADJUSTMENT MAY BE NEEDED if volume dropped >15% day-over-day.
+    impl: extracted/thresholds.py:apply_sorter_flags
+    inputs:
+      sorter_metrics: request_manual_data_gate.output.sorter_metrics
+    output:
+      sites: list
+      action_required_sites: list
+      divert_adjustment_sites: list
+    constants:
+      fail_rate_threshold: 5.0
+      volume_drop_threshold: 15.0
+    mandatory: true
 
-  - id: render_ops_report
+  - id: apply_dwell_thresholds
+    kind: pure_function
+    phase: "Manual data"
+    source:
+      section: "Manual data to request from user"
+    description: >
+      Apply color-coded dwell alert thresholds to BI dashboard data:
+      Brand 25-40 = Missort Warning, 41+ = Missort Alert,
+      Carrier 80+ = Possible Misload Alert.
+    impl: extracted/thresholds.py:apply_dwell_thresholds
+    inputs:
+      dwell_data: request_manual_data_gate.output.dwell_data
+    output:
+      all_rows: list
+      flagged_rows: list
+    constants:
+      brand_warning_threshold: 25
+      brand_alert_threshold: 41
+      carrier_alert_threshold: 80
+    mandatory: true
+
+  # ── Wave 5: render final report ───────────────────────────────────────────
+
+  - id: render_report
     kind: pure_function
     phase: "Report format"
     source:
       section: "Report format"
-    description: |
-      Assemble the final executive operations report as Markdown.
+    description: >
+      Assemble the full executive operations report as Markdown.
       KPI header + Section 1 (Dock Compliance) + Section 2 (Missort & Loss)
-      + Section 3 (Dwell) + reminder to open the live ops-report artifact.
-    impl: extracted/report.py:render_ops_report
+      + Section 3 (Dwell) + artifact reminder.
+    impl: extracted/render.py:render_report
     inputs:
       shipment_data: parse_shipment_containers.output
       dock_pending_data: parse_dock_pending_log.output
-      email_data: aggregate_dock_emails.output
-      dwell_tickets: parse_dwell_tickets.output
-      manual_thresholds: apply_manual_thresholds.output
-    output:
-      report_markdown: str
+      dock_email_data: parse_dock_activity_emails.output
+      dwell_tickets_data: parse_dwell_tickets.output
+      appointment_data: apply_appointment_flags.output
+      sorter_data: apply_sorter_flags.output
+      dwell_data: apply_dwell_thresholds.output
+    output: report_markdown str
     mandatory: true
-    timeout: 30s
 
-# ── edges ─────────────────────────────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────────────────────
+# EDGES
+# ─────────────────────────────────────────────────────────────────────────────
 edges:
-  - {from: fetch_shipment_containers,  to: parse_shipment_containers}
-  - {from: fetch_dock_pending_log,     to: parse_dock_pending_log}
-  - {from: fetch_dock_emails,          to: classify_dock_email,      fan_out: true}
-  - {from: classify_dock_email,        to: aggregate_dock_emails}
-  - {from: fetch_dwell_tickets,        to: parse_dwell_tickets}
-  - {from: parse_shipment_containers,  to: duty_manager_data_gate}
-  - {from: parse_dock_pending_log,     to: duty_manager_data_gate}
-  - {from: aggregate_dock_emails,      to: duty_manager_data_gate}
-  - {from: parse_dwell_tickets,        to: duty_manager_data_gate}
-  - {from: duty_manager_data_gate,     to: apply_manual_thresholds,  on_signal: duty_manager_data_provided}
-  - {from: apply_manual_thresholds,    to: render_ops_report}
-  - {from: parse_shipment_containers,  to: render_ops_report}
-  - {from: parse_dock_pending_log,     to: render_ops_report}
-  - {from: aggregate_dock_emails,      to: render_ops_report}
-  - {from: parse_dwell_tickets,        to: render_ops_report}
+  # Wave 1 → Wave 2 (fetch → parse, four parallel chains)
+  - {from: fetch_shipment_containers,   to: parse_shipment_containers}
+  - {from: fetch_dock_pending_log,      to: parse_dock_pending_log}
+  - {from: fetch_dock_activity_emails,  to: parse_dock_activity_emails}
+  - {from: fetch_dwell_tickets,         to: parse_dwell_tickets}
+
+  # Wave 2 → Wave 3 (all four parses feed the HITL gate)
+  - {from: parse_shipment_containers,   to: request_manual_data_gate}
+  - {from: parse_dock_pending_log,      to: request_manual_data_gate}
+  - {from: parse_dock_activity_emails,  to: request_manual_data_gate}
+  - {from: parse_dwell_tickets,         to: request_manual_data_gate}
+
+  # Wave 3 → Wave 4 (gate fires three threshold nodes in parallel)
+  - {from: request_manual_data_gate, to: apply_appointment_flags, on_signal: manual_data_provided}
+  - {from: request_manual_data_gate, to: apply_sorter_flags,      on_signal: manual_data_provided}
+  - {from: request_manual_data_gate, to: apply_dwell_thresholds,  on_signal: manual_data_provided}
+
+  # Wave 2+4 → Wave 5 (render collects from all seven upstreams)
+  - {from: parse_shipment_containers,  to: render_report}
+  - {from: parse_dock_pending_log,     to: render_report}
+  - {from: parse_dock_activity_emails, to: render_report}
+  - {from: parse_dwell_tickets,        to: render_report}
+  - {from: apply_appointment_flags,    to: render_report}
+  - {from: apply_sorter_flags,         to: render_report}
+  - {from: apply_dwell_thresholds,     to: render_report}
 
 entry_nodes:
+  # Pattern 8: all four data pulls are independent — run concurrently
   - fetch_shipment_containers
   - fetch_dock_pending_log
-  - fetch_dock_emails
+  - fetch_dock_activity_emails
   - fetch_dwell_tickets
 
 exit_nodes:
-  - render_ops_report
+  - render_report
+

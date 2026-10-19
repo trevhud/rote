@@ -291,19 +291,33 @@ def _skill_text(skill_dir: Path) -> str:
     return _normalized("\n".join(parts))
 
 
+#: A bold line standing in for a heading (``**Open questions:**``).
+_BOLD_HEADING_LEVEL = 99
+
+
 def _open_questions(report: str) -> list[str]:
-    """The list items under the report's Open questions heading."""
+    """The entries under the report's Open questions heading.
+
+    An entry is a list item or a sub-heading (``### OQ-1: ...``). A real
+    report used one sub-heading per question, which an items-only reading
+    took for an empty section: the agent was sent back twice to fix a
+    report that was fine, and the compile failed. The section ends at the
+    next heading of the same or a higher level.
+    """
     items: list[str] = []
-    inside = False
+    level: int | None = None  # the Open questions heading's level, while inside
     for line in report.splitlines():
         stripped = line.strip()
-        is_heading = stripped.startswith("#") or (
-            stripped.startswith("**") and stripped.rstrip(":").endswith("**")
-        )
-        if is_heading:
-            inside = "open question" in stripped.lower()
+        hashes = re.match(r"^(#+)\s+(.*)", stripped)
+        bold = stripped.startswith("**") and stripped.rstrip(":").endswith("**")
+        if hashes or bold:
+            this = len(hashes.group(1)) if hashes else _BOLD_HEADING_LEVEL
+            if level is not None and this > level:
+                items.append(stripped)
+                continue
+            level = this if "open question" in stripped.lower() else None
             continue
-        if inside and re.match(r"^([-*+]|\d+[.)])\s+\S", stripped):
+        if level is not None and re.match(r"^([-*+]|\d+[.)])\s+\S", stripped):
             items.append(stripped)
     return items
 

@@ -1,310 +1,387 @@
 """
-Deterministic parsers for ops-report data sources.
+Pure-function parsers for the ops-report data sources.
 
-All functions accept CSV/TSV text returned by Google Drive MCP read_file_content
-and return structured dicts. Columns are located case- and whitespace-insensitively.
-Missing required columns raise ValueError naming the absent column.
-
-No third-party imports — stdlib only.
+All four Google Drive / Gmail pulls flow through these functions before
+any downstream processing. Stdlib only; no third-party imports.
 """
 
 import csv
 import io
-from typing import Any
-
-# ── constants lifted from skill prose ────────────────────────────────────────
-
-COMPLETION_THRESHOLD_PCT: float = 75.0   # flag sites below this
-MISSORT_WARNING_PACKAGES: int = 25       # Brand 25-40 → Missort Warning
-MISSORT_ALERT_PACKAGES: int = 41         # Brand 41+  → Missort Alert
-MISLOAD_ALERT_CARRIER: int = 80          # Carrier 80+ missing → Possible Misload Alert
+import json
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Constants (lifted from skill prose — Pattern 2)
+# ---------------------------------------------------------------------------
 
-def _norm(s: str) -> str:
-    """Lowercase + strip for case-insensitive column matching."""
-    return s.strip().lower()
+# skill: "Flag any site below 75% completion"
+COMPLETION_THRESHOLD: float = 75.0
+
+# skill: "packages >= 25 (Missort Warning), >= 41 (Missort Alert),
+#         carrier >= 80 (Possible Misload Alert)"
+DWELL_PACKAGES_WARNING: int = 25
+DWELL_PACKAGES_ALERT: int = 41
+# rote: assumption: "carrier >= 80 (Possible Misload Alert)" is applied to the
+# raw # packages column of each open ticket row, treating the highest threshold
+# as Possible Misload Alert (80+), middle as Missort Alert (41-79), and lowest
+# as Missort Warning (25-40). The skill does not state whether this is per-row
+# or aggregated by carrier name; per-row is chosen as the simpler/more
+# actionable interpretation. See compile-report.md Open questions.
+DWELL_CARRIER_ALERT: int = 80
 
 
-def _find_col(headers: list[str], *candidates: str) -> int:
-    """Return index of first matching column name; raise ValueError if none found."""
-    norm_headers = [_norm(h) for h in headers]
-    for cand in candidates:
-        cand_norm = _norm(cand)
-        if cand_norm in norm_headers:
-            return norm_headers.index(cand_norm)
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _find_col(headers: list, *names: str) -> int:
+    """Return index of first header matching any of names (case+whitespace insensitive)."""
+    name_set = {n.strip().lower() for n in names}
+    for i, h in enumerate(headers):
+        if h.strip().lower() in name_set:
+            return i
     raise ValueError(
-        "Required column not found. Tried: "
-        + str(list(candidates))
-        + ". Found columns: "
-        + str(headers)
+        "Table has no column matching any of " + repr(names) + "; found " + repr(headers)
     )
 
 
-def _parse_csv(raw: str) -> tuple[list[str], list[list[str]]]:
-    """Parse CSV or TSV text; return (headers, data_rows)."""
-    dialect = "excel-tab" if raw.count("\t") > raw.count(",") else "excel"
-    reader = csv.reader(io.StringIO(raw.strip()), dialect=dialect)
-    rows = list(reader)
-    if not rows:
-        return [], []
-    return rows[0], rows[1:]
+def _int_or_zero(val: str) -> int:
+    val = val.strip()
+    if not val:
+        return 0
+    return int(val)
 
 
-# ── parse_shipment_containers ─────────────────────────────────────────────────
+def _float_from_pct(val: str) -> float:
+    return float(val.strip().rstrip("%"))
 
-def parse_shipment_containers(raw_content: str) -> dict[str, Any]:
+
+# ---------------------------------------------------------------------------
+# parse_shipment_containers
+# ---------------------------------------------------------------------------
+
+def parse_shipment_containers(
+    *,
+    raw: str,
+    completion_threshold: float = COMPLETION_THRESHOLD,
+) -> dict:
     """
-    Parse the Shipment Containers Google Drive spreadsheet.
+    Parse the shipment containers CSV from Google Drive.
 
-    Assumed input shape: CSV/TSV with header row containing columns for
-    site/facility, active, loaded, staged, shipped, completion % (and
-    optionally a prior-week completion % for trend).
+    Input shape assumed: CSV text with a header row containing SITE (or
+    Facility), ACTIVE, LOADED, STAGED, SHIPPED, COMPLETION % columns.
+    An optional column whose header contains both 'prev' and 'completion'
+    supplies week-over-week trend data.
 
     Returns:
-        {
-            "sites": [{"site": str, "active": int, "loaded": int,
-                       "staged": int, "shipped": int,
-                       "completion_pct": float,
-                       "wow_trend_pct": float | None,
-                       "flagged": bool}, ...],
-            "flagged_sites": [str, ...],
-            "avg_completion_pct": float,
-            "total_active": int,
-            "active_site_count": int,
-        }
+      {
+        "sites": list[dict],          # per-site rows
+        "avg_completion_pct": float,
+        "active_site_count": int,
+        "flagged_sites": list[str]    # sites below completion_threshold
+      }
+
+    Each site dict: {site, active, loaded, staged, shipped,
+                     completion_pct, flagged, wow_trend (float|None)}
     """
-    headers, rows = _parse_csv(raw_content)
-    if not headers:
-        return {
-            "sites": [],
-            "flagged_sites": [],
-            "avg_completion_pct": 0.0,
-            "total_active": 0,
-            "active_site_count": 0,
-        }
+    reader = csv.reader(io.StringIO(raw.strip()))
+    rows = list(reader)
+    if not rows:
+        raise ValueError("Shipment containers table is empty")
 
-    site_col = _find_col(headers, "site", "facility", "location", "dc")
-    active_col = _find_col(headers, "active")
-    loaded_col = _find_col(headers, "loaded")
-    staged_col = _find_col(headers, "staged")
-    shipped_col = _find_col(headers, "shipped")
-    completion_col = _find_col(headers, "completion %", "completion%", "completion", "complete %", "pct complete")
+    headers = rows[0]
 
-    # Optional week-over-week column — absent is fine
-    wow_col: int | None = None
-    for cand in ("prior week completion %", "prior completion %", "wow %", "last week %", "prev week %"):
-        try:
-            wow_col = _find_col(headers, cand)
+    # skill: "Parse the facility summary table with COMPLETION % column"
+    site_col = _find_col(headers, "SITE", "Facility", "Site")
+    active_col = _find_col(headers, "ACTIVE", "Active")
+    loaded_col = _find_col(headers, "LOADED", "Loaded")
+    staged_col = _find_col(headers, "STAGED", "Staged")
+    shipped_col = _find_col(headers, "SHIPPED", "Shipped")
+    completion_col = _find_col(headers, "COMPLETION %", "Completion %", "COMPLETION%", "Completion%")
+
+    # Optional week-over-week column
+    prev_completion_col = None
+    for i, h in enumerate(headers):
+        hl = h.strip().lower()
+        if "prev" in hl and "completion" in hl:
+            prev_completion_col = i
             break
-        except ValueError:
-            pass
-
-    def _int(val: str) -> int:
-        try:
-            return int(val.strip().replace(",", ""))
-        except (ValueError, AttributeError):
-            return 0
-
-    def _pct(val: str) -> float:
-        try:
-            cleaned = val.strip().rstrip("%").replace(",", "")
-            return float(cleaned)
-        except (ValueError, AttributeError):
-            return 0.0
 
     sites = []
-    for row in rows:
-        if not any(cell.strip() for cell in row):
-            continue  # skip blank rows
-        if len(row) <= max(site_col, active_col, loaded_col, staged_col, shipped_col, completion_col):
+    total_completion = 0.0
+    flagged_sites = []
+
+    for row in rows[1:]:
+        if not row or not any(cell.strip() for cell in row):
             continue
 
         site = row[site_col].strip()
-        if not site:
-            continue
+        active = _int_or_zero(row[active_col])
+        loaded = _int_or_zero(row[loaded_col])
+        staged = _int_or_zero(row[staged_col])
+        shipped = _int_or_zero(row[shipped_col])
+        completion_pct = _float_from_pct(row[completion_col]) if row[completion_col].strip() else 0.0
 
-        completion_pct = _pct(row[completion_col])
-        wow_trend: float | None = None
-        if wow_col is not None and len(row) > wow_col and row[wow_col].strip():
-            wow_trend = _pct(row[wow_col])
+        wow_trend = None
+        if prev_completion_col is not None:
+            prev_raw = row[prev_completion_col].strip().rstrip("%")
+            if prev_raw:
+                wow_trend = round(completion_pct - float(prev_raw), 2)
 
-        flagged = completion_pct < COMPLETION_THRESHOLD_PCT
+        # skill: "Flag any site below 75% completion"
+        flagged = completion_pct < completion_threshold
+        if flagged:
+            flagged_sites.append(site)
 
         sites.append({
             "site": site,
-            "active": _int(row[active_col]),
-            "loaded": _int(row[loaded_col]),
-            "staged": _int(row[staged_col]),
-            "shipped": _int(row[shipped_col]),
+            "active": active,
+            "loaded": loaded,
+            "staged": staged,
+            "shipped": shipped,
             "completion_pct": completion_pct,
-            "wow_trend_pct": wow_trend,
             "flagged": flagged,
+            "wow_trend": wow_trend,
         })
+        total_completion += completion_pct
 
-    flagged_sites = [s["site"] for s in sites if s["flagged"]]
-    avg_pct = sum(s["completion_pct"] for s in sites) / len(sites) if sites else 0.0
-    total_active = sum(s["active"] for s in sites)
+    avg_completion_pct = round(total_completion / len(sites), 2) if sites else 0.0
 
     return {
         "sites": sites,
-        "flagged_sites": flagged_sites,
-        "avg_completion_pct": round(avg_pct, 1),
-        "total_active": total_active,
+        "avg_completion_pct": avg_completion_pct,
         "active_site_count": len(sites),
+        "flagged_sites": flagged_sites,
     }
 
 
-# ── parse_dock_pending_log ────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# parse_dock_pending_log
+# ---------------------------------------------------------------------------
 
-def parse_dock_pending_log(raw_content: str) -> dict[str, Any]:
+def parse_dock_pending_log(*, raw: str) -> dict:
     """
-    Parse the Dock Pending Log Google Drive spreadsheet.
+    Parse the dock pending log CSV from Google Drive.
 
-    Assumed input shape: CSV/TSV with columns for resolved flag, site, and
-    issue type. Counts rows where Resolved = FALSE (case-insensitive).
+    Input shape assumed: CSV text with header row containing RESOLVED (or
+    Resolved), SITE (or Site), and ISSUE TYPE (or Issue Type) columns.
 
     Returns:
-        {
-            "total_open": int,
-            "by_site": {"EAST1": int, ...},
-            "by_issue_type": {"PO Number": int, "Pallet/Piece Count Discrepancy": int, ...},
-        }
+      {
+        "total_open": int,
+        "by_site": {site: count},
+        "by_issue_type": {issue_type: count}
+      }
     """
-    headers, rows = _parse_csv(raw_content)
-    if not headers:
-        return {"total_open": 0, "by_site": {}, "by_issue_type": {}}
+    reader = csv.reader(io.StringIO(raw.strip()))
+    rows = list(reader)
+    if not rows:
+        raise ValueError("Dock pending log table is empty")
 
-    resolved_col = _find_col(headers, "resolved", "resolved?", "is resolved", "status")
-    site_col = _find_col(headers, "site", "facility", "location", "dc")
-    issue_col = _find_col(headers, "issue type", "issue", "type", "problem type")
+    headers = rows[0]
 
-    by_site: dict[str, int] = {}
-    by_issue: dict[str, int] = {}
+    resolved_col = _find_col(headers, "RESOLVED", "Resolved")
+    site_col = _find_col(headers, "SITE", "Site")
+    issue_col = _find_col(
+        headers,
+        "ISSUE TYPE", "Issue Type", "ISSUE_TYPE", "IssueType",
+        "PO Number", "PO/Issue Type",
+    )
+
     total_open = 0
+    by_site: dict = {}
+    by_issue_type: dict = {}
 
-    for row in rows:
-        if not any(cell.strip() for cell in row):
-            continue
-        if len(row) <= max(resolved_col, site_col, issue_col):
+    for row in rows[1:]:
+        if not row or not any(cell.strip() for cell in row):
             continue
 
+        # skill: "Count all rows where Resolved = FALSE"
         resolved_val = row[resolved_col].strip().upper()
-        if resolved_val in ("FALSE", "NO", "0", "N", ""):
+        if resolved_val in ("FALSE", "0", "NO", "N"):
             total_open += 1
             site = row[site_col].strip()
             issue = row[issue_col].strip()
             by_site[site] = by_site.get(site, 0) + 1
-            by_issue[issue] = by_issue.get(issue, 0) + 1
+            by_issue_type[issue] = by_issue_type.get(issue, 0) + 1
 
     return {
         "total_open": total_open,
         "by_site": by_site,
-        "by_issue_type": by_issue,
+        "by_issue_type": by_issue_type,
     }
 
 
-# ── parse_dwell_tickets ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# parse_dock_activity_emails
+# ---------------------------------------------------------------------------
 
-def parse_dwell_tickets(raw_content: str) -> dict[str, Any]:
+def parse_dock_activity_emails(*, raw) -> dict:
     """
-    Parse the Dwell Ticket Log Google Drive spreadsheet (tab: Dwell Log - Form Responses).
+    Parse the Gmail search_threads result for dock-activity emails.
 
-    Assumed input shape: CSV/TSV with columns for open/closed status, date, facility,
-    number of packages, client impact, carrier impact, and issue description.
+    Input shape assumed: dict (or JSON string) with a 'threads' key containing
+    a list of thread objects. Each thread object is expected to have at least
+    one of 'subject' or 'snippet' as a string.
 
-    Applies thresholds from skill prose:
-      - packages >= MISSORT_WARNING_PACKAGES (25): Missort Warning
-      - packages >= MISSORT_ALERT_PACKAGES (41): Missort Alert (supersedes warning)
-      - carrier packages >= MISLOAD_ALERT_CARRIER (80): Possible Misload Alert
+    # rote: assumption: The Gmail MCP search_threads tool returns a JSON-
+    # serializable dict with a 'threads' key. Each thread has a 'subject' or
+    # 'snippet' field. Appointment status is inferred from the word 'approved'
+    # (→ Approved) or 'request'/'requested' (→ Requested) appearing in the
+    # thread subject/snippet. The skill does not define the email format; this
+    # keyword heuristic is the simplest defensible interpretation.
 
     Returns:
-        {
-            "open_tickets": [{date, facility, packages, client_impact,
-                              carrier_impact, issue_description,
-                              alert_level: "none"|"missort_warning"|"missort_alert"|"misload_alert"}, ...],
-            "missort_warnings": [ticket, ...],
-            "missort_alerts": [ticket, ...],
-            "misload_alerts": [ticket, ...],
-            "total_open": int,
-        }
+      {
+        "approved_count": int,
+        "requested_count": int,
+        "unapproved_requests": list[str],   # subjects of unapproved request threads
+        "total_threads": int
+      }
     """
-    headers, rows = _parse_csv(raw_content)
-    if not headers:
-        return {
-            "open_tickets": [],
-            "missort_warnings": [],
-            "missort_alerts": [],
-            "misload_alerts": [],
-            "total_open": 0,
-        }
-
-    status_col = _find_col(headers, "open/closed", "status", "open closed", "open?", "closed?")
-    date_col = _find_col(headers, "date", "timestamp", "submitted", "created date", "date submitted")
-    facility_col = _find_col(headers, "facility", "site", "location", "dc")
-    packages_col = _find_col(headers, "# packages", "packages", "package count", "qty", "quantity", "# pkgs")
-    client_col = _find_col(headers, "client impact", "client", "brand impact", "shipper impact")
-    carrier_col = _find_col(headers, "carrier impact", "carrier")
-    issue_col = _find_col(headers, "issue description", "issue", "description", "notes")
-
-    def _int(val: str) -> int:
+    if isinstance(raw, str):
         try:
-            return int(val.strip().replace(",", ""))
-        except (ValueError, AttributeError):
-            return 0
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(
+                "parse_dock_activity_emails: could not parse raw as JSON: "
+                + repr(raw[:200])
+            ) from exc
+    elif isinstance(raw, dict):
+        data = raw
+    else:
+        raise ValueError(
+            "parse_dock_activity_emails: expected str or dict, got "
+            + type(raw).__name__
+        )
 
-    open_tickets = []
-    missort_warnings = []
-    missort_alerts = []
-    misload_alerts = []
+    threads = data.get("threads", [])
+    if not isinstance(threads, list):
+        raise ValueError(
+            "parse_dock_activity_emails: 'threads' field must be a list, got "
+            + type(threads).__name__
+        )
 
-    for row in rows:
-        if not any(cell.strip() for cell in row):
+    approved_count = 0
+    requested_count = 0
+    unapproved_requests: list = []
+
+    for thread in threads:
+        subject = thread.get("subject") or thread.get("snippet") or ""
+        subject_lower = subject.lower()
+
+        # skill: "Count Approved vs. Requested appointments"
+        if "approved" in subject_lower:
+            approved_count += 1
+        elif "request" in subject_lower:
+            # skill: "Flag any outstanding requests not yet approved"
+            requested_count += 1
+            unapproved_requests.append(subject)
+
+    return {
+        "approved_count": approved_count,
+        "requested_count": requested_count,
+        "unapproved_requests": unapproved_requests,
+        "total_threads": len(threads),
+    }
+
+
+# ---------------------------------------------------------------------------
+# parse_dwell_tickets
+# ---------------------------------------------------------------------------
+
+def _classify_dwell_packages(
+    packages: int,
+    *,
+    packages_warning_threshold: int,
+    packages_alert_threshold: int,
+    carrier_alert_threshold: int,
+) -> str:
+    """Return alert level string for a package count, or empty string if no alert."""
+    # skill: "packages >= 25 (Missort Warning), >= 41 (Missort Alert),
+    #         carrier >= 80 (Possible Misload Alert)"
+    # rote: assumption: thresholds are applied as ranges (not cumulative), with
+    # the highest threshold taking precedence: 80+ = Possible Misload Alert,
+    # 41-79 = Missort Alert, 25-40 = Missort Warning.
+    if packages >= carrier_alert_threshold:
+        return "Possible Misload Alert"
+    if packages >= packages_alert_threshold:
+        return "Missort Alert"
+    if packages >= packages_warning_threshold:
+        return "Missort Warning"
+    return ""
+
+
+def parse_dwell_tickets(
+    *,
+    raw: str,
+    packages_warning_threshold: int = DWELL_PACKAGES_WARNING,
+    packages_alert_threshold: int = DWELL_PACKAGES_ALERT,
+    carrier_alert_threshold: int = DWELL_CARRIER_ALERT,
+) -> dict:
+    """
+    Parse the dwell ticket log CSV from Google Drive, tab "Dwell Log - Form Responses".
+
+    Input shape assumed: CSV text with header row. Required columns (case- and
+    whitespace-insensitive): Open/Closed (or Status), Date (or Timestamp),
+    Facility (or Site), # Packages (or Packages), Client Impact, Carrier Impact,
+    Issue Description.
+
+    Returns:
+      {
+        "open_tickets": list[dict],
+        "total_open": int
+      }
+
+    Each ticket dict: {date, facility, packages (int), client_impact,
+                       carrier_impact, issue_description, alert_level}
+    """
+    reader = csv.reader(io.StringIO(raw.strip()))
+    rows = list(reader)
+    if not rows:
+        raise ValueError("Dwell ticket log table is empty")
+
+    headers = rows[0]
+
+    # skill: 'Tab: Dwell Log - Form Responses. Filter rows where Open/Closed column = "Open".'
+    status_col = _find_col(headers, "Open/Closed", "open/closed", "Status", "status")
+    date_col = _find_col(headers, "Date", "date", "Timestamp", "timestamp")
+    facility_col = _find_col(headers, "Facility", "facility", "Site", "site")
+    packages_col = _find_col(headers, "# Packages", "# packages", "Packages", "packages", "# Orders/Packages")
+    client_col = _find_col(headers, "Client Impact", "client impact", "ClientImpact")
+    carrier_col = _find_col(headers, "Carrier Impact", "carrier impact", "CarrierImpact")
+    issue_col = _find_col(headers, "Issue Description", "issue description", "Issue", "issue")
+
+    open_tickets: list = []
+
+    for row in rows[1:]:
+        if not row or not any(cell.strip() for cell in row):
             continue
-        max_col = max(status_col, date_col, facility_col, packages_col, client_col, carrier_col, issue_col)
-        if len(row) <= max_col:
+
+        # skill: 'Filter rows where Open/Closed column = "Open"'
+        status_val = row[status_col].strip().lower()
+        if status_val != "open":
             continue
 
-        status_val = row[status_col].strip().upper()
-        if status_val != "OPEN":
-            continue
+        packages = _int_or_zero(row[packages_col].strip().replace(",", ""))
+        alert_level = _classify_dwell_packages(
+            packages,
+            packages_warning_threshold=packages_warning_threshold,
+            packages_alert_threshold=packages_alert_threshold,
+            carrier_alert_threshold=carrier_alert_threshold,
+        )
 
-        packages = _int(row[packages_col])
-        carrier_str = row[carrier_col].strip()
-        carrier_packages = _int(carrier_str)
-
-        # Determine alert level (misload_alert can co-exist with missort levels)
-        if packages >= MISSORT_ALERT_PACKAGES:
-            alert_level = "missort_alert"
-        elif packages >= MISSORT_WARNING_PACKAGES:
-            alert_level = "missort_warning"
-        else:
-            alert_level = "none"
-
-        ticket = {
+        open_tickets.append({
             "date": row[date_col].strip(),
             "facility": row[facility_col].strip(),
             "packages": packages,
             "client_impact": row[client_col].strip(),
-            "carrier_impact": carrier_str,
+            "carrier_impact": row[carrier_col].strip(),
             "issue_description": row[issue_col].strip(),
             "alert_level": alert_level,
-            "misload_alert": packages >= MISLOAD_ALERT_CARRIER,
-        }
-        open_tickets.append(ticket)
-
-        if alert_level == "missort_alert":
-            missort_alerts.append(ticket)
-        elif alert_level == "missort_warning":
-            missort_warnings.append(ticket)
-        if ticket["misload_alert"]:
-            misload_alerts.append(ticket)
+        })
 
     return {
         "open_tickets": open_tickets,
-        "missort_warnings": missort_warnings,
-        "missort_alerts": missort_alerts,
-        "misload_alerts": misload_alerts,
         "total_open": len(open_tickets),
     }
