@@ -91,6 +91,7 @@ from rote.adapters._py_common import (
     agent_loop_call,
     async_runner_helper,
     call_impl_helper,
+    cli_input_check,
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
@@ -867,13 +868,15 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
             #
             # HITL gates are resumed from another process either way — see
             # README.md.
+            if "--serve" not in sys.argv[1:]:
+                pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+            __INPUT_CHECK__
             launch()
             try:
                 if "--serve" in sys.argv[1:]:
                     print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)
                     threading.Event().wait()
                 else:
-                    pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
                     handle = DBOS.start_workflow(run_pipeline, pipeline_input)
                     print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
                     print(json.dumps(handle.get_result(), indent=2, default=str))
@@ -882,6 +885,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         """
     )
 
+    # Checked before launch(): a bad input should not start DBOS (or print
+    # its startup log) only to fail inside the workflow.
+    main_block = main_block.replace("    __INPUT_CHECK__\n", cli_input_check(pipeline, " " * 8))
     return header + "".join(step_parts) + workflow_block + main_block
 
 

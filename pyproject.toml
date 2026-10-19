@@ -134,6 +134,8 @@ packages = ["src/rote"]
 "examples/expense-audit/expected/pipeline-draft.yaml" = "rote/examples/expense-audit/expected/pipeline-draft.yaml"
 "examples/expense-audit/expected/eval.yaml" = "rote/examples/expense-audit/expected/eval.yaml"
 "examples/expense-audit/expected/extracted" = "rote/examples/expense-audit/expected/extracted"
+"examples/expense-audit/scorecard.md" = "rote/examples/expense-audit/scorecard.md"
+"examples/expense-audit/runs" = "rote/examples/expense-audit/runs"
 
 [tool.hatch.build.targets.sdist]
 # Keep the sdist lean but self-sufficient: building a wheel from the

@@ -363,6 +363,9 @@ def run_skill(
     )
 
 
+#: Runtimes whose emitted implementations are TypeScript.
+_TS_RUNTIMES = frozenset({"cloudflare", "inngest", "dbos-ts"})
+
 #: Runtimes whose runner needs a Python extra in rote's own environment:
 #: dbos apps run under ``sys.executable`` and temporal runs its worker
 #: in-process. The TS runtimes bring their own toolchain.
@@ -396,11 +399,19 @@ def preflight_pipeline(target: RunTarget, *, allow_stubs: bool = False) -> None:
     stubs = [] if allow_stubs else unimplemented_stubs(target.path)
     if stubs:
         listing = "\n".join(f"  {stub}" for stub in stubs)
+        if runtime in _TS_RUNTIMES:
+            # A TS app's implementations are TypeScript: Python modules
+            # beside the pipeline.yaml are never sourced into it.
+            fix = "Implement them in TypeScript in the files above"
+        else:
+            fix = (
+                "Implement them, or re-emit with the real modules in an "
+                "extracted/ directory beside the pipeline.yaml (emit copies them in)"
+            )
         raise TargetError(
             f"{len(stubs)} emitted module(s) are still stubs and would raise "
             f"on their first call:\n{listing}\n"
-            f"Implement them (or re-emit next to the real extracted/ modules), "
-            f"then re-run: rote run {target.path}\n"
+            f"{fix}, then re-run: rote run {target.path}\n"
             f"If the run will not reach them, pass --allow-stubs."
         )
 

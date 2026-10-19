@@ -1348,7 +1348,7 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
 function normalizeServerUrl(raw: string): string {
     const u = new URL(raw.trim());
     const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
-    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\\/+$/, "")}${u.search}`;
 }
 
 /** Whether a stored login URL names `url`. False when the stored one

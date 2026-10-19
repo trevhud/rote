@@ -197,11 +197,18 @@ class Scorecard:
                 f"{_tokens(self.pipeline.sampling.sampled_output_tokens)} | "
                 f"{sampled_change} |"
             )
+            # The two totals count different things (the skill's agent steps
+            # from eval.yaml, the pipeline's nodes), so each cell names its
+            # unit and the change column says why they differ.
             lines.append(
                 "| Steps decided by a sampled LLM | "
-                f"{self.skill.sampling.sampled_steps} of {self.skill.sampling.total_steps} | "
+                f"{self.skill.sampling.sampled_steps} of {self.skill.sampling.total_steps} "
+                "agent steps | "
                 f"{self.pipeline.sampling.sampled_steps} of {self.pipeline.sampling.total_steps} "
-                f"({self.pipeline.sampling.schema_constrained_steps} schema-constrained) | — |"
+                f"pipeline nodes ({self.pipeline.sampling.schema_constrained_steps} "
+                "schema-constrained) | "
+                "different units: the skill's steps as an agent runs them vs the "
+                "compiled nodes |"
             )
             lines.append(
                 "| Roteness (deterministic steps) | "

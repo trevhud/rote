@@ -77,6 +77,7 @@ from rote.adapters._py_common import (
     agent_loop_call,
     async_runner_helper,
     call_impl_helper,
+    cli_input_check,
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
@@ -502,17 +503,15 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
         f"{_emit_pipeline_body(pipeline)}\n"
     )
 
-    main_block = textwrap.dedent(
-        """\
-
-
-        if __name__ == "__main__":
-            # No engine, no daemon: parse the JSON input from argv[1], run the
-            # pipeline in-process, print the result.
-            pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-            result = run_pipeline(pipeline_input)
-            print(json.dumps(result, indent=2, default=str))
-        """
+    main_block = (
+        "\n\n"
+        'if __name__ == "__main__":\n'
+        "    # No engine, no daemon: parse the JSON input from argv[1], run the\n"
+        "    # pipeline in-process, print the result.\n"
+        "    pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}\n"
+        f"{cli_input_check(pipeline, '    ')}"
+        "    result = run_pipeline(pipeline_input)\n"
+        "    print(json.dumps(result, indent=2, default=str))\n"
     )
 
     return (

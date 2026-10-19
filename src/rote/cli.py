@@ -110,6 +110,29 @@ def _unimplemented_stubs(runtime_dir: Path) -> list[str]:
     return [str(p) for p in unimplemented_stubs(runtime_dir)]
 
 
+def _run_command(runtime_dir: Path, pipeline: Pipeline | None, pipeline_path: Path | None) -> str:
+    """The ``rote run`` command for an emitted app, ready to paste.
+
+    An app emitted from a bare pipeline.yaml has no skill to derive an
+    input from, so a pipeline with required inputs needs ``--input``. The
+    file is the ``input.json`` beside the pipeline or one level up (the
+    examples' layout); without one, the placeholder names the fields.
+    """
+    import shlex
+
+    command = f"rote run {shlex.quote(str(runtime_dir))}"
+    if pipeline is None or pipeline_path is None or not pipeline.required_input_fields:
+        return command
+    for candidate in (
+        pipeline_path.parent / "input.json",
+        pipeline_path.parent.parent / "input.json",
+    ):
+        if candidate.is_file():
+            return f"{command} --input {shlex.quote(str(candidate))}"
+    fields = ", ".join(pipeline.required_input_fields)
+    return f"{command} --input '<JSON object with {fields}>'"
+
+
 def _print_stub_todo(
     stubs: list[str],
     runtime_dir: Path,
@@ -117,6 +140,7 @@ def _print_stub_todo(
     tracked: bool,
     indent: str = "  ",
     stream: Any = None,
+    run_command: str | None = None,
 ) -> None:
     """Tell a human which emitted modules they still have to fill in.
 
@@ -125,6 +149,7 @@ def _print_stub_todo(
     an empty list proves nothing, so this says so instead of "none".
     """
     out = stream if stream is not None else sys.stdout
+    run = run_command or f"rote run {runtime_dir}"
     if not tracked:
         print(
             f"{indent}stubs: not tracked for this output (its implementation "
@@ -135,7 +160,7 @@ def _print_stub_todo(
         return
     if not stubs:
         print(f"{indent}stubs: none, every extracted module is implemented", file=out)
-        print(f"{indent}next: rote run {runtime_dir}", file=out)
+        print(f"{indent}next: {run}", file=out)
         return
     print(
         f"{indent}stubs: {len(stubs)} module(s) still raise until you implement them:",
@@ -143,7 +168,7 @@ def _print_stub_todo(
     )
     for stub in stubs:
         print(f"{indent}  {stub}", file=out)
-    print(f"{indent}next: fill those in, then rote run {runtime_dir}", file=out)
+    print(f"{indent}next: fill those in, then {run}", file=out)
 
 
 def _cmd_emit(args: argparse.Namespace) -> int:
@@ -242,7 +267,12 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"  required MCP servers: {rendered}")
         for line in _mcp_recommendation_lines(mcp_servers):
             print(line)
-    _print_stub_todo(stubs, out_dir, tracked=tracked)
+    _print_stub_todo(
+        stubs,
+        out_dir,
+        tracked=tracked,
+        run_command=_run_command(out_dir, pipeline, pipeline_path),
+    )
     return 0
 
 
@@ -2584,20 +2614,22 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append(f"  rote {report['version']}  ·  Python {report['python']}")
     lines.append("")
 
+    # The driver and the extra share the name "api"; the labels say which
+    # is which ("api driver" uses your key, "[api] extra" is a package set).
     lines.append("Compiler drivers (at least one required):")
     for driver in report["drivers"]:
         mark = "✓" if driver["available"] else "✗"
         suffix = "" if driver["available"] else f" — {driver['reason']}"
-        lines.append(f"  {mark} {driver['name']}{suffix}")
+        lines.append(f"  {mark} {driver['name']} driver{suffix}")
     lines.append("  note: CLI subscription auth (claude/codex) is only verified at run time.")
     lines.append("")
 
-    lines.append("Runtime dependencies:")
+    lines.append("Optional extras (runtime dependencies):")
     for runtime in report["runtimes"]:
         if runtime["installed"]:
-            lines.append(f"  ✓ {runtime['name']}")
+            lines.append(f"  ✓ [{runtime['name']}] extra")
         else:
-            lines.append(f"  ✗ {runtime['name']} — {install_hint(runtime['name'])}")
+            lines.append(f"  ✗ [{runtime['name']}] extra — {install_hint(runtime['name'])}")
     lines.append("")
 
     lines.append("MCP servers:")

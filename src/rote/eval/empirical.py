@@ -71,6 +71,23 @@ FAILURE_EXCERPT_CHARS = 1500
 _NODE_ERROR_HEADER = re.compile(r"^(?:[A-Z]\w*)?Error: .+$", re.MULTILINE)
 
 
+#: The prefix an emitted app puts on a usage error (bad input) before
+#: exiting 2. See ``rote.adapters._py_common.cli_input_check``.
+USAGE_ERROR_PREFIX = "error: "
+
+
+def usage_error(output: str) -> str | None:
+    """An emitted app's own usage error (a bad input), without its prefix.
+
+    The app prints it as its last line and exits 2. It already says what
+    to fix, so it replaces the whole failure message: the runtime's log
+    lines above it are noise, and temporal (in-process) reports the same
+    error as one line too.
+    """
+    last = output.strip().rsplit("\n", 1)[-1]
+    return last[len(USAGE_ERROR_PREFIX) :] if last.startswith(USAGE_ERROR_PREFIX) else None
+
+
 def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_CHARS) -> str:
     """The useful part of a failed process's output, for an error message.
 
@@ -429,6 +446,9 @@ def _wait_for_workflow_id(stderr_path: Path, proc: subprocess.Popen[Any], deadli
             if line.startswith(marker):
                 return line[len(marker) :].strip()
         if proc.poll() is not None:
+            usage = usage_error(text)
+            if usage is not None:
+                raise EmpiricalError(usage)
             raise EmpiricalError(
                 f"DBOS app exited (code {proc.returncode}) before starting "
                 f"a workflow:\n{failure_excerpt(text)}"
@@ -556,7 +576,8 @@ def run_pipeline_trial(
         return MeasuredRun(
             wall_seconds=wall,
             output=None,
-            error=f"pipeline exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
+            error=usage_error(stderr)
+            or f"pipeline exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
             judge_usage=tuple(usage_rows),
         )
     try:

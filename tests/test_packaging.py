@@ -31,3 +31,16 @@ def test_rote_command_still_exists() -> None:
     scripts = _project()["scripts"]
     assert isinstance(scripts, dict)
     assert scripts["rote"] == "rote.cli:main"
+
+
+def test_no_source_file_compiles_with_a_warning() -> None:
+    """An invalid escape in a template string (`'\\/'` inside a regex in the
+    emitted TS) warns on every fresh import and becomes a SyntaxError in a
+    future Python. Compile every module with warnings as errors."""
+    import warnings
+
+    src = PYPROJECT.parent / "src" / "rote"
+    for path in sorted(src.rglob("*.py")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
