@@ -12,6 +12,7 @@ speculation.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -19,7 +20,17 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 # ───────── Data-flow input references ─────────
 #
@@ -314,6 +325,34 @@ class SourceRef(BaseModel):
         return v
 
 
+class MCPLiteral(BaseModel):
+    """A fixed value for one MCP tool argument: ``{literal: "BDR do not contact"}``.
+
+    The mapping form keeps it distinct from a reference: a bare string in
+    ``mcp.args`` always names a payload key or a constant, so a literal
+    can never be misread as one, or the reverse. Only scalars: a string, a
+    finite number, or a boolean. Strict types, so ``"3"`` stays a string
+    and ``true`` stays a boolean instead of being coerced. A list or an
+    object belongs in the node's ``constants``, which ``mcp.args`` can
+    already name, and ``null`` is better said by leaving the argument out.
+
+    The value reaches emitted code, so emitters render it only as an
+    escaped quoted literal (``json.dumps`` / a Python string literal),
+    never spliced (invariant #7).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    literal: StrictBool | StrictInt | StrictFloat | StrictStr
+
+    @field_validator("literal")
+    @classmethod
+    def _validate_literal(cls, v: bool | int | float | str) -> bool | int | float | str:
+        if isinstance(v, float) and not math.isfinite(v):
+            raise ValueError(f"mcp.args literal {v!r} must be a finite number")
+        return v
+
+
 class MCPBinding(BaseModel):
     """Binding from an ``external_call`` node to an MCP tool.
 
@@ -342,11 +381,13 @@ class MCPBinding(BaseModel):
     tool: str = Field(
         description="MCP tool name to invoke, e.g. 'hubspot_get_contact_emails'",
     )
-    args: dict[str, str] | None = Field(
+    args: dict[str, str | MCPLiteral] | None = Field(
         default=None,
         description=(
-            "Optional rename map: MCP tool-argument name → key in the node's "
-            "runtime payload. Omit to pass the payload through unchanged."
+            "Optional map: MCP tool-argument name → where its value comes from. "
+            "A string names a key in the node's runtime payload, or one of its "
+            "constants; {literal: <string, number or boolean>} is a fixed value. "
+            "Omit to pass the payload through unchanged."
         ),
     )
     url: str | None = Field(
@@ -383,15 +424,21 @@ class MCPBinding(BaseModel):
 
     @field_validator("args")
     @classmethod
-    def _validate_args(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        """Both halves reach emitted dict literals / payload lookups."""
+    def _validate_args(
+        cls, v: dict[str, str | MCPLiteral] | None
+    ) -> dict[str, str | MCPLiteral] | None:
+        """Keys and references reach emitted dict literals and payload lookups,
+        so they are identifiers. A literal is validated by :class:`MCPLiteral`."""
         if v is None:
             return None
-        for arg_name, payload_key in v.items():
+        for arg_name, source in v.items():
             if not _IDENTIFIER_RE.fullmatch(arg_name):
                 raise ValueError(f"mcp.args key {arg_name!r} must be a valid identifier")
-            if not _IDENTIFIER_RE.fullmatch(payload_key):
-                raise ValueError(f"mcp.args value {payload_key!r} must be a valid identifier")
+            if isinstance(source, str) and not _IDENTIFIER_RE.fullmatch(source):
+                raise ValueError(
+                    f"mcp.args value {source!r} must be a valid identifier (a payload key "
+                    f"or constant name); write {{literal: {source!r}}} for a fixed value"
+                )
         return v
 
 

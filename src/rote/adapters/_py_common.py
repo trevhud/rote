@@ -152,8 +152,10 @@ def mcp_arguments_line(node: Node, indent: str = "    ") -> str:
     items = ", ".join(
         f"{json.dumps(tool_arg)}: "
         + (
+            # A constant and a literal are both fixed values: an escaped
+            # Python literal, never spliced (invariant #7).
             _constant_literal(node, tool_arg, value)
-            if origin == "constant"
+            if origin in ("constant", "literal")
             else f"payload[{json.dumps(value)}]"
         )
         for tool_arg, origin, value in sources
@@ -491,7 +493,16 @@ def _py_literal(value: Any) -> str:
     containers recurse so nested strings get the same treatment.
     """
     if isinstance(value, str):
-        return json.dumps(value)
+        # Raw non-ASCII, not \u escapes: JSON spells a character outside
+        # the BMP as a surrogate pair, which Python reads as two lone
+        # surrogates instead of the character. What remains escaped (quote,
+        # backslash, control characters) is valid in a Python string too.
+        # The three line breaks JSON leaves raw are escaped as well: Python
+        # does not end a line on them, but str.splitlines and editors do.
+        literal = json.dumps(value, ensure_ascii=False)
+        for raw, escaped in (("\x85", "\\x85"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+            literal = literal.replace(raw, escaped)
+        return literal
     if isinstance(value, bool) or value is None:
         return repr(value)
     if isinstance(value, list):

@@ -144,6 +144,32 @@ Rules:
 - Steps that are *not* MCP tool calls (plain HTTP the skill documents,
   browser automation, file I/O) take no binding — never invent one.
 
+**Tool arguments (`mcp.args`).** Without `args` the node's payload is
+the tool's arguments as-is. With it, each tool argument names where its
+value comes from:
+
+```yaml
+  mcp:
+    server: zoominfo
+    tool: zoominfo_search_contacts
+    args:
+      company_ids: company_ids              # a payload key (one of `inputs:`)
+      batch_size: batch_size                # one of the node's `constants:`
+      level: {literal: management-levels}   # a fixed value
+      limit: {literal: 25}
+      include_inactive: {literal: false}
+```
+
+- A bare string is always a reference (an identifier): a payload key, or
+  a constant's name. It is never literal text.
+- `{literal: ...}` is a fixed string, number or boolean, typed as
+  written (`{literal: "25"}` is a string). Use it for a value the skill
+  passes the tool verbatim every run, like a list name ('BDR do not
+  contact') or a filter keyword. A list or object is a `constants:`
+  entry named by reference. `null` is never needed: leave the argument
+  out.
+- Once `args` is present, only the arguments it names reach the tool.
+
 ### Data-flow bindings (`inputs:`)
 
 `input:` documents *types*; `inputs:` binds *where the values come

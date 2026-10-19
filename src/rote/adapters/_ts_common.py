@@ -1679,7 +1679,13 @@ def mcp_args_ts_line(node: Node) -> str:
         return "    const args = payload; // tool arg names match the threaded payload keys"
     items = ", ".join(
         f"{json.dumps(tool_arg)}: "
-        + (json.dumps(value) if origin == "constant" else f"payload[{json.dumps(value)}]")
+        # A constant and a literal are both fixed values: JSON, which is a
+        # valid, fully escaped TS literal, never spliced (invariant #7).
+        + (
+            json.dumps(value)
+            if origin in ("constant", "literal")
+            else f"payload[{json.dumps(value)}]"
+        )
         for tool_arg, origin, value in sources
     )
     return f"    const args = {{ {items} }};"

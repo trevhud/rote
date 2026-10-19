@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from rote.ir import (
     Edge,
+    Node,
     NodeKind,
     Pipeline,
     PipelineInput,
@@ -1105,3 +1106,59 @@ def test_a_cycle_is_a_validation_error() -> None:
     raw["edges"].append({"from": "pre_enrollment_report", "to": "target_research"})
     with pytest.raises(ValidationError, match="Cycle detected"):
         Pipeline.model_validate(raw)
+
+
+# ───────── mcp.args literals ─────────
+
+
+def _mcp_node(args: dict[str, Any]) -> Node:
+    return Node.model_validate(
+        {
+            "id": "search",
+            "kind": "external_call",
+            "description": "Search.",
+            "mcp": {"server": "zoominfo", "tool": "search_contacts", "args": args},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["management-levels", "BDR do not contact", 3, 2.5, True, False, "", "3"]
+)
+def test_mcp_args_accept_a_typed_literal(value: Any) -> None:
+    from rote.ir import MCPLiteral
+
+    node = _mcp_node({"level": {"literal": value}})
+    assert node.mcp is not None and node.mcp.args is not None
+    literal = node.mcp.args["level"]
+    assert isinstance(literal, MCPLiteral)
+    # No coercion: "3" stays a string, True stays a boolean, 3 an int.
+    assert literal.literal == value
+    assert type(literal.literal) is type(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, ["a", "b"], {"k": "v"}, float("nan"), float("inf")],
+    ids=["null", "list", "object", "nan", "inf"],
+)
+def test_mcp_args_reject_a_literal_that_is_not_a_scalar(value: Any) -> None:
+    with pytest.raises(ValueError):
+        _mcp_node({"level": {"literal": value}})
+
+
+def test_a_literal_is_only_the_literal_key() -> None:
+    with pytest.raises(ValueError):
+        _mcp_node({"level": {"literal": "x", "also": 1}})
+    with pytest.raises(ValueError):
+        _mcp_node({"level": {"value": "x"}})
+
+
+def test_a_bare_string_is_always_a_reference_and_says_how_to_write_a_literal() -> None:
+    """Literal text where a reference goes was the real compile failure;
+    the error now names the fix."""
+    with pytest.raises(ValueError, match=r"write \{literal: 'BDR do not contact'\}"):
+        _mcp_node({"list_name": "BDR do not contact"})
+    # A reference still validates as one.
+    node = _mcp_node({"q": "query"})
+    assert node.mcp is not None and node.mcp.args == {"q": "query"}

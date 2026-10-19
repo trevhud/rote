@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from rote.ir import Node, NodeKind, Pipeline
+from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -119,20 +119,28 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     ``None`` means the threaded payload is the arguments as-is: the node's
     inputs, never its constants, because a tool rejects arguments it does
     not declare (FastMCP raises "Unexpected keyword argument"). With
-    ``mcp.args`` each entry is ``(tool_arg, "payload", key)`` or
-    ``(tool_arg, "constant", value)``: a key that names one of the node's
-    constants forwards that constant, which is the only way a constant
-    reaches a tool. Language-neutral on purpose, so every runtime sends a
-    tool the identical arguments.
+    ``mcp.args`` each entry is ``(tool_arg, "payload", key)``,
+    ``(tool_arg, "constant", value)`` or ``(tool_arg, "literal", value)``:
+    a key that names one of the node's constants forwards that constant,
+    which is the only way a constant reaches a tool, and ``{literal: v}``
+    sends ``v``. Constants and literals are both fixed values, so emitters
+    render them the same way: an escaped literal, never spliced code.
+    Language-neutral on purpose, so every runtime sends a tool the
+    identical arguments.
     """
     assert node.mcp is not None
     if not node.mcp.args:
         return None
     constants = node.constants or {}
-    return [
-        (tool_arg, "constant", constants[key]) if key in constants else (tool_arg, "payload", key)
-        for tool_arg, key in node.mcp.args.items()
-    ]
+    sources: list[tuple[str, str, Any]] = []
+    for tool_arg, source in node.mcp.args.items():
+        if isinstance(source, MCPLiteral):
+            sources.append((tool_arg, "literal", source.literal))
+        elif source in constants:
+            sources.append((tool_arg, "constant", constants[source]))
+        else:
+            sources.append((tool_arg, "payload", source))
+    return sources
 
 
 def safe_docstring_line(text: str, fallback: str = "") -> str:
