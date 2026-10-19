@@ -10,7 +10,7 @@
     {
       "name": "rote",
       "source": "./plugin",
-      "description": "Compile an AI agent skill into a deterministic workflow for DBOS, Temporal, Cloudflare Workflows, Inngest, or plain Python with /rote:compile, then trigger the deployed workflows from Claude over MCP with /rote:serve.",
+      "description": "Compile an AI agent skill into a deterministic workflow for DBOS, Temporal, Cloudflare Workflows, Inngest, or plain Python with /rote:compile, fill in its emitted stub modules with /rote:implement, then trigger the deployed workflows from Claude over MCP with /rote:serve.",
       "version": "0.14.0",
       "category": "development",
       "tags": ["workflow", "durable-execution", "mcp", "agent-skills", "token-cost"]
