@@ -51,6 +51,7 @@ from rote.mcp.auth import (  # noqa: E402
     registration_of,
 )
 from rote.mcp.learned import learned_auth  # noqa: E402
+from tests._helpers import occupied_ports  # noqa: E402
 from tests._oauth_fixture import (  # noqa: E402
     CIMD_DOCUMENT,
     OAuthFixture,
@@ -224,9 +225,7 @@ def test_a_callback_port_outside_the_published_set_does_not_offer_cimd(
 def test_login_moves_to_the_next_published_port_when_the_first_is_taken(
     fx: OAuthFixture,
 ) -> None:
-    with socket.socket() as held:
-        held.bind(("127.0.0.1", CALLBACK_PORTS[0]))
-        held.listen()
+    with occupied_ports(CALLBACK_PORTS[0]):
         doc = asyncio.run(login("vendor", _config(fx)))
     assert doc["client_info"]["client_id"] == fx.cimd_url
     assert {e["redirect_uri"] for e in fx.events("authorize")} == {
@@ -619,16 +618,9 @@ def test_a_login_that_needs_no_callback_releases_the_port(fx: OAuthFixture) -> N
 def test_every_published_port_taken_fails_before_contacting_the_server(
     fx: OAuthFixture,
 ) -> None:
-    held = []
-    for port in CALLBACK_PORTS:
-        sock = socket.socket()
-        sock.bind(("127.0.0.1", port))
-        sock.listen()
-        held.append(sock)
-    try:
-        with pytest.raises(McpAuthError, match="33418, 33419, 33420, 33421"):
-            asyncio.run(login("vendor", _config(fx)))
-    finally:
-        for sock in held:
-            sock.close()
+    with (
+        occupied_ports(*CALLBACK_PORTS),
+        pytest.raises(McpAuthError, match="33418, 33419, 33420, 33421"),
+    ):
+        asyncio.run(login("vendor", _config(fx)))
     assert fx.events() == []

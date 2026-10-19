@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import socket
 import stat
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from rote.mcp import (
     write_token_file,
 )
 from rote.mcp.tokens import ServerTokenKV
+from tests._helpers import occupied_ports
 
 # ───────── Registry ─────────
 
@@ -989,20 +989,12 @@ def test_client_metadata_url_override_and_opt_out(monkeypatch: pytest.MonkeyPatc
     assert client_metadata_url() is None
 
 
-def _hold(port: int) -> socket.socket:
-    held = socket.socket()
-    held.bind(("127.0.0.1", port))
-    held.listen()
-    return held
-
-
 def test_selecting_a_callback_port_binds_it_and_skips_taken_ones() -> None:
     """The bind is the check, and the port stays held: nothing can take it
     between selection and the callback server starting."""
     from rote.mcp import auth
 
-    held = [_hold(port) for port in auth.CALLBACK_PORTS[:2]]
-    try:
+    with occupied_ports(*auth.CALLBACK_PORTS[:2]):
         port, sockets = auth.select_callback_port()
         try:
             assert port == auth.CALLBACK_PORTS[2]
@@ -1015,21 +1007,16 @@ def test_selecting_a_callback_port_binds_it_and_skips_taken_ones() -> None:
         assert again is not None
         for sock in again:
             sock.close()
-    finally:
-        for sock in held:
-            sock.close()
 
 
 def test_login_errors_naming_the_ports_when_every_published_one_is_taken() -> None:
     from rote.mcp import auth
 
-    held = [_hold(port) for port in auth.CALLBACK_PORTS]
-    try:
-        with pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"):
-            auth.select_callback_port()
-    finally:
-        for sock in held:
-            sock.close()
+    with (
+        occupied_ports(*auth.CALLBACK_PORTS),
+        pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"),
+    ):
+        auth.select_callback_port()
 
 
 def test_input_required_error_pickles_and_is_not_an_auth_error() -> None:
