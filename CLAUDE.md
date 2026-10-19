@@ -1486,6 +1486,29 @@ a template, so the output depended on where the command was typed.
 compiler, run it against a copy of the skill outside the repo anyway:
 an older installed rote has none of this.
 
+### A failed `claude -p` compile is still a paid one, and the output cap resumes
+
+A real invoice-push compile died after 28 minutes and 8 turns with
+`Claude's response exceeded the 32000 output token maximum`, and its cost
+appeared nowhere: the driver raised without reading the result envelope,
+which every such failure still carries. Three things now hold:
+
+- **`DriverError.metadata`** carries the failed session's usage (same
+  keys as `DriverResult.metadata`, via `_session_metadata`). The
+  orchestrator prints it in the error and emits a `usage before the
+  failure:` log line, so progress.jsonl has it too.
+- **`CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000`** in the compiler child's env
+  (`ClaudeDriver._build_child_env`), `setdefault` so a caller's value
+  wins. Unset, Claude Code uses 32000 for a model it cannot resolve;
+  64000 is the default compile model's own maximum, and the CLI lowers a
+  value above a model's cap to the cap. Raising it also shrinks the
+  context left before auto-compaction, so don't push it to 128000
+  without measuring.
+- **The cap is resumable, once per compile.** The session is intact, so
+  the driver resumes it with `OUTPUT_CAP_RESUME` (write large files in
+  pieces) and then takes the normal file-first path. Once, not per
+  round: a model that hits the cap twice is not going to stop.
+
 ---
 
 ## Canonical examples to imitate

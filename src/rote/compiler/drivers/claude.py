@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -102,6 +103,33 @@ DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
 access needed), no WebFetch / WebSearch by default (no external
 network), no TodoWrite. Read + Write + Edit cover file I/O; Glob +
 Grep cover discovery of source skill structure and reference content."""
+
+#: Claude Code's per-response output cap for the compiler subprocess.
+#: Unset, it is 32000 for a model the CLI cannot resolve, and a real
+#: invoice-push compile died on it after 28 minutes and 8 turns ("Claude's
+#: response exceeded the 32000 output token maximum"), on one large Write.
+#: 64000 is the default compile model's (claude-sonnet-4-6) own maximum;
+#: Claude Code lowers a value above a model's cap to the cap, so a larger
+#: model is never asked for more than it supports. Higher is not free: the
+#: docs note it shrinks the context left before auto-compaction. A value
+#: already set in the caller's environment is respected.
+#: https://code.claude.com/docs/en/env-vars
+MAX_OUTPUT_TOKENS = "64000"
+
+#: The CLI's message when one response hits that cap. The run ends there,
+#: but the session is intact, so it is resumable.
+_OUTPUT_CAP_RE = re.compile(r"exceeded the \d+ output token maximum")
+
+#: The one user turn a capped session is resumed with. The cap is hit by a
+#: single huge tool call (a whole module in one Write), so the fix is to
+#: write in pieces, not to retry the same call.
+OUTPUT_CAP_RESUME = (
+    "Your last response was cut off: it exceeded the output-token limit for a "
+    "single response, so nothing in it took effect. Continue the compilation "
+    "from where you were. Write any large file in pieces: Write a first part, "
+    "then add the rest with Edit, keeping each tool call well under 20000 "
+    "tokens. Do not rewrite files that are already complete."
+)
 
 WEB_TOOLS = "WebSearch,WebFetch"
 """Research tools appended when ``web_tools=True``: the agent may look
@@ -285,6 +313,14 @@ def _result_detail(result_obj: dict[str, Any] | None) -> str:
     return json.dumps(result_obj)[:2000]
 
 
+def _hit_output_cap(result_obj: dict[str, Any] | None) -> bool:
+    """Whether a run ended on Claude Code's per-response output-token cap."""
+    if not isinstance(result_obj, dict):
+        return False
+    text = result_obj.get("result")
+    return isinstance(text, str) and bool(_OUTPUT_CAP_RE.search(text))
+
+
 @dataclass(frozen=True)
 class _Invocation:
     """One ``claude -p`` subprocess: the first run or a resumed repair round."""
@@ -447,9 +483,40 @@ class ClaudeDriver(CompilerDriver):
         # re-announced every phase already in progress.ndjson at the start
         # of each repair round, so a repaired compile read as if it had
         # restarted from Phase 1.
+        cap_resumed = False
+
+        async def resume_if_capped(inv: _Invocation) -> _Invocation | None:
+            """Resume once, compile-wide, a session that hit the output cap."""
+            nonlocal cap_resumed
+            if cap_resumed or not _hit_output_cap(inv.result):
+                return None
+            assert inv.result is not None
+            session_id = inv.result.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                return None
+            cap_resumed = True
+            emit_safely(
+                on_event,
+                CompilationEvent(
+                    type="warning",
+                    ts=time.time(),
+                    message=(
+                        "a response hit the output-token cap; resuming the session "
+                        "once with an instruction to write large files in pieces"
+                    ),
+                ),
+            )
+            resumed = await invoke(OUTPUT_CAP_RESUME, session_id, inv.turn)
+            invocations.append(resumed)
+            return resumed
+
+        invocations: list[_Invocation] = []
         async with ProgressFileWatcher(work_dir, on_event):
             first = await invoke(user_prompt, None, 0)
-            invocations = [first]
+            invocations.append(first)
+            # A capped first run is continued, and the continuation then
+            # stands in for it in everything below.
+            first = await resume_if_capped(first) or first
             result_obj, stderr = first.result, first.stderr
             # The first run's exit status decides recovery: a repair round that
             # dies is reported as a repair_warning, not a failed compilation.
@@ -473,6 +540,7 @@ class ClaudeDriver(CompilerDriver):
                     break
                 repaired = await invoke(instruction, session_id, last.turn)
                 invocations.append(repaired)
+                repaired = await resume_if_capped(repaired) or repaired
                 if repaired.returncode != 0:
                     repair_warning = (
                         f"a repair round exited with code {repaired.returncode}; the "
@@ -489,14 +557,21 @@ class ClaudeDriver(CompilerDriver):
         # missing.
         if not pipeline_yaml.is_file():
             detail = stderr or _result_detail(result_obj) or "(no output)"
+            # The result envelope exists on most failures (an API error, the
+            # output cap, max turns) and carries the session's cost. It used
+            # to be dropped here, so a 28-minute failed compile reported no
+            # cost anywhere.
+            usage = self._session_metadata(invocations)
             if returncode != 0:
                 raise DriverError(
                     f"claude CLI exited with code {returncode}",
                     details=detail,
+                    metadata=usage,
                 )
             raise DriverError(
                 f"claude CLI finished successfully but did not produce {pipeline_yaml}.",
                 details=detail,
+                metadata=usage,
             )
 
         metadata = self._session_metadata(invocations)
@@ -583,7 +658,9 @@ class ClaudeDriver(CompilerDriver):
         eval harness's skill runner, which spawns ``claude -p`` under
         the same billing rules.
         """
-        return build_subscription_env()
+        env = build_subscription_env()
+        env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS)
+        return env
 
     def _build_system_prompt(self, skill_md_text: str) -> str:
         """Build the ``--append-system-prompt`` content.
