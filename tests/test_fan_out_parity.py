@@ -416,11 +416,13 @@ def test_every_runtime_fans_over_a_pipeline_input_list(runtime: str) -> None:
     fn, lang = _EMITTERS[runtime]
     src = fn(_input_fan_pipeline(_TYPED_INPUT))
     if lang == "py":
-        list_expr = 'pipeline_input["invoices"]'
+        # Pipeline-input reads go through .get / _input_field (#106), so an
+        # omitted optional field is left out instead of raising KeyError.
+        list_expr = 'pipeline_input.get("invoices")'
         assert re.search(r"_fan_out_list\(\s*" + re.escape(list_expr) + ",", src), src
         assert '"invoice": _item' in src
         assert f'"invoice": {list_expr}' not in src
-        assert '"currency": pipeline_input["currency"]' in src
+        assert '_input_field(pipeline_input, "currency", "currency")' in src
         ast.parse(src)
     else:
         list_expr = 'pipelineInput["invoices"]'
