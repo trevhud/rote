@@ -214,6 +214,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the input type.
 
 ### Fixed
+- **Generated tests run under a uv-managed Python.** CI's setup-uv
+  interpreter lives in `~/.local/share/uv/python`, and every sandboxed
+  generated-test run died with "No module named 'encodings'": the child
+  was launched through the venv, whose `pyvenv.cfg` points at a uv
+  minor-version symlink nothing in the bwrap namespace binds. The child
+  is now launched by the resolved binary. The run's summary is also
+  taken from pytest's stdout, not from a termcap warning the interpreter
+  prints to stderr on exit. The sandbox tests now check the real
+  property (no bind exposes the home's contents, planted secrets in the
+  home and the venv root are unreadable) instead of "nothing under /home
+  is bound", which failed on any in-tree venv.
 - **Compile-time test verification works on a normal install.** pytest
   was only in the `dev` extra, so `pip install 'rote-cli[dbos]'` had no
   test runner, the generated tests were silently skipped, and a compile

@@ -1347,7 +1347,7 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   and the ssh-agent socket and Keychain CLI are reachable. So:
   - macOS: `sandbox-exec` with a generated deny-by-default profile.
     Reads: the work dir; the interpreter's stdlib, its site-packages
-    dirs, and as single files the binary, libpython and `pyvenv.cfg`
+    dirs, and as single files the binary and libpython
     (`sandbox.current_layout`, derived from `sysconfig`, never "the dir
     above the binary", which for `~/bin/python` is the home and for
     `/usr/bin/python3` all of `/usr`); `/` as a literal; `/System`,
@@ -1366,6 +1366,23 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
     restriction; `tests/test_sandbox.py` fails instead of skipping when
     `CI` is set. No `unshare -n` fallback: without a mount namespace
     rebuilt the way bwrap does it, the home stays readable.
+    A bind under the home is fine and normal: setup-uv's interpreter lives
+    in `~/.local/share/uv/python`, a CI venv in the checkout. The property
+    is that no bind exposes home *contents*: bwrap creates each bind's
+    parent dirs, so inside, `~` lists an empty `.local` or `work`, and
+    nothing else. The snoop test checks exactly that skeleton plus planted
+    secrets in the home and the venv root; don't "tighten" it back to
+    "nothing under /home is bound", which failed on every in-tree venv.
+  - **The child is launched by the resolved binary, never `sys.executable`**
+    (`sandbox.launch_executable`). Through a venv, Python finds its stdlib
+    via `pyvenv.cfg`'s `home`, and uv writes a minor-version *symlink*
+    there (`cpython-3.11-linux-...` -> `cpython-3.11.17-...`) that nothing
+    binds: every sandboxed run on a uv-managed Python died with "No module
+    named 'encodings'". `-S` plus the explicit PYTHONPATH means the child
+    needs nothing from the venv.
+  - The summary is the last line of pytest's *stdout*. A uv Python's
+    ncurses prints "using dumb terminal settings." to stderr on exit (no
+    terminfo inside), which used to become the summary.
   - The child runs `python -S` (no `.pth` processing) with PYTHONPATH set
     to the work dir and pytest's site-packages, and pytest's config,
     rootdir and conftest boundary pinned to the work dir: walking up

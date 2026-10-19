@@ -474,3 +474,18 @@ def test_the_committed_ops_report_compile_still_verifies() -> None:
         by_kind.setdefault(impl.kind, set()).add(impl.status)
     assert by_kind == {"pure_function": {"implemented"}, "external_call": {"stub"}}
     assert all(i.mcp_bound for i in v.implementations if i.status == "stub")
+
+
+def test_the_summary_is_pytests_not_the_interpreters_last_words(tmp_path: Path) -> None:
+    """A uv-managed Python under bwrap prints a termcap warning to stderr as
+    it exits. The summary is pytest's result line, not that."""
+    noisy = (
+        "import atexit, sys\n"
+        "atexit.register(lambda: sys.stderr.write('using dumb terminal settings.\\n'))\n\n"
+        "def test_ok():\n    assert True\n"
+    )
+    root = _deliverable(tmp_path, {"tests/test_noisy.py": noisy})
+    result = run_generated_tests(root, trust_skill=True)
+    assert result is not None and result.status == "passed", result.output
+    assert "using dumb terminal settings." in result.output
+    assert result.summary.startswith("1 passed"), result.summary
