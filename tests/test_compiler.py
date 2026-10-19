@@ -981,3 +981,48 @@ def test_cli_exits_nonzero_when_the_deliverable_fails_verification(
     assert "still fails verification" in err
     assert "absent: only_node" in err
     assert (out / "runtime" / "dbos" / "main.py").is_file()
+
+
+@pytest.mark.parametrize(
+    ("flags", "sandbox_ok", "expected"),
+    [
+        ([], False, "NOT RUN. The deliverable is UNVERIFIED: generated tests NOT run: no OS"),
+        (["--trust-skill"], False, "passed (1 passed"),
+        (["--no-verify-tests"], True, "NOT RUN (--no-verify-tests). The deliverable is UNVERIFIED"),
+    ],
+)
+def test_the_compile_report_says_whether_the_tests_ran(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    sandbox_ok: bool,
+    expected: str,
+) -> None:
+    """With no sandbox the tests are skipped, and the report must not read
+    as verified. The section is rote's, so a re-run replaces it."""
+    from rote.cli import main
+    from rote.compiler import sandbox
+
+    if not sandbox_ok:
+        monkeypatch.setattr(sandbox, "detect", lambda: (None, "no sandbox in this test"))
+
+    def driver() -> _RepairableDriver:
+        return _RepairableDriver(
+            [_LOGIC_YAML],
+            files={
+                "extracted/foo.py": _LOGIC_IMPL,
+                "tests/test_foo.py": _LOGIC_TEST,
+                "compile-report.md": "# Report\n\nThe agent's text.\n",
+            },
+        )
+
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver())
+    out = tmp_path / "run"
+    argv = ["compile", str(fake_skill_dir), "--local", "--runtime", "dbos", "--no-eval"]
+    for _ in range(2):  # twice: the section is replaced, not duplicated
+        assert main([*argv, *flags, "--out", str(out)]) == 0
+    report = (out / "compiled" / "compile-report.md").read_text()
+    assert report.startswith("# Report\n\nThe agent's text.")
+    assert report.count("## rote verification") == 1
+    assert expected in report

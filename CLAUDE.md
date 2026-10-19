@@ -1253,17 +1253,41 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
 - **A rejected IR goes to `<out>.rejected`, never into `<out>`.** A
   re-run into an existing `--out` must not replace the last good
   pipeline.yaml and the stubs the user filled in since.
-- **Generated tests are untrusted code and run with an allowlisted env.**
-  The agent wrote them from a SKILL.md that may be third-party
-  (invariant #7), and rote runs them automatically, up to three times.
-  `verify.generated_test_env` passes only PATH and locale through, sets
-  an empty throwaway HOME (so `~/.local/share/rote/cloud.json` and other
-  dotfiles are not there), `PYTHONPATH` to the work dir, and cwd to the
-  work dir. An allowlist, not the credential scrub lists in
-  `build_subscription_env` or conftest: those keep everything else, and
-  no list knows every secret a developer exports. It is a credential
-  boundary, not a sandbox (absolute paths and the network are still
-  reachable), which is what `--no-verify-tests` is for. Regression:
+- **Generated tests are untrusted code and run in an OS sandbox, or not
+  at all** (`rote.compiler.sandbox`). The agent wrote them from a
+  SKILL.md that may be third-party (invariant #7), and rote runs them
+  automatically, up to three times. An env allowlist alone was shown to
+  stop nothing: `pwd.getpwuid` names the real home, the network is open,
+  and the ssh-agent socket and Keychain CLI are reachable. So:
+  - macOS: `sandbox-exec` with a generated deny-by-default profile.
+    Reads: the work dir, the interpreter install and the site-packages
+    holding pytest, `/` itself, `/System`, `/usr/lib`, `/usr/share`, dyld,
+    a few devices. Writes: the work dir and a private scratch dir. Exec:
+    the interpreter only. No network. `file-read-metadata` is allowed
+    everywhere because path resolution needs it, so a test can learn that
+    a path exists, not what it holds.
+  - Linux: `bwrap --unshare-all` (network included), read-only binds of
+    the system lib dirs and interpreter paths, binds of the work dir and
+    scratch dir, tmpfs `/tmp`, `--clearenv`, no home. CI installs it via
+    `.github/actions/bubblewrap` and lifts Ubuntu's AppArmor userns
+    restriction; `tests/test_sandbox.py` fails instead of skipping when
+    `CI` is set. No `unshare -n` fallback: without a mount namespace
+    rebuilt the way bwrap does it, the home stays readable.
+  - The child runs `python -S` (no `.pth` processing) with PYTHONPATH set
+    to the work dir and pytest's site-packages, and pytest's config,
+    rootdir and conftest boundary pinned to the work dir: walking up
+    reads the user's project, which the sandbox denies.
+  - The env is still an allowlist (`verify.generated_test_env`: PATH,
+    locale, an empty HOME), not a scrub list.
+  - No working sandbox: the tests are skipped, status `unverified`, said
+    in the compile output and in a `## rote verification` section rote
+    appends to compile-report.md. `--trust-skill` runs them with the env
+    allowlist only; `--no-verify-tests` never runs them.
+  - Not isolated: file metadata on macOS (above), CPU and memory (only the
+    120 s timeout), writes inside the work dir (a test can modify the
+    deliverable it tests).
+  Regressions: `tests/test_sandbox.py` (each denial verified by removing
+  it from the profile), and
   `tests/test_verify.py::test_generated_tests_cannot_see_credentials_or_the_users_home`.
 - **One stub predicate.** `rote.adapters._common.stub_raise` decides what
   a stub is for both `rote run`'s preflight and the compile's per-node

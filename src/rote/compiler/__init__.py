@@ -201,6 +201,7 @@ class Compiler:
         on_event: EventCallback | None = None,
         driver_kwargs: dict[str, Any] | None = None,
         run_generated_tests: bool = True,
+        trust_skill: bool = False,
     ) -> None:
         """
         Parameters
@@ -233,6 +234,10 @@ class Compiler:
             see :mod:`rote.compiler.verify`). ``False`` is
             ``--no-verify-tests``: for a skill you do not trust, nothing
             the agent wrote is executed, and the static checks still run.
+        trust_skill
+            Run the generated tests without an OS sandbox (``--trust-skill``).
+            By default they run under one, and are skipped (the deliverable
+            is unverified) when none is available.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -240,6 +245,7 @@ class Compiler:
         self.on_event = on_event
         self.driver_kwargs = driver_kwargs
         self.run_generated_tests = run_generated_tests
+        self.trust_skill = trust_skill
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -478,6 +484,7 @@ class Compiler:
                 result.work_dir,
                 base_dir=base_dir,
                 run_tests=self.run_generated_tests,
+                trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
             )
             self._emit_verification(verification)
@@ -579,6 +586,7 @@ class Compiler:
                 artifact_dir,
                 base_dir=base_dir,
                 run_tests=self.run_generated_tests,
+                trust_skill=self.trust_skill,
                 skill_dir=skill_dir,
             )
             instruction = verification.repair_instruction(artifact_dir)

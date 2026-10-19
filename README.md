@@ -192,12 +192,14 @@ The agent implements the deterministic `pure_function` steps the skill
 spells out and writes tests for them. Before the compile reports
 success, rote checks what the agent wrote and runs those tests, and any
 failure goes back to the agent to fix. The tests are code an LLM wrote
-from a skill you may not have written, so rote runs them with only
-`PATH` and locale from your environment and an empty `HOME`: no API
-keys, no `~/.local/share/rote` login. That keeps your credentials out,
-but it is not a sandbox. For a skill you don't trust, pass
-`--no-verify-tests`, then review the tests in `<out>/compiled/tests/`
-before you run them.
+from a skill you may not have written, so rote runs them in an OS
+sandbox (`sandbox-exec` on macOS, bubblewrap on Linux): no network, no
+reads outside the compile's work dir and the Python install, no programs
+other than Python, no API keys in the environment, an empty `HOME`. If
+no sandbox works on your machine, the tests are skipped and the compile
+says the deliverable is unverified. `--trust-skill` runs them without a
+sandbox, and `--no-verify-tests` never runs them; either way, review
+`<out>/compiled/tests/` before running them yourself.
 
 `rote` is a three-layer system; each layer has one job and contracts on
 a small interface.

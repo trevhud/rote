@@ -228,8 +228,9 @@ these checks on your work dir when you end your turn:
    Open questions entry per `# rote: assumption:`.
 5. Every implemented `pure_function` is called from a file under
    `tests/`.
-6. `python -m pytest tests` passes. It runs with no credentials in its
-   environment and an empty HOME, so a test that needs either is broken.
+6. `python -m pytest tests` passes. It runs in a sandbox with no
+   network, no credentials, an empty HOME, and nothing readable outside
+   the work dir, so a test that needs any of those is broken.
 
 If any check fails, the problems come back to you as the next message,
 verbatim, with the pytest output. Fix exactly what they name and end

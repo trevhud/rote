@@ -107,12 +107,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   kept, and `rote compile` exits 1 and skips the rote cloud deploy.
   The summary prints how many impl nodes were implemented and every
   stub with its reason (`verification` in `--json`).
-- **Generated tests run without your credentials.** They are code an LLM
-  wrote from a possibly third-party skill, so rote runs them with only
-  `PATH` and locale from the environment, an empty throwaway `HOME`,
-  and the work dir as cwd. That is a credential boundary, not a sandbox:
-  `rote compile --no-verify-tests` (also on `rote analyze`) skips
-  running them for a skill you don't trust. The static checks still run.
+- **Generated tests run in an OS sandbox, or not at all.** They are code
+  an LLM wrote from a possibly third-party skill, so rote runs them under
+  `sandbox-exec` (macOS) or bubblewrap (Linux): no network, no reads
+  outside the work dir and the Python install, no exec but the
+  interpreter, an env of only `PATH` and locale, and an empty throwaway
+  `HOME`. With no working sandbox they are skipped, and the compile
+  output and a `## rote verification` section in compile-report.md say
+  the deliverable is unverified. `--trust-skill` runs them without a
+  sandbox; `--no-verify-tests` never runs them (both also on
+  `rote analyze`). The static checks always run.
 - **Every outcome the compiled code decides cites the skill, or is a
   declared assumption.** The rubric has the agent quote the skill text
   behind each value, category, and branch (`# skill: "..."`), and mark

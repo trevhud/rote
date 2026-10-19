@@ -64,7 +64,9 @@ GENERATED_TESTS_TIMEOUT_SECONDS = 120.0
 #: failure summary; the whole log would re-bill every line on each turn.
 _TEST_OUTPUT_CHARS = 6000
 
-TestStatus = Literal["passed", "failed", "unavailable"]
+#: ``unverified``: the tests exist but were deliberately not run, because
+#: no OS sandbox is available and the user did not pass ``--trust-skill``.
+TestStatus = Literal["passed", "failed", "unavailable", "unverified"]
 
 
 @dataclass(frozen=True)
@@ -130,16 +132,26 @@ def generated_test_env(artifact_dir: Path, home: Path) -> dict[str, str]:
     return env
 
 
-def run_generated_tests(artifact_dir: Path | str) -> GeneratedTests | None:
+def run_generated_tests(
+    artifact_dir: Path | str, *, trust_skill: bool = False
+) -> GeneratedTests | None:
     """Run ``<artifact_dir>/tests`` with pytest, if there is anything to run.
 
-    ``python -m pytest`` from the artifact dir puts that dir on
-    ``sys.path``, which is what lets a test say ``from extracted.parsers
-    import parse_x`` with no conftest. ``unavailable`` (pytest is not
-    installed alongside rote) is reported, never treated as a pass, and
-    never sent to the agent: it cannot fix the environment.
+    By default the run happens inside an OS sandbox (:mod:`rote.compiler.sandbox`):
+    no network, no reads outside the work dir and the interpreter, no exec
+    of anything but the interpreter. With no sandbox available the tests
+    are NOT run and the result is ``unverified``, never a pass.
+    ``trust_skill`` (``--trust-skill``) runs them without a sandbox,
+    with only the environment allowlist and an empty HOME between them and
+    the user's machine.
+
+    ``unavailable`` (pytest is not installed alongside rote) and
+    ``unverified`` are reported, never treated as a pass, and never sent
+    to the agent: it cannot fix the environment.
     """
-    root = Path(artifact_dir)
+    from rote.compiler import sandbox
+
+    root = Path(artifact_dir).resolve()
     tests_dir = root / "tests"
     if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
         return None
@@ -148,22 +160,60 @@ def run_generated_tests(artifact_dir: Path | str) -> GeneratedTests | None:
             status="unavailable",
             summary=f"pytest is not installed for {sys.executable}; generated tests not run",
         )
+    box: sandbox.Sandbox | None = None
+    if not trust_skill:
+        box, why = sandbox.detect()
+        if box is None:
+            return GeneratedTests(
+                status="unverified",
+                summary=(
+                    f"generated tests NOT run: no OS sandbox ({why}). Review them, then "
+                    f"pass --trust-skill to run them without one"
+                ),
+            )
     try:
-        with tempfile.TemporaryDirectory(prefix="rote-test-home-") as home:
+        with tempfile.TemporaryDirectory(prefix="rote-test-") as scratch_str:
+            scratch = Path(scratch_str).resolve()
+            home = scratch / "home"
+            home.mkdir()
+            # pytest walks up from the tests looking for a config file and
+            # conftest.py files. Above the work dir is the user's project (or
+            # their home), which is none of the tests' business and which the
+            # sandbox denies reading. Pin the config, rootdir and conftest
+            # boundary to what rote controls.
+            ini = scratch / "pytest.ini"
+            ini.write_text("[pytest]\n", encoding="utf-8")
+            pytest_args = [
+                "-m",
+                "pytest",
+                "tests",
+                "-c",
+                str(ini),
+                "--rootdir",
+                str(root),
+                "--confcutdir",
+                str(root),
+                "-q",
+                "--no-header",
+                "-p",
+                "no:cacheprovider",
+                "--tb=short",
+            ]
+            env = generated_test_env(root, home)
+            if box is None:
+                argv = [sys.executable, *pytest_args]
+            else:
+                # -S: no site processing, so no .pth file (which can point
+                # anywhere and run code) is read. The site-packages dirs that
+                # hold pytest are passed explicitly instead.
+                env["PYTHONPATH"] = os.pathsep.join([str(root), *sandbox.import_path()])
+                argv, env = sandbox.wrap(
+                    box, [sys.executable, "-S", *pytest_args], root, scratch, env
+                )
             proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "pytest",
-                    "tests",
-                    "-q",
-                    "--no-header",
-                    "-p",
-                    "no:cacheprovider",
-                    "--tb=short",
-                ],
+                argv,
                 cwd=root,
-                env=generated_test_env(root, Path(home)),
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=GENERATED_TESTS_TIMEOUT_SECONDS,
@@ -342,6 +392,7 @@ def verify_deliverable(
     base_dir: Path | str | None = None,
     run_tests: bool = True,
     skill_dir: Path | str | None = None,
+    trust_skill: bool = False,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -357,7 +408,7 @@ def verify_deliverable(
     contains (see :mod:`rote.compiler.provenance`).
     """
     try:
-        return _verify_or_raise(artifact_dir, base_dir, run_tests, skill_dir)
+        return _verify_or_raise(artifact_dir, base_dir, run_tests, skill_dir, trust_skill)
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
         # DriverError is caught, and before the work dir leaves its temp
@@ -382,10 +433,13 @@ def _verify_or_raise(
     base_dir: Path | str | None,
     run_tests: bool,
     skill_dir: Path | str | None,
+    trust_skill: bool,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
-        return _verify(Path(artifact_dir), run_tests=run_tests, skill_dir=skill)
+        return _verify(
+            Path(artifact_dir), run_tests=run_tests, skill_dir=skill, trust_skill=trust_skill
+        )
     import shutil
     import tempfile
 
@@ -401,10 +455,12 @@ def _verify_or_raise(
         produced = Path(artifact_dir) / "pipeline.yaml"
         if produced.is_file():
             shutil.copy2(produced, overlay / "pipeline.yaml")
-        return _verify(overlay, run_tests=run_tests, skill_dir=skill)
+        return _verify(overlay, run_tests=run_tests, skill_dir=skill, trust_skill=trust_skill)
 
 
-def _verify(root: Path, *, run_tests: bool, skill_dir: Path | None) -> Verification:
+def _verify(
+    root: Path, *, run_tests: bool, skill_dir: Path | None, trust_skill: bool
+) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
     except Exception as e:  # noqa: BLE001 (any load failure is the agent's to fix)
@@ -415,7 +471,7 @@ def _verify(root: Path, *, run_tests: bool, skill_dir: Path | None) -> Verificat
         + _deliverable_findings(pipeline, root, implementations)
         + provenance_findings(pipeline, root, skill_dir)
     )
-    tests = run_generated_tests(root) if run_tests else None
+    tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
     return Verification(
         pipeline=pipeline,
         findings=findings,
