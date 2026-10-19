@@ -32,6 +32,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
@@ -653,25 +654,48 @@ def measured_pipeline_cost_usd(
     unpriced: set[str] = set()
     per_run: list[float] = []
     for run in runs:
-        total = 0.0
-        for row in run.judge_usage:
-            model = str(row.get("model", ""))
-            rates = catalog.rates_for(model)
-            if rates is None:
-                unpriced.add(model)
-                continue
-            in_rate, out_rate, read_rate, write_rate = rates
-            cache_write = row.get("cache_write_tokens") or 0
-            cache_read = row.get("cache_read_tokens") or 0
-            if (cache_write and write_rate is None) or (cache_read and read_rate is None):
-                unpriced.add(model)
-                continue
-            total += (row.get("input_tokens") or 0) * in_rate / 1_000_000
-            total += (row.get("output_tokens") or 0) * out_rate / 1_000_000
-            total += cache_write * (write_rate or 0.0) / 1_000_000
-            total += cache_read * (read_rate or 0.0) / 1_000_000
+        total, missing = judge_usage_cost_usd(run.judge_usage, catalog)
+        unpriced |= missing
         per_run.append(total)
     return (mean(per_run) if per_run else 0.0, sorted(unpriced))
+
+
+def judge_usage_cost_usd(
+    rows: Iterable[Mapping[str, Any]], catalog: PricingCatalog | None
+) -> tuple[float, set[str]]:
+    """Dollars for one run's judge usage rows, plus the models left unpriced.
+
+    A row carrying ``cost_usd`` (the ``claude -p`` lane logs the CLI's own
+    estimate per concrete model) is taken as is: the CLI knows what the
+    catalog cannot, such as a 1h cache write billing at twice the 5m rate.
+    Every other row is priced from ``catalog``. A model the catalog does
+    not list (an alias like ``sonnet``), or a cache bucket with no
+    published rate, leaves the row unpriced rather than guessed, and so
+    does a missing catalog.
+    """
+    total = 0.0
+    unpriced: set[str] = set()
+    for row in rows:
+        model = str(row.get("model", ""))
+        reported = row.get("cost_usd")
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            total += float(reported)
+            continue
+        rates = catalog.rates_for(model) if catalog is not None else None
+        if rates is None:
+            unpriced.add(model)
+            continue
+        in_rate, out_rate, read_rate, write_rate = rates
+        cache_write = row.get("cache_write_tokens") or 0
+        cache_read = row.get("cache_read_tokens") or 0
+        if (cache_write and write_rate is None) or (cache_read and read_rate is None):
+            unpriced.add(model)
+            continue
+        total += (row.get("input_tokens") or 0) * in_rate / 1_000_000
+        total += (row.get("output_tokens") or 0) * out_rate / 1_000_000
+        total += cache_write * (write_rate or 0.0) / 1_000_000
+        total += cache_read * (read_rate or 0.0) / 1_000_000
+    return total, unpriced
 
 
 def suggested_priors(

@@ -251,3 +251,51 @@ def test_run_help_mentions_both_sides(capsys: pytest.CaptureFixture[str]) -> Non
     assert "claude -p" in out
     assert "--signal" in out
     assert "--allow-writes" in out
+
+
+def test_run_prints_the_cli_lane_judge_cost_without_a_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The claude-cli lane logs its own cost, so the dollar figure needs no
+    price fetch (the conftest seam raises if one is attempted)."""
+    app = _emitted_dbos_dir(tmp_path)
+    row = {
+        "model": "claude-sonnet-5-5",
+        "input_tokens": 2,
+        "output_tokens": 53,
+        "cache_write_tokens": 1375,
+        "cache_read_tokens": 0,
+        "cost_usd": 0.006034,
+    }
+    monkeypatch.setattr(
+        "rote.runners.run_pipeline_trial",
+        lambda *a, **k: MeasuredRun(wall_seconds=0.4, output={"answer": 1}, judge_usage=(row,)),
+    )
+    assert cli_main(["run", str(app), "--input", "{}"]) == 0
+    assert "judge usage: 1 call(s), 1377 in / 53 out tokens, $0.0060" in capsys.readouterr().err
+
+
+def test_run_refuses_a_dollar_figure_for_an_unlisted_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One unpriceable row means no figure at all: a partial sum reads as
+    the whole cost."""
+    from rote.eval.pricing import PricingCatalog
+
+    app = _emitted_dbos_dir(tmp_path)
+    catalog = PricingCatalog(
+        prices=(), reference_prices={"claude-mid-9": (2.0, 10.0)}, reference_cache_rates={}
+    )
+    monkeypatch.setattr("rote.cli._judge_price_catalog", lambda: catalog)
+    rows = (
+        {"model": "claude-mid-9", "input_tokens": 1_000_000, "output_tokens": 0},
+        {"model": "sonnet", "input_tokens": 3, "output_tokens": 5},
+    )
+    monkeypatch.setattr(
+        "rote.runners.run_pipeline_trial",
+        lambda *a, **k: MeasuredRun(wall_seconds=0.4, output={"answer": 1}, judge_usage=rows),
+    )
+    assert cli_main(["run", str(app), "--input", "{}"]) == 0
+    err = capsys.readouterr().err
+    assert "cost unknown (no published price for sonnet)" in err
+    assert "$" not in err

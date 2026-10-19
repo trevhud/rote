@@ -122,8 +122,12 @@ Two rules that are easy to get wrong:
   value into dead config, so editing it changes nothing. A Python
   function several nodes share receives the calling node's values, so
   take each constant as a keyword parameter. Every calling node is
-  listed in the stub's docstring with its constants, and a constant
-  that only some callers send needs a default. Each TS stub serves one
+  listed in the stub's docstring with its constants. A constant every
+  caller sends is a required parameter with **no default**: writing
+  `channel_id: str = "C0EXAMPLE000"` or `fixed_queries or []` repeats
+  the IR value, so if the constant ever stops arriving the function
+  silently falls back instead of raising. Only a constant that some
+  callers omit gets a default. Each TS stub serves one
   node, and its doc comment lists that node's constant keys. Declare
   them in the input type, or `tsc` rejects the call. Confirm against the
   generated call site.

@@ -767,6 +767,13 @@ the code (`tests/test_claude_driver.py`, `tests/test_cli.py`,
   touched the cache and the rates are genuinely unknown, `_cost_usd`
   returns `None`. Billing cache reads at the plain input rate would
   overstate them roughly tenfold.
+- **A judge's usage row names the model the CLI ran, not the alias.**
+  `claude -p --model sonnet` runs `claude-sonnet-5-5`, and only the
+  envelope's `modelUsage` says so. The emitted helper logs one row per
+  `modelUsage` entry with the CLI's `costUSD` as `cost_usd`, which
+  pricing takes as is: the CLI bills a 1h cache write at twice the 5m
+  rate a catalog publishes. A row logged under `sonnet` matched no
+  catalog entry, so the whole subscription lane went unpriced.
 
 The general lesson, and it generalizes past this file: a usage number is
 only as complete as the fields you chose to read, and a field you never

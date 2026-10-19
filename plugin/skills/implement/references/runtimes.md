@@ -20,9 +20,13 @@ drift from it.
   in `main.py` (dbos, python) or `activities.py` (temporal) for the exact
   keys per node. Give the function explicit keyword parameters rather
   than `**payload`, so a contract change fails loudly, and let the
-  constants it receives drive the logic. When nodes sharing a function
-  send different constant sets (one sends `tab_name`, the others do
-  not), the extra parameter needs a default.
+  constants it receives drive the logic. A constant every caller sends
+  is a required parameter with no default (`*, channel_id: str`, never
+  `channel_id: str = "C0..."` or `fixed_queries or []`), so a missing
+  constant raises instead of silently falling back to a copied value.
+  Only when nodes sharing a function send different constant sets (one
+  sends `tab_name`, the others do not) does the extra parameter get a
+  default.
 - **Sync or async:** either works on all three. `_call_impl` awaits an
   `async def` function (or a plain one that returns a coroutine) on dbos
   and python, and on temporal it runs a plain function in a worker
@@ -66,8 +70,9 @@ drift from it.
 - **Constants are passed; read them from the input.** The stub's doc
   comment lists the node's constants under "Constants from the source
   skill". Use `input.<key>`, not a hard-coded copy: a copy makes the
-  pipeline.yaml value dead config, so editing it changes nothing. An
-  MCP-bound node is the exception. Its tool gets a constant only when
+  pipeline.yaml value dead config, so editing it changes nothing. Do
+  not fall back either (`input.channel_id ?? "C0..."`): declare the key
+  required in the input type. An MCP-bound node is the exception. Its tool gets a constant only when
   `mcp.args` names it.
 - **Type-check after implementing.** wrangler, esbuild and tsx bundle
   without type-checking, and `rote run` won't show it either, so run
