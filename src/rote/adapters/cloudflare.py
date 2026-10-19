@@ -42,6 +42,7 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
+    escape_invisible,
     fan_out_nodes,
     override_env_vars,
     pipeline_identity,
@@ -1072,7 +1073,7 @@ def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     deploy_url = f"{_DEPLOY_BUTTON_BASE}{_REPO_URL_PLACEHOLDER}"
     button = f"[![Deploy to Cloudflare]({_DEPLOY_BUTTON_IMAGE})]({deploy_url})"
 
-    description = pipeline.description.strip()
+    description = escape_invisible(pipeline.description.strip())
     description_block = f"\n{description}\n" if description else ""
 
     secrets = _secret_names(pipeline)

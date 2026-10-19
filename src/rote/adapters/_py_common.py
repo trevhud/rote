@@ -34,6 +34,7 @@ from rote.adapters._common import (
     _to_pascal_case,
     agent_loop_output,
     mcp_tool_arguments,
+    py_str_literal,
     safe_docstring_line,
 )
 from rote.ir import (
@@ -493,16 +494,7 @@ def _py_literal(value: Any) -> str:
     containers recurse so nested strings get the same treatment.
     """
     if isinstance(value, str):
-        # Raw non-ASCII, not \u escapes: JSON spells a character outside
-        # the BMP as a surrogate pair, which Python reads as two lone
-        # surrogates instead of the character. What remains escaped (quote,
-        # backslash, control characters) is valid in a Python string too.
-        # The three line breaks JSON leaves raw are escaped as well: Python
-        # does not end a line on them, but str.splitlines and editors do.
-        literal = json.dumps(value, ensure_ascii=False)
-        for raw, escaped in (("\x85", "\\x85"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
-            literal = literal.replace(raw, escaped)
-        return literal
+        return py_str_literal(value)
     if isinstance(value, bool) or value is None:
         return repr(value)
     if isinstance(value, list):
@@ -782,7 +774,7 @@ def _str_chunks(text: str, indent: str) -> list[str]:
     current = ""
     for ch in text:
         current += ch
-        if len(json.dumps(current)) >= width:
+        if len(py_str_literal(current)) >= width:
             chunks.append(current)
             current = ""
     if current or not chunks:
@@ -794,8 +786,8 @@ def _chunked_str_literal(text: str, indent: str = "    ") -> str:
     """Render a long string as a parenthesized adjacent-literal expression."""
     chunks = _str_chunks(text, indent)
     if len(chunks) == 1:
-        return json.dumps(chunks[0])
-    body = "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+        return py_str_literal(chunks[0])
+    body = "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
     outer = indent[:-4] if len(indent) >= 4 else ""
     return f"(\n{body}\n{outer})"
 
@@ -808,7 +800,7 @@ def _chunked_call_arg(text: str, indent: str) -> str:
     UP034 (extraneous parentheses) quiet.
     """
     chunks = _str_chunks(text, indent)
-    return "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+    return "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
 
 
 # ───────── signatures/<id>.py emission ─────────

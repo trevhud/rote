@@ -247,6 +247,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   intact. `json.dumps` spelled one as a surrogate pair, which Python reads
   as two lone surrogates, so a constant like an emoji reached its impl or
   tool changed.
+- Untrusted IR text never lands invisible in emitted source. A bidi
+  override, zero-width space, BOM or other control or format character
+  from a pipeline.yaml is written as an escape in Python literals,
+  docstrings, TS comments and the Cloudflare README (the Trojan Source
+  shape, CVE-2021-42574). A lone surrogate, which used to crash emit with
+  UnicodeEncodeError partway through writing files, now emits code that
+  round-trips it.
 - **A failed `claude -p` compile reports what it cost, and the output cap
   no longer ends it.** A real invoice-push compile died after 28 minutes
   on "Claude's response exceeded the 32000 output token maximum" and

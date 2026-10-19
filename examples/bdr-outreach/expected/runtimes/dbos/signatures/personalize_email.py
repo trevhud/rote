@@ -94,10 +94,10 @@ class PersonalizeEmailOutput(BaseModel):
 
 PROMPT = (
     "Generate a personalized opening line and TA-relevant callout for an outreach email.\n"
-    "\nLead with a specific observation about this contact's work \u2014 never generic. G"
-    "round the TA callout in our validated experience in the indication.\n\nContact: {{ c"
-    "ontact }}\nIntel: {{ intel }}\nCampaign type: {{ campaign_type }}\n\nReturn both fie"
-    "lds via the structured output tool."
+    "\nLead with a specific observation about this contact's work — never generic. Ground"
+    " the TA callout in our validated experience in the indication.\n\nContact: {{ contac"
+    "t }}\nIntel: {{ intel }}\nCampaign type: {{ campaign_type }}\n\nReturn both fields v"
+    "ia the structured output tool."
 )
 
 TOOL_DESCRIPTION = "Generate personalized opening line and TA-relevant callout per"

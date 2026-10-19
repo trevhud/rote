@@ -457,8 +457,17 @@ runtimes) found:
 
 - `json.dumps` escapes a character outside the BMP as a surrogate pair,
   which JS reads correctly and Python reads as two lone surrogates. Python
-  literals now use `ensure_ascii=False`, with U+0085, U+2028 and U+2029
-  re-escaped because `str.splitlines` and editors break lines on them.
+  string literals go through `py_str_literal`: raw non-ASCII, but every
+  character in Unicode category Cc, Cf, Zl, Zp or Cs escaped
+  (`escape_invisible`). Raw, a bidi override, zero-width space or BOM is
+  the Trojan Source shape (CVE-2021-42574), and a lone surrogate (PyYAML
+  makes one from `"\ud800"`) cannot be written as UTF-8 at all. The same
+  rule covers docstrings (`safe_docstring_line`), TS comments
+  (`safe_block_comment_line`) and the Cloudflare README; TS literals are
+  ASCII `json.dumps`, already safe. `_pipeline_hash` falls back to an
+  escaped encoding only when the JSON encoder refuses a lone surrogate, so
+  no existing workflow hash changes. Regression:
+  `tests/test_emitted_source_is_visible.py`.
 - `JSON.stringify` leaves those three raw, so the DBOS-TS runner's
   trailing-JSON parser splits on `\n` only, or a valid result is cut
   apart.
