@@ -1260,11 +1260,17 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   stop nothing: `pwd.getpwuid` names the real home, the network is open,
   and the ssh-agent socket and Keychain CLI are reachable. So:
   - macOS: `sandbox-exec` with a generated deny-by-default profile.
-    Reads: the work dir, the interpreter install and the site-packages
-    holding pytest, `/` itself, `/System`, `/usr/lib`, `/usr/share`, dyld,
-    a few devices. Writes: the work dir and a private scratch dir. Exec:
-    the interpreter and binaries of its own install (a framework build's
-    `bin/python3.x` spawns `Python.app`). No network. `file-read-metadata` is allowed
+    Reads: the work dir; the interpreter's stdlib, its site-packages
+    dirs, and as single files the binary, libpython and `pyvenv.cfg`
+    (`sandbox.current_layout`, derived from `sysconfig`, never "the dir
+    above the binary", which for `~/bin/python` is the home and for
+    `/usr/bin/python3` all of `/usr`); `/` as a literal; `/System`,
+    `/usr/lib`, `/usr/share`, dyld; a few devices. Writes: the work dir and
+    a private scratch dir. Exec: literals only, the binary and a framework
+    build's `Python.app` launcher. No network. A layout whose roots
+    include `/`, a home, an ancestor of one, or anything holding
+    `~/.ssh`, `~/.config/rote` or `~/.local/share/rote` is refused
+    (`sandbox.refusal`), which means no sandbox, so unverified. `file-read-metadata` is allowed
     everywhere because path resolution needs it, so a test can learn that
     a path exists, not what it holds.
   - Linux: `bwrap --unshare-all` (network included), read-only binds of
@@ -1305,7 +1311,12 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   marker on its statement or in the comment directly above it or above
   the `if` that decides it (an early-return `if` ladder counts as one;
   independent checks do not, because proximity let a real compile's
-  cap severity pass under an unrelated citation), and Open questions must have one entry per assumption.
+  cap severity pass under an unrelated citation), labels reached by
+  reference (module constants, policy tables, Enum members) are checked at
+  their definition, and Open questions must have one entry per distinct
+  assumption. Presence guards against an accidental unmarked label, not a
+  deliberate evasion: a slot whose name is not in `OUTCOME_WORDS`, or a
+  label built at run time, is not seen.
   `tests/test_provenance.py` holds the gaming cases, each verified by a
   mutation.
 

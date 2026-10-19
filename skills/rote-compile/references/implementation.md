@@ -93,9 +93,13 @@ How a citation is written, and what rote accepts:
   that order within one paragraph of the skill.
 
 Every outcome literal the code writes needs a marker: a label it
-returns, or a string it puts under a key, keyword, or variable whose
-name says outcome (`severity`, `status`, `category`, `level`,
-`alert`, `route`, `tier`, `decision`, `flag`, `label`, `priority`...).
+returns (alone or in a tuple), or a string it puts under a key, keyword,
+or variable whose name says outcome (`severity`, `status`, `category`,
+`level`, `alert`, `route`, `tier`, `decision`, `flag`, `label`,
+`priority`...). A label reached by reference needs its marker where it is
+defined: a module constant (`BLOCK = "block"`), a policy table
+(`SEVERITY_BY_RULE = {...}`, marked on the entry or above the table), or
+an Enum member.
 A marker covers the statement it is on, or sits in the comment block
 directly above that statement, or directly above the `if` that decides
 it. One comment above an `if`/`elif` chain, or above a ladder of `if`s

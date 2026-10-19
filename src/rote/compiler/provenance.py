@@ -42,7 +42,9 @@ MIN_FRAGMENT_WORDS = 4
 #: a pure_function writes a decided label into.
 OUTCOME_WORDS = frozenset(
     {
+        "action",
         "alert",
+        "bucket",
         "category",
         "classification",
         "color",
@@ -50,11 +52,14 @@ OUTCOME_WORDS = frozenset(
         "decision",
         "disposition",
         "flag",
+        "grade",
         "label",
         "level",
         "outcome",
         "priority",
+        "rating",
         "result",
+        "risk",
         "route",
         "routing",
         "severity",
@@ -185,10 +190,7 @@ def _is_outcome_name(name: str | None) -> bool:
     return any(t in OUTCOME_WORDS for t in tokens)
 
 
-def _labels(value: ast.expr | None) -> list[ast.Constant]:
-    """String constants a value can evaluate to (through ``a if c else b``)."""
-    if isinstance(value, ast.IfExp):
-        return _labels(value.body) + _labels(value.orelse)
+def _label(value: ast.expr) -> ast.Constant | None:
     if (
         isinstance(value, ast.Constant)
         and isinstance(value.value, str)
@@ -198,8 +200,76 @@ def _labels(value: ast.expr | None) -> list[ast.Constant]:
         and "\n" not in value.value
         and len(value.value) <= 80
     ):
-        return [value]
-    return []
+        return value
+    return None
+
+
+#: Module-level names whose string values are labels a slot can receive by
+#: reference: ``BLOCK = "block"`` (``"BLOCK"``), a table
+#: ``SEVERITY_BY_RULE = {"over_cap": "block"}`` (its values), and Enum
+#: members (``"Severity.BLOCK"``).
+Named = dict[str, list[ast.Constant]]
+
+
+def _labels(value: ast.expr | None, named: Named | None = None) -> list[ast.Constant]:
+    """The string labels a value can evaluate to.
+
+    Through ``a if c else b``, inside a returned or assigned tuple, list,
+    set or dict (its values), and by reference: a module constant, a
+    lookup in a module-level table (``TABLE[k]``, ``TABLE.get(k, d)``),
+    or an Enum member. A label reached by reference is reported at its
+    definition, which is where its marker belongs.
+    """
+    named = named or {}
+    if value is None:
+        return []
+    if isinstance(value, ast.IfExp):
+        return _labels(value.body, named) + _labels(value.orelse, named)
+    if isinstance(value, ast.Tuple | ast.List | ast.Set):
+        return [lit for elt in value.elts for lit in _labels(elt, named)]
+    if isinstance(value, ast.Dict):
+        return [lit for v in value.values for lit in _labels(v, named)]
+    if isinstance(value, ast.Name):
+        return list(named.get(value.id, []))
+    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+        return list(named.get(f"{value.value.id}.{value.attr}", []))
+    if isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name):
+        return list(named.get(value.value.id, []))
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Attribute)
+        and value.func.attr == "get"
+        and isinstance(value.func.value, ast.Name)
+    ):
+        defaults = [lit for arg in value.args[1:] for lit in _labels(arg, named)]
+        return list(named.get(value.func.value.id, [])) + defaults
+    label = _label(value)
+    return [label] if label is not None else []
+
+
+def _is_enum_class(node: ast.ClassDef) -> bool:
+    names = {b.id if isinstance(b, ast.Name) else getattr(b, "attr", "") for b in node.bases}
+    return any(n.endswith("Enum") for n in names)
+
+
+def _named_labels(tree: ast.Module) -> Named:
+    """Module constants, tables, and Enum members holding string labels."""
+    named: Named = {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign | ast.AnnAssign):
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            labels = _labels(stmt.value)
+            for target in targets:
+                if isinstance(target, ast.Name) and labels:
+                    named[target.id] = labels
+        elif isinstance(stmt, ast.ClassDef) and _is_enum_class(stmt):
+            for member in stmt.body:
+                if isinstance(member, ast.Assign):
+                    labels = _labels(member.value)
+                    for target in member.targets:
+                        if isinstance(target, ast.Name) and labels:
+                            named[f"{stmt.name}.{target.id}"] = labels
+    return named
 
 
 def _target_name(target: ast.expr) -> str | None:
@@ -217,16 +287,31 @@ def _target_name(target: ast.expr) -> str | None:
 def outcome_literals(tree: ast.Module) -> list[ast.Constant]:
     """The labels the code decides: returned, or written into an outcome slot.
 
-    * ``return "block"`` (a function that returns a label is a classifier);
+    * ``return "block"`` or ``return ("block", reason)`` (a function that
+      returns a label is a classifier);
     * a dict value under an outcome key (``{"severity": "block"}``);
     * a keyword argument with an outcome name (``Finding(severity="block")``);
     * an assignment to an outcome name (``status = "flagged"``,
-      ``row["alert_level"] = "missort_alert"``).
+      ``row["alert_level"] = "missort_alert"``), including a whole table
+      (``SEVERITY_BY_RULE = {"over_cap": "block"}``: every value);
+    * any of those reached by reference: ``{"severity": BLOCK}``,
+      ``SEVERITY_BY_RULE[rule]``, ``Severity.BLOCK``, reported where the
+      constant or member is defined.
+
+    A slot is recognized by its name (:data:`OUTCOME_WORDS`). This catches
+    the accidental unmarked label, not a deliberate evasion: a label stored
+    under an unrecognized name, or built at run time, is not seen.
     """
-    found: list[ast.Constant] = []
+    named = _named_labels(tree)
+    found: dict[int, ast.Constant] = {}
+
+    def add(labels: list[ast.Constant]) -> None:
+        for label in labels:
+            found.setdefault(id(label), label)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Return):
-            found += _labels(node.value)
+            add(_labels(node.value, named))
         elif isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values, strict=True):
                 if (
@@ -234,7 +319,7 @@ def outcome_literals(tree: ast.Module) -> list[ast.Constant]:
                     and isinstance(key.value, str)
                     and _is_outcome_name(key.value)
                 ):
-                    found += _labels(value)
+                    add(_labels(value, named))
         elif (
             (isinstance(node, ast.keyword) and _is_outcome_name(node.arg))
             or (
@@ -243,8 +328,8 @@ def outcome_literals(tree: ast.Module) -> list[ast.Constant]:
             )
             or (isinstance(node, ast.AnnAssign) and _is_outcome_name(_target_name(node.target)))
         ):
-            found += _labels(node.value)
-    return found
+            add(_labels(node.value, named))
+    return sorted(found.values(), key=lambda c: (c.lineno, c.col_offset))
 
 
 def _parents(tree: ast.Module) -> dict[ast.AST, ast.AST]:

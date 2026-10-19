@@ -120,16 +120,80 @@ def test_no_sandbox_means_not_run_and_unverified(
 
 
 def test_the_macos_profile_denies_by_default_and_allows_no_network(tmp_path: Path) -> None:
-    profile = sandbox.macos_profile(tmp_path / "w", tmp_path / "t", [tmp_path / "py"])
+    layout = sandbox.current_layout()
+    profile = sandbox.macos_profile(tmp_path / "w", tmp_path / "t", layout)
     assert "(deny default)" in profile
     assert "network" not in profile
-    assert profile.count("(allow process-exec") == 1
-    assert str(Path(os.path.realpath(sys.executable))) in profile
+    [exec_rule] = [ln for ln in profile.splitlines() if ln.startswith("(allow process-exec")]
+    # Literals only: no directory of binaries is executable.
+    assert "subpath" not in exec_rule
+    assert str(Path(os.path.realpath(sys.executable))) in exec_rule
 
 
 def test_the_bwrap_namespace_has_no_network_and_no_home(tmp_path: Path) -> None:
-    argv = sandbox.bwrap_argv(tmp_path / "w", tmp_path / "t", [tmp_path / "py"])
+    argv = sandbox.bwrap_argv(tmp_path / "w", tmp_path / "t", sandbox.current_layout())
     assert "--unshare-all" in argv
     bound = {argv[i + 2] for i, a in enumerate(argv) if a in ("--bind", "--ro-bind")}
     assert REAL_HOME not in bound
     assert not any(b.startswith("/home") or b == "/root" for b in bound)
+
+
+# ───────── An install that cannot be confined is refused, not loosened ─────────
+
+HOME = Path("/Users/alice")
+
+
+def _layout(executable: str, *dirs: str) -> sandbox.Layout:
+    return sandbox.Layout(
+        executable=Path(executable),
+        read_dirs=tuple(Path(d) for d in dirs),
+        read_files=(Path(executable),),
+    )
+
+
+#: The shapes the review found: a Python under the home, and a system
+#: Python whose install root is /usr. Each derived root is checked.
+UNSAFE = {
+    "home itself readable": _layout("/Users/alice/bin/python", "/Users/alice"),
+    "an ancestor of home": _layout("/Users/python", "/Users"),
+    "rote's data dir under a root": _layout(
+        "/Users/alice/.local/bin/python", "/Users/alice/.local"
+    ),
+    "rote's config dir under a root": _layout("/Users/alice/py/python", "/Users/alice/.config"),
+    "~/.ssh under a root": _layout("/Users/alice/py/python", "/Users/alice/.ssh/.."),
+    "filesystem root": _layout("/python", "/"),
+    "exec from the home dir": _layout("/Users/alice/python", "/opt/py/lib/python3.12"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNSAFE))
+def test_an_unconfinable_layout_is_refused(name: str) -> None:
+    layout = UNSAFE[name]
+    assert sandbox.refusal(layout, {HOME}) is not None, name
+
+
+def test_a_usr_python_is_confined_to_its_own_dirs_not_usr() -> None:
+    """/usr/bin/python3 used to make all of /usr readable and executable."""
+    layout = _layout("/usr/bin/python3.12", "/usr/lib/python3.12", "/usr/lib/python3/dist-packages")
+    assert sandbox.refusal(layout, {Path("/home/alice")}) is None
+    argv = sandbox.bwrap_argv(Path("/w"), Path("/t"), layout)
+    bound = {argv[i + 1] for i, a in enumerate(argv) if a in ("--bind", "--ro-bind")}
+    assert "/usr" not in bound and "/usr/bin" not in bound
+    assert "/usr/bin/python3.12" in bound  # the one binary, as a file
+    profile = sandbox.macos_profile(Path("/w"), Path("/t"), layout)
+    assert '(subpath "/usr")' not in profile and '(subpath "/usr/bin")' not in profile
+
+
+def test_a_home_rooted_python_falls_back_to_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home_python = _layout(REAL_HOME + "/bin/python", REAL_HOME)
+    monkeypatch.setattr(sandbox, "current_layout", lambda: home_python)
+    sandbox.detect.cache_clear()
+    try:
+        box, why = sandbox.detect()
+        assert box is None and "cannot be confined" in why
+        result = run_generated_tests(_deliverable(tmp_path / "work"))
+        assert result is not None and result.status == "unverified"
+    finally:
+        sandbox.detect.cache_clear()

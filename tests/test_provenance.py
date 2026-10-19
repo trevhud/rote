@@ -145,6 +145,59 @@ def test_a_marked_outcome_or_a_non_outcome_passes(source: str) -> None:
     assert unmarked_outcomes(source) == []
 
 
+@pytest.mark.parametrize(
+    ("source", "unmarked"),
+    [
+        # A policy table, then a lookup: the natural expense-audit style.
+        (
+            'RULES = {"over_cap": "block", "late": "review"}\n\n\n'
+            "def audit(rule):\n"
+            '    return {"severity": RULES[rule]}\n',
+            ["block", "review"],
+        ),
+        (
+            'RULES = {"over_cap": "block"}\n\n\n'
+            "def audit(rule):\n"
+            '    return {"severity": RULES.get(rule, "review")}\n',
+            ["block", "review"],
+        ),
+        # A table assigned to an outcome-named variable is itself outcomes.
+        ('severity_by_rule = {"over_cap": "block"}\n', ["block"]),
+        # A module constant used by name.
+        ('BLOCK = "block"\n\n\ndef audit(r):\n    return {"severity": BLOCK}\n', ["block"]),
+        # An Enum member.
+        (
+            "from enum import StrEnum\n\n\n"
+            "class Severity(StrEnum):\n"
+            '    BLOCK = "block"\n'
+            '    REVIEW = "review"\n\n\n'
+            "def audit(r):\n"
+            "    return Finding(severity=Severity.BLOCK)\n",
+            ["block"],
+        ),
+        # A tuple return.
+        (
+            'def route(r):\n    return ("manual_review", "no receipt")\n',
+            ["manual_review", "no receipt"],
+        ),
+    ],
+)
+def test_labels_reached_by_reference_or_container_need_markers(
+    source: str, unmarked: list[str]
+) -> None:
+    assert sorted(lit.value for lit in unmarked_outcomes(source)) == sorted(unmarked)
+
+
+def test_a_marker_at_the_definition_covers_a_referenced_label() -> None:
+    source = (
+        "# rote: assumption: an over-cap line is a block; the skill names the rule only\n"
+        'SEVERITY_BY_RULE = {"over_cap": "block"}\n\n\n'
+        "def audit(rule):\n"
+        '    return {"severity": SEVERITY_BY_RULE[rule]}\n'
+    )
+    assert unmarked_outcomes(source) == []
+
+
 def test_a_citation_for_one_check_does_not_cover_the_next() -> None:
     """The real case: an expense-audit compile's over-cap severity sat in a
     second, independent `if`, with an unrelated lodging-nights citation a
