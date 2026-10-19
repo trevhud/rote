@@ -1263,7 +1263,8 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
     Reads: the work dir, the interpreter install and the site-packages
     holding pytest, `/` itself, `/System`, `/usr/lib`, `/usr/share`, dyld,
     a few devices. Writes: the work dir and a private scratch dir. Exec:
-    the interpreter only. No network. `file-read-metadata` is allowed
+    the interpreter and binaries of its own install (a framework build's
+    `bin/python3.x` spawns `Python.app`). No network. `file-read-metadata` is allowed
     everywhere because path resolution needs it, so a test can learn that
     a path exists, not what it holds.
   - Linux: `bwrap --unshare-all` (network included), read-only binds of

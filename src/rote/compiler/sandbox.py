@@ -67,6 +67,11 @@ class Sandbox:
     executable: str
 
 
+def _install_root() -> Path:
+    """The directory the running interpreter binary was installed under."""
+    return Path(os.path.realpath(sys.executable)).parent.parent
+
+
 def interpreter_paths() -> list[Path]:
     """What a sandboxed ``python -m pytest`` must be able to read.
 
@@ -75,7 +80,7 @@ def interpreter_paths() -> list[Path]:
     this process rather than guessed.
     """
     paths = {
-        Path(os.path.realpath(sys.executable)).parent.parent,
+        _install_root(),
         Path(sys.base_prefix).resolve(),
         Path(sys.prefix).resolve(),
         Path(sysconfig.get_paths()["stdlib"]).resolve(),
@@ -117,7 +122,10 @@ def macos_profile(work_dir: Path, tmp_dir: Path, readable: list[Path]) -> str:
         "(version 1)",
         "(deny default)",
         "(allow process-fork)",
-        f"(allow process-exec (literal {_sbpl(python)}))",
+        # The interpreter, and the binaries of its own install: a macOS
+        # framework build's bin/python3.x is a stub that posix_spawns
+        # Resources/Python.app/Contents/MacOS/Python (Homebrew, python.org).
+        f"(allow process-exec (literal {_sbpl(python)}) (subpath {_sbpl(str(_install_root()))}))",
         # Path resolution stats every parent directory. Metadata only:
         # contents and listings of anything not allowed below stay denied.
         "(allow file-read-metadata)",
