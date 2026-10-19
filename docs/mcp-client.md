@@ -158,6 +158,10 @@ unit test pins the document to that constant). This works without the
 server being lenient. `--callback-port` with any other port skips CIMD
 for that login, since it would be rejected by exactly the servers that
 support it. If all four ports are busy the login fails and says so.
+Selecting a port binds it: the login holds the listening sockets from
+selection until the callback server runs on them, so nothing can take
+the port after the redirect URI names it, and every path (success,
+failure, a still-valid token that needs no callback) releases them.
 
 ### `iss` and issuer binding
 

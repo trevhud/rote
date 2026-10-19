@@ -80,6 +80,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   list.
 
 ### Fixed
+- **`rote mcp login` holds its callback port from selection to callback.**
+  The port was checked for being free, then bound later by fastmcp's
+  callback server, after the browser had already been sent to it. Anything
+  that took the port in between (seen in CI: a concurrent login) killed
+  the login with EADDRINUSE instead of it using the next published port.
+  The login now binds the port while selecting it (33418 to 33421, both
+  IPv4 and IPv6 localhost), runs the callback server on those sockets, and
+  releases them on every path, so sequential logins never leak a port.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few
