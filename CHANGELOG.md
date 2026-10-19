@@ -428,6 +428,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   consumes its payload while nothing is retrying.
 
 ### Changed
+- **Breaking (TS): the TS runtimes pass each node's constants to its
+  impl, as the Python runtimes do.** Cloudflare, Inngest and DBOS-TS add
+  a `pure_function` / `external_call` node's IR constants to the impl's
+  input after its inputs, on DAG calls, on each fan_out element and on an
+  agent loop's loop_body tool calls (the model's tool schema never shows
+  them). Before, they only appeared in the stub's doc comment, so a TS
+  impl had to hard-code them and an edit in pipeline.yaml did nothing. An
+  MCP-backed step still sends a tool a constant only when `mcp.args`
+  names it. A typed TS impl whose input type does not declare its node's
+  constants now fails `tsc` with an excess-property error; add them to
+  the input type.
 - **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
   Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
   ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with

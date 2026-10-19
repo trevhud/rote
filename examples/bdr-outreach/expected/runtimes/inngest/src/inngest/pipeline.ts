@@ -178,12 +178,14 @@ export const runPipeline = inngest.createFunction(
         // enforce inside the implementation (AbortSignal.timeout) if needed.
         const hubspot_upsert_result = await step.run("hubspot_upsert", async () => hubspotUpsert({
                 contacts: contact_review_gate_result["approved_contacts"],
+                batch_size: 100,
             }));
 
         // ─── Wave 5 ───
         const hubspot_create_list_result = await step.run("hubspot_create_list", async () => hubspotCreateList({
                 campaign_name: pipelineInput["drug_brand"],
                 contacts: hubspot_upsert_result["upserted"],
+                add_batch_size: 250,
             }));
 
         // ─── Wave 6 ───
@@ -194,6 +196,8 @@ export const runPipeline = inngest.createFunction(
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await step.run("exclusion_check_recent", async () => exclusionCheckRecent({
                 contacts: exclusion_check_dnc_result["passed"],
+                days_back: 30,
+                direction: "OUTBOUND",
             }));
 
         // ─── Wave 8 ───

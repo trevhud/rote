@@ -114,16 +114,19 @@ Read the generated call site in the workflow file to confirm it.
 
 Two rules that are easy to get wrong:
 
-- **Constants: Python receives them, TypeScript does not.** On dbos,
-  python and temporal, each node's IR `constants` arrive as keyword
-  arguments next to its inputs. A function several nodes share
-  receives the calling node's values, so take each constant as a
-  keyword parameter and never hard-code one node's value. Every calling
-  node is listed in the stub's docstring with its constants. A constant
-  that only some callers send needs a default. The TypeScript runtimes
-  pass no constants. Each TS stub serves exactly one node, and its doc
-  comment lists that node's constants, so write them into that file as
-  named constants. Confirm either way against the generated call site.
+- **Constants arrive with every call, on every runtime.** Each node's
+  IR `constants` are passed next to its inputs: as keyword arguments on
+  dbos, python and temporal, and as keys of the one input object on
+  cloudflare, inngest and dbos-ts. Read them from there and never
+  hard-code a value. A hard-coded constant turns the pipeline.yaml
+  value into dead config, so editing it changes nothing. A Python
+  function several nodes share receives the calling node's values, so
+  take each constant as a keyword parameter. Every calling node is
+  listed in the stub's docstring with its constants, and a constant
+  that only some callers send needs a default. Each TS stub serves one
+  node, and its doc comment lists that node's constant keys. Declare
+  them in the input type, or `tsc` rejects the call. Confirm against the
+  generated call site.
 - **Optional pipeline inputs may be absent.** An `input_schema` field not
   in `required` can be missing or null. Apply the default the schema's
   description names (for example "omit to default to today") inside the

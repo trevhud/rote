@@ -266,6 +266,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "60 seconds" },
             async () => hubspotUpsert({
                 contacts: contact_review_gate_result["approved_contacts"],
+                batch_size: 100,
             }),
         );
 
@@ -276,6 +277,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             async () => hubspotCreateList({
                 campaign_name: pipelineInput["drug_brand"],
                 contacts: hubspot_upsert_result["upserted"],
+                add_batch_size: 250,
             }),
         );
 
@@ -294,6 +296,8 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             { timeout: "10 minutes" },
             async () => exclusionCheckRecent({
                 contacts: exclusion_check_dnc_result["passed"],
+                days_back: 30,
+                direction: "OUTBOUND",
             }),
         );
 
