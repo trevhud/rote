@@ -135,7 +135,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   run and so never tested the lockfile developers use. Each job also
   runs `uv lock --check`, failing when the lock is out of date with
   pyproject. The newest-dependencies workflow still covers what a fresh
-  PyPI install gets.
+  PyPI install gets. The Python e2e job also reserves the OAuth callback
+  ports (33418-33421) from Linux's ephemeral range, and the registration
+  tests check the first port is free before they start: one run had an
+  unrelated socket on 33418 for its whole duration, which surfaced as
+  nine "rejected the static client credentials" failures.
 - The `claude` compiler driver runs isolated from the invoking user's
   Claude Code setup: the same context flags as the emitted judge lane
   (`--setting-sources ""`, `--strict-mcp-config`, auto memory off, now

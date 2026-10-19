@@ -102,6 +102,14 @@ jobs:
           uv lock --check
           uv sync --frozen --extra dev
 
+      # The OAuth callback ports (rote.mcp.auth.CALLBACK_PORTS) lie inside
+      # Linux's default ephemeral range, so any socket with an OS-chosen
+      # port can take one for a whole run (seen once: every test needing
+      # 33418 failed, then passed on re-run). Reserve them, as a machine
+      # that relies on fixed loopback ports should.
+      - name: Reserve the OAuth callback ports
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=33418-33421
+
       # Every slow suite that needs no external toolchain. Previously
       # only test_mcp_e2e ran here, which left the DBOS Python runtime,
       # park-on-auth, the OAuth flow and the MCP-trigger server proven
