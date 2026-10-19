@@ -231,6 +231,7 @@ def test_cloud_and_no_deploy_conflict_exits_2(
         (["--baseline-input", "x.json"], "--baseline-input runs locally"),
         (["--yes"], "--yes runs locally"),
         (["--no-eval"], "--no-eval runs locally"),
+        (["--strict-provenance"], "--strict-provenance runs locally"),
     ],
 )
 def test_local_only_flags_rejected_in_cloud_mode(

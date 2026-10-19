@@ -225,6 +225,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the input type.
 
 ### Fixed
+- **Assumptions no longer fail a compile.** A real bdr-outreach compile
+  exited 1 over 15 declared `# rote: assumption:` markers and one
+  citation that was verbatim but for its quote marks. Now only a
+  citation the skill does not contain fails. Every assumption is listed
+  by node and `file:line` in the compile output, compile-report.md,
+  `--json` and the progress.jsonl summary. An unmarked outcome or an
+  assumption missing from Open questions is still sent back for repair,
+  and is a warning if it survives. `--strict-provenance` (compile and
+  analyze) fails on any of it, for CI. Citations now match regardless of
+  quote style (`'`, `"`, curly quotes).
 - **A failed `claude -p` compile reports what it cost, and the output cap
   no longer ends it.** A real invoice-push compile died after 28 minutes
   on "Claude's response exceeded the 32000 output token maximum" and

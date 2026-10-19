@@ -329,7 +329,7 @@ _ASSUMED = _CITED.replace(
 
 
 @pytest.mark.parametrize(
-    ("report", "ok"),
+    ("report", "covered"),
     [
         (None, False),
         ("# Report\n\n## Open questions\n\n(none)\n\n## Next steps\n\n- ship it\n", False),
@@ -351,13 +351,25 @@ _ASSUMED = _CITED.replace(
     ],
 )
 def test_a_recorded_assumption_must_reach_the_open_questions(
-    tmp_path: Path, report: str | None, ok: bool
+    tmp_path: Path, report: str | None, covered: bool
 ) -> None:
+    """An assumption never fails the compile. One the Open questions do not
+    cover is a gap the repair loop is asked to close; left open, it is a
+    warning, and only --strict-provenance makes it a failure."""
     root = _provenance_case(tmp_path, _ASSUMED, report)
     v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
-    assert v.ok is ok, v.errors
-    if not ok:
-        assert [f.kind for f in v.errors] == ["unlisted_assumption"]
+    assert v.ok, v.errors
+    assert [a.text for a in v.assumptions] == [
+        "an over-cap line is a block (the skill names the rule, not its severity)"
+    ]
+    assert [f.kind for f in v.review_gaps] == ([] if covered else ["unlisted_assumption"])
+    assert (v.repair_instruction(root) is None) is covered
+    strict = verify_deliverable(
+        root, skill_dir=tmp_path / "skill", run_tests=False, strict_provenance=True
+    )
+    assert strict.ok is covered
+    if not covered:
+        assert [f.kind for f in strict.errors] == ["unlisted_assumption"]
 
 
 def test_no_tests_dir_means_nothing_to_run(tmp_path: Path) -> None:

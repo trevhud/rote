@@ -19,6 +19,25 @@ A review showed every looser version could be satisfied without telling
 a reviewer anything (one-word quotes, quoting a heading, fragments
 matched out of order, no comment at all, one Open question for many
 assumptions), so each of those is a test.
+
+What a finding costs the compile depends on what it means:
+
+* A citation that is not in the skill (``citation_not_in_skill``,
+  ``malformed_citation``) is a factual error: the code claims the skill
+  says something it does not. It fails the compile (``severity="error"``).
+* An assumption is a declared decision, and declaring it is the point:
+  however many there are, they never fail the compile. They are listed
+  for review instead (:func:`assumptions`).
+* A *review gap* is a declaration that is missing, not false: an outcome
+  with no marker (``uncited_outcome``) or assumptions the report's Open
+  questions do not cover (``unlisted_assumption``). The repair loop asks
+  the agent to close it, and one that survives the repair rounds is a
+  warning, not a failure. A reviewer can close it from the listed
+  assumptions and the warning, while failing the compile over it would
+  discard a paid run for a bookkeeping gap.
+
+``strict=True`` (``--strict-provenance``, for CI) makes every finding an
+error, review gaps included.
 """
 
 from __future__ import annotations
@@ -76,9 +95,17 @@ _MARKER_RE = re.compile(r"#\s*(skill:|rote:\s*assumption:)")
 
 def _normalized(text: str) -> str:
     """Lowercase, markdown links reduced to their text, emphasis and code
-    marks dropped, whitespace collapsed. A real compile quoted "rates in
-    references/fx-rates.md", which the skill writes as a markdown link."""
+    marks dropped, quote marks made one, whitespace collapsed.
+
+    A real compile quoted "rates in references/fx-rates.md", which the
+    skill writes as a markdown link. Another quoted the skill's `search for
+    "BDR do not contact" list` as `search for 'BDR do not contact' list`,
+    because its own citation was in double quotes, and the compile failed
+    on a "fabricated" citation that was verbatim but for the quote style.
+    Which quote mark encloses a phrase is not part of what the skill says.
+    """
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"[\"'\u2018\u2019\u201c\u201d]", "'", text)
     return " ".join(re.sub(r"[*_`]", "", text).lower().split())
 
 
@@ -497,16 +524,87 @@ def open_questions(report: str) -> list[str]:
 # ───────── The check ─────────
 
 
-def _finding(kind: str, message: str, path: str) -> ContractFinding:
-    return ContractFinding(
-        node_id="(provenance)", kind=kind, severity="error", message=message, path=path
-    )
+#: The node id every provenance finding carries.
+PROVENANCE_NODE = "(provenance)"
+
+#: Findings that state something false about the skill. Always errors.
+FACTUAL_KINDS = frozenset({"citation_not_in_skill", "malformed_citation"})
+
+#: Findings about a missing declaration. Repaired, then warnings unless strict.
+REVIEW_KINDS = frozenset({"uncited_outcome", "unlisted_assumption"})
+
+
+@dataclass(frozen=True)
+class Assumption:
+    """One ``# rote: assumption:`` marker: a decision the skill does not state."""
+
+    path: str
+    line: int
+    text: str
+    #: The node whose implementation holds it, or None for a module helper
+    #: that no single node owns.
+    node_id: str | None
+
+    def as_dict(self) -> dict[str, object]:
+        return {"node": self.node_id, "path": self.path, "line": self.line, "text": self.text}
+
+
+def _owners(pipeline: Pipeline) -> dict[str, dict[str, str]]:
+    """``{module path: {symbol: node id}}`` for every node with an ``impl``."""
+    owners: dict[str, dict[str, str]] = {}
+    for node in pipeline.nodes:
+        if node.impl:
+            rel, _, symbol = node.impl.partition(":")
+            owners.setdefault(rel, {})[symbol] = node.id
+    return owners
+
+
+def _node_at(tree: ast.Module | None, line: int, symbols: dict[str, str]) -> str | None:
+    """The node owning ``line``: its enclosing top-level function's node, or
+    the module's only node."""
+    if tree is not None:
+        for stmt in tree.body:
+            if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name in symbols:
+                first = min([stmt.lineno, *(d.lineno for d in stmt.decorator_list)])
+                if first <= line <= (stmt.end_lineno or stmt.lineno):
+                    return symbols[stmt.name]
+    owners = set(symbols.values())
+    return owners.pop() if len(owners) == 1 else None
+
+
+def assumptions(pipeline: Pipeline, root: Path) -> list[Assumption]:
+    """Every assumption marker under ``extracted/``, by file and line."""
+    found: list[Assumption] = []
+    owners = _owners(pipeline)
+    extracted = root / "extracted"
+    for path in sorted(extracted.rglob("*.py")) if extracted.is_dir() else []:
+        rel = str(path.relative_to(root))
+        source = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree: ast.Module | None = ast.parse(source)
+        except SyntaxError:
+            tree = None
+        for number, line in enumerate(source.splitlines(), start=1):
+            m = _ASSUMPTION_RE.search(line)
+            if m is not None:
+                text = m.group("text").strip()
+                found.append(
+                    Assumption(rel, number, text, _node_at(tree, number, owners.get(rel, {})))
+                )
+    return found
 
 
 def provenance_findings(
-    pipeline: Pipeline, root: Path, skill_dir: Path | None
+    pipeline: Pipeline, root: Path, skill_dir: Path | None, *, strict: bool = False
 ) -> list[ContractFinding]:
     """Citations quote the skill, outcomes are marked, assumptions are listed."""
+
+    def _finding(kind: str, message: str, path: str) -> ContractFinding:
+        severity = "error" if strict or kind in FACTUAL_KINDS else "warning"
+        return ContractFinding(
+            node_id=PROVENANCE_NODE, kind=kind, severity=severity, message=message, path=path
+        )
+
     findings: list[ContractFinding] = []
     paragraphs = (
         skill_paragraphs(skill_dir) if skill_dir is not None and skill_dir.is_dir() else None
@@ -516,12 +614,10 @@ def provenance_findings(
         for node in pipeline.nodes
         if node.kind is NodeKind.PURE_FUNCTION and node.impl
     }
-    assumptions: list[tuple[str, str]] = []
     extracted = root / "extracted"
     for path in sorted(extracted.rglob("*.py")) if extracted.is_dir() else []:
         rel = str(path.relative_to(root))
         source = path.read_text(encoding="utf-8", errors="replace")
-        assumptions += [(rel, m.group("text").strip()) for m in _ASSUMPTION_RE.finditer(source)]
         if paragraphs is not None:
             for cite in citations(source):
                 if cite.quote is None:
@@ -560,8 +656,9 @@ def provenance_findings(
                 )
     # One assumption marked at two call sites is one question, not two: a
     # real report listed it once and was bounced twice for the duplicate.
-    distinct = {_normalized(text) for _, text in assumptions}
-    if assumptions:
+    marked = assumptions(pipeline, root)
+    distinct = {_normalized(a.text) for a in marked}
+    if marked:
         report = root / REPORT_FILENAME
         listed = (
             open_questions(report.read_text(encoding="utf-8", errors="replace"))
@@ -569,7 +666,7 @@ def provenance_findings(
             else []
         )
         if len(listed) < len(distinct):
-            sample = "; ".join(f"{rel}: {text}" for rel, text in assumptions[:3])
+            sample = "; ".join(f"{a.path}: {a.text}" for a in marked[:3])
             findings.append(
                 _finding(
                     "unlisted_assumption",

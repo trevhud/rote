@@ -49,7 +49,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from rote.compiler.provenance import REPORT_FILENAME, provenance_findings
+from rote.compiler.provenance import (
+    PROVENANCE_NODE,
+    REPORT_FILENAME,
+    Assumption,
+    assumptions,
+    provenance_findings,
+)
 from rote.contracts import (
     ContractFinding,
     NodeImplementation,
@@ -416,10 +422,31 @@ class Verification:
     findings: list[ContractFinding] = field(default_factory=list)
     implementations: list[NodeImplementation] = field(default_factory=list)
     tests: GeneratedTests | None = None
+    #: Every ``# rote: assumption:`` marker, for review. Never a failure.
+    assumptions: list[Assumption] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ContractFinding]:
         return [f for f in self.findings if f.severity == "error"]
+
+    @property
+    def review_gaps(self) -> list[ContractFinding]:
+        """Provenance declarations that are missing, not false: repaired, but
+        not a failure (see :mod:`rote.compiler.provenance`)."""
+        return [
+            f for f in self.findings if f.node_id == PROVENANCE_NODE and f.severity == "warning"
+        ]
+
+    def provenance_report(self) -> dict[str, object]:
+        """Counts and lists for ``--json``, progress.jsonl and ``rote analyze``."""
+        provenance_errors = [f for f in self.errors if f.node_id == PROVENANCE_NODE]
+        return {
+            "assumptions": len(self.assumptions),
+            "errors": len(provenance_errors),
+            "review_gaps": len(self.review_gaps),
+            "assumption_list": [a.as_dict() for a in self.assumptions],
+            "findings": [f.as_dict() for f in provenance_errors + self.review_gaps],
+        }
 
     @property
     def ok(self) -> bool:
@@ -443,7 +470,7 @@ class Verification:
                 f"the errors name, then end your turn. {WRITE_ONCE_RULES}\n\n"
                 f"Validation errors:\n{self.pipeline_error}"
             )
-        if self.ok:
+        if self.ok and not self.review_gaps:
             return None
         parts = [
             f"rote checked the deliverable in {artifact_dir} and found problems. "
@@ -457,6 +484,11 @@ class Verification:
             parts.append(
                 "Contract problems:\n"
                 + "\n".join(f"- {f.node_id}: {f.message}" for f in self.errors)
+            )
+        if self.review_gaps:
+            parts.append(
+                "Provenance gaps (a reviewer needs these declared; close each one):\n"
+                + "\n".join(f"- {f.message}" for f in self.review_gaps)
             )
         if self.tests is not None and self.tests.status == "failed":
             parts.append(
@@ -480,6 +512,7 @@ def verify_deliverable(
     skill_dir: Path | str | None = None,
     trust_skill: bool = False,
     emit_target: EmitTarget | None = None,
+    strict_provenance: bool = False,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -496,10 +529,19 @@ def verify_deliverable(
 
     ``emit_target`` is the runtime the compile emits for. With it, the
     deliverable must also survive that adapter's emit (:func:`emit_findings`).
+
+    ``strict_provenance`` (``--strict-provenance``) makes every provenance
+    finding an error, review gaps included.
     """
     try:
         return _verify_or_raise(
-            artifact_dir, base_dir, run_tests, skill_dir, trust_skill, emit_target
+            artifact_dir,
+            base_dir,
+            run_tests,
+            skill_dir,
+            trust_skill,
+            emit_target,
+            strict_provenance,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -527,6 +569,7 @@ def _verify_or_raise(
     skill_dir: Path | str | None,
     trust_skill: bool,
     emit_target: EmitTarget | None,
+    strict_provenance: bool,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -536,6 +579,7 @@ def _verify_or_raise(
             skill_dir=skill,
             trust_skill=trust_skill,
             emit_target=emit_target,
+            strict_provenance=strict_provenance,
         )
     import shutil
     import tempfile
@@ -558,6 +602,7 @@ def _verify_or_raise(
             skill_dir=skill,
             trust_skill=trust_skill,
             emit_target=emit_target,
+            strict_provenance=strict_provenance,
         )
 
 
@@ -568,6 +613,7 @@ def _verify(
     skill_dir: Path | None,
     trust_skill: bool,
     emit_target: EmitTarget | None,
+    strict_provenance: bool,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -577,7 +623,7 @@ def _verify(
     findings = (
         check_contracts(pipeline, root)
         + _deliverable_findings(pipeline, root, implementations)
-        + provenance_findings(pipeline, root, skill_dir)
+        + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
     )
     tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
@@ -586,4 +632,5 @@ def _verify(
         findings=findings,
         implementations=implementations,
         tests=tests,
+        assumptions=assumptions(pipeline, root),
     )

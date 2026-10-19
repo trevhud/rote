@@ -50,6 +50,7 @@ from rote.adapters._common import stubs_tracked
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
+from rote.compiler.provenance import PROVENANCE_NODE
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
@@ -847,6 +848,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         driver_kwargs=driver_kwargs or None,
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
+        strict_provenance=args.strict_provenance,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
@@ -986,6 +988,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             via = " (runs via its mcp binding)" if impl.mcp_bound else ""
             reason = f": {impl.reason}" if impl.reason else ""
             print(f"  {impl.status}: {impl.node_id}{via}{reason}", file=sys.stderr)
+    if deliverable is not None:
+        for line in _provenance_lines(deliverable, "compile"):
+            print(line, file=sys.stderr)
     if deliverable is not None or tests_run is not None or args.no_verify_tests:
         _record_verification_in_report(compiled_dir, deliverable, tests_run, args)
 
@@ -1212,6 +1217,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "errors": [f.as_dict() for f in deliverable.errors],
                 "implementations": [i.as_dict() for i in deliverable.implementations],
             }
+            payload["provenance"] = deliverable.provenance_report()
         if deploy_entry is not None:
             payload["deploy"] = deploy_entry
         print(json.dumps(payload, indent=2))
@@ -1246,6 +1252,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "unimplemented_stubs": _unimplemented_stubs(runtime_dir),
                 "mcp_servers": analysis["mcp_servers"],
                 "contract_errors": sum(1 for f in contract_findings if f.severity == "error"),
+                **(
+                    {"provenance": result.verification.provenance_report()}
+                    if result.verification is not None
+                    else {}
+                ),
                 "total_tokens": total_tokens,
                 "usage_complete": meta.get("usage_complete", True),
             },
@@ -1253,6 +1264,35 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         )
         progress_sink.close()
     return exit_code
+
+
+def _assumptions_by_node(found: list[Any]) -> list[tuple[str, list[Any]]]:
+    """Assumptions grouped by owning node, in first-seen order."""
+    groups: dict[str, list[Any]] = {}
+    for a in found:
+        groups.setdefault(a.node_id or "(module helpers)", []).append(a)
+    return list(groups.items())
+
+
+def _provenance_lines(deliverable: Any, command: str) -> list[str]:
+    """The compile output's provenance block: every assumption, grouped by
+    node, then the gaps the repair rounds left. Assumptions are listed for
+    review and never fail the compile; the gaps are warnings unless
+    ``--strict-provenance`` made them errors (then they are reported with
+    the other unresolved problems)."""
+    lines: list[str] = []
+    found = deliverable.assumptions
+    if found:
+        lines.append(
+            f"rote {command}: {len(found)} assumption(s) the skill does not state; "
+            f"review each one (also in compile-report.md):"
+        )
+        for node, entries in _assumptions_by_node(found):
+            lines.append(f"  {node}:")
+            lines += [f"    {a.path}:{a.line}  {a.text}" for a in entries]
+    for finding in deliverable.review_gaps:
+        lines.append(f"rote {command}: provenance warning ({finding.kind}): {finding.message}")
+    return lines
 
 
 #: The heading rote owns at the end of compile-report.md. Everything above
@@ -1287,6 +1327,18 @@ def _record_verification_in_report(
             f"- Unresolved problems: {len(errors)}"
             + (": " + "; ".join(f"{f.node_id}: {f.kind}" for f in errors[:10]) if errors else ".")
         )
+        gaps = deliverable.review_gaps
+        if gaps:
+            lines.append(f"- Provenance gaps to review ({len(gaps)}, not failures):")
+            lines += [f"  - {f.kind}: {f.message}" for f in gaps]
+        found = deliverable.assumptions
+        lines.append(
+            f"- Assumptions the skill does not state: {len(found)}"
+            + (". Review each one:" if found else ".")
+        )
+        for node, entries in _assumptions_by_node(found):
+            lines.append(f"  - {node}:")
+            lines += [f"    - `{a.path}:{a.line}` {a.text}" for a in entries]
     text = report.read_text(encoding="utf-8")
     at = text.find("\n" + _VERIFICATION_HEADING)
     if at >= 0:
@@ -1362,6 +1414,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-mcp", args.no_mcp),
         ("--no-verify-tests", args.no_verify_tests),
         ("--trust-skill", args.trust_skill),
+        ("--strict-provenance", args.strict_provenance),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2468,6 +2521,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         driver_kwargs={"mcp_servers": []} if args.no_mcp else None,
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
+        strict_provenance=args.strict_provenance,
     )
 
     out_ctx: Any = (
@@ -2494,6 +2548,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         # kind of thing a dry run should surface before you pay for `compile`.
         contract_findings = check_contracts(result.pipeline, compiled_dir)
         report["contract_findings"] = [f.as_dict() for f in contract_findings]
+        deliverable = result.verification
+        if deliverable is not None:
+            report["provenance"] = deliverable.provenance_report()
+        # analyze is a dry run and exits 0 on what it finds, except that
+        # --strict-provenance (for CI) fails on any unresolved provenance
+        # finding, which that flag has already made an error.
+        strict_failed = (
+            args.strict_provenance
+            and deliverable is not None
+            and any(f.node_id == PROVENANCE_NODE for f in deliverable.errors)
+        )
         if args.json:
             print(json.dumps(report, indent=2))
         else:
@@ -2501,6 +2566,13 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             for finding in contract_findings:
                 label = "ERROR" if finding.severity == "error" else "warning"
                 print(f"  contract: {label} {finding.node_id}: {finding.message}")
+            if deliverable is not None:
+                for line in _provenance_lines(deliverable, "analyze"):
+                    print(line)
+                if strict_failed:
+                    for finding in deliverable.errors:
+                        if finding.node_id == PROVENANCE_NODE:
+                            print(f"  provenance: ERROR ({finding.kind}): {finding.message}")
             if args.out:
                 print()
                 print(f"  compiled IR kept at: {compiled_dir / 'pipeline.yaml'}")
@@ -2511,6 +2583,12 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
             else:
                 print()
                 print("  (report only — pass --out DIR to keep the pipeline.yaml for `rote emit`)")
+        if strict_failed:
+            print(
+                "rote analyze: unresolved provenance findings (--strict-provenance)",
+                file=sys.stderr,
+            )
+            return 1
     return 0
 
 
@@ -3976,6 +4054,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=("Don't run the tests the compiler agent writes. Static checks still run."),
     )
     compile_p.add_argument(
+        "--strict-provenance",
+        action="store_true",
+        help=(
+            "Fail (exit 1) on every unresolved provenance finding, for CI. By default "
+            "only a citation the skill does not contain fails; assumptions never do, "
+            "and a provenance gap the repair rounds did not close (an unmarked outcome, "
+            "an assumption missing from Open questions) is a warning"
+        ),
+    )
+    compile_p.add_argument(
         "--trust-skill",
         action="store_true",
         help=(
@@ -4513,6 +4601,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-verify-tests",
         action="store_true",
         help="Don't run the tests the compiler agent writes (see rote compile --help)",
+    )
+    analyze.add_argument(
+        "--strict-provenance",
+        action="store_true",
+        help=(
+            "Fail (exit 1) on every unresolved provenance finding, for CI. By default "
+            "only a citation the skill does not contain fails; assumptions never do, "
+            "and a provenance gap the repair rounds did not close (an unmarked outcome, "
+            "an assumption missing from Open questions) is a warning"
+        ),
     )
     analyze.add_argument(
         "--trust-skill",

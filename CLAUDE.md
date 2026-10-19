@@ -1452,6 +1452,24 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   label built at run time, is not seen.
   `tests/test_provenance.py` holds the gaming cases, each verified by a
   mutation.
+- **What a provenance finding costs is decided by what it means**
+  (the user's rule, after a real BDR compile exited 1 on 15 recorded
+  assumptions). A citation not in the skill (`citation_not_in_skill`,
+  `malformed_citation`, `FACTUAL_KINDS`) is an error: exit 1 after the
+  repair rounds. Assumptions never fail; they are listed by node and
+  `file:line` in the compile output, in compile-report.md's
+  `## rote verification`, and as `provenance` in `--json` and the
+  progress.jsonl summary (`Verification.provenance_report`). A missing
+  declaration (`uncited_outcome`, `unlisted_assumption`, `REVIEW_KINDS`)
+  is a `review_gap`: the repair loop is sent it like an error, and if it
+  survives it is a warning. Not exit 1, because a reviewer closes it from
+  the listed assumptions, and failing would throw away a paid run over
+  bookkeeping. `--strict-provenance` (compile and analyze, for CI) makes
+  every provenance finding an error; analyze otherwise exits 0 as a dry
+  run. Quote marks are normalized (`'`, `"` and curly quotes are one):
+  the BDR compile's one "fabricated" citation was verbatim except that
+  it wrote the skill's `"BDR do not contact"` in single quotes inside its
+  own double-quoted citation.
 
 ### The claude driver repairs by resuming, and a resumed result is cumulative
 
