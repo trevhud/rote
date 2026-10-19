@@ -374,6 +374,30 @@ async function callToolUnattended(
 }
 
 /**
+ * A tool's value from its text content, for servers that declare no
+ * output schema (the TS SDK's usual shape) and return JSON as text.
+ * Same rules as the Python helper's _result_payload: only blocks that
+ * carry text count (image and audio blocks are skipped), each text is
+ * JSON-parsed and kept verbatim when it is not JSON, one text block
+ * yields its value, several yield a list in order, and none yields null.
+ */
+function textContentPayload(content: unknown): unknown {
+    const blocks = Array.isArray(content) ? content : [];
+    const texts = blocks
+        .map((block) => (block as { text?: unknown } | null)?.text)
+        .filter((text): text is string => typeof text === "string");
+    const parse = (text: string): unknown => {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return text;
+        }
+    };
+    if (texts.length === 0) return null;
+    return texts.length === 1 ? parse(texts[0]) : texts.map(parse);
+}
+
+/**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
  * Returns the tool's JSON value (a wrapped fastmcp list or scalar comes
@@ -402,10 +426,7 @@ export async function callMcpTool(
                 result.structuredContent as Record<string, unknown>,
             )) as JsonValue;
         }
-        const text = (result.content as Array<{ type: string; text?: string }>).find(
-            (block) => block.type === "text",
-        )?.text;
-        return (text ? JSON.parse(text) : {}) as JsonValue;
+        return textContentPayload(result.content) as JsonValue;
     });
 }
 
