@@ -121,6 +121,19 @@ packages = ["src/rote"]
 # editable installs. If you move or rename the bundle, update both.
 [tool.hatch.build.targets.wheel.force-include]
 "skills/rote-compile" = "rote/skills/rote-compile"
+# `rote example` ships the examples that run with no credentials. The
+# files live only in examples/; these paths must match
+# `rote.examples.BUNDLED[...].files` (tests/test_examples_command.py
+# pins it), and `examples_root()` falls back to the repo layout for
+# editable installs, like the skill bundle above.
+"examples/expense-audit/README.md" = "rote/examples/expense-audit/README.md"
+"examples/expense-audit/input.json" = "rote/examples/expense-audit/input.json"
+"examples/expense-audit/eval-input.json" = "rote/examples/expense-audit/eval-input.json"
+"examples/expense-audit/skill" = "rote/examples/expense-audit/skill"
+"examples/expense-audit/expected/pipeline.yaml" = "rote/examples/expense-audit/expected/pipeline.yaml"
+"examples/expense-audit/expected/pipeline-draft.yaml" = "rote/examples/expense-audit/expected/pipeline-draft.yaml"
+"examples/expense-audit/expected/eval.yaml" = "rote/examples/expense-audit/expected/eval.yaml"
+"examples/expense-audit/expected/extracted" = "rote/examples/expense-audit/expected/extracted"
 
 [tool.hatch.build.targets.sdist]
 # Keep the sdist lean but self-sufficient: building a wheel from the
@@ -128,6 +141,7 @@ packages = ["src/rote"]
 include = [
     "src/rote",
     "skills/rote-compile",
+    "examples/expense-audit",
 ]
 
 [tool.ruff]
