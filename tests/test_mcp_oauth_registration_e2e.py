@@ -50,6 +50,7 @@ from rote.mcp.auth import (  # noqa: E402
     login,
     registration_of,
 )
+from rote.mcp.learned import learned_auth  # noqa: E402
 from tests._oauth_fixture import (  # noqa: E402
     CIMD_DOCUMENT,
     OAuthFixture,
@@ -180,8 +181,12 @@ def test_a_pre_registered_client_works_where_nothing_else_does(fx: OAuthFixture)
     fx.configure(cimd=False, dcr=False)
     _preregister(fx)
     doc = asyncio.run(login("vendor", _config(fx, client_id=PRE_ID)))
+    assert doc is not None
     assert doc["client_info"]["client_id"] == PRE_ID
     assert _call_through_emitted_helper(fx) == {"authenticated": True}
+    # The pre-registered path records what it learned like any other login.
+    learned = learned_auth("vendor", fx.mcp_url)
+    assert learned is not None and learned.auth == "oauth"
 
 
 def test_no_registration_path_names_the_fix_and_guesses_no_url(fx: OAuthFixture) -> None:

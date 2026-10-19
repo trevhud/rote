@@ -115,7 +115,10 @@ def write_token_file(server: str, data: dict[str, Any], directory: Path | None =
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{server}-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({**data, "version": TOKEN_CONTRACT_VERSION}, f, indent=2)
+            # A newer rote's higher contract version is kept, not overwritten.
+            stamped = data.get("version")
+            version = max(stamped if isinstance(stamped, int) else 0, TOKEN_CONTRACT_VERSION)
+            json.dump({**data, "version": version}, f, indent=2)
             f.write("\n")
         os.chmod(tmp_name, 0o600)
         os.replace(tmp_name, path)
@@ -156,16 +159,24 @@ def access_token_state(doc: dict[str, Any]) -> tuple[str | None, bool]:
 
 AuthStatus = Literal[
     "static headers",
+    "no auth required",
+    "auth unknown",
     "not authenticated",
     "authenticated",
     "expired (refreshable)",
     "expired",
 ]
-"""The five states a registered server's credentials can be in.
+"""The states a registered server's credentials can be in.
 
 - ``static headers`` — the server carries API-key-style ``headers`` and
   never runs the OAuth dance.
-- ``not authenticated`` — no token file, or a file with no usable token.
+- ``no auth required`` — rote learned ``none`` for this endpoint
+  (:mod:`rote.mcp.learned`) and holds no token for it: runs connect
+  unauthenticated and never park on this server.
+- ``auth unknown`` — no token for this endpoint, and nothing learned
+  about whether it needs one. Runs park on it only if it does.
+- ``not authenticated`` — the server needs OAuth (recorded, or a token
+  file exists) but there is no usable token.
 - ``authenticated`` — a fresh (unexpired) access token.
 - ``expired (refreshable)`` — the access token is stale but a
   ``refresh_token`` is on hand, so a refresh grant can recover it.
@@ -174,8 +185,12 @@ AuthStatus = Literal[
 """
 
 
-def auth_status(server_config: McpServerConfig, token_doc: dict[str, Any] | None) -> AuthStatus:
-    """Classify a server's credentials into one of the five :data:`AuthStatus` states.
+def auth_status(
+    server_config: McpServerConfig,
+    token_doc: dict[str, Any] | None,
+    learned: Literal["oauth", "none"] | None = None,
+) -> AuthStatus:
+    """Classify a server's credentials into one of the :data:`AuthStatus` states.
 
     The single source of truth for auth-state classification, shared by
     ``rote mcp list`` and ``rote doctor``. Combines the server's static
@@ -185,10 +200,18 @@ def auth_status(server_config: McpServerConfig, token_doc: dict[str, Any] | None
     """
     if server_config.headers:
         return "static headers"
-    if token_doc is None or not stored_for_url(token_doc, server_config.url):
-        # A login for the endpoint this name used to point at is not one
-        # for the endpoint it points at now.
-        return "not authenticated"
+    # A login for the endpoint this name used to point at is not one for
+    # the endpoint it points at now: that file counts as no file, except
+    # that it shows this name needed OAuth before.
+    stale = token_doc is not None and not stored_for_url(token_doc, server_config.url)
+    if token_doc is None or stale:
+        if learned == "none":
+            return "no auth required"
+        if learned == "oauth" or stale:
+            return "not authenticated"
+        return "auth unknown"
+    # A token file for this endpoint is evidence of OAuth whatever was
+    # learned: a stale `none` must not hide a login the server now needs.
     token, fresh = access_token_state(token_doc)
     if token and fresh:
         return "authenticated"

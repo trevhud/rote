@@ -981,6 +981,35 @@ async function unwrapFastmcpResult(
 }
 """
 
+#: How every TS MCP helper reads a tool result that has no structured
+#: content: text blocks, by exactly the rules of the Python twin
+#: ``rote.mcp._runtime_helper._result_payload``. Spliced into the Node,
+#: Workers and binding helpers so none of them can drift from it.
+_MCP_TEXT_PAYLOAD_TS = """/**
+ * A tool's value from its text content, for servers that declare no
+ * output schema (the TS SDK's usual shape) and return JSON as text.
+ * Same rules as the Python helper's _result_payload: only blocks that
+ * carry text count (image and audio blocks are skipped), each text is
+ * JSON-parsed and kept verbatim when it is not JSON, one text block
+ * yields its value, several yield a list in order, and none yields null.
+ */
+function textContentPayload(content: unknown): unknown {
+    const blocks = Array.isArray(content) ? content : [];
+    const texts = blocks
+        .map((block) => (block as { text?: unknown } | null)?.text)
+        .filter((text): text is string => typeof text === "string");
+    const parse = (text: string): unknown => {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return text;
+        }
+    };
+    if (texts.length === 0) return null;
+    return texts.length === 1 ? parse(texts[0]) : texts.map(parse);
+}
+"""
+
 #: Source of ``src/extracted/_roteMcp.ts`` — the Node-side twin of
 #: ``rote.mcp._runtime_helper``. It reads the SAME registry and token
 #: files the rote CLI writes (the documented cross-language contract in
@@ -1319,6 +1348,7 @@ async function withMcpSession<T>(
 
 __FASTMCP_UNWRAP_TS__
 __ROTE_TS_INPUT_REQUIRED_MAPPING__
+__MCP_TEXT_PAYLOAD_TS__
 /**
  * Call one tool on an MCP server, authenticated from the rote credential
  * store. On a 401 (revoked/expired-early token) the call refreshes once
@@ -1348,10 +1378,7 @@ export async function callMcpTool(
                 result.structuredContent as Record<string, unknown>,
             );
         }
-        const text = (result.content as Array<{ type: string; text?: string }>).find(
-            (block) => block.type === "text",
-        )?.text;
-        return text ? JSON.parse(text) : {};
+        return textContentPayload(result.content);
     });
 }
 
@@ -1502,6 +1529,7 @@ function isUnauthorized(err: unknown): boolean {
     .replace("__ROTE_TS_INPUT_REQUIRED_MAPPING__", _TS_INPUT_REQUIRED_MAPPING)
     .replace("__ROTE_TS_MCP_CLIENT__", _TS_MCP_CLIENT_CONSTRUCTION)
     .replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
+    .replace("__MCP_TEXT_PAYLOAD_TS__", _MCP_TEXT_PAYLOAD_TS)
 )
 
 
@@ -1839,6 +1867,7 @@ async function withMcpSession<T>(
 
 __FASTMCP_UNWRAP_TS__
 __ROTE_TS_INPUT_REQUIRED_MAPPING__
+__MCP_TEXT_PAYLOAD_TS__
 /**
  * Call one tool on an MCP server, authenticated from provisioned Worker
  * secrets + KV-cached tokens. Retries once with a forced refresh on 401.
@@ -1868,10 +1897,7 @@ export async function callMcpTool(
                 result.structuredContent as Record<string, unknown>,
             )) as JsonValue;
         }
-        const text = (result.content as Array<{ type: string; text?: string }>).find(
-            (block) => block.type === "text",
-        )?.text;
-        return (text ? JSON.parse(text) : {}) as JsonValue;
+        return textContentPayload(result.content) as JsonValue;
     });
 }
 
@@ -2010,6 +2036,7 @@ function isUnauthorizedWorkers(err: unknown): boolean {
     .replace("__ROTE_TS_INPUT_REQUIRED_MAPPING__", _TS_INPUT_REQUIRED_MAPPING)
     .replace("__ROTE_TS_MCP_CLIENT__", _TS_MCP_CLIENT_CONSTRUCTION)
     .replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
+    .replace("__MCP_TEXT_PAYLOAD_TS__", _MCP_TEXT_PAYLOAD_TS)
 )
 
 
@@ -2323,10 +2350,13 @@ export async function callMcpTool(
     }
     const content = result.content;
     if (typeof content === "string") {
-        return (content ? JSON.parse(content) : {}) as JsonObject;
+        // One text block, read by the same rules as the direct helpers.
+        return textContentPayload([{ text: content }]) as JsonObject;
     }
-    return (content ?? {}) as JsonObject;
+    return (content ?? null) as JsonObject;
 }
+
+__MCP_TEXT_PAYLOAD_TS__
 
 /**
  * Every tool `server` advertises, fetched through the platform proxy.
@@ -2444,7 +2474,9 @@ export async function bindAgentTools(
     }
     return [...bound.values()];
 }
-""".replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED)
+""".replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED).replace(
+    "__MCP_TEXT_PAYLOAD_TS__", _MCP_TEXT_PAYLOAD_TS
+)
 
 
 # ───────── signatures/_roteInference.ts (agent loops) ─────────

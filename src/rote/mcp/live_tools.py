@@ -247,12 +247,15 @@ async def registry_server_specs(
     (:func:`rote.eval.baseline.mcp_servers_from_registry`), resolved for
     in-process drivers that need concrete headers rather than a
     ``headersHelper`` subprocess: a registry entry with static headers
-    contributes them verbatim; a logged-in server contributes a freshly
+    contributes them verbatim; a server recorded as needing no auth
+    contributes no headers; a logged-in server contributes a freshly
     refreshed bearer token. A server that is not authenticated, whose
     refresh fails, or that uses an unsupported transport is skipped with
     a reason through ``on_skip`` — never an error.
     """
     from rote.mcp import McpAuthError, fresh_access_token, load_registry, read_token_file
+    from rote.mcp._runtime_helper import stored_for_url
+    from rote.mcp.learned import learned_auth
     from rote.mcp.tokens import access_token_state
 
     def _skip(server: str, reason: str) -> None:
@@ -269,6 +272,12 @@ async def registry_server_specs(
             specs.append({"name": name, "url": entry.url, "headers": dict(entry.headers)})
             continue
         doc = read_token_file(name)
+        if doc is not None and not stored_for_url(doc, entry.url):
+            doc = None  # a login for the endpoint this name used to point at
+        learned = learned_auth(name, entry.url)
+        if doc is None and learned is not None and learned.auth == "none":
+            specs.append({"name": name, "url": entry.url})
+            continue
         if doc is None or access_token_state(doc)[0] is None:
             _skip(name, f"not authenticated — rote mcp login {name}")
             continue

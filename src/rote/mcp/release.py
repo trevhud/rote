@@ -16,6 +16,7 @@ quite reached its ``recv`` yet is safe — the message waits for it.
 from __future__ import annotations
 
 import os
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +25,7 @@ from typing import Any
 from rote._dbos import dbos_system_database_url, dbos_ts_system_database_url
 from rote.app_registry import RegisteredApp, registered_apps
 from rote.extras import install_hint
+from rote.mcp.learned import note_auth_park_safely
 
 
 class ReleaseUnavailable(RuntimeError):
@@ -104,6 +106,12 @@ def release_parked_workflows(server: str) -> ReleaseReport:
             released.extend(_release_in_app(client, app, server))
 
         skipped.extend(scan_dbos_apps(visit, dbos_apps))
+    if released:
+        # Something was parked on this server's auth, so it needs auth.
+        # Bookkeeping only: a failure to record it never fails the release.
+        warning = note_auth_park_safely(server)
+        if warning is not None:
+            warnings.warn(warning, RuntimeWarning, stacklevel=2)
     return ReleaseReport(
         released=tuple(released), skipped=tuple(skipped), broadcasts=tuple(broadcasts)
     )

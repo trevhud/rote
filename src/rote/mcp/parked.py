@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from rote.mcp.learned import note_auth_park_safely
+
 #: Prefix of the line the emitted TypeScript parks (Inngest, Cloudflare)
 #: print right before they wait, followed by a JSON object with
 #: ``server``, ``node`` and ``wait`` (the wait's step id, unique per park
@@ -426,6 +428,9 @@ class AuthParkWatcher:
             if park.key not in self._seen:
                 self._seen[park.key] = self.fingerprint_fn(park.server)
                 self._announce(park)
+                warning = note_auth_park_safely(park.server)
+                if warning is not None:
+                    self.echo(f"rote run: note: {warning}")
                 fixable_here = self.channel.remote_fix is None
                 if fixable_here and self.interactive and park.server not in self._declined:
                     blocked += self._offer_login(park)
