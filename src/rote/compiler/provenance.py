@@ -548,21 +548,26 @@ class Assumption:
 
 
 def _owners(pipeline: Pipeline) -> dict[str, dict[str, str]]:
-    """``{module path: {symbol: node id}}`` for every node with an ``impl``."""
+    """``{module path: {symbol: node id}}`` for every node's ``impl`` and
+    legacy ``signature`` module."""
     owners: dict[str, dict[str, str]] = {}
     for node in pipeline.nodes:
-        if node.impl:
-            rel, _, symbol = node.impl.partition(":")
-            owners.setdefault(rel, {})[symbol] = node.id
+        for ref in (node.impl, node.signature):
+            if ref:
+                rel, _, symbol = ref.partition(":")
+                owners.setdefault(rel, {})[symbol] = node.id
     return owners
 
 
 def _node_at(tree: ast.Module | None, line: int, symbols: dict[str, str]) -> str | None:
-    """The node owning ``line``: its enclosing top-level function's node, or
-    the module's only node."""
+    """The node owning ``line``: its enclosing top-level function's (or
+    signature class's) node, or the module's only node."""
     if tree is not None:
         for stmt in tree.body:
-            if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name in symbols:
+            if (
+                isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+                and stmt.name in symbols
+            ):
                 first = min([stmt.lineno, *(d.lineno for d in stmt.decorator_list)])
                 if first <= line <= (stmt.end_lineno or stmt.lineno):
                     return symbols[stmt.name]
@@ -570,25 +575,70 @@ def _node_at(tree: ast.Module | None, line: int, symbols: dict[str, str]) -> str
     return owners.pop() if len(owners) == 1 else None
 
 
+#: Where a pipeline.yaml node entry starts, and a top-level key that ends
+#: the ``nodes:`` list.
+_YAML_NODE_ID = re.compile(r"^\s*-\s*id:\s*['\"]?(?P<id>[A-Za-z_][A-Za-z0-9_]*)")
+_YAML_TOP_KEY = re.compile(r"^[A-Za-z_]")
+
+
+def _pipeline_yaml_assumptions(root: Path, node_ids: set[str]) -> list[Assumption]:
+    """Markers in pipeline.yaml: a YAML comment, or text inside a judge's
+    ``signature_spec.prompt``. Each belongs to the node entry it sits in."""
+    path = root / "pipeline.yaml"
+    if not path.is_file():
+        return []
+    found: list[Assumption] = []
+    current: str | None = None
+    for number, line in enumerate(
+        path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
+    ):
+        node = _YAML_NODE_ID.match(line)
+        if node is not None and node.group("id") in node_ids:
+            current = node.group("id")
+        elif _YAML_TOP_KEY.match(line):
+            current = None
+        m = _ASSUMPTION_RE.search(line)
+        if m is not None:
+            found.append(Assumption("pipeline.yaml", number, m.group("text").strip(), current))
+    return found
+
+
+#: The deliverable's code directories whose markers reach the report:
+#: implementations, and judge signatures (their prompts are judgment).
+_MARKED_DIRS = ("extracted", "signatures")
+
+
 def assumptions(pipeline: Pipeline, root: Path) -> list[Assumption]:
-    """Every assumption marker under ``extracted/``, by file and line."""
+    """Every assumption marker in the deliverable, by file and line.
+
+    Python under ``extracted/`` and ``signatures/``, plus ``pipeline.yaml``:
+    a structural guess (a kind, a gate, a mandatory flag) is marked in a
+    YAML comment on its node, and a judge prompt's guess in the prompt or
+    its signature module. The compile report lists every one, so this
+    scan is what keeps a judgment call from going unseen.
+    """
     found: list[Assumption] = []
     owners = _owners(pipeline)
-    extracted = root / "extracted"
-    for path in sorted(extracted.rglob("*.py")) if extracted.is_dir() else []:
-        rel = str(path.relative_to(root))
-        source = path.read_text(encoding="utf-8", errors="replace")
-        try:
-            tree: ast.Module | None = ast.parse(source)
-        except SyntaxError:
-            tree = None
-        for number, line in enumerate(source.splitlines(), start=1):
-            m = _ASSUMPTION_RE.search(line)
-            if m is not None:
-                text = m.group("text").strip()
-                found.append(
-                    Assumption(rel, number, text, _node_at(tree, number, owners.get(rel, {})))
-                )
+    node_ids = {n.id for n in pipeline.nodes}
+    for sub in _MARKED_DIRS:
+        base = root / sub
+        for path in sorted(base.rglob("*.py")) if base.is_dir() else []:
+            rel = str(path.relative_to(root))
+            source = path.read_text(encoding="utf-8", errors="replace")
+            try:
+                tree: ast.Module | None = ast.parse(source)
+            except SyntaxError:
+                tree = None
+            symbols = owners.get(rel, {})
+            for number, line in enumerate(source.splitlines(), start=1):
+                m = _ASSUMPTION_RE.search(line)
+                if m is not None:
+                    owner = _node_at(tree, number, symbols)
+                    if owner is None and not symbols and path.stem in node_ids:
+                        # signatures/<node id>.py for a signature_spec judge.
+                        owner = path.stem
+                    found.append(Assumption(rel, number, m.group("text").strip(), owner))
+    found += _pipeline_yaml_assumptions(root, node_ids)
     return found
 
 

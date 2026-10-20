@@ -297,7 +297,17 @@ report from it after you stop:
 - **Open questions**: every `# rote: assumption:` marker, and every stub
   with its `NotImplementedError` message. A judgment call the reviewer
   should check belongs in one of those two places, in words that stand
-  alone: what you chose, and what the skill leaves open.
+  alone: what you chose, and what the skill leaves open. rote reads
+  markers in `extracted/`, in `signatures/`, and in `pipeline.yaml`. A
+  structural guess (a kind, a gate, a `mandatory:` or `fan_out:` you
+  inferred) is a YAML comment on its node, and a judge prompt's guess
+  goes in the prompt or its signature module:
+
+  ```yaml
+  - id: controller_review
+    # rote: assumption: one controller approves; the skill names no quorum
+    kind: hitl_gate
+  ```
 
 A report written by the agent cost real compiles 17 to 66 seconds of
 output, was rewritten in repair rounds, and sent compiles back to repair

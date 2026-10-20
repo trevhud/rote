@@ -422,17 +422,21 @@ async def test_the_child_writes_the_prompt_cache_for_five_minutes(
 ) -> None:
     """Claude Code picks the 1-hour cache TTL on a subscription, which bills
     every cache write at 2x input instead of 1.25x; a compile reuses its
-    prefix within seconds. The value is asserted, not just the key, and a
-    caller's own opt-in to the 1-hour TTL does not change it."""
+    prefix within seconds. Both buckets' documented controls are set, the
+    values are asserted, not just the keys, and a caller's own 1-hour
+    exports do not reach the child."""
     skill_dir, compiler_dir, work_dir = fake_skills
     monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
-    monkeypatch.setenv("FORCE_PROMPT_CACHING_5M", "0")
+    monkeypatch.setenv("CLAUDE_CODE_PROMPT_CACHE_TTL", "1h")
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "1h")
     recorder = fake_claude_subprocess(
         stdout_text=_stream(_result_line(result="ok")),
         write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
     )
     await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
-    assert recorder.calls[0]["env"]["FORCE_PROMPT_CACHING_5M"] == "1"
+    env = recorder.calls[0]["env"]
+    assert env["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "5m"
+    assert env["CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL"] == "5m"
 
 
 def test_effort_outside_the_accepted_levels_is_rejected() -> None:

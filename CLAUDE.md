@@ -967,21 +967,34 @@ renders it from the deliverable after the final verification (from
 is now "distinct assumptions + stubs" and comparable across runs. The
 `unlisted_assumption` finding is gone with it. Two consequences to keep:
 a judgment call a reviewer must see belongs in a marker or a stub
-message (the rubric says so), and every turn now ends in one sentence,
+message (the rubric says so), and `provenance.assumptions()` reads markers
+in `extracted/`, `signatures/` and `pipeline.yaml` (a YAML comment on a
+node, or a judge prompt), so a structural guess has a route into the
+report too. Marker text is rendered behind `> `, so a marker reading
+`### OQ-9` cannot forge an entry, and every turn now ends in one sentence,
 because the closing summary was 400 to 650 output tokens nobody read.
 Tests: `tests/test_compile_report.py`, each verified by a mutation.
 
 ### The compiler child writes a 5-minute prompt cache
 
-On a subscription, Claude Code writes the prompt cache with the 1-hour
-TTL, billed at 2x the input rate (5 minutes is 1.25x). A compile's calls
-follow each other within seconds, so the hour buys nothing, and
-profiled compiles put 35 to 40 percent of `total_cost_usd` in 1-hour
-cache writes. `ClaudeDriver` sets `FORCE_PROMPT_CACHING_5M=1`
-(`PROMPT_CACHE_ENV`), which outranks every other TTL setting
+On a subscription within plan usage, Claude Code writes the main
+conversation's prompt cache (`-p` runs included) with the 1-hour TTL,
+billed at 2x the input rate (5 minutes is 1.25x). A compile's calls
+follow each other within seconds, so the hour buys nothing. Profiled
+compiles put an estimated 35 to 40 percent of `total_cost_usd` in
+1-hour cache writes. Estimated, because `total_cost_usd` is Claude
+Code's client-side estimate: the saving is real in it, but nothing shows
+it changes how a subscription's plan limits are consumed. `ClaudeDriver`
+sets the documented per-bucket controls, `CLAUDE_CODE_PROMPT_CACHE_TTL=5m`
+and `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m` (`PROMPT_CACHE_ENV`,
+Claude Code 2.1.242+), on the compiler child only. They outrank the
+settings and `ENABLE_PROMPT_CACHING_1H`; only `FORCE_PROMPT_CACHING_5M`,
+which the docs frame as a debugging override, ranks higher
 (https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself).
 Confirm it in a transcript: `usage.cache_creation.ephemeral_5m_input_tokens`
-carries the writes and `ephemeral_1h_input_tokens` is 0.
+carries the writes and `ephemeral_1h_input_tokens` is 0. Unmeasured: a
+single response, or a repair round's verification, that runs past 5
+minutes expires the cache and costs one full rewrite (seen once, $0.23).
 
 ### Sonnet 5.5 is faster and cheaper, but not yet the default
 

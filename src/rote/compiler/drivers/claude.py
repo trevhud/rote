@@ -136,16 +136,28 @@ EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 ``max``; they are left out on purpose, since Sonnet 4.6 has no ``xhigh``
 (it runs as ``high``) and ``max`` is the costliest level there is."""
 
-PROMPT_CACHE_ENV: dict[str, str] = {"FORCE_PROMPT_CACHING_5M": "1"}
-"""Forces Claude Code's 5-minute prompt-cache TTL in the compiler child.
+PROMPT_CACHE_ENV: dict[str, str] = {
+    "CLAUDE_CODE_PROMPT_CACHE_TTL": "5m",
+    "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL": "5m",
+}
+"""Claude Code's 5-minute prompt-cache TTL for the compiler child.
 
-On a subscription, Claude Code writes the cache with the 1-hour TTL, which
-bills a write at 2x the input rate against 1.25x for 5 minutes. A
-compile's calls follow each other within seconds, and every read renews
-the TTL, so the extra hour buys nothing. Profiled compiles (2026-10-19,
-Sonnet 4.6 and 5.5) put 35 to 40 percent of ``total_cost_usd`` in 1-hour
-cache writes. The variable outranks every other TTL setting, including
-a user's own ``promptCacheTtl``.
+On a subscription within plan usage, Claude Code writes the main
+conversation's cache (which includes ``-p`` runs) with the 1-hour TTL,
+billed at 2x the input rate against 1.25x for 5 minutes. A compile's
+calls follow each other within seconds, and every read renews the TTL,
+so the extra hour buys nothing. Profiled compiles (2026-10-19, Sonnet
+4.6 and 5.5) put an estimated 35 to 40 percent of ``total_cost_usd`` in
+1-hour cache writes. That figure is Claude Code's client-side estimate:
+the saving is real in it, but not shown to change how a subscription's
+plan limits are consumed.
+
+These are the documented per-bucket TTL controls (Claude Code 2.1.242+),
+both buckets so a subagent cannot differ. They rank above the
+``promptCacheTtl`` settings and ``ENABLE_PROMPT_CACHING_1H``, and the
+child's values replace any the caller exported. Only
+``FORCE_PROMPT_CACHING_5M``, a debugging override, ranks higher, and it
+also means 5 minutes.
 https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself"""
 
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"

@@ -65,6 +65,17 @@ def _cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
+def _quoted(text: str) -> str:
+    """Text from the deliverable as one inert blockquote line.
+
+    Assumption text, stub messages and a mode's details come from code the
+    agent wrote. On a line of its own, ``### OQ-9: fake`` would be a real
+    heading that :func:`open_questions` counts (inflating the bench's
+    ``OQ``) and a ``- `` would be a list item; behind ``> `` neither is.
+    """
+    return "> " + " ".join(text.split())
+
+
 def _module_summary(source: str) -> str | None:
     """The first line of a module's docstring, if it has one."""
     try:
@@ -170,11 +181,13 @@ def _open_questions(
         distinct.setdefault(_normalized(a.text), []).append(a)
     lines: list[str] = []
     for number, group in enumerate(distinct.values(), start=1):
-        owner = group[0].node_id or "module helper"
+        owner = group[0].node_id or (
+            "pipeline" if group[0].path == "pipeline.yaml" else "module helper"
+        )
         lines += [
             f"### OQ-{number}: {owner}",
             "",
-            group[0].text,
+            _quoted(group[0].text),
             "",
             "Marked `# rote: assumption:` at "
             + ", ".join(f"`{a.path}:{a.line}`" for a in group)
@@ -185,9 +198,14 @@ def _open_questions(
         if impl.status == "implemented" or impl.mcp_bound:
             continue
         reason = impl.reason or "no reason given"
-        lines += [f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})", "", reason, ""]
+        lines += [
+            f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})",
+            "",
+            _quoted(reason),
+            "",
+        ]
     for title, detail in extra:
-        lines += [f"### {' '.join(title.split())}", "", detail, ""]
+        lines += [f"### {' '.join(title.split())}", "", _quoted(detail), ""]
     if not lines:
         return ["None: the code records no assumption and leaves no stub.", ""]
     return lines

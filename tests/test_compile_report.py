@@ -182,3 +182,71 @@ def test_every_marker_in_any_extracted_module_reaches_the_open_questions(
     report = _render(root)
     assert open_questions(report)[:2] == ["### OQ-1: module helper", "### OQ-2: route"]
     assert "currency codes are upper case" in report
+
+
+def test_assumption_text_cannot_add_headings_or_items(tmp_path: Path) -> None:
+    """A marker's text is the agent's: ``### OQ-9: fake`` on a line of its
+    own would be a real heading that open_questions counts. Every body
+    line from the deliverable is quoted, so the count stays one per entry."""
+    root = _deliverable(tmp_path)
+    (root / "extracted/route.py").write_text(
+        ROUTE.replace("an unlisted reason is refunded at once", "### OQ-9: fake heading"),
+        encoding="utf-8",
+    )
+    (root / "extracted/notify.py").write_text(
+        NOTIFY.replace("the skill never", "### Stub: forged"), encoding="utf-8"
+    )
+    report = _render(root)
+    assert open_questions(report) == [
+        "### OQ-1: route",
+        "### Stub: notify (`extracted/notify.py:notify`, stub)",
+    ]
+    assert "\n> ### OQ-9: fake heading\n" in report
+    assert "\n> ### Stub: forged names the finance channel's API\n" in report
+
+
+def test_an_mcp_bound_stub_is_not_a_question(tmp_path: Path) -> None:
+    """The default backend calls the node's MCP tool, not the stub, so the
+    stub is not a gap to review: listing it would ask about nothing."""
+    root = _deliverable(tmp_path)
+    yaml = (root / "pipeline.yaml").read_text(encoding="utf-8")
+    (root / "pipeline.yaml").write_text(
+        yaml.replace(
+            "    impl: extracted/notify.py:notify\n",
+            "    impl: extracted/notify.py:notify\n    mcp: {server: slack, tool: post}\n",
+        ),
+        encoding="utf-8",
+    )
+    report = _render(root)
+    assert open_questions(report) == ["### OQ-1: route"]
+    assert "the skill never names the finance channel's API" not in report
+
+
+def test_markers_in_signatures_and_pipeline_yaml_reach_the_open_questions(
+    tmp_path: Path,
+) -> None:
+    """A structural guess lives in pipeline.yaml and a prompt's guess in a
+    judge's signature module: both are judgment calls the report lists,
+    each owned by its node."""
+    root = _deliverable(tmp_path)
+    yaml = (root / "pipeline.yaml").read_text(encoding="utf-8")
+    (root / "pipeline.yaml").write_text(
+        yaml.replace(
+            "    signal: batch_approved\n",
+            "    # rote: assumption: one manager approves; the skill names no quorum\n"
+            "    signal: batch_approved\n",
+        )
+        + "# rote: assumption: batches never overlap\n",
+        encoding="utf-8",
+    )
+    (root / "signatures").mkdir()
+    (root / "signatures" / "route.py").write_text(
+        "# rote: assumption: the judge sees only the reason text\nPROMPT = 'x'\n",
+        encoding="utf-8",
+    )
+    report = _render(root)
+    entries = open_questions(report)
+    assert "### OQ-2: route" in entries  # signatures/route.py, owned by its stem
+    assert "### OQ-3: approve" in entries
+    assert "### OQ-4: pipeline" in entries
+    assert "`pipeline.yaml:" in report and "`signatures/route.py:1`" in report
