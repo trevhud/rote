@@ -78,8 +78,11 @@ one-line tip recommending it; it never blocks.
 uvx --from rote-cli rote compile <skill-dir> --runtime <runtime> --out <out-dir>
 ```
 
-- A realistic skill takes **~13 minutes** and 30–40 agent turns (~$0.70 on a
-  Claude subscription). **Run it backgrounded** and poll — do not block.
+- A realistic skill takes **2 to 6 minutes** on the default path (System-1:
+  rote decides the structure with rules, and the agent writes only code and
+  prompts). `--no-system1`, and every `--update`, run the full-rubric agent,
+  which takes ~13 minutes and 30–40 agent turns. **Run it backgrounded** and
+  poll — do not block.
 - **Confirm the resolved skill directory as an absolute path** with the human
   before launching. Compilation spends real time and tokens; never guess-and-go.
   If the directory has no `SKILL.md`, stop and ask.

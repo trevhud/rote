@@ -612,11 +612,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.system1_decider != "rules" and not args.system1:
-        print(
-            f"error: --system1-decider {args.system1_decider} needs --system1",
-            file=sys.stderr,
-        )
+    s1_error = _system1_flag_error(args)
+    if s1_error:
+        print(f"error: {s1_error}", file=sys.stderr)
         return 2
 
     # ── Layered defaults ── flag > ROTE_* env > project rote.yaml >
@@ -1456,7 +1454,8 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-verify-tests", args.no_verify_tests),
         ("--trust-skill", args.trust_skill),
         ("--strict-provenance", args.strict_provenance),
-        ("--system1", args.system1),
+        ("--system1/--no-system1", args.system1 is not None),
+        ("--system1-decider", args.system1_decider != "rules"),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2541,6 +2540,10 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     if not skill_path.is_dir():
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
+    s1_error = _system1_flag_error(args)
+    if s1_error:
+        print(f"error: {s1_error}", file=sys.stderr)
+        return 2
 
     # Same layered agent/model defaults as compile — analyze is its dry run.
     from rote import config as rote_config
@@ -2571,6 +2574,8 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
+        system1=args.system1,
+        system1_decider=args.system1_decider,
     )
 
     out_ctx: Any = (
@@ -3858,6 +3863,45 @@ def _run_empirical(
 # ───────── Argument parsing ─────────
 
 
+def _system1_flag_error(args: argparse.Namespace) -> str | None:
+    """A usage error in the System-1 flags, else None."""
+    if args.system1_decider != "rules" and args.system1 is False:
+        return (
+            f"--system1-decider {args.system1_decider} decides System-1's structure; "
+            "drop --no-system1"
+        )
+    return None
+
+
+def _add_system1_flags(p: argparse.ArgumentParser) -> None:
+    """The System-1 flags, shared by ``compile`` and its dry run ``analyze``."""
+    p.add_argument(
+        "--system1",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "System-1 (the default): rote decides the whole pipeline structure with rules "
+            "(kinds, data flow, fan_out, mandatory, gates, constants, rule tables as code) "
+            "before the agent runs, and the agent then writes only text (implementations, "
+            "judge prompts, the report). --no-system1 runs the full-rubric agent, which "
+            "decides the structure itself. --update always runs the full-rubric agent, "
+            "because System-1 does not support it yet. See docs/design/system1-compile.md"
+        ),
+    )
+    p.add_argument(
+        "--system1-decider",
+        choices=["rules", "clef"],
+        default="rules",
+        help=(
+            "Who decides each step's kind and whether a person must act. 'rules' "
+            "(default) makes no call. 'clef' asks Cloudflare's Clef decision model where "
+            "it is confident and the rules elsewhere. It sends every step's text to your "
+            "Cloudflare account's Workers AI, needs CLOUDFLARE_ACCOUNT_ID and "
+            "CLOUDFLARE_API_TOKEN, and costs about $0.005 a compile"
+        ),
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     # Help text names the real defaults, read from the constants the code
     # uses, so `--help` cannot drift from behavior when a default moves.
@@ -4150,28 +4194,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=("Don't run the tests the compiler agent writes. Static checks still run."),
     )
-    compile_p.add_argument(
-        "--system1",
-        action="store_true",
-        help=(
-            "EXPERIMENTAL: decide the whole pipeline structure with rules (kinds, data "
-            "flow, fan_out, mandatory, gates, constants, rule tables as code) before the "
-            "agent runs; the agent then writes only text (implementations, judge "
-            "prompts, the report). See docs/design/system1-compile.md"
-        ),
-    )
-    compile_p.add_argument(
-        "--system1-decider",
-        choices=["rules", "clef"],
-        default="rules",
-        help=(
-            "EXPERIMENTAL, with --system1: who decides each step's kind and whether a person "
-            "must act. 'rules' (default) makes no call. 'clef' asks Cloudflare's Clef "
-            "decision model where it is confident and the rules elsewhere. It sends every "
-            "step's text to your Cloudflare account's Workers AI, needs CLOUDFLARE_ACCOUNT_ID "
-            "and CLOUDFLARE_API_TOKEN, and costs about $0.005 a compile"
-        ),
-    )
+    _add_system1_flags(compile_p)
     compile_p.add_argument(
         "--strict-provenance",
         action="store_true",
@@ -4722,6 +4745,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Emit the analysis report as JSON instead of text.",
     )
     analyze.set_defaults(func=_cmd_analyze)
+    _add_system1_flags(analyze)
     analyze.add_argument(
         "--no-verify-tests",
         action="store_true",

@@ -262,7 +262,7 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
     assert "## Open questions" in report
     assert "### The agent edited a decision; rote restored it" in report
     assert f"> `{first.id}` fan_out: agent wrote True, kept None" in report
-    assert "Compiled with `--system1`" in report
+    assert "Compiled with System-1" in report
     assert (out / "system1" / "decisions.json").is_file()
 
 

@@ -1,4 +1,4 @@
-"""System-1 compile (EXPERIMENTAL, ``rote compile --system1``).
+"""System-1 compile, the default ``rote compile`` path (``--no-system1`` opts out).
 
 Every decision a compile makes (which nodes a step becomes, their kinds,
 data flow, fan_out, mandatory flags, gates and signals, constants, rule
@@ -7,8 +7,8 @@ agent is then given a much smaller rubric and writes only text: module
 implementations and tests, judge signatures and prompts, the report.
 
 The research behind it, with measured numbers, is
-``docs/design/system1-compile.md``. Nothing on the default
-compile path calls it.
+``docs/design/system1-compile.md``. ``--no-system1`` and ``--update``
+run the full-rubric agent instead, which decides the structure itself.
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def settle(work_dir: Path, p: Plan, *, final: bool = False) -> list[str]:
 
 
 def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
-    """What --system1 adds to the shared compile report (rote.compiler.report).
+    """What System-1 adds to the shared compile report (rote.compiler.report).
 
     Read from ``work_dir`` (the proposals and the enforcement record), so it
     is built before the work dir moves to the output."""
@@ -134,7 +134,7 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     clef_used = _used_clef(work_dir)
     return ReportExtras(
         preamble=(
-            "Compiled with `--system1`: rote decided the structure with rules"
+            "Compiled with System-1: rote decided the structure with rules"
             f"{' and the Clef decision model' if clef_used else ''}, and the "
             "agent wrote the implementations and judge prompts. Every decision, with its "
             f"confidence and rule, is in `{BRIEF_DIRNAME}/{DECISIONS_FILENAME}`."
@@ -145,11 +145,11 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
             "not state, and each low-confidence decision took a conservative default.",
             "Run the pipeline once (`rote run`) and compare it with a run of the skill.",
             (
-                "Recompile with `rote compile --system1` after the skill changes. The "
+                "Recompile with `rote compile` after the skill changes. The "
                 "decisions are model answers (Clef) where Clef was confident, and rules "
                 "elsewhere: compare decisions.json between runs before trusting a diff."
                 if clef_used
-                else "Recompile with `rote compile --system1` after the skill changes: the "
+                else "Recompile with `rote compile` after the skill changes: the "
                 "rules are deterministic, so the same skill text gives the same decisions."
             ),
         ),

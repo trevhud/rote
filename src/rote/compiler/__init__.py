@@ -232,7 +232,7 @@ class Compiler:
         trust_skill: bool = False,
         emit_target: EmitTarget | None = None,
         strict_provenance: bool = False,
-        system1: bool = False,
+        system1: bool | None = None,
         system1_decider: str = "rules",
         tool_discovery: tool_grounding.Discovery = "named",
     ) -> None:
@@ -281,10 +281,18 @@ class Compiler:
             error, review gaps included. By default only a citation the skill
             does not contain fails; assumptions never do.
         system1
-            EXPERIMENTAL (``--system1``): every structural decision is made by
+            System-1 (the default): every structural decision is made by
             rules before the agent runs (:mod:`rote.compiler.system1`), and
             the agent, under a smaller rubric, writes only text. rote holds
-            the agent to the decisions after every stop.
+            the agent to the decisions after every stop. ``None`` (the
+            default) means System-1 for a full compile and the full-rubric
+            agent for ``update=True``, which System-1 does not support yet.
+            ``False`` (``--no-system1``) is the full-rubric agent always.
+            ``True`` with ``update=True`` is an error.
+        system1_decider
+            Who decides step kinds and gates on the System-1 path
+            (:data:`rote.compiler.system1.DECIDERS`). A model decider with
+            System-1 off is an error, never ignored.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -454,6 +462,18 @@ class Compiler:
         skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         if self.system1 and update:
             raise CompilerError("--system1 does not support --update yet; run a full compile")
+        use_system1 = self.system1 if self.system1 is not None else not update
+        if not use_system1 and self.system1_decider != "rules":
+            raise CompilerError(
+                f"--system1-decider {self.system1_decider} decides System-1's structure, "
+                "and this compile does not run System-1"
+                + (" (--update uses the full-rubric agent)" if update else "")
+            )
+        if update and self.system1 is None:
+            self._emit(
+                "log",
+                "--update runs the full-rubric agent: System-1 does not support --update yet",
+            )
 
         plan: UpdatePlan | None = None
         if update:
@@ -500,7 +520,7 @@ class Compiler:
                 tools=await self._tool_schemas(observations, skill_dir),
             )
             s1_plan: system1.Plan | None = None
-            if self.system1:
+            if use_system1:
                 try:
                     s1_plan = system1.prepare(
                         skill_dir,
@@ -588,7 +608,7 @@ class Compiler:
                 except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
                     kept = self._keep_rejected_work(result.work_dir, output_dir)
                     raise CompilerError(
-                        f"--system1 could not settle the agent's deliverable: "
+                        f"System-1 could not settle the agent's deliverable: "
                         f"{type(e).__name__}: {e}. The agent's work is kept at {kept}."
                     ) from e
 

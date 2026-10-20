@@ -230,6 +230,7 @@ def test_the_clef_decider_needs_system1(tmp_path: Path) -> None:
             str(_skill(tmp_path)),
             "--out",
             str(tmp_path / "o"),
+            "--no-system1",
             "--system1-decider",
             "clef",
         ]

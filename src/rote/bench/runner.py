@@ -404,7 +404,10 @@ def _parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar="FLAG",
-        help="Extra flag passed to every rote compile, repeatable (e.g. --compile-flag=--system1)",
+        help=(
+            "Extra flag passed to every rote compile, repeatable "
+            "(e.g. --compile-flag=--no-system1 for the full-rubric path)"
+        ),
     )
     p.add_argument("--no-tsc", action="store_true", help="Skip npm install + tsc on cloudflare")
     p.add_argument("--label", default=None, help="Free text stored in results.json (a git sha)")

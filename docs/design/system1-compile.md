@@ -1,7 +1,10 @@
-# `rote compile --system1`: rules decide, the LLM writes code
+# System-1 compile: rules decide, the LLM writes code
 
-Status: experimental, behind `--system1`. The default compile path is
-unchanged. Built on main after #144 (`--effort low`) and #146 (`rote bench`).
+Status: the default `rote compile` path. `--no-system1` runs the
+full-rubric agent instead, and `--update` always does, because System-1
+does not support incremental re-compilation yet. This document was written
+while it was an experimental `--system1` flag, so the measurements below
+call it that. Built on main after #144 (`--effort low`) and #146 (`rote bench`).
 
 The principle, in the user's words: *"classification is something we can do
 with a system one model. Also, any decision. We should only be using LLMs
