@@ -57,6 +57,29 @@ def read_compile_metrics(compiled: Path | None) -> dict[str, Any]:
     return dict(meta) if isinstance(meta, dict) else {}
 
 
+def decisions_cost_usd(compiled: Path | None) -> float | None:
+    """What System-1's own model calls cost, from ``system1/decisions.json``.
+
+    The decider (Clef or Jev) and the tie-break are paid calls outside the
+    agent run, so the driver's ``total_cost_usd`` does not include them.
+    ``0.0`` when the compile made none (rules, no tie-break, or the
+    full-rubric path), ``None`` when one was made and could not be priced.
+    """
+    path = None if compiled is None else compiled / "system1" / "decisions.json"
+    if path is None or not path.is_file():
+        return 0.0
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    total = 0.0
+    for call in (doc.get("decider"), doc.get("tiebreak")):
+        if call is None:
+            continue
+        cost = call.get("cost_usd")
+        if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+            return None
+        total += float(cost)
+    return total
+
+
 def phase_durations(progress_jsonl: Path) -> dict[str, Any]:
     """Seconds spent in each announced phase, from ``progress.jsonl``.
 
@@ -290,6 +313,8 @@ def collect_job(
     """
     compiled = deliverable_dir(out_dir)
     metrics = read_compile_metrics(compiled) or failed_run_usage(out_dir / "progress.jsonl")
+    decisions = decisions_cost_usd(compiled)
+    driver_cost = metrics.get("cost_usd")
     run: dict[str, Any] = {
         "exit_code": exit_code,
         "wall_seconds": round(wall_seconds, 1) if wall_seconds is not None else None,
@@ -298,7 +323,14 @@ def collect_job(
         # count (assistant turns) as iterations.
         "turns": metrics.get("num_turns", metrics.get("iterations")),
         "repair_rounds": metrics.get("repair_rounds"),
-        "cost_usd": metrics.get("cost_usd"),
+        # The whole compile: the agent run plus System-1's decision calls. A
+        # decision call that could not be priced (decisions_cost_usd null) is
+        # left out, so the budget still counts the agent run.
+        "cost_usd": (
+            None if driver_cost is None else round(float(driver_cost) + (decisions or 0.0), 6)
+        ),
+        "driver_cost_usd": driver_cost,
+        "decisions_cost_usd": decisions,
         "input_tokens": metrics.get("input_tokens"),
         "output_tokens": metrics.get("output_tokens"),
         "cache_write_tokens": metrics.get("cache_write_tokens"),

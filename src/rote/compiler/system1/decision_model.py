@@ -263,6 +263,15 @@ def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
             loaded = json.loads(r.read())
     except urllib.error.HTTPError as e:
         detail = f"Workers AI answered HTTP {e.code}: {e.read()[:300]!r}"
+        if e.code == 402:
+            # Measured: Jev, a partner model, bills the account's AI Gateway
+            # Unified Billing credits, while Clef bills Workers AI itself, so
+            # one account can serve Clef and refuse Jev.
+            detail += (
+                ". The account's AI Gateway balance is empty: partner models such as "
+                "Jev bill Unified Billing credits, so add credits in the Cloudflare "
+                "dashboard (AI > AI Gateway) or use --decider clef"
+            )
         if 400 <= e.code < 500 and e.code != 429:
             # A bad token, a missing model or a malformed body fails the same
             # way every time: fail now instead of six times with backoff.
@@ -306,18 +315,32 @@ def ask(
     raise DeciderUnavailable(f"{model.label} did not answer after 6 tries: {last}")
 
 
+#: Calls in flight at once. Every (step, phrasing) call is independent, so a
+#: compile's 30-odd calls take about one call's latency instead of 30.
+MAX_PARALLEL = 16
+VARIANTS = ("v0", "v1", "v2")
+
+
 def decide(model: DecisionModel, skill: SkillParse) -> Verdicts:
     """The model's ensembled kind and gate probability for every step unit."""
+    from concurrent.futures import ThreadPoolExecutor
+
     account, token = credentials(model)
     _gateway_headers()  # a bad gateway setting fails here, not six retries later
+    jobs = [(u, variant) for u in skill.units for variant in VARIANTS]
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
+        results = list(
+            pool.map(lambda j: ask(model, account, token, state_for(skill, j[0]), j[1]), jobs)
+        )
+    by_unit: dict[int, list[dict[str, Any]]] = {}
+    for (u, _), res in zip(jobs, results, strict=True):
+        by_unit.setdefault(u.index, []).append(res)
     out: dict[int, Verdict] = {}
     for u in skill.units:
-        state = state_for(skill, u)
         probs: dict[str, list[float]] = {}
         human: list[float] = []
         cost = 0.0
-        for variant in ("v0", "v1", "v2"):
-            res = ask(model, account, token, state, variant)
+        for res in by_unit[u.index]:
             answers = res["answers"]
             for k, p in answers["kind"]["probabilities"].items():
                 probs.setdefault(k, []).append(float(p))

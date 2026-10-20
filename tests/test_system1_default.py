@@ -64,6 +64,7 @@ async def _rubric_for(
     spy = _RubricSpy()
     monkeypatch.setattr(Compiler, "select_driver", lambda self: spy)
     logs: list[str] = []
+    kwargs.setdefault("system1_tiebreak", "none")
     compiler = Compiler(on_event=lambda e: logs.append(e.message), **kwargs)
     with pytest.raises(_Stop):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
@@ -219,7 +220,7 @@ async def test_the_compiler_checks_judge_specs_on_the_system1_path_only(
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Writes())
     with contextlib.suppress(CompilerError):
-        await Compiler(system1=system1, run_generated_tests=False).compile(
+        await Compiler(system1=system1, run_generated_tests=False, system1_tiebreak="none").compile(
             _skill(tmp_path), tmp_path / "out"
         )
     assert seen and set(seen) == {flagged}

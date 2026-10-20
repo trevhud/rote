@@ -3,7 +3,8 @@
 Walks the choices that shape every later command — where compiled
 pipelines run (rote cloud vs a local runtime), which compiler driver
 does the work, optionally which model, and who decides the pipeline
-structure on a local compile — then writes them to a config file
+structure on a local compile (a decider, and whether a small LLM breaks
+ties) — then writes them to a config file
 (:mod:`rote.config`). It is the only interactive entry
 point in the CLI besides login itself; everything else must stay
 prompt-free for CI, which is why this lives behind an explicit command
@@ -38,7 +39,7 @@ RUNTIME_MENU: tuple[tuple[str, str], ...] = (
 DECIDER_MENU: tuple[tuple[str, str], ...] = (
     ("rules", "rules over the skill's text: no call, nothing leaves this machine (default)"),
     ("clef", "Cloudflare's Clef decision model, where it is confident (~$0.005 a compile)"),
-    ("jev", "Typesafe's Jev decision model, where it is confident (~$0.001 a compile)"),
+    ("jev", "Typesafe's Jev decision model, where it is confident (~$0.001, AI Gateway credits)"),
 )
 
 
@@ -178,6 +179,18 @@ def run_wizard(
             "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN before compiling (a compile "
             "without them fails rather than using the rules)"
         )
+
+    # ── 5. Tie-break ──
+    echo("")
+    tb = _ask(
+        "Let Claude Haiku decide the steps System-1 is unsure of? One small call a "
+        "compile, billed like the compile itself [y/N]: ",
+        input_fn,
+        default="n",
+        valid={"y", "n"},
+    )
+    if tb == "y":
+        values["tiebreak"] = "haiku"
 
     # ── Write ──
     target = (cwd or Path.cwd()) / "rote.yaml" if project else user_config_path()
