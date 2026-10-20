@@ -852,7 +852,7 @@ def test_the_bench_grounds_each_compile_in_the_examples_sample() -> None:
 
     from rote.bench.runner import compile_argv, sample_input
 
-    args = argparse.Namespace(runtime="dbos", model=None, agent=None)
+    args = argparse.Namespace(runtime="dbos", model=None, agent=None, compile_flag=[])
     sample = sample_input(REPO / "examples", "expense-audit")
     # sample.json, never input.json: the fidelity cases are built from input.json.
     assert sample == EXPENSE / "sample.json"
@@ -950,3 +950,49 @@ def test_rote_compile_passes_sample_input_to_the_compiler(
     argv = ["compile", str(skill), "--runtime", "dbos", "--local", "--no-eval"]
     rc = cli_main([*argv, "--out", str(tmp_path / "out"), "--sample-input", str(sample)])
     assert rc == 1 and seen["sample_input"] == str(sample)
+
+
+def _grounding_kinds(pipeline: Pipeline, sample: Sample) -> set[str]:
+    from rote.compiler.grounding import grounding_findings
+
+    return {f.kind for f in grounding_findings(pipeline, EXPENSE / "skill", sample)}
+
+
+def test_system1_takes_its_input_schema_and_gate_keys_from_the_sample(tmp_path: Path) -> None:
+    """In --system1 mode rote decides the IR's input and gate payloads, and the
+    agent cannot change them, so the sample must feed those decisions: a
+    check the agent cannot satisfy would only burn repair rounds."""
+    from rote.compiler import system1
+    from rote.ir import NodeKind
+
+    sample = load_sample(EXPENSE / "sample.json")
+    (tmp_path / "with").mkdir()
+    (tmp_path / "without").mkdir()
+    system1.prepare(EXPENSE / "skill", tmp_path / "with", sample=sample)
+    grounded = _pipeline(tmp_path / "with")
+    assert grounded.input.input_schema == input_contract(sample)
+    [gate] = [n for n in grounded.nodes if n.kind is NodeKind.HITL_GATE]
+    assert gate.output_keys == {"reviewer", "approved_ids", "rejected_ids"}
+    assert _grounding_kinds(grounded, sample) == set()
+    # The compiler hands the sample it found to System-1.
+    import asyncio
+
+    from rote.compiler import CompilerError
+
+    seen: dict[str, object] = {}
+
+    def _record(*args: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+        raise system1.UnsafeSkillText("stop here")
+
+    skill = _write(tmp_path / "skill", {"SKILL.md": "# s\n", "input.json": json.dumps(_ROWS)})
+    compiler = Compiler(compiler_skill_dir=tmp_path, system1=True)
+    compiler.select_driver = lambda: _GroundedDriver()  # type: ignore[method-assign]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(system1, "prepare", _record)
+        with pytest.raises(CompilerError, match="stop here"):
+            asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    assert isinstance(seen["sample"], Sample) and seen["sample"].payload == _ROWS
+    # Without a sample, the wording decides, and the sample's check would fail.
+    system1.prepare(EXPENSE / "skill", tmp_path / "without")
+    assert "gate_payload_not_sample" in _grounding_kinds(_pipeline(tmp_path / "without"), sample)
