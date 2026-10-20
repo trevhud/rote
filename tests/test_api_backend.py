@@ -190,6 +190,7 @@ async def _compile(
 ) -> str:
     skill, rubric = skill_dirs
     compiler = Compiler(
+        system1=False,  # a fake rubric; System-1 is proven by the real runs
         compiler_skill_dir=rubric,
         emit_target=EmitTarget("dbos", backend),
         run_generated_tests=False,
@@ -226,6 +227,7 @@ async def test_a_cited_page_the_agent_never_fetched_is_flagged(
     driver = _ResearchingDriver(CITED_MODULE, ["https://example.com/some-other-page"])
     skill, rubric = skill_dirs
     compiler = Compiler(
+        system1=False,  # a fake rubric; System-1 is proven by the real runs
         compiler_skill_dir=rubric,
         emit_target=EmitTarget("dbos", "api"),
         run_generated_tests=False,
