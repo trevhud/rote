@@ -482,6 +482,11 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
         ("Look up each line's rate in the FX table.", False),
         ("Use the rows you read in Phase 2.", False),
         ("Load the request from the Controller.", False),
+        ("Look up each line's rate in FX table.", False),  # no article, still a label
+        ("Read the totals from earlier.", False),  # a lowercase word is not a name
+        ("Read each row of the table.", False),
+        ("Read each row of the Google Sheet.", True),
+        ("Read the open deals of HubSpot.", True),
         # A read from outside is.
         ("Pull open tickets from Zendesk.", True),
         ("Read the 50 most recent messages from #deal-intake.", True),

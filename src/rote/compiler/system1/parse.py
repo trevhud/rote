@@ -124,7 +124,7 @@ _SOURCE = (
     r"(?!(?:the\s+)?\[?references/|\w+\.md\b)"
     r"(?:(?:the\s+|a\s+|an\s+|our\s+|your\s+)?[#@][\w-]+"
     r"|(?:our\s+|your\s+)?(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)(?-i:[A-Z])[\w.-]*"
-    r"(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
+    r"(?![\w.-])(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
     rf"|(?:the\s+|a\s+|an\s+|our\s+|your\s+)?(?:[\w-]+\s+){{0,2}}{_SYSTEM_NOUN})"
 )
 
@@ -176,7 +176,9 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         # from Zendesk", "read the 50 most recent messages from #deal-intake".
         # A lookup in the skill's own reference files is not a call.
         r"\b(?:read|pull|fetch|query|look up|retrieve|download|export)\b[^.\n]{0,60}"
-        rf"\b(?:from|in|via|using)\s+{_SOURCE}",
+        # "of" only reaches a named product or system ("each row of the Google
+        # Sheet"); "each row of the table" has no source.
+        rf"\b(?:from|in|via|using|of)\s+{_SOURCE}",
         r"\bsearch\b[^.\n]{0,40}\bfor\b|\bsearch query\b",
         r"\bnavigate to\b",
     ),
