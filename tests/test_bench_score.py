@@ -183,6 +183,9 @@ def test_structure_and_kind_confusion() -> None:
     # 3 of 5 expected nodes kept their kind: the missing one counts as a miss.
     assert s["kind_accuracy"] == 0.6
     assert s["kind_accuracy_matched"] == 0.75
+    # Matching-free: expected {ext 2, pure 1, judge 1, gate 1}, compiled
+    # {ext 1, pure 3, gate 1}; shared minimums 1 + 1 + 1 over 5 nodes.
+    assert s["kind_mix_overlap"] == 0.6
     assert s["missing"] == ["publish"]
     assert s["extra"] == ["extra_log"]
     assert s["confusion"] == {
