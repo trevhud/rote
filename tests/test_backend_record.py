@@ -177,3 +177,23 @@ def test_the_compile_summary_lists_servers_only_for_a_runtime_that_calls_them(
     )
     captured = capsys.readouterr()
     assert ("required MCP servers: gmail" in captured.out + captured.err) is listed
+
+
+@pytest.mark.parametrize(
+    ("flag", "rejected"), [(["--backend", "mcp"], True), (["--backend", "api"], True), ([], False)]
+)
+def test_cloud_mode_rejects_any_explicit_backend(
+    tmp_path: Path, flag: list[str], rejected: bool
+) -> None:
+    """An explicit --backend, even the default value, is a local-only choice:
+    checking `!= "mcp"` would let `--backend mcp` through to the cloud."""
+    from rote.cli import _build_parser, _reject_local_only_cloud_flags
+
+    args = _build_parser().parse_args(
+        ["compile", str(tmp_path), "--out", str(tmp_path / "o"), *flag]
+    )
+    message = _reject_local_only_cloud_flags(args)
+    if rejected:
+        assert message is not None and "--backend" in message
+    else:
+        assert message is None or "--backend" not in message
