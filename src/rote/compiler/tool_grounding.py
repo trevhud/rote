@@ -89,22 +89,94 @@ def _phrase(name: str) -> str:
     return " ".join(w for w in re.split(r"[^a-z0-9]+", name.casefold()) if w)
 
 
-def servers_to_contact(
-    registered: Iterable[str], skill_text: str, mode: Discovery = "named"
-) -> list[str]:
-    """The registered servers a compile may send ``tools/list`` to.
+def _mention(name: str, text: str, table: frozenset[str]) -> str | None:
+    """The text that shows the skill means server ``name``, or ``None``.
 
-    ``named``: those whose name, read as words (``google_drive`` as
-    "google drive"), appears in the skill's text as a phrase. ``all``: every
-    registered server, on the user's explicit say-so. ``none``: no server.
+    A multi-word name (``google_drive``) matches as a phrase ("Google
+    Drive"): ordinary prose rarely says two such words together. A
+    one-word name (``linear``, ``box``, ``mail``) is an everyday word, so it
+    needs a server-shaped mention:
+
+    * backticked: `` `linear` ``;
+    * named as an MCP or server: "Linear MCP", "the slack server";
+    * a tool id: ``mcp__linear__create_issue``;
+    * the skill's tool table maps a tool to it;
+    * capitalized as a proper noun, case-sensitive, not as the first word
+      of a sentence or line ("post it in Slack" counts; "Drive the review
+      forward." does not).
+
+    A capitalized word right after another one is part of a longer name
+    ("Google Drive", "Google Drive MCP") and does not name a ``drive``.
+    """
+    words = _phrase(name).split()
+    if not words:
+        return None
+    if len(words) > 1:
+        pattern = r"\b" + r"[\W_]+".join(map(re.escape, words)) + r"\b"
+        m = re.search(pattern, text, re.IGNORECASE)
+        return m.group(0) if m else None
+    word = re.escape(words[0])
+    if name in table:
+        return f"the skill's tool table names {name!r}"
+    for pattern in (rf"`{word}`", rf"\bmcp__{word}__\w+"):
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            return m.group(0)
+    for m in re.finditer(rf"\b{word}\s+(?:mcp|server)\b", text, re.IGNORECASE):
+        if not _inside_longer_name(text, m.start()):
+            return m.group(0)
+    proper = words[0][:1].upper() + words[0][1:]
+    for m in re.finditer(rf"\b{re.escape(proper)}\b", text):
+        if not _sentence_start(text, m.start()) and not _inside_longer_name(text, m.start()):
+            return text[max(0, m.start() - 30) : m.end()].strip()
+    return None
+
+
+def _sentence_start(text: str, start: int) -> bool:
+    """Whether the word at ``start`` opens a sentence, paragraph, heading or
+    list item. A line break inside a wrapped paragraph does not."""
+    head = text[:start]
+    gap = re.search(r"[\s*_(\[\"'>`]*$", head)
+    before = head[: gap.start()] if gap else head
+    if not before or (gap and re.search(r"\n[ \t]*\n", gap.group(0))):
+        return True
+    if before[-1] in ".!?:#-+|":
+        return True
+    return re.search(r"(?:^|\n)\s*\d+[.)]$", before) is not None
+
+
+def _inside_longer_name(text: str, start: int) -> bool:
+    """Whether the word at ``start`` continues a capitalized name: "in Google
+    Drive" names Google Drive, not a server called ``drive``. A capital that
+    only opens the sentence ("Search Gmail") is not a name."""
+    prev = re.search(r"([A-Za-z][\w.-]*)[ \t]+$", text[:start])
+    return (
+        prev is not None
+        and prev.group(1)[:1].isupper()
+        and not _sentence_start(text, prev.start(1))
+    )
+
+
+def servers_to_contact(
+    registered: Iterable[str],
+    skill_text: str,
+    mode: Discovery = "named",
+    tool_table_servers: Iterable[str] = (),
+) -> dict[str, str]:
+    """``{server: why}`` for the registered servers a compile may list.
+
+    ``named``: those the skill mentions (:func:`_mention`), each with the
+    text that matched, for the log. ``all``: every registered server, on
+    the user's explicit say-so. ``none``: no server.
     """
     names = sorted(registered)
     if mode == "none":
-        return []
+        return {}
     if mode == "all":
-        return names
-    text = f" {_phrase(skill_text)} "
-    return [n for n in names if _phrase(n) and f" {_phrase(n)} " in text]
+        return {n: "--tool-discovery all" for n in names}
+    table = frozenset(tool_table_servers)
+    found = {n: _mention(n, skill_text, table) for n in names}
+    return {n: why for n, why in found.items() if why is not None}
 
 
 async def discover(

@@ -261,7 +261,11 @@ def test_dead_servers_are_listed_concurrently_and_time_out(
     monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
     reasons: dict[str, str] = {}
     started = time.monotonic()
-    found = asyncio.run(discover(servers, on_skip=reasons.__setitem__, timeout=1.0))
+    # A hard bound of its own: with the per-server timeout broken, a dead
+    # server hangs forever, and this must fail in seconds, not minutes.
+    found = asyncio.run(
+        asyncio.wait_for(discover(servers, on_skip=reasons.__setitem__, timeout=1.0), 10)
+    )
     elapsed = time.monotonic() - started
     assert found == {}
     assert sorted(reasons) == ["dead0", "dead1", "dead2", "dead3"]
@@ -275,12 +279,83 @@ def test_only_servers_the_skill_names_are_contacted() -> None:
     from rote.compiler.tool_grounding import servers_to_contact
 
     registered = ["gmail", "google_drive", "work_jira", "salesforce"]
-    skill = "Pull the sheet (Google Drive MCP) and search Gmail for the label."
-    assert servers_to_contact(registered, skill) == ["gmail", "google_drive"]
-    assert servers_to_contact(registered, skill, "all") == sorted(registered)
-    assert servers_to_contact(registered, skill, "none") == []
+    skill = "Pull the sheet (Google Drive MCP) and search the Gmail MCP for the label."
+    contact = servers_to_contact(registered, skill)
+    assert sorted(contact) == ["gmail", "google_drive"]
+    assert contact["google_drive"] == "Google Drive" and contact["gmail"] == "Gmail MCP"
+    assert sorted(servers_to_contact(registered, skill, "all")) == sorted(registered)
+    assert servers_to_contact(registered, skill, "none") == {}
     # A word inside another word is not a mention.
-    assert servers_to_contact(["mail"], "Search Gmail.") == []
+    assert servers_to_contact(["mail"], "Search Gmail.") == {}
+
+
+#: Seven one-word server names that are also everyday English words.
+_EVERYDAY = ["box", "calendar", "drive", "linear", "mail", "notion", "slack"]
+
+
+def test_everyday_prose_contacts_only_the_server_it_names_as_a_proper_noun() -> None:
+    """Plain English uses all seven words; only `Slack`, capitalized in the
+    middle of a sentence, reads as the product. `Drive` opens a sentence,
+    so its capital says nothing."""
+    from rote.compiler.tool_grounding import servers_to_contact
+
+    prose = (
+        "Drive the review forward. Keep a linear order, box up the results, "
+        "check the calendar, mail the team a notion of the plan, and post the "
+        "summary in Slack once it is done.\n"
+        "Box sizes are listed below.\n"
+        "1. Calendar invites go out last."
+    )
+    contact = servers_to_contact(_EVERYDAY, prose)
+    assert sorted(contact) == ["slack"]
+    assert contact["slack"].endswith("in Slack")
+
+
+@pytest.mark.parametrize(
+    "mention",
+    [
+        "Create the issue with `linear`.",
+        "Use the Linear MCP to file it.",
+        "Ask the linear server for the cycle.",
+        "Call mcp__linear__create_issue with the title.",
+        "File it in Linear when the triage ends.",
+    ],
+)
+def test_each_server_shaped_mention_of_a_one_word_name_counts(mention: str) -> None:
+    from rote.compiler.tool_grounding import servers_to_contact
+
+    assert sorted(servers_to_contact(_EVERYDAY, mention)) == ["linear"]
+
+
+@pytest.mark.parametrize(
+    ("text", "contacted"),
+    [
+        # Part of a longer product name: Google Drive is not a server `drive`.
+        ("Pull the spreadsheets from Google Drive.", []),
+        ("Read it (Google Drive MCP) first.", []),
+        # A wrapped paragraph's line break is not a sentence start.
+        ("Pull the spreadsheets from\n  Google Drive and the log.", []),
+        ("Post it in\n  Slack when done.", ["slack"]),
+        # A sentence-opening capital before the name is not part of it.
+        ("Search Gmail for the label.", ["gmail"]),
+        # Paragraph, heading and list starts are sentence starts.
+        ("Done.\n\nSlack is optional.", []),
+        ("## Slack\nNothing here.", []),
+        ("1. Slack the team.", []),
+        ("Steps:\n1) Slack the team.", []),
+    ],
+)
+def test_capitalization_counts_only_mid_sentence_and_alone(text: str, contacted: list[str]) -> None:
+    from rote.compiler.tool_grounding import servers_to_contact
+
+    assert sorted(servers_to_contact(["drive", "gmail", "slack"], text)) == contacted
+
+
+def test_the_skills_tool_table_names_a_server() -> None:
+    from rote.compiler.tool_grounding import servers_to_contact
+
+    contact = servers_to_contact(_EVERYDAY, "No mention in prose.", tool_table_servers={"notion"})
+    assert contact == {"notion": "the skill's tool table names 'notion'"}
 
 
 def test_the_bench_gives_each_job_its_own_registry(tmp_path: Path) -> None:
@@ -317,6 +392,36 @@ class _Driver(CompilerDriver):
         return DriverResult(
             pipeline_yaml_path=work_dir / "pipeline.yaml", work_dir=work_dir, driver_name="tools"
         )
+
+
+def test_the_compiler_contacts_a_server_named_only_by_the_tool_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bdr-outreach writes "ZoomInfo" in prose (no match for `zoominfo`) but
+    maps its tools to `zoominfo` in a tool table, which the compiler reads."""
+    import shutil
+
+    from rote.compiler import tool_grounding
+
+    calls: list[list[str]] = []
+
+    async def _discover(servers, on_skip=None, timeout=0):  # noqa: ANN001, ANN202
+        calls.append(sorted(servers))
+        return {}
+
+    registry = tmp_path / "mcp.json"
+    registry.write_text(
+        json.dumps({"version": 1, "servers": {"zoominfo": {"url": "http://127.0.0.1:9/mcp"}}})
+    )
+    monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
+    monkeypatch.setattr(tool_grounding, "discover", _discover)
+    skill = tmp_path / "skill"
+    shutil.copytree(REPO / "examples" / "bdr-outreach" / "skill", skill)
+    assert tool_grounding.servers_to_contact(["zoominfo"], (skill / "SKILL.md").read_text()) == {}
+    compiler = Compiler(compiler_skill_dir=tmp_path, trust_skill=True)
+    compiler.select_driver = lambda: _Driver()  # type: ignore[method-assign]
+    asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    assert calls == [["zoominfo"]]
 
 
 @pytest.mark.parametrize(
