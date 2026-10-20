@@ -371,7 +371,10 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     Components with nothing to compare are ``None`` and left out of the
     mean, so a case with no tool calls is not scored on tool calls.
     """
-    fields = {p: v for p, v in reference["fields"].items() if p != "outcome"}
+    # A stable null is the agent agreeing it never computed the field (the
+    # skill stopped first). Absence cannot be found by value, and the
+    # outcome component already scores the stop, so it is not an output.
+    fields = {p: v for p, v in reference["fields"].items() if p != "outcome" and v is not None}
     index = index_trace(trace.get("objects", []))
     reproduced = {p: field_reproduced(p, v, index) for p, v in fields.items()}
     outputs = round(sum(reproduced.values()) / len(fields), 4) if fields else None

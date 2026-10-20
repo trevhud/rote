@@ -263,6 +263,20 @@ def test_reads_charge_extra_calls_and_side_effects_score_partial_order() -> None
     assert s["side_effects"] == 0.5
 
 
+def test_a_field_every_run_left_uncomputed_is_not_an_output() -> None:
+    """The stop case: agents agree a field is null because the skill stopped
+    before computing it. A pipeline that also stopped has nothing to show."""
+    ref = stable_reference(
+        [
+            _run({"late": ["E1"], "total": None, "outcome": "stopped"}),
+            _run({"late": ["E1"], "total": None, "outcome": "stopped"}),
+        ]
+    )
+    s = score_case(ref, {"completed": False, "objects": [{"late_ids": ["E1"]}], "calls": []})
+    assert s["fields_checked"] == 1
+    assert (s["outputs"], s["outcome"]) == (1.0, 1.0)
+
+
 def test_components_with_nothing_to_compare_are_left_out() -> None:
     ref = stable_reference([_run({"total": 99.5}), _run({"total": 99.5})])
     s = score_case(ref, {"completed": True, "objects": [{"t": 99.5}], "calls": []})
@@ -344,6 +358,32 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         ("read_file_content", {"file_id": "C"}, False, None),
     ]
     assert json.loads(json.dumps(calls))  # the log is plain JSON
+
+
+def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wheel without the mcp extra once scored ops-report 0.0 with only
+    "fixture MCP server exited with code 1" to show for it."""
+    import importlib.util
+
+    from rote.bench import fidelity
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "fastmcp" else real(name, *a)
+    )
+    casefile = fidelity.CaseFile(
+        example_dir=tmp_path, output_fields={}, servers={"drive": {"tools": {}}}
+    )
+    case = fidelity.Case(
+        id="c", description="", input={}, gates=[], gate_instructions=None, fixtures={}
+    )
+    with (
+        pytest.raises(fidelity.FixtureError, match="need fastmcp"),
+        fidelity.fixture_servers(casefile, case, tmp_path / "w"),
+    ):
+        pass
 
 
 @pytest.mark.slow

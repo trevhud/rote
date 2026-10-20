@@ -131,15 +131,42 @@ def _free_port() -> int:
         return port
 
 
-def _wait_for_port(port: int, proc: subprocess.Popen[Any], deadline: float) -> None:
+class FixtureError(RuntimeError):
+    """The bench could not stand up its fixture servers.
+
+    An environment problem, not a pipeline result: :func:`pipeline_fidelity`
+    lets it through rather than scoring every case 0.
+    """
+
+
+def _wait_for_port(
+    port: int, proc: subprocess.Popen[Any], deadline: float, stderr_log: Path
+) -> None:
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise RuntimeError(f"fixture MCP server exited with code {proc.returncode}")
+            tail = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise FixtureError(
+                f"fixture MCP server exited with code {proc.returncode}: "
+                f"{_last_line(tail) or 'no output'}"
+            )
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             if s.connect_ex(("127.0.0.1", port)) == 0:
                 return
         time.sleep(0.1)
-    raise RuntimeError(f"fixture MCP server did not listen on {port}")
+    raise FixtureError(f"fixture MCP server did not listen on {port}")
+
+
+def _require_fixture_runtime() -> None:
+    """Fail before any case runs when the fixture server cannot start."""
+    import importlib.util
+
+    if importlib.util.find_spec("fastmcp") is None:
+        from rote.extras import install_hint
+
+        raise FixtureError(
+            "fidelity cases with fixture MCP servers need fastmcp, which this "
+            f"install does not have: {install_hint('mcp')}"
+        )
 
 
 @contextlib.contextmanager
@@ -147,6 +174,8 @@ def fixture_servers(
     casefile: CaseFile, case: Case, work: Path
 ) -> Iterator[tuple[dict[str, str], Path]]:
     """Start one fixture server per declared server; yield ``(urls, call_log)``."""
+    if casefile.servers:
+        _require_fixture_runtime()
     work.mkdir(parents=True, exist_ok=True)
     log = work / "calls.jsonl"
     log.write_text("", encoding="utf-8")
@@ -163,13 +192,22 @@ def fixture_servers(
             spec = work / f"fixture-{name}.json"
             spec.write_text(json.dumps({"server": name, "tools": tools}), encoding="utf-8")
             port = _free_port()
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "rote.bench.fixture_mcp", str(spec), str(port), str(log)],
-                stdout=subprocess.DEVNULL,
-                stderr=(work / f"fixture-{name}.stderr.log").open("w"),
-            )
+            stderr_log = work / f"fixture-{name}.stderr.log"
+            with stderr_log.open("w") as stderr:
+                proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "rote.bench.fixture_mcp",
+                        str(spec),
+                        str(port),
+                        str(log),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr,
+                )
             procs.append(proc)
-            _wait_for_port(port, proc, time.monotonic() + 30)
+            _wait_for_port(port, proc, time.monotonic() + 30, stderr_log)
             urls[name] = f"http://127.0.0.1:{port}/mcp"
         yield urls, log
     finally:
@@ -579,6 +617,8 @@ def pipeline_fidelity(
             )
             try:
                 trace = run_pipeline_case(compiled_dir, casefile, case, root / case.id)
+            except FixtureError:
+                raise  # the bench's environment, not the pipeline: never a score
             except Exception as e:  # noqa: BLE001 (an unrunnable pipeline is a result)
                 trace = {
                     "completed": False,

@@ -331,7 +331,9 @@ Read the number with these limits in mind:
 - **Values match anywhere.** A reference value counts as reproduced when
   it appears in any step output. A field that passes data through
   unchanged (an id, a period) is credited as soon as the step that
-  fetched it runs, whether or not anything downstream used it.
+  fetched it runs, whether or not anything downstream used it. The
+  converse also holds: a value the pipeline only holds as a filtered
+  subset of a larger list is not found (see `blocked_ids` below).
 - **The contract is summaries.** Counts, flagged ids, totals. The
   individual dwell, sorter and container rows behind a summary are not
   compared, so a pipeline can get a row-level detail wrong and keep a
@@ -364,9 +366,9 @@ broken copies, scored with `--fidelity-of`:
 
 | Pipeline | fidelity | base | second_batch | unknown_currency |
 | --- | --- | --- | --- | --- |
-| gold | 0.93 | 1.00 | 0.91 | 0.89 |
-| mandatory duplicate check dropped | 0.86 | 0.94 | 0.87 | 0.78 |
-| `duplicate_ids` and `late_ids` inputs swapped | 0.66 | 0.58 | 0.51 | 0.89 |
+| gold | 0.96 | 1.00 | 0.98 | 0.89 |
+| mandatory duplicate check dropped | 0.87 | 0.94 | 0.88 | 0.78 |
+| `duplicate_ids` and `late_ids` inputs swapped | 0.66 | 0.58 | 0.52 | 0.89 |
 | the pre-#144 baseline compile | 0.17 | 0.00 | 0.00 | 0.50 |
 
 Each break costs what it should: the dropped check loses the duplicate
@@ -377,16 +379,21 @@ matter. The baseline compile renamed the pipeline input (`lines`,
 skill's own input at all. The structural score had the input recall at
 0.5 and nothing else alarming.
 
-The gold misses four fields on second_batch because the skill's own
-agent runs, three of three, file EXP-2410 (software over its cap) as a
-block, where the hand-written pipeline treats a cap breach as review. The
-reference is the skill as it runs, so that counts against the gold too.
-The base case shows the agent's other face: its three runs disagree on
-`reimbursable_usd` ($2,990.98, $2,414.34, $2,544.73), so that field is
-unstable there and not scored.
+The gold misses `blocked_ids` on second_batch although it computes the
+same four ids the agent reports: it never holds them as a list of their
+own, only as the review-queue rows whose severity is `block`. Value
+matching finds a list or a column, not a filtered subset of one, so a
+field the agent derives by filtering can be missed even when the pipeline
+got it right. The base case shows the agent's own variance: its three
+runs disagree on `reimbursable_usd` ($2,544.73, $2,990.98, $2,544.73),
+so that field is unstable there and not scored.
 
-Costs: recording the references took $6.01 once (expense-audit $4.51
-for 9 runs, ops-report $1.50 for 6). Per-compile fidelity on these two
+Costs: the references cost $1.50 (ops-report, 6 runs) and $4.48
+(expense-audit, 9 runs, recorded a second time after the reference prompt
+began asking for `null` on fields a stopped run never computed: the first
+recording, $4.51, had the stop case at 4 of 13 stable fields because
+agents wrote 0, `[]` or nothing for the same uncomputed field. It is at
+13 of 13 now). Per-compile fidelity on these two
 examples costs nothing, since neither compiled pipeline has a judge. A
 pipeline with judges pays for its judge calls, reported as
 `fidelity_cost_usd`.

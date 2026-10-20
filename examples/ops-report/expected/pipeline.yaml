@@ -270,7 +270,7 @@ nodes:
     output:
       dock_appointment_completion: AppointmentCompletion
       sorter_metrics: list
-      dwell_dashboard_rows: list
+      current_dwell: list
 
   # ── Wave 4: assemble the final report ─────────────────────────────
 
