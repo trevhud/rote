@@ -36,6 +36,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   skipped with one stderr warning instead of shadowing it.
 
 ### Fixed
+- A Cloudflare app whose judge returns free-form objects (`{type: object}`
+  with no properties, alone, in an array or nested) or an untyped field
+  now compiles. The judge's Zod schema typed them `Record<string,
+  unknown>` and `unknown`, which `step.do`'s `Rpc.Serializable`
+  constraint rejects (TS2769), so `tsc` failed on emit (found by `rote
+  bench` on deal-monitor). They are now a five-level JSON value type,
+  declared in a signature module only when used. DBOS-TS and Inngest
+  compiled before and still do. The typed-impls e2e covers the shape on
+  all three.
 - A `tools/list` or tool call that landed while the registry file was
   corrupt (hand-edit typo, torn write) raised inside the provider and
   FastMCP answered with no tools. Only the background watcher tolerated

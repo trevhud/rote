@@ -156,8 +156,13 @@ def _zod_verdicts(out: Path, tmp: Path) -> list[tuple[bool, Any]]:
         text=True,
     )
     payloads = json.dumps([payload for _, payload, _ in CASES])
+    # The module's JSON_VALUE (JSON_VALUE_ZOD_TS), minus its TS types: this
+    # harness is plain JS.
+    json_value = "const JSON_VALUE = z.custom(() => true);\n" if "JSON_VALUE" in zod_expr else ""
+    assert not json_value or "const JSON_VALUE = z.custom<JsonValue>(() => true);" in emitted
     (proj / "check.mjs").write_text(
         'import { z } from "zod";\n'
+        f"{json_value}"
         f"const Input = {zod_expr};\n"
         f"const payloads = {payloads};\n"
         "console.log(JSON.stringify(payloads.map((p) => {\n"

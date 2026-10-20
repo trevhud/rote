@@ -124,7 +124,10 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
         props = schema.get("properties", {})
         required = set(schema.get("required", []))
         if not props:
-            return "z.record(z.string(), z.unknown())"
+            # A free-form object holds JSON values, not `unknown`: Cloudflare's
+            # step.do requires its result to be Rpc.Serializable, which
+            # `Record<string, unknown>` is not (TS2769).
+            return "z.record(z.string(), JSON_VALUE)"
         closing = ").strict()" if schema.get("additionalProperties") is False else ")"
         pad = "  " * (indent + 1)
         outer = "  " * indent
@@ -152,8 +155,33 @@ def _convert_zod(schema: Any, indent: int = 0) -> str:
     if schema_type == "null":
         return "z.null()"
 
-    # Permissive fallback for under-specified schemas.
-    return "z.unknown()"
+    # Permissive fallback for under-specified schemas: any JSON value, typed
+    # so a step can carry it (see JSON_VALUE_ZOD_TS).
+    return "JSON_VALUE"
+
+
+#: The Zod schema and type for "any JSON value", declared in a signature
+#: module that uses one (a free-form object, or an untyped schema).
+#: Spelled out five levels deep, not recursively: Cloudflare's step.do
+#: checks results against Rpc.Serializable, which rejects `unknown` and
+#: cannot instantiate a recursive type (TS2589). The check accepts any
+#: value, since the model's output was already decoded from JSON.
+JSON_VALUE_ZOD_TS = """\
+type JsonScalar = string | number | boolean | null;
+type Json1 = JsonScalar | JsonScalar[] | { [key: string]: JsonScalar };
+type Json2 = JsonScalar | Json1[] | { [key: string]: Json1 };
+type Json3 = JsonScalar | Json2[] | { [key: string]: Json2 };
+type Json4 = JsonScalar | Json3[] | { [key: string]: Json3 };
+type JsonValue = JsonScalar | Json4[] | { [key: string]: Json4 };
+const JSON_VALUE = z.custom<JsonValue>(() => true);
+"""
+
+
+def json_value_zod_lines(*zod_sources: str) -> list[str]:
+    """:data:`JSON_VALUE_ZOD_TS` as module lines, when any source uses it."""
+    if not any("JSON_VALUE" in source for source in zod_sources):
+        return []
+    return ["", *JSON_VALUE_ZOD_TS.rstrip("\n").split("\n")]
 
 
 def json_schema_to_zod(schema: dict[str, Any], indent: int = 0) -> str:
@@ -250,6 +278,7 @@ def emit_signature_anthropic(
         "",
         'import Anthropic from "@anthropic-ai/sdk";',
         'import { z } from "zod";',
+        *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
         f"export type {pascal}Input = z.infer<typeof {pascal}Input>;",
@@ -353,6 +382,7 @@ def emit_signature_openai(
         "",
         'import OpenAI from "openai";',
         'import { z } from "zod";',
+        *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
         f"export type {pascal}Input = z.infer<typeof {pascal}Input>;",
@@ -463,6 +493,7 @@ def emit_signature_workers_ai(
         " */",
         "",
         'import { z } from "zod";',
+        *json_value_zod_lines(input_zod, output_zod),
         "",
         f"export const {pascal}Input = {input_zod};",
         f"export type {pascal}Input = z.infer<typeof {pascal}Input>;",
