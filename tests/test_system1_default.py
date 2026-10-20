@@ -512,3 +512,30 @@ def test_a_list_a_judge_reads_whole_is_an_array(tmp_path: Path) -> None:
     props = judge_input_schema(node, {"type": "object"})["properties"]
     assert "type" not in props["rows"]  # the fanned list: one element
     assert props["others"]["type"] == "array"  # another list, read whole
+
+
+def test_a_spec_written_into_pipeline_yaml_keeps_the_decided_inputs(tmp_path: Path) -> None:
+    """The agent may write a judge's prompt in pipeline.yaml instead of
+    text.yaml: it is laid over the skeleton's spec the same way."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judge = next(n for n in doc["nodes"] if n["kind"] == "llm_judge")
+    decided = judge["signature_spec"]["input_schema"]
+    judge["signature_spec"] = {
+        "prompt": "Decide from {{ request }}.",
+        "output_schema": {"type": "object", "properties": {"v": {"type": "string"}}},
+    }
+    (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    enforce(work, final=True)
+    merged = next(
+        n for n in load_pipeline(work / "pipeline.yaml").nodes if n.id == judge["id"]
+    ).signature_spec
+    assert merged is not None and merged.input_schema == decided
+    assert merged.prompt == "Decide from {{ request }}."
