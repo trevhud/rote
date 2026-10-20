@@ -443,7 +443,10 @@ class Compiler:
             compiler_skill_dir = self.compiler_skill_dir
             s1_plan: system1.Plan | None = None
             if self.system1:
-                s1_plan = system1.prepare(skill_dir, work_dir)
+                try:
+                    s1_plan = system1.prepare(skill_dir, work_dir)
+                except system1.UnsafeSkillText as e:
+                    raise CompilerError(str(e)) from e
                 self._emit(
                     "log",
                     f"system1: decided {len(s1_plan.nodes)} node(s) with rules; "

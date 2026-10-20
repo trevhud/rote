@@ -19,7 +19,7 @@ from pathlib import Path
 from rote.compiler.system1 import report
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
-from rote.compiler.system1.parse import parse_skill
+from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
 from rote.compiler.system1.skeleton import write
 from rote.ir import load_pipeline
 
@@ -29,6 +29,7 @@ __all__ = [
     "all_changes",
     "TEXT_RUBRIC_FILE",
     "TEXT_RUBRIC_REFERENCES",
+    "UnsafeSkillText",
     "check_proposals",
     "enforce",
     "materialize_text_rubric",

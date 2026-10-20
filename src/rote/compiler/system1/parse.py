@@ -324,6 +324,25 @@ class RuleTable:
         return out
 
 
+#: What a reference file may be called for its name to reach generated code.
+#: A skill is untrusted input (invariant #7): a newline in a file name
+#: spliced into a comment would become a line of code.
+_SAFE_REFERENCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md")
+
+
+class UnsafeSkillText(ValueError):
+    """A skill name or string that cannot safely reach generated code."""
+
+
+def safe_reference_name(name: str) -> str:
+    if not _SAFE_REFERENCE_NAME.fullmatch(name):
+        raise UnsafeSkillText(
+            f"reference file name {name!r} is not allowed in a --system1 compile: use "
+            "letters, digits, '.', '_' and '-' only"
+        )
+    return name
+
+
 def tables_in(path: Path, label: str) -> list[RuleTable]:
     out: list[RuleTable] = []
     heading = ""
@@ -532,7 +551,7 @@ def parse_skill(skill_dir: Path) -> SkillParse:
     ref_dir = skill_dir / "references"
     if ref_dir.is_dir():
         for ref in sorted(ref_dir.glob("*.md")):
-            tables += tables_in(ref, f"references/{ref.name}")
+            tables += tables_in(ref, f"references/{safe_reference_name(ref.name)}")
     return SkillParse(
         name=str(fm.get("name") or skill_dir.name),
         description=" ".join(str(fm.get("description") or "").split()),

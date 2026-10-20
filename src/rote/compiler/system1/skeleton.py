@@ -183,6 +183,16 @@ def eval_doc(plan: Plan) -> dict[str, Any]:
     }
 
 
+#: Every character a Python tokenizer, or an editor, could read as the end of
+#: a line. Skill text in a generated comment must stay on that line.
+_LINE_BREAKS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _comment(line: str) -> str:
+    """A generated comment line carrying skill text, with no way to end the line."""
+    return _LINE_BREAKS.sub(" ", line)
+
+
 def _decimal_literal(value: Decimal) -> str:
     return f'Decimal("{value}")'
 
@@ -207,10 +217,10 @@ def tables_module(tables: list[RuleTable]) -> tuple[str, str, list[str]] | None:
             while name in names:
                 name += "_2"
             names.append(name)
-            body.append(f"#: From {file}, column {colname!r}.")
+            body.append(_comment(f"#: From {file}, column {colname!r}."))
             for t in ts:
                 for raw in t.raw_rows:
-                    body.append(f'# skill: "{raw}"')
+                    body.append(_comment(f'# skill: "{raw}"'))
             if nested:
                 body.append(f"{name}: dict[str, dict[str, Decimal]] = {{")
                 for t in ts:
