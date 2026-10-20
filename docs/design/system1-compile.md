@@ -193,7 +193,10 @@ text) decides each step's kind and whether a person must act. It uses the
 when its ensemble kind confidence is at least 0.85 or its gate probability is
 at least 0.50. Otherwise the rules decide, and a disagreement is listed in
 Open questions. Mandatory and fan_out stay on rules. A missing credential
-fails the compile (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`). A
+fails the compile (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`).
+`CLOUDFLARE_AI_GATEWAY_ID` routes the calls through an AI Gateway, and
+`CLOUDFLARE_AI_GATEWAY_METADATA` (a JSON object) tags each logged call, which
+is how rote cloud bills one compile's Clef calls to its tenant. A
 spot check of three dev steps against the lane's cached answers agreed
 within 0.01 on kind and on which side of the gate threshold each fell.
 
