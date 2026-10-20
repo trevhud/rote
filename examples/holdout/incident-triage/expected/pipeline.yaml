@@ -458,7 +458,8 @@ nodes:
       Rollback is the IC's decision and action, never this workflow's.
     signal: ic_confirmed_severity
     # The skill: no IC reply within 15 minutes and PagerDuty's own escalation
-    # takes over. The gate times out and triage ends there; the priority
+    # takes over. A gate timeout raises on every runtime, so the run fails at
+    # the gate and escalation continues outside the workflow. The priority
     # write-back only runs on a confirmed severity.
     timeout: 15m
     output:

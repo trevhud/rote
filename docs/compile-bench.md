@@ -85,6 +85,7 @@ own offline checks on it.
 | `fanP`, `fanR` | fan_out precision and recall vs expected |
 | `mandP`, `mandR` | mandatory precision and recall |
 | `gates`, `sig`, `gateJ` | compiled/expected gates, gates with the same signal name, mean Jaccard of the resume payload keys |
+| `sigN`, `gateJN` | the same two on normalized tokens (separators and inflection ignored), so `cs_lead_approved` matches `cs_lead_approval` and `approved_plan` shares `plan` |
 | `inR`, `inP` | pipeline input field names, recall and precision |
 | `impl` | pure_function nodes implemented / total (the rest are stubs) |
 | `tests` | the generated tests, run in the OS sandbox |
@@ -107,26 +108,56 @@ or 1.
 
 ### How nodes are matched
 
-An expected node pairs with the compiled node of the same id. Otherwise
-it pairs with the most similar compiled node: the mean of the id-token
-Jaccard and the (id + description)-token Jaccard, kept at 0.25 or above.
-Pairs are taken greedily, highest similarity first, one to one. The
-matches are listed in the JSON, so a surprising score can be checked by
-reading them.
+Matching ignores names as far as it can. A compile that calls the
+expected `render_welcome_post` `format_announcement` did the same step,
+and a name-keyed matcher would charge it a kind error, a mandatory miss
+and a spurious mandatory.
 
-Lexical matching misfires when a compile splits or merges steps. In the
-baseline, expense-audit's expected `file_report` (render and save, an
-external_call) became two compiled nodes, `render_audit_report` and
-`save_audit_report`, and the two `audit report` nodes matched crosswise,
-which counts two kind errors that are really one split. That is why
-`kmix` exists: it cannot misfire this way, and a `kind` drop with a
-steady `kmix` usually means a matching artifact, not a classification
-regression. Check `structure.matches` before acting on a kind change.
+Every (expected, compiled) pair gets a similarity: a weighted mean of
+the signals that apply to it (`SIGNAL_WEIGHTS` in
+`src/rote/bench/score.py`). The signals are:
+
+- the node's topological rank, in- and out-degree, and its neighbors' kinds
+- whether its neighbors were matched to the other node's neighbors
+- the skill section it cites (`source.section`)
+- its input and output field names
+- its MCP server and tool
+- its description, and only weakly its id
+
+The node's own kind, flags and gate fields are left out, because those
+are what the metrics grade. An optimal one-to-one assignment (the
+Hungarian algorithm) then maximizes the total similarity, and a pair
+under 0.35 is dropped.
+
+Matching runs twice. The second pass adds the matched-neighbors signal
+from the first pass's assignment, which settles nodes that look alike
+on their own (two fetches at the start) by what they feed. Every metric
+reads this one matching: kind, mandatory, fan_out, gates, edges and
+waves. `structure.matches` in the JSON lists the pairs and their
+similarity.
+
+What changes, measured on the 55 compiles on disk when this landed
+(committed snapshots plus every bench run). The counts below come from
+200 hand-labeled contested matches:
+
+- **Renamed steps are now found.** expense-audit's `find_duplicates` as
+  `check_duplicate_submissions`, and customer-onboarding's announce pair.
+  The old matcher got 171 of the 200 right, the new one 183.
+- **A fully renamed copy of every gold pipeline is recovered 95/95**,
+  even with every description blanked. The old matcher recovered 0 with
+  descriptions blanked.
+- **Splits match the half that sits where the step sat.** The other half
+  is an extra node.
+- **Known residual.** When a compile moves a join onto a neighboring node,
+  so the structure itself swaps two steps' roles, the matcher can follow
+  the structure. That happened on three system-1 expense-audit compiles
+  (`group_by_employee` and `audit_report`), and those runs read
+  fan_out 0 where the old matcher read 1.
+
+`kmix` stays matching-free, as a cross-check.
 
 The expected pipelines are hand-written, so they are one good answer, not
-the only one. A compile that splits a step in two scores an extra node,
-and a reasonable rename can fall under the threshold. Compare runs with
-each other rather than chasing 1.0.
+the only one. Compare runs with each other rather than chasing 1.0.
 
 ## The committed baseline
 

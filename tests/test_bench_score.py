@@ -18,7 +18,12 @@ import pytest
 from rote.bench.collect import phase_durations
 from rote.bench.report import aggregate, compare, headline
 from rote.bench.runner import STATE_ENV, isolated_env
-from rote.bench.score import dependency_edges, match_nodes, score_pipeline
+from rote.bench.score import (
+    _max_weight_assignment,
+    dependency_edges,
+    match_nodes,
+    score_pipeline,
+)
 from rote.ir import Pipeline
 
 from .conftest import BDR_PIPELINE_YAML
@@ -127,7 +132,7 @@ def _compiled() -> Pipeline:
     )
 
 
-def test_matching_pairs_by_id_then_description() -> None:
+def test_matching_pairs_the_fixture_steps() -> None:
     pairs = {(m.expected_id, m.compiled_id) for m in match_nodes(_expected(), _compiled())}
     assert pairs == {
         ("fetch", "fetch"),
@@ -162,6 +167,170 @@ def test_matching_takes_the_most_similar_pair_first() -> None:
     )
     [m] = match_nodes(expected, compiled)
     assert (m.expected_id, m.compiled_id) == ("late_submissions", "late_submissions_check")
+
+
+def _ext(id_: str, description: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "id": id_,
+        "kind": "external_call",
+        "description": description,
+        "impl": f"extracted/m.py:{id_}",
+        **extra,
+    }
+
+
+def test_a_fully_renamed_compile_still_matches_by_structure() -> None:
+    """Every id differs and only one description survives, so the old
+    lexical matcher found one pair here. Hand-worked, pass 2 (weights:
+    position 2, degree 1, neighbor_kinds 1.5, matched_neighbors 2,
+    inputs 1.5, outputs 1, description 2, name 1.5):
+
+    fetch_rows ~ pull: position 1, degree 1, neighbor_kinds 1,
+    matched_neighbors 1, outputs 1 (rows -> row), description 1, name 0.
+    Inputs (neither side has any) and MCP (only the expected node is
+    bound: a missing binding is an MCP error, not a different step) do
+    not apply.
+    (2 + 1 + 1.5 + 2 + 1 + 2 + 0) / 11 = 0.8636.
+
+    total_rows ~ sum_it: everything 1 except description, {sum, amount}
+    vs {add, up, amount} = 1/4, and name 0 ("it" is a stopword).
+    (2 + 1 + 1.5 + 2 + 1.5 + 1 + 0.5 + 0) / 12.5 = 0.76.
+    """
+    expected = _pipeline(
+        [
+            _ext(
+                "fetch_rows",
+                "pull the ledger",
+                output={"rows": "list"},
+                mcp={"server": "ledger", "tool": "export_rows"},
+            ),
+            _pure(
+                "total_rows",
+                "sum amounts",
+                inputs={"rows": "fetch_rows.output.rows"},
+                output={"total": "float"},
+            ),
+        ],
+        [("fetch_rows", "total_rows")],
+        required=[],
+    )
+    compiled = _pipeline(
+        [
+            _ext("pull", "pull the ledger", output={"rows": "list"}),
+            _pure(
+                "sum_it",
+                "add up amounts",
+                inputs={"rows": "pull.output.rows"},
+                output={"total": "float"},
+            ),
+        ],
+        [("pull", "sum_it")],
+        required=[],
+    )
+    got = {(m.expected_id, m.compiled_id): m.similarity for m in match_nodes(expected, compiled)}
+    assert got == {("fetch_rows", "pull"): 0.8636, ("total_rows", "sum_it"): 0.76}
+    s = score_pipeline(expected, compiled)
+    assert s["structure"]["kind_accuracy"] == 1.0
+    assert s["graph"]["edge_f1"] == 1.0
+
+
+def test_a_split_step_matches_the_half_that_sits_where_it_sat() -> None:
+    """Expected file_report (render and save) became render_report ->
+    save_report. Hand-worked:
+
+    pass 1: file_report ~ save_report 6.75 / 10.5 = 0.6429 (position 1,
+    degree 1, neighbor_kinds 0.5, inputs 0, outputs 1, description 3/4,
+    name 1/3) beats file_report ~ render_report 5.5 / 10.5 = 0.5238
+    (position 0.5, degree 0.75, neighbor_kinds 0.5, inputs 1, outputs 0,
+    description 2/4, name 1/3). fetch ~ fetch is 8.25 / 9 = 0.9167.
+
+    pass 2 adds matched_neighbors. fetch's successor is matched to
+    save_report, but the compiled fetch feeds render_report: 0, so
+    fetch ~ fetch = 8.25 / 11 = 0.75. file_report's predecessor fetch is
+    not save_report's predecessor: 0, so 6.75 / 12.5 = 0.54. Against
+    render_report it is 1 / 2: (5.5 + 1) / 12.5 = 0.52, still lower.
+    So save_report is the match, and render_report is the one extra.
+    """
+    expected = _pipeline(
+        [
+            _ext("fetch", "pull the ledger", output={"rows": "list"}),
+            _ext(
+                "file_report",
+                "render the report and save it to the drive",
+                inputs={"rows": "fetch.output.rows"},
+                output={"path": "str"},
+            ),
+        ],
+        [("fetch", "file_report")],
+        required=[],
+    )
+    compiled = _pipeline(
+        [
+            _ext("fetch", "pull the ledger", output={"rows": "list"}),
+            _pure(
+                "render_report",
+                "render the report",
+                inputs={"rows": "fetch.output.rows"},
+                output={"markdown": "str"},
+            ),
+            _ext(
+                "save_report",
+                "save the report to the drive",
+                inputs={"markdown": "render_report.output.markdown"},
+                output={"path": "str"},
+            ),
+        ],
+        [("fetch", "render_report"), ("render_report", "save_report")],
+        required=[],
+    )
+    got = {(m.expected_id, m.compiled_id): m.similarity for m in match_nodes(expected, compiled)}
+    assert got == {("fetch", "fetch"): 0.75, ("file_report", "save_report"): 0.54}
+    s = score_pipeline(expected, compiled)["structure"]
+    assert (s["node_recall"], s["node_precision"]) == (1.0, 0.6667)
+    assert s["extra"] == ["render_report"]
+    assert s["kind_accuracy"] == 1.0
+
+
+def test_the_assignment_is_optimal_not_greedy() -> None:
+    """Greedy takes the 0.9 and strands row 1 (total 0.9); the optimum
+    gives up the 0.9 for two 0.8s (total 1.6)."""
+    assert sorted(_max_weight_assignment([[0.9, 0.8], [0.8, 0.0]])) == [(0, 1), (1, 0)]
+    # Rectangular, both ways round: only real rows and columns come back.
+    assert sorted(_max_weight_assignment([[0.1, 0.7, 0.2]])) == [(0, 1)]
+    assert sorted(_max_weight_assignment([[0.3], [0.6], [0.1]])) == [(1, 0)]
+    assert _max_weight_assignment([]) == []
+
+
+def test_gate_names_score_exact_and_normalized() -> None:
+    """cs_lead_approved vs cs_lead_approval is one signal spelled twice.
+    Exact: no signal match, payload {approver, region} of 6 keys = 0.3333.
+    Normalized: both signals are {cs, lead, approv}; the pooled payload
+    tokens are {approv, plan, seat, region} on both sides = 1.0."""
+
+    def gate(signal: str, output: dict[str, str]) -> Pipeline:
+        node = {
+            "id": "sign_off",
+            "kind": "hitl_gate",
+            "description": "CS lead approves",
+            "signal": signal,
+            "output": output,
+        }
+        return _pipeline([node], [], required=[])
+
+    expected = gate(
+        "cs_lead_approval", {"approver": "str", "plan": "str", "seats": "int", "region": "str"}
+    )
+    compiled = gate(
+        "cs_lead_approved",
+        {"approver": "str", "approved_plan": "str", "approved_seats": "int", "region": "str"},
+    )
+    g = score_pipeline(expected, compiled)["gates"]
+    assert (g["signal_matches"], g["signal_matches_normalized"]) == (0, 1)
+    assert g["payload_jaccard_mean"] == pytest.approx(0.3333)
+    assert g["payload_jaccard_normalized_mean"] == 1.0
+    # A different signal stays different after normalizing.
+    other = score_pipeline(expected, gate("controller_review", {"approver": "str"}))["gates"]
+    assert other["signal_matches_normalized"] == 0
 
 
 def test_gate_payload_reads_output_schema_properties_too() -> None:
