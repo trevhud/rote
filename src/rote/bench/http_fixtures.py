@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.vendor_specs.fake import FakeApi, read_log, serving
-from rote.vendor_specs.fixtures import FixtureSet
+from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from rote.vendor_specs.model import ApiSpec
 from rote.vendor_specs.store import SpecStore, default_root
 
@@ -93,7 +93,11 @@ def api_side(
     work.mkdir(parents=True, exist_ok=True)
     log = work / "http-calls.jsonl"
     log.write_text("", encoding="utf-8")
-    api = FakeApi([(spec, fixtures[spec.key]) for spec in specs], log)
+    try:
+        api = FakeApi([(spec, fixtures[spec.key]) for spec in specs], log)
+    except FixtureError as e:
+        # A ValueError: left alone, the bench scored it as a dead pipeline run.
+        raise HttpFixtureError(f"a case's http: fixtures do not fit the spec: {e}") from e
     deps = install_vendor_deps(app)
     with serving(api) as base:
         path = [str(INTERCEPT_DIR), *([str(deps)] if deps else [])]

@@ -95,6 +95,11 @@ dev = [
     "fastmcp>=4.1.1,<5",
     "httpx>=0.28",
     "trustme>=1.2.1",
+    "requests>=2.34.2",
+    "httplib2>=0.32.0",
+    "google-api-python-client>=2.201.0",
+    "google-auth>=2.62.0",
+    "google-auth-httplib2>=0.4.4",
 ]
 
 [project.scripts]

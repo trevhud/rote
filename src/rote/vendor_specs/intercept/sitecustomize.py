@@ -17,12 +17,20 @@ is left alone. Patched, when installed: httpx, requests, httplib2 (which
 Google's client library uses), urllib, and ``google.auth.default`` (the
 fake accepts any bearer token, so a fixture credential stands in for the
 user's).
+
+Under those patches, name resolution is guarded too: ``socket.getaddrinfo``
+refuses every faked host and every host of a vendor in play. A client this
+module does not patch (``http.client``, ``httpcore`` or ``urllib3`` used
+directly, aiohttp) still resolves the vendor's name before it connects, so
+it fails here instead of reaching the real vendor. A faked host that gets as
+far as resolution has bypassed its rewrite, which is the same failure.
 """
 
 from __future__ import annotations
 
 import importlib
 import os
+import socket
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -39,13 +47,17 @@ class NetworkBlocked(ConnectionError):
     """A request to a host the fidelity bench does not fake."""
 
 
+def _in_play(host: str) -> bool:
+    return host in _HOSTS or any(host == s or host.endswith("." + s) for s in _BLOCK)
+
+
 def rewrite(url: str) -> str:
     parts = urlsplit(str(url))
     host = (parts.hostname or "").lower()
     if host in _HOSTS:
         query = f"?{parts.query}" if parts.query else ""
         return f"{_BASE}/{host}{parts.path}{query}"
-    if any(host == s or host.endswith("." + s) for s in _BLOCK):
+    if _in_play(host):
         raise NetworkBlocked(
             f"the fidelity bench blocks {host}: only {', '.join(sorted(_HOSTS)) or 'no host'} "
             f"is faked for this run"
@@ -143,7 +155,25 @@ def _patch_google_auth() -> None:
     auth.default = default
 
 
+def _guard_name_resolution() -> None:
+    original = socket.getaddrinfo
+
+    def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
+        raw = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host or "")
+        name = raw.lower().rstrip(".")
+        if _in_play(name):
+            raise NetworkBlocked(
+                f"the fidelity bench blocks {name}: the request reached name resolution "
+                f"without going through the fake, so it came from an HTTP client this "
+                f"bench does not patch"
+            )
+        return original(host, *args, **kwargs)
+
+    socket.getaddrinfo = getaddrinfo
+
+
 if _BASE:
+    _guard_name_resolution()
     _patch_httpx()
     _patch_requests()
     _patch_httplib2()

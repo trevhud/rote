@@ -257,6 +257,133 @@ def test_a_pipeline_process_reaches_the_fake_and_nothing_else_of_the_vendor(
     ]
 
 
+#: One client per snippet, each run in a fresh interpreter with the bench's
+#: interception on. A snippet assigns ``out``: the answer it got, or the
+#: text of the error that refused it.
+_THREADS = "https://gmail.googleapis.com/gmail/v1/users/me/threads?q=label:dock-activity"
+_FAKED = {
+    "httpx": f"""
+import httpx
+out = httpx.get("{_THREADS}", headers={{"Authorization": "Bearer x"}}).json()
+""",
+    "httpx-async": f"""
+import asyncio, httpx
+async def go():
+    async with httpx.AsyncClient() as c:
+        return (await c.get("{_THREADS}", headers={{"Authorization": "Bearer x"}})).json()
+out = asyncio.run(go())
+""",
+    "requests": f"""
+import requests
+out = requests.get("{_THREADS}", headers={{"Authorization": "Bearer x"}}).json()
+""",
+    "httplib2": f"""
+import json, httplib2
+_, body = httplib2.Http().request("{_THREADS}", headers={{"Authorization": "Bearer x"}})
+out = json.loads(body)
+""",
+    "urllib": f"""
+import json, urllib.request
+req = urllib.request.Request("{_THREADS}", headers={{"Authorization": "Bearer x"}})
+out = json.loads(urllib.request.urlopen(req).read())
+""",
+    # Google's own client: google.auth.default -> AuthorizedHttp -> httplib2.
+    "googleapiclient": """
+import google.auth
+from googleapiclient.discovery import build
+creds, _ = google.auth.default()
+gmail = build("gmail", "v1", credentials=creds, static_discovery=True, cache_discovery=False)
+out = gmail.users().threads().list(userId="me", q="label:dock-activity").execute()
+""",
+}
+#: Clients the module does not patch: refused when they resolve the name.
+_UNPATCHED = {
+    "http.client": """
+import http.client
+conn = http.client.HTTPSConnection("gmail.googleapis.com", timeout=5)
+conn.request("GET", "/gmail/v1/users/me/threads")
+""",
+    "httpcore": f"""
+import httpcore
+httpcore.ConnectionPool().request("GET", "{_THREADS}")
+""",
+    "urllib3": f"""
+import urllib3
+urllib3.PoolManager(retries=False).request("GET", "{_THREADS}")
+""",
+}
+
+
+def _intercepted(api: FakeApi, snippet: str) -> Any:
+    script = (
+        "import json, traceback\n"
+        "try:\n"
+        + textwrap.indent(textwrap.dedent(snippet).strip(), "    ")
+        + "\nexcept Exception as e:\n"
+        "    chain = []\n"
+        "    while e is not None:\n"
+        "        chain.append(f'{type(e).__name__}: {e}')\n"
+        "        e = e.__cause__ or e.__context__\n"
+        "    out = {'refused': ' <- '.join(chain)}\n"
+        "print(json.dumps(out))\n"
+    )
+    with serving(api) as base:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "PYTHONPATH": str(INTERCEPT_DIR),
+                "ROTE_HTTP_FIXTURE_URL": base,
+                "ROTE_HTTP_FIXTURE_HOSTS": ",".join(sorted(api.hosts)),
+                "ROTE_HTTP_FIXTURE_BLOCK": "googleapis.com",
+            },
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.parametrize("client", sorted(_FAKED))
+def test_each_patched_client_is_answered_by_the_fake(
+    tmp_path: Path, store: SpecStore, client: str
+) -> None:
+    api = _api(store, tmp_path / "log.jsonl")
+    out = _intercepted(api, _FAKED[client])
+    assert out.get("resultSizeEstimate") == 1, out
+    assert [e["operation"] for e in read_log(tmp_path / "log.jsonl")] == [
+        "gmail.users.threads.list"
+    ]
+
+
+@pytest.mark.parametrize("client", sorted(_UNPATCHED))
+def test_an_unpatched_client_is_refused_before_it_reaches_the_vendor(
+    tmp_path: Path, store: SpecStore, client: str
+) -> None:
+    """Without the name-resolution guard each of these opened a connection
+    to the real gmail.googleapis.com."""
+    api = _api(store, tmp_path / "log.jsonl")
+    out = _intercepted(api, _UNPATCHED[client])
+    assert "the fidelity bench blocks gmail.googleapis.com" in out.get("refused", ""), out
+    assert "reached name resolution" in out["refused"]
+    assert read_log(tmp_path / "log.jsonl") == []
+
+
+def test_name_resolution_is_left_alone_for_a_host_not_in_play(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    api = _api(store, tmp_path / "log.jsonl")
+    out = _intercepted(
+        api,
+        """
+import socket
+out = {"resolved": bool(socket.getaddrinfo("localhost", 80))}
+""",
+    )
+    assert out == {"resolved": True}
+
+
 # ───────── The app's environment ─────────
 
 
@@ -305,12 +432,15 @@ def test_vendor_requirements_name_known_distributions_and_refuse_guesses(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("bad", [False, True])
+@pytest.mark.parametrize("variant", ["fits", "bad_request", "bad_fixture"])
 def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
-    tmp_path: Path, store: SpecStore, bad: bool
+    tmp_path: Path, store: SpecStore, variant: str
 ) -> None:
     """The api pipeline's Gmail read keys the same as the skill's MCP read,
-    so reads score 1.0; a request the spec refuses fails the node."""
+    so reads score 1.0; a request the spec refuses fails the node. A fixture
+    the spec refuses is the bench's own fault: it stops the bench instead of
+    scoring the pipeline 0.0 (it was a ValueError, scored as a dead run)."""
+    bad = variant == "bad_request"
     pytest.importorskip("dbos")
     pytest.importorskip("httpx")
     import yaml
@@ -330,7 +460,11 @@ def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
                         "id": "c",
                         "input": {"q": "label:dock-activity"},
                         "fixtures": {},
-                        "http": {"google/gmail/v1": GMAIL_FIXTURES},
+                        "http": {
+                            "google/gmail/v1": GMAIL_FIXTURES
+                            if variant != "bad_fixture"
+                            else {"operations": {"gmail.users.threads.search": [{"body": {}}]}}
+                        },
                     }
                 ],
             }
@@ -394,6 +528,10 @@ def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
     )
     write_backend(compiled, "api")
 
+    if variant == "bad_fixture":
+        with pytest.raises(HttpFixtureError, match="not an operation"):
+            pipeline_fidelity(compiled, example, tmp_path / "work", spec_store=store)
+        return
     report = pipeline_fidelity(compiled, example, tmp_path / "work", spec_store=store)
     case = report["cases"]["c"]
     if bad:
