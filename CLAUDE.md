@@ -690,12 +690,21 @@ keep:
   same function at emit time. `tests/_messages_api.py` is an
   independent copy of the measured rules, and the Messages stubs refuse
   what it refuses, so the suite fails where the API would.
-- **Two shapes cannot be expressed, and are never approximated.** A
-  free-form object (no declared properties) and a value with no type.
-  Closing a map would make the model answer `{}` with nothing noticing.
+- **Two shapes cannot be expressed, and are never approximated.** An
+  object that admits undeclared keys (no declared properties, or
+  `additionalProperties` set to `true` or a schema, as in a fixed key
+  plus a typed map) and a value with no type. Only an object that *omits*
+  `additionalProperties` is closed. Closing a map would make the model
+  drop its keys with nothing noticing.
   An anthropic judge with either fails at `rote emit`, naming the path.
   An agent loop's output often has one (an IR type name the IR never
   defines), so its extra turn falls back to asking for `submit_result`.
+  That fallback keys on `STRUCTURED_INEXPRESSIBLE` in the message, so any
+  other normalizer error still propagates.
+- **The SDK floor is load-bearing.** `anthropic>=1.15` (has
+  `output_config`) reaches every Python runtime's install instructions
+  through `_py_common.vendor_sdk_requirements`; an older SDK fails every
+  judge with an unexpected-keyword error.
 - **Only `end_turn` is an answer.** `refusal` and `max_tokens` raise a
   plain RuntimeError naming the stop reason; a truncated JSON prefix
   must never reach a downstream node.

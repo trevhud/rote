@@ -21,7 +21,7 @@ from typing import Any
 
 from pydantic_core import PydanticSerializationError
 
-from rote.inference import structured_output_schema
+from rote.inference import STRUCTURED_INEXPRESSIBLE, structured_output_schema
 from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
@@ -970,7 +970,9 @@ def _format_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     try:
         return structured_output_schema(schema, node_id="agent_loop")
-    except RuntimeError:
+    except RuntimeError as exc:
+        if STRUCTURED_INEXPRESSIBLE not in str(exc):
+            raise
         return None
 
 

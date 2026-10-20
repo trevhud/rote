@@ -19,7 +19,7 @@ resumes from the last completed step after a crash.
 ## Run locally
 
 ```sh
-pip install 'dbos>=3.3,<4'   # the emitted main.py targets DBOS 3
+pip install 'dbos>=3.3,<4' 'anthropic>=1.15'
 python main.py '{"your": "input"}'   # one run, blocks until done
 python main.py --serve                 # long-lived worker (see below)
 ```

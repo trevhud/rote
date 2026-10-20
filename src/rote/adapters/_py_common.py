@@ -804,6 +804,40 @@ def _chunked_call_arg(text: str, indent: str) -> str:
     return "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
 
 
+# ───────── vendor SDK requirements ─────────
+
+#: The Anthropic SDK every emitted Python app needs for its judges and
+#: agent loops. The floor is load-bearing: judges send
+#: ``output_config.format`` (structured outputs), and an older SDK fails
+#: every call with ``unexpected keyword argument 'output_config'``. 1.15.0
+#: has it (verified by installing it) and is the version uv.lock pins.
+ANTHROPIC_PY_REQUIREMENT = "anthropic>=1.15"
+
+#: The OpenAI SDK for ``client: openai`` judges (``response_format``
+#: json_schema).
+OPENAI_PY_REQUIREMENT = "openai>=1.40"
+
+
+def vendor_sdk_requirements(pipeline: Pipeline) -> list[str]:
+    """The vendor SDK requirement lines an emitted Python app needs.
+
+    One definition for every Python runtime's requirements.txt and README.
+    An agent loop runs on the Anthropic SDK's own tool runner when it is
+    not on the subscription CLI, so it needs the SDK even with no judges.
+    """
+    clients = {
+        n.signature_spec.client
+        for n in pipeline.nodes_by_kind(NodeKind.LLM_JUDGE)
+        if n.signature_spec is not None
+    }
+    lines = []
+    if "anthropic" in clients or pipeline.nodes_by_kind(NodeKind.AGENT_LOOP):
+        lines.append(ANTHROPIC_PY_REQUIREMENT)
+    if "openai" in clients:
+        lines.append(OPENAI_PY_REQUIREMENT)
+    return lines
+
+
 # ───────── signatures/<id>.py emission ─────────
 
 

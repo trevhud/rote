@@ -104,6 +104,7 @@ from rote.adapters._py_common import (
     required_inputs_guard,
     resolve_extracted_source,
     serialize_helper,
+    vendor_sdk_requirements,
     write_helper_modules,
     write_signature_package,
 )
@@ -980,7 +981,7 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         ## Run locally
 
         ```sh
-        pip install 'dbos>=3.3,<4'   # the emitted main.py targets DBOS 3
+        pip install {install}
         python main.py '{{"your": "input"}}'   # one run, blocks until done
         python main.py --serve                 # long-lived worker (see below)
         ```
@@ -1030,6 +1031,9 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         first_signal=first_signal,
         judge_note=judge_override_readme(pipeline),
         mcp_note=mcp_note,
+        install=" ".join(
+            f"'{req}'" for req in ["dbos>=3.3,<4", *vendor_sdk_requirements(pipeline)]
+        ),
     )
 
 

@@ -1606,6 +1606,18 @@ def test_an_output_no_schema_can_lock_gets_asked_once_more_never_forced(
     assert asked["messages"][-1]["content"][-1]["text"].startswith("Call submit_result now")
 
 
+def test_a_malformed_output_schema_fails_rather_than_asking_for_submit_result(
+    force_stub: str,
+) -> None:
+    """Only an inexpressible schema switches the last turn to asking for
+    the submit tool. A malformed one is a bug in the emitted call and
+    surfaces as one, before the extra request is sent."""
+    malformed = {"type": "object", "properties": {"summary": 3}, "additionalProperties": False}
+    with pytest.raises(RuntimeError, match=r"#/properties/summary is not a JSON Schema object"):
+        _loop(force_stub, output_schema=malformed)
+    assert len(_ForceStub.requests) == 1
+
+
 def test_an_unlockable_output_never_submitted_fails_with_the_shared_message(
     force_stub: str,
 ) -> None:

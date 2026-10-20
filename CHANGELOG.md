@@ -33,8 +33,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   into the subset structured outputs accepts (objects closed, `oneOf` as
   `anyOf`, bounds moved into descriptions). The judge still validates the
   answer against the original. A `refusal` or `max_tokens` stop is an
-  error, never data. An anthropic judge whose output schema has a free-form
-  object or an untyped value now fails at `rote emit`, naming the path. An
+  error, never data. An anthropic judge whose output schema has an object that
+  admits undeclared keys (no properties, or `additionalProperties: true`
+  or a schema) or an untyped value now fails at `rote emit` and in the
+  compile's dry emit, naming the path. The dbos README and a new temporal
+  `requirements.txt` pin `anthropic>=1.15`, the SDK floor with
+  `output_config`. An
   agent loop's one extra turn after it ends without `submit_result` uses
   the same mechanism.
 - **System-1 binds MCP arguments only from schema names that pass grounding's

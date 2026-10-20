@@ -508,8 +508,8 @@ def structured_output_schema(schema: Mapping[str, Any], *, node_id: str) -> dict
     identical answers):
 
     * every object needs ``additionalProperties: false``; omitting it and
-      ``true`` are both a 400. Objects with declared properties get it
-      set here, which only narrows what the model may write.
+      ``true`` are both a 400. An object that omits it gets it set here,
+      which only narrows what the model may write.
     * ``oneOf`` is a 400 and becomes ``anyOf``, which accepts a superset.
     * numeric and string bounds, ``maxItems``, ``minItems`` above 1,
       ``not`` and ``patternProperties`` are a 400 and move into the
@@ -519,10 +519,12 @@ def structured_output_schema(schema: Mapping[str, Any], *, node_id: str) -> dict
       are all accepted as they are.
 
     Two shapes cannot be expressed at all, and raise rather than being
-    approximated: an object with no declared properties that admits
-    arbitrary keys (a free-form map), and a value with no type at all.
-    Closing either would make the model answer ``{}`` or guess a type
-    with nothing downstream noticing.
+    approximated: an object that admits keys it does not declare (no
+    declared properties, or ``additionalProperties`` set to ``true`` or a
+    schema, as in a fixed key plus a typed map), and a value with no type.
+    Closing either would make the model drop data, or guess a type, with
+    nothing downstream noticing. Both errors contain
+    :data:`STRUCTURED_INEXPRESSIBLE`.
 
     The caller validates the answer against the original schema, which
     is what enforces the constraints that moved into descriptions.
@@ -563,18 +565,28 @@ def _structured_node(schema: Any, path: str, node_id: str) -> dict[str, Any]:
     kind = schema.get("type")
     kinds = kind if isinstance(kind, list) else [kind]
     if "object" in kinds:
-        if not schema.get("properties") and schema.get("additionalProperties") is not False:
+        extra = schema.get("additionalProperties", False)
+        if extra is not False:
+            raise RuntimeError(
+                f"{node_id}: output schema at {path} is an object that allows keys it "
+                f"does not declare (additionalProperties: {json.dumps(extra)}), "
+                f"{STRUCTURED_INEXPRESSIBLE} (every object must set "
+                "additionalProperties: false). Declare every key as a property, or "
+                "turn the map into a list of objects, in the IR's "
+                "signature_spec.output_schema."
+            )
+        if not schema.get("properties") and "additionalProperties" not in schema:
             raise RuntimeError(
                 f"{node_id}: output schema at {path} is an object with no declared "
-                "properties, which Anthropic structured outputs cannot express "
-                "(every object must set additionalProperties: false). Declare the "
-                "object's properties in the IR's signature_spec.output_schema."
+                f"properties, {STRUCTURED_INEXPRESSIBLE} (every object must set "
+                "additionalProperties: false). Declare the object's properties in "
+                "the IR's signature_spec.output_schema."
             )
         out["additionalProperties"] = False
     if kind is None and not any(k in schema for k in _STRUCTURED_UNTYPED_OK):
         raise RuntimeError(
-            f"{node_id}: output schema at {path} has no type, which Anthropic "
-            "structured outputs cannot express. Give it a type in the IR's "
+            f"{node_id}: output schema at {path} has no type, "
+            f"{STRUCTURED_INEXPRESSIBLE}. Give it a type in the IR's "
             "signature_spec.output_schema."
         )
     if moved:
@@ -583,6 +595,13 @@ def _structured_node(schema: Any, path: str, node_id: str) -> dict[str, Any]:
         out["description"] = f"{described}\n\n{note}" if described else note
     return out
 
+
+#: In every error :func:`structured_output_schema` raises for a shape the
+#: subset cannot express, and in no other error, so a caller with another
+#: way to ask (an agent loop's submit tool) can tell the two apart. A
+#: substring rather than an exception class: a custom class only unpickles
+#: where this module is importable (see the module docstring).
+STRUCTURED_INEXPRESSIBLE = "which Anthropic structured outputs cannot express"
 
 #: Keywords that give a node a value space without a ``type``.
 _STRUCTURED_UNTYPED_OK = ("enum", "const", "$ref", "anyOf", "oneOf", "allOf")
@@ -1366,7 +1385,9 @@ def _lockable_schema(output_schema: Mapping[str, Any], node_id: str) -> dict[str
     subset cannot express it."""
     try:
         return structured_output_schema(output_schema, node_id=node_id)
-    except RuntimeError:
+    except RuntimeError as exc:
+        if STRUCTURED_INEXPRESSIBLE not in str(exc):
+            raise
         return None
 
 
