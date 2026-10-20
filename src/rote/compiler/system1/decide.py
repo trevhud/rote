@@ -355,9 +355,11 @@ def _registry_tool_for(sentence: str, registry: Mapping[str, str]) -> str | None
         parts = tool.split("_")
         if not set(parts) & _WRITE_VERBS:
             continue
-        # The first word names the vendor ("hubspot"), not the object.
-        objects = {w.rstrip("s") for w in parts[1:]} - _TOOL_VERBS
-        if objects & words:
+        # The object is the name's last non-verb word, its head noun: "template"
+        # in hubspot_create_sales_template. A modifier ("sales") is not enough,
+        # or "post the sales summary" would bind a template tool.
+        nouns = [w for w in parts[1:] if w not in _TOOL_VERBS]
+        if nouns and nouns[-1].rstrip("s") in words:
             return tool
     return None
 

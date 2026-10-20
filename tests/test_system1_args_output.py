@@ -234,3 +234,20 @@ def test_two_matching_schema_properties_bind_neither(tmp_path: Path) -> None:
     node = _gmail(doc)
     assert node["mcp"]["args"] == {}
     assert any("no parameter for ['query_text']" in r for r in plan.review)
+
+
+def test_a_write_tool_binds_on_its_head_noun_not_a_modifier() -> None:
+    from rote.compiler.system1.decide import _registry_tool_for
+
+    registry = {"hubspot_create_sales_template": "hubspot"}
+    assert _registry_tool_for("Create the sales email templates.", registry) == (
+        "hubspot_create_sales_template"
+    )
+    assert _registry_tool_for("Post the sales summary.", registry) is None
+
+
+def test_only_a_read_tool_sharing_the_noun_does_not_name_a_destination() -> None:
+    from rote.compiler.system1.decide import _registry_tool_for
+
+    registry = {"hubspot_get_template": "hubspot", "hubspot_search_templates": "hubspot"}
+    assert _registry_tool_for("Create the email templates.", registry) is None
