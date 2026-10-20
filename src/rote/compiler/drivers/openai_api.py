@@ -42,6 +42,7 @@ from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
 from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     build_system_prompt,
+    build_task_prompt,
     dispatch_tool,
     emit_progress_phases,
     openai_tool_schemas,
@@ -452,7 +453,10 @@ class OpenAIApiDriver(CompilerDriver):
         repair: Callable[[Path], str | None] | None,
     ) -> DriverResult:
         """The tool-use loop body, bracketed by ``run``'s MCP lifecycle."""
-        read_roots = [skill_dir, compiler_skill_dir]
+        # The work directory too: System-1 writes the skeleton pipeline.yaml
+        # and system1/brief.md there before the agent starts, and an agent
+        # that cannot read them writes its own plan beside System-1's.
+        read_roots = [skill_dir, compiler_skill_dir, work_dir]
         write_root = work_dir
 
         system_prompt = build_system_prompt(skill_dir, compiler_skill_dir, work_dir, skill_md_text)
@@ -462,12 +466,7 @@ class OpenAIApiDriver(CompilerDriver):
         if live is not None:
             tool_schemas = tool_schemas + live.openai_tool_schemas()
 
-        task_prompt = (
-            f"Compile the skill at {skill_dir}. "
-            f"Begin by reading {skill_dir}/SKILL.md and the reference "
-            f"files in {compiler_skill_dir}/references/, then produce "
-            f"the pipeline.yaml at {work_dir}/pipeline.yaml."
-        )
+        task_prompt = build_task_prompt(skill_dir, compiler_skill_dir, work_dir)
         if extra_instructions:
             task_prompt = f"{task_prompt}\n\n{extra_instructions}"
 
