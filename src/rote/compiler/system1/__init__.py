@@ -17,13 +17,13 @@ import json
 import shutil
 from pathlib import Path
 
-from rote.compiler.system1 import clef, report
+from rote.compiler.report import ReportExtras
+from rote.compiler.system1 import clef
 from rote.compiler.system1.clef import ClefUnavailable
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
 from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
 from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME, write
-from rote.ir import load_pipeline
 
 __all__ = [
     "DECIDERS",
@@ -38,6 +38,7 @@ __all__ = [
     "enforce",
     "materialize_text_rubric",
     "prepare",
+    "report_extras",
     "settle",
 ]
 
@@ -94,14 +95,44 @@ def materialize_text_rubric(compiler_skill_dir: Path, dest: Path) -> Path:
 
 
 def settle(work_dir: Path, p: Plan, *, final: bool = False) -> list[str]:
-    """After an agent stop: restore the decisions, then write the report from data.
+    """After an agent stop: restore the decisions.
 
     Runs before every verification (repair rounds included) and once more
     after the agent's last stop, so what is verified is what ships."""
-    changes = enforce(work_dir, final=final)
-    try:
-        pipeline = load_pipeline(work_dir / "pipeline.yaml")
-    except Exception:  # noqa: BLE001 (verification reports it to the agent)
-        return changes
-    report.write(work_dir, p, pipeline, all_changes(work_dir))
-    return changes
+    return enforce(work_dir, final=final)
+
+
+def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
+    """What --system1 adds to the shared compile report (rote.compiler.report).
+
+    Read from ``work_dir`` (the proposals and the enforcement record), so it
+    is built before the work dir moves to the output."""
+    questions: list[tuple[str, str]] = []
+    for line in p.review:
+        node = line.split("`", 2)[1] if line.startswith("`") else "pipeline"
+        questions.append((f"System-1 decision below {REVIEW_BELOW} confidence: {node}", line))
+    questions += [("Proposed by the agent, not applied", x) for x in check_proposals(work_dir)]
+    questions += [
+        ("The agent edited a decision; rote restored it", c) for c in all_changes(work_dir)
+    ]
+    return ReportExtras(
+        preamble=(
+            "Compiled with `--system1`: rote decided the structure with rules"
+            f"{' and the Clef decision model' if _used_clef(work_dir) else ''}, and the "
+            "agent wrote the implementations and judge prompts. Every decision, with its "
+            f"confidence and rule, is in `{BRIEF_DIRNAME}/{DECISIONS_FILENAME}`."
+        ),
+        questions=questions,
+        next_steps=(
+            "Review every Open question above; each assumption is a rule the skill does "
+            "not state, and each low-confidence decision took a conservative default.",
+            "Run the pipeline once (`rote run`) and compare it with a run of the skill.",
+            "Recompile with `rote compile --system1` after the skill changes: the decisions "
+            "are deterministic, so only changed text costs tokens.",
+        ),
+    )
+
+
+def _used_clef(work_dir: Path) -> bool:
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    return path.is_file() and "decider" in json.loads(path.read_text(encoding="utf-8"))

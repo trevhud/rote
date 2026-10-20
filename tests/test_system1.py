@@ -260,10 +260,9 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
     assert first.fan_out is False  # restored after the agent's edit
     report = (out / "compile-report.md").read_text()
     assert "## Open questions" in report
-    assert (
-        f"The agent edited a decision; rote restored it: `{first.id}` fan_out: "
-        "agent wrote True, kept None"
-    ) in report
+    assert "### The agent edited a decision; rote restored it" in report
+    assert f"> `{first.id}` fan_out: agent wrote True, kept None" in report
+    assert "Compiled with `--system1`" in report
     assert (out / "system1" / "decisions.json").is_file()
 
 
@@ -321,10 +320,9 @@ def test_unparseable_agent_yaml_goes_to_repair_then_falls_back_to_the_skeleton(
     load_pipeline(tmp_path / "pipeline.yaml")
 
 
-def test_report_lists_every_assumption_so_no_repair_round_is_spent_on_it(tmp_path: Path) -> None:
-    """The commonest repair cause: an assumption with no Open questions entry."""
+def test_the_shared_report_lists_assumptions_and_system1_entries(tmp_path: Path) -> None:
     from rote.compiler.provenance import open_questions
-    from rote.compiler.verify import verify_deliverable
+    from rote.compiler.report import render_compile_report
 
     plan = system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
     doc = yaml.safe_load((tmp_path / "pipeline.yaml").read_text())
@@ -338,13 +336,15 @@ def test_report_lists_every_assumption_so_no_repair_round_is_spent_on_it(tmp_pat
         "    return {}\n"
     )
     system1.settle(tmp_path, plan, final=True)
-    report = (tmp_path / "compile-report.md").read_text()
-    entries = open_questions(report)
-    assert sum("assumed" in e for e in entries) == 2
-    v = verify_deliverable(
-        tmp_path, run_tests=False, skill_dir=EXAMPLES / "expense-audit" / "skill"
+    report = render_compile_report(
+        load_pipeline(tmp_path / "pipeline.yaml"),
+        tmp_path,
+        system1.report_extras(tmp_path, plan),
     )
-    assert not [f for f in v.findings if f.kind == "unlisted_assumption"]
+    entries = open_questions(report)
+    # Both assumptions, then System-1's own entries, all under Open questions.
+    assert sum(e.startswith("### OQ-") for e in entries) == 2
+    assert sum("System-1 decision below" in e for e in entries) == len(plan.review)
 
 
 def test_text_yaml_carries_judge_specs_without_editing_pipeline_yaml(tmp_path: Path) -> None:

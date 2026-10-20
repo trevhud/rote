@@ -509,9 +509,11 @@ class Compiler:
                     spent = f" after spending {usage}"
                 raise CompilerError(f"Driver {driver.name!r} failed{spent}: {e}{detail}") from e
 
+            s1_extras = None
             if s1_plan is not None:
                 try:
                     system1.settle(result.work_dir, s1_plan, final=True)
+                    s1_extras = system1.report_extras(result.work_dir, s1_plan)
                 except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
                     kept = self._keep_rejected_work(result.work_dir, output_dir)
                     raise CompilerError(
@@ -585,7 +587,7 @@ class Compiler:
             # rote.compiler.report). Rendered from output_dir, after an
             # update's merge, so it describes the deliverable as kept.
             (output_dir / REPORT_FILENAME).write_text(
-                render_compile_report(pipeline, output_dir), encoding="utf-8"
+                render_compile_report(pipeline, output_dir, s1_extras), encoding="utf-8"
             )
 
             # The agent records source_skill relative to its own temp

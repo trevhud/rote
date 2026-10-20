@@ -182,9 +182,9 @@ def test_review_lists_exactly_the_decisions_below_threshold(tmp_path: Path) -> N
     assert any(" mandatory = True (confidence 0.60)" in r for r in plan.review)
     work = tmp_path / "work"
     system1.settle(work, plan, final=True)
-    report = (work / "compile-report.md").read_text()
-    lines = [x for x in report.splitlines() if "System-1 decision below" in x]
-    assert [x.split(": ", 1)[1] for x in lines] == plan.review
+    questions = system1.report_extras(work, plan).questions
+    listed = [d for t, d in questions if t.startswith("System-1 decision below")]
+    assert listed == plan.review
 
 
 @pytest.mark.parametrize(
@@ -272,7 +272,8 @@ async def test_a_proposal_is_reported_and_never_applied(
     first = result.pipeline.nodes[0]
     assert first.kind.value == "pure_function"
     report = (out / "compile-report.md").read_text()
-    assert f"Proposed by the agent, not applied: `{first.id}` kind -> 'llm_judge'" in report
+    assert "### Proposed by the agent, not applied" in report
+    assert f"> `{first.id}` kind -> 'llm_judge'" in report
 
 
 def test_every_field_the_agent_writes_survives_enforcement(tmp_path: Path) -> None:
@@ -310,7 +311,8 @@ def test_a_malformed_proposals_file_is_reported_not_raised(tmp_path: Path) -> No
     (verdict,) = check_proposals(work)
     assert "did not parse" in verdict
     system1.settle(work, plan, final=True)
-    assert "proposals.yaml did not parse" in (work / "compile-report.md").read_text()
+    details = [d for _, d in system1.report_extras(work, plan).questions]
+    assert any("proposals.yaml did not parse" in d for d in details)
 
 
 @pytest.mark.asyncio

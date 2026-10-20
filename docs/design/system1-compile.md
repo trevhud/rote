@@ -84,12 +84,11 @@ about 2,400 for the full rubric. Its job is four turns:
 Three changes moved paid work into code. Each came from reading a v1
 transcript:
 
-- **The report is generated.** `system1/report.py` writes `compile-report.md`
-  from data: counts, the crystallization log with citation counts per
-  module, and Open questions with one entry per `# rote: assumption:`
-  marker, per stub, per low-confidence decision, per proposal and per
-  reverted edit. That removes a turn, and the most common repair cause
-  (fewer Open questions than assumptions) cannot happen.
+- **The report is generated.** rote renders `compile-report.md` from data
+  with the shared renderer both modes use (`rote.compiler.report`, #152).
+  `--system1` passes `system1.report_extras`: a preamble, one Open
+  questions entry per low-confidence decision, per proposal and per
+  reverted edit, and its next steps. The agent spends no turn on it.
 - **Text goes in one file.** In v1, one compile spent 9 of 44 turns on
   separate Edits to `pipeline.yaml` descriptions. The agent now writes
   `system1/text.yaml` once, and rote merges only text fields from it.
