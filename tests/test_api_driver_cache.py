@@ -90,18 +90,56 @@ async def _run(fake_anthropic: Any, fake_skills: Any) -> tuple[Any, Any]:  # noq
 
 
 @pytest.mark.asyncio
-async def test_every_request_caches_tools_system_and_the_latest_user_turn(
+async def test_every_request_caches_tools_system_and_the_last_two_user_turns(
     fake_anthropic: Any,  # noqa: F811
     fake_skills: Any,  # noqa: F811
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = await _run(fake_anthropic, fake_skills)
     for i, request in enumerate(client.messages.calls):
-        # One rolling breakpoint, always on the last message (a user turn):
-        # three of the API's four, every turn.
+        # The latest user turn, and the one the previous request ended on
+        # (two messages back, past the assistant turn): all four breakpoints.
         last = len(request["messages"]) - 1
-        assert _breakpoints(request) == ["tools", "system", f"messages[{last}]"], i
+        expected = [
+            "tools",
+            "system",
+            *([f"messages[{last - 2}]"] if last >= 2 else []),
+            f"messages[{last}]",
+        ]
+        assert _breakpoints(request) == expected, i
         assert request["system"][0]["text"]
+
+
+def test_the_previous_requests_breakpoint_is_read_however_wide_the_turn() -> None:
+    """A turn of 12 parallel reads adds 24 blocks, past the 20-block
+    lookback: the second-to-last user turn is where the previous request's
+    entry was written, and it keeps a breakpoint."""
+    uses = [SimpleNamespace(type="tool_use", id=f"t{i}") for i in range(12)]
+    results = [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "x"} for i in range(12)]
+    messages = [
+        {"role": "user", "content": "compile"},
+        {"role": "assistant", "content": uses},
+        {"role": "user", "content": results},
+    ]
+    sent = cached_messages(messages)
+    assert sent[0]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert sent[2]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # Only the last block of each: not every tool_result.
+    assert all("cache_control" not in b for b in sent[2]["content"][:-1])
+    # No more than two message breakpoints however long the history.
+    longer = [
+        *messages,
+        {"role": "assistant", "content": uses},
+        {"role": "user", "content": results},
+    ]
+    marked = [
+        i
+        for i, m in enumerate(cached_messages(longer))
+        if isinstance(m["content"], list)
+        and isinstance(m["content"][-1], dict)
+        and "cache_control" in m["content"][-1]
+    ]
+    assert marked == [2, 4]
 
 
 @pytest.mark.asyncio
@@ -154,7 +192,17 @@ async def test_all_four_buckets_are_summed_and_priced_into_the_metadata(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rates", [None, (3.0, 15.0, None, None)])
+@pytest.mark.parametrize(
+    "rates",
+    [
+        None,
+        (3.0, 15.0, None, None),
+        # Only the cache-write rate is missing, and the run wrote to the cache.
+        (3.0, 15.0, 0.3, None),
+        # Only the cache-read rate is missing, and the run read from it.
+        (3.0, 15.0, None, 3.75),
+    ],
+)
 async def test_a_run_that_cannot_be_priced_reports_no_cost_not_a_wrong_one(
     fake_anthropic: Any,  # noqa: F811
     fake_skills: Any,  # noqa: F811
@@ -267,3 +315,38 @@ async def test_the_agent_reads_the_system1_skeleton_from_the_work_dir_by_relativ
     assert not (elsewhere / "extracted").exists()
     assert results["e"].get("is_error") and not (work_dir.parent / "escape.py").exists()
     assert results["f"].get("is_error") and text("f") != "s"
+
+
+@pytest.mark.asyncio
+async def test_a_compile_that_writes_no_pipeline_still_reports_what_it_spent(
+    fake_anthropic: Any,  # noqa: F811
+    fake_skills: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The DriverError carries the run's usage and cost, and the failure line
+    the compiler logs from it is what bench --budget reads back."""
+    from rote.bench.collect import failed_run_usage
+    from rote.compiler import Compiler
+    from rote.compiler.drivers import DriverError
+
+    monkeypatch.setattr(
+        "rote.eval.pricing.fetch_catalog", lambda provider: _catalog((3.0, 15.0, 0.3, 3.75))
+    )
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    fake_anthropic([_msg([_text("done")], "end_turn", input=10, write=2000, read=0, output=7)])
+    with pytest.raises(DriverError, match="did not produce") as caught:
+        await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir)
+    meta = caught.value.metadata
+    assert meta["iterations"] == 1 and meta["cache_write_tokens"] == 2000
+    assert meta["cost_usd"] == pytest.approx((10 * 3.0 + 7 * 15.0 + 2000 * 3.75) / 1e6)
+    progress = tmp_path / "progress.jsonl"
+    progress.write_text(
+        json.dumps({"message": "usage before the failure: " + Compiler._usage_summary(meta)})
+        + "\n",
+        encoding="utf-8",
+    )
+    usage = failed_run_usage(progress)
+    assert usage["cost_usd"] == pytest.approx(meta["cost_usd"], abs=1e-6)
+    assert usage["num_turns"] == 1
