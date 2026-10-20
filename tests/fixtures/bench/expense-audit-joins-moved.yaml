@@ -1,0 +1,168 @@
+# A real expense-audit compile (system-1 router, gpt-oss model), kept as a
+# matcher regression fixture. It moved the duplicate and late joins onto the
+# grouping node, so structure alone can swap group_by_employee and
+# audit_report. See tests/test_bench_score.py.
+version: 0.1.0
+description: Month-end audit of employee expense reports. Takes the month's export
+  from the expense tool, converts every line to USD at the finance month-end rates,
+  checks each employee's report against the travel and expense policy (category caps,
+  receipts, pre-approvals, duplicates, late submissions), auto-approves clean reports,
+  routes everything else to the controller for a decision, and files the audit report
+  for payroll. Use when someone asks to "run the expense audit", "close out expenses
+  for <month>", or "check this month's expense reports".
+name: expense-audit
+source_skill: ../skill-src/expense-audit
+input:
+  type: ExpenseAuditInput
+  input_schema:
+    type: object
+    additionalProperties: true
+    properties:
+      month:
+        description: the skill's placeholder '<month>'
+edges:
+- from: convert_line_usd
+  to: group_audit_employee_s_report
+- from: check_duplicate_submissions
+  to: group_audit_employee_s_report
+- from: check_late_submissions
+  to: group_audit_employee_s_report
+- from: group_audit_employee_s_report
+  to: audit_employee_s_report_each
+  fan_out: true
+- from: audit_employee_s_report_each
+  to: summarize_batch
+- from: summarize_batch
+  to: controller_review_gate
+- from: controller_review_gate
+  to: file_audit_report
+- from: file_audit_report
+  to: file_audit_report_write
+entry_nodes:
+- convert_line_usd
+- check_duplicate_submissions
+- check_late_submissions
+exit_nodes:
+- file_audit_report_write
+nodes:
+- id: convert_line_usd
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  impl: extracted/convert_line_usd.py:convert_line_usd
+  source:
+    section: 'Step 1: Convert every line to USD'
+  description: 'Step 1: Convert every line to USD: Look up the period''s month-end
+    rates in [references/fx-rates.md](references/fx-rates.md) and convert each line''s
+    `amount` from its `currency` to USD.'
+  output: dict
+- id: check_duplicate_submissions
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  impl: extracted/check_duplicate_submissions.py:check_duplicate_submissions
+  source:
+    section: 'Step 2: Check for duplicate submissions (MANDATORY)'
+  description: 'Step 2: Check for duplicate submissions (MANDATORY): Two lines are
+    duplicates when they have the same employee, merchant (ignore case), amount, currency,
+    and date.'
+  output: dict
+- id: check_late_submissions
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  constants:
+    threshold: 60
+  impl: extracted/check_late_submissions.py:check_late_submissions
+  source:
+    section: 'Step 3: Check for late submissions (MANDATORY)'
+  description: 'Step 3: Check for late submissions (MANDATORY): The policy window
+    is 60 days.'
+  output: dict
+- id: group_audit_employee_s_report
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    convert_line_usd: convert_line_usd.output
+    check_duplicate_submissions: check_duplicate_submissions.output
+    check_late_submissions: check_late_submissions.output
+  mandatory: true
+  constants:
+    threshold: 25.0
+  impl: extracted/group_audit_employee_s_report.py:group_audit_employee_s_report
+  source:
+    section: 'Step 4: Audit each employee''s report'
+  description: 'Step 4: Audit each employee''s report: Group the converted lines by
+    employee.'
+  output:
+    items: list
+- id: audit_employee_s_report_each
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    group_audit_employee_s_report: group_audit_employee_s_report.output.items
+  fan_out: true
+  mandatory: true
+  impl: extracted/audit_employee_s_report_each.py:audit_employee_s_report_each
+  source:
+    section: 'Step 4: Audit each employee''s report'
+  description: 'Step 4: Audit each employee''s report: Group the converted lines by
+    employee.'
+  output: dict
+- id: summarize_batch
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    audit_employee_s_report_each: audit_employee_s_report_each.output
+  mandatory: true
+  impl: extracted/summarize_batch.py:summarize_batch
+  source:
+    section: 'Step 5: Summarize the batch'
+  description: 'Step 5: Summarize the batch: Total the batch in USD, list the auto-approved
+    employees, and build the review queue: every finding from step 4, one row per
+    finding, with the expense id, employee, rule, severity, and a one-line detail.'
+  output: dict
+- id: controller_review_gate
+  kind: hitl_gate
+  inputs:
+    request: pipeline.input
+    summarize_batch: summarize_batch.output
+  signal: controller_review_approved
+  timeout: 3d
+  source:
+    section: 'Step 6: Controller review'
+  description: 'Step 6: Controller review: Post the review queue to the controller
+    and wait for a decision on every **review** item: approve or reject.'
+  output:
+    approved: Any
+    rejected: Any
+- id: file_audit_report
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    controller_review_gate: controller_review_gate.output
+  mandatory: true
+  impl: extracted/file_audit_report.py:file_audit_report
+  source:
+    section: 'Step 7: File the audit report'
+  description: 'Step 7: File the audit report: Write the report in the layout in [references/report-format.md](references/report-format.md)
+    and save it to the finance shared folder as `<period>-expense-audit.md`.'
+  output: dict
+- id: file_audit_report_write
+  kind: external_call
+  inputs:
+    request: pipeline.input
+    file_audit_report: file_audit_report.output
+  mandatory: true
+  impl: extracted/file_audit_report_write.py:file_audit_report_write
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 'Step 7: File the audit report'
+  description: 'Step 7: File the audit report: Write the report in the layout in [references/report-format.md](references/report-format.md)
+    and save it to the finance shared folder as `<period>-expense-audit.md`.'
+  output: dict

@@ -20,7 +20,13 @@ from rote.eval.sidecar import load_eval_estimates
 from rote.ir import NodeKind, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_PIPELINES = sorted((REPO_ROOT / "examples").glob("*/expected/pipeline.yaml"))
+EXAMPLE_PIPELINES = sorted(
+    [
+        *(REPO_ROOT / "examples").glob("*/expected/pipeline.yaml"),
+        # The held-out benchmark skills' gold labels must stay emittable too.
+        *(REPO_ROOT / "examples" / "holdout").glob("*/expected/pipeline.yaml"),
+    ]
+)
 
 
 @pytest.mark.parametrize("pipeline_yaml", EXAMPLE_PIPELINES, ids=lambda p: p.parent.parent.name)

@@ -10,6 +10,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **`rote bench --fidelity`: does the compiled pipeline behave like the
+  skill?** Each compiled pipeline runs on fixed cases (input, gate answers,
+  fixture MCP responses served by a local fastmcp server) and is scored
+  against the skill itself run as an agent on the same cases, several
+  times, counting only what every agent run agrees on: outputs matched by
+  value, outcome, reads, ordered side effects, and gate payload fit.
+  References are recorded once with `--record-reference`, and
+  `--fidelity-of DIR` scores any compiled dir. Cases and references ship
+  for expense-audit and ops-report. See `docs/compile-bench.md`.
 - **`rote bench`, a scored compile benchmark (dev tool, spends tokens).**
   It compiles the example skills, scores each `pipeline.yaml` against the
   hand-written `expected/pipeline.yaml` (node and kind match, edges, wave
@@ -36,6 +45,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   skipped with one stderr warning instead of shadowing it.
 
 ### Fixed
+- A Cloudflare app whose judge returns free-form objects (`{type: object}`
+  with no properties, alone, in an array or nested) or an untyped field
+  now compiles. The judge's Zod schema typed them `Record<string,
+  unknown>` and `unknown`, which `step.do`'s `Rpc.Serializable`
+  constraint rejects (TS2769), so `tsc` failed on emit (found by `rote
+  bench` on deal-monitor). They are now a five-level JSON value type,
+  declared in a signature module only when used. DBOS-TS and Inngest
+  compiled before and still do. The typed-impls e2e covers the shape on
+  all three.
 - A `tools/list` or tool call that landed while the registry file was
   corrupt (hand-edit typo, torn write) raised inside the provider and
   FastMCP answered with no tools. Only the background watcher tolerated

@@ -101,9 +101,20 @@ def _normalized(text: str) -> str:
     because its own citation was in double quotes, and the compile failed
     on a "fabricated" citation that was verbatim but for the quote style.
     Which quote mark encloses a phrase is not part of what the skill says.
+
+    Dashes likewise: a BDR compile at low effort quoted the skill's
+    ``list \u2014 search for`` as ``list -- search for`` in an ASCII comment, and
+    four verbatim citations failed the compile. An em dash, an en dash and
+    a run of hyphens are one mark here. A single hyphen stays as it is, so
+    ``do-not-contact`` still has to match ``do-not-contact``. The same
+    citation also escaped the skill's inner quotes (``\\"BDR do not
+    contact\\"``), a code habit that is quote style too, so a backslash
+    before a quote mark is dropped.
     """
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"\\([\"'])", r"\1", text)
     text = re.sub(r"[\"'\u2018\u2019\u201c\u201d]", "'", text)
+    text = re.sub(r"[\u2013\u2014]|-{2,}", "\u2014", text)
     return " ".join(re.sub(r"[*_`]", "", text).lower().split())
 
 

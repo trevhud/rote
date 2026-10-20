@@ -16,6 +16,7 @@ Number = int | float
 
 #: (key, column header, format). Order is the table's column order.
 COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("fidelity", "fidel", "{:.2f}"),
     ("nodes", "nodes", "{}"),
     ("node_recall", "nodeR", "{:.2f}"),
     ("node_precision", "nodeP", "{:.2f}"),
@@ -29,7 +30,9 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("mandatory_recall", "mandR", "{:.2f}"),
     ("gates", "gates", "{}"),
     ("gate_signal_matches", "sig", "{}"),
+    ("gate_signal_matches_normalized", "sigN", "{}"),
     ("gate_payload_jaccard", "gateJ", "{:.2f}"),
+    ("gate_payload_jaccard_normalized", "gateJN", "{:.2f}"),
     ("input_recall", "inR", "{:.2f}"),
     ("input_precision", "inP", "{:.2f}"),
     ("implemented", "impl", "{}"),
@@ -51,7 +54,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 #: Keys summed, not averaged, in the aggregate.
-SUMMED = frozenset({"cost_usd", "wall_seconds"})
+SUMMED = frozenset({"cost_usd", "wall_seconds", "fidelity_cost_usd"})
 
 #: Headline keys where a larger number is worse. ``--compare`` marks a
 #: delta as a regression by this, so the reader need not remember it.
@@ -62,6 +65,7 @@ LOWER_IS_BETTER = frozenset(
         "repair_rounds",
         "turns",
         "cost_usd",
+        "fidelity_cost_usd",
         "input_tokens_total",
         "output_tokens",
         "wall_seconds",
@@ -110,6 +114,8 @@ def headline(job: dict[str, Any]) -> dict[str, Any]:
 
     impl = _get(job, "verification", "implementation") or {}
     return {
+        "fidelity": _get(job, "fidelity", "score"),
+        "fidelity_cost_usd": _get(job, "fidelity", "cost_usd"),
         "nodes": _ratio(
             _get(job, "structure", "compiled_nodes"), _get(job, "structure", "expected_nodes")
         ),
@@ -125,7 +131,9 @@ def headline(job: dict[str, Any]) -> dict[str, Any]:
         "mandatory_recall": _get(job, "mandatory", "recall"),
         "gates": _ratio(_get(job, "gates", "compiled"), _get(job, "gates", "expected")),
         "gate_signal_matches": _get(job, "gates", "signal_matches"),
+        "gate_signal_matches_normalized": _get(job, "gates", "signal_matches_normalized"),
         "gate_payload_jaccard": _get(job, "gates", "payload_jaccard_mean"),
+        "gate_payload_jaccard_normalized": _get(job, "gates", "payload_jaccard_normalized_mean"),
         "input_recall": _get(job, "inputs", "recall"),
         "input_precision": _get(job, "inputs", "precision"),
         "implemented": _ratio(impl.get("implemented"), impl.get("pure_functions")),

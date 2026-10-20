@@ -338,6 +338,8 @@ def run_baseline_trial(
     timeout_seconds: float = 1800.0,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
     min_expected_turns: int | None = None,
+    output_fields: list[str] | None = None,
+    extra_instructions: str | None = None,
 ) -> tuple[MeasuredRun, list[ObservedToolCall], list[str]]:
     """One ``claude -p`` run of the raw skill in stream-json mode.
 
@@ -349,6 +351,10 @@ def run_baseline_trial(
 
     ``mcp_tool_ids`` is the explicit tool allowlist (read-only gate);
     pass ``["mcp__<server>__*" ...]`` wildcards to lift the gate.
+    ``output_fields`` names fields result.json must carry, and
+    ``extra_instructions`` is appended to the prompt before the result
+    instructions (the compile bench's fidelity references use both: a fixed
+    output contract, and the answers a person would give at each gate).
     """
     skill_path = Path(skill_dir).resolve()
     if not (skill_path / "SKILL.md").is_file():
@@ -358,7 +364,7 @@ def run_baseline_trial(
             f"`{executable}` CLI not found — install Claude Code or pass a different executable"
         )
 
-    prompt = _skill_prompt(skill_path, input_payload, None)
+    prompt = _skill_prompt(skill_path, input_payload, output_fields, extra_instructions)
     with tempfile.TemporaryDirectory(prefix="rote-baseline-") as workdir_str:
         workdir = Path(workdir_str)
         if mcp_tool_ids:

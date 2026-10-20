@@ -943,9 +943,12 @@ pure function implemented, tests green, node and kind accuracy at or
 above the `high` runs). BDR at `low` (judges, agent loops, gates): the
 first pass took 12 turns, $1.96 and 857 s, against 63-74 turns,
 $4.46-5.14 and 27-49 min at `high`. Kind accuracy, gates and judge/loop
-detection matched or beat the `high` run's. Its repair round was cut off
-by a usage limit, so a repaired BDR deliverable at `low` is still
-unverified. If one regresses, `medium` ($1.91 / 916 s on expense-audit)
+detection matched or beat the `high` run's. A full BDR rerun at `low`
+($2.85, 65 turns, 20 min, against $5.14, 74 turns, 49 min) ended with
+four citation "errors" that were verbatim but for an ASCII `--` for the
+skill's em dash and `\"` for its inner quotes. The provenance normalizer
+now treats both as punctuation, and the same deliverable then verifies
+clean (51/51 tests, dbos and cloudflare dry-emit ok). If one regresses, `medium` ($1.91 / 916 s on expense-audit)
 is the fallback. To profile a compile, read its
 transcript under `~/.claude/projects/<work-dir-slug>/<session_id>.jsonl`:
 the `cost-state` records carry `thinkingTokens` per invocation.
@@ -1082,6 +1085,15 @@ field access with `as unknown as Record<...>`: it compiles everywhere
 precisely because it turns off tsc's field-name check, so an IR field the
 user's type names differently becomes `undefined` at run time instead of
 a TS7053.
+
+The same constraint bites judges, whose output type comes from Zod. A
+free-form object (`{type: object}` with no properties) and an untyped
+field used to be `z.record(z.string(), z.unknown())` and `z.unknown()`,
+so a judge returning one failed `step.do` with TS2769 (deal-monitor,
+found by `rote bench`). They are `JSON_VALUE` now (`JSON_VALUE_ZOD_TS`, a
+`z.custom` over a JSON type spelled out five levels deep, declared in a
+signature module only when used), the same non-recursive shape agent-loop
+outputs use, because a recursive type fails TS2589 there.
 
 Checking the stubs compile proves nothing here.
 `tests/test_ts_typed_impls_e2e.py` replaces them with typed
@@ -1697,6 +1709,14 @@ copy the shape of an existing canonical example.
 | Test a TS-emitting adapter end-to-end | `tests/test_cloudflare_e2e.py` (real `npm install` + `tsc --noEmit`; `@pytest.mark.slow`) |
 | Test the CLI via subprocess | `tests/test_cli.py::test_subprocess_emit_bdr` |
 | Add a rubric file | Any file in `skills/rote-compile/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
+
+**Never tune against `examples/holdout/`.** Those skills and their gold
+pipelines are the held-out half of `rote bench` (see
+[`examples/holdout/README.md`](examples/holdout/README.md)). Rubric or
+prompt work is judged on the five top-level examples, then checked
+once against the holdout with `--examples examples/holdout`. Don't
+cite holdout skills as rubric examples either: that leaks the answer
+key into the compiler.
 
 ---
 

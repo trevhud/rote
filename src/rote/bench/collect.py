@@ -280,9 +280,14 @@ def collect_job(
     exit_code: int | None,
     wall_seconds: float | None,
     tsc: bool = True,
+    fidelity_example: Path | None = None,
 ) -> dict[str, Any]:
     """Every metric for one compile job. Never raises on a bad compile:
-    a missing or invalid pipeline is itself the result."""
+    a missing or invalid pipeline is itself the result.
+
+    ``fidelity_example`` (``--fidelity``) is the example dir whose
+    ``fidelity/`` cases and reference the pipeline is run against.
+    """
     compiled = deliverable_dir(out_dir)
     metrics = read_compile_metrics(compiled) or failed_run_usage(out_dir / "progress.jsonl")
     run: dict[str, Any] = {
@@ -317,4 +322,20 @@ def collect_job(
     job.update(score_pipeline(load_pipeline(expected_yaml), pipeline))
     job["verification"] = verification_metrics(pipeline, compiled, skill_dir)
     job["emit"] = emit_check(pipeline, compiled, out_dir / "bench-emit", tsc=tsc)
+    if fidelity_example is not None:
+        job["fidelity"] = fidelity_check(compiled, fidelity_example, out_dir / "bench-fidelity")
     return job
+
+
+def fidelity_check(compiled: Path, example_dir: Path, work: Path) -> dict[str, Any]:
+    """Behavioral fidelity, or why it could not be measured (never raises)."""
+    from rote.bench.fidelity import has_cases, pipeline_fidelity
+
+    if not has_cases(example_dir):
+        return {"score": None, "skipped": f"{example_dir.name} has no fidelity cases"}
+    if work.exists():
+        shutil.rmtree(work)
+    try:
+        return pipeline_fidelity(compiled, example_dir, work)
+    except FileNotFoundError as e:
+        return {"score": None, "skipped": str(e)}

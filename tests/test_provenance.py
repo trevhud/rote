@@ -376,6 +376,28 @@ def test_a_citation_that_only_changes_the_quote_style_is_verbatim(tmp_path: Path
     assert citation_problem(quote.replace("each", "every"), paragraphs) is not None
 
 
+def test_a_citation_that_only_changes_the_dash_is_verbatim(tmp_path: Path) -> None:
+    """The real BDR case at low effort: the agent wrote the skill's em dash
+    as ``--`` in an ASCII comment, and four verbatim citations failed."""
+    (tmp_path / "SKILL.md").write_text(
+        '1. **Do-not-contact list** \u2014 search for "BDR do not contact" list, check each '
+        "contact's memberships\n"
+    )
+    paragraphs = skill_paragraphs(tmp_path)
+    tail = " search for 'BDR do not contact' list, check each contact's memberships"
+    for dash in ("--", "---", "\u2013", "\u2014"):
+        assert citation_problem(f"Do-not-contact list {dash}{tail}", paragraphs) is None, dash
+    # The same citation escaped the inner quotes, as code does.
+    escaped = (
+        'Do-not-contact list -- search for \\"BDR do not contact\\" list, '
+        "check each contact's memberships"
+    )
+    assert citation_problem(escaped, paragraphs) is None
+    # The negative half: a single hyphen is a hyphen, not a dash.
+    assert citation_problem(f"Do-not-contact list -{tail}", paragraphs) is not None
+    assert citation_problem(f"Do not contact list \u2014{tail}", paragraphs) is not None
+
+
 def test_open_questions_counts_subheadings_not_their_detail() -> None:
     report = "## Open questions\n\n### OQ-1\n- a\n- b\n\n### OQ-2\n- c\n\n## Next\n- d\n"
     assert len(open_questions(report)) == 2
