@@ -100,14 +100,43 @@ nodes:
       page: fetch_page.output
       title: pipeline.input.title
     output: report str
+  - id: extract
+    kind: llm_judge
+    description: Extract free-form records from the page.
+    inputs:
+      page: fetch_page.output
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          page: {type: string}
+        required: [page]
+      # Free-form objects, in an array and nested, plus an untyped field:
+      # a Cloudflare step.do result must be Rpc.Serializable, which
+      # Record<string, unknown> is not (deal-monitor's shape, from rote bench).
+      output_schema:
+        type: object
+        properties:
+          records: {type: array, items: {type: object}}
+          meta: {type: object}
+          nested:
+            type: object
+            properties:
+              extra: {type: object}
+              anything: {}
+            required: [extra, anything]
+        required: [records, meta, nested]
+      prompt: "Extract from {{ page }}"
+      client: anthropic
 edges:
   - {from: list_items, to: score_item}
   - {from: score_item, to: summarize}
   - {from: fetch_page, to: summarize}
   - {from: summarize, to: render}
   - {from: fetch_page, to: render}
+  - {from: fetch_page, to: extract}
 entry_nodes: [fetch_page, list_items]
-exit_nodes: [render, summarize, score_item, list_items, fetch_page]
+exit_nodes: [render, summarize, score_item, list_items, fetch_page, extract]
 """
 
 # Typed the way a user fills a stub in: concrete return types, inputs
