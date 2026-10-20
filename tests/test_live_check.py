@@ -935,3 +935,34 @@ def test_a_google_http_call_carries_the_checks_token_not_the_codes(tmp_path: Pat
     )
     [request] = sent
     assert request.headers == {"Authorization": "Bearer ya29.check"}
+
+
+def test_an_input_alias_and_a_constant_are_sent_as_the_code_would(
+    tmp_path: Path, api: tuple[_Api, str]
+) -> None:
+    """The trial-scout shape that a first live run reported as computed at run
+    time: `condition = request["condition"]` and `MAX = 10`."""
+    state, base = api
+    module = """
+    import httpx
+    BASE = "BASEURL/v1/items"
+    MAX = 10
+    def fetch_items(request):
+        q = request["q"]
+        return httpx.get(BASE, params={"q": q, "pageSize": MAX}).json()
+    def summarize(items):
+        return {}
+    """
+    root = _compiled(tmp_path, base, module=module)
+    pipeline = root / "pipeline.yaml"
+    pipeline.write_text(
+        pipeline.read_text().replace(
+            "inputs: {q: pipeline.input.q}", "inputs: {request: pipeline.input}"
+        )
+    )
+    spec_path = root / "vendor_specs" / "local.items.v1.json"
+    raw = json.loads(spec_path.read_text())
+    raw["operations"][0]["params"]["pageSize"] = {"location": "query", "type": "integer"}
+    spec_path.write_text(json.dumps(raw))
+    report = _check(tmp_path, root, payload={"q": "asthma"})
+    assert state.requests == [("GET", "/v1/items?q=asthma&pageSize=10")], report.unchecked

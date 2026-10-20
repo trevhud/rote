@@ -102,10 +102,16 @@ def extract(source: str) -> list[CallSite]:
     module_names = _module_aliases(tree)
     factories = _build_factories(tree, module_names)
     dict_helpers = _dict_helpers(tree, module_consts)
+    module_literals = _literal_consts(tree.body)
     for scope in [tree, *[n for n in ast.walk(tree) if isinstance(n, _FUNCS)]]:
         consts = module_consts if scope is tree else _string_consts(scope.body, module_consts)
         name = scope.name if isinstance(scope, _FUNCS) else None
-        sites += _Scope(scope, name, consts, module_names, factories, dict_helpers).sites()
+        literal_consts = (
+            module_literals if scope is tree else _literal_consts(scope.body, module_literals)
+        )
+        sites += _Scope(
+            scope, name, consts, module_names, factories, dict_helpers, literal_consts
+        ).sites()
     sites.sort(key=lambda s: s.line)
     return sites
 
@@ -233,16 +239,69 @@ def _dict_helpers(
     return out
 
 
-def _value(node: ast.expr, consts: dict[str, str]) -> object:
+def _ref_label(node: ast.expr) -> str | None:
+    """``request.season`` for ``request["season"]`` / ``request.get("season")``, a
+    name or a chain of string keys under one; ``None`` for anything else."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    ):
+        base = _ref_label(node.value)
+        return f"{base}.{node.slice.value}" if base is not None else None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    ):
+        base = _ref_label(node.func.value)
+        return f"{base}.{node.args[0].value}" if base is not None else None
+    return None
+
+
+def _literal_consts(
+    body: list[ast.stmt], base: dict[str, object] | None = None
+) -> dict[str, object]:
+    """Names bound to a non-string literal (``MAX_STUDIES = 10``) in ``body``."""
+    out: dict[str, object] = dict(base or {})
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        if isinstance(target, ast.Name):
+            literal = _literal(value)
+            if literal is not UNKNOWN and not isinstance(literal, str):
+                out[target.id] = literal
+            else:
+                out.pop(target.id, None)
+    return out
+
+
+def _value(
+    node: ast.expr, consts: dict[str, str], literals: dict[str, object] | None = None
+) -> object:
     """A literal, an :class:`Expr` template, or :data:`UNKNOWN`."""
     literal = _literal(node)
     if literal is not UNKNOWN:
         return literal
+    if isinstance(node, ast.Name) and literals and node.id in literals:
+        return literals[node.id]
     var = _env_var(node)
     if var is not None:
         return Expr(f"{{$env:{var}}}")
     if isinstance(node, ast.Name):
         return Expr(consts.get(node.id, f"{{{node.id}}}"))
+    label = _ref_label(node)
+    if label is not None:
+        return Expr(f"{{{label}}}")
     template = _template(node, consts)
     return Expr(template) if template is not None else UNKNOWN
 
@@ -262,7 +321,14 @@ def _string_consts(body: list[ast.stmt], base: dict[str, str] | None = None) -> 
             continue
         if isinstance(target, ast.Name):
             var = _env_var(value)
-            template = f"{{$env:{var}}}" if var is not None else _template(value, out)
+            label = _ref_label(value) if isinstance(value, (ast.Subscript, ast.Call)) else None
+            if var is not None:
+                template: str | None = f"{{$env:{var}}}"
+            elif label is not None:
+                # `condition = request["condition"]`: a name for part of an argument.
+                template = f"{{{label}}}"
+            else:
+                template = _template(value, out)
             if template is not None:
                 out[target.id] = template
     return out
@@ -281,7 +347,7 @@ def _template(node: ast.expr, consts: dict[str, str]) -> str | None:
                 parts.append(str(v.value))
             elif isinstance(v, ast.FormattedValue):
                 inner = v.value
-                label = inner.id if isinstance(inner, ast.Name) else "?"
+                label = _ref_label(inner) or "?"
                 var = _env_var(inner)
                 if var is not None:
                     parts.append(f"{{$env:{var}}}")
@@ -323,8 +389,10 @@ class _Scope:
         modules: dict[str, str],
         factories: dict[str, tuple[int, int]],
         dict_helpers: dict[str, tuple[ast.Dict, dict[str, str]]] | None = None,
+        literal_consts: dict[str, object] | None = None,
     ) -> None:
         self.dict_helpers = dict_helpers or {}
+        self.literal_consts = literal_consts or {}
         self.scope = scope
         self.name = name
         self.consts = consts
@@ -458,7 +526,7 @@ class _Scope:
             if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Dict):
                 node = ast.Assign(targets=[node.target], value=node.value, lineno=node.lineno)
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
-                keys, complete = _dict_items(node.value, self.consts)
+                keys, complete = _dict_items(node.value, self.consts, self.literal_consts)
                 for t in node.targets:
                     if isinstance(t, ast.Name):
                         prev = out.get(t.id, ({}, True))
@@ -473,7 +541,10 @@ class _Scope:
                     ):
                         prev = out.get(t.value.id, ({}, True))
                         out[t.value.id] = (
-                            {**prev[0], t.slice.value: _value(node.value, self.consts)},
+                            {
+                                **prev[0],
+                                t.slice.value: _value(node.value, self.consts, self.literal_consts),
+                            },
                             prev[1],
                         )
         return out
@@ -482,7 +553,7 @@ class _Scope:
         if node is None:
             return {}, True
         if isinstance(node, ast.Dict):
-            return _dict_items(node, self.consts)
+            return _dict_items(node, self.consts, self.literal_consts)
         if isinstance(node, ast.Name) and node.id in self.dicts:
             return self.dicts[node.id]
         if (
@@ -598,7 +669,7 @@ class _Scope:
                 keys, _ = self._kw_dict(k.value)
                 body = tuple(keys)
             elif k.arg:
-                params[k.arg] = _value(k.value, self.consts)
+                params[k.arg] = _value(k.value, self.consts, self.literal_consts)
             else:
                 spread, spread_complete = self._kw_dict(k.value)
                 params.update(spread)
@@ -770,14 +841,16 @@ class _Bindings(Generic[_T]):
         return current
 
 
-def _dict_items(node: ast.Dict, consts: dict[str, str]) -> tuple[dict[str, object], bool]:
+def _dict_items(
+    node: ast.Dict, consts: dict[str, str], literals: dict[str, object] | None = None
+) -> tuple[dict[str, object], bool]:
     out: dict[str, object] = {}
     complete = True
     for k, v in zip(node.keys, node.values, strict=True):
         if k is None:
             complete = False  # **spread
         elif isinstance(k, ast.Constant) and isinstance(k.value, str):
-            out[k.value] = _value(v, consts)
+            out[k.value] = _value(v, consts, literals)
         else:
             complete = False
     return out, complete

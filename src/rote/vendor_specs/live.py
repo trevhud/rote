@@ -458,7 +458,34 @@ def _resolve(value: object, kwargs: dict[str, Any], env: dict[str, str]) -> Any:
     if value is UNKNOWN:
         raise _Unbuildable("a value is computed at run time")
     if isinstance(value, Expr):
+        whole = _TEMPLATE_PART.fullmatch(value.template)
+        if whole is not None and not whole.group(1):
+            # Exactly one reference: the value itself, its type kept (an
+            # integer parameter from the input stays an integer).
+            found = _lookup(kwargs, whole.group(2))
+            if found is None or not _scalar_or_list(found):
+                raise _Unbuildable("a value is computed at run time")
+            return found
         return _fill(value.template, kwargs, env)
+    return value
+
+
+def _scalar_or_list(value: Any) -> bool:
+    if isinstance(value, list):
+        return all(isinstance(v, (str, int, float, bool)) for v in value)
+    return isinstance(value, (str, int, float, bool))
+
+
+def _lookup(kwargs: dict[str, Any], label: str) -> Any:
+    """``request.season`` in the node's arguments, or ``None`` when it is not there."""
+    head, *keys = label.split(".")
+    if head == "?" or head not in kwargs:
+        return None
+    value = kwargs[head]
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
     return value
 
 
@@ -469,9 +496,10 @@ def _fill(template: str, kwargs: dict[str, Any], env: dict[str, str], path: bool
             if name not in env:
                 raise _Unbuildable(f"the code reads {name} from the environment, and it is not set")
             return env[name]
-        if name == "?" or name not in kwargs or not isinstance(kwargs[name], (str, int, float)):
+        value = _lookup(kwargs, name)
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
             raise _Unbuildable("a value is computed at run time")
-        text = str(kwargs[name])
+        text = str(value)
         return urllib.parse.quote(text, safe="") if path else text
 
     return _TEMPLATE_PART.sub(part, template)
