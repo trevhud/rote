@@ -161,8 +161,8 @@ a DBOS app: `python main.py '{"your": "input"}'` (see the runtime
 ## Layered defaults can change what a flagless command does
 
 `rote compile` / `rote emit` / `rote analyze` resolve `runtime`,
-`deploy`, `agent`, and `model` as **flag > `ROTE_*` env
-(`ROTE_RUNTIME`, `ROTE_DEPLOY`, `ROTE_AGENT`, `ROTE_MODEL`) > project
+`deploy`, `agent`, `model`, and `effort` as **flag > `ROTE_*` env
+(`ROTE_RUNTIME`, `ROTE_DEPLOY`, `ROTE_AGENT`, `ROTE_MODEL`, `ROTE_EFFORT`) > project
 `rote.yaml` (discovered upward from cwd, stopping at the first `.git`)
 > user `~/.config/rote/config.yaml` > built-in**. Humans write these
 files with the interactive `rote init`; automation should either pass

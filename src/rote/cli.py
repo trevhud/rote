@@ -635,6 +635,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         deploy_rv = rote_config.resolve("deploy", "none" if args.no_deploy else None, layers=layers)
         agent_rv = rote_config.resolve("agent", args.agent, layers=layers)
         model_rv = rote_config.resolve("model", args.model, layers=layers)
+        effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -670,6 +671,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
     # Local path: fold the config-resolved agent/model into args now.
     args.agent, args.model = agent_rv.value, model_rv.value
+    args.effort = effort_rv.value
     if args.no_mcp:
         try:
             if args.baseline:
@@ -832,6 +834,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     driver_kwargs: dict[str, Any] = {}
     if args.backend == "api":
         driver_kwargs["web_tools"] = True
+    # Only the claude driver sizes thinking by effort; the others absorb
+    # the kwarg (driver-registry convention), like web_tools above.
+    if args.effort is not None:
+        driver_kwargs["effort"] = args.effort
     # In-process drivers (api / openai-api) can call MCP tools live during
     # the compilation; wire in the local registry's authenticated servers
     # the same way the baseline does. Read-only tools only.
@@ -1406,6 +1412,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         )
     for flag, is_set in (
         ("--agent", args.agent is not None),
+        ("--effort", args.effort is not None),
         ("--backend", args.backend != "mcp"),
         ("--baseline", args.baseline),
         ("--baseline-input", args.baseline_input is not None),
@@ -2507,6 +2514,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         layers = rote_config.load_layers()
         agent = rote_config.resolve("agent", args.agent, layers=layers).value
         model = rote_config.resolve("model", args.model, layers=layers).value
+        effort = rote_config.resolve("effort", args.effort, layers=layers).value
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -2516,10 +2524,15 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             return 2
+    analyze_kwargs: dict[str, Any] = {}
+    if args.no_mcp:
+        analyze_kwargs["mcp_servers"] = []
+    if effort is not None:
+        analyze_kwargs["effort"] = effort
     compiler = Compiler(
         agent=agent,
         model=model,
-        driver_kwargs={"mcp_servers": []} if args.no_mcp else None,
+        driver_kwargs=analyze_kwargs or None,
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
@@ -3369,6 +3382,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
     """Show every configurable default, its effective value, and its source."""
     from rote import config as rote_config
     from rote.cloud_auth import load_credential
+    from rote.compiler.drivers.claude import DEFAULT_EFFORT as _COMPILER_DEFAULT_EFFORT
 
     try:
         layers = rote_config.load_layers()
@@ -3398,6 +3412,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
         else (deploy, f"built-in default ({login_note})"),
         "agent": (resolved["agent"].value or "auto-detect", resolved["agent"].source),
         "model": (resolved["model"].value or "driver default", resolved["model"].source),
+        "effort": (
+            resolved["effort"].value or f"{_COMPILER_DEFAULT_EFFORT} (claude driver)",
+            resolved["effort"].source,
+        ),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3413,6 +3431,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "deploy": deploy,
             "agent": resolved["agent"].value,
             "model": resolved["model"].value,
+            "effort": resolved["effort"].value,
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -3808,9 +3827,17 @@ def _build_parser() -> argparse.ArgumentParser:
     # Help text names the real defaults, read from the constants the code
     # uses, so `--help` cannot drift from behavior when a default moves.
     from rote.compiler.drivers.anthropic_api import DEFAULT_MODEL as API_DEFAULT_MODEL
+    from rote.compiler.drivers.claude import DEFAULT_EFFORT, EFFORT_LEVELS
     from rote.compiler.drivers.claude import DEFAULT_MODEL as CLAUDE_DEFAULT_MODEL
     from rote.runners import RUNNABLE_RUNTIMES
 
+    EFFORT_HELP = (
+        "How much the compiler agent thinks, for the claude driver (other "
+        f"drivers ignore it). Default: the `effort` config, else {DEFAULT_EFFORT}. "
+        "Higher costs more and runs longer: thinking is most of a compile's "
+        "output tokens. Overrides CLAUDE_CODE_EFFORT_LEVEL, which rote "
+        "clears for the compiler."
+    )
     model_default_note = (
         f"{CLAUDE_DEFAULT_MODEL} for the claude and api drivers"
         if CLAUDE_DEFAULT_MODEL == API_DEFAULT_MODEL
@@ -3972,6 +3999,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "model costs more per run). Defaults to the driver's default: "
             f"{model_default_note}; codex uses its CLI's configured model."
         ),
+    )
+    compile_p.add_argument(
+        "--effort",
+        choices=EFFORT_LEVELS,
+        default=None,
+        help=EFFORT_HELP,
     )
     compile_p.add_argument(
         "--no-eval",
@@ -4582,6 +4615,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--model",
         default=None,
         help="Override the LLM model the compiler uses (default: the driver's default).",
+    )
+    analyze.add_argument(
+        "--effort",
+        choices=EFFORT_LEVELS,
+        default=None,
+        help=EFFORT_HELP,
     )
     analyze.add_argument(
         "--out",

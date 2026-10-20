@@ -280,6 +280,8 @@ async def test_happy_path_args_env_and_metadata(
     assert args[0] == "claude"
     assert "-p" in args
     assert args[args.index("--model") + 1] == DEFAULT_MODEL
+    # The value, not the flag: low sizes thinking far below the CLI's high.
+    assert args[args.index("--effort") + 1] == "low"
     assert "--append-system-prompt" in args
     assert args.count("--add-dir") == 3
     assert DEFAULT_ALLOWED_TOOLS in args
@@ -389,6 +391,41 @@ def test_zero_final_usage_is_not_replaced_with_stream_totals() -> None:
 
 
 @pytest.mark.asyncio
+async def test_effort_is_rotes_alone(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLAUDE_CODE_EFFORT_LEVEL in the caller's shell never reaches the child.
+
+    Claude Code ranks that env var above --effort, so an export meant for
+    interactive use would silently re-price every compile. The value rote
+    resolved is the one on the command line, and the only one.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok")),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    await ClaudeDriver(effort="medium").run(skill_dir, compiler_dir, work_dir)
+    args = list(recorder.calls[0]["args"])
+    assert args[args.index("--effort") + 1] == "medium"
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in recorder.calls[0]["env"]
+
+
+def test_effort_outside_the_accepted_levels_is_rejected() -> None:
+    with pytest.raises(ValueError, match="effort"):
+        ClaudeDriver(effort="max")
+
+
+def test_registry_kwargs_for_other_drivers_are_absorbed() -> None:
+    """The factory convention: a kwarg meant for another driver is not a crash."""
+    driver = ClaudeDriver(mcp_servers=[])
+    assert driver.effort == "low"
+
+
+@pytest.mark.asyncio
 async def test_prompt_and_system_prompt_content(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001
@@ -408,6 +445,10 @@ async def test_prompt_and_system_prompt_content(
     assert str(compiler_dir.resolve()) in user_prompt
     assert str(work_dir.resolve()) in user_prompt
     assert "pipeline.yaml" in user_prompt
+    # SKILL.md already rides in the system prompt (asserted below). Asking
+    # for a Read of it too paid for the same ~4k tokens twice per compile.
+    assert "do not Read it again" in user_prompt
+    assert f"{compiler_dir.resolve()}/SKILL.md" not in user_prompt
 
     system_prompt = args[args.index("--append-system-prompt") + 1]
     assert "ROTE COMPILE SKILL" in system_prompt

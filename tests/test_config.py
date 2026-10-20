@@ -169,6 +169,20 @@ def test_env_values_are_validated_loudly(tmp_path: Path, monkeypatch: pytest.Mon
         resolve("deploy", None, layers=layers)
 
 
+def test_effort_is_validated_in_files_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``max`` is Claude Code's costliest level and rote does not accept it."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("effort: max\n", encoding="utf-8")
+    with pytest.raises(ConfigError, match="effort"):
+        load_config_file(bad)
+    layers = _layers(monkeypatch, tmp_path)
+    monkeypatch.setenv("ROTE_EFFORT", "max")
+    with pytest.raises(ConfigError, match="ROTE_EFFORT"):
+        resolve("effort", None, layers=layers)
+
+
 def test_unset_everywhere_resolves_to_none(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     layers = _layers(monkeypatch, tmp_path)
     resolved = resolve("model", None, layers=layers)
@@ -189,6 +203,19 @@ def test_config_shows_sources_and_login_state(
     assert "temporal" in out
     assert "user " in out  # the winning layer is named
     assert "logged out" in out
+
+
+def test_config_reports_effort_default_and_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _layers(monkeypatch, tmp_path)
+    assert cli_main(["config", "--json"]) == 0
+    unset = json.loads(capsys.readouterr().out)["settings"]["effort"]
+    assert unset == {"value": None, "source": "built-in default"}
+    monkeypatch.setenv("ROTE_EFFORT", "high")
+    assert cli_main(["config", "--json"]) == 0
+    set_ = json.loads(capsys.readouterr().out)["settings"]["effort"]
+    assert set_ == {"value": "high", "source": "env ROTE_EFFORT"}
 
 
 def test_config_json_reflects_login_derived_defaults(

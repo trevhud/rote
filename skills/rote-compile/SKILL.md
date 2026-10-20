@@ -46,6 +46,25 @@ re-deriving a known-fixed procedure at runtime is waste.
 
 ## Pipeline
 
+**Think in files, not in your head.** Your reasoning is not a draft.
+Anything you would write out in full (the classification table, a
+module, a test, the report) belongs in a file, written once. Reason
+about one decision at a time, just before the Write it informs. Do not
+plan the whole compile, or draft its files, in one long block of
+thinking first: a real compile spent 64,000 tokens and 14 minutes that
+way before its first Write, and the block was discarded when it hit the
+per-response output limit. So the order is:
+
+1. One turn of Reads: every rubric reference and every file of the
+   source skill, together.
+2. Write `pipeline.yaml` next, before any module: it is the Phase 2
+   classification and the data flow in one artifact. Every module then
+   takes exactly its node's `inputs:` keys (and `constants:`) as
+   parameters, which is a check rote runs.
+3. Write each module together with its test, two or three modules per
+   turn.
+4. `eval.yaml`, then `compile-report.md` once, last. Then stop.
+
 **Progress markers.** At the START of each Phase N, rewrite
 `progress.ndjson` in the work directory so it holds one JSON line per
 phase entered so far, in order:
@@ -97,8 +116,11 @@ kind. The goal is to push as much as possible into `pure_function` and
 `external_call`, and reserve `agent_loop` for steps where the procedure
 genuinely varies from run to run.
 
-Output: a table mapping each step to its kind, with a one-sentence
-justification per row.
+Output: `pipeline.yaml`, written now (Phase 5 says what goes in it, and
+`references/ir-schema.md` gives its shape). It is the table mapping each
+step to its kind. The one-sentence justification per row goes in each
+node's `description`. Phase 5 is then a check of this file, with an Edit
+if a module changed a decision.
 
 ### Phase 3: Codification Scan
 
@@ -129,9 +151,25 @@ codification opportunity:
   value extractions — moving a required check from prose into code makes it
   impossible to skip accidentally.
 
-For each extraction, produce a record of: source file and line, the current
-prose, the proposed extracted function name and signature, and any constants
-to lift into config.
+Each extraction's record (source file and line, the prose, the function
+and its signature, the constants lifted into config) lives in the module
+itself, in its docstring and `# skill: "..."` citations. Do not write it
+out anywhere first. The report's crystallization log summarizes it.
+
+Five provenance mistakes account for nearly every repair round real
+compiles were sent back for. Get them right as you write each module:
+
+- A status or label string that a renderer or summary writes (`"OK"`,
+  `"pending review"`, `"auto-approved"`, a flag like `"BELOW 75%"`) is an
+  outcome literal too, and needs its marker.
+- Cite a table row whole, pipes included, never one cell or a
+  paraphrase of it.
+- Never shorten a citation below 4 words of prose per fragment. Quote
+  the sentence, not the label.
+- Close a multi-line `# skill: "` quote with a `"` at the end of its last
+  comment line.
+- Every `# rote: assumption:` gets its own Open questions entry in the
+  report: count them before you write it.
 
 ### Phase 4: LLM-Judge Extraction
 
@@ -246,9 +284,9 @@ Write `compile-report.md` **once, with a single Write, as the last file
 you produce**. Do not create it earlier, and do not Edit it afterwards to
 polish wording: every extra turn re-reads the whole conversation, and a
 real compile spent a quarter of its turns on one-line report edits. The
-phase outputs above (the classification table, the extraction records)
-are working notes in your reasoning, not files; this report is where
-they land, in one pass. Cover:
+classification and the extraction records already exist, in
+`pipeline.yaml` and the modules. This report summarizes them for a human
+reviewer, in one pass. Cover:
 
 - **Summary metrics**: total nodes, breakdown by kind, estimated token cost
   reduction per run, list of HITL gates and what they block on.

@@ -219,6 +219,7 @@ class OpenAIApiDriver(CompilerDriver):
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        **_ignored: Any,
     ) -> None:
         """
         Parameters

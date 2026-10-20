@@ -55,6 +55,41 @@ def test_no_mcp_skips_registry_and_passes_empty_tools(
 
 
 @pytest.mark.parametrize("command", ["compile", "analyze"])
+def test_effort_resolves_through_the_layers_into_the_driver(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler_calls: list[dict[str, Any]],
+    command: str,
+) -> None:
+    """flag > ROTE_EFFORT > config file, and nothing at all when unset.
+
+    Unset must pass no ``effort`` kwarg, so the driver's own DEFAULT_EFFORT
+    applies; a resolved value must reach the driver as exactly that value.
+    """
+    user = tmp_path / "user.yaml"
+    user.write_text("effort: medium\n", encoding="utf-8")
+    base = _args(tmp_path, command) + ["--agent", "claude"]
+
+    with pytest.raises(_CompilerReached):
+        main(base)
+    assert "effort" not in (compiler_calls[-1]["driver_kwargs"] or {})
+
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(user))
+    with pytest.raises(_CompilerReached):
+        main(base)
+    assert compiler_calls[-1]["driver_kwargs"]["effort"] == "medium"
+
+    monkeypatch.setenv("ROTE_EFFORT", "low")
+    with pytest.raises(_CompilerReached):
+        main(base)
+    assert compiler_calls[-1]["driver_kwargs"]["effort"] == "low"
+
+    with pytest.raises(_CompilerReached):
+        main([*base, "--effort", "high"])
+    assert compiler_calls[-1]["driver_kwargs"]["effort"] == "high"
+
+
+@pytest.mark.parametrize("command", ["compile", "analyze"])
 def test_no_mcp_accepts_autodetected_api_and_pins_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
