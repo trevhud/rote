@@ -21,10 +21,10 @@ from rote.adapters import get_adapter
 from rote.compiler import Compiler, CompilerError, system1
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.compiler.system1.decide import REVIEW_BELOW
-from rote.compiler.system1.enforce import enforce
+from rote.compiler.system1.enforce import DECISION_FIELDS, check_proposals, enforce
 from rote.compiler.system1.parse import RuleTable
 from rote.compiler.system1.skeleton import tables_module
-from rote.ir import load_pipeline
+from rote.ir import Node, load_pipeline
 
 REPO = Path(__file__).resolve().parent.parent
 PWNED = "open('PWNED', 'w')"
@@ -266,3 +266,74 @@ async def test_a_proposal_is_reported_and_never_applied(
     assert first.kind.value == "pure_function"
     report = (out / "compile-report.md").read_text()
     assert f"Proposed by the agent, not applied: `{first.id}` kind -> 'llm_judge'" in report
+
+
+def test_every_field_the_agent_writes_survives_enforcement(tmp_path: Path) -> None:
+    """#150 blocker 2: input_schema, output_schema, eval_set ... vanished silently.
+
+    Walks Node.model_fields, so a field the IR gains later is covered the day
+    it lands: either it is a decision (restored) or it is carried as written."""
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(REPO / "examples" / "invoice-push" / "skill", work)
+    skeleton = yaml.safe_load((work / "pipeline.yaml").read_text())
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    node = doc["nodes"][0]
+    fields = [f for f in Node.model_fields if f not in ("id", "output")]
+    for f in fields:
+        node[f] = f"SENTINEL-{f}"
+    (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    changes = enforce(work)
+    after = yaml.safe_load((work / "pipeline.yaml").read_text())["nodes"][0]
+    for f in fields:
+        if f in DECISION_FIELDS:
+            assert after.get(f) == skeleton["nodes"][0].get(f), f
+            assert any(f"`{node['id']}` {f}:" in c for c in changes), f
+        else:
+            assert after.get(f) == f"SENTINEL-{f}", f
+
+
+def test_a_malformed_proposals_file_is_reported_not_raised(tmp_path: Path) -> None:
+    """#150 blocker 3: one bad YAML file used to lose the whole paid run."""
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(REPO / "examples" / "expense-audit" / "skill", work)
+    (work / "system1" / "proposals.yaml").write_text("- node: x\n  reason: a: b: c\n")
+    (verdict,) = check_proposals(work)
+    assert "did not parse" in verdict
+    system1.settle(work, plan, final=True)
+    assert "proposals.yaml did not parse" in (work / "compile-report.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_while_settling_keeps_the_paid_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = tmp_path / "skill"
+    shutil.copytree(REPO / "examples" / "expense-audit" / "skill", skill)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _Proposer())
+
+    def boom(*args: object, **kwargs: object) -> list[str]:
+        raise RuntimeError("settle exploded")
+
+    monkeypatch.setattr(system1, "settle", boom)
+    out = tmp_path / "out"
+    with pytest.raises(CompilerError, match="settle exploded"):
+        await Compiler(system1=True, run_generated_tests=False).compile(skill, out)
+    kept = tmp_path / "out.rejected"
+    assert (kept / "pipeline.yaml").is_file()
+    assert (kept / "system1" / "proposals.yaml").is_file()
+
+
+def test_a_failure_before_a_repair_verification_does_not_escape(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(REPO / "examples" / "expense-audit" / "skill", work)
+
+    def boom(_: Path) -> None:
+        raise RuntimeError("enforce exploded")
+
+    repair = Compiler(system1=True, run_generated_tests=False)._deliverable_repairer(
+        None, REPO / "examples" / "expense-audit" / "skill", before_verify=boom
+    )
+    repair(work / "pipeline.yaml")  # verification still runs; nothing raises

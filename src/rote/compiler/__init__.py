@@ -508,7 +508,14 @@ class Compiler:
                 raise CompilerError(f"Driver {driver.name!r} failed{spent}: {e}{detail}") from e
 
             if s1_plan is not None:
-                system1.settle(result.work_dir, s1_plan, final=True)
+                try:
+                    system1.settle(result.work_dir, s1_plan, final=True)
+                except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
+                    kept = self._keep_rejected_work(result.work_dir, output_dir)
+                    raise CompilerError(
+                        f"--system1 could not settle the agent's deliverable: "
+                        f"{type(e).__name__}: {e}. The agent's work is kept at {kept}."
+                    ) from e
 
             try:
                 pipeline = load_pipeline(result.pipeline_yaml_path)
@@ -668,7 +675,10 @@ class Compiler:
             nonlocal attempts
             artifact_dir = pipeline_yaml_path.parent
             if before_verify is not None:
-                before_verify(artifact_dir)
+                try:
+                    before_verify(artifact_dir)
+                except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
+                    self._emit("warning", f"preparing the deliverable for verification failed: {e}")
             verification = verify_deliverable(
                 artifact_dir,
                 base_dir=base_dir,

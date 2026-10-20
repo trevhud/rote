@@ -32,9 +32,15 @@ ENFORCEMENT_FILENAME = "enforcement.json"
 INVALID_AGENT_PIPELINE = "agent-pipeline.invalid.yaml"
 TEXT_FILENAME = "text.yaml"
 
-#: Node fields that are decisions. Everything else on a node is text.
+#: Node fields that are decisions. Every other field on a node is the
+#: agent's to write and is carried over as it wrote it, so a field the IR
+#: gains later is never dropped silently (tests/test_system1_hardening.py
+#: walks Node.model_fields).
 DECISION_FIELDS = (
     "kind",
+    "signature",
+    "termination",
+    "cache",
     "inputs",
     "fan_out",
     "mandatory",
@@ -51,9 +57,6 @@ DECISION_FIELDS = (
 )
 #: Pipeline fields that are decisions.
 PIPELINE_DECISIONS = ("name", "input", "edges", "entry_nodes", "exit_nodes", "config")
-#: Text fields the agent writes. ``output`` keeps the skeleton's keys (they
-#: are data flow) with the agent's type strings.
-TEXT_FIELDS = ("description", "input", "signature", "signature_spec", "notify", "phase")
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -106,24 +109,32 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
             changes.append(f"restored node `{sk['id']}` the agent removed")
             merged_nodes.append(copy.deepcopy(sk))
             continue
-        node: dict[str, Any] = {}
-        for key in ("id", *DECISION_FIELDS):
+        # Everything that is not a decision is the agent's: carried as written,
+        # falling back to the skeleton's text where the agent left it out.
+        node: dict[str, Any] = {
+            k: copy.deepcopy(v) for k, v in sk.items() if k not in DECISION_FIELDS and k != "id"
+        }
+        node.update(
+            {
+                k: v
+                for k, v in mine.items()
+                if k not in DECISION_FIELDS and k not in ("id", "output")
+            }
+        )
+        node["id"] = sk["id"]
+        for key in DECISION_FIELDS:
             if key in sk:
                 node[key] = copy.deepcopy(sk[key])
-            if mine.get(key) != sk.get(key) and key != "id":
+            if mine.get(key) != sk.get(key):
                 changes.append(
                     f"`{sk['id']}` {key}: agent wrote {mine.get(key)!r}, kept {sk.get(key)!r}"
                 )
-        for key in TEXT_FIELDS:
-            value = mine.get(key, sk.get(key))
-            if value is not None:
-                node[key] = value
         node["output"] = _merge_output(sk.get("output"), mine.get("output"))
         for key, value in text.get(sk["id"], {}).items():
-            if key in TEXT_FIELDS:
-                node[key] = value
-            elif key == "output":
+            if key == "output":
                 node["output"] = _merge_output(sk.get("output"), value)
+            elif key not in DECISION_FIELDS and key != "id":
+                node[key] = value
         merged_nodes.append(node)
     for extra in set(agent_nodes) - {n["id"] for n in skeleton["nodes"]}:
         changes.append(f"removed node `{extra}` the agent added")
@@ -176,8 +187,15 @@ def check_proposals(work_dir: Path) -> list[str]:
     path = work_dir / BRIEF_DIRNAME / PROPOSALS_FILENAME
     if not path.is_file():
         return []
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    proposals = loaded if isinstance(loaded, list) else []
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as err:
+        # A malformed file must cost nothing: it is reported, not raised.
+        detail = " ".join(str(err).split())[:160]
+        return [f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} did not parse, so none was read ({detail})"]
+    if loaded is not None and not isinstance(loaded, list):
+        return [f"{BRIEF_DIRNAME}/{PROPOSALS_FILENAME} is not a list, so none was read"]
+    proposals = loaded or []
     skeleton = _load(work_dir / BRIEF_DIRNAME / SKELETON_FILENAME)
     ids = {n["id"] for n in skeleton["nodes"]}
     out = []
