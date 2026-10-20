@@ -57,6 +57,10 @@ Again at 532bc50 (on #170 aef4963, with a fan_out producer's whole output
 typed as a list to its consumer), API lane: expense-audit 0.96 in 62 s
 ($0.41), ops-report 0.95 in 62 s ($0.33), both verified.
 
+Again at d645f52 (on #170 b8f6127, where the Haiku tie-break is off by
+default), API lane: expense-audit 0.98 in 68 s ($0.37), ops-report 0.95 in
+60 s ($0.33), both verified.
+
 An earlier parallel run at 500238f (before the review fixes and #170) is
 superseded: expense-audit 0.95, 76 s, $0.48, and ops-report 0.96, 52 s,
 $0.30. One of its API-lane expense-audit compiles scored 0.66 because the
