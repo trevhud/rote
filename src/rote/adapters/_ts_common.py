@@ -2655,10 +2655,12 @@ export async function bindAgentTools(
 #: operator who picks the Cloudflare lane gets one model story.
 WORKERS_AI_AGENT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
-#: The Anthropic TypeScript SDK version the agent loop needs.
-#: ``beta.messages.toolRunner`` plus the ``BetaRunnableTool`` shape used
-#: below; older pins (0.91 / 0.110) predate it.
-ANTHROPIC_SDK_NPM_VERSION = "^0.115.0"
+#: The Anthropic TypeScript SDK every emitted TS app installs: the
+#: current release when last bumped. The agent loop needs at least 0.115
+#: (``beta.messages.toolRunner`` plus the ``BetaRunnableTool`` shape used
+#: below; 0.91 and 0.110 predate it). A caret on a 0.x version pins the
+#: minor, so this does not drift forward on its own.
+ANTHROPIC_SDK_NPM_VERSION = "^0.136.0"
 
 #: Cloudflare's embedded function-calling toolkit — the workers-ai lane.
 AI_UTILS_NPM_VERSION = "^1.0.1"
