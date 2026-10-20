@@ -1,0 +1,17 @@
+{
+  "input": {"report_date": "2026-09-14"},
+  "signals": {
+    "manual_data": {
+      "dock_appointment_completion": {"green": 16, "red": 3, "grey": 4, "other": 5},
+      "sorter_metrics": [
+        {"site": "CENTRAL5", "volume": 41500, "prior_day_volume": 47300, "fail_rate_pct": 5.7},
+        {"site": "MTN6", "volume": 22800, "prior_day_volume": 23100, "fail_rate_pct": 1.9}
+      ],
+      "current_dwell": [
+        {"shipper": "Harbor Goods", "carrier": "OnTrac", "site": "CENTRAL5", "packages": 47},
+        {"shipper": "Kestrel Outdoor", "carrier": "DHL", "site": "MTN6", "packages": 27},
+        {"shipper": "Juniper Baby", "carrier": "LaserShip", "site": "CENTRAL5", "packages": 6}
+      ]
+    }
+  }
+}

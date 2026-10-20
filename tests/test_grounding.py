@@ -645,6 +645,23 @@ async def test_a_missing_sample_input_file_fails_before_any_run(tmp_path: Path) 
         await compiler.compile(skill, tmp_path / "out", sample_input=tmp_path / "nope.json")
 
 
+@pytest.mark.parametrize(
+    "module",
+    ["rote.eval.empirical", "rote.eval.baseline", "rote.compiler", "rote.compiler.verify"],
+)
+def test_each_module_imports_first_in_a_fresh_interpreter(module: str) -> None:
+    """Import order hides cycles inside one test process: the e2e suites
+    import rote.eval.empirical first, and a module-level import of
+    rote.eval.baseline in rote.compiler made that a circular import."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [sys.executable, "-c", f"import {module}"], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode == 0, proc.stderr[-1500:]
+
+
 # ───────── the bench ─────────
 
 
@@ -655,12 +672,71 @@ def test_the_bench_grounds_each_compile_in_the_examples_sample() -> None:
 
     args = argparse.Namespace(runtime="dbos", model=None, agent=None)
     sample = sample_input(REPO / "examples", "expense-audit")
-    assert sample == EXPENSE / "input.json"
+    # sample.json, never input.json: the fidelity cases are built from input.json.
+    assert sample == EXPENSE / "sample.json"
     argv = compile_argv(Path("skill"), Path("out"), args, sample)
-    assert argv[argv.index("--sample-input") + 1] == str(EXPENSE / "input.json")
-    # ops-report ships no sample, so its compile is not given one.
-    assert sample_input(REPO / "examples", "ops-report") is None
+    assert argv[argv.index("--sample-input") + 1] == str(EXPENSE / "sample.json")
+    # invoice-push ships no sample, so its compile is not given one.
+    assert sample_input(REPO / "examples", "invoice-push") is None
     assert "--sample-input" not in compile_argv(Path("skill"), Path("out"), args, None)
+
+
+def _leaves(value: object) -> set[object]:
+    """Every scalar inside ``value``, as ``(type, value)`` so 1 and True differ."""
+    if isinstance(value, dict):
+        return set().union(*(_leaves(v) for v in value.values())) if value else set()
+    if isinstance(value, list):
+        return set().union(*(_leaves(v) for v in value)) if value else set()
+    return {(type(value).__name__, value)}
+
+
+def _keys(value: object, path: str = "") -> set[str]:
+    """Every key path inside ``value``, list rows merged as ``[]``."""
+    if isinstance(value, dict):
+        return set().union(*({f"{path}.{k}"} | _keys(v, f"{path}.{k}") for k, v in value.items()))
+    if isinstance(value, list):
+        return set().union(*(_keys(v, f"{path}[]") for v in value)) if value else set()
+    return set()
+
+
+#: Vocabulary the skill itself fixes, so a sample and a case must share it:
+#: currency codes the rate table lists, the policy's category codes, and
+#: booleans. Everything else (people, ids, merchants, amounts, dates,
+#: counts, sites) must differ.
+_SHARED_VOCABULARY = {
+    *(("str", c) for c in ("USD", "EUR", "GBP", "CAD", "JPY")),
+    *(
+        ("str", c)
+        for c in (
+            "airfare",
+            "lodging",
+            "meals",
+            "ground_transport",
+            "software",
+            "office_supplies",
+            "entertainment",
+        )
+    ),
+    ("bool", True),
+    ("bool", False),
+}
+
+
+@pytest.mark.parametrize("example", ["expense-audit", "ops-report"])
+def test_the_bench_sample_shares_the_cases_keys_and_none_of_their_values(example: str) -> None:
+    from rote.bench.fidelity import load_cases
+
+    sample = load_sample(REPO / "examples" / example / "sample.json")
+    cases = load_cases(REPO / "examples" / example).cases
+    case_values: set[object] = set()
+    for case in cases:
+        case_values |= _leaves(case.input) | _leaves(case.gates)
+    shared = (_leaves(sample.payload) | _leaves(list(sample.gates))) & case_values
+    assert shared <= _SHARED_VOCABULARY, f"fidelity case values in the sample: {shared}"
+    # Same contract: every key the cases use, input and gates alike.
+    base = cases[0]
+    assert _keys(sample.payload) >= _keys(base.input)
+    assert [_keys(g) for g in sample.gates] == [_keys(g) for g in base.gates]
 
 
 def test_rote_compile_passes_sample_input_to_the_compiler(

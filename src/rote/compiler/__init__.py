@@ -63,7 +63,6 @@ from rote.compiler.update import (
     render_update_brief,
 )
 from rote.compiler.verify import EmitTarget, Verification, verify_deliverable
-from rote.eval.baseline import load_observations
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline
@@ -499,6 +498,11 @@ class Compiler:
                         "log", "probe artifacts found — feeding observed traffic to the agent"
                     )
                     instructions.append(probe_instructions)
+            # Imported here: rote.eval.empirical imports rote.compiler.drivers,
+            # which runs this package's __init__, so a module-level import of
+            # rote.eval.baseline would be circular.
+            from rote.eval.baseline import load_observations
+
             grounding = Grounding(
                 sample=sample,
                 observations=tuple(load_observations(probe_dir)) if probe_dir else (),

@@ -80,15 +80,20 @@ def isolated_env(state_dir: Path) -> dict[str, str]:
 
 
 #: The sample input an example ships beside its skill (examples/<name>/).
-SAMPLE_INPUT_FILENAME = "input.json"
+SAMPLE_INPUT_FILENAME = "sample.json"
 
 
 def sample_input(examples: Path, skill: str) -> Path | None:
-    """The example's sample input, which every compile is grounded in.
+    """The example's sample run, which every compile is grounded in.
 
-    It sits beside the skill, not in it, so the bench passes it with
-    ``--sample-input``: it is the input a user would hand the skill, not
-    an answer. ``expected/`` and ``fidelity/`` stay out of the compile.
+    ``sample.json`` is the ``{"input", "signals"}`` envelope: the skill's
+    input and the answer a person gives at each gate. It has the same keys
+    as the fidelity cases and none of their values (different people, ids
+    and amounts; pinned by a test), the analog of the sample a real user
+    supplies: the keys are the contract, the values are test data. It sits
+    beside the skill, not in it, so the bench passes it with
+    ``--sample-input``. ``input.json``, ``expected/`` and ``fidelity/``
+    stay out of the compile, since the cases are built from them.
     """
     path = examples / skill / SAMPLE_INPUT_FILENAME
     return path if path.is_file() else None
