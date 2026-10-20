@@ -857,49 +857,6 @@ def test_compile_enriches_contracts_from_baseline_observations(
     assert '"messages"' in stub
 
 
-def test_compile_api_backend_enables_web_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    """--backend api constructs the compiler with web research enabled."""
-    captured: dict[str, Any] = {}
-
-    from tests.test_cli import _install_mock_compiler
-
-    _install_mock_compiler(monkeypatch)
-    original = __import__("rote.cli", fromlist=["Compiler"]).Compiler
-
-    class _CapturingCompiler(original):  # type: ignore[misc, valid-type]
-        def __init__(self, **kwargs: Any) -> None:
-            captured.update(kwargs)
-            super().__init__(**kwargs)
-
-    monkeypatch.setattr("rote.cli.Compiler", _CapturingCompiler)
-
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
-
-    rc = cli_main(
-        [
-            "compile",
-            str(skill),
-            "--out",
-            str(tmp_path / "out"),
-            "--backend",
-            "api",
-            "--no-eval",
-        ]
-    )
-    assert rc == 0
-    assert captured["driver_kwargs"] == {"web_tools": True}
-    capsys.readouterr()
-
-    captured.clear()
-    rc = cli_main(["compile", str(skill), "--out", str(tmp_path / "out2"), "--no-eval"])
-    assert rc == 0
-    assert captured["driver_kwargs"] is None
-
-
 # ───────── Probe artifacts fed into the compiler ─────────
 
 

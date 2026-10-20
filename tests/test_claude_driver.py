@@ -1243,3 +1243,22 @@ async def test_a_repair_round_does_not_replay_the_phases(
         e.message for e in events if e.type == "phase"
     ][:2]
     assert sum(1 for e in events if e.type == "phase") == 2
+
+
+def test_map_stream_line_records_the_page_and_query_of_web_tools() -> None:
+    """--backend api research reaches the compile report through these fields."""
+    url = "https://developers.google.com/gmail/api/reference/rest"
+    events, _, _ = _map_stream_line(
+        _assistant_line(
+            tools=[
+                ("WebFetch", {"url": url, "prompt": "the threads.list response"}),
+                ("WebSearch", {"query": "gmail api threads list"}),
+                ("Read", {"file_path": "/x/SKILL.md", "url": "https://not-a-fetch.example"}),
+            ]
+        ),
+        0,
+    )
+    fetch, search, read = (e for e in events if e.type == "tool")
+    assert (fetch.url, fetch.query, fetch.message) == (url, None, f"WebFetch {url}")
+    assert (search.url, search.query) == (None, "gmail api threads list")
+    assert (read.url, read.query) == (None, None)

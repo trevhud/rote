@@ -345,7 +345,8 @@ def _compile_progress_printer() -> Callable[[CompilationEvent], None]:
             name = event.phase_name or ""
             line = f"[phase {event.phase}/{_COMPILE_TOTAL_PHASES}] {name}".rstrip()
         elif event.type == "tool":
-            loc = f" {event.path}" if event.path else ""
+            target = event.path or event.url or (repr(event.query) if event.query else None)
+            loc = f" {target}" if target else ""
             line = f"[turn {event.turn}] {event.tool_name}{loc}{_format_token_note(last_tokens)}"
         elif event.type == "warning":
             line = f"warning: {event.message}"
@@ -754,6 +755,23 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     else:
         auto_deploy = cloud_cred is not None and args.runtime == "cloudflare"
 
+    from rote.runners import _TS_RUNTIMES
+
+    if args.backend == "api" and args.runtime in _TS_RUNTIMES:
+        # The api backend's vendor calls are the agent's Python modules, and
+        # a TypeScript runtime emits a stub for every external_call instead:
+        # the paid docs research would be thrown away. Refused before the
+        # agent runs.
+        why = runtime_rv.source if runtime_rv.value else "the logged-in default"
+        print(
+            f"error: --backend api writes the vendor calls as Python modules, and the "
+            f"{args.runtime} runtime ({why}) emits TypeScript, with a stub for every "
+            f"external_call. Pass --runtime dbos, python or temporal, or keep "
+            f"--backend mcp for {args.runtime}",
+            file=sys.stderr,
+        )
+        return 2
+
     out_dir = Path(args.out)
     compiled_dir = out_dir / "compiled"
     runtime_dir = out_dir / "runtime" / args.runtime
@@ -830,16 +848,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         if progress_sink is not None:
             progress_sink.emit(event)
 
-    # --backend api asks the compiler for *working* vendor-SDK code, and
-    # current API docs beat training-data memory — so the api backend
-    # grants the agent web research tools (ClaudeDriver appends
-    # WebSearch/WebFetch; other drivers swallow the flag until they grow
-    # an equivalent).
+    # The backend reaches the Compiler through emit_target below; the
+    # Compiler gives the driver web tools and the agent its brief for
+    # --backend api (rote.compiler.api_docs).
     driver_kwargs: dict[str, Any] = {}
-    if args.backend == "api":
-        driver_kwargs["web_tools"] = True
     # The claude and openai-api drivers size thinking by effort; the others
-    # absorb the kwarg (driver-registry convention), like web_tools above.
+    # absorb the kwarg (driver-registry convention).
     if args.effort is not None:
         driver_kwargs["effort"] = args.effort
     # In-process drivers (api / openai-api) can call MCP tools live during
@@ -3979,11 +3993,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="mcp",
         choices=["mcp", "api"],
         help=(
-            "For external_call nodes with an mcp binding (dbos runtime): "
-            "'mcp' (default) emits a working Streamable-HTTP call to the MCP "
-            "tool the skill used; 'api' emits the direct vendor-SDK path "
-            "(fill in the extracted/ stub; one key in .env). No effect on "
-            "nodes without an mcp binding or on runtimes without mcp support."
+            "For external_call nodes with an mcp binding (dbos, dbos-ts, "
+            "cloudflare, inngest): 'mcp' (default) emits a working "
+            "Streamable-HTTP call to the MCP tool the skill used; 'api' emits "
+            "the node's impl, the direct vendor-API path (on a TypeScript "
+            "runtime, a stub to fill in). No effect on nodes without an mcp "
+            "binding, or on python and temporal, which always run the impl."
         ),
     )
     emit.add_argument(
@@ -4052,9 +4067,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="mcp",
         choices=["mcp", "api"],
         help=(
-            "For external_call nodes with an mcp binding (dbos runtime): "
-            "'mcp' (default) emits a working call to the MCP tool the skill "
-            "used; 'api' emits the direct vendor-SDK path. See `rote emit`."
+            "For external_call nodes with an mcp binding: 'mcp' (default) "
+            "emits a working call to the MCP tool the skill used; 'api' has the "
+            "compiler write a direct vendor-API call instead, researched in the "
+            "vendor's current docs (the agent gets web search and fetch tools, "
+            "and compile-report.md lists the pages it cited). 'api' needs a "
+            "Python runtime: dbos, python or temporal."
         ),
     )
     compile_p.add_argument(

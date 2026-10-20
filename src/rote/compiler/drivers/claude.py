@@ -343,10 +343,18 @@ def _map_stream_line(
         tool_name = str(block.get("name") or "tool")
         tool_input = block.get("input")
         raw_path = None
+        url = query = None
         if isinstance(tool_input, dict):
             # Claude Code's file tools key the path as ``file_path``.
             raw_path = tool_input.get("file_path") or tool_input.get("path")
+            # The web tools (--backend api research): WebFetch's page, and
+            # WebSearch's query, recorded for the compile report.
+            if tool_name == "WebFetch" and isinstance(tool_input.get("url"), str):
+                url = tool_input["url"]
+            if tool_name == "WebSearch" and isinstance(tool_input.get("query"), str):
+                query = tool_input["query"]
         rel = relative_display_path(raw_path, work_dir) if work_dir else raw_path
+        target = rel or url or query
         events.append(
             CompilationEvent(
                 type="tool",
@@ -354,7 +362,9 @@ def _map_stream_line(
                 turn=known_turn,
                 tool_name=tool_name,
                 path=rel,
-                message=f"{tool_name} {rel}".rstrip() if rel else tool_name,
+                url=url,
+                query=query,
+                message=f"{tool_name} {target}".rstrip() if target else tool_name,
             )
         )
     return events, turn, obj

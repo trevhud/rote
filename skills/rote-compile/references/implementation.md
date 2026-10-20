@@ -144,12 +144,15 @@ Never write a `# skill:` citation for text the skill does not contain.
 
 An `external_call` talks to a vendor API. With an `mcp:` binding the
 default backend already emits a working call, and the `impl` is the
-direct-API alternative (`--backend api`).
+direct-API alternative (`--backend api`). When the task prompt says the
+compile targets `--backend api`, the `impl` is the call that runs in
+production for EVERY external_call, bound or not: Regime 2 applies to all
+of them, and you have web search and web fetch tools for it.
 
 ### Regime 1 — No ground truth (default)
 
-No `probe-context/` directory exists in your work dir, and you have no
-web research tools. Emit **contract-documented stubs** for the vendor
+No `probe-context/` directory exists in your work dir, and the task
+prompt does not say `--backend api`. Emit **contract-documented stubs** for the vendor
 calls: the function signature, a docstring stating the input/output
 contract as precisely as the skill text allows, and a
 `raise NotImplementedError("<which API, and why it is a stub>")` body.
@@ -162,18 +165,34 @@ pure_function.
 ### Regime 2 — Ground truth available (implement for real)
 
 `probe-context/` exists (observed MCP traffic + inferred schemas from
-an instrumented run of this exact skill), and/or you have WebSearch /
-WebFetch. Now you are expected to write **working implementations**:
+an instrumented run of this exact skill), and/or the task prompt says
+this compile targets `--backend api`. Now you are expected to write
+**working implementations**:
 
 1. **Contract from observation.** The observed input payload keys are
    your function parameters; the observed result shape is your return
    contract. If the skill prose disagrees with the observed traffic,
    trust the traffic and mark the discrepancy `# rote: assumption:`.
 2. **Endpoint from current docs, never memory.** Before writing a
-   vendor call, use WebSearch/WebFetch to confirm the current endpoint,
-   auth scheme, request/response shape, and official SDK name. Cite the
-   doc URL in the module docstring. If you cannot verify a shape, fall
-   back to Regime 1 for that function and say why in its stub message.
+   vendor call, search for the vendor's current API reference and fetch
+   the page for the exact endpoint or SDK method: the endpoint, auth
+   scheme, request parameters, response fields, and official SDK name all
+   come from that page. A search snippet is not the docs; fetch the page.
+   Do the lookups for every vendor call in one turn of parallel calls.
+   Without web tools (a probe-context compile on the mcp backend), confirm
+   nothing from memory: fall back to Regime 1 for the call.
+   **Cite every page you relied on** as a `# docs: <url>` comment directly
+   above the function, one line per page:
+
+   ```python
+   # docs: https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.threads/list
+   def search_dock_emails(query: str) -> dict:
+   ```
+
+   rote lists each cited URL in compile-report.md beside whether you
+   fetched it in this compile, and sends back an implemented vendor call
+   that cites none. If the docs do not let you confirm a shape, fall back
+   to Regime 1 for that function and name the page in its stub message.
 3. **Credentials via environment variables only.** One variable per
    vendor, named `<VENDOR>_API_KEY` (or the vendor's own documented
    convention, e.g. `GOOGLE_APPLICATION_CREDENTIALS`). Read it at call
@@ -189,6 +208,11 @@ WebFetch. Now you are expected to write **working implementations**:
    returning empty results on failure. A 4xx/5xx should raise with the
    response body attached — errors are how the durable runtime knows
    to retry or park.
+6. **Return the node's contract, not the vendor's payload.** Downstream
+   nodes consume the node's declared `output`. Map the documented
+   response onto it in this function (a bound node's MCP tool shape is
+   irrelevant on the api backend; the vendor's raw response is not the
+   contract either).
 
 ## Tests are part of the deliverable
 

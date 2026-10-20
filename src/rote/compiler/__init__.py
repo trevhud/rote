@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rote.compiler import system1, tool_grounding
+from rote.compiler import api_docs, system1, tool_grounding
 from rote.compiler.drivers import (
     CompilerDriver,
     DriverError,
@@ -275,7 +275,11 @@ class Compiler:
             The runtime the caller will emit for. Verification then dry-emits
             the deliverable with that adapter, so an IR it refuses goes back
             to the agent instead of failing after the compile (``None``:
-            no emit check, for callers that do not emit).
+            no emit check, for callers that do not emit). Its
+            ``external_backend="api"`` makes this an api-backend compile: the
+            driver gets web tools, the agent the brief in
+            :mod:`rote.compiler.api_docs`, and every vendor call must cite
+            the docs it relied on.
         strict_provenance
             ``--strict-provenance``: every unresolved provenance finding is an
             error, review gaps included. By default only a citation the skill
@@ -308,6 +312,11 @@ class Compiler:
         self.system1_decider = system1_decider
 
     @property
+    def api_backend(self) -> bool:
+        """Whether this compile writes direct vendor-API calls (``--backend api``)."""
+        return self.emit_target is not None and self.emit_target.external_backend == "api"
+
+    @property
     def compiler_skill_dir(self) -> Path:
         if self._explicit_compiler_skill_dir is not None:
             return self._explicit_compiler_skill_dir
@@ -330,6 +339,10 @@ class Compiler:
         # takes precedence.
         if self.driver_kwargs:
             driver_kwargs.update(self.driver_kwargs)
+        if self.api_backend:
+            # Current docs beat training-data memory for a vendor call: every
+            # driver grants its web search and fetch tools on this flag.
+            driver_kwargs["web_tools"] = True
 
         if self.agent:
             try:
@@ -544,6 +557,10 @@ class Compiler:
             instructions: list[str] = []
             if extra_instructions:
                 instructions.append(extra_instructions)
+            research: api_docs.WebResearch | None = None
+            if self.api_backend:
+                instructions.append(api_docs.brief())
+                research = api_docs.WebResearch()
             if plan is not None:
                 instructions.append(self._materialize_update_context(work_dir, output_dir, plan))
             if probe_dir is not None:
@@ -590,7 +607,9 @@ class Compiler:
                     skill_dir=skill_dir,
                     compiler_skill_dir=compiler_skill_dir,
                     work_dir=work_dir,
-                    on_event=self.on_event,
+                    # An api-backend compile records the agent's web lookups
+                    # off the tool events, for the report's docs section.
+                    on_event=self.on_event if research is None else research.tee(self.on_event),
                     **run_kwargs,
                 )
             except DriverError as e:
@@ -691,7 +710,12 @@ class Compiler:
                 (f"Contract: {q.node_id}", q.text) for q in verification.questions
             ]
             mode = s1_extras or ReportExtras()
-            extras = dataclasses.replace(mode, questions=[*mode.questions, *contract_questions])
+            extras = dataclasses.replace(
+                mode,
+                questions=[*mode.questions, *contract_questions],
+                api_backend=self.api_backend,
+                web_research=research,
+            )
             (output_dir / REPORT_FILENAME).write_text(
                 render_compile_report(pipeline, output_dir, extras), encoding="utf-8"
             )

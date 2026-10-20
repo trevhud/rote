@@ -135,8 +135,9 @@ validator, or renderer it describes is never left as a stub (the one
 exception, a fact the skill does not state, is marked in the stub
 itself). Vendor calls in `external_call` modules stay contract-documented
 stubs unless ground truth is available (a `probe-context/` directory of
-observed MCP traffic in your work dir, and/or web research tools to
-verify current vendor API shapes).
+observed MCP traffic in your work dir, and/or a `--backend api` compile,
+which gives you web search and fetch tools to read the vendor's current
+docs and asks for a working call, citing each page as `# docs: <url>`).
 
 For each node classified as `pure_function` or `external_call`, surface every
 codification opportunity:

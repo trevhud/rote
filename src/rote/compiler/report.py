@@ -24,6 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
 from rote.contracts import NodeImplementation, implementation_status
 from rote.ir import NodeKind, Pipeline
@@ -58,6 +59,11 @@ class ReportExtras:
     questions: Sequence[tuple[str, str]] = field(default_factory=tuple)
     #: Bullets for a "Suggested next steps" section, omitted when empty.
     next_steps: Sequence[str] = field(default_factory=tuple)
+    #: ``--backend api``: every external_call runs its own module, so its
+    #: stubs are open questions and its docs citations get a section.
+    api_backend: bool = False
+    #: The agent's web lookups in this compile (``--backend api``).
+    web_research: api_docs.WebResearch | None = None
 
 
 def _cell(text: str) -> str:
@@ -174,6 +180,7 @@ def _open_questions(
     found: list[Assumption],
     impls: list[NodeImplementation],
     extra: Sequence[tuple[str, str]],
+    api_backend: bool = False,
 ) -> list[str]:
     """One ``###`` entry per distinct assumption, one per stub, one per extra."""
     distinct: dict[str, list[Assumption]] = {}
@@ -195,7 +202,9 @@ def _open_questions(
             "",
         ]
     for impl in impls:
-        if impl.status == "implemented" or impl.mcp_bound:
+        # On the mcp backend a bound node's stub never runs; on the api
+        # backend it is the call.
+        if impl.status == "implemented" or (impl.mcp_bound and not api_backend):
             continue
         reason = impl.reason or "no reason given"
         lines += [
@@ -245,9 +254,19 @@ def render_compile_report(
         "",
         *_crystallization_log(root),
         "",
+        *(
+            [
+                "## Vendor API docs",
+                "",
+                *api_docs.report_section(pipeline, root, extras.web_research),
+                "",
+            ]
+            if extras.api_backend
+            else []
+        ),
         "## Open questions",
         "",
-        *_open_questions(found, impls, extras.questions),
+        *_open_questions(found, impls, extras.questions, extras.api_backend),
         *(steps if extras.next_steps else []),
     ]
     return "\n".join(parts).rstrip("\n") + "\n"

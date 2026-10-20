@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from rote.compiler.api_docs import docs_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -338,7 +339,10 @@ def _tested_symbols(artifact_dir: Path) -> set[str]:
 
 
 def _deliverable_findings(
-    pipeline: Pipeline, artifact_dir: Path, implementations: list[NodeImplementation]
+    pipeline: Pipeline,
+    artifact_dir: Path,
+    implementations: list[NodeImplementation],
+    api_backend: bool = False,
 ) -> list[ContractFinding]:
     """The rules that hold for a fresh compile, but not for any IR on disk.
 
@@ -346,13 +350,29 @@ def _deliverable_findings(
     ``rote emit`` time, where an unwritten module is the documented stub
     path. A compile is held to more: a ``pure_function`` is code the
     skill describes, so the agent either writes it or says why not.
+
+    ``api_backend`` (``--backend api``) holds every ``external_call`` to the
+    same rules, since its module is the call that runs, and to citing the
+    docs page each vendor call was written from
+    (:func:`rote.compiler.api_docs.docs_findings`).
     """
     findings: list[ContractFinding] = []
     tested = _tested_symbols(artifact_dir)
     kinds = {n.id: n.kind for n in pipeline.nodes}
+    held = {NodeKind.PURE_FUNCTION, *([NodeKind.EXTERNAL_CALL] if api_backend else [])}
+    if api_backend:
+        findings += docs_findings(pipeline, artifact_dir, implementations)
     for impl in implementations:
-        if kinds.get(impl.node_id) is not NodeKind.PURE_FUNCTION:
+        kind = kinds.get(impl.node_id)
+        if kind not in held:
             continue
+        assert kind is not None
+        vendor = kind is NodeKind.EXTERNAL_CALL
+        unstated = (
+            "the docs leave a request or response shape unconfirmed"
+            if vendor
+            else "the skill leaves a fact unstated"
+        )
         rel, _, symbol = impl.impl.partition(":")
         if impl.status == "absent" and (artifact_dir / rel).is_file():
             # The module exists but does not parse, decode, or define the
@@ -362,12 +382,13 @@ def _deliverable_findings(
             findings.append(
                 ContractFinding(
                     node_id=impl.node_id,
-                    kind="pure_function_not_written",
+                    kind=f"{kind.value}_not_written",
                     severity="error",
                     message=(
                         f"{impl.impl} does not exist. Write the function, or a stub "
                         f"whose NotImplementedError message says what the skill "
-                        f"leaves unstated (implementation.md)"
+                        f"{'or the docs leave' if vendor else 'leaves'} unstated "
+                        f"(implementation.md)"
                     ),
                     path=rel,
                 )
@@ -379,8 +400,8 @@ def _deliverable_findings(
                     kind="unexplained_stub",
                     severity="error",
                     message=(
-                        f"{symbol}() is a stub with no reason. A pure_function stays "
-                        f"a stub only when the skill leaves a fact unstated; raise "
+                        f"{symbol}() is a stub with no reason. A {kind.value} stays "
+                        f"a stub only when {unstated}; raise "
                         f"NotImplementedError('<what is missing and why>') so the "
                         f"decision is reviewable (implementation.md)"
                     ),
@@ -794,7 +815,12 @@ def _verify(
     implementations = implementation_status(pipeline, root)
     findings = (
         check_contracts(pipeline, root)
-        + _deliverable_findings(pipeline, root, implementations)
+        + _deliverable_findings(
+            pipeline,
+            root,
+            implementations,
+            api_backend=emit_target is not None and emit_target.external_backend == "api",
+        )
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
         + (judge_spec_findings(pipeline) if portable_judges else [])

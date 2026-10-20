@@ -1,0 +1,251 @@
+"""``--backend api``: the vendor docs a compile relied on, and the proof it read them.
+
+With ``--backend api`` every ``external_call`` node runs its ``impl:``
+function in production, and an ``mcp:`` binding on it is never used. So
+the agent writes direct vendor-SDK calls, and a call written from
+training-data memory is the failure this module exists to expose: SDK and
+endpoint shapes drift faster than any model's knowledge, and a
+plausible-but-wrong call fails at run time, not at review.
+
+Three parts, one per party:
+
+* :func:`brief` tells the agent the backend and what it owes: research
+  the current docs with its web tools and cite each page it relied on as a
+  ``# docs: <url>`` comment on the function.
+* :func:`docs_findings` holds the deliverable to it. An implemented vendor
+  call that cites no page is sent back to the agent.
+* :class:`WebResearch` records, from the drivers' ``tool`` events, every
+  page the agent actually fetched and every search it ran. The compile
+  report lists each cited URL beside whether it was fetched in this
+  compile (:func:`cited_docs`), so a reviewer checks the API shape against
+  the page, and a citation the agent never opened stands out.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
+from rote.contracts import ContractFinding, NodeImplementation
+from rote.ir import NodeKind, Pipeline
+
+#: ``# docs: https://...``: one per documentation page a function relies on.
+_DOCS_RE = re.compile(r"#[ \t]*docs:[ \t]*(?P<url>https?://[^\s'\"<>]+)")
+
+#: Trailing punctuation a URL written in prose often picks up.
+_URL_TAIL = ".,;:)]}"
+
+
+def brief() -> str:
+    """The instruction block every ``--backend api`` compile adds to the prompt.
+
+    Tool names differ per driver (Claude Code's ``WebSearch`` /
+    ``WebFetch``, the Messages API's ``web_search`` / ``web_fetch``, Codex's
+    web search), so the brief names them by what they do.
+    """
+    return (
+        "BACKEND: this compile targets `--backend api`. In production every "
+        "external_call node runs its `impl:` function, and an `mcp:` binding on "
+        "the node is never used. Each external_call module is therefore a direct "
+        "call to the vendor's API, written under references/implementation.md "
+        "Regime 2. You have web search and web fetch tools for this compile:\n"
+        "1. Before writing any vendor call, look it up: search for the vendor's "
+        "current API reference, then FETCH the reference page for the exact "
+        "endpoint or SDK method (a search snippet is not the docs). Run the "
+        "lookups for every external_call node in one turn of parallel tool "
+        "calls. Your training data is not a source for an endpoint, a parameter, "
+        "or a response field.\n"
+        "2. Cite every page you relied on with a `# docs: <url>` comment directly "
+        "above the function, one line per page. rote lists each cited URL in "
+        "compile-report.md beside whether you fetched it during this compile, "
+        "and sends back an implemented vendor call that cites none.\n"
+        "3. The function returns the node's declared `output` contract, built "
+        "from the documented response: downstream nodes consume that shape, not "
+        "the vendor's raw payload and not the MCP tool's.\n"
+        "4. If the docs do not let you confirm a request or response shape, "
+        "write a stub whose NotImplementedError message names the page and what "
+        "it left unconfirmed, rather than a call from memory."
+    )
+
+
+def normalize_url(url: str) -> str:
+    """One spelling per page: no fragment, no trailing slash, lowercase host.
+
+    ``http`` and ``https`` are the same page for this purpose, and a
+    ``#section`` anchor points into the page that was fetched.
+    """
+    url = url.strip().rstrip(_URL_TAIL)
+    parts = urlsplit(url)
+    path = parts.path.rstrip("/")
+    return urlunsplit(("https", parts.netloc.lower(), path, parts.query, ""))
+
+
+@dataclass(frozen=True)
+class DocCitation:
+    """One ``# docs:`` URL in an extracted module."""
+
+    node_id: str
+    url: str
+    path: str
+    line: int
+
+
+def module_docs(source: str) -> list[tuple[int, str]]:
+    """``(line, url)`` for every ``# docs:`` comment in ``source``."""
+    found: list[tuple[int, str]] = []
+    for number, text in enumerate(source.splitlines(), start=1):
+        for match in _DOCS_RE.finditer(text):
+            found.append((number, match.group("url").rstrip(_URL_TAIL)))
+    return found
+
+
+def cited_docs(pipeline: Pipeline, root: Path) -> list[DocCitation]:
+    """Every ``# docs:`` URL in the modules the pipeline's ``external_call`` nodes use.
+
+    A citation belongs to the node whose ``impl:`` module holds it. Two
+    nodes that share a module share its citations, since nothing finer
+    than the module says which call a page documents.
+    """
+    out: list[DocCitation] = []
+    for node in pipeline.nodes:
+        if node.kind is not NodeKind.EXTERNAL_CALL or not node.impl:
+            continue
+        rel = node.impl.partition(":")[0]
+        try:
+            source = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        out += [DocCitation(node.id, url, rel, line) for line, url in module_docs(source)]
+    return out
+
+
+def docs_findings(
+    pipeline: Pipeline, root: Path, implementations: list[NodeImplementation]
+) -> list[ContractFinding]:
+    """An implemented vendor call that cites no docs page, under ``--backend api``.
+
+    A stub is not held to it: its NotImplementedError message is where the
+    agent says which page left the shape unconfirmed.
+    """
+    cited = {c.node_id for c in cited_docs(pipeline, root)}
+    kinds = {n.id: n.kind for n in pipeline.nodes}
+    findings: list[ContractFinding] = []
+    for impl in implementations:
+        if kinds.get(impl.node_id) is not NodeKind.EXTERNAL_CALL:
+            continue
+        if impl.status != "implemented" or impl.node_id in cited:
+            continue
+        rel, _, symbol = impl.impl.partition(":")
+        findings.append(
+            ContractFinding(
+                node_id=impl.node_id,
+                kind="uncited_api_call",
+                severity="error",
+                message=(
+                    f"{symbol}() calls a vendor API but its module cites no docs page. "
+                    f"Fetch the vendor's current reference for this call and add a "
+                    f"`# docs: <url>` comment above the function for each page you "
+                    f"relied on (implementation.md, Regime 2)"
+                ),
+                path=rel,
+            )
+        )
+    return findings
+
+
+#: Tool names the drivers report a page fetch / a web search under.
+FETCH_TOOLS = frozenset({"WebFetch", "web_fetch"})
+SEARCH_TOOLS = frozenset({"WebSearch", "web_search"})
+
+
+@dataclass
+class WebResearch:
+    """What the agent looked up during one compile, from the drivers' ``tool`` events.
+
+    ``reported`` is False when the driver emitted no web tool event at all,
+    which for a driver that cannot report them (see each driver) is not the
+    same as an agent that did no research.
+    """
+
+    fetched: list[str] = field(default_factory=list)
+    searches: list[str] = field(default_factory=list)
+
+    @property
+    def reported(self) -> bool:
+        return bool(self.fetched or self.searches)
+
+    def observe(self, event: CompilationEvent) -> None:
+        if event.type != "tool":
+            return
+        if event.tool_name in FETCH_TOOLS and event.url and event.url not in self.fetched:
+            self.fetched.append(event.url)
+        elif event.tool_name in SEARCH_TOOLS and event.query and event.query not in self.searches:
+            self.searches.append(event.query)
+
+    def tee(self, sink: EventCallback | None) -> Callable[[CompilationEvent], None]:
+        """An event callback that records, then forwards to ``sink``."""
+
+        def _both(event: CompilationEvent) -> None:
+            self.observe(event)
+            emit_safely(sink, event)
+
+        return _both
+
+    def was_fetched(self, url: str) -> bool:
+        return normalize_url(url) in {normalize_url(u) for u in self.fetched}
+
+
+def report_section(pipeline: Pipeline, root: Path, research: WebResearch | None) -> list[str]:
+    """The compile report's "Vendor API docs" section for an ``--backend api`` compile."""
+    cites = cited_docs(pipeline, root)
+    lines = [
+        "This pipeline was compiled for `--backend api`: each `external_call` runs "
+        "its own vendor-API code, not an MCP tool. Check each call against the "
+        "page it cites.",
+        "",
+    ]
+    if research is None or not research.reported:
+        lines += [
+            "The compile reported no web fetches, so whether the agent read these "
+            "pages in this compile is unknown.",
+            "",
+        ]
+    if cites:
+        lines += ["| Node | Docs page | Where | Fetched in this compile |", "|---|---|---|---|"]
+        for c in cites:
+            if research is None or not research.reported:
+                fetched = "unknown"
+            else:
+                fetched = "yes" if research.was_fetched(c.url) else "**no**: check it first"
+            lines.append(f"| `{c.node_id}` | {c.url} | `{c.path}:{c.line}` | {fetched} |")
+    else:
+        lines.append("No `external_call` module cites a docs page.")
+    if research is not None and research.reported:
+        cited = {normalize_url(c.url) for c in cites}
+        uncited = [u for u in research.fetched if normalize_url(u) not in cited]
+        lines += [
+            "",
+            f"The agent ran {len(research.searches)} web search(es) and fetched "
+            f"{len(research.fetched)} page(s).",
+        ]
+        if uncited:
+            lines += ["", "Fetched but not cited:", "", *(f"- {u}" for u in uncited)]
+    return lines
+
+
+__all__ = [
+    "FETCH_TOOLS",
+    "SEARCH_TOOLS",
+    "DocCitation",
+    "WebResearch",
+    "brief",
+    "cited_docs",
+    "docs_findings",
+    "module_docs",
+    "normalize_url",
+    "report_section",
+]
