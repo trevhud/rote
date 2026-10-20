@@ -134,7 +134,6 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bjudg(e|ment)\b",
         r"\bassess\b",
         r"\bsentiment\b",
-        r"\bwould this person\b",
         r"\bread the entire thread\b",
         r"\bextract for each\b",
     ),

@@ -29,15 +29,29 @@ REVIEW_BELOW = 0.7
 _NUMBER_WORDS = {
     "a": 1,
     "an": 1,
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "ten": 10,
+    **{
+        w: n
+        for n, w in enumerate(
+            [
+                "one",
+                "two",
+                "three",
+                "four",
+                "five",
+                "six",
+                "seven",
+                "eight",
+                "nine",
+                "ten",
+                "eleven",
+                "twelve",
+            ],
+            start=1,
+        )
+    },
     "fourteen": 14,
+    "fifteen": 15,
+    "twenty": 20,
     "thirty": 30,
 }
 _GATE_TIMEOUT = re.compile(
