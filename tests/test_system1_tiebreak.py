@@ -715,7 +715,7 @@ def test_the_call_uses_the_lanes_own_client(
 async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """codex driver, no Anthropic key, no claude CLI: the default tie-break
+    """codex driver, no Anthropic key, no claude CLI, tie-break asked for: it
     cannot run. The compile stops before the decider and the agent spend."""
     from rote.compiler.system1 import decision_model
 
@@ -734,4 +734,6 @@ async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
     monkeypatch.setattr(decision_model, "decide", no_decider)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Codex())
     with pytest.raises(CompilerError, match=r"under the 'codex' driver.*--tiebreak none"):
-        await Compiler(system1_decider="clef").compile(_skill(tmp_path), tmp_path / "out")
+        await Compiler(system1_decider="clef", system1_tiebreak="haiku").compile(
+            _skill(tmp_path), tmp_path / "out"
+        )
