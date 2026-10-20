@@ -7,6 +7,8 @@ install a tree came from. ``ensure_npm_install`` itself is real.
 
 from __future__ import annotations
 
+import ast
+import itertools
 import json
 import os
 import re
@@ -151,19 +153,93 @@ def test_an_app_with_its_own_node_modules_keeps_it(tmp_path: Path, npm_log: Path
     assert not (app / "node_modules").is_symlink()
 
 
-#: An argv that writes a node_modules: npm install, npm ci, or a generic
-#: npm wrapper that forwards ``*args``.
-_RAW_NPM_INSTALL = re.compile(r"""["']npm["']\s*,\s*(?:["'](?:install|i|ci|add)["']|\*)""")
+#: npm subcommands that write a node_modules.
+_INSTALL_SUBCOMMANDS = frozenset({"install", "i", "ci", "add"})
+
+#: The same, inside a shell string (``"cd app && npm ci"``).
+_SHELL_NPM_INSTALL = re.compile(r"\bnpm\s+(?:install|i|ci|add)\b")
+
+
+def _docstrings(tree: ast.Module) -> set[int]:
+    return {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+
+
+def _is_npm_install(first: ast.expr, second: ast.expr) -> bool:
+    if not (isinstance(first, ast.Constant) and first.value == "npm"):
+        return False
+    return isinstance(second, ast.Starred) or (
+        isinstance(second, ast.Constant) and second.value in _INSTALL_SUBCOMMANDS
+    )
+
+
+def raw_npm_installs(source: str) -> list[int]:
+    """Line numbers of npm installs that bypass ``tests/_node_trees.py``.
+
+    Two forms: an argv list (``["npm", "install", ...]``, or a generic
+    ``["npm", *args]`` wrapper) and a shell string. Docstrings and comments
+    describe installs without running one, so they are not flagged.
+    """
+    tree = ast.parse(source)
+    docstrings = _docstrings(tree)
+    lines = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            if any(_is_npm_install(a, b) for a, b in itertools.pairwise(node.elts)):
+                lines.append(node.lineno)
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+            and _SHELL_NPM_INSTALL.search(node.value)
+        ):
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'subprocess.run(["npm", "install", "--no-audit"], cwd=app)',
+        'subprocess.run(["npm", "ci"], cwd=app)',
+        'subprocess.run(("npm", *args), cwd=app)',
+        'subprocess.run("npm install --no-audit", shell=True, cwd=app)',
+        'subprocess.run(f"cd {app} && npm ci", shell=True)',
+        'os.system("npm i zod")',
+    ],
+)
+def test_the_guard_flags_each_raw_install_form(source: str) -> None:
+    assert raw_npm_installs(source) == [1]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"""Runs a real ``npm install`` and ``tsc --noEmit``."""',
+        "# npm install would write into a shared tree\nx = 1",
+        'subprocess.run(["npm", "rebuild", "inngest-cli"], cwd=app)',
+        'subprocess.run(["npx", "--no-install", "tsc"], cwd=app)',
+        'shutil.which("npm")',
+    ],
+)
+def test_the_guard_leaves_descriptions_and_other_npm_calls_alone(source: str) -> None:
+    assert raw_npm_installs(source) == []
 
 
 def test_every_npm_install_in_the_suites_goes_through_node_trees() -> None:
     """An app's node_modules may be a shared tree, so a raw install into it
     would change what every later test with the same dependencies sees."""
     offenders = [
-        f"{path.name}:{number}"
+        f"{path.name}:{line}"
         for path in sorted(TESTS_DIR.glob("*.py"))
-        if path.name != "_node_trees.py"
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
-        if _RAW_NPM_INSTALL.search(line)
+        # This file's own cases quote raw installs on purpose.
+        if path.name not in {"_node_trees.py", Path(__file__).name}
+        for line in raw_npm_installs(path.read_text(encoding="utf-8"))
     ]
     assert offenders == [], f"install through tests/_node_trees.py instead: {offenders}"
