@@ -142,6 +142,15 @@ def test_values_match_by_value_wherever_the_pipeline_put_them() -> None:
     assert not field_reproduced("blocked_items", 3.0, index)
 
 
+def test_a_long_string_counts_inside_a_longer_one_and_a_short_one_does_not() -> None:
+    index = index_trace(
+        [{"report_path": "/srv/reports/2026-09-expense-audit.md", "note": "not final yet"}]
+    )
+    assert field_reproduced("report_filename", "2026-09-expense-audit.md", index)
+    assert field_reproduced("period", "2026-09", index)
+    assert not field_reproduced("report_status", "final", index)
+
+
 def _reference() -> dict[str, Any]:
     read = _call("read", file_id="A")
     write = _call("write", True, name="r.md")

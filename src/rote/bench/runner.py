@@ -531,6 +531,19 @@ def main(argv: list[str]) -> int:
     if args.report is not None:
         results = json.loads(args.report.read_text(encoding="utf-8"))
         return _finish(results, args, None)
+    # Fidelity and reference runs happen in this process's children (the
+    # skill's claude -p, the emitted DBOS app), not in the compile children
+    # that get isolated_env, so isolate this process too: a developer's MCP
+    # registry or config must not change what a fidelity run sees.
+    run_dir = args.rescore or args.out
+    state = (
+        Path(run_dir).resolve() / "state"
+        if run_dir is not None
+        else Path(tempfile.mkdtemp(prefix="rote-bench-state-"))
+    )
+    os.environ.update(isolated_env(state))
+    for key in ("ROTE_RUNTIME", "ROTE_DEPLOY", "ROTE_AGENT", "ROTE_MODEL"):
+        os.environ.pop(key, None)
     if args.rescore is not None:
         return _rescore(args)
     if args.record_reference or args.fidelity_of is not None:

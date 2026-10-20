@@ -106,9 +106,12 @@ class TraceIndex:
     """Every value a pipeline run produced, with the keys it appeared under."""
 
     values: dict[str, set[str]] = field(default_factory=dict)
+    strings: set[str] = field(default_factory=set)
 
     def add(self, value: Value, key: str) -> None:
         self.values.setdefault(_key(value), set()).add(key)
+        if isinstance(value, str):
+            self.strings.add(value)
 
 
 def index_trace(objects: Iterable[Any]) -> TraceIndex:
@@ -155,11 +158,26 @@ def _leaf_tokens(path: str) -> set[str]:
     return _tokens(path.rsplit(".", 1)[-1].replace("[]", ""))
 
 
+#: Shortest reference string matched inside a longer trace string. Short
+#: strings (a status like ``final``) must match whole, or they would be
+#: found inside unrelated text.
+MIN_SUBSTRING = 7
+
+
 def field_reproduced(path: str, value: Value, index: TraceIndex) -> bool:
-    """Whether a stable reference leaf appears in the pipeline's trace."""
+    """Whether a stable reference leaf appears in the pipeline's trace.
+
+    A string of at least :data:`MIN_SUBSTRING` characters also counts when
+    it is part of a longer trace string: an agent reports the file name
+    (``2026-09-expense-audit.md``) where a pipeline reports the full path.
+    """
     keys = index.values.get(_key(value))
     if not keys:
-        return False
+        return (
+            isinstance(value, str)
+            and len(value) >= MIN_SUBSTRING
+            and any(value in s for s in index.strings)
+        )
     if _informative(value):
         return True
     want = _leaf_tokens(path)
