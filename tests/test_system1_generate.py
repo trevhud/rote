@@ -99,6 +99,8 @@ class FakeGenerator:
         self.fail: set[str] = set()
         #: labels that fail on their first call only (a transient error).
         self.fail_once: set[str] = set()
+        #: seconds a label's call takes (default 0.01).
+        self.delay: dict[str, float] = {}
 
     def is_available(self) -> tuple[bool, str]:
         return (True, "")
@@ -112,7 +114,7 @@ class FakeGenerator:
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(self.delay.get(request.label, 0.01))
             if request.label in self.fail_once:
                 self.fail_once.discard(request.label)
                 raise DriverError(f"claude -p failed for {request.label}: overloaded")
@@ -122,14 +124,14 @@ class FakeGenerator:
                     metadata={"input_tokens": 1, "output_tokens": 2, "cost_usd": 0.5},
                 )
             answer = _blank()
-            if request.label.startswith("interface:"):
+            if self.scripted.get(request.label):
+                answer.update(self.scripted[request.label].pop(0))
+            elif request.label.startswith("interface:"):
                 node = self.nodes[request.label.split(":", 1)[1]]
                 answer["description"] = f"Does {node.id}."
                 answer["output_schema"] = json.dumps(_schema_for(node))
                 if node.kind is NodeKind.AGENT_LOOP and node.termination is None:
                     answer["termination"] = {"condition": "all done", "max_iterations": 3}
-            elif self.scripted.get(request.label):
-                answer.update(self.scripted[request.label].pop(0))
             else:
                 node = self.nodes[request.label]
                 if node.kind is NodeKind.LLM_JUDGE:
@@ -153,12 +155,25 @@ class FakeGenerator:
             self.ended.append(asyncio.get_running_loop().time())
 
 
-async def _write(ctx: Context, plan: system1.Plan, fake: FakeGenerator, **settings: Any) -> Any:
+async def _write(
+    ctx: Context,
+    plan: system1.Plan,
+    fake: FakeGenerator,
+    inject: list[list[ContractFinding]] | None = None,
+    **settings: Any,
+) -> Any:
+    """``inject``: findings to add to each successive verification round."""
+    rounds = list(inject or [])
+
     def verify(work: Path) -> Any:
+        from dataclasses import replace as _replace
+
         from rote.compiler.verify import verify_deliverable
 
         system1.settle(work, plan)
-        return verify_deliverable(work, run_tests=False, portable_judges=True)
+        v = verify_deliverable(work, run_tests=False, portable_judges=True)
+        extra = rounds.pop(0) if rounds else []
+        return _replace(v, findings=[*v.findings, *extra])
 
     return await generate.write_text(
         fake,  # type: ignore[arg-type]
@@ -271,9 +286,12 @@ def test_module_checks_name_each_contract_break(tmp_path: Path) -> None:
     by_package = test.replace(f"from extracted.{node.id} import", "from extracted import")
     assert module_problems(ctx, node, {"module": module, "test": by_package}) == []
 
-    py312 = module + "\ntype Alias = int\n"
-    problems = module_problems(ctx, node, {"module": py312, "test": test})
-    assert any("does not parse on Python 3.11" in p for p in problems)
+    # Both are 3.12+ only. On 3.11 the parse itself refuses them; on a newer
+    # interpreter rote.contracts.newer_syntax_problems does (PEP 701 f-strings
+    # are a tokenizer change that feature_version cannot see).
+    for newer in ("\ntype Alias = int\n", "\nX = f\"{'\\n'.join(['a'])}\"\n"):
+        problems = module_problems(ctx, node, {"module": module + newer, "test": test})
+        assert problems and all(f"extracted/{node.id}.py" in p for p in problems), newer
 
 
 def test_judge_prompt_variables_must_exist_in_the_input_schema(tmp_path: Path) -> None:
@@ -339,9 +357,13 @@ async def test_a_failed_check_is_re_asked_alone_with_the_problem(tmp_path: Path)
     fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
     node = _node(ctx, NodeKind.PURE_FUNCTION)
     fake.scripted[node.id] = [{"module": "def wrong():\n    pass\n", "test": "x = 1\n"}]
-    await _write(ctx, plan, fake)
+    result = await _write(ctx, plan, fake, models=generate.Models("i", "module-m", "j", "repair-m"))
+    # Fixed by its own re-ask, before any verification round.
+    assert result.metadata["repair_rounds"] == 0
+    assert result.metadata["unresolved"] == {}
     asked = [r for r in fake.requests if r.label == node.id]
     assert len(asked) == 2
+    assert [r.model for r in asked] == ["module-m", "repair-m"]
     assert f"defines no top-level `def {node.id}`" in asked[1].prompt
     assert "def wrong():" in asked[1].prompt  # the earlier answer, as text, for edits
     module = (ctx.work_dir / "extracted" / f"{node.id}.py").read_text()
@@ -525,3 +547,171 @@ async def test_a_backend_api_compile_keeps_the_researching_session(
             skill, tmp_path / "out"
         )
     assert Session.ran and fake.requests == []
+
+
+# ───────── review findings: never ship a failing piece, cancel on failure ─────────
+
+
+def _bad(node: Any, ctx: Context) -> dict[str, Any]:
+    """An answer with the right signature that imports a third-party package."""
+    saved = ctx.interface
+    ctx.interface = {n.id: {"output_schema": _schema_for(n)} for n in ctx.pipeline.nodes}
+    module, test = _module_for(module_request(ctx, node, "S", "m").prompt, node.id)
+    ctx.interface = saved
+    return {"module": "import yaml\n" + module, "test": test}
+
+
+@pytest.mark.asyncio
+async def test_a_piece_that_never_passes_its_checks_is_an_error_not_a_pass(
+    tmp_path: Path,
+) -> None:
+    ctx, plan = _context(tmp_path)
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    node = _node(ctx, NodeKind.PURE_FUNCTION)
+    total = (generate.MAX_CHECK_RETRIES + 1) * (1 + generate.MAX_REPAIR_ROUNDS)
+    fake.scripted[node.id] = [_bad(node, ctx) for _ in range(total)]
+    result = await _write(ctx, plan, fake)
+    assert [r.label for r in fake.requests].count(node.id) == total
+    assert result.metadata["unresolved"][node.id] == [
+        f"extracted/{node.id}.py imports `yaml`: stdlib only"
+    ]
+    # The files are kept for review, and the verdict says they fail.
+    assert "import yaml" in (ctx.work_dir / "extracted" / f"{node.id}.py").read_text()
+    (finding,) = generate.unresolved_findings(result.metadata["unresolved"])
+    assert finding.kind == "generation_check_failed" and finding.severity == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_repair_that_fails_its_checks_never_replaces_passing_files(
+    tmp_path: Path,
+) -> None:
+    ctx, plan = _context(tmp_path)
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    node, other = [n for n in ctx.pipeline.nodes if n.kind is NodeKind.PURE_FUNCTION][:2]
+    finding = ContractFinding(node.id, "prefix_run_failed", "error", "raised KeyError", None)
+    attempts = generate.MAX_CHECK_RETRIES + 1
+    plain = fake.generate
+
+    async def generate_call(request: GenerationRequest) -> Generation:
+        if request.label == node.id and "This is a repair" in request.prompt:
+            fake.scripted[node.id] = [_bad(node, ctx)]
+        return await plain(request)
+
+    fake.generate = generate_call  # type: ignore[method-assign]
+    await _write(
+        ctx,
+        plan,
+        fake,
+        inject=[[finding]],
+        models=generate.Models("iface-m", "module-m", "judge-m", "repair-m"),
+    )
+    module = (ctx.work_dir / "extracted" / f"{node.id}.py").read_text()
+    assert "import yaml" not in module  # the earlier, passing files stayed
+    asked = [r for r in fake.requests if r.label == node.id]
+    assert len(asked) == 1 + attempts
+    # Only the named node is repaired, with the repair model, and every re-ask
+    # still carries the verification finding it is for.
+    assert [r.label for r in fake.requests].count(other.id) == 1
+    assert asked[0].model == "module-m" and all(r.model == "repair-m" for r in asked[1:])
+    assert all("raised KeyError" in r.prompt for r in asked[1:])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_interface_cancels_its_siblings_and_counts_them(tmp_path: Path) -> None:
+    ctx, plan = _context(tmp_path)
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    _, failing, *slow = generate.interface_targets(ctx)
+    fake.fail.add(f"interface:{failing.id}")
+    for n in slow:
+        fake.delay[f"interface:{n.id}"] = 5.0  # still running when the failure lands
+    with pytest.raises(DriverError) as err:
+        await asyncio.wait_for(_write(ctx, plan, fake), timeout=3)
+    assert fake.in_flight == 0  # cancelled and awaited, none left running
+    meta = err.value.metadata or {}
+    assert meta["usage_complete"] is False
+    assert f"{len(slow)} call(s) were cancelled" in meta["usage_note"]
+
+
+@pytest.mark.asyncio
+async def test_an_interface_entry_that_never_passes_fails_the_compile(tmp_path: Path) -> None:
+    ctx, plan = _context(tmp_path)
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    target = generate.interface_targets(ctx)[0]
+    empty = {"description": "", "output_schema": json.dumps(_schema_for(target))}
+    fake.scripted[f"interface:{target.id}"] = [empty] * (generate.MAX_CHECK_RETRIES + 1)
+    with pytest.raises(generate.GenerationFailed, match="description is empty"):
+        await _write(ctx, plan, fake)
+
+
+def test_a_consumer_field_the_producer_does_not_return_is_an_interface_problem(
+    tmp_path: Path,
+) -> None:
+    ctx, _ = _context(tmp_path)
+    source = next(
+        n for n in ctx.pipeline.nodes if isinstance(n.output, dict) and "items" in n.output
+    )
+    no_items = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"rows": {"type": "array"}}},
+    }
+    problems = interface_problems(ctx, source, no_items)
+    assert any(f"reads `{source.id}.output.items`" in p for p in problems)
+
+
+def test_a_piece_is_held_to_its_own_tests_and_citations(tmp_path: Path) -> None:
+    """run_tests=True: the piece's tests run alone, as verification would run them."""
+    ctx, _ = _context(tmp_path)
+    ctx.interface = {n.id: {"output_schema": _schema_for(n)} for n in ctx.pipeline.nodes}
+    node = _node(ctx, NodeKind.PURE_FUNCTION)
+    module, test = _module_for(module_request(ctx, node, "S", "m").prompt, node.id)
+    skill = EXAMPLES / "expense-audit" / "skill"
+
+    def check(answer: dict[str, Any]) -> list[str]:
+        return generate.piece_findings(
+            ctx, node, answer, skill_dir=skill, run_tests=True, trust_skill=True
+        )
+
+    assert check({"module": module, "test": test}) == []
+    red = test + "\n\ndef test_red():\n    assert False\n"
+    assert any("its tests fail" in p for p in check({"module": module, "test": red}))
+    cited = module.replace(
+        "    return", '    # skill: "this sentence is nowhere in the skill text"\n    return'
+    )
+    assert any("contains no such text" in p for p in check({"module": cited, "test": test}))
+
+
+def test_only_named_test_files_are_attributed() -> None:
+    class V:
+        pipeline_error = None
+        ok = False
+        errors: list[ContractFinding] = []
+        review_gaps: list[ContractFinding] = []
+
+        class tests:  # noqa: N801
+            status = "failed"
+            summary = "1 failed"
+            output = "FAILED tests/test_rule_tables.py::test_x - AssertionError"
+
+    per, loose = attribute(V(), ["a"])
+    assert per == {} and loose == ["generated tests fail: 1 failed"]
+
+
+@pytest.mark.asyncio
+async def test_the_compile_verdict_fails_on_a_piece_that_never_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    skeleton = tmp_path / "skeleton"
+    skeleton.mkdir()
+    plan = system1.prepare(skill, skeleton)
+    ctx = Context.load(skeleton, plan, Grounding())
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    node = _node(ctx, NodeKind.PURE_FUNCTION)
+    fake.scripted[node.id] = [_bad(node, ctx) for _ in range(50)]
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
+    monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
+    result = await Compiler(run_generated_tests=False).compile(skill, tmp_path / "out")
+    assert result.verification is not None and not result.verification.ok
+    kinds = {(f.node_id, f.kind) for f in result.verification.errors}
+    assert (node.id, "generation_check_failed") in kinds

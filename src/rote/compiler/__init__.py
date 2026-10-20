@@ -145,7 +145,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     ):
         metadata["session_id"] = session_id
     source = result.metadata.get("usage_source")
-    if source in ("stream", "usage", "modelUsage"):
+    if source in ("stream", "usage", "modelUsage", "generations"):
         metadata["usage_source"] = source
     complete = result.metadata.get("usage_complete")
     if isinstance(complete, bool):
@@ -772,6 +772,17 @@ class Compiler:
                 web_research=research,
                 spec_store=specs,
             )
+            unresolved = result.metadata.get("unresolved")
+            if isinstance(unresolved, dict) and unresolved:
+                # A parallel-path piece that never passed its own checks
+                # (rote.compiler.system1.generate) is an error, not a pass.
+                verification = dataclasses.replace(
+                    verification,
+                    findings=[
+                        *verification.findings,
+                        *generate.unresolved_findings(unresolved),
+                    ],
+                )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
             remove_materialized(Path(result.pipeline_yaml_path).parent)

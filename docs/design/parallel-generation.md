@@ -121,6 +121,14 @@ skeleton (rules)              decided before this step
   -> per-node repair          only the nodes a finding names, at most 2 rounds
 ```
 
+A piece that still fails its own checks after its last re-ask keeps its
+files (verification must see them), and its problems become
+`generation_check_failed` errors in every verification and in the final
+verdict: it is never shipped as a pass. A repair answer that fails those
+checks never replaces files that passed them. If any call fails the
+compile, its siblings are cancelled and awaited, and the usage is marked
+incomplete rather than reported as the smaller number.
+
 Checking each piece alone moved most repairs off the critical path: on the
 first full version they waited for the slowest piece and a whole
 verification round, and the compile took 183 s. With per-piece checks the
@@ -171,10 +179,14 @@ Sonnet 5.5 writes every piece. Haiku 5.5, measured on the same two skills:
 | Haiku 5.5 | 26 to 63 s | 7k to 17k (mostly thinking) | failed: `structured_output_retry_exhausted` |
 
 Haiku thinks at length even at effort low, so it is slower per piece, and
-one call ended without a valid answer. That failure now retries once and
-then leaves only that module unwritten. At about a tenth of the cost
-(about $0.10 a compile), Haiku is worth another look for the cheap
-interface calls once its structured-output reliability is measured.
+one call ended without a valid answer. A failed call now retries once.
+
+Haiku 5.5 for the interface calls only, the pieces on Sonnet 5.5, API lane,
+3 compiles each: expense-audit 0.93 (0.90 to 0.95) against Sonnet's 0.95,
+and ops-report 0.83 (0.82 to 0.84) against 0.96, at no lower cost (about
+$0.40 a compile either way, since the pieces' output dominates). Not
+adopted: the interface is the contract every piece writes against, and a
+weaker one costs fidelity.
 
 ## Model calls
 
@@ -191,19 +203,28 @@ ones a compile already uses.
   schema (current models reject a forced `tool_choice` with a 400), the
   shared prefix marked `cache_control`, `output_config.effort` (unset, the
   API's default spent 12k to 21k output tokens per piece against 2k to 3k
-  at low), all four usage buckets, no `temperature`.
+  at low), all four usage buckets, no `temperature`. Each call is priced
+  at its own model's list price (the CLI summary would otherwise price it
+  at the compile's default model), or reports no cost when it cannot be
+  priced.
 
 Concurrency is bounded by `--max-parallel` (default 8).
 
 ## Open items
 
-1. incident-triage fails on both paths: the dbos emit's
-   `signatures/_rote_inference.py` imports `extracted._rote_mcp`, which it
-   does not ship for that pipeline. An adapter defect, not this change.
+1. Fixed on main by #164: incident-triage failed on both paths in the
+   bench above (base e06c232) because verification counted
+   `signatures/_rote_inference.py`'s ImportError-guarded
+   `extracted._rote_mcp` import as unshipped. On this branch, rebased on
+   #164, it verifies and exits 0 (API lane, 34 s).
 2. Test depth: parallel pieces write about half as many tests.
 3. The cloud lane's API driver gives the session agent live MCP tools for
    research. The parallel calls have no tools, so that context is lost
    there.
-4. The per-node prefix probe from #170 (consumers of unrecorded MCP results
+4. One Sonnet expense-audit compile on the API lane scored 0.66: its
+   `file_audit_report` was a stub because the skeleton gives it only the
+   request and the gate's answer. #170's through-gate inputs fix that
+   decision.
+5. The per-node prefix probe from #170 (consumers of unrecorded MCP results
    run on `[]` and `""`) could run inside each piece's own check, once #170
    lands.

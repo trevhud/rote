@@ -182,6 +182,14 @@ async def test_api_generate_locks_the_answer_and_caches_the_shared_prefix(
     client = _Client(_message([SimpleNamespace(type="text", text='{"x": "z"}')]))
     monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    priced: list[str] = []
+
+    class _Catalog:
+        def rates_for(self, model: str) -> tuple[float, float, float, float]:
+            priced.append(model)
+            return (2.0, 10.0, 0.2, 2.5)  # input, output, cache read, cache write per Mtok
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda **k: _Catalog())
     g = await AnthropicApiDriver().generate(REQUEST)
     (call,) = client.calls
     # Structured outputs, never a forced tool: current models 400 on tool_choice "tool".
@@ -199,7 +207,26 @@ async def test_api_generate_locks_the_answer_and_caches_the_shared_prefix(
     assert g.payload == {"x": "z"}
     assert (g.input_tokens, g.output_tokens) == (5, 60)
     assert (g.cache_write_tokens, g.cache_read_tokens) == (700, 8000)
-    assert g.cost_usd is None  # the lane reports none; never a guess
+    # Priced at the model the call ran on, not the compile's default model.
+    assert priced == ["claude-sonnet-5-5"]
+    assert g.cost_usd == pytest.approx((5 * 2.0 + 60 * 10.0 + 700 * 2.5 + 8000 * 0.2) / 1e6)
+
+
+@pytest.mark.asyncio
+async def test_api_generate_reports_no_cost_when_it_cannot_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.eval.pricing import PricingError
+
+    client = _Client(_message([SimpleNamespace(type="text", text='{"x": "z"}')]))
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+
+    def offline(**kwargs: Any) -> Any:
+        raise PricingError("offline")
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", offline)
+    assert (await AnthropicApiDriver().generate(REQUEST)).cost_usd is None
 
 
 @pytest.mark.asyncio

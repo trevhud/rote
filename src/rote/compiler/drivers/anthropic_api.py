@@ -507,9 +507,10 @@ class AnthropicApiDriver(CompilerDriver):
         outright with a 400. The shared prefix is the system prompt, marked
         for the prompt cache, so the calls of one compile after the first
         read it at the cache rate, and usage keeps all four buckets for that
-        reason. No ``temperature``: current models reject it. The lane
-        reports no cost, so ``cost_usd`` is ``None`` (the token counts are
-        exact).
+        reason. No ``temperature``: current models reject it. The API
+        reports no cost, so ``cost_usd`` is the call's own model's list price
+        on its four buckets (:func:`run_cost_usd`), or ``None`` when that
+        cannot be priced.
         """
         if not _ANTHROPIC_AVAILABLE:
             raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
@@ -521,13 +522,7 @@ class AnthropicApiDriver(CompilerDriver):
                 {
                     "model": request.model,
                     "max_tokens": self.max_tokens_per_turn,
-                    "system": [
-                        {
-                            "type": "text",
-                            "text": request.system,
-                            "cache_control": {"type": "ephemeral"},
-                        }
-                    ],
+                    "system": cached_system(request.system),
                     "messages": [{"role": "user", "content": request.prompt}],
                     "output_config": {
                         "format": {"type": "json_schema", "schema": request.schema},
@@ -539,17 +534,8 @@ class AnthropicApiDriver(CompilerDriver):
             raise DriverError(f"Anthropic API call failed for {request.label}: {e}") from e
         finally:
             await client.close()
-        usage = message.usage
-
-        def tokens(name: str) -> int:
-            return int(getattr(usage, name, 0) or 0)
-
-        metadata = {
-            "input_tokens": tokens("input_tokens"),
-            "output_tokens": tokens("output_tokens"),
-            "cache_write_tokens": tokens("cache_creation_input_tokens"),
-            "cache_read_tokens": tokens("cache_read_input_tokens"),
-        }
+        totals = usage_buckets(message.usage)
+        metadata = {f"{bucket}_tokens": count for bucket, count in totals.items()}
         text = "".join(
             getattr(b, "text", "") for b in message.content if getattr(b, "type", None) == "text"
         )
@@ -566,7 +552,7 @@ class AnthropicApiDriver(CompilerDriver):
         return Generation(
             payload=payload,
             model=str(message.model),
-            cost_usd=None,
+            cost_usd=run_cost_usd(str(message.model), totals),
             duration_ms=int((time.monotonic() - started) * 1000),
             **metadata,
         )

@@ -63,7 +63,7 @@ from rote.compiler.system1.skeleton import (
     SKELETON_FILENAME,
     TABLES_MODULE,
 )
-from rote.contracts import _prompt_paths_in_schema
+from rote.contracts import ContractFinding, _prompt_paths_in_schema
 from rote.ir import NodeKind, Pipeline, fan_out_element_param, parse_input_ref
 
 #: The rubric every call shares, inside the rote-compile bundle.
@@ -135,6 +135,9 @@ class Ledger:
 
     calls: list[tuple[str, Generation]] = field(default_factory=list)
     failed: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    #: Calls cancelled mid-flight (a sibling failed the compile). Their usage
+    #: is unknown, so the total is marked incomplete rather than read as small.
+    cancelled: list[str] = field(default_factory=list)
 
     def add(self, label: str, generation: Generation) -> None:
         self.calls.append((label, generation))
@@ -168,8 +171,13 @@ class Ledger:
         out["num_turns"] = len(rows)
         out["duration_ms"] = wall_ms
         out["repair_rounds"] = repair_rounds
-        out["usage_source"] = "modelUsage"
-        out["usage_complete"] = all("output_tokens" in r for r in rows)
+        out["usage_source"] = "generations"
+        out["usage_complete"] = not self.cancelled and all("output_tokens" in r for r in rows)
+        if self.cancelled:
+            out["usage_note"] = (
+                f"{len(self.cancelled)} call(s) were cancelled when the compile failed; "
+                "their usage is not counted"
+            )
         out["generations"] = [{"label": label, **_call_record(g)} for label, g in self.calls]
         return out
 
@@ -793,11 +801,24 @@ def _imports(tree: ast.Module) -> list[tuple[str, list[str]]]:
 
 
 def _parse(source: str, what: str, problems: list[str]) -> ast.Module | None:
+    """The module's tree, or ``None`` with why it cannot run on Python 3.11.
+
+    ``feature_version`` alone misses PEP 701 f-strings (a backslash or a
+    reused quote inside braces), which the 3.12+ tokenizer accepts and 3.11
+    rejects: :func:`rote.contracts.newer_syntax_problems` checks both.
+    """
+    from rote.contracts import newer_syntax_problems
+
     try:
-        return ast.parse(source, feature_version=(3, 11))
+        tree = ast.parse(source)
     except SyntaxError as e:
-        problems.append(f"{what} does not parse on Python 3.11: line {e.lineno}: {e.msg}")
+        problems.append(f"{what} does not parse: line {e.lineno}: {e.msg}")
         return None
+    newer = newer_syntax_problems(source)
+    if newer:
+        problems += [f"{what} line {line}: {msg}" for line, msg in newer]
+        return None
+    return tree
 
 
 def module_problems(ctx: Context, node: Any, payload: dict[str, Any]) -> list[str]:
@@ -1065,6 +1086,21 @@ def attribute(verification: Any, writable: Iterable[str]) -> tuple[dict[str, lis
     return per, loose
 
 
+def unresolved_findings(unresolved: dict[str, list[str]]) -> list[ContractFinding]:
+    """A piece that never passed its own checks, as verification errors."""
+    return [
+        ContractFinding(
+            node_id=node_id,
+            kind="generation_check_failed",
+            severity="error",
+            message=f"{node_id} still fails rote's checks on its answer: {problem}",
+            path=f"extracted/{node_id}.py",
+        )
+        for node_id, problems in sorted(unresolved.items())
+        for problem in problems
+    ]
+
+
 # ───────── the run ─────────
 
 
@@ -1106,6 +1142,8 @@ class TextWriter:
         self.limit = asyncio.Semaphore(settings.max_parallel)
         self.modules: dict[str, dict[str, Any]] = {}
         self.judges: dict[str, dict[str, Any]] = {}
+        #: ``{node id: problems}`` for pieces that still fail their own checks.
+        self.unresolved: dict[str, list[str]] = {}
         #: Set once the first call has had time to write the shared prefix
         #: to the prompt cache. Calls that start before that each write it
         #: again (measured: 7 pieces started together wrote ~9k tokens each).
@@ -1131,6 +1169,9 @@ class TextWriter:
                 try:
                     g = await self.driver.generate(request)
                     break
+                except asyncio.CancelledError:
+                    self.ledger.cancelled.append(request.label)
+                    raise
                 except DriverError as e:
                     self.ledger.add_failure(request.label, e)
                     if attempt == CALL_ATTEMPTS:
@@ -1168,7 +1209,7 @@ class TextWriter:
     async def interface(self) -> None:
         targets = interface_targets(self.ctx)
         self._emit("log", f"generate: interface for {len(targets)} node(s), one call each")
-        entries = await asyncio.gather(*(self._interface_entry(n) for n in targets))
+        entries = await _all(self._interface_entry(n) for n in targets)
         self.ctx.interface = {n.id: e for n, e in zip(targets, entries, strict=True)}
         (self.ctx.work_dir / BRIEF_DIRNAME / INTERFACE_FILENAME).write_text(
             _json(self.ctx.interface), encoding="utf-8"
@@ -1195,24 +1236,29 @@ class TextWriter:
         """One node's piece: asked, checked by code, re-asked with what failed.
 
         ``repair`` carries problems verification found on the merged
-        deliverable; the piece then starts from its current files.
+        deliverable; the piece then starts from its current files, which
+        passed their own checks. A repair answer that fails those checks
+        never replaces them. A first answer that still fails after every
+        retry is kept (verification must see the files), and its problems
+        stay recorded in :attr:`unresolved`, which verification reports as
+        errors: a failing piece is never shipped as if it passed.
         """
         is_judge = node.kind is NodeKind.LLM_JUDGE
         build = judge_request if is_judge else module_request
         store = self.judges if is_judge else self.modules
         keys = ("prompt", "client") if is_judge else ("module", "test")
         models = self.settings.models
-        prior = store.get(node.id) if repair else None
-        note = _repair_text(prior or {}, repair) if repair else None
+        current = store.get(node.id) if repair else None
+        prior = current
+        note = _repair_text(current or {}, repair) if repair else None
         model = models.repair if repair else (models.judge if is_judge else models.module)
-        answer: dict[str, Any] = dict(prior or {})
+        answer: dict[str, Any] | None = None
+        problems: list[str] = []
         for attempt in range(MAX_CHECK_RETRIES + 1):
             try:
                 payload = await self._call(build(self.ctx, node, self.system, model, note))
             except DriverError as e:
-                # One piece's failed call must not cost the others' paid work:
-                # the node keeps what it had (nothing, on a first ask), and
-                # verification reports it like any unwritten module.
+                problems = [f"no answer from the model ({e})"]
                 self._emit("warning", f"generate: {node.id} gave no answer ({e})")
                 break
             answer, problems = apply_answer(prior, payload, keys)
@@ -1224,9 +1270,29 @@ class TextWriter:
                     "warning",
                     f"generate: {node.id} re-asked: " + " | ".join(p[:300] for p in problems),
                 )
-            prior, note, model = answer, _repair_text(answer, problems), models.repair
-        if answer:
+            # Keep verification's findings in the re-ask: fixing the new
+            # problems must not forget what the repair was for.
+            note = _repair_text(answer, [*(repair or []), *problems])
+            prior, model = answer, models.repair
+        if not problems and answer is not None:
             store[node.id] = answer
+            self.unresolved.pop(node.id, None)
+            return
+        if current is not None:
+            # The repair made things worse: keep the files that passed alone.
+            self._emit(
+                "warning",
+                f"generate: {node.id} repair failed its own checks; kept its earlier files",
+            )
+            return
+        if answer is not None:
+            store[node.id] = answer
+        self.unresolved[node.id] = problems
+        self._emit(
+            "warning",
+            f"generate: {node.id} still fails its own checks after "
+            f"{MAX_CHECK_RETRIES + 1} answer(s): " + " | ".join(p[:300] for p in problems),
+        )
 
     def pieces(self) -> list[Any]:
         return [
@@ -1241,7 +1307,7 @@ class TextWriter:
             "log",
             f"generate: {len(pieces)} piece(s), at most {self.settings.max_parallel} at once",
         )
-        await asyncio.gather(*(self._piece(n) for n in pieces))
+        await _all(self._piece(n) for n in pieces)
         self.merge()
 
     def merge(self) -> None:
@@ -1268,7 +1334,7 @@ class TextWriter:
     async def repair(self, verify: Callable[[Path], Any]) -> tuple[Any, int]:
         """Verify, then re-ask only the nodes a finding names. Returns (verdict, rounds)."""
         writable = [n.id for n in self.pieces()]
-        verification = verify(self.ctx.work_dir)
+        verification = self.verified(verify)
         rounds = 0
         while rounds < MAX_REPAIR_ROUNDS:
             per, loose = attribute(verification, writable)
@@ -1287,12 +1353,34 @@ class TextWriter:
                     f"generate: repair round {rounds}: {node_id}: "
                     + " | ".join(p[:300] for p in problems),
                 )
-            await asyncio.gather(
-                *(self._piece(self.ctx.node(n), problems) for n, problems in per.items())
-            )
+            await _all(self._piece(self.ctx.node(n), problems) for n, problems in per.items())
             self.merge()
-            verification = verify(self.ctx.work_dir)
+            verification = self.verified(verify)
         return verification, rounds
+
+    def verified(self, verify: Callable[[Path], Any]) -> Any:
+        """``verify`` on the work dir, with every unresolved piece added as an error."""
+        verification = verify(self.ctx.work_dir)
+        found = unresolved_findings(self.unresolved)
+        if not found:
+            return verification
+        return replace(verification, findings=[*verification.findings, *found])
+
+
+async def _all(coros: Iterable[Any]) -> list[Any]:
+    """Run every coroutine; if one raises, cancel and await the rest, then raise it.
+
+    ``asyncio.gather`` leaves the siblings of a failed call running, so a
+    failed interface reported two calls while eight were in flight and their
+    usage was never counted. A TaskGroup cancels them and waits, so each one
+    lands in the ledger (as cancelled) before the failure is reported.
+    """
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(c) for c in coros]
+    except BaseExceptionGroup as eg:
+        raise eg.exceptions[0] from None
+    return [t.result() for t in tasks]
 
 
 def _ensure_newline(text: str) -> str:
@@ -1347,7 +1435,7 @@ async def write_text(
         _, rounds = await writer.repair(verify)
     except DriverError as e:
         metadata = writer.ledger.metadata(int((time.monotonic() - started) * 1000), rounds)
-        raise DriverError(str(e), details=e.details, metadata=metadata) from e
+        raise type(e)(str(e), details=e.details, metadata=metadata) from e
     return DriverResult(
         pipeline_yaml_path=work_dir / "pipeline.yaml",
         work_dir=work_dir,
@@ -1355,6 +1443,7 @@ async def write_text(
         metadata={
             "driver": driver.name,
             "mode": "parallel",
+            "unresolved": writer.unresolved,
             **writer.ledger.metadata(int((time.monotonic() - started) * 1000), rounds),
         },
     )
