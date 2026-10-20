@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rote.compiler.system1.decide import REVIEW_BELOW, Segment, role_of_kind
+from rote.compiler.system1.decide import REVIEW_BELOW, Segment, infeasible_kinds, role_of_kind
 from rote.compiler.system1.decision_model import Verdicts
 from rote.compiler.system1.parse import SkillParse, Unit
 
@@ -130,6 +130,8 @@ class TieBreak:
     asked: list[int]
     segments: dict[int, list[Segment]] = field(default_factory=dict)
     usage: list[dict[str, Any]] = field(default_factory=list)
+    #: Nodes the model proposed that a rule forbids, kept out (by unit index).
+    overruled: dict[int, list[str]] = field(default_factory=dict)
     #: ``None`` when a usage row could not be priced (no catalog, an alias).
     cost_usd: float | None = 0.0
 
@@ -138,6 +140,7 @@ class TieBreak:
             "model": self.model,
             "lane": self.lane,
             "steps_asked": [str(i) for i in self.asked],
+            "overruled": {str(i): v for i, v in self.overruled.items()},
             "cost_usd": None if self.cost_usd is None else round(self.cost_usd, 6),
             "usage": self.usage,
         }
@@ -229,7 +232,9 @@ def _one_line(text: str, limit: int = 160) -> str:
 
 
 def _parse(payload: dict[str, Any], asked: list[int]) -> dict[int, list[Segment]] | None:
-    """The answer as segments, or None unless it covers exactly the steps asked."""
+    """The answer as segments, or None unless it covers exactly the steps asked.
+
+    Rule constraints are applied after (:func:`_constrain`)."""
     by_step: dict[int, list[Segment]] = {}
     for entry in payload.get("steps") or []:
         step, nodes = entry.get("step"), entry.get("nodes") or []
@@ -247,6 +252,25 @@ def _parse(payload: dict[str, Any], asked: list[int]) -> dict[int, list[Segment]
             for n in nodes
         ]
     return by_step if sorted(by_step) == sorted(asked) else None
+
+
+def _constrain(
+    skill: SkillParse, answer: dict[int, list[Segment]], result: TieBreak
+) -> dict[int, list[Segment]]:
+    """Drop every proposed node of a kind a rule forbids for its step
+    (:func:`rote.compiler.system1.decide.infeasible_kinds`). A step left with
+    no node keeps the rules' decision."""
+    units = {u.index: u for u in skill.units}
+    kept: dict[int, list[Segment]] = {}
+    for step, segments in answer.items():
+        forbidden = infeasible_kinds(units[step], skill.tool_registry)
+        allowed = [seg for seg in segments if seg[1] not in forbidden]
+        dropped = [f"{seg[1]}: {forbidden[seg[1]]}" for seg in segments if seg[1] in forbidden]
+        if dropped:
+            result.overruled[step] = dropped
+        if allowed:
+            kept[step] = allowed
+    return kept
 
 
 def decide(
@@ -284,7 +308,7 @@ def decide(
         result.usage += [{"model": m, **u} for m, u in rows]
         parsed = _parse(payload, asked)
         if parsed is not None:
-            result.segments = parsed
+            result.segments = _constrain(skill, parsed, result)
             result.cost_usd = _cost(result.usage)
             return result
     raise TieBreakUnavailable(
