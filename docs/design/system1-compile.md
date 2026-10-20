@@ -192,7 +192,7 @@ Clef (`@cf/cloudflare/clef` on Workers AI, a decision model with no generated
 text) decides each step's kind and whether a person must act. It uses the
 `models` lane's pre-registered phrasings, ensemble and thresholds. Clef wins
 when its ensemble kind confidence is at least 0.85 or its gate probability is
-at least 0.50; otherwise the rules decide, and a disagreement is listed in
+at least 0.50. Otherwise the rules decide, and a disagreement is listed in
 Open questions. Mandatory and fan_out stay on rules. A missing credential
 fails the compile (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`). A
 spot check of three dev steps against the lane's cached answers agreed
