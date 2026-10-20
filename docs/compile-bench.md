@@ -46,7 +46,7 @@ options:
 | `--runtime` | The compile's `--runtime` (default `dbos`, the logged-out default) |
 | `--no-tsc` | Skip `npm install` + `tsc --noEmit` on the Cloudflare emit |
 | `--compare OLD.json` | Print this run's deltas against an older results.json |
-| `--resume` | Keep the jobs already scored in `<out>/results.json`, run only the missing ones. Their spend counts toward `--budget` |
+| `--resume` | Keep the jobs already scored in `<out>/results.json` and run the rest. A job whose compile produced no pipeline (a usage limit, a crash) is re-run, and what it spent stays in `spent_usd` under `replaced_jobs`. Everything already spent counts toward `--budget` |
 | `--rescore RUN_DIR` | Re-collect an existing run's compiles with the current scorer (needs `--examples`). No tokens |
 | `--report R.json` | Print a results.json (with `--compare`, just the deltas). No tokens |
 

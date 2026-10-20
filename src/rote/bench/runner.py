@@ -188,6 +188,20 @@ class _Budget:
         return self.spent
 
 
+def produced_pipeline(job: dict[str, Any]) -> bool:
+    """Whether a job got as far as a pipeline.yaml (``--resume`` keeps these)."""
+    return "headline" in job and not str(job.get("error", "")).startswith(
+        "no pipeline.yaml produced"
+    )
+
+
+def total_spend(jobs: list[dict[str, Any]], replaced: list[dict[str, Any]]) -> float:
+    """Every dollar the run dir cost: its jobs plus the failed jobs a
+    ``--resume`` re-ran (their spend is real even though their row is gone)."""
+    costs = [j.get("run", {}).get("cost_usd") for j in jobs] + [r.get("cost_usd") for r in replaced]
+    return round(sum(c for c in costs if isinstance(c, (int, float))), 4)
+
+
 def summarize(jobs: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     """``(per_skill, aggregate)`` over the jobs that ran."""
     ran = [j for j in jobs if "headline" in j]
@@ -374,6 +388,7 @@ def _rescore(args: argparse.Namespace) -> int:
         "jobs": jobs,
         "per_skill": per_skill,
         "aggregate": agg,
+        "spent_usd": total_spend(jobs, prior.get("replaced_jobs", [])),
         "rescored_at": datetime.now(UTC).isoformat(),
     }
     return _finish(results, args, run_dir)
@@ -406,14 +421,32 @@ def main(argv: list[str]) -> int:
     budget = _Budget(args.budget)
     started = datetime.now(UTC).isoformat()
     kept: list[dict[str, Any]] = []
+    replaced: list[dict[str, Any]] = []
     if args.resume and (out / "results.json").is_file():
         prior = json.loads((out / "results.json").read_text(encoding="utf-8"))
         wanted = {(j.skill, j.repeat) for j in jobs}
-        kept = [j for j in prior["jobs"] if "headline" in j and (j["skill"], j["repeat"]) in wanted]
+        mine = [j for j in prior["jobs"] if (j["skill"], j["repeat"]) in wanted]
+        # Jobs this invocation does not name stay as they were, so resuming
+        # one skill never drops another skill's row (or its spend).
+        kept = [j for j in prior["jobs"] if (j["skill"], j["repeat"]) not in wanted]
+        kept += [j for j in mine if produced_pipeline(j)]
+        replaced = list(prior.get("replaced_jobs", [])) + [
+            {
+                "skill": j["skill"],
+                "repeat": j["repeat"],
+                "cost_usd": j.get("run", {}).get("cost_usd"),
+                "error": j.get("error"),
+            }
+            for j in mine
+            if not produced_pipeline(j) and "skipped" not in j
+        ]
         done = {(j["skill"], j["repeat"]) for j in kept}
+        skills = list(dict.fromkeys([*skills, *(j["skill"] for j in kept)]))
         jobs = [j for j in jobs if (j.skill, j.repeat) not in done]
         for j in kept:
             budget.add(j["run"].get("cost_usd"))
+        for r in replaced:
+            budget.add(r.get("cost_usd"))
         started = prior.get("started_at", started)
         print(
             f"rote bench: resuming: {len(kept)} job(s) kept (${budget.spent:.2f}), "
@@ -425,12 +458,10 @@ def main(argv: list[str]) -> int:
         gate = asyncio.Semaphore(args.concurrency)
         return list(await asyncio.gather(*(_run_job(j, args, env, gate, budget) for j in jobs)))
 
-    order = {
-        (s, k): i
-        for i, (k, s) in enumerate((k, s) for k in range(1, args.repeat + 1) for s in skills)
-    }
+    rank = {s: i for i, s in enumerate([*skills, *DEFAULT_SKILLS])}
     job_results = sorted(
-        [*kept, *asyncio.run(_all())], key=lambda j: order[(j["skill"], j["repeat"])]
+        [*kept, *asyncio.run(_all())],
+        key=lambda j: (j["repeat"], rank.get(j["skill"], len(rank)), j["skill"]),
     )
     per_skill, agg = summarize(job_results)
     results = {
@@ -450,7 +481,8 @@ def main(argv: list[str]) -> int:
             "budget": args.budget,
             "python": sys.executable,
         },
-        "spent_usd": round(budget.spent, 4),
+        "spent_usd": total_spend(job_results, replaced),
+        "replaced_jobs": replaced,
         "jobs": job_results,
         "per_skill": per_skill,
         "aggregate": agg,

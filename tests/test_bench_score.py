@@ -385,6 +385,23 @@ def test_results_are_portable(tmp_path: Path) -> None:
     }
 
 
+def test_resume_keeps_scored_jobs_and_never_forgets_spend() -> None:
+    """--resume re-runs a job that produced no pipeline, but the dollars it
+    burned stay in spent_usd; a job that produced a (bad) pipeline is a
+    result and is kept."""
+    from rote.bench.runner import produced_pipeline, total_spend
+
+    scored = {"headline": {}, "run": {"cost_usd": 2.5}}
+    bad_ir = {"headline": {}, "run": {"cost_usd": 3.0}, "error": "invalid pipeline.yaml: x"}
+    died = {"headline": {}, "run": {"cost_usd": 2.25}, "error": "no pipeline.yaml produced: limit"}
+    assert produced_pipeline(scored)
+    assert produced_pipeline(bad_ir)
+    assert not produced_pipeline(died)
+    assert not produced_pipeline({"skipped": "budget"})
+    replaced = [{"skill": "x", "repeat": 1, "cost_usd": 2.25}]
+    assert total_spend([scored, bad_ir], replaced) == 7.75
+
+
 def test_a_failed_compile_still_reports_what_it_spent(tmp_path: Path) -> None:
     """No compile-metrics.json on the failure path, so the cost comes from
     the orchestrator's failure log; without it a paid job reads as free and
