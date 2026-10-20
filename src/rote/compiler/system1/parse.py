@@ -173,6 +173,7 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bsave (the|it|to|as)\b",
         r"\bupload\b",
         r"\bupsert\b",
+        r"\bpost(?:s|ed)?\b[^.\n]{0,40}\bto\b|\bpublish\b|\bnotify\b",
         r"\bcreate (a |an |the )?[\w\s-]{0,30}"
         r"\b(list|template|record|folder|sheet|contact|ticket)s?\b",
         r"\bfile the\b",
@@ -263,6 +264,35 @@ _CONST_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 _ID_LITERAL = re.compile(
     r"\b(file id|channel id|folder id)[:\s(`]+\s*`?([A-Za-z0-9_-]{8,})`?", re.I
 )
+
+
+#: A `Label: value` line, the way a skill writes a call's fixed inputs.
+_STATED = re.compile(
+    r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?([A-Z][A-Za-z]*(?:[ /][A-Za-z]+){0,3}?)(?:\*\*)?[ \t]*:"
+    r"[ \t]*(?:\*\*)?[ \t]*`?([^`\n]{1,120}?)`?[ \t]*$",
+    re.M,
+)
+#: The label must name a parameter, not introduce prose ("Include:", "Note:").
+_PARAMETER_NOUN = re.compile(
+    r"\b(query|id|ids|tab|label|labels|channel|folder|file|sheet|range|filter|url|path"
+    r"|name|format|window|list|table|database|project|board|team|calendar|mailbox|repo)\b",
+    re.I,
+)
+
+
+def stated_parameters(text: str, first_line: int) -> list[Constant]:
+    """Every `Label: value` line whose label names a parameter, in order."""
+    out: list[Constant] = []
+    for m in _STATED.finditer(text):
+        label, value = m.group(1).strip(), m.group(2).strip().strip("*").strip()
+        if not value or not _PARAMETER_NOUN.search(label):
+            continue
+        name = slug(label)
+        if any(c.name == name for c in out):
+            continue
+        line = first_line + text[: m.start()].count("\n")
+        out.append(Constant(name, value, m.group(0).strip(), line))
+    return out
 
 
 def to_number(token: str) -> int | float | None:
@@ -425,6 +455,9 @@ class Unit:
     references: list[str]
     signals: dict[str, list[str]]
     constants: list[Constant]
+    #: Parameters the step states as `Label: value` lines ("Search query:
+    #: label:dock-activity", "File ID: ...", "Tab: ..."): a call's arguments.
+    stated: list[Constant] = field(default_factory=list)
     #: A heading whose sub-steps run once per item ("Process each invoice row").
     loop_container: bool = False
     #: The loop container unit this sub-step runs inside, if any.
@@ -568,6 +601,7 @@ def parse_skill(skill_dir: Path) -> SkillParse:
                     references=sorted(set(_REF.findall(chunk))),
                     signals=signal_hits(chunk, title),
                     constants=constants_in(chunk, start),
+                    stated=stated_parameters(chunk, start),
                     loop_parent=parent_loop,
                 )
             )

@@ -17,11 +17,12 @@ listed for review in the compile report.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from rote.compiler.system1.clef import HUMAN_THRESHOLD, KIND_THRESHOLD, Verdict
-from rote.compiler.system1.parse import Constant, SkillParse, Unit, slug
+from rote.compiler.system1.parse import SIGNALS, Constant, SkillParse, Unit, slug
 
 #: At or above this, a decision is reported as settled; below, it is listed
 #: in the report for a person to check.
@@ -221,10 +222,18 @@ def _segment(u: Unit) -> list[tuple[str, str, float, str]]:
         out.append(
             (role, "pure_function", _kind_confidence(s, "pure_function"), "fixed-logic signal")
         )
-    if s.get("write"):
+    if s.get("write") and _names_a_system(u):
         out.append(("write", "external_call", _kind_confidence(s, "write"), "side-effect signal"))
     if not out:
         out.append(("process", "pure_function", 0.3, "no signal: most deterministic kind"))
+    if s.get("write") and not _names_a_system(u):
+        role, kind, conf, rule = out[-1]
+        out[-1] = (
+            role,
+            kind,
+            min(conf, 0.6),
+            f"{rule}; it writes to no named system, so its result is the pipeline's output",
+        )
     return out
 
 
@@ -277,6 +286,49 @@ def _per_item(text: str) -> str | None:
             continue
         return m.group(0)
     return None
+
+
+#: A destination with a name: a #channel, an @handle, a URL, or a proper noun
+#: (HubSpot, Google Sheet). Formats and units are not systems.
+_NAMED = re.compile(r"[#@][\w-]+|https?://\S+|(?<=\s)(?-i:[A-Z][A-Za-z0-9]+)")
+_NOT_SYSTEMS = frozenset(
+    [
+        "HTML",
+        "CSV",
+        "PDF",
+        "JSON",
+        "XLSX",
+        "XML",
+        "TXT",
+        "MD",
+        "YAML",
+        "USD",
+        "EUR",
+        "GBP",
+        "ID",
+        "IDS",
+        "UTC",
+        "ISO",
+    ]
+)
+
+
+def _names_a_system(u: Unit) -> bool:
+    """Does the step's write go somewhere named, outside the pipeline?
+
+    "Save it to the finance shared folder" names no system: that step is the
+    pipeline's output, returned to the caller, not an external_call stub
+    that raises "target system not specified" (a real expense-audit run).
+    A tool, an MCP mention or a UI action is always a named target."""
+    if u.mcp or u.tools or _UI_ACTION.search(u.text):
+        return True
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", u.text):
+        if not SIGNALS["write"].search(sentence):
+            continue
+        for m in _NAMED.finditer(sentence.strip()):
+            if m.group(0).strip("#@").upper() not in _NOT_SYSTEMS or m.group(0)[0] in "#@h":
+                return True
+    return False
 
 
 def _base(title: str, section: str | None = None) -> str:
@@ -464,6 +516,77 @@ def _termination(text: str) -> dict[str, Any] | None:
     return {"condition": stop.group(0).strip(" ,;"), "max_iterations": int(bound.group(1))}
 
 
+def _schema_properties(
+    tools: Mapping[tuple[str, str], Any], server: str, tool: str
+) -> dict[str, Any] | None:
+    """The tool's input properties from grounding (``ToolSchema.input_schema``), if known."""
+    schema = tools.get((server, tool))
+    if schema is None:
+        return None
+    props = (getattr(schema, "input_schema", None) or {}).get("properties")
+    return props if isinstance(props, dict) else None
+
+
+def _match_property(name: str, props: dict[str, Any], taken: set[str]) -> str | None:
+    """The tool parameter a stated label names: the same name, or the property
+    whose words are all in the label ("search_query" names ``query``)."""
+    if name in props and name not in taken:
+        return name
+    words = set(name.split("_"))
+    fits = [p for p in props if p not in taken and set(slug(p).split("_")) <= words]
+    return fits[0] if len(fits) == 1 else None
+
+
+def _bind_arguments(
+    n: NodePlan,
+    u: Unit,
+    bound: tuple[str, str | None],
+    tools: Mapping[tuple[str, str], Any] | None = None,
+) -> None:
+    """The MCP binding and its arguments, never the whole pipeline input.
+
+    Without ``mcp.args`` an emitted step sends its entire payload as the
+    tool's arguments, and the request went out as Gmail search arguments in
+    a real ops-report run. Arguments are the step's own fixed values: the
+    parameters it states ("Search query: label:dock-activity newer_than:1d")
+    and the ids and windows it names, each a constant. A step that states
+    none calls the tool with no arguments, listed for review.
+    """
+    for c in u.stated:
+        if c.name not in n.constants and c.value not in n.constants.values():
+            n.constants[c.name] = c.value
+    server, tool = bound[0], bound[1] or ""
+    props = _schema_properties(tools or {}, server, tool)
+    if props is not None:
+        args: dict[str, str] = {}
+        for const in n.constants:
+            prop = _match_property(const, props, set(args))
+            if prop is not None:
+                args[prop] = const
+        n.mcp = {"server": server, "tool": tool, "args": args}
+        n.decide("mcp", dict(n.mcp), 0.9, "MCP server and tool named in the step")
+        unmatched = [c for c in n.constants if c not in args.values()]
+        n.decide(
+            "mcp.args",
+            dict(args),
+            0.9 if not unmatched else 0.6,
+            "argument names from the tool's input schema"
+            + (f"; no parameter for {unmatched}" if unmatched else ""),
+        )
+        return
+    n.mcp = {"server": server, "tool": tool, "args": {k: k for k in n.constants}}
+    n.decide("mcp", dict(n.mcp), 0.9, "MCP server and tool named in the step")
+    if n.constants:
+        n.decide(
+            "mcp.args",
+            dict(n.mcp["args"]),
+            0.6,
+            "argument names are the step's own labels; check them against the tool's schema",
+        )
+    else:
+        n.decide("mcp.args", {}, 0.5, "the step states no argument: the tool is called with none")
+
+
 def _loop_tools(u: Unit, skill: SkillParse) -> tuple[list[str], dict[str, str], float, str]:
     if u.tools:
         return u.tools, {t: skill.tool_registry[t] for t in u.tools}, 0.9, "tools named in the step"
@@ -533,9 +656,15 @@ def _route(
     return segments
 
 
-def plan(skill: SkillParse, verdicts: dict[int, Verdict] | None = None) -> Plan:
+def plan(
+    skill: SkillParse,
+    verdicts: dict[int, Verdict] | None = None,
+    tools: Mapping[tuple[str, str], Any] | None = None,
+) -> Plan:
     """Every decision for ``skill``. With ``verdicts`` (``--system1-decider clef``),
-    Clef's confident kind and gate answers override the rules per step."""
+    Clef's confident kind and gate answers override the rules per step. With
+    ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
+    names come from each tool's input schema."""
     nodes: list[NodePlan] = []
     used: set[str] = set()
     last_of: dict[int, str] = {}
@@ -626,16 +755,13 @@ def plan(skill: SkillParse, verdicts: dict[int, Verdict] | None = None) -> Plan:
             if n.role == "fetch":
                 bound = next(((s, t) for s, t in u.mcp if t), None)
                 if bound is not None:
-                    n.mcp = {"server": bound[0], "tool": bound[1]}
-                    if n.constants:
-                        n.mcp["args"] = {k: k for k in n.constants}
-                    n.decide("mcp", dict(n.mcp), 0.9, "MCP server and tool named in the step")
+                    _bind_arguments(n, u, bound, tools)
                 elif u.mcp:
                     n.decide("mcp", None, 0.3, f"MCP server '{u.mcp[0][0]}' named, but no tool")
             if n.kind == "agent_loop":
-                tools, servers, tconf, trule = _loop_tools(u, skill)
-                n.tools, n.tool_servers = tools, servers
-                n.decide("tools", tools, tconf, trule)
+                names, servers, tconf, trule = _loop_tools(u, skill)
+                n.tools, n.tool_servers = names, servers
+                n.decide("tools", names, tconf, trule)
                 n.termination = _termination(u.text)
                 if n.termination is not None:
                     n.decide(

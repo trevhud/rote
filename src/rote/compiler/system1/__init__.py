@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -54,11 +55,18 @@ TEXT_RUBRIC_REFERENCES = ("implementation.md", "llm-judge-extraction.md")
 DECIDERS = ("rules", "clef")
 
 
-def prepare(skill_dir: Path, work_dir: Path, decider: str = "rules", sample: Any = None) -> Plan:
+def prepare(
+    skill_dir: Path,
+    work_dir: Path,
+    decider: str = "rules",
+    sample: Any = None,
+    tools: Mapping[tuple[str, str], Any] | None = None,
+) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
     ``sample`` (a :class:`rote.compiler.grounding.Sample`) decides the input
-    schema and gate payload keys, ahead of the skill's wording.
+    schema and gate payload keys, ahead of the skill's wording. ``tools``
+    (grounding's tool schemas, keyed ``(server, tool)``) names MCP arguments.
 
     ``rules`` makes no call at all. ``clef`` asks Cloudflare's Clef decision
     model (no generated text) about each step's kind and gate, and uses its
@@ -67,7 +75,7 @@ def prepare(skill_dir: Path, work_dir: Path, decider: str = "rules", sample: Any
         raise ValueError(f"unknown --system1-decider {decider!r}; choose from {DECIDERS}")
     skill = parse_skill(skill_dir)
     verdicts = clef.decide(skill) if decider == "clef" else None
-    p = plan(skill, verdicts)
+    p = plan(skill, verdicts, tools)
     p.sample = sample
     write(p, work_dir)
     if verdicts is not None:
