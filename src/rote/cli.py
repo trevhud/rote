@@ -51,6 +51,7 @@ from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.compiler.provenance import PROVENANCE_NODE
+from rote.compiler.system1 import DECIDERS
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
@@ -58,6 +59,7 @@ from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
 if TYPE_CHECKING:
+    from rote.config import Resolved
     from rote.eval.pricing import PricingCatalog
     from rote.mcp.learned import LearnedAuth
 
@@ -618,10 +620,6 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    s1_error = _system1_flag_error(args)
-    if s1_error:
-        print(f"error: {s1_error}", file=sys.stderr)
-        return 2
 
     # ── Layered defaults ── flag > ROTE_* env > project rote.yaml >
     # user config > built-in. Resolved up front because the logged-in
@@ -646,6 +644,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         agent_rv = rote_config.resolve("agent", args.agent, layers=layers)
         model_rv = rote_config.resolve("model", args.model, layers=layers)
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
+        decider_rv = rote_config.resolve("decider", args.decider, layers=layers)
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -682,6 +681,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # Local path: fold the config-resolved agent/model into args now.
     args.agent, args.model = agent_rv.value, model_rv.value
     args.effort = effort_rv.value
+    try:
+        args.decider = _local_decider(args, decider_rv, "compile")
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if args.no_mcp:
         try:
             if args.baseline:
@@ -889,7 +893,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
         system1=args.system1,
-        system1_decider=args.system1_decider,
+        system1_decider=args.decider,
         # Tool schemas come from a read-only tools/list; --no-mcp means the
         # compile touches no MCP server at all.
         tool_discovery="none" if args.no_mcp else args.tool_discovery,
@@ -1484,7 +1488,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--trust-skill", args.trust_skill),
         ("--strict-provenance", args.strict_provenance),
         ("--no-system1", args.system1 is False),
-        ("--system1-decider", args.system1_decider != "rules"),
+        ("--decider", args.decider is not None),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2621,10 +2625,6 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     if not skill_path.is_dir():
         print(f"error: skill path is not a directory: {skill_path}", file=sys.stderr)
         return 2
-    s1_error = _system1_flag_error(args)
-    if s1_error:
-        print(f"error: {s1_error}", file=sys.stderr)
-        return 2
 
     # Same layered agent/model defaults as compile — analyze is its dry run.
     from rote import config as rote_config
@@ -2634,7 +2634,10 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         agent = rote_config.resolve("agent", args.agent, layers=layers).value
         model = rote_config.resolve("model", args.model, layers=layers).value
         effort = rote_config.resolve("effort", args.effort, layers=layers).value
-    except rote_config.ConfigError as e:
+        decider = _local_decider(
+            args, rote_config.resolve("decider", args.decider, layers=layers), "analyze"
+        )
+    except (rote_config.ConfigError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
     if args.no_mcp:
@@ -2656,7 +2659,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
         system1=args.system1,
-        system1_decider=args.system1_decider,
+        system1_decider=decider,
     )
 
     out_ctx: Any = (
@@ -3537,6 +3540,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["effort"].value or f"{_COMPILER_DEFAULT_EFFORT} (claude driver)",
             resolved["effort"].source,
         ),
+        "decider": (resolved["decider"].value or "rules", resolved["decider"].source),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3553,6 +3557,8 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "agent": resolved["agent"].value,
             "model": resolved["model"].value,
             "effort": resolved["effort"].value,
+            # Concrete like runtime: unset means rules, which is what runs.
+            "decider": resolved["decider"].value or "rules",
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -3944,14 +3950,31 @@ def _run_empirical(
 # ───────── Argument parsing ─────────
 
 
-def _system1_flag_error(args: argparse.Namespace) -> str | None:
-    """A usage error in the System-1 flags, else None."""
-    if args.system1_decider != "rules" and args.system1 is False:
-        return (
-            f"--system1-decider {args.system1_decider} decides System-1's structure; "
-            "drop --no-system1"
+def _local_decider(args: argparse.Namespace, resolved: Resolved, command: str) -> str:
+    """The System-1 decider a local compile (or analyze) uses.
+
+    ``resolved`` is the layered ``decider`` setting. A model decider on a
+    compile that does not run System-1 (``--no-system1``, or ``--update``,
+    which always runs the full-rubric agent) is a usage error when it came
+    from a flag, so a decider the user asked for never silently goes unused.
+    From a config file or env var it is a standing preference for System-1
+    compiles, so this one compile says it does not apply and uses none.
+    """
+    decider = resolved.value or "rules"
+    runs_system1 = args.system1 if args.system1 is not None else not getattr(args, "update", False)
+    if decider == "rules" or runs_system1:
+        return decider
+    why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
+    if resolved.source == "flag":
+        raise ValueError(
+            f"--decider {decider} decides System-1's structure, and {why} does not run System-1"
         )
-    return None
+    print(
+        f"rote {command}: {resolved.source} sets `decider: {decider}`, which applies only to "
+        f"System-1 compiles; {why} does not run System-1",
+        file=sys.stderr,
+    )
+    return "rules"
 
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
@@ -3972,15 +3995,17 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
         ),
     )
     p.add_argument(
-        "--system1-decider",
-        choices=["rules", "clef"],
-        default="rules",
+        "--decider",
+        dest="decider",
+        choices=DECIDERS,
+        default=None,
         help=(
-            "Who decides each step's kind and whether a person must act. 'rules' "
-            "(default) makes no call. 'clef' asks Cloudflare's Clef decision model where "
-            "it is confident and the rules elsewhere. It sends every step's text to your "
-            "Cloudflare account's Workers AI, needs CLOUDFLARE_ACCOUNT_ID and "
-            "CLOUDFLARE_API_TOKEN, and costs about $0.005 a compile"
+            "Who decides each step's kind and whether a person must act (default: the "
+            "`decider` setting, else rules). 'rules' makes no call. 'clef' (Cloudflare) "
+            "and 'jev' (Typesafe) are decision models: each answers where it is confident, "
+            "and the rules decide elsewhere. Both send every step's text to your "
+            "Cloudflare account's Workers AI and need CLOUDFLARE_ACCOUNT_ID and "
+            "CLOUDFLARE_API_TOKEN. Clef costs about $0.005 a compile and Jev about $0.001"
         ),
     )
 

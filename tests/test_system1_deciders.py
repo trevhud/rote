@@ -1,8 +1,9 @@
-"""`--system1-decider clef`: Clef's confident answers over the rules, nothing silent.
+"""`--decider clef|jev`: a decision model's confident answers over the rules, nothing silent.
 
-The HTTP call is stubbed (no inference in tests). What is pinned: the request
-is exactly the pre-registered one, the thresholds route as measured, and a
-missing credential fails the compile instead of quietly using the rules.
+The HTTP call is stubbed (no inference in tests). What is pinned: each
+model's request is exactly the pre-registered one on its own route, the
+frozen thresholds route as measured, and a missing credential fails the
+compile instead of quietly using the rules.
 """
 
 from __future__ import annotations
@@ -15,7 +16,12 @@ import pytest
 import yaml
 
 from rote.compiler import Compiler, CompilerError, system1
-from rote.compiler.system1 import clef
+from rote.compiler.system1 import decision_model as dm
+from rote.compiler.system1.decision_model import CLEF, JEV, DecisionModel
+
+MODELS = pytest.mark.parametrize("model", [CLEF, JEV], ids=["clef", "jev"])
+#: Jev's thresholds as fitted on the dev skills (docs/compile-bench.md).
+JEV_KIND, JEV_HUMAN = 0.85, 0.60
 
 STEPS = (
     "## Step 1: Total the batch\n\nTotal every line in USD.\n\n"
@@ -41,6 +47,7 @@ def _skill(tmp_path: Path) -> Path:
 
 
 def _answers(kind: dict[str, float], human: float) -> dict[str, Any]:
+    """A per-model route's response (Clef's shape)."""
     return {
         "result": {
             "answers": {
@@ -52,34 +59,51 @@ def _answers(kind: dict[str, float], human: float) -> dict[str, Any]:
     }
 
 
-ZERO = dict.fromkeys(clef.KINDS["v0"], 0.0)
+def _as_served(model: DecisionModel, response: dict[str, Any]) -> dict[str, Any]:
+    """The same answer as ``model``'s route returns it: the unified /ai/run
+    route (Jev) wraps the record once more."""
+    if model.selector is None:
+        return {"result": {"result": response["result"]}}
+    return response
+
+
+def _request(body: dict[str, Any]) -> dict[str, Any]:
+    """``{"state", "questions"}`` from either route's body."""
+    return body.get("input", body)
+
+
+ZERO = dict.fromkeys(dm.KINDS["v0"], 0.0)
 
 
 @pytest.fixture
 def creds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
     monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok")
-    monkeypatch.setattr(clef.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(dm.time, "sleep", lambda _s: None)
 
 
-def _stub(monkeypatch: pytest.MonkeyPatch, by_title: dict[str, Any]) -> list[dict]:
+def _stub(
+    monkeypatch: pytest.MonkeyPatch, by_title: dict[str, Any], model: DecisionModel = CLEF
+) -> list[dict]:
     calls: list[dict[str, Any]] = []
 
     def post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append({"url": url, "token": token, "body": body})
-        answer = by_title[body["state"]["this_step"]["title"]]
+        req = _request(body)
+        answer = by_title[req["state"]["this_step"]["title"]]
         if isinstance(answer, list):  # one answer per phrasing, v0..v2
-            criteria = body["questions"]["kind"]["criteria"]
-            variant = next(v for v, c in clef.KINDS.items() if c == criteria)
-            return answer[int(variant[1])]
-        return answer
+            criteria = req["questions"]["kind"]["criteria"]
+            variant = next(v for v, c in dm.KINDS.items() if c == criteria)
+            answer = answer[int(variant[1])]
+        return _as_served(model, answer)
 
-    monkeypatch.setattr(clef, "_post", post)
+    monkeypatch.setattr(dm, "_post", post)
     return calls
 
 
+@MODELS
 def test_the_request_is_the_pre_registered_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
 ) -> None:
     calls = _stub(
         monkeypatch,
@@ -91,79 +115,113 @@ def test_the_request_is_the_pre_registered_one(
                 "Step 3: Score the leads",
             )
         },
+        model,
     )
     work = tmp_path / "work"
     work.mkdir()
-    system1.prepare(_skill(tmp_path), work, decider="clef")
+    system1.prepare(_skill(tmp_path), work, decider=model.name)
     assert len(calls) == 9  # 3 steps x 3 phrasings
     first = calls[0]
-    assert first["url"] == (
-        "https://api.cloudflare.com/client/v4/accounts/acct123/ai/run/@cf/cloudflare/clef"
-    )
     assert first["token"] == "tok"
     body = first["body"]
-    assert body["model"] == "clef"
+    base = "https://api.cloudflare.com/client/v4/accounts/acct123/ai/run"
+    if model is CLEF:
+        assert first["url"] == f"{base}/@cf/cloudflare/clef"
+        assert set(body) == {"model", "state", "questions"} and body["model"] == "clef"
+    else:
+        # The unified route: model id in the body, the request under `input`.
+        assert first["url"] == base
+        assert set(body) == {"model", "input"} and body["model"] == "typesafe/jev-1.14.0"
+    body = _request(body)
     assert set(body["state"]) == {"skill", "skill_description", "all_steps", "this_step"}
     assert body["state"]["all_steps"] == [
         "Step 1: Total the batch",
         "Step 2: Tidy the notes",
         "Step 3: Score the leads",
     ]
-    variants = [c["body"]["questions"] for c in calls[:3]]
-    assert [v["kind"]["criteria"] for v in variants] == [clef.KINDS[k] for k in ("v0", "v1", "v2")]
+    variants = [_request(c["body"])["questions"] for c in calls[:3]]
+    assert [v["kind"]["criteria"] for v in variants] == [dm.KINDS[k] for k in ("v0", "v1", "v2")]
     assert [v["human"]["instructions"] for v in variants] == [
-        clef.HUMAN[k] for k in ("v0", "v1", "v2")
+        dm.HUMAN[k] for k in ("v0", "v1", "v2")
     ]
-    assert clef.KIND_THRESHOLD == 0.85 and clef.HUMAN_THRESHOLD == 0.50
 
 
+def test_the_thresholds_are_the_frozen_ones() -> None:
+    """Fitted on the dev skills, then measured once on the holdout: an edit
+    here invalidates docs/compile-bench.md's numbers."""
+    assert (CLEF.kind_threshold, CLEF.human_threshold) == (0.85, 0.50)
+    assert (JEV.kind_threshold, JEV.human_threshold) == (JEV_KIND, JEV_HUMAN)
+    assert (CLEF.price_per_m_input, JEV.price_per_m_input) == (0.24, 0.042)
+    assert set(dm.MODELS) == {"clef", "jev"} and system1.DECIDERS == ("rules", "clef", "jev")
+
+
+def _just_above(x: float) -> float:
+    return min(round(x + 0.02, 2), 1.0)
+
+
+def _just_below(x: float) -> float:
+    return round(x - 0.02, 2)
+
+
+@MODELS
 def test_confident_answers_win_and_unsure_ones_go_to_review(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
 ) -> None:
+    """Each answer sits just across one of ``model``'s own thresholds, so the
+    other model's thresholds would route at least one step differently."""
+    kind_hi, kind_lo = _just_above(model.kind_threshold), _just_below(model.kind_threshold)
+    human_hi, human_lo = _just_above(model.human_threshold), _just_below(model.human_threshold)
     _stub(
         monkeypatch,
         {
-            # The rules say pure_function; Clef is sure a person must act.
-            "Step 1: Total the batch": _answers({**ZERO, "pure_function": 0.9}, 0.92),
-            # No signal for the rules (pure_function, 0.3); Clef is sure it is a call.
-            "Step 2: Tidy the notes": _answers({**ZERO, "external_call": 0.93}, 0.05),
-            # The rules say llm_judge; Clef leans pure_function but below 0.85.
-            # The rules say llm_judge. Clef's first phrasing is sure it is
-            # pure_function (0.95), but the three-phrasing mean (0.78) is not.
+            # The rules say pure_function; the model is sure a person must act.
+            "Step 1: Total the batch": _answers({**ZERO, "pure_function": 0.9}, human_hi),
+            # No signal for the rules (pure_function, 0.3); the model is sure it is a call.
+            "Step 2: Tidy the notes": _answers({**ZERO, "external_call": kind_hi}, human_lo),
+            # The rules say llm_judge. The model's first phrasing is sure it is
+            # pure_function, but the three-phrasing mean is just below the threshold.
             "Step 3: Score the leads": [
-                _answers({**ZERO, "pure_function": 0.95, "llm_judge": 0.05}, 0.1),
-                _answers({**ZERO, "pure_function": 0.70, "llm_judge": 0.30}, 0.1),
-                _answers({**ZERO, "pure_function": 0.70, "llm_judge": 0.30}, 0.1),
+                _answers({**ZERO, "pure_function": 1.0}, 0.0),
+                _answers({**ZERO, "pure_function": 1.5 * kind_lo - 0.5}, 0.0),
+                _answers({**ZERO, "pure_function": 1.5 * kind_lo - 0.5}, 0.0),
             ],
         },
+        model,
     )
     work = tmp_path / "work"
     work.mkdir()
-    plan = system1.prepare(_skill(tmp_path), work, decider="clef")
+    plan = system1.prepare(_skill(tmp_path), work, decider=model.name)
     doc = yaml.safe_load((work / "pipeline.yaml").read_text())
     kinds = {n["source"]["section"]: n["kind"] for n in doc["nodes"]}
     assert kinds["Step 1: Total the batch"] == "hitl_gate"
     assert kinds["Step 2: Tidy the notes"] == "external_call"
     assert kinds["Step 3: Score the leads"] == "llm_judge"  # the rules decide below threshold
-    assert any("Clef disagrees below its threshold" in r for r in plan.review)
-    decisions = (work / "system1" / "decisions.json").read_text()
-    assert '"model": "@cf/cloudflare/clef"' in decisions and '"cost_usd": 0.00216' in decisions
+    assert any(f"{model.label} disagrees below its threshold" in r for r in plan.review)
+    decisions = json.loads((work / "system1" / "decisions.json").read_text())["decider"]
+    assert decisions["name"] == model.name and decisions["model"] == model.route
+    # 9 calls x 1000 input tokens at the model's own price.
+    assert decisions["cost_usd"] == round(9 * 1000 / 1e6 * model.price_per_m_input, 6)
+    report = system1.report_extras(work, plan).preamble
+    assert f"rules and the {model.label} decision model" in report
 
 
+@MODELS
 @pytest.mark.asyncio
-async def test_asking_for_clef_without_credentials_fails_the_compile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_asking_for_a_model_without_credentials_fails_the_compile(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
 
     def no_call(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError("Clef was called without credentials")
+        raise AssertionError("the model was called without credentials")
 
-    monkeypatch.setattr(clef, "_post", no_call)
+    monkeypatch.setattr(dm, "_post", no_call)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
-    compiler = Compiler(system1=True, system1_decider="clef")
-    with pytest.raises(CompilerError, match="CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN"):
+    compiler = Compiler(system1_decider=model.name)
+    with pytest.raises(
+        CompilerError, match=f"--decider {model.name} needs CLOUDFLARE_ACCOUNT_ID and"
+    ):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
 
 
@@ -175,19 +233,19 @@ def test_a_rate_limit_is_retried_and_a_dead_endpoint_is_loud(
     def flaky(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         attempts["n"] += 1
         if attempts["n"] < 3:
-            raise clef.ClefUnavailable("Workers AI answered HTTP 429")
+            raise dm.DeciderUnavailable("Workers AI answered HTTP 429")
         return _answers({**ZERO, "pure_function": 1.0}, 0.0)
 
-    monkeypatch.setattr(clef, "_post", flaky)
-    assert clef.ask("a", "t", {}, "v0")["answers"]["human"]["noul"] == 0.0
+    monkeypatch.setattr(dm, "_post", flaky)
+    assert dm.ask(CLEF, "a", "t", {}, "v0")["answers"]["human"]["noul"] == 0.0
     assert attempts["n"] == 3
 
     def dead(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        raise clef.ClefUnavailable("Workers AI answered HTTP 500")
+        raise dm.DeciderUnavailable("Workers AI answered HTTP 500")
 
-    monkeypatch.setattr(clef, "_post", dead)
-    with pytest.raises(clef.ClefUnavailable, match="did not answer after 6 tries"):
-        clef.ask("a", "t", {}, "v0")
+    monkeypatch.setattr(dm, "_post", dead)
+    with pytest.raises(dm.DeciderUnavailable, match="did not answer after 6 tries"):
+        dm.ask(CLEF, "a", "t", {}, "v0")
 
 
 def test_a_refused_request_fails_at_once(monkeypatch: pytest.MonkeyPatch, creds: None) -> None:
@@ -196,11 +254,11 @@ def test_a_refused_request_fails_at_once(monkeypatch: pytest.MonkeyPatch, creds:
 
     def refused(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         attempts["n"] += 1
-        raise clef.ClefRejected("Workers AI answered HTTP 401: b'bad token'")
+        raise dm.DeciderRejected("Workers AI answered HTTP 401: b'bad token'")
 
-    monkeypatch.setattr(clef, "_post", refused)
-    with pytest.raises(clef.ClefRejected, match="HTTP 401"):
-        clef.ask("a", "t", {}, "v0")
+    monkeypatch.setattr(dm, "_post", refused)
+    with pytest.raises(dm.DeciderRejected, match="HTTP 401"):
+        dm.ask(CLEF, "a", "t", {}, "v0")
     assert attempts["n"] == 1
 
 
@@ -216,13 +274,13 @@ def test_http_status_maps_to_retry_or_not(
     def raise_http(req: object, timeout: float) -> object:
         raise urllib.error.HTTPError("u", code, "m", {}, io.BytesIO(b"body"))  # type: ignore[arg-type]
 
-    monkeypatch.setattr(clef.urllib.request, "urlopen", raise_http)
-    with pytest.raises(clef.ClefUnavailable) as err:
-        clef._post("https://example.invalid", "t", {})
-    assert isinstance(err.value, clef.ClefRejected) is rejected
+    monkeypatch.setattr(dm.urllib.request, "urlopen", raise_http)
+    with pytest.raises(dm.DeciderUnavailable) as err:
+        dm._post("https://example.invalid", "t", {})
+    assert isinstance(err.value, dm.DeciderRejected) is rejected
 
 
-def test_the_clef_decider_needs_system1(tmp_path: Path) -> None:
+def test_a_decider_flag_needs_system1(tmp_path: Path) -> None:
     from rote import cli
 
     code = cli.main(
@@ -232,7 +290,7 @@ def test_the_clef_decider_needs_system1(tmp_path: Path) -> None:
             "--out",
             str(tmp_path / "o"),
             "--no-system1",
-            "--system1-decider",
+            "--decider",
             "clef",
         ]
     )
@@ -249,13 +307,13 @@ def _sent_headers(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         sent.update({k.lower(): v for k, v in req.header_items()})
         return io.BytesIO(b'{"result": {}}')
 
-    monkeypatch.setattr(clef.urllib.request, "urlopen", capture)
-    clef._post("https://example.invalid", "t", {})
+    monkeypatch.setattr(dm.urllib.request, "urlopen", capture)
+    dm._post("https://example.invalid", "t", {})
     return sent
 
 
 def test_gateway_metadata_tags_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A host meters Clef per compile by filtering gateway logs on this metadata."""
+    """A host meters a decider per compile by filtering gateway logs on this metadata."""
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", '  {"graduation_id":   "g1"} ')
     sent = _sent_headers(monkeypatch)
@@ -283,7 +341,9 @@ def test_no_gateway_settings_send_no_gateway_headers(monkeypatch: pytest.MonkeyP
         ("rote", '{"missing": null}', "string, number or boolean"),
     ],
 )
+@MODELS
 def test_bad_gateway_metadata_fails_before_any_call(
+    model: DecisionModel,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     creds: None,
@@ -297,8 +357,8 @@ def test_bad_gateway_metadata_fails_before_any_call(
     calls = _stub(monkeypatch, {})
     work = tmp_path / "work"
     work.mkdir()
-    with pytest.raises(clef.ClefUnavailable, match=match):
-        system1.prepare(_skill(tmp_path), work, decider="clef")
+    with pytest.raises(dm.DeciderUnavailable, match=match):
+        system1.prepare(_skill(tmp_path), work, decider=model.name)
     assert calls == []
 
 

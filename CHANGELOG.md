@@ -20,12 +20,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   because System-1 does not support incremental re-compilation yet, and the
   compile log says so. The `--system1` flag is gone: there is nothing to opt
   into. `rote analyze` takes the same flags. In cloud mode `--no-system1`
-  and `--system1-decider` are local-only flags. `Compiler`
+  and `--decider` are local-only flags. `Compiler`
   defaults to the same rule (`system1=None`), so library callers such as
   rote-cloud get System-1 too.
 
 ### Fixed
-- **`--system1` binds MCP arguments only from schema names that pass grounding's
+- **System-1 binds MCP arguments only from schema names that pass grounding's
   filter.** It read raw property names from a server's tool schema, so a name
   that is not identifier-shaped became an `mcp.args` key and the skeleton failed
   IR validation: a hostile or sloppy server could break the compile. Such names
@@ -36,12 +36,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   tool's arguments. Only an omitted (null) `args` passes the payload through. A
   hand-written pipeline that relied on `args: {}` as a pass-through must drop the
   key; none of the examples does.
-- **`--system1`: an MCP step's arguments come from the step, never the whole input.**
+- **System-1: an MCP step's arguments come from the step, never the whole input.**
   The skeleton binds the parameters the step states (`Search query: ...`,
   `File ID: ...`, `Tab: ...`) as constants in `mcp.args`, named by the tool's input
   schema when grounding has one, and calls a tool with no arguments rather than
   forwarding the pipeline input when the step states none.
-- **`--system1`: a write to no named system is the pipeline's output.** "Save it to
+- **System-1: a write to no named system is the pipeline's output.** "Save it to
   the shared folder" no longer becomes an external_call stub that raises
   "target system not specified"; a named destination (HubSpot, #channel, a URL,
   a tool, a UI action) still does.
@@ -56,6 +56,23 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   import the emitted runtime cannot satisfy.
 
 ### Added
+- **`--decider jev`: Typesafe's Jev decision model as a System-1 decider,
+  beside Clef.** Both run through one Workers AI client with their own
+  route and frozen thresholds. Jev's thresholds were fitted on the five dev
+  skills and then measured once on the held-out set: kind 0.67 against the
+  rules' 0.49, 3 of 3 gates against 2 of 3, one false gate, about $0.001 a
+  compile. Clef there: kind 0.66, 3 of 3 gates, no false gate, about $0.005.
+  The built-in default stays `rules`. Not yet verified live: an end-to-end
+  compile with `--decider jev`, and Jev's calls tagged with
+  `CLOUDFLARE_AI_GATEWAY_METADATA` in the gateway logs. Jev's own calls ran
+  live in the skeleton measurement, and the shared metadata code is proven
+  live through Clef.
+- **The decider is a layered setting.** `--decider`, `ROTE_DECIDER`, or `decider:` in `rote.yaml` or the user
+  config, with strict validation. `rote init` asks for it and `rote config`
+  shows it. A model decider without `CLOUDFLARE_ACCOUNT_ID` and
+  `CLOUDFLARE_API_TOKEN` fails the compile. A `--decider` flag on a compile
+  that does not run System-1 (`--no-system1`, `--update`) is a usage error.
+  A configured one is skipped for that compile, with a one-line note.
 - **`rote bench --fidelity`: does the compiled pipeline behave like the
   skill?** Each compiled pipeline runs on fixed cases (input, gate answers,
   fixture MCP responses served by a local fastmcp server) and is scored
@@ -65,7 +82,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   References are recorded once with `--record-reference`, and
   `--fidelity-of DIR` scores any compiled dir. Cases and references ship
   for expense-audit and ops-report. See `docs/compile-bench.md`.
-- **`rote compile --system1` (experimental): rules decide, the agent only
+- **System-1 compile: rules decide, the agent only
   writes code.** Before the agent runs, rote decides the whole pipeline
   structure from the skill's text with no inference: steps and node kinds,
   data flow, fan_out, per-item loops, mandatory flags, gates with their
@@ -75,8 +92,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   then gets a short rubric and writes only module implementations, tests
   and judge prompts. rote restores every decision after each of its stops,
   lists any change it proposes without applying it, and writes
-  `compile-report.md` itself from data. The default compile path is
-  unchanged. `rote bench --compile-flag=--system1` benchmarks it. See
+  `compile-report.md` itself from data. It is the default path (see
+  Changed). See
   `docs/design/system1-compile.md`.
 - **`rote bench`, a scored compile benchmark (dev tool, spends tokens).**
   It compiles the example skills, scores each `pipeline.yaml` against the

@@ -496,7 +496,7 @@ class Compiler:
         use_system1 = self.system1 if self.system1 is not None else not update
         if not use_system1 and self.system1_decider != "rules":
             raise CompilerError(
-                f"--system1-decider {self.system1_decider} decides System-1's structure, "
+                f"--decider {self.system1_decider} decides System-1's structure, "
                 "and this compile does not run System-1"
                 + (" (--update uses the full-rubric agent)" if update else "")
             )
@@ -560,7 +560,7 @@ class Compiler:
                         sample=sample,
                         tools=grounding.tools,
                     )
-                except (system1.UnsafeSkillText, system1.ClefUnavailable) as e:
+                except (system1.UnsafeSkillText, system1.DeciderUnavailable) as e:
                     raise CompilerError(str(e)) from e
                 self._emit(
                     "log",

@@ -188,7 +188,7 @@ What generalizes by construction: explicit MANDATORY markers, "for each",
 rule tables, and the conservative defaults. A missing signal falls to a
 listed low-confidence decision, never to a guess.
 
-## `--system1-decider clef`
+## `--decider clef`
 
 Clef (`@cf/cloudflare/clef` on Workers AI, a decision model with no generated
 text) decides each step's kind and whether a person must act. It uses the
@@ -230,6 +230,58 @@ Expense-audit fails in both modes on the input contract: the code reads
 `request["lines"]`, and the skill's input arrives as `period` +
 `submissions`. That is the `grounding` lane's fix (sample input as the
 contract), not a decider difference.
+
+## `--decider jev`
+
+Jev (`typesafe/jev-1.14.0`, Typesafe's decision model on Workers AI) takes
+the same state and typed questions as Clef, so it runs through the same
+client (`src/rote/compiler/system1/decision_model.py`) with its own route
+and thresholds. It is served on the unified `/ai/run` route, which takes
+the model id in the body and the request under `input`, and wraps the
+answer once more (`result.result`).
+
+The phrasings and the ensemble are Clef's, unchanged. Only the two
+thresholds were fitted, on the five dev skills only, by a rule written
+down before the fit (`research/system1-routing/score_deciders.py fit`):
+
+- Kind: the lowest threshold at which Jev's kind choice is one of the
+  step's expected kinds on at least 95% of the dev steps at or above it,
+  with at least 5 such steps. That is 0.85 (21 of 22 steps right).
+- Gate: the threshold with the best gate F1 on dev steps, the higher one
+  on a tie. That is 0.60 (4 of 4 gates, 1 false).
+
+The same rule applied to Clef gives 0.90 and 0.60, not its frozen 0.85
+and 0.50. Clef keeps its frozen values, because changing them now would
+be fitting on the held-out set.
+
+Then one measurement on the held-out set, with both frozen
+(`score_deciders.py score`, skeletons scored with `score_pipeline`):
+
+| split | decider | kind | kind mix | gates found | false gates | mandatory P / R | $ / compile |
+|---|---|---|---|---|---|---|---|
+| dev (5) | rules | 0.64 | 0.78 | 4/4 | 1 | 0.40 / 0.49 | 0 |
+| dev (5) | clef | 0.64 | 0.78 | 4/4 | 2 | 0.39 / 0.45 | 0.0049 |
+| dev (5) | jev | 0.62 | 0.78 | 4/4 | 2 | 0.39 / 0.45 | 0.0011 |
+| held-out (3) | rules | 0.49 | 0.71 | 2/3 | 0 | 0.94 / 0.68 | 0 |
+| held-out (3) | clef | 0.66 | **0.74** | **3/3** | 0 | 1.00 / 0.68 | 0.0038 |
+| held-out (3) | jev | **0.67** | 0.72 | **3/3** | 1 | 1.00 / 0.65 | 0.0008 |
+
+On the held-out skills both models beat the rules on kind and find the gate
+the rules miss. Jev matches Clef on kind at a fifth of the price and adds
+one false gate. On dev neither changes the kinds the rules chose, and each
+adds one false gate (invoice-push's "Prerequisites Check"). Mandatory is a
+rule decision for every decider; it moves only because a model's gate
+removes a node the rules marked mandatory.
+
+These rows differ slightly from the Clef table above (0.66 against 0.64
+held-out kind) because the parser and the argument binding changed since
+(#155 to #160).
+
+The built-in default stays `rules`: no credential, and nothing leaves the
+machine. The held-out numbers argue for a model decider as the default, so
+that is a decision for the user, not this change. The decider is a layered
+setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
+`--decider`), and `rote init` asks for it.
 
 ## Non-generative models, measured
 

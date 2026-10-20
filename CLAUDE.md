@@ -60,7 +60,11 @@ comes from keeping them clean.
   restores every decision after each agent stop. The full rubric above
   runs under `--no-system1` and for `--update`. `Compiler(system1=None)`
   means exactly that rule, and rote-cloud constructs `Compiler` with the
-  default, so flipping it there changes cloud compiles too. See
+  default, so flipping it there changes cloud compiles too. Who decides
+  kinds and gates is the layered `decider` setting: `rules` (built-in, no
+  call), or the `clef` / `jev` decision models through one Workers AI
+  client (`system1/decision_model.py`), each with thresholds fitted on the
+  dev skills and frozen before a held-out run. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
 
 **When you edit this layer:** you are changing how the agent

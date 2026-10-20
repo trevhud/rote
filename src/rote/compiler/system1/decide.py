@@ -21,7 +21,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from rote.compiler.system1.clef import HUMAN_THRESHOLD, KIND_THRESHOLD, Verdict
+from rote.compiler.system1.decision_model import DecisionModel, Verdict, Verdicts
 from rote.compiler.system1.parse import SIGNALS, Constant, SkillParse, Unit, slug
 from rote.compiler.tool_grounding import parameters
 from rote.tool_schema import checkable
@@ -685,22 +685,25 @@ _ROLE_OF_KIND = {
 
 
 def _route(
-    segments: list[tuple[str, str, float, str]], verdict: Verdict
+    segments: list[tuple[str, str, float, str]], verdict: Verdict, model: DecisionModel
 ) -> list[tuple[str, str, float, str]]:
-    """Clef's answers over the rules' segmentation, only where Clef is confident.
+    """The model's answers over the rules' segmentation, only where it is confident.
 
-    * Clef says a person must act (p >= HUMAN_THRESHOLD): one gate.
-    * Clef's kind at or above KIND_THRESHOLD that the rules did not find: one
-      node of that kind (the rules' split is kept when they already include it).
-    * Otherwise the rules decide. Where Clef disagrees below its threshold,
-      the rules' decision drops below REVIEW_BELOW so the report lists it.
+    * The model says a person must act (p >= its human threshold): one gate.
+    * The model's kind at or above its kind threshold that the rules did not
+      find: one node of that kind (the rules' split is kept when they already
+      include it).
+    * Otherwise the rules decide. Where the model disagrees below its
+      threshold, the rules' decision drops below REVIEW_BELOW so the report
+      lists it.
     """
     rule_kinds = [k for _, k, _, _ in segments]
-    if verdict.human >= HUMAN_THRESHOLD:
+    who = model.label
+    if verdict.human >= model.human_threshold:
         if rule_kinds == ["hitl_gate"]:
             return segments
-        return [("gate", "hitl_gate", 0.9, f"Clef: a person must act (p={verdict.human:.2f})")]
-    if verdict.kind_confidence >= KIND_THRESHOLD:
+        return [("gate", "hitl_gate", 0.9, f"{who}: a person must act (p={verdict.human:.2f})")]
+    if verdict.kind_confidence >= model.kind_threshold:
         if verdict.kind in rule_kinds and "hitl_gate" not in rule_kinds:
             return segments
         return [
@@ -708,7 +711,7 @@ def _route(
                 _ROLE_OF_KIND[verdict.kind],
                 verdict.kind,
                 round(verdict.kind_confidence, 2),
-                f"Clef kind (p={verdict.kind_confidence:.2f}) over the rules' {rule_kinds}",
+                f"{who} kind (p={verdict.kind_confidence:.2f}) over the rules' {rule_kinds}",
             )
         ]
     if verdict.kind not in rule_kinds or (rule_kinds == ["hitl_gate"]):
@@ -717,7 +720,7 @@ def _route(
                 role,
                 kind,
                 min(conf, 0.6),
-                f"{rule}; Clef disagrees below its threshold "
+                f"{rule}; {who} disagrees below its threshold "
                 f"({verdict.kind} p={verdict.kind_confidence:.2f}, person p={verdict.human:.2f})",
             )
             for role, kind, conf, rule in segments
@@ -727,11 +730,12 @@ def _route(
 
 def plan(
     skill: SkillParse,
-    verdicts: dict[int, Verdict] | None = None,
+    verdicts: Verdicts | None = None,
     tools: Mapping[tuple[str, str], Any] | None = None,
 ) -> Plan:
-    """Every decision for ``skill``. With ``verdicts`` (``--system1-decider clef``),
-    Clef's confident kind and gate answers override the rules per step. With
+    """Every decision for ``skill``. With ``verdicts`` (``--decider clef`` or
+    ``jev``), the model's confident kind and gate answers override the rules
+    per step. With
     ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
     names come from each tool's input schema."""
     nodes: list[NodePlan] = []
@@ -746,8 +750,8 @@ def plan(
             if u.loop_container
             else _segment(u, skill.tool_registry)
         )
-        if verdicts is not None and not u.loop_container and u.index in verdicts:
-            segments = _route(segments, verdicts[u.index])
+        if verdicts is not None and not u.loop_container and u.index in verdicts.by_unit:
+            segments = _route(segments, verdicts.by_unit[u.index], verdicts.model)
         unit_nodes: list[NodePlan] = []
         for role, kind, conf, rule in segments:
             nid = _ROLE_IDS[role].format(b=_base(u.title, u.section if u.sibling_group else None))

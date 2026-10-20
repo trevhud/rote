@@ -2,8 +2,9 @@
 
 Walks the choices that shape every later command — where compiled
 pipelines run (rote cloud vs a local runtime), which compiler driver
-does the work, and optionally which model — then writes them to a
-config file (:mod:`rote.config`). It is the only interactive entry
+does the work, optionally which model, and who decides the pipeline
+structure on a local compile — then writes them to a config file
+(:mod:`rote.config`). It is the only interactive entry
 point in the CLI besides login itself; everything else must stay
 prompt-free for CI, which is why this lives behind an explicit command
 rather than a first-run hook.
@@ -30,6 +31,14 @@ RUNTIME_MENU: tuple[tuple[str, str], ...] = (
     ("dbos-ts", "durable TypeScript for DBOS Transact (Postgres)"),
     ("inngest", "TypeScript function app that mounts into Node/Next.js"),
     ("python", "plain script, maximum legibility (no HITL gates)"),
+)
+
+
+#: Decider menu: (name, one-line pitch). Rules first: it is the default.
+DECIDER_MENU: tuple[tuple[str, str], ...] = (
+    ("rules", "rules over the skill's text: no call, nothing leaves this machine (default)"),
+    ("clef", "Cloudflare's Clef decision model, where it is confident (~$0.005 a compile)"),
+    ("jev", "Typesafe's Jev decision model, where it is confident (~$0.001 a compile)"),
 )
 
 
@@ -149,6 +158,26 @@ def run_wizard(
     model = input_fn("compiler model [driver default — Sonnet]: ").strip()
     if model:
         values["model"] = model
+
+    # ── 4. System-1 decider ──
+    echo("")
+    echo("Who decides each step's kind, and whether a person must approve it? (local compiles)")
+    for index, (name, pitch) in enumerate(DECIDER_MENU, start=1):
+        echo(f"  {index}. {name:<5} — {pitch}")
+    pick = _ask(
+        "choice [1]: ",
+        input_fn,
+        default="1",
+        valid={str(i) for i in range(1, len(DECIDER_MENU) + 1)},
+    )
+    decider = DECIDER_MENU[int(pick) - 1][0]
+    if decider != "rules":
+        values["decider"] = decider
+        echo(
+            "  it sends each step's text to Workers AI on your Cloudflare account: set "
+            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN before compiling (a compile "
+            "without them fails rather than using the rules)"
+        )
 
     # ── Write ──
     target = (cwd or Path.cwd()) / "rote.yaml" if project else user_config_path()
