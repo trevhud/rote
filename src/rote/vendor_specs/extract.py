@@ -282,6 +282,10 @@ class _Scope:
         binds a resource, so ``t.list(...)`` is ``users.threads.list``.
         """
         out: dict[str, tuple[tuple[str, str], tuple[str, ...]]] = {}
+        # ``r = svc.files().list()`` binds a request when ``r`` is later run
+        # (``r.execute()``) or paged (``svc.files().list_next(r, resp)``):
+        # a zero-argument call reads like a resource step, so its use decides.
+        requests = self._request_names()
         ordered = sorted(
             (n for n in self.nodes if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)),
             key=lambda n: n.lineno,
@@ -312,9 +316,21 @@ class _Scope:
                     bound = (base, (*prefix, *reversed(chain)))
             if bound is not None:
                 for t in node.targets:
-                    if isinstance(t, ast.Name):
+                    if isinstance(t, ast.Name) and t.id not in requests:
                         out[t.id] = bound
         return out
+
+    def _request_names(self) -> set[str]:
+        """Names some call runs (``name.execute()``) or pages (``*_next(name, ...)``)."""
+        names: set[str] = set()
+        for n in self.nodes:
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            if n.func.attr == "execute" and isinstance(n.func.value, ast.Name):
+                names.add(n.func.value.id)
+            elif _is_next_page(n) and isinstance(n.args[0], ast.Name):
+                names.add(n.args[0].id)
+        return names
 
     def _root(
         self, node: ast.expr, bound: dict[str, tuple[tuple[str, str], tuple[str, ...]]]
@@ -618,6 +634,20 @@ class _Scope:
                     entry = (p[1], read.lineno)
                     if entry not in reads:
                         reads.append(entry)
+
+
+def _is_next_page(call: ast.Call) -> bool:
+    """googleapiclient's ``<method>_next(previous_request, previous_response)``.
+
+    Discovery method names are camelCase, so a ``_next`` suffix is only ever
+    the client's generated pagination helper.
+    """
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr.endswith("_next")
+        and len(call.args) == 2
+        and not call.keywords
+    )
 
 
 class _Bindings(Generic[_T]):
