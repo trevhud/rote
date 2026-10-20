@@ -643,6 +643,11 @@ def test_a_bench_job_costs_the_agent_run_plus_the_decision_calls(tmp_path: Path)
         ("Fetch the rates from https://api.example.com/v1/rates.", True),
         ("Pull this week's tickets from the Zendesk API.", True),
         ("Look up the customer in Salesforce.", True),
+        ("Pull the open deals from HubSpot.", True),
+        # Only the named-source rule catches this one: the parser has no fetch signal.
+        ("Download the invoices through Stripe.", True),
+        ("Load this week's invoices via Stripe.", True),
+        ("Read the contact list via the Clearbit enrichment service.", True),
         # No named source: the rules' default, not a call.
         ("Load the last 7 days of tickets.", False),
         ("Classify each deal by stage.", False),
@@ -657,3 +662,35 @@ def test_a_read_from_a_named_api_is_a_call(text: str, fetches: bool, tmp_path: P
     parsed = parse_skill(skill)
     kinds = [kind for _, kind, _, _ in unit_segments(parsed)[0]]
     assert ("external_call" in kinds) is fetches
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A capital that names a part of the skill, a role, or a label in the data.
+        "Read the summary from Step 3.",
+        "Look up each line's rate in the FX table.",
+        "Retrieve the batch the Controller approved.",
+        "Load the lines and group them by Employee.",
+        "Use the rows you read in Phase 2.",
+        "Pull the totals in the Q3 column.",
+        # The source must follow the read verb in the same sentence.
+        "Read the error log lines. The API latency doubled overnight.",
+        "Read `references/enrich.md` first. Then enrich via ZoomInfo in batches.",
+    ],
+)
+def test_a_capital_that_is_not_a_source_is_not_a_named_read(text: str) -> None:
+    from rote.compiler.system1.decide import _reads_a_named_api
+
+    assert not _reads_a_named_api(text)
+
+
+def test_a_named_read_never_adds_a_second_call(tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: tiny\ndescription: x\n---\n\n# Tiny\n\n## Step 1: Sync\n\n"
+        "Query the AniList GraphQL API and post the summary to #anime.\n"
+    )
+    kinds = [kind for _, kind, _, _ in unit_segments(parse_skill(skill))[0]]
+    assert kinds.count("external_call") == 1
