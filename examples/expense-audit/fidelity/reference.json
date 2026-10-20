@@ -235,8 +235,11 @@
         "coverage": {
           "covered": 10,
           "fields": 13,
+          "leaf_rate": 0.6667,
+          "leaves": 18,
           "low": false,
           "rate": 0.7692,
+          "stable_leaves": 12,
           "uncovered_layout_disagreements": [],
           "uncovered_missing_in_some_runs": [],
           "uncovered_value_disagreements": [
@@ -566,8 +569,11 @@
         "coverage": {
           "covered": 13,
           "fields": 13,
+          "leaf_rate": 0.8333,
+          "leaves": 18,
           "low": false,
           "rate": 1.0,
+          "stable_leaves": 15,
           "uncovered_layout_disagreements": [],
           "uncovered_missing_in_some_runs": [],
           "uncovered_value_disagreements": []
@@ -735,8 +741,11 @@
         "coverage": {
           "covered": 13,
           "fields": 13,
+          "leaf_rate": 1.0,
+          "leaves": 13,
           "low": false,
           "rate": 1.0,
+          "stable_leaves": 13,
           "uncovered_layout_disagreements": [],
           "uncovered_missing_in_some_runs": [],
           "uncovered_value_disagreements": []

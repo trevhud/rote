@@ -116,19 +116,25 @@ def layout_path(path: str) -> str:
 
 
 def flatten_layout(obj: Any) -> dict[str, Value]:
-    """:func:`flatten`, keyed by :func:`layout_path`.
+    """:func:`flatten`, keyed by :func:`layout_path` where that is safe.
 
-    Two leaves that collapse onto one path merge into a set of their
-    values, so a run that repeats a total in two sections still agrees
-    with a run that reports it once.
+    A leaf collapses onto its layout path only when nothing else in the run
+    collapses onto the same path with a different value. Two leaves that
+    differ (``decisions.approved.ids`` and ``decisions.rejected.ids`` both
+    collapse to ``decisions.ids``) keep their full paths: merging them
+    would make a run that swapped approved and rejected agree with one
+    that did not. Two leaves with the same value (a total repeated in two
+    sections) are one fact and collapse.
     """
-    merged: dict[str, list[Value]] = {}
+    groups: dict[str, dict[str, Value]] = {}
     for path, value in flatten(obj).items():
-        merged.setdefault(layout_path(path), []).append(value)
+        groups.setdefault(layout_path(path), {})[path] = value
     out: dict[str, Value] = {}
-    for path, values in merged.items():
-        unique = {_key(v): v for v in values}
-        out[path] = values[0] if len(unique) == 1 else {"set": [unique[k] for k in sorted(unique)]}
+    for layout, members in groups.items():
+        if len({_key(v) for v in members.values()}) == 1:
+            out[layout] = next(iter(members.values()))
+        else:
+            out.update(members)
     return out
 
 
@@ -326,6 +332,13 @@ def stable_reference(
         "covered": len(covered),
         "rate": rate,
         "low": rate is not None and rate < LOW_COVERAGE,
+        # "covered" means at least one stable leaf; a field with one stable
+        # leaf of twenty is covered. The leaf ratio says how much of it.
+        "leaves": len(stable) + len(unstable),
+        "stable_leaves": len(stable),
+        "leaf_rate": (
+            round(len(stable) / (len(stable) + len(unstable)), 4) if stable or unstable else None
+        ),
         "uncovered_value_disagreements": value,
         "uncovered_layout_disagreements": layout,
         "uncovered_missing_in_some_runs": missing,

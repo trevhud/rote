@@ -547,8 +547,11 @@
         "coverage": {
           "covered": 13,
           "fields": 13,
+          "leaf_rate": 1.0,
+          "leaves": 15,
           "low": false,
           "rate": 1.0,
+          "stable_leaves": 15,
           "uncovered_layout_disagreements": [],
           "uncovered_missing_in_some_runs": [],
           "uncovered_value_disagreements": []
@@ -848,8 +851,11 @@
         "coverage": {
           "covered": 13,
           "fields": 13,
+          "leaf_rate": 1.0,
+          "leaves": 14,
           "low": false,
           "rate": 1.0,
+          "stable_leaves": 14,
           "uncovered_layout_disagreements": [],
           "uncovered_missing_in_some_runs": [],
           "uncovered_value_disagreements": []

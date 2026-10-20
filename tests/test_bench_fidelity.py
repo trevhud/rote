@@ -21,6 +21,7 @@ from rote.bench.fidelity_score import (
     field_reproduced,
     flatten,
     index_trace,
+    layout_path,
     normalize,
     score_case,
     stable_reference,
@@ -104,6 +105,59 @@ def test_the_same_number_nested_differently_is_stable() -> None:
     ref = stable_reference(runs, contract=["report", "ids"])
     assert ref["fields"] == {"report.active_sites": 3.0, "ids": {"set": ["a"]}}
     assert ref["coverage"]["rate"] == 1.0
+
+
+def test_runs_that_swap_two_same_named_leaves_are_not_stable() -> None:
+    """approved and rejected both end in `ids`; collapsing them to
+    `decisions.ids` would make a run that swapped them agree with one that
+    did not. The same for counts."""
+    runs = [
+        _run(
+            {
+                "decisions": {
+                    "approved": {"ids": ["E1", "E2"], "n": 2},
+                    "rejected": {"ids": ["E3"], "n": 1},
+                }
+            }
+        ),
+        _run(
+            {
+                "decisions": {
+                    "approved": {"ids": ["E3"], "n": 1},
+                    "rejected": {"ids": ["E1", "E2"], "n": 2},
+                }
+            }
+        ),
+    ]
+    ref = stable_reference(runs, contract=["decisions"])
+    assert ref["fields"] == {}
+    assert ref["coverage"]["covered"] == 0
+    assert ref["coverage"]["rate"] == 0.0
+    assert ref["coverage"]["stable_leaves"] == 0
+    # The same runs without the swap are stable, under the full paths.
+    same = stable_reference([runs[0], runs[0]], contract=["decisions"])
+    assert same["fields"]["decisions.approved.ids"] == {"set": ["e1", "e2"]}
+    assert same["fields"]["decisions.rejected.ids"] == {"set": ["e3"]}
+
+
+def test_a_record_list_marker_survives_the_layout_collapse() -> None:
+    """A column of a list of records is not a single value of the same name."""
+    assert layout_path("report.queue[].expense_id") == "report[].expense_id"
+    assert layout_path("report.section.summary.expense_id") == "report.expense_id"
+    assert layout_path("queue[].expense_id") == "queue[].expense_id"
+    runs = [
+        _run({"r": {"queue": [{"id": "A"}, {"id": "B"}]}, "s": {"x": {"id": "A"}}}),
+        _run({"r": {"rows": [{"id": "B"}, {"id": "A"}]}, "s": {"y": {"id": "A"}}}),
+    ]
+    ref = stable_reference(runs, contract=["r", "s"])
+    assert ref["fields"] == {"r[].id": {"set": ["a", "b"]}, "s.id": "a"}
+
+
+def test_coverage_reports_the_leaf_ratio_beside_fields_covered() -> None:
+    runs = [_run({"f": {"a": 1, "b": 2, "c": 3}}), _run({"f": {"a": 1, "b": 9, "c": 8}})]
+    cov = stable_reference(runs, contract=["f"])["coverage"]
+    assert (cov["covered"], cov["fields"]) == (1, 1)  # "covered" by one leaf...
+    assert (cov["stable_leaves"], cov["leaves"], cov["leaf_rate"]) == (1, 3, 0.3333)
 
 
 def test_coverage_separates_values_layout_and_absence() -> None:

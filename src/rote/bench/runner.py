@@ -494,8 +494,11 @@ def _coverage_line(case_id: str, ref: dict[str, Any]) -> str:
             if names
         ]
         flag = "  LOW: " + "; ".join(parts)
-    counts = f"{cov.get('covered')}/{cov.get('fields')}"
-    return f"reference {case_id}: {counts} contract fields stable{flag}"
+    counts = (
+        f"{cov.get('covered')}/{cov.get('fields')} contract fields with a stable leaf, "
+        f"{cov.get('stable_leaves')}/{cov.get('leaves')} leaves stable"
+    )
+    return f"reference {case_id}: {counts}{flag}"
 
 
 def coverage_lines(fidelity: dict[str, Any]) -> list[str]:

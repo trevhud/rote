@@ -317,8 +317,23 @@ they agree on the values but put them in different places, or some runs
 leave it out. Values compare under layout-normalized paths
 (`report.kpi.active_sites` and `report.header.active_sites` are both
 `report.active_sites`), so nesting one number differently is not a
-disagreement. A case needs at least two successful agent runs: with one,
-every field agrees with itself and nothing is stable.
+disagreement. A leaf collapses only when nothing else in the run lands on
+the same path with a different value: `decisions.approved.ids` and
+`decisions.rejected.ids` keep their full paths, so two runs that swapped
+them stay a disagreement. "Covered" means a field has at least one stable
+leaf, so each case also reports its stable leaves out of all leaves. A
+case needs at least two successful agent runs: with one, every field
+agrees with itself and nothing is stable.
+
+**Fidelity runs code on the host, unsandboxed.** The pipeline side runs
+the emitted app with the compile's `extracted/` modules, and when a run
+fails, `failure_site` imports the failing node's implementation and calls
+it once more to find the line that raised. Both execute agent-written
+code with the bench process's permissions, outside the OS sandbox
+`rote compile` uses for generated tests. That is acceptable for the
+repo's own examples, which are the only skills fidelity runs on. Running
+it on an untrusted skill's compile needs that sandbox around both the
+pipeline run and the replay first.
 
 ### What fidelity does and does not measure
 
