@@ -181,8 +181,10 @@ def _probe_shapes(
         return None
     probed = [b for b in step["bindings"] if b[1] == "node" and b[2] in unrecorded and b[3] is None]
     others = [b for b in step["bindings"] if b not in probed]
-    if not probed or any(b[1] == "node" and b[2] not in results for b in others):
+    if not probed:
         return None
+    # An other input whose node did not run cannot resolve (KeyError below):
+    # such a consumer is never called, so it gets no verdict.
     try:
         payload = {}
         for binding in others:

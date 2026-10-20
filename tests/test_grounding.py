@@ -761,6 +761,74 @@ def test_a_declared_output_shape_is_the_only_one_probed(tmp_path: Path) -> None:
     assert finding.kind == "prefix_shape_assumption"
 
 
+_TWO_UPSTREAMS_IR = """\
+name: ops
+input:
+  type: Day
+  required: [report_date]
+nodes:
+  - id: search
+    kind: external_call
+    description: search mail
+    impl: extracted/mail.py:search
+    mcp: {server: gmail, tool: search_threads}
+    inputs:
+      query: pipeline.input.report_date
+  - id: other
+    kind: pure_function
+    description: a step that does not run on the sample
+    impl: extracted/mail.py:other
+    inputs:
+      day: pipeline.input.report_date
+  - id: count
+    kind: pure_function
+    description: count threads
+    impl: extracted/mail.py:count
+    constants: {cap: 5}
+    inputs:
+      found: search.output
+      prior: other.output
+edges:
+  - {from: search, to: count}
+  - {from: other, to: count}
+entry_nodes: [search, other]
+exit_nodes: [count]
+"""
+
+
+def _two_upstream_run(tmp_path: Path, other_body: str):
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": _TWO_UPSTREAMS_IR,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def other(day):\n    {other_body}\n\n"
+            "def count(found, cap, prior=None):\n"
+            "    return {'n': min(cap, len(found.get('threads', [])))}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    return run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+
+
+def test_a_consumer_is_probed_only_when_its_other_inputs_ran(tmp_path: Path) -> None:
+    """The probe passes made-up data for the unrecorded result only. A
+    consumer whose other upstream did not run is never called, even when a
+    default would let it run (and fail on the dict read, falsely)."""
+    ran = _two_upstream_run(tmp_path / "ran", "return {'ok': True}")
+    # Its constant is passed too: without it the call fails on the signature.
+    assert [f.kind for f in ran.findings] == ["prefix_shape_assumption"]
+    stub = _two_upstream_run(tmp_path / "stub", "raise NotImplementedError('later')")
+    assert stub.steps["other"]["status"] != "ok"
+    assert stub.findings == [] and stub.steps["count"]["status"] == "not_reached"
+
+
 def test_a_wrapped_text_result_is_probed_as_text(tmp_path: Path) -> None:
     """FastMCP wraps a string result as {"result": ...}; the helper unwraps it."""
     wrapped = {
