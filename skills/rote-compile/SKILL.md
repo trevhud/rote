@@ -168,10 +168,6 @@ compiles were sent back for. Get them right as you write each module:
   paraphrase of it.
 - Never shorten a citation below 4 words of prose per fragment. Quote
   the sentence, not the label.
-- Copy the skill's characters, never retype them: keep its quote marks
-  and parentheticals, and drop words only with `...`. A line that is all
-  bold (`**1. Dock Log (Drive MCP, read_file)**`) is a heading and
-  cannot be cited.
 - Close a multi-line `# skill: "` quote with a `"` at the end of its last
   comment line.
 - Anything a reviewer must check that the skill does not state is a
