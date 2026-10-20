@@ -169,7 +169,24 @@ def test_zod_object_strictness_follows_additional_properties() -> None:
 def test_zod_object_without_properties_is_a_free_form_record() -> None:
     """Pydantic renders a property-less object as dict[str, Any]; an empty
     strict object would reject every key it carries."""
-    assert json_schema_to_zod({"type": "object"}) == "z.record(z.string(), z.unknown())"
+    # Values are JSON, not unknown: Rpc.Serializable rejects unknown.
+    assert json_schema_to_zod({"type": "object"}) == "z.record(z.string(), JSON_VALUE)"
+
+
+def test_zod_untyped_schema_is_any_json_value() -> None:
+    assert json_schema_to_zod({}) == "JSON_VALUE"
+    assert json_schema_to_zod({"description": "anything"}) == "JSON_VALUE"
+
+
+def test_signature_modules_declare_json_value_only_when_used() -> None:
+    from rote.adapters._ts_common import JSON_VALUE_ZOD_TS, json_value_zod_lines
+
+    assert json_value_zod_lines("z.object({})", "z.string()") == []
+    lines = json_value_zod_lines("z.string()", "z.array(z.record(z.string(), JSON_VALUE))")
+    assert "\n".join(lines).strip() == JSON_VALUE_ZOD_TS.strip()
+    # Spelled out, never recursive: step.do's Rpc.Serializable cannot
+    # instantiate a recursive type (TS2589).
+    assert "Json4[]" in JSON_VALUE_ZOD_TS and "JsonValue[]" not in JSON_VALUE_ZOD_TS
 
 
 def test_zod_converts_array() -> None:

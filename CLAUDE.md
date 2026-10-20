@@ -1013,6 +1013,15 @@ precisely because it turns off tsc's field-name check, so an IR field the
 user's type names differently becomes `undefined` at run time instead of
 a TS7053.
 
+The same constraint bites judges, whose output type comes from Zod. A
+free-form object (`{type: object}` with no properties) and an untyped
+field used to be `z.record(z.string(), z.unknown())` and `z.unknown()`,
+so a judge returning one failed `step.do` with TS2769 (deal-monitor,
+found by `rote bench`). They are `JSON_VALUE` now (`JSON_VALUE_ZOD_TS`, a
+`z.custom` over a JSON type spelled out five levels deep, declared in a
+signature module only when used), the same non-recursive shape agent-loop
+outputs use, because a recursive type fails TS2589 there.
+
 Checking the stubs compile proves nothing here.
 `tests/test_ts_typed_impls_e2e.py` replaces them with typed
 implementations of every output shape and runs `tsc` on all three
