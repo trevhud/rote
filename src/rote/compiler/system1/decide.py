@@ -904,8 +904,8 @@ def _reads_a_named_api(text: str) -> bool:
 #: "via the Zendesk ...". Only after a source preposition, so a capitalized
 #: word elsewhere ("the batch the Controller approved") is never a source.
 _SOURCE_NAME = re.compile(
-    r"\b(?:from|in|via|through|using)\s+(?:the\s+|their\s+|our\s+)?"
-    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([a-z]+))?"
+    r"\b(?:from|in|via|through|using)\s+(the\s+|their\s+|our\s+)?"
+    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([A-Za-z]+))?"
 )
 #: Capitalized words that name a part of the skill or a role, never a product.
 _NOT_PRODUCTS = frozenset(
@@ -918,11 +918,40 @@ _IN_DATA = frozenset(["table", "tab", "column", "row", "rows", "field", "list", 
 
 def _read_source_product(text: str) -> bool:
     for m in _SOURCE_NAME.finditer(text):
-        first = m.group(1).split()[0].upper()
-        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or m.group(2) in _IN_DATA:
+        article, name, after = m.group(1), m.group(2), (m.group(3) or "").lower()
+        first = name.split()[0].upper()
+        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or after in _IN_DATA:
+            continue
+        # After "the", a capitalized word is a role or a label ("from the
+        # Controller") unless a system noun follows it ("the Zendesk API").
+        if article and after not in _SYSTEM_NOUNS:
             continue
         return True
     return False
+
+
+#: Nouns that make "the <Name> <noun>" a system.
+_SYSTEM_NOUNS = frozenset(
+    [
+        "api",
+        "apis",
+        "portal",
+        "app",
+        "database",
+        "server",
+        "endpoint",
+        "inbox",
+        "channel",
+        "crm",
+        "workspace",
+        "account",
+        "service",
+        "site",
+        "dashboard",
+        "sheet",
+        "drive",
+    ]
+)
 
 
 def _through_gates(sources: list[str], by_id: Mapping[str, NodePlan]) -> list[str]:

@@ -109,12 +109,23 @@ _PERSON = (
 #: name such as Zendesk) or a word for a service. "From the table" or "in the
 #: row" is data the step already has, and the skill's own references are not
 #: a service either.
-_SOURCE = (
-    r"(?!(?:the\s+)?\[?references/|\w+\.md\b)(?:the\s+|a\s+|an\s+|our\s+|your\s+)?"
-    r"(?:[#@][\w-]+|(?-i:[A-Z])[\w.-]*"
-    r"|(?:[\w-]+\s+){0,2}(?:portal|api|database|db|server|endpoint|inbox|channel|crm|system"
+_SYSTEM_NOUN = (
+    r"(?:portal|api|database|db|server|endpoint|inbox|channel|crm|system"
     r"|service|site|website|account|bucket|drive|feed|spreadsheet|sheet|folder|warehouse"
-    r"|repository|repo|queue|mailbox|calendar|store)s?\b)"
+    r"|repository|repo|queue|mailbox|calendar|store)s?\b"
+)
+#: Where a read comes from, when it is outside the pipeline: a #channel or
+#: @handle, a product named bare ("from HubSpot", "in Salesforce"), or a
+#: system noun ("the Zendesk API", "the shared inbox"). A capitalized word
+#: after "the" is a role or a label ("the Controller", "the FX table") unless
+#: a system noun follows it, and a part of the skill ("Step 3", "Phase 2") is
+#: never a source: those reads stay inside the pipeline.
+_SOURCE = (
+    r"(?!(?:the\s+)?\[?references/|\w+\.md\b)"
+    r"(?:(?:the\s+|a\s+|an\s+|our\s+|your\s+)?[#@][\w-]+"
+    r"|(?:our\s+|your\s+)?(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)(?-i:[A-Z])[\w.-]*"
+    r"(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
+    rf"|(?:the\s+|a\s+|an\s+|our\s+|your\s+)?(?:[\w-]+\s+){{0,2}}{_SYSTEM_NOUN})"
 )
 
 SIGNALS: dict[str, re.Pattern[str]] = {

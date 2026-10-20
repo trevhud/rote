@@ -472,3 +472,32 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
     step2 = [n for n in doc["nodes"] if n["source"]["section"].startswith("Step 2")]
     # "Clear All Existing Filter Pills": click the x on each pill. Nothing is computed.
     assert [n["kind"] for n in step2] == ["external_call"]
+
+
+@pytest.mark.parametrize(
+    ("text", "fetch"),
+    [
+        # A read of something inside the pipeline is not a call.
+        ("Read the summary from Step 3.", False),
+        ("Look up each line's rate in the FX table.", False),
+        ("Use the rows you read in Phase 2.", False),
+        ("Load the request from the Controller.", False),
+        # A read from outside is.
+        ("Pull open tickets from Zendesk.", True),
+        ("Read the 50 most recent messages from #deal-intake.", True),
+        ("Look up the customer in Salesforce.", True),
+        ("Pull this week's tickets from the Zendesk API.", True),
+        ("Read the attendees from the shared inbox.", True),
+    ],
+)
+def test_the_fetch_signal_needs_a_source_outside_the_pipeline(
+    text: str, fetch: bool, tmp_path: Path
+) -> None:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        f"---\nname: t\ndescription: x\n---\n\n# T\n\n## Step 1: Get data\n\n{text}\n"
+    )
+    assert bool(parse_skill(skill).units[0].signals.get("fetch")) is fetch
