@@ -13,6 +13,7 @@ import asyncio
 import json
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -219,6 +220,33 @@ def test_discovery_reads_the_fixture_servers_own_tools_list(
             assert schema.declared
             assert schema.input_schema["properties"] == defn["parameters"]["properties"]
             assert schema.input_schema.get("required") == defn["parameters"].get("required")
+            # The fixtures declare no result shape: the prefix must probe both.
+            assert schema.output_schema is None
+
+
+def test_discovery_keeps_a_declared_output_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import rote.mcp._runtime_helper as helper
+
+    tool = SimpleNamespace(
+        name="search_threads",
+        input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+        output_schema={"type": "object", "properties": {"threads": {"type": "array"}}},
+    )
+
+    class _Client:
+        async def list_tools(self) -> list[Any]:
+            return [tool]
+
+    @asynccontextmanager
+    async def fake_client(name: str, url: Any) -> Any:
+        yield _Client()
+
+    monkeypatch.setattr(helper, "mcp_client", fake_client)
+    found = asyncio.run(discover(["gmail"]))
+    assert found[("gmail", "search_threads")].output_schema == tool.output_schema
 
 
 def test_an_unreachable_server_is_skipped_with_its_reason(

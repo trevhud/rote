@@ -445,3 +445,70 @@ def test_the_step_after_a_gate_also_reads_what_the_gate_saw(tmp_path: Path) -> N
             d.rule for d in n.decisions if d.field == "inputs"
         )
     assert all(by_id[g].kind != "hitl_gate" for g in gate_reads)
+
+
+def test_judge_inputs_accept_what_their_upstream_really_returns(tmp_path: Path) -> None:
+    """Emit deal-monitor's System-1 judges and validate real-shaped inputs.
+
+    `score_new_opportunities_judge` reads the fanned classify judge's result,
+    which binds as a LIST. Typing an upstream result as an object refused it.
+    The fanned judge gets one element, whatever its shape."""
+    import importlib.util
+    import sys
+
+    from rote.adapters import get_adapter
+    from rote.compiler import system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    out = tmp_path / "out"
+    get_adapter("dbos", extracted_source_dir=work).emit(pipeline, out)
+    request = {"report_date": "2026-10-19"}
+    cases = {
+        # fanned over a thread list: one thread, of any shape
+        "classify_warehouse_thread_pipeline_judge": {
+            "search_gmail_outbound_quoting": {"id": "t1", "subject": "PO 4411"},
+        },
+        # the fanned judge's results: a list
+        "score_new_opportunities_judge": {
+            "classify_warehouse_thread_pipeline_judge": [{"verdict": "a"}, {"verdict": "b"}],
+        },
+    }
+    sys.path.insert(0, str(out))
+    try:
+        for judge, inputs in cases.items():
+            pascal = "".join(w.title() for w in judge.split("_"))
+            path = out / "signatures" / f"{judge}.py"
+            spec = importlib.util.spec_from_file_location(f"sig_{judge}", path)
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module  # pydantic resolves annotations through it
+            spec.loader.exec_module(module)
+            model = getattr(module, f"{pascal}Input")
+            model.model_validate({"request": request, **inputs})
+            # A string result validates too: nothing typed it yet.
+            other = {k: "plain text" for k in inputs}
+            model.model_validate({"request": request, **other})
+    finally:
+        sys.path.remove(str(out))
+
+
+def test_a_list_a_judge_reads_whole_is_an_array(tmp_path: Path) -> None:
+    from rote.compiler.system1 import decide
+    from rote.compiler.system1.parse import parse_skill
+    from rote.compiler.system1.skeleton import judge_input_schema
+
+    unit = parse_skill(EXAMPLES / "deal-monitor" / "skill").units[0]
+    node = decide.NodePlan("j", "llm_judge", "judge", unit)
+    node.inputs = {"request": "pipeline.input", "rows": "fetch.output.items", "prev": "x.output"}
+    props = judge_input_schema(node, {"type": "object"})["properties"]
+    assert props["rows"]["type"] == "array"
+    assert "type" not in props["prev"]
+    node.fan_out, node.element_source = True, "fetch"
+    node.inputs["others"] = "other.output.items"
+    props = judge_input_schema(node, {"type": "object"})["properties"]
+    assert "type" not in props["rows"]  # the fanned list: one element
+    assert props["others"]["type"] == "array"  # another list, read whole

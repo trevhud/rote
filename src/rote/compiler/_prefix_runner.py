@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -139,11 +140,26 @@ def _mcp_result(step: dict[str, Any], arguments: dict[str, Any]) -> Any:
     return _MISSING
 
 
+#: Probe values by shape: what the finding calls it, and a fresh empty value.
+_SHAPES: dict[str, tuple[str, Any]] = {
+    "list": ("a JSON list", list),
+    "text": ("text", str),
+    "object": ("an object", dict),
+}
+#: The errors that mean code treated a list or a string as a dict. Any other
+#: AttributeError or TypeError is about something else and is no verdict.
+_DICT_ASSUMPTION = re.compile(
+    r"'(?:list|str)' object has no attribute '(?:get|keys|items|values|setdefault|pop)'"
+    r"|list indices must be integers or slices, not str"
+    r"|string indices must be integers"
+)
+
+
 def _probe_shapes(
     step: dict[str, Any],
     sample: dict[str, Any],
     results: dict[str, Any],
-    unrecorded: set[str],
+    unrecorded: dict[str, list[str]],
     root: Path,
 ) -> dict[str, Any] | None:
     """Run a code step that reads an unrecorded MCP result whole, on a list and on text.
@@ -176,14 +192,18 @@ def _probe_shapes(
         fn = getattr(importlib.import_module(step["module"]), step["symbol"])
     except (Exception, SystemExit):  # noqa: BLE001 (no verdict on made-up data)
         return None
-    for shape, empty in (("a JSON list", []), ("text", "")):
+    shapes = [s for s in _SHAPES if any(s in unrecorded[b[2]] for b in probed)]
+    for shape in shapes:
+        label, empty = _SHAPES[shape]
         try:
-            _call(fn, payload | {b[0]: empty for b in probed} | (step["constants"] or {}))
+            _call(fn, payload | {b[0]: empty() for b in probed} | (step["constants"] or {}))
         except (AttributeError, TypeError) as e:
+            if not _DICT_ASSUMPTION.search(str(e)):
+                continue
             return {
                 "status": "shape_assumption",
                 "upstream": sorted({b[2] for b in probed}),
-                "shape": shape,
+                "shape": label,
                 "type": type(e).__name__,
                 "message": str(e)[:300],
                 "at": _location(e, root),
@@ -197,8 +217,8 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
     sample = plan["sample"]
     results: dict[str, Any] = {}
     report: dict[str, Any] = {}
-    #: MCP nodes that ran with no recorded result: their shape is unknown.
-    unrecorded: set[str] = set()
+    #: MCP nodes that ran with no recorded result, and the shapes to probe.
+    unrecorded: dict[str, list[str]] = {}
     for step in plan["steps"]:
         node_id = step["id"]
         if step["kind"] == "skip":
@@ -224,7 +244,7 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 output = _mcp_result(step, arguments)
                 if output is _MISSING:
                     report[node_id] = {"status": "no_recording", "arguments": arguments}
-                    unrecorded.add(node_id)
+                    unrecorded[node_id] = step.get("probe_shapes") or ["list", "text"]
                     continue
                 results[node_id] = output
                 report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}

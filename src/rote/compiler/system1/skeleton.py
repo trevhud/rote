@@ -54,20 +54,26 @@ def _description(n: NodePlan) -> str:
 
 def judge_input_schema(n: NodePlan, request_schema: dict[str, Any]) -> dict[str, Any]:
     """A judge's input schema, decided from its ``inputs``: one required
-    property per input, ``request`` typed as the pipeline input, an upstream
-    output as an object, and a fanned element as anything (its shape is the
-    upstream node's, which code does not know yet).
+    property per input. ``request`` is the pipeline input. A list it reads
+    whole (``<node>.output.items`` on a judge that does not fan out over it)
+    is an array. Everything else is untyped: an upstream result's shape is
+    whatever that node's code returns, which nothing has decided yet, and a
+    fanned element is one item of it. Typing those ``object`` refused a
+    judge fed a list or a string.
 
     The IR requires a judge's inputs to satisfy this schema, so its property
     set is exactly the node's input names."""
     props: dict[str, Any] = {}
     for param, ref in n.inputs.items():
+        source = ref.split(".", 1)[0]
         if ref == "pipeline.input":
             props[param] = request_schema
-        elif ref.endswith(".output.items"):
+        elif ref.endswith(".output.items") and n.fan_out and n.element_source == source:
             props[param] = {"description": f"one element of {ref.removesuffix('.items')}"}
+        elif ref.endswith(".output.items"):
+            props[param] = {"type": "array", "description": f"the list {ref}"}
         else:
-            props[param] = {"type": "object", "description": f"the result of {ref}"}
+            props[param] = {"description": f"the result of {ref}"}
     return {"type": "object", "properties": props, "required": list(props)}
 
 

@@ -602,6 +602,19 @@ def test_a_result_that_is_not_plain_json_fails_by_path(tmp_path: Path) -> None:
     assert run.steps["summary"]["status"] == "not_reached"
 
 
+def test_a_non_string_key_is_not_plain_json(tmp_path: Path) -> None:
+    """JSON turns 1 into "1": the result a later step reads is not the one returned."""
+    root = _prefix_root(tmp_path)
+    checks = root / "extracted" / "checks.py"
+    checks.write_text(
+        checks.read_text().replace(
+            'return {"flagged": flagged, "cap": 25}', 'return {"flagged": {1: flagged}, "cap": 25}'
+        )
+    )
+    [finding] = _run(root).findings
+    assert finding.kind == "prefix_not_json" and "result.flagged has a int key 1" in finding.message
+
+
 def test_a_fanned_input_that_is_not_a_list_fails(tmp_path: Path) -> None:
     run = _run(_prefix_root(tmp_path), {**_ROWS, "submissions": {"E1": {}}})
     kinds = {f.node_id: f.kind for f in run.findings}
@@ -693,6 +706,130 @@ def test_a_consumer_that_assumes_a_dict_is_probed_with_a_list(
         assert f"count crashes when search returns {flagged}:" in run.findings[0].message
     else:
         assert kinds == [] and run.steps["count"]["status"] == "not_reached"
+
+
+def _probe_run(tmp_path: Path, count_body: str, output_schema: dict | None = None):
+    from rote.compiler.tool_grounding import ToolSchema
+
+    ir = _MCP_IR.replace("threads: search.output.threads", "found: search.output")
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def count(found):\n    {count_body}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    tools = {
+        ("gmail", "search_threads"): ToolSchema(
+            "gmail",
+            "search_threads",
+            {"type": "object", "properties": {"query": {"type": "string"}}},
+            "test",
+            True,
+            output_schema,
+        )
+    }
+    return run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+        tools=tools,
+    )
+
+
+def test_a_declared_output_shape_is_the_only_one_probed(tmp_path: Path) -> None:
+    """A list-only consumer is right when the tool declares an array result."""
+    lists_only = "return {'n': len([t for t in found if t])}"
+    array = {"type": "array", "items": {"type": "object"}}
+    assert _probe_run(tmp_path / "a", lists_only, array).findings == []
+    # FastMCP wraps a non-object result; rote's helper unwraps it.
+    wrapped = {
+        "type": "object",
+        "x-fastmcp-wrap-result": True,
+        "properties": {"result": array},
+    }
+    assert _probe_run(tmp_path / "b", lists_only, wrapped).findings == []
+    # Declared as an object: a dict reader is right, nothing to report.
+    dict_reader = "return {'n': len(found.get('threads', []))}"
+    assert _probe_run(tmp_path / "c", dict_reader, {"type": "object"}).findings == []
+    # Undeclared: the same dict reader fails on a list.
+    [finding] = _probe_run(tmp_path / "d", dict_reader).findings
+    assert finding.kind == "prefix_shape_assumption"
+
+
+def test_a_wrapped_text_result_is_probed_as_text(tmp_path: Path) -> None:
+    """FastMCP wraps a string result as {"result": ...}; the helper unwraps it."""
+    wrapped = {
+        "type": "object",
+        "x-fastmcp-wrap-result": True,
+        "properties": {"result": {"type": "string"}},
+    }
+    dict_reader = "return {'n': len(found.get('threads', []))}"
+    [finding] = _probe_run(tmp_path, dict_reader, wrapped).findings
+    assert "returns text:" in finding.message
+
+
+def test_a_field_binding_or_a_fanned_consumer_is_not_probed(tmp_path: Path) -> None:
+    """Only a consumer that reads the whole result is probed: a field of an
+    unknown result, or one element of it, says nothing about the shape."""
+
+    field = _MCP_IR
+    root = _write(
+        tmp_path / "field",
+        {
+            "pipeline.yaml": field,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            "def count(threads):\n    return {'n': len(threads.get('items', []))}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.findings == [] and run.steps["count"]["status"] == "not_reached"
+
+    fanned = _MCP_IR.replace("threads: search.output.threads", "found: search.output").replace(
+        "    impl: extracted/mail.py:count\n",
+        "    impl: extracted/mail.py:count\n    fan_out: true\n",
+    )
+    root = _write(
+        tmp_path / "fanned",
+        {
+            "pipeline.yaml": fanned,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            "def count(found):\n    return {'subject': found.get('subject')}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.findings == [] and run.steps["count"]["status"] == "not_reached"
+
+
+@pytest.mark.parametrize(
+    "count_body",
+    [
+        "return {'n': int(found)}",  # TypeError, but not a dict assumption
+        "return {'n': found.total}",  # AttributeError on list: not dict-shaped access
+    ],
+)
+def test_only_dict_assumptions_count_as_shape_findings(count_body: str, tmp_path: Path) -> None:
+    run = _probe_run(tmp_path, count_body)
+    assert [f.kind for f in run.findings] == []
+    assert run.steps["count"]["status"] == "not_reached"
 
 
 def test_the_prefix_runs_in_the_os_sandbox(tmp_path: Path) -> None:
