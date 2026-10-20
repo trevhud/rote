@@ -383,3 +383,33 @@ def test_results_are_portable(tmp_path: Path) -> None:
         "nested": [{"error": "emit failed in <examples>/x and ~/y"}],
         "n": 3,
     }
+
+
+def test_a_failed_compile_still_reports_what_it_spent(tmp_path: Path) -> None:
+    """No compile-metrics.json on the failure path, so the cost comes from
+    the orchestrator's failure log; without it a paid job reads as free and
+    --budget undercounts."""
+    from rote.bench.collect import collect_job
+
+    line = {
+        "type": "log",
+        "ts": 1.0,
+        "message": (
+            "usage before the failure: tokens in=538266 (538253 cached) out=108304; "
+            "turns=30; cost=$2.2556864999999995"
+        ),
+    }
+    (tmp_path / "progress.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
+    (tmp_path / "bench-compile.stdout.log").write_text(
+        json.dumps({"ok": False, "exit_code": 1, "error": "weekly limit"}), encoding="utf-8"
+    )
+    job = collect_job(
+        tmp_path, tmp_path, BDR_PIPELINE_YAML, exit_code=1, wall_seconds=10.0, tsc=False
+    )
+    run = job["run"]
+    assert run["cost_usd"] == pytest.approx(2.2556865)
+    assert (run["turns"], run["output_tokens"]) == (30, 108304)
+    assert run["input_tokens"] + run["cache_read_tokens"] == 538266
+    assert run["usage_source"] == "failure_log"
+    assert job["error"] == "no pipeline.yaml produced: weekly limit"
+    assert headline(job)["cost_usd"] == pytest.approx(2.2556865)

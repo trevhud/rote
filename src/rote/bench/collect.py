@@ -107,6 +107,51 @@ def phase_durations(progress_jsonl: Path) -> dict[str, Any]:
     }
 
 
+#: The orchestrator's log line for a driver that failed after spending
+#: (``Compiler._usage_summary`` after "usage before the failure: ").
+_FAILURE_USAGE_PREFIX = "usage before the failure: "
+
+
+def failed_run_usage(progress_jsonl: Path) -> dict[str, Any]:
+    """What a compile that died mid-run spent, from its progress log.
+
+    A failed compile writes no compile-metrics.json (the work dir never
+    reaches the output), so without this a paid-but-failed job reads as
+    free and ``--budget`` undercounts exactly when runs are going wrong.
+    The orchestrator logs the driver's own figures on the failure path;
+    the format is rote's (``tokens in=N (M cached) out=K; turns=T;
+    cost=$X``), parsed here and nowhere else.
+    """
+    import re
+
+    if not progress_jsonl.is_file():
+        return {}
+    usage: dict[str, Any] = {}
+    for line in progress_jsonl.read_text(encoding="utf-8").splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = obj.get("message") if isinstance(obj, dict) else None
+        if not isinstance(message, str) or not message.startswith(_FAILURE_USAGE_PREFIX):
+            continue
+        if m := re.search(r"cost=\$([0-9.eE+-]+)", message):
+            usage["cost_usd"] = float(m.group(1))
+        if m := re.search(r"turns=(\d+)", message):
+            usage["num_turns"] = int(m.group(1))
+        if m := re.search(r"in=(\d+)(?: \((\d+) cached\))?", message):
+            total, cached = int(m.group(1)), int(m.group(2) or 0)
+            # The summary folds cache writes and reads into one "cached"
+            # figure. It is booked as cache_read so the input total stays
+            # right; the write/read split is not recoverable here.
+            usage["input_tokens"] = total - cached
+            usage["cache_read_tokens"] = cached
+        if m := re.search(r"out=(\d+)", message):
+            usage["output_tokens"] = int(m.group(1))
+        usage["usage_source"] = "failure_log"
+    return usage
+
+
 def _test_counts(summary: str) -> dict[str, int]:
     """``{"passed": 12, "failed": 1}`` from a pytest summary line."""
     import re
@@ -213,6 +258,21 @@ def _run_tsc(app: Path) -> tuple[str, str]:
     return "passed", ""
 
 
+def _compile_error(out_dir: Path) -> str:
+    """The compile's own ``--json`` error, trimmed, or its stderr tail."""
+    stdout = out_dir / "bench-compile.stdout.log"
+    try:
+        payload = json.loads(stdout.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+            return str(payload["error"])[:500]
+    except (OSError, json.JSONDecodeError):
+        pass
+    stderr = out_dir / "bench-compile.stderr.log"
+    if stderr.is_file():
+        return stderr.read_text(encoding="utf-8", errors="replace")[-500:]
+    return "the compile left no output"
+
+
 def collect_job(
     out_dir: Path,
     skill_dir: Path,
@@ -225,7 +285,7 @@ def collect_job(
     """Every metric for one compile job. Never raises on a bad compile:
     a missing or invalid pipeline is itself the result."""
     compiled = deliverable_dir(out_dir)
-    metrics = read_compile_metrics(compiled)
+    metrics = read_compile_metrics(compiled) or failed_run_usage(out_dir / "progress.jsonl")
     run: dict[str, Any] = {
         "exit_code": exit_code,
         "wall_seconds": round(wall_seconds, 1) if wall_seconds is not None else None,
@@ -243,11 +303,12 @@ def collect_job(
             else None
         ),
         "usage_complete": metrics.get("usage_complete"),
+        "usage_source": metrics.get("usage_source"),
         **phase_durations(out_dir / "progress.jsonl"),
     }
     job: dict[str, Any] = {"run": run}
     if compiled is None:
-        job["error"] = "no pipeline.yaml produced"
+        job["error"] = "no pipeline.yaml produced: " + _compile_error(out_dir)
         return job
     try:
         pipeline = load_pipeline(compiled / "pipeline.yaml")
