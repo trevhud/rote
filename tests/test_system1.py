@@ -487,6 +487,13 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
         ("Read each row of the table.", False),
         ("Read each row of the Google Sheet.", True),
         ("Read the open deals of HubSpot.", True),
+        ("Read the last messages of #finance.", True),
+        # "of" a generic noun is data, not a source (review6).
+        ("Read the balance of the account.", False),
+        ("Read the name of the folder.", False),
+        ("Read the first line of the queue entry.", False),
+        ("Read the status of the service in the request.", False),
+        ("Read the request of the Controller.", False),
         # A read from outside is.
         ("Pull open tickets from Zendesk.", True),
         ("Read the 50 most recent messages from #deal-intake.", True),

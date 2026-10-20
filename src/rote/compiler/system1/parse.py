@@ -120,6 +120,14 @@ _SYSTEM_NOUN = (
 #: after "the" is a role or a label ("the Controller", "the FX table") unless
 #: a system noun follows it, and a part of the skill ("Step 3", "Phase 2") is
 #: never a source: those reads stay inside the pipeline.
+#: A source that is a name, not a generic noun: a #channel or @handle, a
+#: product named bare, or "the <Name> <system noun>".
+_NAMED_SOURCE = (
+    r"(?:(?:the\s+)?[#@][\w-]+"
+    r"|(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)(?-i:[A-Z])[\w.-]*(?![\w.-])"
+    r"(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
+    rf"|the\s+(?-i:[A-Z])[\w.-]*(?:\s+(?-i:[A-Z])[\w.-]*)?\s+{_SYSTEM_NOUN})"
+)
 _SOURCE = (
     r"(?!(?:the\s+)?\[?references/|\w+\.md\b)"
     r"(?:(?:the\s+|a\s+|an\s+|our\s+|your\s+)?[#@][\w-]+"
@@ -176,9 +184,12 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         # from Zendesk", "read the 50 most recent messages from #deal-intake".
         # A lookup in the skill's own reference files is not a call.
         r"\b(?:read|pull|fetch|query|look up|retrieve|download|export)\b[^.\n]{0,60}"
-        # "of" only reaches a named product or system ("each row of the Google
-        # Sheet"); "each row of the table" has no source.
-        rf"\b(?:from|in|via|using|of)\s+{_SOURCE}",
+        rf"\b(?:from|in|via|using)\s+{_SOURCE}",
+        # "of" reaches only a name: "each row of the Google Sheet", "of
+        # HubSpot", "of #finance". Never a bare system noun ("the balance of
+        # the account", "the name of the folder"), which is data.
+        r"\b(?:read|pull|fetch|query|look up|retrieve|download|export)\b[^.\n]{0,60}"
+        rf"\bof\s+{_NAMED_SOURCE}",
         r"\bsearch\b[^.\n]{0,40}\bfor\b|\bsearch query\b",
         r"\bnavigate to\b",
     ),
