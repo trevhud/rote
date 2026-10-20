@@ -375,6 +375,33 @@ repo's own examples, which are the only skills fidelity runs on. Running
 it on an untrusted skill's compile needs that sandbox around both the
 pipeline run and the replay first.
 
+### `--backend api` pipelines
+
+An api pipeline calls the vendor directly, so the bench fakes the vendor
+instead of the MCP server. A case's `http:` section holds one fixture set
+per vendor API version (`google/gmail/v1`), in the shareable format of
+`rote.vendor_specs.fixtures`. The bench:
+
+1. reads the backend from `backend.json` beside the compiled IR and emits
+   for it;
+2. builds a fake of each API from the vendor's own spec
+   (`rote.vendor_specs.fake`). The fake rejects what the real API would
+   (an unknown operation, a missing credential, an undeclared, mistyped or
+   missing required parameter) and answers from the fixtures. With no
+   matching fixture it returns the smallest spec-shaped answer: `{}` for an
+   empty list, 404 for a file;
+3. routes the pipeline process's requests to the fake through a
+   `sitecustomize` on its `PYTHONPATH` (`rote.vendor_specs.intercept`:
+   httpx, requests, httplib2, urllib and `google.auth.default`). Any other
+   host of a vendor in play is blocked, so a fidelity run never reaches a
+   real API;
+4. installs the app's vendor libraries (`google-api-python-client`, ...)
+   into a cached target directory, since they are not rote's own
+   dependencies;
+5. scores the fake's request log like the MCP call log. A fixture's
+   `reads: <server>.<tool>[i]` makes an API read and the skill's tool read
+   the same read.
+
 ### What fidelity does and does not measure
 
 Read the number with these limits in mind:
