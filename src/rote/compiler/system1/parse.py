@@ -126,7 +126,13 @@ _NAMED_SOURCE = (
     r"(?:(?:the\s+)?[#@][\w-]+"
     r"|(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)(?-i:[A-Z])[\w.-]*(?![\w.-])"
     r"(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
-    rf"|the\s+(?-i:[A-Z])[\w.-]*(?:\s+(?-i:[A-Z])[\w.-]*)?\s+{_SYSTEM_NOUN})"
+    rf"|the\s+(?-i:[A-Z])[\w.-]*(?:\s+(?-i:[A-Z])[\w.-]*)?\s+{_SYSTEM_NOUN}"
+    # A determiner, then a name, then what is read from it: "each Gmail
+    # thread", "all Slack channels", "the Zendesk ticket". A name alone
+    # after one ("the Controller") is a role, and a label stays data.
+    r"|(?:the|each|every|all)\s+(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)"
+    r"(?-i:[A-Z])[\w.-]*(?![\w.-])\s+(?!(?-i:table|tab|column|row|rows|field|list)\b)"
+    r"(?-i:[a-z])\w+)"
 )
 _SOURCE = (
     r"(?!(?:the\s+)?\[?references/|\w+\.md\b)"
