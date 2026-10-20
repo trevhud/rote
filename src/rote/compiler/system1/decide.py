@@ -164,6 +164,9 @@ class Plan:
     #: one. Data outranks the skill's wording: its keys become the input
     #: schema and the gates' payload keys.
     sample: Any = None
+    #: The tie-break's answers and cost (:class:`rote.compiler.system1.tiebreak.TieBreak`),
+    #: when one ran.
+    tiebreak: Any = None
 
 
 # ── kinds and segmentation ────────────────────────────────────────────────
@@ -728,22 +731,14 @@ def _route(
     return segments
 
 
-def plan(
-    skill: SkillParse,
-    verdicts: Verdicts | None = None,
-    tools: Mapping[tuple[str, str], Any] | None = None,
-) -> Plan:
-    """Every decision for ``skill``. With ``verdicts`` (``--decider clef`` or
-    ``jev``), the model's confident kind and gate answers override the rules
-    per step. With
-    ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
-    names come from each tool's input schema."""
-    nodes: list[NodePlan] = []
-    used: set[str] = set()
-    last_of: dict[int, str] = {}
-    loop_nodes: dict[int, NodePlan] = {}
-    review: list[str] = []
-    deps = _unit_dependencies(skill)
+#: (role, kind, confidence, rule) for one node a step becomes.
+Segment = tuple[str, str, float, str]
+
+
+def unit_segments(skill: SkillParse, verdicts: Verdicts | None = None) -> dict[int, list[Segment]]:
+    """The nodes each step unit becomes, by unit index: the rules' segmentation,
+    then (with ``verdicts``) the decision model's confident answers over it."""
+    out: dict[int, list[Segment]] = {}
     for u in skill.units:
         segments = (
             [("loop", "agent_loop", 0.7, "a heading whose sub-steps run per item")]
@@ -752,8 +747,50 @@ def plan(
         )
         if verdicts is not None and not u.loop_container and u.index in verdicts.by_unit:
             segments = _route(segments, verdicts.by_unit[u.index], verdicts.model)
+        out[u.index] = segments
+    return out
+
+
+def unsure_units(skill: SkillParse, segments: Mapping[int, list[Segment]]) -> list[Unit]:
+    """The step units whose kind decision is below REVIEW_BELOW: the rules had
+    no clear signal, or a decision model disagreed below its threshold.
+
+    A loop container is never unsure: its kind comes from the skill's shape
+    (a heading whose sub-steps run per item), not from wording."""
+    return [
+        u
+        for u in skill.units
+        if not u.loop_container and min(conf for _, _, conf, _ in segments[u.index]) < REVIEW_BELOW
+    ]
+
+
+def role_of_kind(kind: str) -> str:
+    """The node role a kind decided outside the rules gets."""
+    return _ROLE_OF_KIND[kind]
+
+
+def plan(
+    skill: SkillParse,
+    verdicts: Verdicts | None = None,
+    tools: Mapping[tuple[str, str], Any] | None = None,
+    segments: Mapping[int, list[Segment]] | None = None,
+) -> Plan:
+    """Every decision for ``skill``. With ``verdicts`` (``--decider clef`` or
+    ``jev``), the model's confident kind and gate answers override the rules
+    per step. ``segments`` (from :func:`unit_segments`, possibly revised by
+    the tie-break) replaces that step: the nodes each unit becomes. With
+    ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
+    names come from each tool's input schema."""
+    by_unit = segments if segments is not None else unit_segments(skill, verdicts)
+    nodes: list[NodePlan] = []
+    used: set[str] = set()
+    last_of: dict[int, str] = {}
+    loop_nodes: dict[int, NodePlan] = {}
+    review: list[str] = []
+    deps = _unit_dependencies(skill)
+    for u in skill.units:
         unit_nodes: list[NodePlan] = []
-        for role, kind, conf, rule in segments:
+        for role, kind, conf, rule in by_unit[u.index]:
             nid = _ROLE_IDS[role].format(b=_base(u.title, u.section if u.sibling_group else None))
             base_id, k = nid, 2
             while nid in used:

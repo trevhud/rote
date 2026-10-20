@@ -57,7 +57,7 @@ def test_cloud_path_already_logged_in(tmp_path: Path, monkeypatch: pytest.Monkey
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
 
     # hosting=1 (cloud), driver=default (auto), model=blank, decider=default
-    io = _run(["1", "", "", ""])
+    io = _run(["1", "", "", "", ""])
     assert load_config_file(config_path) == {"runtime": "cloudflare", "deploy": "rote-cloud"}
     assert any("already logged in as t@x" in line for line in io.echoed)
 
@@ -71,7 +71,7 @@ def test_cloud_path_offers_login_when_logged_out(
     monkeypatch.setattr("rote.cloud_auth.login", lambda *a, **k: called.append(True))
 
     # hosting=1, login=y, driver=auto, model=blank, decider=default
-    _run(["1", "y", "", "", ""])
+    _run(["1", "y", "", "", "", ""])
     assert called == [True]
     assert load_config_file(config_path) == {"runtime": "cloudflare", "deploy": "rote-cloud"}
 
@@ -84,7 +84,7 @@ def test_local_path_picks_runtime_driver_and_model(
 
     # hosting=2 (local), runtime=2 (temporal), driver=1 (claude), model=m-9,
     # decider=1 (rules, the default, so it is not written)
-    _run(["2", "2", "1", "m-9", "1"])
+    _run(["2", "2", "1", "m-9", "1", "y"])
     assert load_config_file(config_path) == {
         "runtime": "temporal",
         "deploy": "none",
@@ -100,7 +100,7 @@ def test_the_wizard_picks_a_decider(
     config_path = tmp_path / "cfg" / "config.yaml"
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
 
-    io = _run(["2", "1", "", "", pick])
+    io = _run(["2", "1", "", "", pick, ""])
     assert load_config_file(config_path) == {
         "runtime": "dbos",
         "deploy": "none",
@@ -112,7 +112,7 @@ def test_the_wizard_picks_a_decider(
 def test_project_flag_writes_rote_yaml_in_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _run(["2", "1", "", "", ""], project=True, cwd=tmp_path)
+    _run(["2", "1", "", "", "", ""], project=True, cwd=tmp_path)
     assert load_config_file(tmp_path / "rote.yaml") == {"runtime": "dbos", "deploy": "none"}
 
 
@@ -123,7 +123,7 @@ def test_declined_overwrite_aborts(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
 
     with pytest.raises(WizardAborted, match="kept existing"):
-        _run(["2", "1", "", "", "", "n"])  # last answer declines the overwrite
+        _run(["2", "1", "", "", "", "", "n"])  # last answer declines the overwrite
     assert load_config_file(config_path) == {"runtime": "inngest"}  # untouched
 
 
@@ -132,7 +132,7 @@ def test_invalid_answers_reprompt(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
 
     # "9" is not a hosting choice — the wizard asks again instead of crashing.
-    _run(["9", "2", "1", "", "", ""])
+    _run(["9", "2", "1", "", "", "", ""])
     assert load_config_file(config_path)["runtime"] == "dbos"
 
 
@@ -169,3 +169,17 @@ def test_cli_init_eof_aborts_cleanly(
 
 def _raise_eof(prompt: str = "") -> str:
     raise EOFError
+
+
+def test_the_wizard_can_turn_the_tiebreak_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "cfg" / "config.yaml"
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
+
+    _run(["2", "1", "", "", "", "n"])
+    assert load_config_file(config_path) == {
+        "runtime": "dbos",
+        "deploy": "none",
+        "tiebreak": "none",
+    }

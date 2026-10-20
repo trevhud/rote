@@ -51,12 +51,15 @@ from typing import Any
 
 from rote.bench.score import score_pipeline
 from rote.compiler.system1 import decision_model as dm
-from rote.compiler.system1.decide import plan
+from rote.compiler.system1 import tiebreak
+from rote.compiler.system1.decide import plan, unit_segments, unsure_units
 from rote.compiler.system1.parse import parse_skill
 from rote.compiler.system1.skeleton import write
+from rote.compiler.system1.tiebreak import Lane, TieBreak
 from rote.ir import Pipeline, load_pipeline
 
 REPO = Path(__file__).resolve().parents[2]
+RUBRIC = REPO / "skills" / "rote-compile" / "references" / "node-kinds.md"
 SPLITS = {
     "dev": (
         REPO / "examples",
@@ -158,17 +161,29 @@ def cached_posts(cache: Path) -> Iterator[dict[str, float]]:
         dm._post = live
 
 
-def skeleton(skill_dir: Path, verdicts: dm.Verdicts | None) -> Pipeline:
-    p = plan(parse_skill(skill_dir), verdicts)
+def skeleton(
+    skill_dir: Path, verdicts: dm.Verdicts | None, lane: Lane | None = None
+) -> tuple[Pipeline, TieBreak | None]:
+    skill = parse_skill(skill_dir)
+    segments = unit_segments(skill, verdicts)
+    tb = None
+    if lane is not None:
+        tb = tiebreak.decide(skill, segments, unsure_units(skill, segments), verdicts, lane, RUBRIC)
+        segments = {**segments, **tb.segments}
+    p = plan(skill, verdicts, None, segments)
     with tempfile.TemporaryDirectory() as tmp:
         write(p, Path(tmp))
-        return load_pipeline(Path(tmp) / "pipeline.yaml")
+        return load_pipeline(Path(tmp) / "pipeline.yaml"), tb
 
 
-def row(examples: Path, skill: str, verdicts: dm.Verdicts | None) -> dict[str, Any]:
+def row(
+    examples: Path, skill: str, verdicts: dm.Verdicts | None, lane: Lane | None = None
+) -> dict[str, Any]:
     expected = load_pipeline(examples / skill / "expected" / "pipeline.yaml")
-    s = score_pipeline(expected, skeleton(examples / skill / "skill", verdicts))
+    compiled, tb = skeleton(examples / skill / "skill", verdicts, lane)
+    s = score_pipeline(expected, compiled)
     g = s["gates"]
+    tb_cost = None if tb is None else tb.cost_usd
     return {
         "skill": skill,
         "kind": s["structure"]["kind_accuracy"],
@@ -180,6 +195,8 @@ def row(examples: Path, skill: str, verdicts: dm.Verdicts | None) -> dict[str, A
         "mandP": s["mandatory"]["precision"],
         "mandR": s["mandatory"]["recall"],
         "cost_usd": 0.0 if verdicts is None else verdicts.cost_usd,
+        "tiebreak_steps": 0 if tb is None else len(tb.asked),
+        "tiebreak_cost_usd": tb_cost,
     }
 
 
@@ -197,6 +214,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "mandP": mean("mandP"),
         "mandR": mean("mandR"),
         "cost_usd_per_skill": round(sum(r["cost_usd"] for r in rows) / len(rows), 5),
+        "tiebreak_steps": sum(r["tiebreak_steps"] for r in rows),
+        "tiebreak_cost_usd_per_skill": (
+            round(sum(r["tiebreak_cost_usd"] or 0.0 for r in rows) / len(rows), 5)
+        ),
     }
 
 
@@ -215,6 +236,13 @@ def cmd_score(args: argparse.Namespace) -> None:
             if args.rows:
                 out["rows"] = rows
             print(json.dumps(out))
+            for trial in range(args.tiebreak):
+                rows = [row(examples, s, verdicts.get(s), Lane("claude-cli")) for s in skills]
+                out = {"split": split, "decider": f"{decider}+haiku", "trial": trial}
+                out |= summarize(rows)
+                if args.rows:
+                    out["rows"] = rows
+                print(json.dumps(out), flush=True)
 
 
 def cmd_fit(args: argparse.Namespace) -> None:
@@ -264,6 +292,12 @@ def main() -> None:
     sub.choices["score"].add_argument("--splits", default="dev,holdout")
     sub.choices["score"].add_argument("--deciders", default="rules,clef,jev")
     sub.choices["score"].add_argument("--rows", action="store_true")
+    sub.choices["score"].add_argument(
+        "--tiebreak",
+        type=int,
+        default=0,
+        help="Also score with the Haiku tie-break (claude -p), this many trials each",
+    )
     sub.choices["fit"].add_argument("--model", required=True, choices=sorted(dm.MODELS))
     args = p.parse_args()
     load_env(args.cf_env)

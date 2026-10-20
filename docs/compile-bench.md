@@ -180,6 +180,12 @@ with Jev's thresholds fitted on dev and frozen before the held-out run:
 The method and the fitted thresholds are in
 [`docs/design/system1-compile.md`](design/system1-compile.md#--decider-jev).
 
+With the Haiku tie-break on (the default) for the steps still unsure after
+the decider, three trials each, kind dev / held-out: rules 0.63 / 0.68,
+clef 0.64 / 0.74, jev 0.67 / 0.72, for about $0.001 a compile. Gates do
+not change. The table and method are in
+[the design doc](design/system1-compile.md#the-haiku-tie-break---tiebreak-haiku-the-default).
+
 ## What it reports
 
 Every job is checked the same way, whatever exit path its compile took:
@@ -204,7 +210,7 @@ own offline checks on it.
 | `citeE`, `assum`, `OQ` | citations that are not in the skill, `# rote: assumption:` markers, Open questions entries in compile-report.md. rote renders that report, so `OQ` is distinct assumptions plus stubs. Before that change the agent wrote it, so `OQ` in older results (the baseline) counts the agent's entries |
 | `ok` | rote's verification verdict on the deliverable |
 | `exit`, `rep`, `turns` | compile exit code, repair rounds, agent turns |
-| `cost$`, `inTok`, `outTok` | `total_cost_usd` and tokens. `inTok` includes cache writes and reads, which are nearly all of it |
+| `cost$`, `inTok`, `outTok` | `total_cost_usd` plus System-1's own model calls (the decider and the tie-break, from `system1/decisions.json`), and the agent's tokens. `inTok` includes cache writes and reads, which are nearly all of it. `results.json` keeps the two parts as `driver_cost_usd` and `decisions_cost_usd` (`null` when a call could not be priced, and then `cost$` leaves it out) |
 | `wall_s` | wall time of the compile subprocess |
 | `dbos`, `cf`, `tsc` | does the IR emit on dbos and cloudflare, does the Cloudflare app type-check |
 
