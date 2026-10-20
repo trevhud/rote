@@ -300,3 +300,33 @@ def test_the_prefix_run_reports_schema_breaks_on_the_sample_and_returns_no_paylo
     assert finding.kind == "output_schema_mismatch" and finding.node_id == "summary"
     assert "summary has no `total`" in finding.message
     assert all("output" not in step for step in run.steps.values())
+
+
+def test_the_prefix_runs_past_a_gate_the_sample_answers(tmp_path: Path) -> None:
+    """A node after a gate runs on the sample's answer, so its crash is found at
+    compile time (expense-audit's file_audit_report raised on every case)."""
+    from rote.contracts import implementation_status
+    from tests.test_grounding import _ROWS, _pipeline, _prefix_root, _sample
+
+    root = _prefix_root(tmp_path)
+    (root / "extracted" / "checks.py").write_text(
+        (root / "extracted" / "checks.py")
+        .read_text()
+        .replace(
+            "def after(decision):\n    return decision",
+            "def after(decision):\n    return {'ok': decision['approved_ids'][5]}",
+        )
+    )
+    pipeline = _pipeline(root)
+    from rote.compiler.prefix import run_prefix
+
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample(_ROWS, gates={"controller_review": {"approved_ids": ["E1"]}}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.steps["review"]["status"] == "ok"
+    (finding,) = run.findings
+    assert finding.node_id == "after_gate" and "IndexError" in finding.message

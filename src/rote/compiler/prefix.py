@@ -9,8 +9,9 @@ it is the check that can fail.
 The prefix is every node that runs without a model or a person, in
 execution order: ``pure_function`` nodes with a written implementation,
 and MCP-bound nodes whose call a ``rote baseline`` run recorded (the
-recorded result stands in for the call, matched on the exact arguments).
-A judge, an agent loop, a gate, an unrecorded tool call or a stub ends
+recorded result stands in for the call, matched on the exact arguments),
+and gates the sample answers (its ``signals`` payload is the gate's result).
+A judge, an agent loop, an unanswered gate, an unrecorded tool call or a stub ends
 the prefix on its branch: nodes that need its output are reported as not
 reached, never guessed at.
 
@@ -86,6 +87,7 @@ def build_plan(
     from rote.probe import parse_tool_result
 
     status = {i.node_id: i.status for i in implementations}
+    answers = _gate_answers(pipeline, sample)
     recorded: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for o in observations:
         output = parse_tool_result(o.result)
@@ -103,7 +105,11 @@ def build_plan(
                 else:
                     bindings.append([param, "node", parsed.node_id, parsed.field])
             step: dict[str, Any] = {"id": node.id, "bindings": bindings}
-            if node.mcp is not None:
+            if node.kind is NodeKind.HITL_GATE and node.id in answers:
+                # The sample says what the person answered: the gate's result,
+                # so the nodes after it run on the sample too.
+                step |= {"kind": "gate", "payload": answers[node.id]}
+            elif node.mcp is not None:
                 declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
                 step |= {
                     "kind": "mcp",
@@ -159,6 +165,24 @@ def probe_shapes(output_schema: dict[str, Any] | None) -> list[str]:
     if isinstance(kind, str) and kind in _SHAPE_OF_TYPE:
         return [_SHAPE_OF_TYPE[kind]]
     return list(UNDECLARED_SHAPES)
+
+
+def _gate_answers(pipeline: Pipeline, sample: Sample) -> dict[str, dict[str, Any]]:
+    """``{gate id: the sample's answer}``, matched by grounding's one matcher."""
+    if not sample.gates:
+        return {}
+    from rote.compiler.grounding import GateView, match_sample_gates
+
+    views = [
+        GateView(n.id, n.signal, n.output_keys)
+        for wave in pipeline.execution_waves()
+        for n in wave
+        if n.kind is NodeKind.HITL_GATE
+    ]
+    return {
+        gate_id: sample.gates[signal]
+        for signal, gate_id in match_sample_gates(views, sample).items()
+    }
 
 
 def _where(at: dict[str, Any] | None) -> str:
