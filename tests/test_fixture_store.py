@@ -63,6 +63,12 @@ def test_a_set_that_does_not_fit_is_refused_in_and_out(tmp_path: Path, gmail) ->
     [
         ("google/gmail", "n"),
         ("google/../v1/x", "n"),
+        # Three parts, so only the per-part check stands between them and
+        # the filesystem (keys will come from a shared store).
+        ("../../x", "a"),
+        ("google/../v1", "n"),
+        ("/etc/passwd", "n"),
+        ("google/gmail/.", "n"),
         ("google/gmail/v1", "../escape"),
         ("a/b/c", ""),
     ],
@@ -104,3 +110,20 @@ def test_bench_save_fixtures_writes_every_case(
     rc = main(["--examples", str(tmp_path / "examples"), "--skills", "dock", "--save-fixtures"])
     assert rc == 0
     assert FixtureStore().list() == [("google/gmail/v1", "dock.a"), ("google/gmail/v1", "dock.b")]
+
+
+def test_a_stored_set_must_answer_for_the_key_it_is_filed_under(
+    tmp_path: Path,
+    gmail,  # noqa: ANN001
+) -> None:
+    store = FixtureStore(tmp_path / "fx")
+    sets = load_http({"google/gmail/v1": GMAIL_FIXTURES})
+    saved = store.save(sets["google/gmail/v1"], gmail, name="day", origin="t")
+    # The same file, filed under another API's key.
+    other = store.path("google/drive/v3", "day")
+    other.parent.mkdir(parents=True)
+    other.write_text(saved.read_text())
+    with pytest.raises(
+        FixtureError, match="holds fixtures for google/gmail/v1, not google/drive/v3"
+    ):
+        store.load("google/drive/v3", "day")
