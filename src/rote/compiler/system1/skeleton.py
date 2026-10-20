@@ -53,9 +53,6 @@ def _description(n: NodePlan) -> str:
 def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
-    # A sample's gate answers, in the order the gates ask: its keys are the
-    # payload, whatever the step's wording suggested.
-    sampled = list(plan.sample.gates.values()) if plan.sample is not None else []
     for n in plan.nodes:
         node: dict[str, Any] = {
             "id": n.id,
@@ -88,8 +85,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             if n.tool_servers:
                 node["tool_servers"] = dict(n.tool_servers)
         if n.kind == "hitl_gate":
-            keys = list(sampled.pop(0)) if sampled else n.payload
-            node["output"] = {k: "Any" for k in keys}
+            node["output"] = {k: "Any" for k in n.payload}
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
@@ -105,7 +101,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
     has_out = {e["from"] for e in edges}
     ids = [n.id for n in plan.nodes if n.in_loop is None]
     skill = plan.skill
-    return {
+    doc = {
         "name": slug(skill.name).replace("_", "-"),
         "version": "0.1.0",
         "description": skill.description,
@@ -118,6 +114,32 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
         "entry_nodes": [i for i in ids if i not in has_in],
         "exit_nodes": [i for i in ids if i not in has_out],
     }
+    if plan.sample is not None and plan.sample.gates:
+        _ground_gate_payloads(doc, plan.sample)
+    return doc
+
+
+def _ground_gate_payloads(doc: dict[str, Any], sample: Any) -> None:
+    """Give each gate the keys of the sample's answer that belongs to it.
+
+    Matched with :func:`rote.compiler.grounding.match_sample_gates`, the
+    same function the grounding check uses, on the step's own payload words
+    and the gates' execution order. A data key outranks the wording, so the
+    matched gate's ``output`` becomes the sample's keys.
+    """
+    from rote.compiler.grounding import GateView, match_sample_gates
+    from rote.ir import NodeKind, Pipeline
+
+    pipeline = Pipeline.model_validate(doc)
+    views = [
+        GateView(n.id, n.signal, n.output_keys)
+        for wave in pipeline.execution_waves()
+        for n in wave
+        if n.kind is NodeKind.HITL_GATE
+    ]
+    nodes = {node["id"]: node for node in doc["nodes"]}
+    for signal, gate_id in match_sample_gates(views, sample).items():
+        nodes[gate_id]["output"] = {k: "Any" for k in sample.gates[signal]}
 
 
 _PLACEHOLDER = re.compile(r"\[([a-z][a-z ]{1,30})\]|<([a-z][a-z_ ]{1,30})>")

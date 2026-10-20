@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.contracts import ContractFinding
-from rote.ir import NodeKind, Pipeline, parse_input_ref
+from rote.ir import NodeKind, Pipeline, is_field_name, parse_input_ref
 from rote.skill_source import parse_sections
 
 #: Where a skill bundles a sample input, in the order they are tried. A
@@ -224,6 +224,14 @@ def contract_brief(sample: Sample | None, skill_dir: Path, ctx_dir: Path | None)
             "KeyError or a missing input goes back to you as a failure. Do not "
             f"read {ctx_dir} from tests: copy the values a test needs into the test."
         )
+        odd = unbindable_fields(sample)
+        if odd:
+            parts.append(
+                "These sample fields are not identifiers, so no `pipeline.input.<field>` "
+                f"reference can bind them: {', '.join(f'`{k}`' for k in odd)}. Leave them "
+                "out of `input.required`, bind `pipeline.input` whole to the node that "
+                "reads them, and read them by key there."
+            )
         for signal, gate in sample.gates.items():
             keys = ", ".join(f"`{k}`" for k in gate)
             parts.append(
@@ -496,22 +504,63 @@ def _gates_in_order(pipeline: Pipeline) -> list[Any]:
     return [n for wave in pipeline.execution_waves() for n in wave if n.kind is NodeKind.HITL_GATE]
 
 
-def _sample_gate(gates: list[Any], signal: str, keys: set[str], index: int) -> Any:
-    """The compiled gate a sample's gate payload belongs to.
+@dataclass(frozen=True)
+class GateView:
+    """What matching a sample's gate answer to a gate needs to know about it."""
 
-    By signal name first; else the gate whose payload keys overlap the
-    sample's most; else the gate at the same position, which is the case
-    where the compile renamed every key (and the check should fail).
-    A gate another sample payload names by signal is not taken by overlap.
+    id: str
+    signal: str | None
+    #: The gate's own payload keys: the compile's ``output``, or for a
+    #: System-1 skeleton the step's wording (``approved``, ``rejected``).
+    keys: frozenset[str]
+
+
+def match_sample_gates(gates: list[GateView], sample: Sample) -> dict[str, str]:
+    """``{sample signal: gate id}``, one gate per answer, in a fixed order of tries.
+
+    The one matcher for both places a sample's gate answer meets a gate:
+    System-1 assigning payload keys to its skeleton, and the check of a
+    compiled IR. ``gates`` are in execution-wave order.
+
+    1. A gate whose signal is the sample's signal name.
+    2. Else the unmatched gate sharing the most words with the answer's
+       keys (``approved_ids`` and ``approved`` share ``approved``); the
+       earlier gate wins a tie.
+    3. Else the next unmatched gate in execution order, which is the case
+       where every key was renamed, so the check fails on that gate.
     """
-    for gate in gates:
-        if gate.signal == signal:
-            return gate
-    overlaps = [(len(keys & gate.output_keys), -i, gate) for i, gate in enumerate(gates)]
-    best = max(overlaps, default=None, key=lambda t: (t[0], t[1]))
-    if best is not None and best[0] > 0:
-        return best[2]
-    return gates[index] if index < len(gates) else None
+    matched: dict[str, str] = {}
+    taken: set[str] = set()
+    pending = list(sample.gates.items())
+    for signal, _ in pending:
+        for gate in gates:
+            if gate.id not in taken and gate.signal == signal:
+                matched[signal] = gate.id
+                taken.add(gate.id)
+                break
+    for signal, answer in pending:
+        if signal in matched:
+            continue
+        want = {w for k in answer for w in _words(k)}
+        best: tuple[int, GateView] | None = None
+        for gate in gates:
+            if gate.id in taken:
+                continue
+            score = len(want & {w for k in gate.keys for w in _words(k)})
+            if score > 0 and (best is None or score > best[0]):
+                best = (score, gate)
+        if best is not None:
+            matched[signal] = best[1].id
+            taken.add(best[1].id)
+    for signal, _ in pending:
+        if signal in matched:
+            continue
+        free = next((g for g in gates if g.id not in taken), None)
+        if free is None:
+            break
+        matched[signal] = free.id
+        taken.add(free.id)
+    return matched
 
 
 def gate_findings(
@@ -521,10 +570,11 @@ def gate_findings(
     findings: list[ContractFinding] = []
     gates = _gates_in_order(pipeline)
     if sample is not None:
-        for i, (signal, want) in enumerate(sample.gates.items()):
-            gate = _sample_gate(gates, signal, set(want), i)
-            if gate is None:
-                continue
+        by_id = {g.id: g for g in gates}
+        views = [GateView(g.id, g.signal, g.output_keys) for g in gates]
+        for signal, gate_id in match_sample_gates(views, sample).items():
+            want = sample.gates[signal]
+            gate = by_id[gate_id]
             have = gate.output_keys
             absent = sorted(set(want) - have)
             if absent:
@@ -608,11 +658,32 @@ class Grounding:
     observations: tuple[Any, ...] = field(default_factory=tuple)
 
 
+def unbindable_fields(sample: Sample) -> list[str]:
+    """Top-level sample fields no ``pipeline.input.<field>`` reference can bind.
+
+    Not a reason to reject the sample: the data is what it is, and a node
+    can take the whole input and read ``request["Invoice #"]``. They are
+    named for the agent and listed as an open question instead.
+    """
+    return sorted(k for k in sample.payload if not is_field_name(k))
+
+
 def contract_questions(
     pipeline: Pipeline, skill_dir: Path | None, grounding: Grounding
 ) -> list[ContractQuestion]:
     """The input contract and MCP result shapes nothing recorded, for review."""
     questions: list[ContractQuestion] = []
+    if grounding.sample is not None and unbindable_fields(grounding.sample):
+        odd = ", ".join(f"`{k}`" for k in unbindable_fields(grounding.sample))
+        questions.append(
+            ContractQuestion(
+                INPUT_NODE,
+                f"sample input field(s) {odd} ({grounding.sample.source}) are not "
+                f"identifiers, so they cannot be declared in input.required or bound one "
+                f"by one; a node must take the whole input to read them. Renaming them "
+                f"where the data comes from would let the entry check name them",
+            )
+        )
     if grounding.sample is None:
         fields = sorted(_declared_inputs(pipeline) | set(pipeline.required_input_fields))
         wording = _input_wording(skill_dir) if skill_dir is not None else None

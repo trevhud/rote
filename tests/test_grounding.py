@@ -952,6 +952,59 @@ def test_rote_compile_passes_sample_input_to_the_compiler(
     assert rc == 1 and seen["sample_input"] == str(sample)
 
 
+def test_system1_gives_each_gate_its_own_sample_answer_whatever_the_order(
+    tmp_path: Path,
+) -> None:
+    """The sample lists the contact-review answer before the campaign-brief
+    one. Assigning by position would give the brief gate the contact keys,
+    and the check would then pass, matching rote's own wrong assignment.
+    Both go through one matcher: signal, then the step's own words, then
+    execution order."""
+    from rote.compiler import system1
+    from rote.ir import NodeKind
+
+    bdr = REPO / "examples" / "bdr-outreach" / "skill"
+    sample = _sample(
+        {},
+        gates={
+            "contact_changes": {"added": [], "removed": [], "reprioritized": []},
+            # Ties the brief gate and the handoff gate on words (approved,
+            # notes): the earlier gate in execution order takes it.
+            "brief_sign_off": {"approved": True, "brief_notes": ""},
+        },
+    )
+    system1.prepare(bdr, tmp_path, sample=sample)
+    gates = [
+        n
+        for wave in _pipeline(tmp_path).execution_waves()
+        for n in wave
+        if n.kind is NodeKind.HITL_GATE
+    ]
+    keys = {g.id: g.output_keys for g in gates}
+    assert keys["contact_review_gate_gate"] == {"added", "removed", "reprioritized"}
+    assert keys["campaign_brief_gate"] == {"approved", "brief_notes"}
+    # The third gate has no answer in the sample and keeps the step's words.
+    assert keys["handoff_gate"] == {"approved", "notes"}
+    assert [g.id for g in gates][0] == "campaign_brief_gate"
+
+
+def test_a_sample_field_no_reference_can_bind_is_an_open_question(tmp_path: Path) -> None:
+    """`Invoice #` cannot be `pipeline.input.<field>`, but it is real data, so
+    the sample is kept: the agent is told to read it from the whole input,
+    and a reviewer sees it as an open question."""
+    sample = _sample({"Invoice #": "INV-9", "vendor": "Acme", "2nd_line": "x"})
+    brief = contract_brief(sample, tmp_path, tmp_path / GROUNDING_DIRNAME)
+    assert "not identifiers" in brief and "`2nd_line`, `Invoice #`" in brief
+    root = _write(tmp_path, {"pipeline.yaml": _expense_ir(["vendor"])})
+    questions = contract_questions(_pipeline(root), None, Grounding(sample=sample))
+    [question] = [q for q in questions if "not identifiers" in q.text]
+    assert "`2nd_line`, `Invoice #`" in question.text
+    # Identifier fields raise nothing.
+    plain = Grounding(sample=_sample({"vendor": "Acme"}))
+    assert not [q for q in contract_questions(_pipeline(root), None, plain) if "identif" in q.text]
+    assert "not identifiers" not in contract_brief(plain.sample, tmp_path, tmp_path)
+
+
 def _grounding_kinds(pipeline: Pipeline, sample: Sample) -> set[str]:
     from rote.compiler.grounding import grounding_findings
 

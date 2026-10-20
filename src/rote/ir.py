@@ -131,6 +131,12 @@ def _validate_impl_ref(value: str, field_name: str) -> str:
     return value
 
 
+def is_field_name(name: str) -> bool:
+    """Whether ``name`` can be a pipeline input field: an identifier, the
+    only shape a ``pipeline.input.<field>`` reference can bind."""
+    return _IDENTIFIER_RE.fullmatch(name) is not None
+
+
 @dataclass(frozen=True)
 class InputRef:
     """A parsed ``inputs:`` source reference.
@@ -842,7 +848,7 @@ class PipelineInput(BaseModel):
         did not write. Same identifier shape as ``inputs:`` field
         references (invariant #7), so a name can always be bound."""
         for name in v:
-            if not _IDENTIFIER_RE.fullmatch(name):
+            if not is_field_name(name):
                 raise ValueError(
                     f"pipeline input field name {name!r} must be an identifier "
                     f"(letters, digits, underscores; not starting with a digit)"
