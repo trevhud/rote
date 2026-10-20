@@ -111,18 +111,15 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
             continue
         # Everything that is not a decision is the agent's: carried as written,
         # falling back to the skeleton's text where the agent left it out.
+        decided = _decided_fields(sk)
         node: dict[str, Any] = {
-            k: copy.deepcopy(v) for k, v in sk.items() if k not in DECISION_FIELDS and k != "id"
+            k: copy.deepcopy(v) for k, v in sk.items() if k not in decided and k != "id"
         }
         node.update(
-            {
-                k: v
-                for k, v in mine.items()
-                if k not in DECISION_FIELDS and k not in ("id", "output")
-            }
+            {k: v for k, v in mine.items() if k not in decided and k not in ("id", "output")}
         )
         node["id"] = sk["id"]
-        for key in DECISION_FIELDS:
+        for key in decided:
             if key in sk:
                 node[key] = copy.deepcopy(sk[key])
             if mine.get(key) != sk.get(key):
@@ -133,7 +130,7 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
         for key, value in text.get(sk["id"], {}).items():
             if key == "output":
                 node["output"] = _merge_output(sk.get("output"), value)
-            elif key not in DECISION_FIELDS and key != "id":
+            elif key not in decided and key != "id":
                 node[key] = value
         merged_nodes.append(node)
     for extra in set(agent_nodes) - {n["id"] for n in skeleton["nodes"]}:
@@ -148,6 +145,17 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
     merged["nodes"] = merged_nodes
     path.write_text(yaml.safe_dump(merged, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return _record(work_dir, changes)
+
+
+#: Decisions that rules make only when the skill states them. When the
+#: skeleton leaves one unset, the skill gave nothing to decide from, and the
+#: text agent writes it from the skill's own wording (a loop's stop condition
+#: and bound). Restoring the skeleton's "unset" would ship a loop with no stop.
+_WHEN_STATED = ("termination",)
+
+
+def _decided_fields(skeleton_node: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(k for k in DECISION_FIELDS if k not in _WHEN_STATED or k in skeleton_node)
 
 
 def _text_fields(work_dir: Path) -> dict[str, dict[str, Any]]:

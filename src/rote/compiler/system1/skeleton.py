@@ -80,6 +80,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             node["tools"] = list(n.tools)
             if n.loop_body:
                 node["loop_body"] = list(n.loop_body)
+            if n.termination is not None:
+                node["termination"] = dict(n.termination)
             if n.tool_servers:
                 node["tool_servers"] = dict(n.tool_servers)
         if n.kind == "hitl_gate":

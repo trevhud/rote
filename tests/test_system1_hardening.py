@@ -21,7 +21,11 @@ from rote.adapters import get_adapter
 from rote.compiler import Compiler, CompilerError, system1
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.compiler.system1.decide import REVIEW_BELOW
-from rote.compiler.system1.enforce import DECISION_FIELDS, check_proposals, enforce
+from rote.compiler.system1.enforce import (
+    _decided_fields,
+    check_proposals,
+    enforce,
+)
 from rote.compiler.system1.parse import RuleTable
 from rote.compiler.system1.skeleton import tables_module
 from rote.ir import Node, load_pipeline
@@ -288,8 +292,9 @@ def test_every_field_the_agent_writes_survives_enforcement(tmp_path: Path) -> No
     (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
     changes = enforce(work)
     after = yaml.safe_load((work / "pipeline.yaml").read_text())["nodes"][0]
+    decided = _decided_fields(skeleton["nodes"][0])
     for f in fields:
-        if f in DECISION_FIELDS:
+        if f in decided:
             assert after.get(f) == skeleton["nodes"][0].get(f), f
             assert any(f"`{node['id']}` {f}:" in c for c in changes), f
         else:
@@ -363,5 +368,68 @@ def test_a_failure_before_a_repair_verification_does_not_escape(tmp_path: Path) 
 )
 def test_general_fetch_and_gate_wording(tmp_path: Path, text: str, kinds: list[str]) -> None:
     """Wording outside the five examples, from the #150 review."""
+    _, doc = _prepare(tmp_path, _skill(tmp_path, f"## Step 1: Do the step\n\n{text}\n"))
+    assert [n["kind"] for n in doc["nodes"]] == kinds
+
+
+def _loop_skill(tmp_path: Path, wording: str) -> Path:
+    return _skill(
+        tmp_path,
+        "## Step 1: Research the market\n\n"
+        f"Run an autonomous loop of web research over the `web_search` tool. {wording}\n\n"
+        "## Available Tools\n\n| Tool | Purpose |\n|---|---|\n| `web_search` | search |\n",
+    )
+
+
+def test_a_stated_stop_condition_and_bound_become_the_loops_termination(tmp_path: Path) -> None:
+    skill = _loop_skill(tmp_path, "Stop when ten vetted leads are found, at most 5 rounds.")
+    _, doc = _prepare(tmp_path, skill)
+    (loop,) = [n for n in doc["nodes"] if n["kind"] == "agent_loop"]
+    assert loop["termination"] == {
+        "condition": "Stop when ten vetted leads are found, at most 5 rounds",
+        "max_iterations": 5,
+    }
+    # A decision: the agent cannot change it.
+    work = tmp_path / "work"
+    agent = yaml.safe_load((work / "pipeline.yaml").read_text())
+    agent["nodes"][0]["termination"] = {"condition": "never", "max_iterations": 99}
+    (work / "pipeline.yaml").write_text(yaml.safe_dump(agent, sort_keys=False))
+    enforce(work)
+    after = load_pipeline(work / "pipeline.yaml").nodes[0]
+    assert after.termination is not None and after.termination.max_iterations == 5
+
+
+def test_without_a_stated_bound_the_text_agent_writes_termination(tmp_path: Path) -> None:
+    """#150 re-review: restoring "unset" shipped loops with no stop condition."""
+    skill = _loop_skill(tmp_path, "Keep going until the quota is met.")
+    plan, doc = _prepare(tmp_path, skill)
+    (loop,) = [n for n in doc["nodes"] if n["kind"] == "agent_loop"]
+    assert "termination" not in loop
+    assert any("termination = None (confidence 0.50)" in r for r in plan.review)
+    work = tmp_path / "work"
+    stop = {"condition": "until the quota is met", "max_iterations": 8}
+    (work / "system1" / "text.yaml").write_text(yaml.safe_dump({loop["id"]: {"termination": stop}}))
+    enforce(work)
+    after = load_pipeline(work / "pipeline.yaml").nodes[0]
+    assert after.termination is not None
+    assert (after.termination.condition, after.termination.max_iterations) == (
+        "until the quota is met",
+        8,
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "kinds"),
+    [
+        # Data the step already has is not a call.
+        ("Get the total from the table and round it.", ["pure_function"]),
+        ("Read the status in the row and flag it.", ["pure_function"]),
+        # A program is not a person.
+        ("Ask the API to check the batch, then total it.", ["pure_function"]),
+        # Work the skill says a person does is a gate, whatever the tool.
+        ("Enrollment must be done manually in the CRM.", ["hitl_gate"]),
+    ],
+)
+def test_general_rules_do_not_over_fire(tmp_path: Path, text: str, kinds: list[str]) -> None:
     _, doc = _prepare(tmp_path, _skill(tmp_path, f"## Step 1: Do the step\n\n{text}\n"))
     assert [n["kind"] for n in doc["nodes"]] == kinds

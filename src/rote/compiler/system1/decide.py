@@ -144,6 +144,7 @@ class NodePlan:
     lists_output: bool = False  # another node fans out over this node's `items`
     payload: list[str] = field(default_factory=list)  # a gate's resume payload keys
     loop_body: list[str] = field(default_factory=list)  # an agent_loop's per-item sub-nodes
+    termination: dict[str, Any] | None = None  # an agent_loop's stated stop condition
     in_loop: str | None = None  # the loop that calls this node per item
 
     def decide(self, name: str, value: Any, confidence: float, rule: str) -> None:
@@ -436,6 +437,28 @@ def _gate_payload(u: Unit) -> tuple[list[str], str]:
     return ["approved", "notes"], _DEFAULT_PAYLOAD_RULE
 
 
+_STOP = re.compile(
+    r"\b(?:until|stop (?:when|once|after|if)|end (?:when|once))\b\s*([^.\n]{3,160})", re.I
+)
+_BOUND = re.compile(
+    r"\b(?:at most|up to|no more than|a maximum of|max(?:imum)?(?: of)?)\s+(\d+)\s+"
+    r"(?:iterations?|rounds?|times|passes|pages|attempts|searches|tries|loops|batches)\b",
+    re.I,
+)
+
+
+def _termination(text: str) -> dict[str, Any] | None:
+    """A loop's stop condition and hard bound, both in the skill's words, or None.
+
+    Both are needed: the IR's termination carries a condition and a
+    max_iterations, and a bound the skill does not state would be invented."""
+    flat = " ".join(text.split())
+    stop, bound = _STOP.search(flat), _BOUND.search(flat)
+    if stop is None or bound is None:
+        return None
+    return {"condition": stop.group(0).strip(" ,;"), "max_iterations": int(bound.group(1))}
+
+
 def _loop_tools(u: Unit, skill: SkillParse) -> tuple[list[str], dict[str, str], float, str]:
     if u.tools:
         return u.tools, {t: skill.tool_registry[t] for t in u.tools}, 0.9, "tools named in the step"
@@ -554,6 +577,18 @@ def plan(skill: SkillParse) -> Plan:
                 tools, servers, tconf, trule = _loop_tools(u, skill)
                 n.tools, n.tool_servers = tools, servers
                 n.decide("tools", tools, tconf, trule)
+                n.termination = _termination(u.text)
+                if n.termination is not None:
+                    n.decide(
+                        "termination", dict(n.termination), 0.8, "stop wording and bound stated"
+                    )
+                else:
+                    n.decide(
+                        "termination",
+                        None,
+                        0.5,
+                        "no stated stop condition and bound: the text agent writes it",
+                    )
             if n.kind == "hitl_gate":
                 keys, krule = _gate_payload(u)
                 n.payload = keys

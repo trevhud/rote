@@ -72,6 +72,11 @@ vet_contact_judge:
     client: anthropic
 ```
 
+An `agent_loop` with no `termination` in `pipeline.yaml` needs one in
+`text.yaml`: `termination: {condition: "...", max_iterations: N}`, with the
+condition in the skill's own words and the smallest bound its wording
+supports. A loop without one has no stop.
+
 Write `description` only where the generated one is wrong. Write
 `signature_spec` for every judge (llm-judge-extraction.md, "Cross-runtime
 signature_spec"). Quote every string that contains a colon.

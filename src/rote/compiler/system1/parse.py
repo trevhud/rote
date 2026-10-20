@@ -94,14 +94,31 @@ def _rx(*parts: str) -> re.Pattern[str]:
     return re.compile("|".join(parts), re.I)
 
 
+#: Not a person: asking one of these is a call, not a human gate.
+_PERSON = (
+    r"(?!(?:the |a |an )?(?:api|tool|model|system|server|service|agent|script|mcp|llm"
+    r"|endpoint|bot)\b)(?:the |a |an )?"
+)
+#: Where a retrieval goes: a named thing (#channel, @handle, a capitalized
+#: name such as Zendesk) or a word for a service. "From the table" or "in the
+#: row" is data the step already has, and the skill's own references are not
+#: a service either.
+_SOURCE = (
+    r"(?!(?:the\s+)?\[?references/|\w+\.md\b)(?:the\s+|a\s+|an\s+|our\s+|your\s+)?"
+    r"(?:[#@][\w-]+|(?-i:[A-Z])[\w.-]*"
+    r"|(?:[\w-]+\s+){0,2}(?:portal|api|database|db|server|endpoint|inbox|channel|crm|system"
+    r"|service|site|website|account|bucket|drive|feed|spreadsheet|sheet|folder|warehouse"
+    r"|repository|repo|queue|mailbox|calendar|store)s?\b)"
+)
+
 SIGNALS: dict[str, re.Pattern[str]] = {
     "hitl_gate": _rx(
         # Anyone asked to act on the run: "ask the duty manager to provide",
         # "ask the finance lead to sign off". Asking someone FOR a fact
         # ("ask finance for the rate") is an error path, not a gate.
-        r"\bask (?:the |a |an )?[\w -]{1,40}? to (?:confirm|approve|review|sign[ -]?off"
+        rf"\bask {_PERSON}[\w -]{{1,40}}? to (?:confirm|approve|review|sign[ -]?off"
         r"|provide|decide|choose|check)\b",
-        r"\bask (?:the |a |an )?[\w -]{1,40}? for (?:approval|sign[ -]?off|a decision"
+        rf"\bask {_PERSON}[\w -]{{1,40}}? for (?:approval|sign[ -]?off|a decision"
         r"|confirmation|review)\b",
         r"\bpresent (?:the |a )?[\w\s-]{0,40}\bto (?:the )?[\w -]{1,30}?"
         r"(?: for (?:approval|review|sign[ -]?off)|$|[.,])",
@@ -110,9 +127,10 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bsigns? off\b|\bsign-off\b",
         r"\b(?:needs?|requires?|get|obtain) (?:\w+ ){0,2}approval\b",
         r"\bfor (\w+ )?approval\b",
-        r"\bmust be done manually\b",
-        r"\breview gate\b",
-        r"\bhandoff\b",
+        # Work the skill says a person does, not the run.
+        r"\b(?:must|has to|needs to|should) be done (?:manually|by hand|by (?:a|the) \w+)\b",
+        r"\bhand(?:s|ing)? (?:it |this |them )?(?:off|over)\b|\bhandoff\b",
+        r"\bgate\b",
         r"\brequest from (the )?user\b",
     ),
     "agent_loop": _rx(
@@ -134,20 +152,16 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bjudg(e|ment)\b",
         r"\bassess\b",
         r"\bsentiment\b",
-        r"\bread the entire thread\b",
-        r"\bextract for each\b",
     ),
     "fetch": _rx(
         r"\bmcp\b",
         # Any retrieval verb with a source, no vendor list: "pull open tickets
         # from Zendesk", "read the 50 most recent messages from #deal-intake".
         # A lookup in the skill's own reference files is not a call.
-        r"\b(?:read|pull|fetch|query|look up|retrieve|list|download|export|get)\b[^.\n]{0,60}"
-        r"\b(?:from|in|via|using)\s+(?!(?:the\s+)?\[?references/|\w+\.md\b)"
-        r"(?:the\s+)?[#@]?[A-Za-z]",
+        r"\b(?:read|pull|fetch|query|look up|retrieve|download|export)\b[^.\n]{0,60}"
+        rf"\b(?:from|in|via|using)\s+{_SOURCE}",
         r"\bsearch\b[^.\n]{0,40}\bfor\b|\bsearch query\b",
         r"\bnavigate to\b",
-        r"\bfile id\b",
     ),
     "write": _rx(
         r"\bsave (the|it|to|as)\b",
@@ -159,7 +173,7 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bsend (the|an?|it)\b",
         r"\bclick\b",
         r"\bpush to\b",
-        r"\bwrite [\w\s]{0,20}\bto (the )?[\w\s]{0,20}\b(folder|drive|sheet|crm|hubspot)\b",
+        rf"\bwrite [\w\s]{{0,20}}\bto {_SOURCE}",
     ),
     "pure_function": _rx(
         r"\bconvert\b",
