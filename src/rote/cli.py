@@ -4098,7 +4098,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "EXPERIMENTAL: decide the whole pipeline structure with rules (kinds, data "
             "flow, fan_out, mandatory, gates, constants, rule tables as code) before the "
             "agent runs; the agent then writes only text (implementations, judge "
-            "prompts, the report). See docs/design/compile-system1-and-parallel.md"
+            "prompts, the report). See docs/design/system1-compile.md"
         ),
     )
     compile_p.add_argument(

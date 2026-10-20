@@ -1,7 +1,7 @@
 """Read a skill bundle into steps, signals, constants and rule tables. No inference.
 
 This is the measured extractor from the System-1 research
-(``docs/design/compile-system1-and-parallel.md``, experiment (a)): the
+(``docs/design/system1-compile.md``; first measured in PR #145): the
 signal patterns are unchanged from the version that was scored, so the
 numbers in that document describe this code.
 """
@@ -96,17 +96,24 @@ def _rx(*parts: str) -> re.Pattern[str]:
 
 SIGNALS: dict[str, re.Pattern[str]] = {
     "hitl_gate": _rx(
-        r"\bask (the |a )?(user|duty manager|controller|bdr|human|operator|manager"
-        r"|reviewer|approver)",
-        r"\bpresent (the |a )?[\w\s-]{0,40}\b(to the (user|bdr|reviewer)|for (approval|review))",
-        r"\bwait for (a |the )?(decision|approval|response|confirmation|sign-?off)",
-        r"\bconfirm with the user",
-        r"\bfor (user |human )?approval\b",
+        # Anyone asked to act on the run: "ask the duty manager to provide",
+        # "ask the finance lead to sign off". Asking someone FOR a fact
+        # ("ask finance for the rate") is an error path, not a gate.
+        r"\bask (?:the |a |an )?[\w -]{1,40}? to (?:confirm|approve|review|sign[ -]?off"
+        r"|provide|decide|choose|check)\b",
+        r"\bask (?:the |a |an )?[\w -]{1,40}? for (?:approval|sign[ -]?off|a decision"
+        r"|confirmation|review)\b",
+        r"\bpresent (?:the |a )?[\w\s-]{0,40}\bto (?:the )?[\w -]{1,30}?"
+        r"(?: for (?:approval|review|sign[ -]?off)|$|[.,])",
+        r"\bwait for (a |the )?(decision|approval|response|confirmation|sign[ -]?off)",
+        r"\bconfirm with (?:the |a |an )?\w+",
+        r"\bsigns? off\b|\bsign-off\b",
+        r"\b(?:needs?|requires?|get|obtain) (?:\w+ ){0,2}approval\b",
+        r"\bfor (\w+ )?approval\b",
         r"\bmust be done manually\b",
         r"\breview gate\b",
         r"\bhandoff\b",
         r"\brequest from (the )?user\b",
-        r"\bpost [\w\s]{0,30}\bto the (controller|user|reviewer|approver)",
     ),
     "agent_loop": _rx(
         r"\bautonomous loop\b",
@@ -133,10 +140,13 @@ SIGNALS: dict[str, re.Pattern[str]] = {
     ),
     "fetch": _rx(
         r"\bmcp\b",
-        r"\b(read|pull|fetch|search|query|look up|retrieve|list)\b[^.\n]{0,60}"
-        r"\b(slack|gmail|drive|sheet|hubspot|zoominfo|salesforce|api|channel|inbox"
-        r"|threads?|messages?)\b",
-        r"\bsearch (query|gmail|for)\b",
+        # Any retrieval verb with a source, no vendor list: "pull open tickets
+        # from Zendesk", "read the 50 most recent messages from #deal-intake".
+        # A lookup in the skill's own reference files is not a call.
+        r"\b(?:read|pull|fetch|query|look up|retrieve|list|download|export|get)\b[^.\n]{0,60}"
+        r"\b(?:from|in|via|using)\s+(?!(?:the\s+)?\[?references/|\w+\.md\b)"
+        r"(?:the\s+)?[#@]?[A-Za-z]",
+        r"\bsearch\b[^.\n]{0,40}\bfor\b|\bsearch query\b",
         r"\bnavigate to\b",
         r"\bfile id\b",
     ),
@@ -173,7 +183,6 @@ SIGNALS: dict[str, re.Pattern[str]] = {
         r"\bcheck\b",
         r"\bbreak (it )?down\b",
         r"\bbuild the\b",
-        r"\bexecutive[- ]level summary\b",
         r"\bkpi\b",
     ),
 }
@@ -194,9 +203,7 @@ _STEP_NO = re.compile(r"^(?:step|phase)\s+(\d+)\b", re.I)
 
 
 #: A container heading whose sub-steps run once per item.
-_PER_ITEM = re.compile(
-    r"\bfor each\b|\beach (?:visible )?(?:row|item|record|invoice|line|page|file)\b", re.I
-)
+_PER_ITEM = re.compile(r"\bfor (?:each|every)\b|\beach (?!other\b|time\b)[a-z]+\b", re.I)
 
 
 def slug(text: str) -> str:
@@ -225,7 +232,7 @@ _CONST_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "window",
         re.compile(
-            rf"\b(?:last|past|within|newer_than:)\s*({_NUM})\s*"
+            rf"\b(?:last|past|within)\s*({_NUM})\s*"
             r"(d\b|days?|hours?|weeks?|months?|minutes?|seconds?)",
             re.I,
         ),

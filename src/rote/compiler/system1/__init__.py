@@ -7,7 +7,7 @@ agent is then given a much smaller rubric and writes only text: module
 implementations and tests, judge signatures and prompts, the report.
 
 The research behind it, with measured numbers, is
-``docs/design/compile-system1-and-parallel.md``. Nothing on the default
+``docs/design/system1-compile.md``. Nothing on the default
 compile path calls it.
 """
 

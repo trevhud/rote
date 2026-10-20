@@ -189,7 +189,10 @@ def test_review_lists_exactly_the_decisions_below_threshold(tmp_path: Path) -> N
         ("Ask the user to approve the list.", "hitl_gate"),  # 1 gate, 0 judge
         ("Ask the user to approve; classify the list.", "hitl_gate"),  # tie: the gate wins
         ("Ask the user. Classify and score the rubric list.", "llm_judge"),  # judge outvotes
-        ("Ask the user, then run the autonomous loop until the quota is met.", "hitl_gate"),
+        (
+            "Ask the user to approve it, then run the autonomous loop until the quota is met.",
+            "hitl_gate",
+        ),
     ],
 )
 def test_gate_judge_and_loop_precedence(tmp_path: Path, text: str, kind: str) -> None:
@@ -337,3 +340,28 @@ def test_a_failure_before_a_repair_verification_does_not_escape(tmp_path: Path) 
         None, REPO / "examples" / "expense-audit" / "skill", before_verify=boom
     )
     repair(work / "pipeline.yaml")  # verification still runs; nothing raises
+
+
+@pytest.mark.parametrize(
+    ("text", "kinds"),
+    [
+        # No vendor list: any retrieval verb with a source is a call.
+        ("Pull open tickets from Zendesk.", ["external_call"]),
+        (
+            "Download the invoices from the billing portal and total them.",
+            ["external_call", "pure_function"],
+        ),
+        # The skill's own reference files are not a service.
+        ("Look up the rates in references/rates.md and total every line.", ["pure_function"]),
+        # Anyone asked to act on the run parks it.
+        ("Ask the finance lead to sign off on the batch.", ["hitl_gate"]),
+        ("Send the draft to legal and wait for approval.", ["hitl_gate"]),
+        ("The batch needs manager approval before it ships.", ["hitl_gate"]),
+        # Asking someone FOR a fact is an error path, not a gate.
+        ("Total every line. If a rate is missing, ask finance for the rate.", ["pure_function"]),
+    ],
+)
+def test_general_fetch_and_gate_wording(tmp_path: Path, text: str, kinds: list[str]) -> None:
+    """Wording outside the five examples, from the #150 review."""
+    _, doc = _prepare(tmp_path, _skill(tmp_path, f"## Step 1: Do the step\n\n{text}\n"))
+    assert [n["kind"] for n in doc["nodes"]] == kinds
