@@ -176,7 +176,8 @@ def test_cloud_mode_rejects_the_local_system1_flags() -> None:
 
 def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> None:
     """The legacy `signature` path emits only on Python runtimes; System-1's
-    deliverable must emit everywhere, so a judge without a spec is an error."""
+    deliverable must emit everywhere, so a judge whose spec is missing or
+    still the skeleton's (no prompt, no output fields) is an error."""
     from rote.compiler import system1
     from rote.compiler.verify import verify_deliverable
 
@@ -184,14 +185,77 @@ def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> Non
     work.mkdir()
     system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
     judges = [n for n in load_pipeline(work / "pipeline.yaml").nodes if n.kind.value == "llm_judge"]
-    assert judges and all(j.signature_spec is None for j in judges)
+    assert len(judges) == 2
 
-    def missing(portable: bool) -> set[str]:
+    def flagged(portable: bool) -> set[str]:
         v = verify_deliverable(work, run_tests=False, portable_judges=portable)
-        return {f.node_id for f in v.findings if f.kind == "missing_signature_spec"}
+        return {f.node_id for f in v.findings if f.kind == "incomplete_signature_spec"}
 
-    assert missing(True) == {j.id for j in judges}
-    assert missing(False) == set()
+    assert flagged(True) == {j.id for j in judges}
+    assert flagged(False) == set()
+
+
+def _fill_judges(work: Path) -> None:
+    """What the text agent writes for each judge: a prompt and output fields."""
+    import yaml
+
+    from rote.compiler.system1.enforce import enforce
+
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    text = {
+        n["id"]: {
+            "signature_spec": {
+                "prompt": "Decide from {{ request }}.",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"verdict": {"type": "string"}},
+                    "required": ["verdict"],
+                },
+            }
+        }
+        for n in doc["nodes"]
+        if n["kind"] == "llm_judge"
+    }
+    (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
+    enforce(work, final=True)
+
+
+def test_the_skeleton_decides_each_judges_input_schema(tmp_path: Path) -> None:
+    from rote.compiler import system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    for j in (n for n in pipeline.nodes if n.kind.value == "llm_judge"):
+        assert j.signature is None  # one judge form: the spec
+        spec = j.signature_spec
+        assert spec is not None and spec.prompt == "Decide from {{ request }}."
+        props = spec.input_schema["properties"]
+        assert set(props) == set(j.inputs) == set(spec.input_schema["required"])
+        assert props["request"] == pipeline.input.input_schema
+        assert spec.output_schema["required"] == ["verdict"]
+
+
+@pytest.mark.parametrize("runtime", ["cloudflare", "dbos", "temporal", "python"])
+def test_a_system1_judge_pipeline_emits_on_every_runtime(runtime: str, tmp_path: Path) -> None:
+    """System-1 plus a judge plus a TypeScript target: the emit that broke."""
+    from rote.adapters import get_adapter
+    from rote.compiler import system1
+    from rote.compiler.verify import verify_deliverable
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    v = verify_deliverable(work, run_tests=False, portable_judges=True)
+    assert not [f for f in v.findings if f.kind == "incomplete_signature_spec"]
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    if runtime == "python" and pipeline.requires_durable_execution:
+        pytest.skip("deal-monitor has a gate; the python adapter refuses gates by design")
+    get_adapter(runtime, extracted_source_dir=work).emit(pipeline, tmp_path / "out")
+    assert any((tmp_path / "out").rglob("*"))
 
 
 @pytest.mark.asyncio
@@ -329,3 +393,36 @@ def test_rote_config_reports_the_decider(
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["decider"]
     assert setting == {"value": "jev", "source": "env ROTE_DECIDER"}
+
+
+@pytest.mark.parametrize(
+    ("written", "named"),
+    [
+        ({"prompt": "Decide from {{ request }}."}, "is missing output fields"),
+        (
+            {"output_schema": {"type": "object", "properties": {"v": {"type": "string"}}}},
+            "is missing a prompt",
+        ),
+    ],
+)
+def test_each_half_of_a_judges_text_is_required(
+    written: dict[str, Any], named: str, tmp_path: Path
+) -> None:
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+    from rote.compiler.verify import verify_deliverable
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judges = [n["id"] for n in doc["nodes"] if n["kind"] == "llm_judge"]
+    (work / "system1" / "text.yaml").write_text(
+        yaml.safe_dump({j: {"signature_spec": written} for j in judges})
+    )
+    enforce(work, final=True)
+    v = verify_deliverable(work, run_tests=False, portable_judges=True)
+    messages = [f.message for f in v.findings if f.kind == "incomplete_signature_spec"]
+    assert len(messages) == len(judges) and all(named in m for m in messages)

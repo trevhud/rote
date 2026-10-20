@@ -1,8 +1,10 @@
 """Render a System-1 plan into the files the text agent starts from. No inference.
 
 * ``pipeline.yaml``: the complete IR skeleton. Every decision field is
-  final; the agent only fills text (descriptions, type strings, judge
-  ``signature_spec``).
+  final; the agent only fills text (descriptions, type strings, a judge's
+  prompt and output fields). Each judge's ``signature_spec`` starts with an
+  input schema decided from its ``inputs`` (:func:`judge_input_schema`), so
+  the IR emits on every runtime without the agent writing one.
 * ``extracted/rule_tables.py`` + ``tests/test_rule_tables.py``: the skill's
   markdown rule tables as typed literals, each row cited verbatim.
 * ``eval.yaml``: per-step agent-turn estimates from a fixed table by kind.
@@ -50,8 +52,33 @@ def _description(n: NodePlan) -> str:
     return f"{n.unit.title}: {first}"[:400]
 
 
+def judge_input_schema(n: NodePlan, request_schema: dict[str, Any]) -> dict[str, Any]:
+    """A judge's input schema, decided from its ``inputs``: one required
+    property per input, ``request`` typed as the pipeline input, an upstream
+    output as an object, and a fanned element as anything (its shape is the
+    upstream node's, which code does not know yet).
+
+    The IR requires a judge's inputs to satisfy this schema, so its property
+    set is exactly the node's input names."""
+    props: dict[str, Any] = {}
+    for param, ref in n.inputs.items():
+        if ref == "pipeline.input":
+            props[param] = request_schema
+        elif ref.endswith(".output.items"):
+            props[param] = {"description": f"one element of {ref.removesuffix('.items')}"}
+        else:
+            props[param] = {"type": "object", "description": f"the result of {ref}"}
+    return {"type": "object", "properties": props, "required": list(props)}
+
+
+#: What a judge's spec starts with before the agent writes its text.
+SKELETON_PROMPT = ""
+SKELETON_OUTPUT_SCHEMA: dict[str, Any] = {"type": "object"}
+
+
 def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
+    request_schema = input_schema(plan)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -75,7 +102,12 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             if n.mcp is not None:
                 node["mcp"] = dict(n.mcp)
         if n.kind == "llm_judge":
-            node["signature"] = f"signatures/{n.id}.py:{_camel(n.id)}"
+            node["signature_spec"] = {
+                "input_schema": judge_input_schema(n, request_schema),
+                "output_schema": dict(SKELETON_OUTPUT_SCHEMA),
+                "prompt": SKELETON_PROMPT,
+                "client": "anthropic",
+            }
         if n.kind == "agent_loop":
             node["tools"] = list(n.tools)
             if n.loop_body:

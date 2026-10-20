@@ -73,6 +73,15 @@ def _merge_output(skeleton: Any, agent: Any) -> Any:
     return agent if isinstance(agent, (str, dict)) else skeleton
 
 
+def _merge_spec(base: Any, agent: Any) -> Any:
+    """A judge's spec: the skeleton's (code-decided input schema), with each key
+    the agent wrote laid over it. The agent writes the prompt and the output
+    schema, and may type the inputs more precisely."""
+    if not isinstance(agent, dict):
+        return copy.deepcopy(base)
+    return {**copy.deepcopy(base), **copy.deepcopy(agent)}
+
+
 def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
     """Restore System-1's decisions in ``work_dir/pipeline.yaml``; return what changed.
 
@@ -127,9 +136,13 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
                     f"`{sk['id']}` {key}: agent wrote {mine.get(key)!r}, kept {sk.get(key)!r}"
                 )
         node["output"] = _merge_output(sk.get("output"), mine.get("output"))
+        if "signature_spec" in sk:
+            node["signature_spec"] = _merge_spec(sk["signature_spec"], mine.get("signature_spec"))
         for key, value in text.get(sk["id"], {}).items():
             if key == "output":
                 node["output"] = _merge_output(sk.get("output"), value)
+            elif key == "signature_spec" and "signature_spec" in sk:
+                node["signature_spec"] = _merge_spec(node["signature_spec"], value)
             elif key not in decided and key != "id":
                 node[key] = value
         merged_nodes.append(node)
