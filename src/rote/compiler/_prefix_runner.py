@@ -42,6 +42,33 @@ def _serialize(obj: Any) -> Any:
     return obj
 
 
+def _not_json(value: Any, path: str = "result") -> str | None:
+    """Where ``value`` stops being plain JSON, or None when it is JSON throughout.
+
+    A step result crosses a durable boundary (a DBOS row, a Workers step, a
+    JSON run result), so a set, a datetime or an object there either fails
+    or silently turns into its ``repr``: a real compile's duplicate check
+    returned ``{'EXP-2412'}``, a Python set, and the run reported the string
+    instead of the list."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return None
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            where = _not_json(item, f"{path}[{i}]")
+            if where:
+                return where
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return f"{path} has a {type(key).__name__} key {key!r}"
+            where = _not_json(item, f"{path}.{key}")
+            if where:
+                return where
+        return None
+    return f"{path} is a {type(value).__name__}"
+
+
 class BindingError(Exception):
     """An ``inputs:`` reference that the upstream result cannot satisfy."""
 
@@ -155,7 +182,10 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                         f"fan_out over `{fan}` expected a list, got {type(items).__name__}"
                     )
                 output = [_serialize(_call(fn, {**payload, fan: item})) for item in items]
-            json.dumps(output, default=str)  # a step result must cross a durable boundary
+            where = _not_json(output)
+            if where:
+                report[node_id] = {"status": "not_json", "message": where}
+                continue
             results[node_id] = output
             report[node_id] = {"status": "ok"}
         except BindingError as e:
