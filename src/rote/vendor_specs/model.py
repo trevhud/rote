@@ -81,6 +81,23 @@ class Operation(BaseModel):
         return (self.url_template, *self.upload_url_templates)
 
 
+class AuthSpec(BaseModel):
+    """The one credential a vendor's requests carry: where it goes and where it comes from.
+
+    The live check sends this credential and no other: a ``{$env:VAR}`` the
+    code reads anywhere else is refused, so code a hostile skill steered
+    cannot send another secret from the user's shell.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: The environment variable holding it.
+    env: str
+    location: Literal["header", "query"]
+    #: The header (``Authorization``) or query parameter (``key``) it goes in.
+    name: str
+
+
 class ApiSpec(BaseModel):
     """One vendor API version, in the shareable form."""
 
@@ -99,6 +116,9 @@ class ApiSpec(BaseModel):
     global_params: dict[str, ParamSpec] = Field(default_factory=dict)
     operations: list[Operation] = Field(default_factory=list)
     schemas: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    #: The credential its requests carry, when the spec declares one (a docs
+    #: spec's ``auth``). Google's is the OAuth token, handled by the live check.
+    auth: AuthSpec | None = None
 
     @property
     def key(self) -> str:
@@ -136,6 +156,7 @@ def host_of(url: str) -> str | None:
 
 __all__ = [
     "FORMAT_VERSION",
+    "AuthSpec",
     "path_segments",
     "ApiSpec",
     "Operation",

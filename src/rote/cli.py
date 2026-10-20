@@ -3126,8 +3126,26 @@ def _cmd_live_check(args: argparse.Namespace) -> int:
         return 2
     raw = Path(args.input).read_text(encoding="utf-8") if Path(args.input).is_file() else args.input
     payload = json.loads(raw)
+
+    def confirm(plan: list[Any]) -> bool:
+        print(f"rote run: the live check will send {len(plan)} request(s):", file=sys.stderr)
+        for p in plan:
+            carries = f", with {p.credential}" if p.credential else ", with no credential"
+            print(f"  {p.method} {p.host}  {p.operation}{carries}", file=sys.stderr)
+        if args.yes:
+            return True
+        if not sys.stdin.isatty():
+            print("rote run: pass --yes to send them (no terminal to ask)", file=sys.stderr)
+            return False
+        return input("Send them? [y/N] ").strip().lower() in ("y", "yes")
+
     try:
-        report = live_check(compiled.resolve(), payload)
+        report = live_check(
+            compiled.resolve(),
+            payload,
+            confirm=confirm,
+            allow_hosts=frozenset(args.allow_host or ()),
+        )
     except LiveCheckRefused as e:
         print(f"rote run: live check refused: {e}", file=sys.stderr)
         return 2
@@ -4527,6 +4545,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_p.add_argument(
+        "--allow-host",
+        action="append",
+        metavar="HOST",
+        help=(
+            "With --live-check: allow a host from the compile's own docs spec whose "
+            "cited pages the compile did not fetch (repeatable)"
+        ),
+    )
+    run_p.add_argument(
         "--live-check",
         action="store_true",
         help=(
@@ -4551,7 +4578,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--yes",
         action="store_true",
-        help="Accept the derived input proposal without prompting (non-interactive runs)",
+        help=(
+            "Accept the derived input proposal without prompting (non-interactive runs); "
+            "with --live-check, send the printed requests without asking"
+        ),
     )
     run_p.add_argument(
         "--json",

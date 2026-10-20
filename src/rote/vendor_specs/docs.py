@@ -35,7 +35,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from rote.contracts import ContractFinding
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec
+from rote.vendor_specs.model import ApiSpec, AuthSpec, Operation, ParamSpec
 
 DOCS_DIRNAME = "vendor_specs"
 
@@ -72,6 +72,9 @@ class DocsSpecFile(BaseModel):
     version: str
     sources: list[str] = Field(min_length=1)
     operations: list[_DocsOperation] = Field(min_length=1)
+    #: The one credential the vendor's requests carry, as its docs describe:
+    #: ``{"env": "SLACK_BOT_TOKEN", "location": "header", "name": "Authorization"}``.
+    auth: AuthSpec | None = None
 
 
 class DocsSpecError(ValueError):
@@ -137,6 +140,7 @@ def to_api_spec(raw: DocsSpecFile, where: str) -> ApiSpec:
         source_url=raw.sources[0],
         sources=list(raw.sources),
         operations=operations,
+        auth=raw.auth,
     )
 
 

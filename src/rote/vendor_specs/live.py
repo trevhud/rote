@@ -41,10 +41,12 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rote.compiler import api_docs
 from rote.ir import NodeKind, Pipeline, load_pipeline, parse_input_ref
 from rote.vendor_specs import docs, google
 from rote.vendor_specs.check import best_operation, check_deliverable
@@ -167,6 +169,22 @@ class _Unbuildable(Exception):
     """Why a request cannot be built exactly from the static extraction."""
 
 
+@dataclass(frozen=True)
+class PlannedRequest:
+    """One request the check will send, as the user confirms it."""
+
+    key: str
+    node_id: str
+    method: str
+    host: str
+    operation: str
+    #: The environment variable (or Google's OAuth token) it carries, if any.
+    credential: str | None
+
+
+Confirm = Callable[[list[PlannedRequest]], bool]
+
+
 def live_check(
     compiled_dir: Path,
     payload: dict[str, Any],
@@ -174,11 +192,18 @@ def live_check(
     fixtures: FixtureStore | None = None,
     env: dict[str, str] | None = None,
     send: Any = None,
+    *,
+    confirm: Confirm,
+    allow_hosts: frozenset[str] = frozenset(),
 ) -> LiveReport:
     """Send each entry vendor read once to the real API, built statically; compare shapes.
 
-    ``env`` is where credentials are read (default: ``os.environ``); ``send``
-    replaces the HTTP client (tests count what it was asked to send).
+    Every request is built before any is sent, and ``confirm`` sees the whole
+    plan (each host, operation and credential); nothing is sent unless it
+    returns True. ``env`` is where the declared credential is read (default:
+    ``os.environ``); ``send`` replaces the HTTP client (tests count what it
+    was asked to send). ``allow_hosts`` admits docs-spec hosts the compile's
+    fetched pages do not vouch for.
     """
     specs = specs or SpecStore()
     fixtures = fixtures or FixtureStore()
@@ -214,8 +239,13 @@ def live_check(
             "the live check is read-only, and this deliverable writes: "
             + ", ".join(f"{c.operation} ({c.path}:{c.line})" for c in writes)
         )
+    _refuse_unvouched_hosts(
+        [ops[c.operation or ""] for c in checks], api_docs.read_fetched(compiled_dir), allow_hosts
+    )
     runnable, skipped = entry_reads(pipeline)
     report = LiveReport(skipped=skipped)
+    # Build everything first: a credential refused anywhere sends nothing.
+    planned: list[tuple[PlannedRequest, LiveRequest, ApiSpec, Operation, dict[str, set[str]]]] = []
     for node in runnable:
         rel, _, symbol = node.impl.partition(":")
         module = compiled_dir / rel
@@ -234,48 +264,143 @@ def live_check(
             check = next(c for c in checks if c.path == rel and c.line == site.line)
             spec, op = ops[check.operation or ""]
             try:
-                request = _build(site, spec, op, kwargs, env)
+                request, credential = _build(site, spec, op, kwargs, env)
             except _Unbuildable as e:
                 report.unchecked[key] = str(e)
                 continue
-            assert request.method in _READ_METHODS  # the one invariant everything rests on
-            try:
-                status, content_type, body = send(request)
-            except Exception as e:  # noqa: BLE001 (any failure is reported, never its text)
-                report.errors[key] = _redacted(e)
-                continue
-            report.checked.append(
-                _compare(node.id, spec, op, status, content_type, body, fixtures, code_reads)
+            plan = PlannedRequest(
+                key, node.id, request.method, host_of(request.url) or "", op.id, credential
             )
+            planned.append((plan, request, spec, op, code_reads))
+    if planned and not confirm([p for p, *_ in planned]):
+        raise LiveCheckRefused("the live calls were not confirmed; nothing was sent")
+    for plan, request, spec, op, code_reads in planned:
+        assert request.method in _READ_METHODS  # the one invariant everything rests on
+        try:
+            status, content_type, body = send(request)
+        except Exception as e:  # noqa: BLE001 (any failure is reported, never its text)
+            report.errors[plan.key] = _redacted(e)
+            continue
+        report.checked.append(
+            _compare(plan.node_id, spec, op, status, content_type, body, fixtures, code_reads)
+        )
     return report
+
+
+def _refuse_unvouched_hosts(
+    used: list[tuple[ApiSpec, Operation]], fetched: set[str] | None, allow_hosts: frozenset[str]
+) -> None:
+    """A docs spec is the agent's claim: its host is trusted only when every page it
+    cites was fetched in the compile (rote's own record), or the user allows it."""
+    for spec, op in used:
+        if spec.source != "docs":
+            continue
+        host = (host_of(op.url_template) or "").split(":")[0]
+        pages = [s for s in spec.sources if s != "skill"]
+        vouched = (
+            bool(pages)
+            and fetched is not None
+            and all(api_docs.normalize_url(p) in fetched for p in pages)
+        )
+        if not vouched and host not in allow_hosts:
+            why = (
+                "cites only the skill"
+                if not pages
+                else "cites pages this compile has no record of fetching"
+            )
+            raise LiveCheckRefused(
+                f"{host} comes from the compile's own docs spec ({spec.key}), which {why}: "
+                f"pass --allow-host {host} to call it anyway"
+            )
+
+
+class CredentialRefused(LiveCheckRefused):
+    """The code would send an environment value the spec does not declare as its auth."""
 
 
 def _build(
     site: CallSite, spec: ApiSpec, op: Operation, kwargs: dict[str, Any], env: dict[str, str]
-) -> LiveRequest:
-    """The exact GET/HEAD ``site`` makes, from the node's inputs and the environment."""
+) -> tuple[LiveRequest, str | None]:
+    """The exact GET/HEAD ``site`` makes, and the credential it carries.
+
+    Only the credential the spec declares is ever sent: Google's OAuth token
+    (the check's own, whatever the code builds), or a docs spec's ``auth``
+    at its declared place. Any other environment read the code makes, in the
+    URL, a parameter or a header, refuses the whole check: a skill can
+    steer the code and the docs spec both, and the user's shell holds more
+    secrets than this vendor's.
+    """
     if not site.params_complete:
         raise _Unbuildable("the call spreads parameters the check cannot see (**kwargs)")
     if site.kind == "google_client":
-        return _build_google(site, spec, op, kwargs, env)
+        return _build_google(site, spec, op, kwargs, env), "Google OAuth token"
     if site.auth_kwarg:
         raise _Unbuildable("the call authenticates with an auth= object the check cannot rebuild")
     if site.headers is None:
         raise _Unbuildable("the call passes headers the check cannot read")
     assert site.url is not None and site.method is not None
+    google_api = spec.vendor == "google"
+    headers_in = dict(site.headers)
+    if google_api:
+        # The check sends Google's token itself; the code's own is not used.
+        headers_in = {k: v for k, v in headers_in.items() if k.lower() != "authorization"}
+    used = _check_credentials(site.url, site.params, headers_in, spec)
     url = _fill(site.url, kwargs, env, path=True)
     query = {name: _resolve(value, kwargs, env) for name, value in site.params.items()}
-    headers = {name: _resolve(value, kwargs, env) for name, value in site.headers.items()}
+    headers = {name: str(_resolve(value, kwargs, env)) for name, value in headers_in.items()}
     _refuse_method_override(headers)
-    return LiveRequest(
-        site.method, _with_query(url, query), {k: str(v) for k, v in headers.items()}
-    )
+    credential = used
+    if google_api:
+        headers["Authorization"] = f"Bearer {_google_token(op, env)}"
+        credential = "Google OAuth token"
+    return LiveRequest(site.method, _with_query(url, query), headers), credential
+
+
+def _env_names(value: object) -> set[str]:
+    text = value.template if isinstance(value, Expr) else value if isinstance(value, str) else ""
+    return {m.group(2) for m in _TEMPLATE_PART.finditer(text) if m.group(1)}
+
+
+def _check_credentials(
+    url: str, params: dict[str, object], headers: dict[str, object], spec: ApiSpec
+) -> str | None:
+    """The declared credential the request uses, or raise for any other env read."""
+    auth = spec.auth
+    used: set[str] = set()
+    places = [("url", "", url)] + [("query", n, v) for n, v in params.items()]
+    places += [("header", n, v) for n, v in headers.items()]
+    for location, name, value in places:
+        names = _env_names(value)
+        if not names:
+            continue
+        allowed = (
+            auth is not None
+            and names == {auth.env}
+            and location == auth.location
+            and name.lower() == auth.name.lower()
+        )
+        if not allowed:
+            where = "the URL" if location == "url" else f"{location} {name!r}"
+            declared = (
+                f"the spec's declared credential is {auth.env} in {auth.location} {auth.name!r}"
+                if auth is not None
+                else "the spec declares no credential"
+            )
+            raise CredentialRefused(
+                f"the code sends {', '.join(sorted(names))} from the environment in {where}, "
+                f"and {declared}: nothing was sent"
+            )
+        used |= names
+    return next(iter(used), None)
 
 
 def _build_google(
     site: CallSite, spec: ApiSpec, op: Operation, kwargs: dict[str, Any], env: dict[str, str]
 ) -> LiveRequest:
     """A client-library call as the HTTP request the library would send."""
+    # Its credential is the check's own Google token: no environment value
+    # rides along as a parameter.
+    _check_credentials("", site.params, {}, spec)
     by_client = {google.client_param(n): n for n in {**spec.global_params, **op.params}}
     path: dict[str, str] = {}
     query: dict[str, Any] = {}
