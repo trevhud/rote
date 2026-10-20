@@ -43,12 +43,13 @@ from rote.adapters._common import (
     _to_pascal_case,
     agent_loop_named_types,
     agent_loop_output,
+    effort_env_vars,
     mcp_tool_arguments,
     override_env_vars,
     safe_block_comment_line,
     temperature_env_var,
 )
-from rote.inference import structured_output_schema
+from rote.inference import DEFAULT_JUDGE_EFFORT, structured_output_schema
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
@@ -212,6 +213,24 @@ def _temperature_block(node_id: str, temperature: float | None) -> tuple[str, st
     )
 
 
+def _effort_block(node_id: str) -> tuple[list[str], str]:
+    """``(env_type_lines, const_line)`` for an Anthropic judge's effort knob.
+
+    The same resolution as the Python helper's ``node_effort``: the
+    per-node variable, then the pipeline-wide one, then
+    :data:`rote.inference.DEFAULT_JUDGE_EFFORT`. Set but empty omits
+    ``output_config.effort``.
+    """
+    node_var, all_var = effort_env_vars(node_id)
+    default = json.dumps(DEFAULT_JUDGE_EFFORT or "")
+    return (
+        [f"        {node_var}?: string;", f"        {all_var}?: string;"],
+        f"    const EFFORT = (env.{node_var} ?? env.{all_var} ?? {default}).trim() as\n"
+        '        | Anthropic.OutputConfig["effort"]\n'
+        '        | "";',
+    )
+
+
 _INTERPOLATE_HELPER = """\
 function interpolate(template: string, vars: Record<string, unknown>): string {
     return template.replace(/\\{\\{\\s*([\\w.]+)\\s*\\}\\}/g, (_match, key: string) => {
@@ -263,6 +282,7 @@ def emit_signature_anthropic(
     """
     desc_first = safe_block_comment_line(description, fallback=node_id)
     temp_env_line, temp_const_line, temp_line = _temperature_block(node_id, temperature)
+    effort_env_lines, effort_const_line = _effort_block(node_id)
     quoted_model = json.dumps(model)
     quoted_prompt = json.dumps(prompt_template)
     model_var, base_var = override_env_vars(node_id)
@@ -302,10 +322,12 @@ def emit_signature_anthropic(
         f"        {model_var}?: string;",
         f"        {base_var}?: string;",
         *([temp_env_line] if temp_env_line else []),
+        *effort_env_lines,
         "    },",
         f"): Promise<{pascal}Output> {{",
         f"    const input = {pascal}Input.parse(rawInput);",
         *([temp_const_line] if temp_const_line else []),
+        effort_const_line,
         "    const client = new Anthropic({",
         "        apiKey: env.ANTHROPIC_API_KEY,",
         f"        baseURL: env.{base_var}{base_default},",
@@ -329,6 +351,7 @@ def emit_signature_anthropic(
         [
             "        output_config: {",
             '            format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },',
+            "            ...(EFFORT ? { effort: EFFORT } : {}),",
             "        },",
             "        messages: [",
             msg_line,
@@ -971,14 +994,14 @@ def judge_env_arg(node: Node) -> str:
     """
     spec = require_signature_spec(node)
     key = "OPENAI_API_KEY" if spec.client == "openai" else "ANTHROPIC_API_KEY"
-    model_var, base_var = override_env_vars(node.id)
-    return (
-        "{\n"
-        f'        {key}: requireEnv("{key}"),\n'
-        f"        {model_var}: process.env.{model_var},\n"
-        f"        {base_var}: process.env.{base_var},\n"
-        "    }"
-    )
+    knobs = list(override_env_vars(node.id))
+    if spec.temperature is not None:
+        knobs.append(temperature_env_var(node.id))
+    if spec.client == "anthropic":
+        knobs.extend(effort_env_vars(node.id))
+    lines = [f'        {key}: requireEnv("{key}"),']
+    lines += [f"        {var}: process.env.{var}," for var in knobs]
+    return "{\n" + "\n".join(lines) + "\n    }"
 
 
 def emit_node_tsconfig() -> str:
@@ -2989,6 +3012,23 @@ function sdkTarget(
     };
 }
 
+/** Mirrors rote.inference.DEFAULT_JUDGE_EFFORT (empty: send no effort). */
+const DEFAULT_EFFORT = "";
+
+/**
+ * The effort this loop runs at, or null to send none: ROTE_EFFORT_<NODE_ID>,
+ * then ROTE_JUDGE_EFFORT, then the default, and a set-but-empty value
+ * omits it. The same resolution as the Python helper's node_effort.
+ */
+function nodeEffort(nodeId: string, env: AgentEnv): Anthropic.Beta.BetaOutputConfig["effort"] {
+    const value = (
+        env[`ROTE_EFFORT_${nodeId.toUpperCase()}`] ??
+        env.ROTE_JUDGE_EFFORT ??
+        DEFAULT_EFFORT
+    ).trim();
+    return value ? (value as Anthropic.Beta.BetaOutputConfig["effort"]) : null;
+}
+
 async function runViaAnthropic(
     nodeId: string,
     provider: Provider,
@@ -3023,12 +3063,14 @@ async function runViaAnthropic(
         parse: (content: unknown) => content as Record<string, unknown>,
     }));
 
+    const effort = nodeEffort(nodeId, env);
     const runner = client.beta.messages.toolRunner({
         model,
         max_tokens: 4096,
         system: SYSTEM_PROMPT,
         tools: runnable,
         max_iterations: maxIterations,
+        ...(effort ? { output_config: { effort } } : {}),
         messages: [{ role: "user", content: prompt }],
     });
     // runUntilDone(), never done(): done() waits for the async iterator to
@@ -3086,10 +3128,13 @@ async function runViaAnthropic(
                 ? {
                       tool_choice: { type: "none" as const },
                       output_config: {
+                          ...(effort ? { effort } : {}),
                           format: { type: "json_schema" as const, schema: outputFormat },
                       },
                   }
-                : {}),
+                : effort
+                  ? { output_config: { effort } }
+                  : {}),
             messages,
         });
         iterations += 1;

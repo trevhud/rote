@@ -303,6 +303,23 @@ function sdkTarget(
     };
 }
 
+/** Mirrors rote.inference.DEFAULT_JUDGE_EFFORT (empty: send no effort). */
+const DEFAULT_EFFORT = "";
+
+/**
+ * The effort this loop runs at, or null to send none: ROTE_EFFORT_<NODE_ID>,
+ * then ROTE_JUDGE_EFFORT, then the default, and a set-but-empty value
+ * omits it. The same resolution as the Python helper's node_effort.
+ */
+function nodeEffort(nodeId: string, env: AgentEnv): Anthropic.Beta.BetaOutputConfig["effort"] {
+    const value = (
+        env[`ROTE_EFFORT_${nodeId.toUpperCase()}`] ??
+        env.ROTE_JUDGE_EFFORT ??
+        DEFAULT_EFFORT
+    ).trim();
+    return value ? (value as Anthropic.Beta.BetaOutputConfig["effort"]) : null;
+}
+
 async function runViaAnthropic(
     nodeId: string,
     provider: Provider,
@@ -337,12 +354,14 @@ async function runViaAnthropic(
         parse: (content: unknown) => content as Record<string, unknown>,
     }));
 
+    const effort = nodeEffort(nodeId, env);
     const runner = client.beta.messages.toolRunner({
         model,
         max_tokens: 4096,
         system: SYSTEM_PROMPT,
         tools: runnable,
         max_iterations: maxIterations,
+        ...(effort ? { output_config: { effort } } : {}),
         messages: [{ role: "user", content: prompt }],
     });
     // runUntilDone(), never done(): done() waits for the async iterator to
@@ -400,10 +419,13 @@ async function runViaAnthropic(
                 ? {
                       tool_choice: { type: "none" as const },
                       output_config: {
+                          ...(effort ? { effort } : {}),
                           format: { type: "json_schema" as const, schema: outputFormat },
                       },
                   }
-                : {}),
+                : effort
+                  ? { output_config: { effort } }
+                  : {}),
             messages,
         });
         iterations += 1;

@@ -47,8 +47,11 @@ a gateway) without re-emitting:
 ```sh
 export ROTE_MODEL_VET_CONTACT=...           # `vet_contact`: model id
 export ROTE_BASE_URL_VET_CONTACT=...        # `vet_contact`: custom endpoint
+export ROTE_EFFORT_VET_CONTACT=low          # `vet_contact`: effort (empty value omits it)
 export ROTE_MODEL_PERSONALIZE_EMAIL=...     # `personalize_email`: model id
 export ROTE_BASE_URL_PERSONALIZE_EMAIL=...  # `personalize_email`: custom endpoint
+export ROTE_EFFORT_PERSONALIZE_EMAIL=low    # `personalize_email`: effort (empty value omits it)
+export ROTE_JUDGE_EFFORT=low                # effort for every Anthropic judge
 ```
 
 ## HITL gates
