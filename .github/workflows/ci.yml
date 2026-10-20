@@ -128,6 +128,7 @@ jobs:
             tests/test_dbos_serve_e2e.py \
             tests/test_eval_empirical_dbos.py \
             tests/test_expense_audit_example.py \
+            tests/test_bench_fidelity.py \
             tests/test_constants_parity.py \
             tests/test_mcp_args_literal_parity.py \
             tests/test_agent_loop_output_parity.py \

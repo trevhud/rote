@@ -544,6 +544,15 @@
         }
       ],
       "stable": {
+        "coverage": {
+          "covered": 13,
+          "fields": 13,
+          "low": false,
+          "rate": 1.0,
+          "uncovered_layout_disagreements": [],
+          "uncovered_missing_in_some_runs": [],
+          "uncovered_value_disagreements": []
+        },
         "fields": {
           "active_sites": 3.0,
           "approved_appointments": 2.0,
@@ -601,6 +610,7 @@
             ]
           }
         },
+        "insufficient_runs": false,
         "reads": [
           "gmail.search_threads->response[0]",
           "google_drive.read_file_content->response[0]",
@@ -617,72 +627,7 @@
         "side_effects": [],
         "side_effects_unordered": [],
         "successful_runs": 3,
-        "unstable_fields": [
-          "container_flow[].active",
-          "container_flow[].completion_pct",
-          "container_flow[].loaded",
-          "container_flow[].shipped",
-          "container_flow[].site",
-          "container_flow[].staged",
-          "current_dwell[].alert",
-          "current_dwell[].carrier",
-          "current_dwell[].packages",
-          "current_dwell[].shipper",
-          "current_dwell[].site",
-          "dock_appointment_completion.green",
-          "dock_appointment_completion.grey",
-          "dock_appointment_completion.other",
-          "dock_appointment_completion.red",
-          "duty_manager_reminder",
-          "report_date",
-          "report_sections.kpi_header.active_sites",
-          "report_sections.kpi_header.avg_completion_pct",
-          "report_sections.kpi_header.dock_pending_count",
-          "report_sections.kpi_header.open_dwell_tickets",
-          "report_sections.section1_dock_compliance.appointment_tiles.escalation_required",
-          "report_sections.section1_dock_compliance.appointment_tiles.green_complete",
-          "report_sections.section1_dock_compliance.appointment_tiles.grey_canceled",
-          "report_sections.section1_dock_compliance.appointment_tiles.other_non_compliant",
-          "report_sections.section1_dock_compliance.appointment_tiles.red_no_call_no_show",
-          "report_sections.section1_dock_compliance.gmail_summary.approved",
-          "report_sections.section1_dock_compliance.gmail_summary.outstanding_not_approved",
-          "report_sections.section1_dock_compliance.gmail_summary.requested",
-          "report_sections.section1_dock_compliance.pending_log[].issue_type",
-          "report_sections.section1_dock_compliance.pending_log[].po",
-          "report_sections.section1_dock_compliance.pending_log[].site",
-          "report_sections.section2_missort_and_loss.container_flow[].active",
-          "report_sections.section2_missort_and_loss.container_flow[].completion_pct",
-          "report_sections.section2_missort_and_loss.container_flow[].flagged",
-          "report_sections.section2_missort_and_loss.container_flow[].loaded",
-          "report_sections.section2_missort_and_loss.container_flow[].shipped",
-          "report_sections.section2_missort_and_loss.container_flow[].site",
-          "report_sections.section2_missort_and_loss.container_flow[].staged",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].action_needed",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].divert_adjustment_needed",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].fail_rate_pct",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].prior_day_volume",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].site",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].volume",
-          "report_sections.section2_missort_and_loss.sorter_metrics[].volume_change_pct",
-          "report_sections.section3_dwell.current_dwell_alerts[].alert",
-          "report_sections.section3_dwell.current_dwell_alerts[].carrier",
-          "report_sections.section3_dwell.current_dwell_alerts[].packages",
-          "report_sections.section3_dwell.current_dwell_alerts[].shipper",
-          "report_sections.section3_dwell.current_dwell_alerts[].site",
-          "report_sections.section3_dwell.open_dwell_impact_log[].carrier_impact",
-          "report_sections.section3_dwell.open_dwell_impact_log[].client_impact",
-          "report_sections.section3_dwell.open_dwell_impact_log[].date",
-          "report_sections.section3_dwell.open_dwell_impact_log[].facility",
-          "report_sections.section3_dwell.open_dwell_impact_log[].issue",
-          "report_sections.section3_dwell.open_dwell_impact_log[].packages",
-          "report_sections.section3_dwell.open_dwell_impact_log[].ticket",
-          "sorter_metrics[].action_needed",
-          "sorter_metrics[].fail_rate_pct",
-          "sorter_metrics[].prior_day_volume",
-          "sorter_metrics[].site",
-          "sorter_metrics[].volume",
-          "sorter_metrics[].volume_drop_pct"
-        ]
+        "unstable_fields": []
       }
     },
     "quiet_day": {
@@ -900,6 +845,15 @@
         }
       ],
       "stable": {
+        "coverage": {
+          "covered": 13,
+          "fields": 13,
+          "low": false,
+          "rate": 1.0,
+          "uncovered_layout_disagreements": [],
+          "uncovered_missing_in_some_runs": [],
+          "uncovered_value_disagreements": []
+        },
         "fields": {
           "active_sites": 4.0,
           "approved_appointments": 2.0,
@@ -934,6 +888,7 @@
             "set": []
           }
         },
+        "insufficient_runs": false,
         "reads": [
           "gmail.search_threads->response[0]",
           "google_drive.read_file_content->response[0]",

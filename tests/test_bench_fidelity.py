@@ -346,6 +346,52 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
     assert json.loads(json.dumps(calls))  # the log is plain JSON
 
 
+@pytest.mark.slow
+def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> None:
+    """DBOS re-raises a step's error without its traceback; the replay
+    rebuilds the failing node's inputs from what DBOS recorded and finds
+    the line. Breaks the gold expense-audit at a known line to check it."""
+    pytest.importorskip("dbos")
+    import shutil
+
+    from rote.adapters import get_adapter
+    from rote.bench.fidelity import failure_site
+    from rote.eval.empirical import run_pipeline_trial
+    from rote.ir import load_pipeline
+
+    from .conftest import EXAMPLES_DIR
+
+    compiled = tmp_path / "compiled"
+    shutil.copytree(
+        EXAMPLES_DIR / "expense-audit" / "expected",
+        compiled,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    checks = compiled / "extracted" / "checks.py"
+    text = checks.read_text(encoding="utf-8")
+    anchor = "    _, period_end = period_bounds(period)\n"
+    assert text.count(anchor) == 1
+    broken = text.replace(anchor, '    submissions[0]["no_such_field"]\n' + anchor)
+    checks.write_text(broken, encoding="utf-8")
+    line = broken[: broken.index("no_such_field")].count("\n") + 1
+
+    pipeline = load_pipeline(compiled / "pipeline.yaml")
+    app = tmp_path / "app"
+    get_adapter("dbos", extracted_source_dir=compiled).emit(pipeline, app)
+    payload = json.loads((EXAMPLES_DIR / "expense-audit" / "input.json").read_text())
+    review = {"reviewer": "x", "approved_ids": [], "rejected_ids": []}
+    run = run_pipeline_trial(
+        app, payload, signals={"controller_review": review}, timeout_seconds=300
+    )
+    assert run.error is not None
+
+    site = failure_site(app, pipeline, payload)
+    assert site is not None
+    assert site["node"] == "find_late_submissions"
+    assert site["exception"] == "KeyError: 'no_such_field'"
+    assert site["at"] == f"extracted/checks.py:{line}"
+
+
 def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:
     from rote.bench.fidelity import _last_line
 

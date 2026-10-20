@@ -309,6 +309,54 @@ component with nothing to compare is left out):
 the table when `--fidelity` is on, with its judge cost under
 `fidelity_cost_usd`, apart from the compile cost.
 
+**Reference coverage** (`fcov`, and a line per case in the bench output)
+says how much a score can claim: the contract fields that have a stable
+value, out of all of them. A case under 50% is flagged `LOW`, with the
+reason for each uncovered field: the agent runs disagree on its value,
+they agree on the values but put them in different places, or some runs
+leave it out. Values compare under layout-normalized paths
+(`report.kpi.active_sites` and `report.header.active_sites` are both
+`report.active_sites`), so nesting one number differently is not a
+disagreement. A case needs at least two successful agent runs: with one,
+every field agrees with itself and nothing is stable.
+
+### What fidelity does and does not measure
+
+Read the number with these limits in mind:
+
+- **It measures agreement with the agent, not with the gold.** The
+  reference is the skill run as an agent. Where the agent reads the skill
+  differently from the hand-written pipeline, the gold loses points too
+  (see below). Where the agent is inconsistent, that field is not scored.
+- **Values match anywhere.** A reference value counts as reproduced when
+  it appears in any step output. A field that passes data through
+  unchanged (an id, a period) is credited as soon as the step that
+  fetched it runs, whether or not anything downstream used it.
+- **The contract is summaries.** Counts, flagged ids, totals. The
+  individual dwell, sorter and container rows behind a summary are not
+  compared, so a pipeline can get a row-level detail wrong and keep a
+  correct total.
+- **expense-audit exercises no reads or side effects.** It uses no MCP,
+  and the report file is not compared. Its score is outputs, outcome and
+  gate fit only.
+- **The fixture shapes are assumptions.** The ops-report fixtures answer
+  Gmail `search_threads` with a bare JSON list of threads and Drive
+  `read_file_content` with plain CSV text. The skill names the tools but
+  not their result shapes, and so do the fixtures' authors: neither shape
+  was recorded from the real servers. Eight compiles in the October sweep
+  read `.threads` and `.content` from those results and fail here. That
+  failure is real only if the real servers answer the way the fixtures
+  do. Record real responses (a `rote baseline` run against the live
+  servers gives them) before treating it as a compile defect.
+- **An input the skill does not name is a contract the compiler invents.**
+  expense-audit's skill describes its input ("one row per expense line,
+  plus the reporting period") without naming a field. The cases pass the
+  bundled `input.json` (`period`, `submissions`, rows keyed `id`), and
+  every compile in the sweep named those differently, so none ran. That
+  is a real failure (the pipeline cannot take the export it is given),
+  but it says nothing about the rest of the pipeline until compile is
+  grounded in a sample input.
+
 ### Checking that the metric measures behavior
 
 The gold pipeline (expense-audit's hand-written `expected/`) and two
