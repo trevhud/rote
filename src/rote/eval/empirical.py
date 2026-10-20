@@ -234,7 +234,10 @@ class MeasuredRun:
 
 
 def _skill_prompt(
-    skill_dir: Path, input_payload: dict[str, Any], output_fields: list[str] | None
+    skill_dir: Path,
+    input_payload: dict[str, Any],
+    output_fields: list[str] | None,
+    extra_instructions: str | None = None,
 ) -> str:
     skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     fields_clause = (
@@ -254,7 +257,8 @@ def _skill_prompt(
         "Read tool exactly when the skill directs you to.\n\n"
         "Execute the skill now for this input:\n\n"
         f"```json\n{json.dumps(input_payload, indent=2)}\n```\n\n"
-        "When the skill is complete, write your final structured result "
+        + (f"{extra_instructions}\n\n" if extra_instructions else "")
+        + "When the skill is complete, write your final structured result "
         f"as a single JSON object to a file named {RESULT_FILENAME} in "
         f"the current working directory{fields_clause}. Write nothing "
         "else to that file."
@@ -480,6 +484,7 @@ def run_pipeline_trial(
     python_executable: str | None = None,
     timeout_seconds: float = 600.0,
     park_watch: ParkWatchFactory | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> MeasuredRun:
     """Run the emitted pipeline once and measure it.
 
@@ -491,6 +496,9 @@ def run_pipeline_trial(
     captured via the emitted ``$ROTE_USAGE_LOG`` hook. ``park_watch``
     (``rote run``) builds an :class:`rote.mcp.parked.AuthParkWatcher`
     that reports and resolves MCP auth parks of a DBOS app while it runs.
+    ``extra_env`` is laid over the inherited environment for this run only
+    (the compile bench points ``ROTE_MCP_<SERVER>_URL`` at fixture servers
+    per case, from concurrent threads, so it cannot touch ``os.environ``).
     """
     from rote.mcp.parked import DbosAuthChannel, app_parks_on_auth, wait_for_exit
 
@@ -514,6 +522,7 @@ def run_pipeline_trial(
         # openai.OpenAI() directly and NEED their API keys. Only the
         # `claude -p` spawn scrubs keys (subscription billing).
         env = os.environ.copy()
+        env.update(extra_env or {})
         env["ROTE_USAGE_LOG"] = str(usage_log)
         args = [python, str(main_py), json.dumps(input_payload)]
 
