@@ -102,16 +102,18 @@ from rote.adapters._py_common import (
     needs_call_impl,
     require_constant_parameters,
     required_inputs_guard,
+    requirements_txt,
     resolve_extracted_source,
     serialize_helper,
-    vendor_sdk_requirements,
     write_helper_modules,
     write_signature_package,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
-from rote.mcp._runtime_helper import FASTMCP_REQUIREMENT
+
+#: The DBOS the emitted main.py targets (rote's own `dbos` extra pins the same).
+DBOS_REQUIREMENT = "dbos>=3.3,<4"
 
 # ───────── Adapter configuration ─────────
 
@@ -924,10 +926,9 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         mcp_note = (
             "\n## MCP-backed steps\n\n"
             "Some `external_call` steps call MCP tools over Streamable HTTP\n"
-            "(the `mcp` backend). To run them, install `fastmcp` and set one\n"
+            "(the `mcp` backend). `requirements.txt` carries `fastmcp`; set one\n"
             "endpoint env var per server:\n\n"
             "```sh\n"
-            f"pip install '{FASTMCP_REQUIREMENT}'\n"
             f"{env_lines}\n"
             "```\n\n"
             "### Authentication and parking\n\n"
@@ -977,11 +978,12 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         - `signatures/` — typed LLM judges generated from the pipeline IR
           (Pydantic models + direct vendor SDK calls)
         - `dbos-config.yaml` — CLI/Cloud tooling config for `dbos start`
+        - `requirements.txt` — what the emitted code imports, vendor SDKs included
 
         ## Run locally
 
         ```sh
-        pip install {install}
+        pip install -r requirements.txt   # dbos 3, plus what extracted/ imports
         python main.py '{{"your": "input"}}'   # one run, blocks until done
         python main.py --serve                 # long-lived worker (see below)
         ```
@@ -1031,9 +1033,6 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         first_signal=first_signal,
         judge_note=judge_override_readme(pipeline),
         mcp_note=mcp_note,
-        install=" ".join(
-            f"'{req}'" for req in ["dbos>=3.3,<4", *vendor_sdk_requirements(pipeline)]
-        ),
     )
 
 
@@ -1119,6 +1118,15 @@ class DbosAdapter:
 
         written["dbos-config"] = writer.write(
             "dbos-config.yaml", content=emit_dbos_config(pipeline)
+        )
+        written["requirements"] = writer.write(
+            "requirements.txt",
+            content=requirements_txt(
+                pipeline,
+                writer.output_dir,
+                generated_by="rote.adapters.dbos",
+                runtime=(DBOS_REQUIREMENT,),
+            ),
         )
 
         written["README"] = writer.write("README.md", content=emit_readme(pipeline, self.config))

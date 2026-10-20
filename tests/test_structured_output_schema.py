@@ -322,7 +322,11 @@ def test_an_unexpressible_judge_schema_reaches_the_compile_repair_loop(
 
 @pytest.mark.parametrize(
     ("runtime", "install_file"),
-    [("python", "requirements.txt"), ("temporal", "requirements.txt"), ("dbos", "README.md")],
+    [
+        ("python", "requirements.txt"),
+        ("temporal", "requirements.txt"),
+        ("dbos", "requirements.txt"),
+    ],
 )
 def test_every_python_runtime_installs_an_sdk_with_structured_outputs(
     runtime: str, install_file: str, tmp_path: Path
