@@ -46,7 +46,8 @@ options:
 | `--runtime` | The compile's `--runtime` (default `dbos`, the logged-out default) |
 | `--no-tsc` | Skip `npm install` + `tsc --noEmit` on the Cloudflare emit |
 | `--compare OLD.json` | Print this run's deltas against an older results.json |
-| `--rescore RUN_DIR` | Re-collect an existing run's compiles with the current scorer. No tokens |
+| `--resume` | Keep the jobs already scored in `<out>/results.json`, run only the missing ones. Their spend counts toward `--budget` |
+| `--rescore RUN_DIR` | Re-collect an existing run's compiles with the current scorer (needs `--examples`). No tokens |
 | `--report R.json` | Print a results.json (with `--compare`, just the deltas). No tokens |
 
 Each job runs `python -m rote compile <skill> --local --runtime dbos
@@ -72,6 +73,7 @@ own offline checks on it.
 | `nodes` | compiled / expected node count |
 | `nodeR`, `nodeP` | expected nodes matched / compiled nodes matched |
 | `kind` | expected nodes whose matched compiled node has the same kind. A missing node counts as wrong. The full confusion map is in the JSON |
+| `kmix` | matching-free kind agreement: shared per-kind node counts over the larger node count. Read it beside `kind` (see below) |
 | `edgeF1` | F1 of dependency edges (declared edges plus `inputs` references) between matched nodes |
 | `waves` | pairwise ordering agreement: for each pair of matched nodes, do both pipelines put them before / together / after? Robust to a whole wave shifting |
 | `fanP`, `fanR` | fan_out precision and recall vs expected |
@@ -87,6 +89,9 @@ own offline checks on it.
 | `wall_s` | wall time of the compile subprocess |
 | `dbos`, `cf`, `tsc` | does the IR emit on dbos and cloudflare, does the Cloudflare app type-check |
 
+`results.json` is portable: job dirs are relative to the run dir, and the
+run dir, the examples checkout and the home directory are replaced by
+`<run>`, `<examples>` and `~` everywhere else, so it can be committed.
 Per-phase seconds (from the compile's `progress.jsonl`), the matches,
 missing and extra node ids, and the per-gate rows are in `results.json`.
 The `AGGREGATE` row is a mean of each column (cost and wall time are
@@ -102,6 +107,15 @@ Jaccard and the (id + description)-token Jaccard, kept at 0.25 or above.
 Pairs are taken greedily, highest similarity first, one to one. The
 matches are listed in the JSON, so a surprising score can be checked by
 reading them.
+
+Lexical matching misfires when a compile splits or merges steps. In the
+baseline, expense-audit's expected `file_report` (render and save, an
+external_call) became two compiled nodes, `render_audit_report` and
+`save_audit_report`, and the two `audit report` nodes matched crosswise,
+which counts two kind errors that are really one split. That is why
+`kmix` exists: it cannot misfire this way, and a `kind` drop with a
+steady `kmix` usually means a matching artifact, not a classification
+regression. Check `structure.matches` before acting on a kind change.
 
 The expected pipelines are hand-written, so they are one good answer, not
 the only one. A compile that splits a step in two scores an extra node,

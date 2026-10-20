@@ -9,6 +9,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`rote bench`, a scored compile benchmark (dev tool, spends tokens).**
+  It compiles the example skills, scores each `pipeline.yaml` against the
+  hand-written `expected/pipeline.yaml` (node and kind match, edges, wave
+  order, fan_out, mandatory, gates, inputs), re-verifies the deliverable,
+  checks the dbos and cloudflare emits, and writes a diffable
+  `results.json` (`--compare`). Hidden from `rote --help`. The origin/main
+  baseline is in `examples/bench/baseline.json`. See
+  `docs/compile-bench.md`.
+
 ## [0.15.0] - 2026-10-19
 
 ### Upgrading from 0.14

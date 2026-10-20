@@ -281,6 +281,8 @@ def score_pipeline(expected: Pipeline, compiled: Pipeline) -> dict[str, Any]:
             confusion[f"(extra)->{n.kind.value}"] += 1
 
     kind_equal = sum(1 for m in matches if m.kind_equal)
+    e_kinds = Counter(n.kind.value for n in expected.nodes)
+    c_kinds = Counter(n.kind.value for n in compiled.nodes)
     structure = {
         "expected_nodes": len(expected.nodes),
         "compiled_nodes": len(compiled.nodes),
@@ -292,8 +294,15 @@ def score_pipeline(expected: Pipeline, compiled: Pipeline) -> dict[str, Any]:
         # not a free pass.
         "kind_accuracy": _rate(kind_equal, len(expected.nodes)),
         "kind_accuracy_matched": _rate(kind_equal, len(matches)),
-        "kind_counts_expected": dict(sorted(Counter(n.kind.value for n in expected.nodes).items())),
-        "kind_counts_compiled": dict(sorted(Counter(n.kind.value for n in compiled.nodes).items())),
+        # Matching-free: how much of the kind mix the two pipelines share
+        # (sum of per-kind minimums over the larger node count). Lexical
+        # matching misfires when a compile splits or merges steps; this
+        # number cannot, so read kind_accuracy beside it.
+        "kind_mix_overlap": _rate(
+            sum((e_kinds & c_kinds).values()), max(len(expected.nodes), len(compiled.nodes))
+        ),
+        "kind_counts_expected": dict(sorted(e_kinds.items())),
+        "kind_counts_compiled": dict(sorted(c_kinds.items())),
         "confusion": dict(sorted(confusion.items())),
         "matches": [
             {
