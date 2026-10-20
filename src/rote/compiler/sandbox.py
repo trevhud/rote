@@ -100,11 +100,15 @@ def _site_dirs() -> list[Path]:
     )
 
 
-def current_layout() -> Layout:
-    """The running interpreter's layout: binary, stdlib, libpython, site dirs."""
+def current_layout(extra_read_dirs: tuple[Path, ...] = ()) -> Layout:
+    """The running interpreter's layout: binary, stdlib, libpython, site dirs.
+
+    ``extra_read_dirs`` are more import roots the run needs (an app's vendor
+    libraries), held to the same :func:`refusal` rules as the site dirs.
+    """
     executable = Path(os.path.realpath(sys.executable))
     stdlib = Path(sysconfig.get_paths()["stdlib"]).resolve()
-    read_dirs = {stdlib, *_site_dirs()}
+    read_dirs = {stdlib, *_site_dirs(), *(Path(p).resolve() for p in extra_read_dirs)}
     # The sandboxed child is launched by this resolved path (see
     # :func:`launch_executable`), never through a venv or symlink, so no
     # venv's pyvenv.cfg and no symlinked install path need to exist inside.
@@ -255,10 +259,15 @@ def bwrap_argv(work_dir: Path, tmp_dir: Path, layout: Layout) -> list[str]:
 
 
 def wrap(
-    sandbox: Sandbox, argv: list[str], work_dir: Path, tmp_dir: Path, env: dict[str, str]
+    sandbox: Sandbox,
+    argv: list[str],
+    work_dir: Path,
+    tmp_dir: Path,
+    env: dict[str, str],
+    extra_read_dirs: tuple[Path, ...] = (),
 ) -> tuple[list[str], dict[str, str]]:
     """``(argv, env)`` that run ``argv`` inside ``sandbox``."""
-    layout = current_layout()
+    layout = current_layout(extra_read_dirs)
     if sandbox.kind == "sandbox-exec":
         profile = tmp_dir / "sandbox.sb"
         profile.write_text(macos_profile(work_dir, tmp_dir, layout), encoding="utf-8")
