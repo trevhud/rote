@@ -117,27 +117,74 @@ transcript:
    "Clear All Existing Filter Pills" becomes pure + write. BDR's lead
    generation loop has no `enrich` / `vet` sub-nodes.
 
-## Which rules generalize, and why
+## Held-out set: the rules do not generalize yet
 
-They come from node-kinds.md and from how skills are written, not from
-any example's strings. They generalize when a skill states its structure
-in prose, as all five examples do:
+Three skills under `examples/holdout/` were written by another agent with
+gold labels and kept blind: I never opened their skill or expected files.
+I looked only at the scores and the aggregate error counts the bench
+prints. Both modes ran with one repeat each. The rules were frozen at
+8ab7ad4 (system1, Sonnet 5.5 for the text half), and the default path ran
+on main at ffd8a73.
 
-- MANDATORY markers, "for each", explicit step references, "do not depend
-  on each other", "up to N days", tool tables, markdown rule tables.
+| skill | default: $, wall, node recall, kind mix, gates | `--system1`: $, wall, node recall, kind mix, gates |
+|---|---|---|
+| customer-onboarding | $0.97, 333 s, 0.80, 0.91, 1/1 | $0.20, 50 s, 0.60, 0.60, 1/1 |
+| incident-triage | $1.77, 680 s, 0.79, 1.00, 1/1 | $0.50, 164 s, 0.43, 0.71, **0/1** |
+| saas-spend-audit | $1.59, 436 s, 0.82, 0.92, 1/1 | $0.42, 145 s, 0.18, 0.64, **0/1** (the gate became an external_call) |
+| **mean** | **$1.44, 483 s** | **$0.37, 120 s** |
 
-Two rules are weaker:
+Every compile in both modes verified, with tests passing and both emits ok.
 
-- **Segmentation by signal words** has a fixed vocabulary. A skill with
-  unusual verbs falls to the no-signal default (`pure_function`, confidence
-  0.3, listed for review).
-- **Per-item wording** replaced an earlier "judging verb over a plural
-  heading" rule, which was a vocabulary guess. It loses deal-monitor's
-  "Score New Opportunities" (the skill never says "each"), which is now
-  run as one judge over the list and listed for review.
+| metric (mean) | default, dev | default, held-out | system1, dev | system1, held-out |
+|---|---|---|---|---|
+| kind mix | 0.81 | 0.94 | 0.84 (8ab7ad4, at $0) | **0.65** |
+| node recall | 0.81 | 0.80 | 0.56 | 0.40 |
+| edge F1 | 0.73 | 0.88 | 0.57 | 0.52 |
+| fan_out P / R | 0.25 / 0.12 | 0.75 / 0.75 | 1.00 / 0.38 | 0.00 / 0.00 |
+| mandatory P / R | 0.47 / 0.86 | 0.71 / 0.71 | 0.32 / 0.43 | 0.48 / 0.36 |
+| gates found | 4/4 | 3/3 | 4/4 | **1/3** |
+| input field recall | 0.38 | 1.00 | 0.09 | 0.00 |
 
-One new skill in the held-out set will say more than any further tuning on
-these five.
+The default path holds or improves on new skills. System-1 drops on every
+structural measure, and it **misses two of three human gates**. That is a
+fidelity failure, not a naming one: a missed gate ships a pipeline that
+no longer waits for the person the skill asks. The error counts point at
+vocabulary. External calls and pure steps went missing, and a gate was
+read as a call. The rules cover the wording of the five dev skills and
+not much past it.
+
+These failures were not tuned on. The rule changes that came after the run
+(below) came from the #150 review's wording, not from the held-out skills.
+Re-scoring them on the held-out set would still not be blind, because the
+error types above are now known.
+
+## Rules at risk of not generalizing
+
+Listed here whatever the held-out scores show, as the #150 review asked:
+
+- `parse.py` SIGNALS. Kinds come from a fixed vocabulary of verbs. Until
+  bb1f261 the fetch signal keyed on a vendor list (slack, gmail, hubspot,
+  zoominfo ...) and the gate signal on role names (duty manager,
+  controller, bdr). After the held-out run, both were replaced by general
+  patterns: a retrieval verb with a source, and anyone asked to confirm,
+  approve, review, provide or sign off. Those are tested on tiny skills
+  outside the examples. On the dev set this costs kind mix 0.839 to
+  0.817, because deal-monitor's "Read the entire thread" no longer reads
+  as a call.
+- `_PER_ITEM` (per-item containers) said "each visible row|invoice".
+  It now matches any "for each" / "each X".
+- The constants window pattern had a Gmail-only `newer_than:`, now removed.
+- `decide.py` segmentation order and its confidences (0.9 / 0.8 / 0.6 /
+  0.3) were set by reading the dev skills, not fitted.
+- `_UI_ACTION` and `_TRANSFORM` (UI steps stay whole unless they compute)
+  are vocabularies too.
+- The parallel-steps and step-reference patterns need a skill to number its
+  steps.
+
+What generalizes by construction: explicit MANDATORY markers, "for each",
+"do not depend on each other", stated durations, tool tables, markdown
+rule tables, and the conservative defaults. A missing signal falls to a
+listed low-confidence decision, never to a guess.
 
 ## Non-generative models, measured
 
@@ -200,7 +247,7 @@ made-up quote. Rule-table rows are cited verbatim from the skill's markdown.
 
 ## Spend for this build
 
-$18.67 of the $26 cap:
+$24.11 of the $26 cap:
 
 | item | cost |
 |---|---|
@@ -211,6 +258,8 @@ $18.67 of the $26 cap:
 | main + #144 baseline bench | $7.00 |
 | v2 bench | $2.26 |
 | v2 expense-audit on Sonnet 4.6 | $0.81 |
+| held-out, default path | $4.32 |
+| held-out, `--system1` | $1.12 |
 
 The $0 hill-climbing loop is
 `research/system1-routing/score_skeletons.py`. It scores skeletons with the
