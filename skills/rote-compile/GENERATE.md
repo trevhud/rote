@@ -26,7 +26,8 @@ Asked for the interface, you describe every listed node in one answer:
 
 - `description`: one sentence, in plain words, on what the node does.
   Quote any string that contains a colon.
-- `output_schema`: the JSON Schema of the value the node returns. This is
+- `output_schema`: the JSON Schema of the value the node returns, written
+  as JSON text. This is
   a contract other calls write code against at the same time as you, so
   it must be exact:
   - name every field the skill's step produces, with its type and a

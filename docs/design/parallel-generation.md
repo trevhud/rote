@@ -1,162 +1,207 @@
 # Parallel per-node generation for System-1 compiles
 
-Status: design, then built behind the default System-1 path (see the
-measured table at the end once it exists).
+Status: the default text step of a System-1 compile with the `claude` and
+`api` drivers. `codex` and `openai-api` keep the single SYSTEM1.md session.
 
-After System-1 has decided the structure, one agent session writes all the
-text: every extracted module, every test, the judge prompts and
-`system1/text.yaml`. This doc replaces that session with small,
-schema-locked generations that run at the same time, one per node.
+After System-1 has decided the structure, one agent session used to write
+all the text: every extracted module, every test, the judge prompts and
+`system1/text.yaml`. This replaces that session with small, schema-locked
+calls that run at the same time, one or two per node.
 
-## Where a System-1 compile spends its time today
+## Result
 
-Eleven System-1 compiles from the last two days (`progress.jsonl`, the
-`modelUsage` totals in each run's summary line), default driver
-(`claude -p`, Sonnet 4.6, effort low):
+Measured 2026-10-20 with `rote bench`, 3 compiles per cell, wheels of both
+commits, subscription lane (`claude -p`), concurrency 2. Serial is main at
+e06c232 (the session on Sonnet 4.6, effort low). Parallel is this branch at
+500238f (Sonnet 5.5 for every call, effort low). Mean, with the range.
 
-| run | wall | until first module | modules | tests | repair | turns | output tok | cache write | cache read | $ |
-|---|---|---|---|---|---|---|---|---|---|---|
-| expense-audit (A) | 165 s | 20 | 50 | 58 | 22 | 10 | 14,719 | 45,195 | 320,284 | 0.49 |
-| expense-audit (C) | 273 s | 112 | 60 | 75 | 8 | 7 | 23,287 | 54,158 | 214,341 | 0.62 |
-| expense-audit (rules) | 220 s | 20 | 79 | 70 | 31 | 22 | 18,449 | 49,309 | 771,371 | 0.69 |
-| ops-report (A) | 184 s | 35 | 71 | 48 | 15 | 7 | 17,018 | 38,948 | 195,526 | 0.46 |
-| ops-report (C) | 232 s | 78 | 72 | 67 | 6 | 7 | 20,127 | 41,174 | 207,410 | 0.52 |
-| ops-report (rules) | 205 s | 69 | 63 | 51 | 7 | 7 | 16,947 | 37,723 | 199,113 | 0.46 |
-| ops-report (clef) | 218 s | 76 | 80 | 46 | 0 | 18 | 17,677 | 37,604 | 587,435 | 0.58 |
-| ops-report (haiku tie-break) | 205 s | 46 | 69 | 66 | 14 | 23 | 16,461 | 37,951 | 767,225 | 0.62 |
-| deal-monitor | 347 s | 91 | 118 | 76 | 52 | 33 | 25,551 | 49,820 | 1,385,326 | 0.99 |
-| bdr-outreach | 260 s | 118 | 55 | 41 | 12 | 8 | 20,728 | 63,391 | 271,981 | 0.63 |
-| customer-onboarding | 274 s | 91 | 60 | - | 52 | 14 | 21,411 | 59,120 | 673,882 | 0.88 |
+| skill | path | fidelity | wall (s) | cost ($) |
+|---|---|---|---|---|
+| expense-audit | serial | 0.92 (0.90 to 0.92) | 321 (281 to 376) | 0.69 (0.60 to 0.81) |
+| expense-audit | parallel | **0.95** (0.95 to 0.95) | **76** (67 to 83) | **0.48** (0.40 to 0.55) |
+| ops-report | serial | 0.60 (0.50 to 0.80) | 209 (194 to 221) | 0.57 (0.47 to 0.64) |
+| ops-report | parallel | **0.96** (0.96 to 0.96) | **52** (46 to 57) | **0.30** (0.27 to 0.33) |
+| customer-onboarding (holdout) | serial | n/a | 188 (108 to 246) | 0.45 (0.29 to 0.59) |
+| customer-onboarding (holdout) | parallel | n/a | **35** (32 to 38) | **0.15** (0.13 to 0.19) |
+| saas-spend-audit (holdout) | serial | n/a | 336 (185 to 412) | 0.74 (0.42 to 0.99) |
+| saas-spend-audit (holdout) | parallel | n/a | **51** (42 to 60) | **0.27** (0.25 to 0.31) |
+| incident-triage (holdout) | serial | n/a | 336 (289 to 407) | 0.84 (0.65 to 1.16) |
+| incident-triage (holdout) | parallel | n/a | **62** (60 to 64) | **0.44** (0.39 to 0.51) |
 
-"Until first module" is reading plus generating the first module, since a
-Write appears when its tool call has streamed. "Modules" runs from the first
-module Write to the last, and "tests" from there to the last test Write.
+The held-out skills have no fidelity cases, so they are judged by
+verification. Every compile in both columns verified with its tests passing,
+except incident-triage, which exits 1 on both paths for the same adapter
+defect (the emitted `signatures/_rote_inference.py` imports
+`extracted._rote_mcp`, which the dbos emit does not ship). Structural
+scores are identical across the two paths, because structure is decided
+before either runs.
 
-What the numbers say:
+On the API lane (`--agent api`, the same branch plus effort on the API
+call), one compile each: expense-audit 0.94 in 66 s, ops-report 0.96 in
+61 s, about $0.37 and $0.29 at list prices from the token counts.
 
-1. **Output tokens are the wall time.** 15k to 26k output tokens per
-   compile, streamed at roughly 100 to 130 tokens per second, is 130 to
-   220 s. Modules and tests are written one after another in two turns,
-   so the whole compile waits on one stream.
-2. **Output tokens are also about half the cost.** On expense-audit (A):
-   output $0.22 (45%), cache writes $0.17 (35%), cache reads $0.10 (20%).
-   The cache reads grow with every turn, because each turn re-reads the
-   whole conversation (deal-monitor read 1.4M cached tokens in 33 turns).
-3. **Repair re-reads everything.** A repair round resumes the full
-   conversation to fix one module: 7 to 52 s and a growing cache read.
-4. **Some of the text is not text.** In ops-report, 4 of 9 modules are
-   MCP-bound `external_call` stubs (`raise NotImplementedError`, the
-   `--backend api` alternative with no probe context). Their content
-   follows from the IR alone.
+Fidelity also stopped swinging. The serial path's ops-report scored 0.50,
+0.80 and 0.50. The parallel path scored 0.96 three times. The two fixes
+behind that are below (the shared rule tables and unverified tool results).
+
+Parallel compiles write fewer tests: 16 to 55 against 28 to 72 for the same
+skills. Every implemented function is still tested (verification requires
+it), but the depth is lower. That is an open item, not a measured fidelity
+cost.
+
+## Where the serial compile spent its time
+
+Eleven System-1 compiles (`progress.jsonl`, the `modelUsage` totals in each
+run's summary line), before this change:
+
+| run | wall | until first module | modules | tests | repair | turns | output tok | $ |
+|---|---|---|---|---|---|---|---|---|
+| expense-audit (A) | 165 s | 20 | 50 | 58 | 22 | 10 | 14,719 | 0.49 |
+| expense-audit (C) | 273 s | 112 | 60 | 75 | 8 | 7 | 23,287 | 0.62 |
+| ops-report (A) | 184 s | 35 | 71 | 48 | 15 | 7 | 17,018 | 0.46 |
+| ops-report (C) | 232 s | 78 | 72 | 67 | 6 | 7 | 20,127 | 0.52 |
+| deal-monitor | 347 s | 91 | 118 | 76 | 52 | 33 | 25,551 | 0.99 |
+| bdr-outreach | 260 s | 118 | 55 | 41 | 12 | 8 | 20,728 | 0.63 |
+| customer-onboarding | 274 s | 91 | 60 | - | 52 | 14 | 21,411 | 0.88 |
+
+1. **Output tokens were the wall time.** 15k to 26k output tokens, streamed
+   at about 100 to 130 tokens per second, is 130 to 220 s, and the modules
+   and tests came one after another in two turns.
+2. **Output tokens were also about half the cost.** On expense-audit (A),
+   output was $0.22 (45%), cache writes $0.17 (35%) and cache reads $0.10
+   (20%). The cache reads grew with every turn, because each turn re-reads
+   the whole conversation (deal-monitor read 1.4M cached tokens).
+3. **Repair re-read everything.** A repair round resumed the whole
+   conversation to fix one module: 7 to 52 s.
+4. **Some text was not text.** In ops-report, 4 of 9 modules are MCP-bound
+   `external_call` stubs, which follow from the IR alone.
 
 ## What is independent once the skeleton is frozen
 
-Every node's module depends on two things it cannot see from its own
-section: the shape of each value it receives, and the shape its consumers
-expect it to return. The single session coordinates these implicitly (it
-wrote the producer a turn earlier). Generated in parallel, they must be
-fixed first, or node B reads `result["threads"]` from a node A that
-returns a list. That exact defect shipped in a serial compile
-(ops-report, #162).
+A module depends on two things its own section does not show: the structure
+of each value it receives, and the shape its consumers expect back. The single
+session coordinated these implicitly. Written in parallel, they must be
+fixed first.
 
-So the work splits in two:
+- **The interface** fixes each producing node's return value as a JSON
+  Schema (plus a description and, for a loop the skill gives no stop, a
+  termination). It is one call per node, all at once: a node describes only
+  what it produces, its consumers read what it says, so producer and
+  consumer agree by construction. Each call sees the whole pipeline's
+  outline and its consumers' sections. A first version asked for every
+  node in one call. It took 56 s and 8.7k output tokens, against 14 s for
+  the per-node calls, at the same fidelity.
+- **The pieces** are then independent: one call per `pure_function`
+  (module and tests together) and one per judge (its prompt). Each sees
+  its section, its exact `def` line, the schema and sample value of each
+  parameter, its constants, its output schema, its consumers, the skill
+  text (for verbatim citations) and the rule tables.
 
-- **The interface** (one call, needs the whole skill): every producing
-  node's return value as a JSON Schema, a one-sentence description per
-  node, and a stop condition for any loop the skill gives none. Small
-  output, about 1 to 3k tokens.
-- **The pieces** (one call each, all at once): given the interface, each
-  `pure_function` module and its test, and each judge's prompt, are
-  independent of each other. Each needs only: the node's section text, its
-  exact signature, the schema (and the sample value, when there is one) of
-  every parameter, its constants, its output schema, which consumers read
-  it, the rule-table names, and the skill text (for verbatim citations).
-
-What needs no model at all:
-
-- an `external_call` without probe context: a contract-documented stub
-  (implementation.md, Regime 1) rendered from the IR and the interface;
-- each judge's `signature_spec.input_schema` (its properties are exactly
-  the node's `inputs:` keys, each typed by its producer's output schema)
-  and `output_schema` (from the interface), and `client`;
-- the function's `def` line, which the piece must use verbatim;
-- `system1/text.yaml`, merged from the pieces' answers.
+Code writes everything that needs no model: each `external_call`'s
+direct-API stub, each judge's typed input schema and `signature_spec`, each
+`def` line, and the merge into `system1/text.yaml`, which now carries every
+node's `output_schema` into the IR.
 
 ## The pipeline
 
 ```
-skeleton (rules, no model)            already built
-  -> deterministic pieces              stubs, signatures, judge schemas
-  -> interface call (1)                output schemas, descriptions, loop stops
-  -> validate interface (code)         fan_out sources return {items: [...]}, etc.
-  -> pieces (N, bounded concurrency)   module + test per node, prompt per judge
-       each answer checked by code at once (parses on 3.11, exact signature,
-       stdlib imports, test imports the function, prompt variables resolve);
-       a failing piece is re-asked alone, without waiting for the others
-  -> merge (code)                      files, text.yaml, settle()
-  -> verify_deliverable (existing)     tests, contracts, provenance, prefix, dry emit
-  -> per-node repair (parallel)        only the nodes a finding names, max 2 rounds
+skeleton (rules)              decided before this step
+  -> interface                one call per node, in parallel
+  -> pieces                   one call per pure_function and judge, in parallel
+       each answer is checked the moment it arrives, cheapest check first:
+       parses on 3.11, exact signature, stdlib imports, the test imports
+       only names the module defines, the prompt's variables resolve,
+       citations and outcome markers (rote.compiler.provenance), and its
+       own tests in the sandbox. A failing piece is re-asked alone, with
+       the problems and its files as text, and answers with edits.
+  -> merge (code)             files, text.yaml, settle()
+  -> verify_deliverable       contracts, tests, the prefix on the sample, dry emit
+  -> per-node repair          only the nodes a finding names, at most 2 rounds
 ```
 
-Checks run in the order the user asked for: schema, then code, then models.
-The interface call and every piece are schema-locked (`claude -p
---json-schema`, a forced tool call; the API driver forces a tool the same
-way), and the interface's response schema names every producing node as a
-required key, so a node cannot be skipped or invented. Code checks each
-answer before anything runs. Only what survives both reaches verification.
+Checking each piece alone moved most repairs off the critical path: on the
+first full version they waited for the slowest piece and a whole
+verification round, and the compile took 183 s. With per-piece checks the
+same skill took 64 s, and most compiles in the bench needed no
+verification round at all (1 of 15).
 
-The prefix run (`rote.compiler.prefix`) already executes the deterministic
-nodes on the sample input. It also checks each result against the node's
-interface schema, so a module that returns a `set`, or a dict with the
-wrong keys, is caught on data no model wrote.
+The prefix (`rote.compiler.prefix`) now checks each result on the sample
+against its node's `output_schema`, and runs past a gate when the sample
+answers it. Before that, a module after the gate (expense-audit's
+`file_audit_report`) could raise on every case with nothing to catch it.
+
+## Two fixes that made fidelity stable
+
+- **The rule tables go in the shared prompt.** A module that imports
+  `extracted.rule_tables` must know the exact names and nesting. With
+  only the names, one compile's `file_audit_report` guessed the FX table's
+  shape, raised "no FX rate for currency EUR", and scored 0.66.
+- **An MCP result no recording shows is unverified.** The interface must
+  infer its shape from the skill's words, and a wrong guess (an object with
+  a `threads` key, for a Gmail tool that returns the list) crashes every
+  run in the consumer. That was ops-report's 0.50 on both paths. Each
+  consumer of such a result is now told to accept the list, an object
+  wrapping it, or JSON text, and to test each. A recorded baseline result
+  replaces the guess with a schema inferred from it.
 
 ## Cost and caching
 
-Every call shares one system prompt: the piece rubric (`GENERATE.md`) and
-the skill's text, identical bytes for every call in a compile. The
-interface call runs first and writes that prefix to the prompt cache; the
-pieces start after it and read it at a tenth of the input price. A probe
-(two pieces, 10k-token shared prefix) read 10,042 of 10,428 prefix tokens
-from cache when the prefix had been written first, and wrote all of it
-twice when the two started together.
+Every call shares one system prompt, byte for byte: `GENERATE.md`, the
+rule tables and the skill. Two things make the prompt cache serve it:
 
-Per piece, measured on two expense-audit nodes (`claude -p`, effort low):
+- **One answer schema for every call.** `--json-schema` becomes a forced
+  tool, and tools come first in the cache prefix, so calls with different
+  schemas share nothing. Measured: seven pieces with their own schema each
+  wrote about 9k cache tokens and read none. `ANSWER_SCHEMA` has every
+  field required, a call fills the fields its task names, and code checks
+  it did. `output_schema` travels as JSON text, because the API's
+  structured outputs require every object to close its properties.
+- **The first call runs alone** until it finishes or 4 s pass, since a
+  cache entry is readable only once its request's response has started.
 
-| model | wall | output tok (thinking) | $ |
+## Model per piece
+
+Sonnet 5.5 writes every piece. Haiku 5.5, measured on the same two skills:
+
+| model | per piece | output tokens per piece | compile |
 |---|---|---|---|
-| Sonnet 5.5 | 12 to 17 s | 1.9k to 2.0k (0.2k to 0.4k) | 0.06 cold, about 0.03 warm |
-| Haiku 5.5 | 23 to 33 s | 5.7k to 8.3k (3.3k to 5.6k) | 0.003 to 0.004 |
+| Sonnet 5.5 | 10 to 36 s | 1.8k to 6.2k | 64 s, $0.44 (expense-audit) |
+| Haiku 5.5 | 26 to 63 s | 7k to 17k (mostly thinking) | failed: `structured_output_retry_exhausted` |
 
-Haiku 5.5 is 15x cheaper per piece but slower, because it thinks at length
-even at effort low. Which model writes which piece is decided by the
-fidelity bench below, not by these two samples.
+Haiku thinks at length even at effort low, so it is slower per piece, and
+one call ended without a valid answer. That failure now retries once and
+then leaves only that module unwritten. At about a tenth of the cost
+(about $0.10 a compile), Haiku is worth another look for the cheap
+interface calls once its structured-output reliability is measured.
 
 ## Model calls
 
 Both lanes go through the compile driver, so auth, the subscription
 `ANTHROPIC_API_KEY` scrub and the API driver's gateway settings are the
-ones a compile already uses:
+ones a compile already uses.
 
 - `ClaudeDriver.generate`: `claude -p --output-format json --json-schema`,
   the system prompt from a file, `--tools ""` and the context-isolation
-  flags (no CLAUDE.md, no settings, no MCP), the 5-minute cache TTL, the
-  effort setting. Usage from `modelUsage` (all four buckets), cost from
-  `total_cost_usd`. An `is_error` envelope inside a zero exit is a
-  failure.
-- `AnthropicApiDriver.generate`: `messages.create` with one forced tool
-  whose `input_schema` is the response schema, the shared prefix marked
-  `cache_control`, all four usage buckets. No `temperature`.
-
-A driver without `generate` (codex, openai-api) keeps the single session.
+  flags, the 5-minute cache TTL, the driver's effort. Usage from
+  `modelUsage` (all four buckets), cost from `total_cost_usd`. An
+  `is_error` envelope inside a zero exit is a failure.
+- `AnthropicApiDriver.generate`: `output_config.format` with the answer
+  schema (current models reject a forced `tool_choice` with a 400), the
+  shared prefix marked `cache_control`, `output_config.effort` (unset, the
+  API's default spent 12k to 21k output tokens per piece against 2k to 3k
+  at low), all four usage buckets, no `temperature`.
 
 Concurrency is bounded by `--max-parallel` (default 8).
 
-## What could make it worse, and the check for each
+## Open items
 
-| risk | check |
-|---|---|
-| a piece misreads an upstream value | the interface schema in its card; the prefix checks results against it on the sample |
-| two pieces disagree on a field name | only the interface names fields; every piece reads the same schema |
-| a test pins behavior its module does not have | the same piece writes both; repair gets both and the skill decides |
-| a repair breaks a neighbor | a repair changes only its node's two files; the next verification runs everything |
-| the interface is wrong for a node | its consumers fail on the sample in the prefix; repair can then return a module that matches the schema, or (round 2) the interface entry is re-asked |
+1. incident-triage fails on both paths: the dbos emit's
+   `signatures/_rote_inference.py` imports `extracted._rote_mcp`, which it
+   does not ship for that pipeline. An adapter defect, not this change.
+2. Test depth: parallel pieces write about half as many tests.
+3. The cloud lane's API driver gives the session agent live MCP tools for
+   research. The parallel calls have no tools, so that context is lost
+   there.
+4. The per-node prefix probe from #170 (consumers of unrecorded MCP results
+   run on `[]` and `""`) could run inside each piece's own check, once #170
+   lands.

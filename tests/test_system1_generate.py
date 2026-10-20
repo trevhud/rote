@@ -61,7 +61,7 @@ def _schema_for(node: Any) -> dict[str, Any]:
 def _blank() -> dict[str, Any]:
     return {
         "description": "",
-        "output_schema": {},
+        "output_schema": "",
         "termination": {"condition": "", "max_iterations": 0},
         "module": "",
         "test": "",
@@ -125,7 +125,7 @@ class FakeGenerator:
             if request.label.startswith("interface:"):
                 node = self.nodes[request.label.split(":", 1)[1]]
                 answer["description"] = f"Does {node.id}."
-                answer["output_schema"] = _schema_for(node)
+                answer["output_schema"] = json.dumps(_schema_for(node))
                 if node.kind is NodeKind.AGENT_LOOP and node.termination is None:
                     answer["termination"] = {"condition": "all done", "max_iterations": 3}
             elif self.scripted.get(request.label):
@@ -296,6 +296,14 @@ def test_interface_checks_fan_out_sources_and_consumer_fields(tmp_path: Path) ->
     assert any("`items` array" in p for p in interface_problems(ctx, source, flat))
     listy = {"description": "x", "output_schema": {"type": "array"}}
     assert any("must return an object" in p for p in interface_problems(ctx, source, listy))
+    from rote.compiler.system1.generate import _interface_entry
+
+    broken = _interface_entry({"description": "x", "output_schema": "{not json"}, ctx, source)
+    assert any("not valid JSON text" in p for p in interface_problems(ctx, source, broken))
+    parsed = _interface_entry(
+        {"description": "x", "output_schema": json.dumps(_schema_for(source))}, ctx, source
+    )
+    assert parsed["output_schema"] == _schema_for(source)
     assert "description is empty" in interface_problems(
         ctx, source, {"description": " ", "output_schema": _schema_for(source)}
     )

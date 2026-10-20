@@ -40,6 +40,7 @@ roots via ``Path.relative_to``.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable
@@ -71,6 +72,7 @@ from rote.compiler.drivers._fs_tools import (
     handle_write_file as _handle_write_file,
 )
 from rote.compiler.drivers._heartbeat import await_with_heartbeat
+from rote.compiler.drivers.claude import DEFAULT_EFFORT, EFFORT_LEVELS
 from rote.compiler.events import (
     CompilationEvent,
     EventCallback,
@@ -400,6 +402,7 @@ class AnthropicApiDriver(CompilerDriver):
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         web_tools: bool = False,
+        effort: str = DEFAULT_EFFORT,
         **_ignored: Any,
     ) -> None:
         """
@@ -432,7 +435,16 @@ class AnthropicApiDriver(CompilerDriver):
             (see :mod:`rote.extras`). Only tools whose server
             declares ``readOnlyHint`` are exposed; a server that cannot
             be reached is skipped with a warning event, never an error.
+        effort
+            ``rote compile --effort``, sent as ``output_config.effort`` on
+            :meth:`generate` calls. Unset, the API runs at its own default,
+            and a measured ops-report compile's pieces spent 12k to 21k
+            output tokens each, against 2k to 3k at ``low``, the claude
+            driver's default (:data:`rote.compiler.drivers.claude.DEFAULT_EFFORT`).
         """
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"effort must be one of {', '.join(EFFORT_LEVELS)}, got {effort!r}")
+        self.effort = effort
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
@@ -487,24 +499,22 @@ class AnthropicApiDriver(CompilerDriver):
         )
 
     async def generate(self, request: GenerationRequest) -> Generation:
-        """One schema-locked call: a single forced tool whose input is the answer.
+        """One schema-locked call: structured outputs, the answer as JSON text.
 
-        The shared prefix is the system prompt, marked for the prompt
-        cache, so the calls of one compile after the first read it at the
-        cache rate. Usage keeps all four buckets for that reason. No
-        ``temperature``: current models reject it, and the forced tool is
-        what makes the answer's shape fixed. The lane reports no cost, so
-        ``cost_usd`` is ``None`` (the token counts are exact).
+        ``output_config.format`` constrains decoding to ``request.schema``.
+        A forced tool would do the same on older models, and current ones
+        (Sonnet 5.5, Haiku 5.5) reject ``tool_choice`` ``tool`` and ``any``
+        outright with a 400. The shared prefix is the system prompt, marked
+        for the prompt cache, so the calls of one compile after the first
+        read it at the cache rate, and usage keeps all four buckets for that
+        reason. No ``temperature``: current models reject it. The lane
+        reports no cost, so ``cost_usd`` is ``None`` (the token counts are
+        exact).
         """
         if not _ANTHROPIC_AVAILABLE:
             raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
         started = time.monotonic()
         client = anthropic.AsyncAnthropic(**self._client_kwargs())
-        tool = {
-            "name": "answer",
-            "description": "Submit the answer. Call this exactly once.",
-            "input_schema": request.schema,
-        }
         try:
             message = await _streamed_message(
                 client,
@@ -519,8 +529,10 @@ class AnthropicApiDriver(CompilerDriver):
                         }
                     ],
                     "messages": [{"role": "user", "content": request.prompt}],
-                    "tools": [tool],
-                    "tool_choice": {"type": "tool", "name": "answer"},
+                    "output_config": {
+                        "format": {"type": "json_schema", "schema": request.schema},
+                        "effort": self.effort,
+                    },
                 },
             )
         except Exception as e:  # noqa: BLE001 (any SDK failure is this call's)
@@ -532,19 +544,23 @@ class AnthropicApiDriver(CompilerDriver):
         def tokens(name: str) -> int:
             return int(getattr(usage, name, 0) or 0)
 
-        payload = next(
-            (b.input for b in message.content if getattr(b, "type", None) == "tool_use"), None
-        )
         metadata = {
             "input_tokens": tokens("input_tokens"),
             "output_tokens": tokens("output_tokens"),
             "cache_write_tokens": tokens("cache_creation_input_tokens"),
             "cache_read_tokens": tokens("cache_read_input_tokens"),
         }
+        text = "".join(
+            getattr(b, "text", "") for b in message.content if getattr(b, "type", None) == "text"
+        )
+        try:
+            payload = json.loads(text) if text else None
+        except ValueError:
+            payload = None
         if not isinstance(payload, dict):
             raise DriverError(
                 f"Anthropic API returned no answer for {request.label} "
-                f"(stop_reason {message.stop_reason!r})",
+                f"(stop_reason {message.stop_reason!r}): {text[:200]!r}",
                 metadata=metadata,
             )
         return Generation(

@@ -176,16 +176,20 @@ def _message(content: list[Any]) -> Any:
 
 
 @pytest.mark.asyncio
-async def test_api_generate_forces_one_tool_and_caches_the_shared_prefix(
+async def test_api_generate_locks_the_answer_and_caches_the_shared_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = _Client(_message([SimpleNamespace(type="tool_use", input={"x": "z"})]))
+    client = _Client(_message([SimpleNamespace(type="text", text='{"x": "z"}')]))
     monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     g = await AnthropicApiDriver().generate(REQUEST)
     (call,) = client.calls
-    assert call["tool_choice"] == {"type": "tool", "name": "answer"}
-    assert call["tools"][0]["input_schema"] == SCHEMA
+    # Structured outputs, never a forced tool: current models 400 on tool_choice "tool".
+    assert call["output_config"] == {
+        "format": {"type": "json_schema", "schema": SCHEMA},
+        "effort": "low",  # unset, the API's default cost 5x the output tokens
+    }
+    assert "tool_choice" not in call and "tools" not in call
     assert call["system"] == [
         {"type": "text", "text": "SHARED PREFIX", "cache_control": {"type": "ephemeral"}}
     ]
@@ -199,7 +203,7 @@ async def test_api_generate_forces_one_tool_and_caches_the_shared_prefix(
 
 
 @pytest.mark.asyncio
-async def test_api_generate_without_a_tool_call_fails_with_its_usage(
+async def test_api_generate_without_a_json_answer_fails_with_its_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _Client(_message([SimpleNamespace(type="text", text="no")]))

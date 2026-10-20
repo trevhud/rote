@@ -458,12 +458,15 @@ ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "description": {"type": "string"},
-        "output_schema": {"type": "object"},
+        # JSON text, not an object: the API's structured outputs require
+        # every object in the response schema to close its properties
+        # (additionalProperties: false), and an output schema is open-ended.
+        "output_schema": {"type": "string"},
         "termination": {
             "type": "object",
             "properties": {
                 "condition": {"type": "string"},
-                "max_iterations": {"type": "integer", "minimum": 0},
+                "max_iterations": {"type": "integer"},
             },
             "required": ["condition", "max_iterations"],
             "additionalProperties": False,
@@ -501,7 +504,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text, {} for output_schema, {"condition": "", "max_iterations": 0} for '
+    '"" for text and output_schema, {"condition": "", "max_iterations": 0} for '
     'termination, "anthropic" for client, and [] for edits.'
 )
 
@@ -547,7 +550,11 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
     lines = [
         f'Task: the interface entry for `{node.id}` (GENERATE.md, "The interface").',
         "Answer fields: description"
-        + (", output_schema" if _needs_output_schema(ctx, node) else "")
+        + (
+            ", output_schema (the JSON Schema, as JSON text)"
+            if _needs_output_schema(ctx, node)
+            else ""
+        )
         + (", termination" if _needs_termination(node) else "")
         + f". {_ANSWER_FIELDS}",
         "",
@@ -619,6 +626,8 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
             problems.append("termination needs a condition and a max_iterations of at least 1")
     if not _needs_output_schema(ctx, node):
         return problems
+    if entry.get("output_schema_error"):
+        return [*problems, str(entry["output_schema_error"])]
     schema = entry.get("output_schema")
     if not isinstance(schema, dict) or not schema:
         return [*problems, "output_schema is empty"]
@@ -648,7 +657,12 @@ def _interface_entry(payload: dict[str, Any], ctx: Context, node: Any) -> dict[s
     """The fields of an answer that belong in the interface, nothing else."""
     entry: dict[str, Any] = {"description": str(payload.get("description") or "").strip()}
     if _needs_output_schema(ctx, node):
-        entry["output_schema"] = payload.get("output_schema") or {}
+        raw = payload.get("output_schema")
+        try:
+            entry["output_schema"] = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except ValueError as e:
+            entry["output_schema"] = {}
+            entry["output_schema_error"] = f"output_schema is not valid JSON text: {e}"
     if _needs_termination(node):
         entry["termination"] = dict(payload.get("termination") or {})
     return entry
