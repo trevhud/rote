@@ -74,12 +74,26 @@ def _merge_output(skeleton: Any, agent: Any) -> Any:
 
 
 def _types(schema: Any) -> set[str] | None:
-    """A schema's declared JSON types, or None when it declares none."""
-    kind = schema.get("type") if isinstance(schema, dict) else None
+    """A schema's declared JSON types, or None when it declares none.
+
+    ``anyOf`` / ``oneOf`` branches contribute their types; one untyped
+    branch makes the whole schema untyped (it accepts anything)."""
+    if not isinstance(schema, dict):
+        return None
+    kind = schema.get("type")
     if isinstance(kind, str):
         return {kind}
     if isinstance(kind, list):
         return {k for k in kind if isinstance(k, str)} or None
+    branches = schema.get("anyOf") or schema.get("oneOf")
+    if isinstance(branches, list) and branches:
+        found: set[str] = set()
+        for branch in branches:
+            types = _types(branch)
+            if types is None:
+                return None
+            found |= types
+        return found
     return None
 
 
