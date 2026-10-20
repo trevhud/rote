@@ -48,23 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # ubuntu-26.04 (ubuntu-latest's new target) mounts /tmp as a
-      # RAM-backed tmpfs with systemd's per-user quota, which caps the
-      # runner user at about 6.3G. The slow suites npm-install into one
-      # pytest tmp dir per test (about 6.2G for the TypeScript job alone)
-      # and failed with EDQUOT. Point pytest, npm, and wrangler at the
-      # root disk instead. It must stay outside $HOME, because the
-      # sandbox tests assert that nothing under the home is exposed.
-      - name: Keep temp files on disk, off the quota-limited /tmp
-        run: |
-          dir=/var/tmp/rote-ci
-          mkdir -p "$dir"
-          fstype=$(findmnt -no FSTYPE --target "$dir")
-          if [ "$fstype" = tmpfs ]; then
-            echo "::error::$dir is on tmpfs, so it would hit the same quota"
-            exit 1
-          fi
-          echo "TMPDIR=$dir" >> "$GITHUB_ENV"
+      # /tmp is a quota-limited tmpfs on ubuntu-26.04. See the action.
+      - uses: ./.github/actions/disk-tmp
 
       - uses: actions/setup-python@v7
         with:

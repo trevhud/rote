@@ -109,6 +109,8 @@ export const vetContactStep = DBOS.registerStep(
         ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
         ROTE_MODEL_VET_CONTACT: process.env.ROTE_MODEL_VET_CONTACT,
         ROTE_BASE_URL_VET_CONTACT: process.env.ROTE_BASE_URL_VET_CONTACT,
+        ROTE_EFFORT_VET_CONTACT: process.env.ROTE_EFFORT_VET_CONTACT,
+        ROTE_JUDGE_EFFORT: process.env.ROTE_JUDGE_EFFORT,
     }),
     { name: "vet_contact" },
 );
@@ -188,6 +190,8 @@ export const personalizeEmailStep = DBOS.registerStep(
         ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
         ROTE_MODEL_PERSONALIZE_EMAIL: process.env.ROTE_MODEL_PERSONALIZE_EMAIL,
         ROTE_BASE_URL_PERSONALIZE_EMAIL: process.env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
+        ROTE_EFFORT_PERSONALIZE_EMAIL: process.env.ROTE_EFFORT_PERSONALIZE_EMAIL,
+        ROTE_JUDGE_EFFORT: process.env.ROTE_JUDGE_EFFORT,
     }),
     { name: "personalize_email" },
 );

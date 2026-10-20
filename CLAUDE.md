@@ -764,6 +764,31 @@ The `claude-cli` lane (`claude -p --json-schema`) and the OpenAI lane
 are separate mechanisms and were unaffected (the CLI handles
 claude-sonnet-5-5 itself).
 
+Effort rides in the same `output_config`. Unset, the API runs `high`.
+`ROTE_EFFORT_<NODE_ID>` > `ROTE_JUDGE_EFFORT` set it for judges and agent
+loops on every lane, and an empty value omits it (the temperature knob's
+shape). On the `claude-cli` lane it is `claude -p --effort`, added by one
+function (`_cli_effort_flags`) to both the judge and the agent-loop
+command lines. The CLI does not fail on an unknown level: it warns on
+stderr and runs at its default, exit 0. So before any paid call the
+helper asks the CLI itself with `claude --effort <level> --version`
+(free, ~50ms, validated before `--version` exits), once per process:
+first with a level nothing accepts, which must draw a warning rote
+recognizes (any line naming effort and saying unknown / invalid /
+unsupported), then with the real level, which must not. Never hardcode
+the level list in the helper; it goes stale. If a CLI release rewords
+the warning past recognition, the self-check fails loudly instead of
+letting every bad level through. Tested against a stub CLI
+(`tests/test_cli_effort_check.py`). The default stays unset on
+data: on 2026-10-20, 8 example judges x 6 inputs, `low` cut output tokens
+15% (sonnet-4-6) and 33% (sonnet-5-5) but changed decisions the default
+made the same way twice, including dropping an ARR stated in the input.
+Don't name the pipeline-wide knob `ROTE_EFFORT`: that is the compiler's,
+and it would silently retune every judge a developer runs. On the Node
+TS runtimes a judge only sees the env vars `judge_env_arg` threads, so a
+new knob must be added there too (the temperature knob was missing until
+this was found).
+
 ### Vendor SDK errors do not survive a durable step boundary
 
 `anthropic.APIError` / `openai.APIError` subclasses take keyword-only
@@ -2072,6 +2097,15 @@ Consequences worth keeping in mind:
   real Postgres — no inference, so they are automated (see the
   `TypeScript e2e` / `DBOS-TS e2e` CI jobs). `@pytest.mark.slow` says
   what *toolchain* a suite needs, never whether it should run.
+- **Every npm install in a test goes through `tests/_node_trees.py`.**
+  It installs once per distinct dependency set (the dependency fields
+  of `package.json`, install scripts, extra npm args, node and npm
+  versions) and symlinks each app's `node_modules` to that tree. Per-app
+  installs used to take 8.7G per CI run, which overflowed ubuntu-26.04's
+  quota-limited `/tmp`. A slow test's `rote run` installs go the same
+  way (conftest swaps the runners' `ensure_npm_install`). A raw
+  `npm install` in a test fails `tests/test_node_trees.py`, because it
+  would write into a tree other tests share.
 - **Emitted judges and agent loops get stubbed, not called.** The live
   suites point `ROTE_BASE_URL_<NODE_ID>` at a local Messages stub and
   set a fake key. That is what makes it possible to prove the agent-loop

@@ -29,6 +29,7 @@ from rote.adapters._ts_common import json_schema_to_zod
 from rote.adapters.cloudflare import CloudflareAdapter
 from rote.adapters.python import PythonAdapter
 from rote.ir import Pipeline
+from tests import _node_trees as node_trees
 
 pytestmark = pytest.mark.slow
 
@@ -148,13 +149,7 @@ def _zod_verdicts(out: Path, tmp: Path) -> list[tuple[bool, Any]]:
     (proj / "package.json").write_text(
         json.dumps({"name": "zod-parity", "private": True, "type": "module"}), encoding="utf-8"
     )
-    subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund", f"zod@{zod_range}"],
-        cwd=proj,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    node_trees.install(proj, f"zod@{zod_range}")
     payloads = json.dumps([payload for _, payload, _ in CASES])
     # The module's JSON_VALUE (JSON_VALUE_ZOD_TS), minus its TS types: this
     # harness is plain JS.

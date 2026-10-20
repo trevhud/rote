@@ -25,6 +25,7 @@ import yaml
 
 from rote.adapters import get_adapter
 from rote.adapters._common import _to_camel_case
+from rote.adapters._ts_common import judge_env_arg
 from rote.adapters.dbos_ts import (
     DbosTsAdapter,
     DbosTsAdapterConfig,
@@ -350,6 +351,45 @@ def test_main_threads_operator_overrides_to_judges(main_src: str) -> None:
     silently ignored on this runtime."""
     assert "ROTE_MODEL_VET_CONTACT: process.env.ROTE_MODEL_VET_CONTACT," in main_src
     assert "ROTE_BASE_URL_VET_CONTACT: process.env.ROTE_BASE_URL_VET_CONTACT," in main_src
+
+
+@pytest.mark.parametrize(
+    ("client", "temperature", "expected", "absent"),
+    [
+        (
+            "anthropic",
+            0.2,
+            ["ROTE_TEMPERATURE_GRADE", "ROTE_EFFORT_GRADE", "ROTE_JUDGE_EFFORT"],
+            [],
+        ),
+        ("anthropic", None, ["ROTE_EFFORT_GRADE", "ROTE_JUDGE_EFFORT"], ["ROTE_TEMPERATURE_GRADE"]),
+        ("openai", None, [], ["ROTE_EFFORT_GRADE", "ROTE_JUDGE_EFFORT", "ROTE_TEMPERATURE_GRADE"]),
+    ],
+)
+def test_every_knob_a_signature_reads_reaches_it_on_node_runtimes(
+    client: str, temperature: float | None, expected: list[str], absent: list[str]
+) -> None:
+    """A Node runtime hands each judge a narrow env literal, so a knob the
+    signature declares but the literal omits is silently ignored. The
+    temperature knob was exactly that until effort was added beside it."""
+    spec: dict[str, object] = {
+        "input_schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+        "output_schema": {
+            "type": "object",
+            "properties": {"y": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        "prompt": "{{ x }}",
+        "client": client,
+    }
+    if temperature is not None:
+        spec["temperature"] = temperature
+    node = Node(id="grade", kind=NodeKind.LLM_JUDGE, description="g", signature_spec=spec)
+    arg = judge_env_arg(node)
+    for var in expected:
+        assert f"        {var}: process.env.{var}," in arg
+    for var in absent:
+        assert var not in arg
 
 
 def test_emit_rejects_llm_judge_without_signature_spec(tmp_path: Path) -> None:

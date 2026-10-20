@@ -339,3 +339,33 @@ def test_every_python_runtime_installs_an_sdk_with_structured_outputs(
     text = (tmp_path / install_file).read_text(encoding="utf-8")
     assert "anthropic>=1.15" in text
     assert "openai" not in text  # only the SDK a judge actually uses
+
+
+# ───────── the TS agent loop's emit-time rewrite ─────────
+
+
+def test_the_ts_loop_rewrite_returns_none_only_for_an_inexpressible_schema() -> None:
+    """A TS agent loop gets ``outputFormat`` from this at emit time. An
+    inexpressible schema means "ask for submit_result instead"; a malformed
+    one is a bug and must fail the emit, not quietly change the request."""
+    from rote.adapters._common import _format_schema
+
+    untyped = {
+        "type": "object",
+        "properties": {"result": {"description": "Value of type Account."}},
+        "required": ["result"],
+        "additionalProperties": False,
+    }
+    assert _format_schema(untyped) is None
+    closed = {**untyped, "properties": {"result": {"type": "string"}}}
+    assert _format_schema(closed) == closed
+    with pytest.raises(RuntimeError, match="is not a JSON Schema object"):
+        _format_schema({**untyped, "properties": {"result": 3}})
+
+
+def test_the_ts_helper_default_effort_mirrors_the_python_one() -> None:
+    from rote.adapters._ts_common import ROTE_INFERENCE_HELPER_TS
+    from rote.inference import DEFAULT_JUDGE_EFFORT
+
+    expected = json.dumps(DEFAULT_JUDGE_EFFORT or "")
+    assert f"const DEFAULT_EFFORT = {expected};" in ROTE_INFERENCE_HELPER_TS

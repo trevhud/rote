@@ -24,7 +24,27 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   defaults to the same rule (`system1=None`), so library callers such as
   rote-cloud get System-1 too.
 
+### Added
+
+- **Effort knob for Anthropic judges and agent loops.** `ROTE_EFFORT_<NODE_ID>`
+  sets one node's effort, and `ROTE_JUDGE_EFFORT` sets it for every node. An
+  empty value omits it. The SDK lanes send `output_config.effort`; the
+  subscription lane passes `claude -p --effort`, and an unknown level fails
+  there too instead of being ignored. Unset, judges still send no effort (the
+  API runs `high`): measured on 8 example judges, `low` saved 15 to 33% of
+  output tokens but changed decisions. Works on every runtime.
+
 ### Fixed
+
+- **An unknown effort level fails before a subscription call is paid for.**
+  `claude -p` ignores an unknown `--effort` with only a warning, so rote now
+  asks the CLI with a free `claude --effort <level> --version` first, and
+  self-checks once per process that the CLI still warns in a way rote
+  recognizes.
+
+- **`ROTE_TEMPERATURE_<NODE_ID>` reaches judges on DBOS-TS and Inngest.**
+  Those runtimes pass each judge a narrow env object, which left the
+  temperature knob out, so an empty value could not drop the parameter.
 - **Emitted judges work on claude-sonnet-5-5.** That model rejects a forced
   `tool_choice` with HTTP 400, and every Anthropic judge forced one, so
   pointing `ROTE_MODEL_<ID>` at it failed every judge call. Judges on every
