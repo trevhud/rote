@@ -472,3 +472,108 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
     step2 = [n for n in doc["nodes"] if n["source"]["section"].startswith("Step 2")]
     # "Clear All Existing Filter Pills": click the x on each pill. Nothing is computed.
     assert [n["kind"] for n in step2] == ["external_call"]
+
+
+@pytest.mark.parametrize(
+    ("text", "fetch"),
+    [
+        # A read of something inside the pipeline is not a call.
+        ("Read the summary from Step 3.", False),
+        ("Look up each line's rate in the FX table.", False),
+        ("Use the rows you read in Phase 2.", False),
+        ("Load the request from the Controller.", False),
+        ("Look up each line's rate in FX table.", False),  # no article, still a label
+        ("Read the totals from earlier.", False),  # a lowercase word is not a name
+        ("Read each row of the table.", False),
+        ("Read each row of the Google Sheet.", True),
+        ("Read the open deals of HubSpot.", True),
+        ("Read the last messages of #finance.", True),
+        # "of" a generic noun is data, not a source (review6).
+        ("Read the balance of the account.", False),
+        ("Read the name of the folder.", False),
+        ("Read the first line of the queue entry.", False),
+        ("Read the status of the service in the request.", False),
+        ("Read the request of the Controller.", False),
+        ("Read the total of Step 3.", False),
+        ("Read the summary of each Phase result.", False),
+        ("Read the subject of each line.", False),
+        # A capitalized domain noun is not a system (review6).
+        ("Read the owner of each Deal and group them.", False),
+        ("Read the name of every Customer in the batch.", False),
+        ("Read the status of each Order and flag late ones.", False),
+        # Data words after a name are rows of data, not system objects (review6).
+        ("Read the total of each Q3 row.", False),
+        ("Read the amount of each Order invoice.", False),
+        ("Read the value of each Budget cell.", False),
+        ("Read the owner of each Deal record.", False),
+        ("Read the total of each Customer order.", False),
+        ("Read the amount of each Expense row.", False),
+        ("Read the name of each Invoice file.", False),
+        ("Read the total of each Q3 column.", False),
+        # A read from outside is.
+        ("Pull open tickets from Zendesk.", True),
+        ("Read the 50 most recent messages from #deal-intake.", True),
+        ("Look up the customer in Salesforce.", True),
+        ("Pull this week's tickets from the Zendesk API.", True),
+        ("Read the attendees from the shared inbox.", True),
+    ],
+)
+def test_the_fetch_signal_needs_a_source_outside_the_pipeline(
+    text: str, fetch: bool, tmp_path: Path
+) -> None:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        f"---\nname: t\ndescription: x\n---\n\n# T\n\n## Step 1: Get data\n\n{text}\n"
+    )
+    assert bool(parse_skill(skill).units[0].signals.get("fetch")) is fetch
+
+
+@pytest.mark.parametrize(
+    ("text", "tools", "call"),
+    [
+        # A product known to exist (a registered server) is a system on evidence.
+        ("Read the stage of each Salesforce deal.", [("salesforce", "query")], True),
+        ("Read the status of each Shopify order.", [("shopify", "get_orders")], True),
+        ("Read the rows of each Google Sheets tab.", [("google_sheets", "read")], True),
+        # The same wording with nothing declared stays a plain step.
+        ("Read the stage of each Salesforce deal.", [], False),
+        ("Read the status of each Shopify order.", [], False),
+        # A declared server elsewhere does not make a domain noun one.
+        ("Read the owner of each Deal record.", [("salesforce", "query")], False),
+        ("Read the total of each Q3 row.", [], False),
+        ("Read the amount of each Order invoice.", [], False),
+        ("Read the value of each Budget cell.", [], False),
+        ("Read the total of each Customer order.", [], False),
+        ("Read the amount of each Expense row.", [], False),
+        ("Read the name of each Invoice file.", [], False),
+    ],
+)
+def test_a_named_read_of_a_declared_server_is_a_call(
+    text: str, tools: list[tuple[str, str]], call: bool, tmp_path: Path
+) -> None:
+    from rote.compiler.system1.decide import unit_segments
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        f"---\nname: t\ndescription: x\n---\n\n# T\n\n## Step 1: Get data\n\n{text}\n"
+    )
+    kinds = [k for _, k, _, _ in unit_segments(parse_skill(skill), tools=tools)[0]]
+    assert ("external_call" in kinds) is call
+
+
+def test_prepare_passes_the_declared_servers_to_the_rules(tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: t\ndescription: x\n---\n\n# T\n\n## Step 1: Get data\n\n"
+        "Read the stage of each Salesforce deal.\n"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(skill, work, tools={("salesforce", "query"): object()})
+    assert "external_call" in [n.kind for n in plan.nodes]

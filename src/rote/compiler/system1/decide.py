@@ -184,7 +184,9 @@ def _kind_confidence(signals: dict[str, list[str]], kind_key: str) -> float:
 
 
 def _segment(
-    u: Unit, registry: Mapping[str, str] | None = None
+    u: Unit,
+    registry: Mapping[str, str] | None = None,
+    systems: frozenset[str] = frozenset(),
 ) -> list[tuple[str, str, float, str]]:
     """(role, kind, confidence, rule) for each node a unit becomes, in data-flow order.
 
@@ -233,7 +235,7 @@ def _segment(
         out.append(("write", "external_call", _kind_confidence(s, "write"), "side-effect signal"))
     # A read from a named API or product the parser's fetch signal missed
     # ("query the AniList GraphQL API"). Never a second call in one step.
-    if _reads_a_named_api(u.text) and not any(k == "external_call" for _, k, _, _ in out):
+    if _reads_a_named_api(u.text, systems) and not any(k == "external_call" for _, k, _, _ in out):
         out.insert(0, ("fetch", "external_call", 0.8, "reads from a named API or product"))
     if not out:
         out.append(("process", "pure_function", 0.3, "no signal: most deterministic kind"))
@@ -739,15 +741,24 @@ def _route(
 Segment = tuple[str, str, float, str]
 
 
-def unit_segments(skill: SkillParse, verdicts: Verdicts | None = None) -> dict[int, list[Segment]]:
+def unit_segments(
+    skill: SkillParse,
+    verdicts: Verdicts | None = None,
+    tools: Collection[tuple[str, str]] = (),
+) -> dict[int, list[Segment]]:
     """The nodes each step unit becomes, by unit index: the rules' segmentation,
-    then (with ``verdicts``) the decision model's confident answers over it."""
+    then (with ``verdicts``) the decision model's confident answers over it.
+
+    ``tools`` (grounding's ``(server, tool)`` keys) and the skill's tool
+    registry name the systems that are known to exist, so a read from one of
+    them by name ("each Salesforce deal") is a call on evidence, not wording."""
+    systems = known_systems(skill.tool_registry, tools)
     out: dict[int, list[Segment]] = {}
     for u in skill.units:
         segments = (
             [("loop", "agent_loop", 0.7, "a heading whose sub-steps run per item")]
             if u.loop_container
-            else _segment(u, skill.tool_registry)
+            else _segment(u, skill.tool_registry, systems)
         )
         if verdicts is not None and not u.loop_container and u.index in verdicts.by_unit:
             segments = _route(segments, verdicts.by_unit[u.index], verdicts.model)
@@ -883,7 +894,27 @@ def _names_a_product(text: str) -> bool:
     return any(m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(text))
 
 
-def _reads_a_named_api(text: str) -> bool:
+def known_systems(
+    registry: Mapping[str, str] | None = None, tools: Collection[tuple[str, str]] = ()
+) -> frozenset[str]:
+    """Slugs of the servers the skill's tool registry or tools/list declares."""
+    servers = set((registry or {}).values()) | {s for s, _ in tools}
+    return frozenset(slug(s) for s in servers if s)
+
+
+def _names_a_known_system(text: str, systems: frozenset[str]) -> bool:
+    """A capitalized name (one or two words) whose slug is a declared server:
+    "Salesforce", "Google Sheets" against ``salesforce``, ``google_sheets``."""
+    if not systems:
+        return False
+    for m in re.finditer(r"(?-i:[A-Z][\w.-]*)(?:\s+(?-i:[A-Z][\w.-]*))?", text):
+        words = m.group(0).split()
+        if any(slug(" ".join(words[:k])) in systems for k in range(len(words), 0, -1)):
+            return True
+    return False
+
+
+def _reads_a_named_api(text: str, systems: frozenset[str] = frozenset()) -> bool:
     """A read whose source is a named API or product: "query the AniList
     GraphQL API", "fetch the rates from https://...". The parser's fetch
     signal misses both, and a --backend api compile then made no vendor
@@ -895,7 +926,12 @@ def _reads_a_named_api(text: str) -> bool:
         # The source comes after the read verb, in the same sentence: "read
         # the error log" and an "API" two sentences on are not one read.
         rest = sentence[verb.end() :]
-        if _NAMED_API.search(rest) or re.search(r"\bAPIs?\b", rest) or _read_source_product(rest):
+        if (
+            _NAMED_API.search(rest)
+            or re.search(r"\bAPIs?\b", rest)
+            or _read_source_product(rest)
+            or _names_a_known_system(rest, systems)
+        ):
             return True
     return False
 
@@ -904,8 +940,8 @@ def _reads_a_named_api(text: str) -> bool:
 #: "via the Zendesk ...". Only after a source preposition, so a capitalized
 #: word elsewhere ("the batch the Controller approved") is never a source.
 _SOURCE_NAME = re.compile(
-    r"\b(?:from|in|via|through|using)\s+(?:the\s+|their\s+|our\s+)?"
-    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([a-z]+))?"
+    r"\b(?:from|in|via|through|using)\s+(the\s+|their\s+|our\s+)?"
+    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([A-Za-z]+))?"
 )
 #: Capitalized words that name a part of the skill or a role, never a product.
 _NOT_PRODUCTS = frozenset(
@@ -918,11 +954,40 @@ _IN_DATA = frozenset(["table", "tab", "column", "row", "rows", "field", "list", 
 
 def _read_source_product(text: str) -> bool:
     for m in _SOURCE_NAME.finditer(text):
-        first = m.group(1).split()[0].upper()
-        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or m.group(2) in _IN_DATA:
+        article, name, after = m.group(1), m.group(2), (m.group(3) or "").lower()
+        first = name.split()[0].upper()
+        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or after in _IN_DATA:
+            continue
+        # After "the", a capitalized word is a role or a label ("from the
+        # Controller") unless a system noun follows it ("the Zendesk API").
+        if article and after not in _SYSTEM_NOUNS:
             continue
         return True
     return False
+
+
+#: Nouns that make "the <Name> <noun>" a system.
+_SYSTEM_NOUNS = frozenset(
+    [
+        "api",
+        "apis",
+        "portal",
+        "app",
+        "database",
+        "server",
+        "endpoint",
+        "inbox",
+        "channel",
+        "crm",
+        "workspace",
+        "account",
+        "service",
+        "site",
+        "dashboard",
+        "sheet",
+        "drive",
+    ]
+)
 
 
 def _through_gates(sources: list[str], by_id: Mapping[str, NodePlan]) -> list[str]:

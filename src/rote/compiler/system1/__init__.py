@@ -88,7 +88,7 @@ def prepare(
     skill = parse_skill(skill_dir)
     model = decision_model.MODELS.get(decider)
     verdicts = decision_model.decide(model, skill) if model is not None else None
-    segments = unit_segments(skill, verdicts)
+    segments = unit_segments(skill, verdicts, list(tools or {}))
     tb = None
     if tiebreak_lane is not None:
         if rubric is None:

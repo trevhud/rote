@@ -647,6 +647,7 @@ def test_a_bench_job_costs_the_agent_run_plus_the_decision_calls(tmp_path: Path)
         ("Pull the open deals from HubSpot.", True),
         # Only the named-source rule catches this one: the parser has no fetch signal.
         ("Download the invoices through Stripe.", True),
+        ("Download the invoices through the Stripe dashboard.", True),
         ("Load this week's invoices via Stripe.", True),
         ("Read the contact list via the Clearbit enrichment service.", True),
         # No named source: the rules' default, not a call.
@@ -675,6 +676,11 @@ def test_a_read_from_a_named_api_is_a_call(text: str, fetches: bool, tmp_path: P
         "Load the lines and group them by Employee.",
         "Use the rows you read in Phase 2.",
         "Pull the totals in the Q3 column.",
+        # A role after a preposition is not a product.
+        "Load the request from the Controller.",
+        # The source must come after the read verb.
+        "HubSpot is down today, so load the cached copy.",
+        "With the Stripe API down, read the cached copy.",
         # The source must follow the read verb in the same sentence.
         "Read the error log lines. The API latency doubled overnight.",
         "Read `references/enrich.md` first. Then enrich via ZoomInfo in batches.",
