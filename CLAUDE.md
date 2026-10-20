@@ -538,6 +538,30 @@ preserve:
   one schema. A schema inferred from a baseline's recorded calls never
   fails a compile: it only shows what someone sent.
 
+### `--backend api` is a compile mode, not only an emit flag
+
+With `--backend api` every external_call runs its `impl:` module, so the
+agent must write real vendor calls, and a call from training-data memory
+fails at run time. The Compiler owns this (`rote.compiler.api_docs`), on
+both the legacy and the System-1 path:
+
+- **The backend reaches the Compiler as `emit_target.external_backend`.**
+  The Compiler, not the CLI, grants the driver `web_tools` and adds the
+  brief to the prompt, so any caller that compiles for `api` gets both.
+- **Citations are checked, and fetches are the evidence.** Each vendor
+  function carries `# docs: <url>` (or `# docs: skill` for an internal API
+  the skill itself documents). Verification sends back an implemented
+  external_call that cites none, and, when the driver reports fetches, a
+  cited page the agent never fetched. The report marks each cited page as
+  fetched in this compile or not. The fetched list comes from the drivers'
+  `tool` events (their `url` / `query` fields), so a driver that does not
+  put them there makes the report say "unknown".
+- **TypeScript runtimes are refused at compile.** They emit a stub for
+  every external_call, so `compile --backend api --runtime cloudflare`
+  (including the logged-in default) exits 2 before the agent runs. The
+  Compiler refuses it too, for callers that skip the CLI (the cloud
+  container, the bench).
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

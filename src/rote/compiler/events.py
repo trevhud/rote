@@ -81,6 +81,10 @@ class CompilationEvent:
     message: str = ""
     #: False when output usage is pending; missing buckets are not zero.
     usage_complete: bool | None = None
+    #: The page a web fetch tool event read (``--backend api`` research).
+    url: str | None = None
+    #: The query a web search tool event ran.
+    query: str | None = None
 
 
 EventCallback = Callable[[CompilationEvent], None]

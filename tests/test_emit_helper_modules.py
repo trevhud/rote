@@ -108,3 +108,40 @@ def test_only_top_level_python_modules_ship(tmp_path: Path, runtime: str) -> Non
     shipped = sorted(str(p.relative_to(out / "extracted")) for p in (out / "extracted").rglob("*"))
     assert shipped == ["__init__.py", "_common.py", "rule_tables.py", "total_lines.py"]
     assert not (out / "tests").exists() or not list((out / "tests").glob("test_total_lines.py"))
+
+
+def test_an_import_guarded_by_import_error_is_optional(tmp_path: Path) -> None:
+    ext = tmp_path / "extracted"
+    ext.mkdir()
+    (ext / "a.py").write_text(
+        "def f():\n"
+        "    try:\n"
+        "        from extracted import optional\n"
+        "    except (ImportError, ValueError):\n"
+        "        return None\n"
+        "    try:\n"
+        "        from extracted import other\n"
+        "    except ValueError:\n"
+        "        return None\n"
+        "    from extracted import required\n"
+    )
+    assert sorted(m for _, m in unshipped_imports(tmp_path)) == ["other", "required"]
+
+
+def test_a_judge_on_the_api_backend_ships_every_import(tmp_path: Path) -> None:
+    """The verbatim inference helper imports extracted._rote_mcp only for
+    agent loops, behind ImportError. On the api backend no binding emits that
+    module, and every dbos pipeline with a judge failed verification."""
+    pipeline = load_pipeline(
+        Path(__file__).resolve().parent.parent
+        / "examples"
+        / "deal-monitor"
+        / "expected"
+        / "pipeline.yaml"
+    )
+    assert any(n.kind.value == "llm_judge" for n in pipeline.nodes)
+    assert not any(n.kind.value == "agent_loop" for n in pipeline.nodes)
+    out = tmp_path / "rt"
+    get_adapter("dbos", external_backend="api").emit(pipeline, out)
+    assert not (out / "extracted" / "_rote_mcp.py").exists()
+    assert unshipped_imports(out) == []

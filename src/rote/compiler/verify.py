@@ -51,6 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from rote.compiler.api_docs import WebResearch, api_view, docs_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -338,7 +339,11 @@ def _tested_symbols(artifact_dir: Path) -> set[str]:
 
 
 def _deliverable_findings(
-    pipeline: Pipeline, artifact_dir: Path, implementations: list[NodeImplementation]
+    pipeline: Pipeline,
+    artifact_dir: Path,
+    implementations: list[NodeImplementation],
+    api_backend: bool = False,
+    web_research: WebResearch | None = None,
 ) -> list[ContractFinding]:
     """The rules that hold for a fresh compile, but not for any IR on disk.
 
@@ -346,13 +351,29 @@ def _deliverable_findings(
     ``rote emit`` time, where an unwritten module is the documented stub
     path. A compile is held to more: a ``pure_function`` is code the
     skill describes, so the agent either writes it or says why not.
+
+    ``api_backend`` (``--backend api``) holds every ``external_call`` to the
+    same rules, since its module is the call that runs, and to citing the
+    docs page each vendor call was written from
+    (:func:`rote.compiler.api_docs.docs_findings`).
     """
     findings: list[ContractFinding] = []
     tested = _tested_symbols(artifact_dir)
     kinds = {n.id: n.kind for n in pipeline.nodes}
+    held = {NodeKind.PURE_FUNCTION, *([NodeKind.EXTERNAL_CALL] if api_backend else [])}
+    if api_backend:
+        findings += docs_findings(pipeline, artifact_dir, implementations, web_research)
     for impl in implementations:
-        if kinds.get(impl.node_id) is not NodeKind.PURE_FUNCTION:
+        kind = kinds.get(impl.node_id)
+        if kind not in held:
             continue
+        assert kind is not None
+        vendor = kind is NodeKind.EXTERNAL_CALL
+        unstated = (
+            "the docs leave a request or response shape unconfirmed"
+            if vendor
+            else "the skill leaves a fact unstated"
+        )
         rel, _, symbol = impl.impl.partition(":")
         if impl.status == "absent" and (artifact_dir / rel).is_file():
             # The module exists but does not parse, decode, or define the
@@ -362,12 +383,13 @@ def _deliverable_findings(
             findings.append(
                 ContractFinding(
                     node_id=impl.node_id,
-                    kind="pure_function_not_written",
+                    kind=f"{kind.value}_not_written",
                     severity="error",
                     message=(
                         f"{impl.impl} does not exist. Write the function, or a stub "
                         f"whose NotImplementedError message says what the skill "
-                        f"leaves unstated (implementation.md)"
+                        f"{'or the docs leave' if vendor else 'leaves'} unstated "
+                        f"(implementation.md)"
                     ),
                     path=rel,
                 )
@@ -379,8 +401,8 @@ def _deliverable_findings(
                     kind="unexplained_stub",
                     severity="error",
                     message=(
-                        f"{symbol}() is a stub with no reason. A pure_function stays "
-                        f"a stub only when the skill leaves a fact unstated; raise "
+                        f"{symbol}() is a stub with no reason. A {kind.value} stays "
+                        f"a stub only when {unstated}; raise "
                         f"NotImplementedError('<what is missing and why>') so the "
                         f"decision is reviewable (implementation.md)"
                     ),
@@ -503,6 +525,29 @@ def emit_findings(
     ]
 
 
+def _optional_imports(tree: ast.Module) -> set[int]:
+    """``id()`` of every import in a ``try`` body whose handlers catch ImportError."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        caught = {name for h in node.handlers for name in _handler_names(h.type)}
+        if caught & {"ImportError", "ModuleNotFoundError"}:
+            for stmt in node.body:
+                found |= {
+                    id(n) for n in ast.walk(stmt) if isinstance(n, ast.Import | ast.ImportFrom)
+                }
+    return found
+
+
+def _handler_names(expr: ast.expr | None) -> list[str]:
+    if isinstance(expr, ast.Name):
+        return [expr.id]
+    if isinstance(expr, ast.Tuple):
+        return [e.id for e in expr.elts if isinstance(e, ast.Name)]
+    return []
+
+
 def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
     """(file, module) for every ``extracted`` import the emitted runtime cannot satisfy.
 
@@ -511,6 +556,12 @@ def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
     ``extracted._common`` / ``extracted.rule_tables``, which the work dir
     had and the emitted runtime did not. Static (AST) resolution, so no
     deliverable code runs outside the test sandbox.
+
+    An import inside a ``try`` that catches ImportError is optional by
+    construction and is not counted: the verbatim inference helper imports
+    ``extracted._rote_mcp`` that way for agent loops only, and a dbos
+    pipeline with a judge and no called MCP binding (every ``--backend api``
+    one) was failing verification on it.
     """
     extracted = runtime_dir / "extracted"
     have = {p.stem for p in extracted.glob("*.py")} if extracted.is_dir() else set()
@@ -522,7 +573,10 @@ def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
         except SyntaxError:
             continue  # reported by the syntax check, not here
         inside = path.parent == extracted
+        optional = _optional_imports(tree)
         for node in ast.walk(tree):
+            if id(node) in optional:
+                continue
             wanted: list[str] = []
             if isinstance(node, ast.Import):
                 wanted = [
@@ -664,6 +718,7 @@ def verify_deliverable(
     strict_provenance: bool = False,
     grounding: Grounding | None = None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -683,6 +738,9 @@ def verify_deliverable(
 
     ``strict_provenance`` (``--strict-provenance``) makes every provenance
     finding an error, review gaps included.
+
+    ``web_research`` is what the agent fetched so far (``--backend api``):
+    with it, a cited docs page the agent never fetched is an error.
 
     ``grounding`` is what the compile's contracts are grounded in
     (:mod:`rote.compiler.grounding`). With a sample input, the pipeline's
@@ -706,6 +764,7 @@ def verify_deliverable(
             strict_provenance,
             grounding,
             portable_judges,
+            web_research,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -736,6 +795,7 @@ def _verify_or_raise(
     strict_provenance: bool,
     grounding: Grounding | None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -748,6 +808,7 @@ def _verify_or_raise(
             strict_provenance=strict_provenance,
             grounding=grounding,
             portable_judges=portable_judges,
+            web_research=web_research,
         )
     import shutil
     import tempfile
@@ -773,6 +834,7 @@ def _verify_or_raise(
             strict_provenance=strict_provenance,
             grounding=grounding,
             portable_judges=portable_judges,
+            web_research=web_research,
         )
 
 
@@ -786,15 +848,23 @@ def _verify(
     strict_provenance: bool,
     grounding: Grounding | None = None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
     except Exception as e:  # noqa: BLE001 (any load failure is the agent's to fix)
         return Verification(pipeline=None, pipeline_error=str(e))
     implementations = implementation_status(pipeline, root)
+    api_backend = emit_target is not None and emit_target.external_backend == "api"
     findings = (
         check_contracts(pipeline, root)
-        + _deliverable_findings(pipeline, root, implementations)
+        + _deliverable_findings(
+            pipeline,
+            root,
+            implementations,
+            api_backend=api_backend,
+            web_research=web_research,
+        )
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
         + (judge_spec_findings(pipeline) if portable_judges else [])
@@ -802,15 +872,19 @@ def _verify(
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     if grounding is not None:
-        findings += grounding_findings(pipeline, skill_dir, grounding.sample)
-        findings += tool_findings(pipeline, grounding.tools)
-        questions = contract_questions(pipeline, skill_dir, grounding) + [
+        # On the api backend no binding is called: its tool's arguments and
+        # result shape are not the pipeline's contract, and a recorded tool
+        # result cannot stand in for the vendor call in the prefix.
+        called = api_view(pipeline) if api_backend else pipeline
+        findings += grounding_findings(called, skill_dir, grounding.sample)
+        findings += tool_findings(called, grounding.tools)
+        questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
-            for node_id, text in tool_questions(pipeline, grounding.tools)
+            for node_id, text in tool_questions(called, grounding.tools)
         ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(
-                pipeline,
+                called,
                 root,
                 grounding.sample,
                 implementations,

@@ -29,7 +29,7 @@ If you think a decision is wrong, add an entry to `system1/proposals.yaml`
 and never applies it. **Never cite `system1/` files or `pipeline.yaml` in a
 `# skill:` comment.** Cite only the skill's own text.
 
-## What you write, in four turns
+## What you write, in four turns (five with `--backend api`)
 
 Every turn re-reads the whole conversation, so the number of turns is the
 cost. Put many tool calls in one turn: they run in parallel.
@@ -37,6 +37,12 @@ cost. Put many tool calls in one turn: they run in parallel.
 1. **Turn 1, Reads only:** `pipeline.yaml`, `system1/brief.md`, both files
    under this bundle's `references/`, and every file of the source skill,
    all in this one turn.
+   **With `--backend api`** (the task prompt says so), add one research
+   turn here: for every `external_call` node, search for and fetch the
+   vendor's current reference page for its exact call, all in parallel
+   (`references/implementation.md`, Regime 2). Its module cites each page
+   as `# docs: <url>`. A turn of lookups is cheaper than a vendor call
+   written from memory, which fails at run time.
 2. **Turn 2, every module at once:** one Write per `pure_function` /
    `external_call` node, at its `impl:` path, following
    `references/implementation.md`, and one Write per `llm_judge` node at

@@ -438,6 +438,11 @@ way, prefer the more deterministic kind.
 Pick with `--runtime`; the same IR drives all of them. Under
 `--backend api`, none of the emitted code references MCP: the
 crystallization step replaces tool calls with direct vendor API calls.
+The compiler agent gets web search and fetch tools for that, writes each
+call from the vendor's current reference page, and cites the page as
+`# docs: <url>`; `compile-report.md` lists every cited page beside
+whether the agent fetched it during the compile. The api backend's calls
+are Python, so it needs a Python runtime (`dbos`, `python`, `temporal`).
 Under the default `--backend mcp`, tool-using nodes emit a working MCP
 client call (with durable park-on-auth on every MCP-capable runtime);
 see [`docs/mcp-client.md`](docs/mcp-client.md).
