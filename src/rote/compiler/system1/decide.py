@@ -772,14 +772,35 @@ def infeasible_kinds(u: Unit, registry: Mapping[str, str] | None = None) -> dict
     real expense-audit compile shows why: the tie-break made "save it to the
     finance shared folder" an external_call, the agent could only write a
     stub for a system the skill never names, and every run died there.
+
+    Deliberately narrow: only a step that writes, reads nothing, and names no
+    target anywhere (no system, proper noun, tool code span, HTTP path or
+    file path). A step that names one may still be a call.
     """
     out: dict[str, str] = {}
-    if not u.signals.get("fetch") and not _names_a_system(u, registry):
+    writes = any(SIGNALS["write"].search(x) for x in (u.title, u.text))
+    if (
+        writes
+        and not u.signals.get("fetch")
+        and not _names_a_system(u, registry)
+        and not _CALL_TARGET.search(u.text)
+        and not any(
+            m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(u.text)
+        )
+    ):
         out["external_call"] = (
-            "the step reads nothing and writes to no named system, so its result is "
-            "the pipeline's output"
+            "the step writes to no named system, so its result is the pipeline's output"
         )
     return out
+
+
+#: A capitalized word inside a sentence (a sentence's first word says nothing).
+_MID_SENTENCE_NAME = re.compile(r"(?<=[a-z0-9,] )(?-i:[A-Z][A-Za-z0-9]+)")
+#: A call target that is not a proper noun: a tool name in a code span
+#: (`update_incident`), an HTTP verb with a path, or an absolute or home path.
+_CALL_TARGET = re.compile(
+    r"`[a-z][a-z0-9]*(?:_[a-z0-9]+)+`|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/|(?<![\w.])[~/][\w.-]*/"
+)
 
 
 def role_of_kind(kind: str) -> str:
