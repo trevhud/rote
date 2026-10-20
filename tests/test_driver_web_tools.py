@@ -346,35 +346,125 @@ async def test_run_checks_the_tool_list_before_the_first_request(
 # ───────── Pricing and error size ─────────
 
 
-def test_a_web_search_is_priced_at_the_documented_rate() -> None:
-    """ "$10 per 1,000 searches" (web search tool page, checked 2026-10-20)."""
-    from rote.compiler.drivers.anthropic_api import WEB_SEARCH_USD_PER_REQUEST
+#: Trimmed from https://openrouter.ai/api/v1/models (2026-10-20): native
+#: search on an Anthropic model is passed through at Anthropic's price.
+_OPENROUTER = {
+    "data": [
+        {
+            "id": "anthropic/claude-sonnet-4.6",
+            "pricing": {"prompt": "0.000003", "completion": "0.000015", "web_search": "0.01"},
+        },
+        {
+            "id": "anthropic/claude-sonnet-4.6:batch",
+            "pricing": {"prompt": "0.0000015", "completion": "0.0000075", "web_search": "0.02"},
+        },
+        {"id": "anthropic/claude-haiku-5.5", "pricing": {"prompt": "0.0000001", "completion": "0"}},
+    ]
+}
 
-    assert pytest.approx(0.01) == WEB_SEARCH_USD_PER_REQUEST
+
+def _catalog(web_search: dict[str, float]) -> Any:
+    from rote.eval.pricing import PricingCatalog
+
+    return PricingCatalog(
+        prices=(),
+        reference_prices={"claude-sonnet-4-6": (3.0, 15.0)},
+        reference_cache_rates={"claude-sonnet-4-6": (0.3, 3.75)},
+        web_search_rates=web_search,
+    )
 
 
-@pytest.mark.parametrize(("searches", "reported"), [(30, None), (0, None), (30, 2.0)])
-def test_the_summary_prices_searches_on_top_of_tokens(
-    tmp_path: Path, searches: int, reported: float | None
+def test_the_web_search_price_is_read_live_from_openrouter() -> None:
+    from rote.eval.pricing import PricingError, _parse_openrouter_web_search
+
+    rates = _parse_openrouter_web_search(_OPENROUTER)
+    # The base model's listing wins over its :batch variant.
+    assert rates == {"claude-sonnet-4-6": 0.01}
+    catalog = _catalog(rates)
+    assert catalog.web_search_usd_per_request("anthropic/claude-sonnet-4.6") == 0.01
+    with pytest.raises(PricingError, match="no live web search price"):
+        catalog.web_search_usd_per_request("claude-haiku-5-5")
+
+
+def test_the_web_search_price_survives_the_disk_cache(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from rote.eval.pricing import ModelPrice, ModelTier, _load_cache, _store_cache
+
+    # _load_cache refuses a catalog with no tier representative.
+    price = ModelPrice(
+        model_id="claude-sonnet-4-6",
+        provider="anthropic",
+        display_name="Sonnet 4.6",
+        tier=ModelTier.MID,
+        input_per_mtok=3.0,
+        output_per_mtok=15.0,
+        cache_read_per_mtok=0.3,
+        cache_write_per_mtok=3.75,
+        source="t",
+        fetched_at="t",
+    )
+    catalog = replace(_catalog({"claude-sonnet-4-6": 0.01}), prices=(price,))
+    path = tmp_path / "pricing.json"
+    _store_cache(path, catalog, "anthropic")
+    loaded = _load_cache(path, 3600, "anthropic")
+    assert loaded is not None and loaded.web_search_rates == {"claude-sonnet-4-6": 0.01}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("priced", [True, False])
+async def test_searches_are_priced_into_the_runs_cost_or_the_cost_is_unknown(
+    tmp_path: Path,
+    fake_skills: tuple[Path, Path, Path],  # noqa: F811
+    fake_anthropic: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+    priced: bool,
 ) -> None:
-    from rote.cli import _JsonlProgressSink, _Rates
+    from rote.compiler import _write_compile_metrics
 
-    path = tmp_path / "p.ndjson"
-    sink = _JsonlProgressSink.__new__(_JsonlProgressSink)
-    sink._path = path  # type: ignore[attr-defined]
-    sink._model_id = "m"  # type: ignore[attr-defined]
-    sink._prices = _Rates(input_per_mtok=3.0, output_per_mtok=15.0)  # type: ignore[attr-defined]
-    sink._file = path.open("w", encoding="utf-8")  # type: ignore[attr-defined]
-    digest = {"type": "summary", "total_tokens": {"input": 1000, "output": 500}}
-    sink.write_summary(digest, reported_cost=reported, web_searches=searches)
-    sink.close()
-    written = json.loads(path.read_text(encoding="utf-8").strip())
-    if reported is not None:
-        # The runtime's own estimate already covers what it billed.
-        assert written["cost_usd"] == reported and "web_search_usd" not in written
+    catalog = _catalog({"claude-sonnet-4-6": 0.01} if priced else {})
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda provider: catalog)
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    fake_anthropic(
+        [
+            _usage_msg(
+                [
+                    _tool_use(
+                        "w",
+                        "write_file",
+                        {"path": str(work_dir / "pipeline.yaml"), "content": VALID_PIPELINE_YAML},
+                    )
+                ],
+                stop_reason="tool_use",
+                searches=7,
+                fetches=2,
+            ),
+            _msg([_text("done")], stop_reason="end_turn"),
+        ]
+    )
+    result = await AnthropicApiDriver(model="claude-sonnet-4-6", web_tools=True).run(
+        skill_dir, compiler_dir, work_dir
+    )
+    meta = result.metadata
+    tokens = (
+        meta["input_tokens"] * 3.0
+        + meta["output_tokens"] * 15.0
+        + meta["cache_read_tokens"] * 0.3
+        + meta["cache_write_tokens"] * 3.75
+    ) / 1e6
+    if priced:
+        assert meta["web_search_usd"] == pytest.approx(0.07)
+        assert meta["cost_usd"] == pytest.approx(tokens + 0.07)
     else:
-        assert written["cost_usd"] == pytest.approx(0.0105 + searches * 0.01)
-        assert written.get("web_search_usd") == (pytest.approx(0.3) if searches else None)
+        # A search with no live price is not billed at a remembered rate.
+        assert meta["web_search_usd"] is None and meta["cost_usd"] is None
+    out = tmp_path / "compiled"
+    out.mkdir()
+    _write_compile_metrics(result, out)
+    written = json.loads((out / "compile-metrics.json").read_text())["metadata"]
+    assert written["web_search_requests"] == 7 and written["web_fetch_requests"] == 2
+    assert written.get("web_search_usd") == (pytest.approx(0.07) if priced else None)
 
 
 @pytest.mark.asyncio
@@ -394,29 +484,3 @@ async def test_a_failed_codex_run_carries_the_tail_of_its_event_stream(
     assert details.endswith("THE LAST LINE SAYS WHY")
     assert len(details) < DETAILS_MAX_CHARS + 100
     assert "earlier characters cut" in details
-
-
-def test_compile_hands_the_drivers_search_count_to_the_summary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    from rote.cli import main
-    from tests.test_cli import _install_mock_compiler, _patch_pricing, _read_ndjson
-
-    _patch_pricing(monkeypatch, (3.0, 15.0))
-    _install_mock_compiler(
-        monkeypatch,
-        driver_metadata={"input_tokens": 1000, "output_tokens": 500, "web_search_requests": 7},
-    )
-    skill = tmp_path / "skill"
-    skill.mkdir()
-    (skill / "SKILL.md").write_text("---\nname: t\n---\n", encoding="utf-8")
-    out = tmp_path / "out"
-    assert (
-        main(
-            ["compile", str(skill), "--local", "--runtime", "dbos", "--no-eval", "--out", str(out)]
-        )
-        == 0
-    )
-    capsys.readouterr()
-    [summary] = [o for o in _read_ndjson(out / "progress.jsonl") if o.get("type") == "summary"]
-    assert summary["web_search_usd"] == pytest.approx(0.07)

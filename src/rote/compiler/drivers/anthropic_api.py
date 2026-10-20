@@ -142,12 +142,6 @@ WEB_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
 )
 
-#: What one web search bills on top of tokens: "$10 per 1,000 searches",
-#: checked 2026-10-20 on the web search tool page above (failed searches are
-#: not billed; web fetch has no charge beyond tokens). The model price
-#: catalog does not carry it, so it lives beside the tool it prices.
-WEB_SEARCH_USD_PER_REQUEST = 10 / 1000
-
 #: Server tool names a response may carry. Anything else (``code_execution``
 #: above all) means the API provisioned a tool this driver did not ask
 #: for, and the run stops before it spends more.
@@ -301,16 +295,36 @@ def usage_buckets(usage: Any) -> dict[str, int]:
     }
 
 
-def run_cost_usd(model: str, totals: dict[str, int]) -> float | None:
+def web_search_usd(model: str, searches: int) -> float | None:
+    """What ``searches`` server-side web searches cost on ``model``, or ``None``
+    when no live source prices them (see ``PricingCatalog.web_search_usd_per_request``)."""
+    from rote.eval.pricing import PricingError, fetch_catalog
+
+    if not searches:
+        return 0.0
+    try:
+        rate = fetch_catalog(provider="anthropic").web_search_usd_per_request(model)
+    except PricingError:
+        return None
+    return round(rate * searches, 6)
+
+
+def run_cost_usd(model: str, totals: dict[str, int], web_searches: int = 0) -> float | None:
     """The run's cost from the live price catalog, or ``None`` when it cannot be priced.
 
+    Tokens in all four buckets, plus each server-side web search, which
+    bills per call on top of tokens (web fetch bills tokens only).
     ``None`` rather than a guess, as everywhere in rote: no catalog
-    (offline), an unlisted model, or cache tokens with no published cache
-    rate. The model id is normalized by the catalog (a gateway's
-    ``anthropic/claude-haiku-5.5`` prices as ``claude-haiku-5-5``).
+    (offline), an unlisted model, cache tokens with no published cache
+    rate, or searches with no live search price. The model id is
+    normalized by the catalog (a gateway's ``anthropic/claude-haiku-5.5``
+    prices as ``claude-haiku-5-5``).
     """
     from rote.eval.pricing import PricingError, fetch_catalog
 
+    search_usd = web_search_usd(model, web_searches)
+    if search_usd is None:
+        return None
     try:
         rates = fetch_catalog(provider="anthropic").rates_for(model)
     except PricingError:
@@ -328,7 +342,7 @@ def run_cost_usd(model: str, totals: dict[str, int]) -> float | None:
         + totals["cache_read"] * (cache_read or 0.0)
         + totals["cache_write"] * (cache_write or 0.0)
     ) / 1e6
-    return round(cost, 6)
+    return round(cost + search_usd, 6)
 
 
 def _server_tool_event(block: Any, turn: int) -> CompilationEvent:
@@ -667,11 +681,9 @@ class AnthropicApiDriver(CompilerDriver):
                         raise DriverError(
                             f"the API ran server tool {block.name!r}, which the api "
                             f"driver did not ask for; stopping before it spends more.",
-                            metadata={
-                                "model": self.model,
-                                "input_tokens": total_input_tokens,
-                                "output_tokens": total_output_tokens,
-                            },
+                            metadata=self._metadata(
+                                totals, server_tools, completed_iterations, repair_rounds
+                            ),
                         )
 
             if response.stop_reason == "pause_turn":
@@ -852,13 +864,14 @@ class AnthropicApiDriver(CompilerDriver):
             "output_tokens": totals["output"],
             "cache_write_tokens": totals["cache_write"],
             "cache_read_tokens": totals["cache_read"],
-            "cost_usd": run_cost_usd(self.model, totals),
+            "cost_usd": run_cost_usd(self.model, totals, server_tools["web_search"]),
             "iterations": iterations,
             "repair_rounds": repair_rounds,
             **(
                 {
                     "web_search_requests": server_tools["web_search"],
                     "web_fetch_requests": server_tools["web_fetch"],
+                    "web_search_usd": web_search_usd(self.model, server_tools["web_search"]),
                 }
                 if self.web_tools
                 else {}

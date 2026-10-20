@@ -298,3 +298,21 @@ def test_cache_rates_survive_the_on_disk_round_trip(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.rates_for("claude-fable-5") == (10.0, 50.0, 1.0, 12.5)
     assert loaded.rates_for("claude-sonnet-4-6") == (3.0, 15.0, None, None)
+
+
+def test_build_catalog_carries_openrouters_web_search_price() -> None:
+    """The only live source for a server-side search's price; without
+    OpenRouter there is none, and the accessor says so."""
+    openrouter = {
+        "data": [
+            {
+                "id": "anthropic/claude-sonnet-5",
+                "pricing": {"prompt": "0.000002", "completion": "0.00001", "web_search": "0.01"},
+            }
+        ]
+    }
+    with_or = build_catalog(LINEUP, openrouter, provider="anthropic", fetched_at="t")
+    assert with_or.web_search_usd_per_request("claude-sonnet-5") == 0.01
+    without = build_catalog(LINEUP, None, provider="anthropic", fetched_at="t")
+    with pytest.raises(PricingError, match="no live web search price"):
+        without.web_search_usd_per_request("claude-sonnet-5")

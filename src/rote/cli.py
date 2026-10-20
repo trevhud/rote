@@ -508,12 +508,7 @@ class _JsonlProgressSink:
             # A progress-file bug must never sink a paid run.
             pass
 
-    def write_summary(
-        self,
-        summary: dict[str, Any],
-        reported_cost: float | None = None,
-        web_searches: int = 0,
-    ) -> None:
+    def write_summary(self, summary: dict[str, Any], reported_cost: float | None = None) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
         Prices the run's ``total_tokens`` into a ``cost_usd`` field the
@@ -523,10 +518,6 @@ class _JsonlProgressSink:
         (e.g. from ``claude -p``), not authoritative billing data. It wins
         when present because it includes the per-model usage split that
         this single-model catalog estimate cannot represent.
-
-        ``web_searches`` are the api driver's server-side searches, billed per
-        call on top of tokens (``WEB_SEARCH_USD_PER_REQUEST``): added to the
-        token-priced cost, and reported on their own as ``web_search_usd``.
         """
         try:
             if reported_cost is not None:
@@ -536,10 +527,7 @@ class _JsonlProgressSink:
                 if isinstance(total, dict):
                     cost = self._cost_usd(total)
                     if cost is not None:
-                        searches = _web_search_usd(web_searches)
-                        summary = {**summary, "cost_usd": round(cost + searches, 6)}
-                        if web_searches:
-                            summary["web_search_usd"] = searches
+                        summary = {**summary, "cost_usd": cost}
             self._write(summary)
         except Exception:
             pass
@@ -1326,16 +1314,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "usage_complete": meta.get("usage_complete", True),
             },
             reported_cost=meta.get("cost_usd"),
-            web_searches=int(meta.get("web_search_requests") or 0),
         )
         progress_sink.close()
     return exit_code
-
-
-def _web_search_usd(searches: int) -> float:
-    from rote.compiler.drivers.anthropic_api import WEB_SEARCH_USD_PER_REQUEST
-
-    return round(searches * WEB_SEARCH_USD_PER_REQUEST, 6)
 
 
 def _assumptions_by_node(found: list[Any]) -> list[tuple[str, list[Any]]]:

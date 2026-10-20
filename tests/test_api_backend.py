@@ -514,13 +514,23 @@ async def test_the_compiler_itself_refuses_api_on_a_typescript_runtime(
         (CITED_MODULE, ["https://elsewhere.example"], {"unfetched_docs_page"}),
         # A driver that reports no fetches cannot say what was not fetched.
         (CITED_MODULE, None, set()),
-        # The skill as the reference: cited, and exempt from the fetch check.
+        # The skill as the reference, quoted: cited, and exempt from the fetch check.
+        (
+            UNCITED_MODULE.replace(
+                "def search_dock_emails",
+                '# docs: skill\n# skill: "POST /v1/dock/search with the facility id"\n'
+                "def search_dock_emails",
+            ),
+            ["https://elsewhere.example"],
+            set(),
+        ),
+        # "The skill documents it" with nothing of the skill quoted.
         (
             UNCITED_MODULE.replace(
                 "def search_dock_emails", "# docs: skill\ndef search_dock_emails"
             ),
             ["https://elsewhere.example"],
-            set(),
+            {"unquoted_skill_docs"},
         ),
     ],
 )
