@@ -484,6 +484,7 @@ def test_judge_inputs_accept_what_their_upstream_really_returns(tmp_path: Path) 
             if ref != "pipeline.input"
         }
     assert len(cases) == 2 and any(cases.values())
+    by_id = {n.id: n for n in pipeline.nodes}
     sys.path.insert(0, str(out))
     try:
         for judge, inputs in cases.items():
@@ -496,9 +497,22 @@ def test_judge_inputs_accept_what_their_upstream_really_returns(tmp_path: Path) 
             spec.loader.exec_module(module)
             model = getattr(module, f"{pascal}Input")
             model.model_validate({"request": request, **inputs})
-            # A string result validates too: nothing typed it yet.
-            other = {k: "plain text" for k in inputs}
-            model.model_validate({"request": request, **other})
+            # Only an untyped input takes a string: nothing typed it yet. A
+            # fanned upstream's whole result is a list, and is typed one.
+            schema = by_id[judge].signature_spec.input_schema["properties"]  # type: ignore[union-attr]
+            untyped = {k for k in inputs if "type" not in schema[k]}
+            listed = {k for k in inputs if schema[k].get("type") == "array"}
+            assert untyped | listed == set(inputs)
+            model.model_validate(
+                {
+                    "request": request,
+                    **{k: "plain text" for k in untyped},
+                    **{k: inputs[k] for k in listed},
+                }
+            )
+            for k in listed:
+                with pytest.raises(Exception, match="valid list"):
+                    model.model_validate({"request": request, **inputs, k: "plain text"})
     finally:
         sys.path.remove(str(out))
 
@@ -569,9 +583,11 @@ def test_a_judge_input_schema_with_its_own_names_is_replaced(tmp_path: Path) -> 
     }
     typed = {j["id"]: dict(j["signature_spec"]["input_schema"]) for j in judges}
     first, second = judges[0]["id"], judges[1]["id"]
-    # The second judge types its own inputs more precisely: that is kept.
+    # The second judge types its own inputs more precisely, compatibly: kept.
     typed[second]["properties"] = {
-        k: {"type": "string"} if k == "request" else v
+        k: {**v, "items": {"type": "object"}}
+        if v.get("type") == "array"
+        else {**v, "description": "typed by the agent"}
         for k, v in typed[second]["properties"].items()
     }
     out_schema = {"type": "object", "properties": {"v": {"type": "string"}}}
@@ -652,3 +668,73 @@ def test_an_input_schema_must_name_exactly_the_inputs(bad: str, tmp_path: Path) 
     node = next(n for n in merged["nodes"] if n["id"] == judge["id"])
     assert node["signature_spec"]["input_schema"] == decided
     assert any(f"`{judge['id']}` signature_spec.input_schema" in c for c in changes)
+
+
+def test_a_fanned_upstream_typed_as_an_object_is_replaced(tmp_path: Path) -> None:
+    """review6: the agent typed a fanned judge's whole result (a list at run
+    time) as an object. The emitted judge then refused every call."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    fanned = {n["id"] for n in doc["nodes"] if n.get("fan_out")}
+    judge = next(
+        n
+        for n in doc["nodes"]
+        if n["kind"] == "llm_judge"
+        and any(ref == f"{f}.output" for ref in n["inputs"].values() for f in fanned)
+    )
+    param = next(k for k, ref in judge["inputs"].items() if ref.split(".")[0] in fanned)
+    decided = judge["signature_spec"]["input_schema"]
+    assert decided["properties"][param]["type"] == "array"
+
+    def merged_with(prop: dict[str, Any]) -> dict[str, Any]:
+        schema = {**decided, "properties": {**decided["properties"], param: prop}}
+        (work / "system1" / "text.yaml").write_text(
+            yaml.safe_dump({judge["id"]: {"signature_spec": {"input_schema": schema}}})
+        )
+        enforce(work, final=True)
+        out = yaml.safe_load((work / "pipeline.yaml").read_text())
+        node = next(n for n in out["nodes"] if n["id"] == judge["id"])
+        return node["signature_spec"]["input_schema"]["properties"][param]
+
+    assert merged_with({"type": "object"}) == decided["properties"][param]
+    # An array of objects is compatible: kept.
+    kept = {"type": "array", "items": {"type": "object"}}
+    assert merged_with(kept) == kept
+    # The check is against the decided schema, not the copy pipeline.yaml now
+    # holds: decided items are untyped, so other items still fit.
+    other = {"type": "array", "items": {"type": "string"}}
+    assert merged_with(other) == other
+
+
+@pytest.mark.parametrize(
+    ("decided", "agent", "fits"),
+    [
+        ({}, {"type": "object"}, True),
+        ({"type": "array"}, {}, True),
+        ({"type": "array"}, {"type": "object"}, False),
+        ({"type": "array"}, {"type": ["array", "null"]}, True),
+        ({"type": "array"}, {"type": ["object", "null"]}, False),
+        (
+            {"type": "array", "items": {"type": "object"}},
+            {"type": "array", "items": {"type": "string"}},
+            False,
+        ),
+        (
+            {"type": "array", "items": {"type": "object"}},
+            {"type": "array", "items": {"type": "object"}},
+            True,
+        ),
+        ({"type": "array", "items": {"type": "object"}}, {"type": "array"}, True),
+    ],
+)
+def test_input_type_compatibility(decided: Any, agent: Any, fits: bool) -> None:
+    from rote.compiler.system1.enforce import _compatible
+
+    assert _compatible(decided, agent) is fits

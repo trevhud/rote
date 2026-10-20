@@ -52,13 +52,17 @@ def _description(n: NodePlan) -> str:
     return f"{n.unit.title}: {first}"[:400]
 
 
-def judge_input_schema(n: NodePlan, request_schema: dict[str, Any]) -> dict[str, Any]:
+def judge_input_schema(
+    n: NodePlan, request_schema: dict[str, Any], fanned: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     """A judge's input schema, decided from its ``inputs``: one required
     property per input. ``request`` is the pipeline input. A list it reads
-    whole (``<node>.output.items`` on a judge that does not fan out over it)
-    is an array. Everything else is untyped: an upstream result's shape is
-    whatever that node's code returns, which nothing has decided yet, and a
-    fanned element is one item of it. Typing those ``object`` refused a
+    whole is an array: ``<node>.output.items`` on a judge that does not fan
+    out over it, and the whole result of a node in ``fanned`` (a fan_out
+    node's result binds as the list of its per-element results). Everything
+    else is untyped: an upstream result's shape is whatever that node's code
+    returns, which nothing has decided yet, and a fanned element is one item
+    of it. Typing those ``object`` refused a
     judge fed a list or a string.
 
     The IR requires a judge's inputs to satisfy this schema, so its property
@@ -72,6 +76,8 @@ def judge_input_schema(n: NodePlan, request_schema: dict[str, Any]) -> dict[str,
             props[param] = {"description": f"one element of {ref.removesuffix('.items')}"}
         elif ref.endswith(".output.items"):
             props[param] = {"type": "array", "description": f"the list {ref}"}
+        elif ref == f"{source}.output" and source in fanned:
+            props[param] = {"type": "array", "description": f"the per-element results of {source}"}
         else:
             props[param] = {"description": f"the result of {ref}"}
     return {"type": "object", "properties": props, "required": list(props)}
@@ -85,6 +91,7 @@ SKELETON_OUTPUT_SCHEMA: dict[str, Any] = {"type": "object"}
 def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     request_schema = input_schema(plan)
+    fanned = frozenset(x.id for x in plan.nodes if x.fan_out)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -109,7 +116,7 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
                 node["mcp"] = dict(n.mcp)
         if n.kind == "llm_judge":
             node["signature_spec"] = {
-                "input_schema": judge_input_schema(n, request_schema),
+                "input_schema": judge_input_schema(n, request_schema, fanned),
                 "output_schema": dict(SKELETON_OUTPUT_SCHEMA),
                 "prompt": SKELETON_PROMPT,
                 "client": "anthropic",

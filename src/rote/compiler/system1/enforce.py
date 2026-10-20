@@ -73,14 +73,46 @@ def _merge_output(skeleton: Any, agent: Any) -> Any:
     return agent if isinstance(agent, (str, dict)) else skeleton
 
 
-def _merge_spec(base: Any, agent: Any, node_id: str, changes: list[str]) -> Any:
+def _types(schema: Any) -> set[str] | None:
+    """A schema's declared JSON types, or None when it declares none."""
+    kind = schema.get("type") if isinstance(schema, dict) else None
+    if isinstance(kind, str):
+        return {kind}
+    if isinstance(kind, list):
+        return {k for k in kind if isinstance(k, str)} or None
+    return None
+
+
+def _compatible(decided: Any, agent: Any) -> bool:
+    """Whether the agent's type for one input fits what the input really is.
+
+    An untyped decided input accepts any typing, and an untyped agent input
+    accepts anything. Otherwise the types must overlap, and an array's items
+    must be compatible too. A real review case: the agent typed a fanned
+    judge's whole result (a list at run time) as an object, so the emitted
+    judge refused every call and nothing at compile time caught it."""
+    want, got = _types(decided), _types(agent)
+    if want is None or got is None:
+        return True
+    if not want & got:
+        return False
+    if "array" in want & got and isinstance(decided, dict) and isinstance(agent, dict):
+        return _compatible(decided.get("items"), agent.get("items"))
+    return True
+
+
+def _merge_spec(
+    base: Any, agent: Any, node_id: str, changes: list[str], decided: Any = None
+) -> Any:
     """A judge's spec: the skeleton's, with each key the agent wrote laid over it.
 
     The agent writes the prompt and the output schema. The input schema is a
     decision: its properties are exactly the node's ``inputs`` (the IR
     rejects anything else). The agent may type those inputs more precisely,
-    but an input schema with any other property names, or that requires a
-    name the node does not have, is replaced by the skeleton's and recorded.
+    as long as each type fits the decided one (:func:`_compatible`). An input
+    schema with any other property names, that requires a name the node
+    does not have, or that types an input incompatibly, is replaced by the
+    skeleton's and recorded.
     A real cloud compile shipped judges whose input schemas required
     ``ticket`` and ``deadline_hours`` for a node whose inputs were
     ``request`` and ``compute_response_deadline``, and failed IR validation
@@ -88,16 +120,19 @@ def _merge_spec(base: Any, agent: Any, node_id: str, changes: list[str]) -> Any:
     if not isinstance(agent, dict):
         return copy.deepcopy(base)
     merged = {**copy.deepcopy(base), **copy.deepcopy(agent)}
-    decided = base.get("input_schema") if isinstance(base, dict) else None
+    if decided is None:
+        decided = base.get("input_schema") if isinstance(base, dict) else None
     mine = agent.get("input_schema")
     if isinstance(decided, dict) and "input_schema" in agent:
         names = set(decided.get("properties") or {})
         props = mine.get("properties") if isinstance(mine, dict) else None
         required = mine.get("required") if isinstance(mine, dict) else None
+        decided_props = decided.get("properties") or {}
         fits = (
             isinstance(props, dict)
             and set(props) == names
             and (required is None or (isinstance(required, list) and set(required) <= names))
+            and all(_compatible(decided_props[k], props[k]) for k in names)
         )
         if not fits:
             merged["input_schema"] = copy.deepcopy(decided)
@@ -171,8 +206,14 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
             if key == "output":
                 node["output"] = _merge_output(sk.get("output"), value)
             elif key == "signature_spec" and "signature_spec" in sk:
+                # Checked against the skeleton's decided schema, not against
+                # whatever pipeline.yaml's copy already says.
                 node["signature_spec"] = _merge_spec(
-                    node["signature_spec"], value, sk["id"], changes
+                    node["signature_spec"],
+                    value,
+                    sk["id"],
+                    changes,
+                    sk["signature_spec"].get("input_schema"),
                 )
             elif key not in decided and key != "id":
                 node[key] = value
