@@ -48,13 +48,7 @@ class FakeApi:
 
     @property
     def hosts(self) -> set[str]:
-        return {
-            h
-            for spec, _ in self.served
-            for op in spec.operations
-            for template in op.templates()
-            if (h := host_of(template))
-        }
+        return {h for spec, _ in self.served for op in spec.operations for h in _hosts(spec, op)}
 
     def answer(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, str, bytes]:
         """``(status, content type, body)`` for ``method`` on ``/<host>/<path>?<query>``."""
@@ -98,7 +92,7 @@ class FakeApi:
         # included. The host is the fake's to filter (the check is
         # host-agnostic: Gmail also answers at www.googleapis.com/gmail/v1).
         for spec, fixtures in self.served:
-            ops = [op for op in spec.operations if host in {host_of(t) for t in op.templates()}]
+            ops = [op for op in spec.operations if host in _hosts(spec, op)]
             op, bound = best_operation(ops, method, f"https://{host}{path}")
             if op is not None:
                 return spec, fixtures, op, bound
@@ -162,6 +156,19 @@ def _value_problem(param: ParamSpec, value: Any) -> str | None:
         if param.type == "boolean" and str(v) not in ("true", "false", "True", "False"):
             return f"{v!r} is not a boolean"
     return None
+
+
+#: Every Google API also answers on the shared host, at its own path
+#: (www.googleapis.com/gmail/v1/... is Gmail), as the request check accepts.
+_GOOGLE_SHARED_HOST = "www.googleapis.com"
+
+
+def _hosts(spec: ApiSpec, op: Operation) -> set[str]:
+    """The hosts ``op`` is answered on."""
+    hosts = {h for t in op.templates() if (h := host_of(t))}
+    if spec.vendor == "google":
+        hosts.add(_GOOGLE_SHARED_HOST)
+    return hosts
 
 
 @contextmanager

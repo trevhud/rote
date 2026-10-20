@@ -32,7 +32,7 @@ from typing import Any
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from rote.vendor_specs.model import ApiSpec
-from rote.vendor_specs.store import SpecStore, default_root
+from rote.vendor_specs.store import SpecStore, SpecUnavailable, default_root
 
 INTERCEPT_DIR = Path(__file__).resolve().parent.parent / "vendor_specs" / "intercept"
 
@@ -76,7 +76,12 @@ def specs_for(fixtures: dict[str, FixtureSet], store: SpecStore) -> list[ApiSpec
         vendor, api, version = key.split("/")
         if vendor != "google":
             raise HttpFixtureError(f"no spec source for vendor {vendor!r} ({key})")
-        spec = store.google(api, version)
+        try:
+            spec = store.google(api, version)
+        except SpecUnavailable as e:
+            # The bench's environment (Discovery unreachable), not the
+            # pipeline's: it stops the bench instead of scoring a 0.0.
+            raise HttpFixtureError(f"the spec for the fixtures {key} is unavailable: {e}") from e
         if spec is None:
             raise HttpFixtureError(f"Google lists no {api} {version} for the fixtures {key}")
         out.append(spec)

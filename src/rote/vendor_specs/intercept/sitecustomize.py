@@ -29,6 +29,7 @@ far as resolution has bypassed its rewrite, which is the same failure.
 from __future__ import annotations
 
 import importlib
+import ipaddress
 import os
 import socket
 from typing import Any
@@ -155,21 +156,58 @@ def _patch_google_auth() -> None:
     auth.default = default
 
 
+def _refusal(host: Any) -> str | None:
+    """Why ``host`` may not be resolved or connected to, or ``None``."""
+    raw = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host or "")
+    name = raw.lower().rstrip(".").strip("[]")
+    if _in_play(name):
+        return (
+            f"the fidelity bench blocks {name}: the request reached name resolution "
+            f"without going through the fake, so it came from an HTTP client this "
+            f"bench does not patch"
+        )
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return None
+    if address.is_loopback:
+        return None  # the fake listens on loopback
+    # An IP literal skips the name checks, so a vendor reached by its address
+    # would get through: no bench run needs one.
+    return f"the fidelity bench blocks the IP address {name}: only named hosts are allowed"
+
+
 def _guard_name_resolution() -> None:
-    original = socket.getaddrinfo
+    """Refuse vendor hosts and non-loopback IP literals at every resolution call.
+
+    A guard for cooperative clients, not a sandbox: a raw socket connected
+    to an address the code already holds is not seen here. Real isolation
+    needs egress filtering.
+    """
+    getaddrinfo_, by_name, by_name_ex = (
+        socket.getaddrinfo,
+        socket.gethostbyname,
+        socket.gethostbyname_ex,
+    )
 
     def getaddrinfo(host: Any, *args: Any, **kwargs: Any) -> Any:
-        raw = host.decode("ascii", "replace") if isinstance(host, bytes) else str(host or "")
-        name = raw.lower().rstrip(".")
-        if _in_play(name):
-            raise NetworkBlocked(
-                f"the fidelity bench blocks {name}: the request reached name resolution "
-                f"without going through the fake, so it came from an HTTP client this "
-                f"bench does not patch"
-            )
-        return original(host, *args, **kwargs)
+        if (reason := _refusal(host)) is not None:
+            raise NetworkBlocked(reason)
+        return getaddrinfo_(host, *args, **kwargs)
+
+    def gethostbyname(host: Any) -> Any:
+        if (reason := _refusal(host)) is not None:
+            raise NetworkBlocked(reason)
+        return by_name(host)
+
+    def gethostbyname_ex(host: Any) -> Any:
+        if (reason := _refusal(host)) is not None:
+            raise NetworkBlocked(reason)
+        return by_name_ex(host)
 
     socket.getaddrinfo = getaddrinfo
+    socket.gethostbyname = gethostbyname
+    socket.gethostbyname_ex = gethostbyname_ex
 
 
 if _BASE:

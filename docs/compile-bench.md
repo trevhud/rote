@@ -396,7 +396,13 @@ per vendor API version (`google/gmail/v1`), in the shareable format of
    host of a vendor in play is blocked, so a fidelity run never reaches a
    real API. Name resolution is guarded too: a client the intercept does
    not patch (`http.client`, `httpcore` or `urllib3` used directly,
-   aiohttp) is refused when it resolves a vendor host;
+   aiohttp) is refused when it resolves a vendor host, `gethostbyname` of
+   one is refused, and so is any non-loopback IP literal (the fake listens
+   on loopback; judges reach their models by name). This guards
+   cooperative clients and is not a sandbox: a raw socket connected to an
+   address the code already holds is not seen. Real isolation needs
+   egress filtering. Gmail and every other Google API are also answered on
+   `www.googleapis.com` at their own paths, as the request check accepts;
 4. runs the pipeline with an allowlisted environment
    (`rote.bench.fidelity.bench_environment`): the process essentials, the
    judges' inference credentials, and `DBOS_*` / `ROTE_*` / `LC_*`. A

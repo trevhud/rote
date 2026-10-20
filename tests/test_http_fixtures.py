@@ -25,7 +25,7 @@ from rote.bench.http_fixtures import (
     load_http,
     vendor_requirements,
 )
-from rote.vendor_specs import SpecStore
+from rote.vendor_specs import SpecStore, SpecUnavailable
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from tests.test_vendor_specs import _Fetch
@@ -300,6 +300,20 @@ out = gmail.users().threads().list(userId="me", q="label:dock-activity").execute
 }
 #: Clients the module does not patch: refused when they resolve the name.
 _UNPATCHED = {
+    # A vendor reached by an IP literal skips every name check.
+    "an IP literal": """
+import http.client
+conn = http.client.HTTPSConnection("142.250.80.42", timeout=5)
+conn.request("GET", "/gmail/v1/users/me/threads")
+""",
+    "gethostbyname": """
+import socket
+socket.gethostbyname("gmail.googleapis.com")
+""",
+    "gethostbyname_ex": """
+import socket
+socket.gethostbyname_ex("www.googleapis.com")
+""",
     "http.client": """
 import http.client
 conn = http.client.HTTPSConnection("gmail.googleapis.com", timeout=5)
@@ -367,8 +381,11 @@ def test_an_unpatched_client_is_refused_before_it_reaches_the_vendor(
     to the real gmail.googleapis.com."""
     api = _api(store, tmp_path / "log.jsonl")
     out = _intercepted(api, _UNPATCHED[client])
-    assert "the fidelity bench blocks gmail.googleapis.com" in out.get("refused", ""), out
-    assert "reached name resolution" in out["refused"]
+    expected = {
+        "an IP literal": "blocks the IP address 142.250.80.42",
+        "gethostbyname_ex": "blocks www.googleapis.com",
+    }.get(client, "blocks gmail.googleapis.com")
+    assert f"the fidelity bench {expected}" in out.get("refused", ""), out
     assert read_log(tmp_path / "log.jsonl") == []
 
 
@@ -771,3 +788,27 @@ def test_an_api_case_without_http_fixtures_stops_the_bench(tmp_path: Path) -> No
     write_backend(compiled, "api")
     with pytest.raises(HttpFixtureError, match="has no http: fixtures"):
         pipeline_fidelity(compiled, example, tmp_path / "work")
+
+
+def test_an_unreachable_spec_stops_the_bench_instead_of_scoring_zero(tmp_path: Path) -> None:
+    from rote.bench.http_fixtures import specs_for
+
+    def offline(url: str) -> Any:
+        raise SpecUnavailable("discovery is down")
+
+    store = SpecStore(root=tmp_path / "specs", fetch=offline)
+    with pytest.raises(HttpFixtureError, match="unavailable: discovery is down"):
+        specs_for(load_http({"google/gmail/v1": GMAIL_FIXTURES}), store)
+
+
+def test_the_fake_answers_a_google_api_on_the_shared_host(tmp_path: Path, store: SpecStore) -> None:
+    """www.googleapis.com/gmail/v1 is Gmail, as the check and the real API agree."""
+    api = _api(store, tmp_path / "log.jsonl")
+    status, _, body = api.answer(
+        "GET", "/www.googleapis.com/gmail/v1/users/me/threads?q=label:dock-activity", AUTH
+    )
+    assert status == 200 and json.loads(body)["resultSizeEstimate"] == 1
+    assert [e["operation"] for e in read_log(tmp_path / "log.jsonl")] == [
+        "gmail.users.threads.list"
+    ]
+    assert "www.googleapis.com" in api.hosts
