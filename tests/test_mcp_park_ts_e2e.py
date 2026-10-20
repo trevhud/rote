@@ -40,6 +40,7 @@ from rote.app_registry import record_app
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPolicy
 from rote.mcp import clear_token_file, write_token_file
 from rote.mcp.release import release_parked_workflows
+from tests import _node_trees as node_trees
 from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
 
 dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
@@ -247,15 +248,7 @@ def test_ts_workflow_parks_and_python_release_completes_it(
     write_token_file("vendor", _dead_token_doc(mcp_server))
     monkeypatch.setenv("ROTE_MCP_VENDOR_URL", mcp_server)
 
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     build = subprocess.run(
         ["npx", "--no-install", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300
     )
@@ -334,15 +327,7 @@ def test_ts_missing_endpoint_runs_the_step_once(
     pipeline = unconfigured_mcp_pipelines("ts_config")[node_id]
     DbosTsAdapter().emit(pipeline, app_dir)
     count_ts_step_attempts(app_dir / "src" / "extracted" / f"{node_id}.ts", node_id)
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     build = subprocess.run(
         ["npx", "--no-install", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300
     )

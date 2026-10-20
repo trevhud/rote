@@ -50,6 +50,7 @@ from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp
 
 pytest.importorskip("fastmcp")
 
+from tests import _node_trees as node_trees  # noqa: E402
 from tests.test_cloudflare_e2e import (  # noqa: E402 — reuse the proven live harness
     _http_get,
     _http_post,
@@ -210,15 +211,7 @@ def test_cf_instance_parks_and_event_release_completes_it(mcp_server: str, tmp_p
     )
     wrangler_path.write_text(wrangler, encoding="utf-8")
 
-    npm = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert npm.returncode == 0, f"npm install failed:\n{npm.stdout}\n{npm.stderr}"
+    node_trees.install(out)
 
     port = _free_port()
     log_path = out / "wrangler-dev.log"

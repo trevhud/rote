@@ -26,6 +26,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.ir import Pipeline, load_pipeline
+from tests import _node_trees as node_trees
 from tests._messages_api import CURRENT_SONNET
 from tests.test_agent_loop_output_parity import (
     EXPECTED,
@@ -115,15 +116,7 @@ def test_downstream_reads_the_loops_declared_keys(
 def test_invoice_push_typechecks(runtime: str, tmp_path: Path) -> None:
     app = tmp_path / runtime
     get_adapter(runtime).emit(load_pipeline(INVOICE_PUSH), app)
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, install.stderr
+    node_trees.install(app)
     tsc = subprocess.run(
         ["npx", "--no-install", "tsc", "--noEmit"],
         cwd=app,
@@ -159,7 +152,7 @@ def loop_app(tmp_path_factory: pytest.TempPathFactory) -> Path:
     get_adapter("dbos-ts").emit(PIPELINE, app)
     (app / "src" / "extracted" / "report.ts").write_text(REPORT_TS, encoding="utf-8")
     (app / "src" / "driver.ts").write_text(_DRIVER_TS, encoding="utf-8")
-    _npm_install(app)
+    node_trees.install(app)
     build = subprocess.run(["npx", "tsc"], cwd=app, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, build.stdout + build.stderr
     return app
@@ -320,7 +313,7 @@ def test_a_typed_reader_compiles_once_the_named_type_is_narrowed(
     types_ts = app / "src" / "types.ts"
     assert "export type Finding = JsonValue;" in types_ts.read_text(encoding="utf-8")
     (app / "src" / "extracted" / "report.ts").write_text(_TYPED_REPORT_TS, encoding="utf-8")
-    _npm_install(app)
+    node_trees.install(app)
 
     # As emitted, Finding is any JSON value, so reading .title fails.
     before = _tsc(app)
@@ -335,18 +328,6 @@ def test_a_typed_reader_compiles_once_the_named_type_is_narrowed(
     # And a re-emit keeps the narrowed alias.
     get_adapter(runtime).emit(_NAMED, app)
     assert types_ts.read_text(encoding="utf-8") == _NARROWED
-
-
-def _npm_install(app: Path) -> None:
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, install.stderr
 
 
 def _tsc(app: Path) -> subprocess.CompletedProcess[str]:

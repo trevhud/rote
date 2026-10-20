@@ -40,6 +40,7 @@ from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPo
 from rote.mcp import clear_token_file, write_token_file
 from rote.mcp.parked import parse_auth_park_markers
 from rote.mcp.release import release_parked_workflows
+from tests import _node_trees as node_trees
 from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
 
 pytest.importorskip("fastmcp")
@@ -50,7 +51,6 @@ from tests.test_inngest_e2e import (  # noqa: E402 — reuse the proven live har
     _find_free_port,
     _http,
     _node_available,
-    _npm_install,
     _wait_until_healthy,
 )
 
@@ -157,7 +157,7 @@ def test_inngest_run_parks_and_broadcast_release_completes_it(
     write_token_file("vendor", _dead_token_doc(mcp_server))
     monkeypatch.setenv("ROTE_MCP_VENDOR_URL", mcp_server)
 
-    _npm_install(out, "--ignore-scripts=false", INNGEST_CLI_SPEC)
+    node_trees.install(out, "--ignore-scripts=false", INNGEST_CLI_SPEC)
     rebuild = subprocess.run(
         ["npm", "rebuild", "--ignore-scripts=false", "inngest-cli"],
         cwd=out,
