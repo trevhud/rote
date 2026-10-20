@@ -17,36 +17,19 @@ requirement set, and put on the pipeline's ``PYTHONPATH``.
 
 from __future__ import annotations
 
-import ast
-import hashlib
-import importlib.util
 import re
-import shutil
-import subprocess
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from rote.vendor_specs.model import ApiSpec
-from rote.vendor_specs.store import SpecStore, SpecUnavailable, default_root
+from rote.vendor_specs.store import SpecStore, SpecUnavailable
 
 INTERCEPT_DIR = Path(__file__).resolve().parent.parent / "vendor_specs" / "intercept"
-
-#: Import name -> the distribution that provides it, for vendor libraries an
-#: emitted module may use that rote itself does not install.
-DISTRIBUTIONS = {
-    "googleapiclient": "google-api-python-client",
-    "google_auth_httplib2": "google-auth-httplib2",
-    "google.auth": "google-auth",
-    "google.oauth2": "google-auth",
-    "httplib2": "httplib2",
-    "httpx": "httpx",
-    "requests": "requests",
-}
 
 #: Host suffix per vendor: any host of a vendor in play that the fake does
 #: not answer for is blocked, so a run can never reach the real API.
@@ -103,7 +86,10 @@ def api_side(
     except FixtureError as e:
         # A ValueError: left alone, the bench scored it as a dead pipeline run.
         raise HttpFixtureError(f"a case's http: fixtures do not fit the spec: {e}") from e
-    deps = install_vendor_deps(app)
+    try:
+        deps = install_vendor_deps(app)
+    except VendorDepsError as e:
+        raise HttpFixtureError(str(e)) from e
     with serving(api) as base:
         path = [str(INTERCEPT_DIR), *([str(deps)] if deps else [])]
         env = {
@@ -127,94 +113,6 @@ def credential_variables(app: Path) -> set[str]:
         for match in _ENV_READ.finditer(path.read_text(encoding="utf-8", errors="replace")):
             names.add(match.group(1) or match.group(2))
     return {n for n in names if not n.startswith("ROTE_")}
-
-
-def vendor_requirements(app: Path) -> list[str]:
-    """Distributions the app imports that this interpreter cannot import yet.
-
-    An import that is neither importable here nor in :data:`DISTRIBUTIONS`
-    is an error: a guessed distribution name could install the wrong
-    package.
-    """
-    needed: set[str] = set()
-    unknown: set[str] = set()
-    for path in sorted((app / "extracted").glob("*.py")) + sorted(
-        (app / "signatures").glob("*.py")
-    ):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                names = [node.module]
-            for name in names:
-                top = name.split(".")[0]
-                if top in sys.stdlib_module_names or top in ("extracted", "signatures"):
-                    continue
-                dist = (
-                    DISTRIBUTIONS.get(name)
-                    or DISTRIBUTIONS.get(".".join(name.split(".")[:2]))
-                    or DISTRIBUTIONS.get(top)
-                )
-                if _importable(name):
-                    continue
-                if dist is None:
-                    unknown.add(name)
-                else:
-                    needed.add(dist)
-    if unknown:
-        raise HttpFixtureError(
-            f"the app imports {', '.join(sorted(unknown))}, which is not installed here and "
-            f"has no known distribution (rote.bench.http_fixtures.DISTRIBUTIONS)"
-        )
-    return sorted(needed)
-
-
-def _importable(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
-        return False
-
-
-def install_vendor_deps(app: Path) -> Path | None:
-    """Install the app's missing vendor libraries into a cached target dir."""
-    wanted = vendor_requirements(app)
-    if not wanted:
-        return None
-    digest = hashlib.sha256("\n".join([sys.version, *wanted]).encode()).hexdigest()[:16]
-    target = default_root().parent / "bench-deps" / digest
-    if (target / ".complete").is_file():
-        return target
-    uv = shutil.which("uv")
-    if uv is None:
-        raise HttpFixtureError(f"installing {', '.join(wanted)} for the app needs uv on PATH")
-    if target.exists():
-        shutil.rmtree(target)
-    result = subprocess.run(
-        [
-            uv,
-            "pip",
-            "install",
-            "--quiet",
-            "--python",
-            sys.executable,
-            "--target",
-            str(target),
-            *wanted,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        raise HttpFixtureError(f"could not install {', '.join(wanted)}: {result.stderr[-2000:]}")
-    (target / ".complete").write_text("\n".join(wanted), encoding="utf-8")
-    return target
 
 
 def api_calls(log: Path) -> list[dict[str, Any]]:
@@ -259,7 +157,5 @@ __all__ = [
     "api_calls",
     "api_side",
     "credential_variables",
-    "install_vendor_deps",
     "load_http",
-    "vendor_requirements",
 ]

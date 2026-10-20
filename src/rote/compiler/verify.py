@@ -75,6 +75,7 @@ from rote.contracts import (
 )
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
+from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 
 #: Wall-clock cap on one generated-test run. Pure-function tests are
 #: millisecond-scale, so hitting this means an infinite loop, which the
@@ -156,7 +157,10 @@ def generated_test_env(artifact_dir: Path, home: Path) -> dict[str, str]:
 
 
 def run_generated_tests(
-    artifact_dir: Path | str, *, trust_skill: bool = False
+    artifact_dir: Path | str,
+    *,
+    trust_skill: bool = False,
+    extra_paths: tuple[Path, ...] = (),
 ) -> GeneratedTests | None:
     """Run ``<artifact_dir>/tests`` with pytest, if there is anything to run.
 
@@ -213,7 +217,11 @@ def run_generated_tests(
         ]
 
     run = run_confined(
-        root, _pytest_args, trust_skill=trust_skill, timeout=GENERATED_TESTS_TIMEOUT_SECONDS
+        root,
+        _pytest_args,
+        trust_skill=trust_skill,
+        timeout=GENERATED_TESTS_TIMEOUT_SECONDS,
+        extra_paths=extra_paths,
     )
     if run.unconfined_reason is not None:
         return GeneratedTests(
@@ -265,6 +273,7 @@ def run_confined(
     trust_skill: bool,
     timeout: float,
     read_back: tuple[str, ...] = (),
+    extra_paths: tuple[Path, ...] = (),
 ) -> ConfinedRun:
     """Run the interpreter on agent-written code in ``root``, confined.
 
@@ -275,6 +284,9 @@ def run_confined(
     :func:`generated_test_env`; the OS sandbox is
     :mod:`rote.compiler.sandbox`, skipped only with ``trust_skill``.
     ``read_back`` names scratch files to return in :attr:`ConfinedRun.files`.
+    ``extra_paths`` are import roots the code also needs (the app's vendor
+    libraries, :mod:`rote.vendor_specs.deps`): on ``PYTHONPATH``, and
+    readable inside the sandbox.
     """
     from rote.compiler import sandbox
 
@@ -283,6 +295,11 @@ def run_confined(
         box, why = sandbox.detect()
         if box is None:
             return ConfinedRun(unconfined_reason=why)
+        unsafe = sandbox.refusal(sandbox.current_layout(extra_paths))
+        if unsafe is not None:
+            return ConfinedRun(
+                unconfined_reason=f"the vendor libraries cannot be confined: {unsafe}"
+            )
     try:
         with tempfile.TemporaryDirectory(prefix="rote-test-") as scratch_str:
             scratch = Path(scratch_str).resolve()
@@ -290,15 +307,22 @@ def run_confined(
             home.mkdir()
             args = python_args(scratch)
             env = generated_test_env(root, home)
+            extra = [str(p) for p in extra_paths]
             if box is None:
+                env["PYTHONPATH"] = os.pathsep.join([str(root), *extra])
                 argv = [sys.executable, *args]
             else:
                 # -S: no site processing, so no .pth file (which can point
                 # anywhere and run code) is read. The site-packages dirs that
                 # hold pytest are passed explicitly instead.
-                env["PYTHONPATH"] = os.pathsep.join([str(root), *sandbox.import_path()])
+                env["PYTHONPATH"] = os.pathsep.join([str(root), *extra, *sandbox.import_path()])
                 argv, env = sandbox.wrap(
-                    box, [sandbox.launch_executable(), "-S", *args], root, scratch, env
+                    box,
+                    [sandbox.launch_executable(), "-S", *args],
+                    root,
+                    scratch,
+                    env,
+                    extra_read_dirs=extra_paths,
                 )
             proc = subprocess.run(
                 argv, cwd=root, env=env, capture_output=True, text=True, timeout=timeout
@@ -933,7 +957,26 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
-    tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
+    vendor_paths: tuple[Path, ...] = ()
+    if api_backend and run_tests:
+        # The agent's tests import the vendor's SDK, which rote does not
+        # ship: without it they fail on an ImportError, and the agent
+        # rewrites working code to satisfy an environment problem.
+        try:
+            deps = install_vendor_deps(root)
+            vendor_paths = (deps,) if deps is not None else ()
+        except VendorDepsError as e:
+            questions.append(
+                ContractQuestion(
+                    "(deliverable)",
+                    f"the generated tests ran without the app's vendor libraries: {e}",
+                )
+            )
+    tests = (
+        run_generated_tests(root, trust_skill=trust_skill, extra_paths=vendor_paths)
+        if run_tests
+        else None
+    )
     return Verification(
         pipeline=pipeline,
         findings=findings,
