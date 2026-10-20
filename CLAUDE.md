@@ -552,6 +552,14 @@ both the legacy and the System-1 path:
 - **The backend reaches the Compiler as `emit_target.external_backend`.**
   The Compiler, not the CLI, grants the driver `web_tools` and adds the
   brief to the prompt, so any caller that compiles for `api` gets both.
+  Claude: WebSearch/WebFetch. api: the Messages API's server-side
+  `web_search_20250305` / `web_fetch_20250910`, and NOT the newer
+  versions: those provision code execution, and a real compile spent
+  about $14 of extra input tokens running code in it. Resend a
+  `pause_turn` as-is; it is not a stop. Codex: `-c web_search="live"`
+  plus `--json` (`codex exec` has no `--search`). openai-api: no web
+  tool exists on chat/completions, so it reports itself unavailable
+  rather than compiling from memory.
 - **Citations are checked, and fetches are the evidence.** Each vendor
   function carries `# docs: <url>` (or `# docs: skill` for an internal API
   the skill itself documents). Verification sends back an implemented

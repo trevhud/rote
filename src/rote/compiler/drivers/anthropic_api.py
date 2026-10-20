@@ -112,6 +112,28 @@ Users with complex skills can override via
 
 DEFAULT_MAX_ITERATIONS = 60
 
+#: ``web_tools=True`` (``--backend api``): Anthropic's server-side web
+#: search and web fetch, the API's equivalent of Claude Code's WebSearch /
+#: WebFetch. The API runs them inside the request, so the loop never
+#: dispatches them. web_fetch only opens a URL that already appeared in the
+#: conversation, so the agent searches first.
+#:
+#: The basic versions, on purpose. The newer ones (web_search_20260209+,
+#: web_fetch_20260209+) turn on "dynamic filtering", for which the API
+#: provisions a code execution container on its own. In a real ops-report
+#: compile the model then used that container as a second workspace: 70+
+#: code_execution / bash calls inside two requests, billed as 3.69M and
+#: 2.91M input tokens ($8.04 and $6.18), for a run that costs about $1 on
+#: the claude driver. The basic versions run no code. ``max_content_tokens``
+#: bounds what one fetched page adds to a context this loop resends every
+#: turn; a vendor reference page is typically 10k to 25k tokens.
+#: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+#: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
+WEB_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
+    {"type": "web_search_20250305", "name": "web_search"},
+    {"type": "web_fetch_20250910", "name": "web_fetch", "max_content_tokens": 32000},
+)
+
 #: Per-turn output-token cap. This is a ceiling, not a spend — only a
 #: runaway turn pays it — so it's set generously: Claude 5-family models
 #: think at length, and an 8192 cap starved them into hitting
@@ -269,6 +291,27 @@ def run_cost_usd(model: str, totals: dict[str, int]) -> float | None:
     return round(cost, 6)
 
 
+def _server_tool_event(block: Any, turn: int) -> CompilationEvent:
+    """A ``tool`` event for a ``server_tool_use`` block: a fetch's url, a search's query."""
+    name = str(getattr(block, "name", "") or "server_tool")
+    tool_input = getattr(block, "input", None)
+    tool_input = tool_input if isinstance(tool_input, dict) else {}
+    url = tool_input.get("url") if name == "web_fetch" else None
+    query = tool_input.get("query") if name == "web_search" else None
+    url = url if isinstance(url, str) else None
+    query = query if isinstance(query, str) else None
+    target = url or query
+    return CompilationEvent(
+        type="tool",
+        ts=time.time(),
+        turn=turn,
+        tool_name=name,
+        url=url,
+        query=query,
+        message=f"{name} {target}" if target else name,
+    )
+
+
 # ───────── The driver ─────────
 
 
@@ -283,6 +326,7 @@ class AnthropicApiDriver(CompilerDriver):
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        web_tools: bool = False,
         **_ignored: Any,
     ) -> None:
         """
@@ -291,10 +335,11 @@ class AnthropicApiDriver(CompilerDriver):
         model, max_iterations, max_tokens_per_turn
             Loop knobs (see the module constants for defaults).
         **_ignored
-            Cross-driver kwargs this driver doesn't implement yet are
-            swallowed per the registry contract — notably ``web_tools``
-            (ClaudeDriver only for now; the api driver's equivalent is
-            the server-side web_search tool, a planned follow-up).
+            Cross-driver kwargs this driver doesn't implement are
+            swallowed per the registry contract.
+        web_tools
+            ``--backend api``: add the server-side web search and web
+            fetch tools (:data:`WEB_TOOL_SCHEMAS`).
         base_url
             Override the Anthropic API base URL — point the SDK at a
             proxy or a Cloudflare AI Gateway endpoint. ``None`` lets the
@@ -321,6 +366,7 @@ class AnthropicApiDriver(CompilerDriver):
         self.base_url = base_url
         self.default_headers = default_headers
         self.mcp_servers = mcp_servers
+        self.web_tools = web_tools
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble ``AsyncAnthropic(...)`` kwargs.
@@ -470,6 +516,8 @@ class AnthropicApiDriver(CompilerDriver):
         tool_schemas = anthropic_tool_schemas()
         if live is not None:
             tool_schemas = tool_schemas + live.anthropic_tool_schemas()
+        if self.web_tools:
+            tool_schemas = tool_schemas + [dict(t) for t in WEB_TOOL_SCHEMAS]
 
         task_prompt = build_task_prompt(skill_dir, compiler_skill_dir, work_dir)
         if extra_instructions:
@@ -480,6 +528,8 @@ class AnthropicApiDriver(CompilerDriver):
         totals = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
         tools_param = cached_tools(tool_schemas)
         system_param = cached_system(system_prompt)
+        #: Server tool calls: searches bill per call on top of tokens; fetches are free.
+        server_tools = {"web_search": 0, "web_fetch": 0}
         last_text = ""
         completed_iterations = 0
         #: Repair turns the orchestrator's verifier bounced back (the claude
@@ -521,6 +571,9 @@ class AnthropicApiDriver(CompilerDriver):
             if usage is not None:
                 for bucket, n in usage_buckets(usage).items():
                     totals[bucket] += n
+                server = getattr(usage, "server_tool_use", None)
+                server_tools["web_search"] += getattr(server, "web_search_requests", 0) or 0
+                server_tools["web_fetch"] += getattr(server, "web_fetch_requests", 0) or 0
 
             # The AI Gateway unified endpoint can return `content: null` for
             # a turn that was entirely (stripped) thinking blocks — normalize
@@ -543,6 +596,18 @@ class AnthropicApiDriver(CompilerDriver):
             # replay, so only append turns that actually said/did something.
             if content:
                 messages.append({"role": "assistant", "content": content})
+
+            # The API ran these itself (web search / fetch, and the code
+            # execution that filters them); they are only reported.
+            for block in content:
+                if block.type == "server_tool_use":
+                    emit_safely(on_event, _server_tool_event(block, iteration))
+
+            if response.stop_reason == "pause_turn":
+                # A long server-tool turn the API paused: send the paused
+                # assistant turn back unchanged, with nothing after it, and
+                # the API resumes it. Not a stop.
+                continue
 
             has_tool_use = any(block.type == "tool_use" for block in content)
 
@@ -680,7 +745,7 @@ class AnthropicApiDriver(CompilerDriver):
             raise DriverError(
                 f"Agent did not complete within {self.max_iterations} iterations.",
                 details=f"Last assistant text: {last_text!r}",
-                metadata=self._metadata(totals, completed_iterations, repair_rounds),
+                metadata=self._metadata(totals, server_tools, completed_iterations, repair_rounds),
             )
 
         pipeline_yaml = work_dir / "pipeline.yaml"
@@ -688,18 +753,22 @@ class AnthropicApiDriver(CompilerDriver):
             raise DriverError(
                 f"Agent finished but did not produce {pipeline_yaml}.",
                 details=f"Last assistant text: {last_text!r}",
-                metadata=self._metadata(totals, completed_iterations, repair_rounds),
+                metadata=self._metadata(totals, server_tools, completed_iterations, repair_rounds),
             )
 
         return DriverResult(
             pipeline_yaml_path=pipeline_yaml,
             work_dir=work_dir,
             driver_name=self.name,
-            metadata=self._metadata(totals, completed_iterations, repair_rounds),
+            metadata=self._metadata(totals, server_tools, completed_iterations, repair_rounds),
         )
 
     def _metadata(
-        self, totals: dict[str, int], iterations: int, repair_rounds: int
+        self,
+        totals: dict[str, int],
+        server_tools: dict[str, int],
+        iterations: int,
+        repair_rounds: int,
     ) -> dict[str, Any]:
         """Usage in the keys every driver reports, priced into ``cost_usd``.
 
@@ -715,4 +784,12 @@ class AnthropicApiDriver(CompilerDriver):
             "cost_usd": run_cost_usd(self.model, totals),
             "iterations": iterations,
             "repair_rounds": repair_rounds,
+            **(
+                {
+                    "web_search_requests": server_tools["web_search"],
+                    "web_fetch_requests": server_tools["web_fetch"],
+                }
+                if self.web_tools
+                else {}
+            ),
         }
