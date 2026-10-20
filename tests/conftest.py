@@ -124,6 +124,14 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # injected fetch, never the network, and never the developer's cache.
     monkeypatch.setenv("ROTE_SPEC_CACHE_DIR", str(tmp_path / "vendor-specs"))
     monkeypatch.setattr("rote.vendor_specs.store.http_get_json", _offline_spec_fetch)
+    # Nor install an app's vendor libraries (rote.vendor_specs.deps).
+    monkeypatch.setattr("rote.vendor_specs.deps._uv_install", _no_package_install)
+
+
+def _no_package_install(wanted: list[str], target: Path) -> None:
+    from rote.vendor_specs.deps import VendorDepsError
+
+    raise VendorDepsError(f"tests never install packages ({', '.join(wanted)})")
 
 
 def _offline_price_fetch(*args: object, **kwargs: object) -> object:
