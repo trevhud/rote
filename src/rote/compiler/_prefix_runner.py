@@ -139,10 +139,59 @@ def _mcp_result(step: dict[str, Any], arguments: dict[str, Any]) -> Any:
     return _MISSING
 
 
+def _probe_shapes(
+    step: dict[str, Any],
+    sample: dict[str, Any],
+    results: dict[str, Any],
+    unrecorded: set[str],
+    root: Path,
+) -> dict[str, Any] | None:
+    """Run a code step that reads an unrecorded MCP result whole, on a JSON list.
+
+    rote knows a tool's input schema, never its result's shape, and MCP
+    tools commonly return a bare JSON list (a real Gmail search_threads
+    did). A consumer that only works on a dict crashes on every real run,
+    and nothing before it would say so: 7 of 9 real ops-report compiles
+    called ``.get("threads")`` on that list. The probe is one call with an
+    empty list in place of each unrecorded result. Only a crash that
+    assumes a dict counts (AttributeError, TypeError). Any other outcome
+    says nothing about the real data, so the step stays not reached and
+    its result is never used downstream.
+    """
+    if step["kind"] != "call" or step["fan_param"] is not None:
+        return None
+    probed = [b for b in step["bindings"] if b[1] == "node" and b[2] in unrecorded and b[3] is None]
+    others = [b for b in step["bindings"] if b not in probed]
+    if not probed or any(b[1] == "node" and b[2] not in results for b in others):
+        return None
+    try:
+        payload = {}
+        for binding in others:
+            value = _resolve(binding, sample, results)
+            if value is not _MISSING:
+                payload[binding[0]] = value
+        payload |= {b[0]: [] for b in probed} | (step["constants"] or {})
+        fn = getattr(importlib.import_module(step["module"]), step["symbol"])
+        _call(fn, payload)
+    except (AttributeError, TypeError) as e:
+        return {
+            "status": "shape_assumption",
+            "upstream": sorted({b[2] for b in probed}),
+            "type": type(e).__name__,
+            "message": str(e)[:300],
+            "at": _location(e, root),
+        }
+    except (Exception, SystemExit):  # noqa: BLE001 (no verdict on made-up data)
+        return None
+    return None
+
+
 def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
     sample = plan["sample"]
     results: dict[str, Any] = {}
     report: dict[str, Any] = {}
+    #: MCP nodes that ran with no recorded result: their shape is unknown.
+    unrecorded: set[str] = set()
     for step in plan["steps"]:
         node_id = step["id"]
         if step["kind"] == "skip":
@@ -150,7 +199,10 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             continue
         not_run = [b[2] for b in step["bindings"] if b[1] == "node" and b[2] not in results]
         if not_run:
-            report[node_id] = {"status": "not_reached", "upstream": sorted(set(not_run))}
+            report[node_id] = _probe_shapes(step, sample, results, unrecorded, root) or {
+                "status": "not_reached",
+                "upstream": sorted(set(not_run)),
+            }
             continue
         try:
             payload = {}
@@ -165,6 +217,7 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 output = _mcp_result(step, arguments)
                 if output is _MISSING:
                     report[node_id] = {"status": "no_recording", "arguments": arguments}
+                    unrecorded.add(node_id)
                     continue
                 results[node_id] = output
                 report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}

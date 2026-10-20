@@ -645,6 +645,49 @@ def test_a_recorded_tool_result_stands_in_for_the_call(tmp_path: Path) -> None:
     assert other.steps["search"]["status"] == "no_recording" and other.findings == []
 
 
+@pytest.mark.parametrize(
+    ("count_body", "flagged"),
+    [
+        # 7 of 9 real ops-report compiles: a dict assumed, a list returned.
+        ("return {'n': len(found.get('threads', []))}", True),
+        ("return {'n': len(found['threads'])}", True),
+        # Either shape: nothing to report.
+        (
+            "threads = found if isinstance(found, list) else found.get('threads', [])\n"
+            "    return {'n': len(threads)}",
+            False,
+        ),
+    ],
+)
+def test_a_consumer_that_assumes_a_dict_is_probed_with_a_list(
+    count_body: str, flagged: bool, tmp_path: Path
+) -> None:
+    ir = _MCP_IR.replace("threads: search.output.threads", "found: search.output")
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def count(found):\n    {count_body}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.steps["search"]["status"] == "no_recording"
+    kinds = [f.kind for f in run.findings]
+    if flagged:
+        assert kinds == ["prefix_shape_assumption"]
+        assert "count crashes when search returns a JSON list" in run.findings[0].message
+    else:
+        assert kinds == [] and run.steps["count"]["status"] == "not_reached"
+
+
 def test_the_prefix_runs_in_the_os_sandbox(tmp_path: Path) -> None:
     from rote.compiler import sandbox
 
