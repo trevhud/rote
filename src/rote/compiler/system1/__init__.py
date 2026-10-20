@@ -94,7 +94,9 @@ def prepare(
         if rubric is None:
             raise ValueError("a tie-break needs the node-kinds rubric")
         unsure = unsure_units(skill, segments)
-        tb = tiebreak.decide(skill, segments, unsure, verdicts, tiebreak_lane, rubric)
+        tb = tiebreak.decide(
+            skill, segments, unsure, verdicts, tiebreak_lane, rubric, tools=list(tools or {})
+        )
         segments = {**segments, **tb.segments}
     p = plan(skill, verdicts, tools, segments)
     p.sample = sample

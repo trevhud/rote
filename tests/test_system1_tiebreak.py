@@ -179,27 +179,71 @@ def test_a_rule_constraint_overrules_the_model(
     doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
     assert doc["overruled"] == {
         "1": [
-            "external_call: the step writes to no named system, so its result is the "
+            "external_call: no declared system can perform it (no MCP server or tool the "
+            "skill or the registry declares, and no named API), so its result is the "
             "pipeline's output"
         ]
     }
 
+    # Nothing allowed left: the rules' decision stands, node for node.
+    rules = unit_segments(parsed)[1]
+    _install(monkeypatch, _Stub(_answer("external_call")))
+    plan = system1.prepare(skill, work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    kept = [n for n in plan.nodes if n.unit.index == 1]
+    assert [n.kind for n in kept] == [kind for _, kind, _, _ in rules]
+    assert [next(d.rule for d in n.decisions if d.field == "kind") for n in kept] == [
+        rule for _, _, _, rule in rules
+    ]
+    assert plan.tiebreak.segments == {}
+
+    # A registered server the step names declares the system: the call stands.
+    _install(monkeypatch, _Stub(_answer("pure_function", "external_call")))
+    plan = system1.prepare(
+        skill,
+        work,
+        tiebreak_lane=Lane("claude-cli"),
+        rubric=RUBRIC,
+        tools={("shared_folder", "upload_file"): object()},
+    )
+    assert [n.kind for n in plan.nodes if n.unit.index == 1] == [
+        "pure_function",
+        "external_call",
+    ]
+
+
+_EMAIL = {"send_email": "gmail"}
+
 
 @pytest.mark.parametrize(
-    ("text", "forbidden"),
+    ("text", "registry", "tools", "forbidden"),
     [
-        ("Save it to the shared folder as `<period>.md`.", True),
-        # A sentence's first word is not a system name.
-        ("Save it to the shared folder. Payroll pays from it.", True),
-        ("Save it to the folder in Dropbox.", False),
-        ("Save it with `append_sheet_values`.", False),
-        ("Save it: `POST /v1/reports` with the body.", False),
-        ("Save it to ~/reports/ as a file.", False),
-        # No write at all: nothing to constrain.
-        ("Total the lines.", False),
+        # Same intent, two phrasings: decided by what is declared, not by wording.
+        ("Notify the account owner by email.", {}, [], True),
+        ("Email the summary to the customer.", {}, [], True),
+        ("Notify the account owner by email.", _EMAIL, [], False),
+        ("Email the summary to the customer.", _EMAIL, [], False),
+        ("Save it to the finance shared folder as `<period>.md`.", {}, [], True),
+        ("Save it to Google Drive.", {}, [], True),
+        ("Save it to Google Drive.", {}, [("google_drive", "upload_file")], False),
+        ("Set the priority with `update_incident`.", {}, [], False),
+        ("Append one row with `append_sheet_values`.", {}, [], False),
+        ("Invite each admin: `POST /v1/workspaces/{id}/invites`.", {}, [], False),
+        ("Fetch https://api.example.com/v1/rates first.", {}, [], False),
+        ("Search the receipts with the Gmail MCP server.", {}, [], False),
+        ("Read the scoring rules at ~/.claude/skills/x/SKILL.md.", {}, [], True),
+        ("Total the lines in USD.", {}, [], True),
+        # A declared tool the step uses by name.
+        ("Run upload_report on the file.", {"upload_report": "drive"}, [], False),
+        ("Run upload_report on the file.", {}, [], True),
     ],
 )
-def test_the_constraint_is_narrow(text: str, forbidden: bool, tmp_path: Path) -> None:
+def test_an_external_call_needs_a_declared_system(
+    text: str,
+    registry: dict[str, str],
+    tools: list[tuple[str, str]],
+    forbidden: bool,
+    tmp_path: Path,
+) -> None:
     from rote.compiler.system1.decide import infeasible_kinds
 
     skill = tmp_path / "skill"
@@ -207,8 +251,8 @@ def test_the_constraint_is_narrow(text: str, forbidden: bool, tmp_path: Path) ->
     (skill / "SKILL.md").write_text(
         f"---\nname: tiny\ndescription: x\n---\n\n# Tiny\n\n## Step 1: Do it\n\n{text}\n"
     )
-    parsed = parse_skill(skill)
-    assert ("external_call" in infeasible_kinds(parsed.units[0], parsed.tool_registry)) is forbidden
+    unit = parse_skill(skill).units[0]
+    assert ("external_call" in infeasible_kinds(unit, registry, tools)) is forbidden
 
 
 def test_without_a_lane_nothing_is_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
