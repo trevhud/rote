@@ -43,6 +43,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.ir import Pipeline
+from tests._messages_api import reject_like_the_api
 
 pytestmark = pytest.mark.slow
 
@@ -162,6 +163,8 @@ class _MessagesStub(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("content-length", 0)))
         payload = json.loads(body or b"{}")
         type(self).requests.append(payload)
+        if reject_like_the_api(self, payload):
+            return
         turn = len(type(self).requests)
         if turn == 1:
             message = {

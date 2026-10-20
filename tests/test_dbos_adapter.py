@@ -16,6 +16,7 @@ so the fast suite stays runnable in environments without the extra.
 from __future__ import annotations
 
 import ast
+import copy
 import sys
 import types
 from pathlib import Path
@@ -455,7 +456,10 @@ def test_signature_module_from_spec(emit_result: dict[str, Path]) -> None:
     assert "OUTPUT_JSON_SCHEMA" in src
     assert "from signatures._rote_inference import call_judge" in src
     assert 'client="anthropic",' in src
-    assert "tool_description=TOOL_DESCRIPTION," in src
+    # Schema-locked by output_config.format in the helper: no tool, so no
+    # tool description (a forced tool call 400s on claude-sonnet-5-5).
+    assert "tool_description" not in src
+    assert "TOOL_DESCRIPTION" not in src
     assert "VetContactOutput.model_validate(payload)" in src
     # No vendor SDK is imported per judge any more.
     assert "import anthropic" not in src
@@ -620,6 +624,21 @@ def _import_signature(judge: Node, monkeypatch: pytest.MonkeyPatch) -> types.Mod
     return module
 
 
+def test_an_anthropic_judge_output_schema_the_api_cannot_express_fails_at_emit() -> None:
+    """Loud at emit, naming the node and the path, rather than a 400 on
+    every call after deploy. The same check runs per request in the
+    helper; an OpenAI judge does not take it."""
+    free_form = {
+        "type": "object",
+        "properties": {"grade": {"type": "integer"}, "meta": {"type": "object"}},
+        "required": ["grade"],
+    }
+    with pytest.raises(RuntimeError, match=r"grade_essay: output schema at #/properties/meta "):
+        emit_signature_module(_judge_with(output_schema=free_form), DbosAdapterConfig())
+    openai_judge = _judge_with(output_schema=free_form, client="openai")
+    assert "OUTPUT_JSON_SCHEMA" in emit_signature_module(openai_judge, DbosAdapterConfig())
+
+
 def test_signature_spec_scopes_conflicting_defs(monkeypatch: pytest.MonkeyPatch) -> None:
     from pydantic import ValidationError
 
@@ -747,7 +766,15 @@ def test_signature_spec_model_names_cannot_shadow_module_symbols(
         "$defs": {"Thing": nested} if reference else {},
         "additionalProperties": False,
     }
-    module = _import_signature(_judge_with(input_schema=schema, output_schema=schema), monkeypatch)
+    # A free-form object is fine in the input. In the output, structured
+    # outputs needs its properties declared.
+    closed = copy.deepcopy(schema)
+    closed["properties"]["extra"] = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "additionalProperties": False,
+    }
+    module = _import_signature(_judge_with(input_schema=schema, output_schema=closed), monkeypatch)
     payload = {"item": {"value": "text"}, "from": "source", "kind": "a", "extra": {"n": 1}}
     for model in (module.GradeEssayInput, module.GradeEssayOutput):
         assert model.model_validate(payload).model_dump(by_alias=True) == payload

@@ -19,6 +19,7 @@ from rote.inference._runtime_helper import (
     build_subscription_env,
     provider_availability,
     select_provider,
+    structured_output_schema,
 )
 
 #: Providers that cannot exist in a deployed image. A Claude
@@ -34,4 +35,5 @@ __all__ = [
     "build_subscription_env",
     "provider_availability",
     "select_provider",
+    "structured_output_schema",
 ]

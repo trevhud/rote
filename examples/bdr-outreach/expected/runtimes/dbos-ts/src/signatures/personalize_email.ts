@@ -57,7 +57,6 @@ export type PersonalizeEmailOutput = z.infer<typeof PersonalizeEmailOutput>;
 const PROMPT = "Generate a personalized opening line and TA-relevant callout for an outreach email.\n\nLead with a specific observation about this contact's work \u2014 never generic. Ground the TA callout in our validated experience in the indication.\n\nContact: {{ contact }}\nIntel: {{ intel }}\nCampaign type: {{ campaign_type }}\n\nReturn both fields via the structured output tool.";
 
 const OUTPUT_JSON_SCHEMA = {
-  "additionalProperties": false,
   "properties": {
     "opening_line": {
       "title": "Opening Line",
@@ -73,7 +72,8 @@ const OUTPUT_JSON_SCHEMA = {
     "ta_callout"
   ],
   "title": "PersonalizeEmailOutput",
-  "type": "object"
+  "type": "object",
+  "additionalProperties": false
 };
 
 function interpolate(template: string, vars: Record<string, unknown>): string {
@@ -116,22 +116,29 @@ export async function personalizeEmail(
     const response = await client.messages.create({
         model: env.ROTE_MODEL_PERSONALIZE_EMAIL ?? "claude-sonnet-4-6",
         max_tokens: 4096,
-        tools: [
-            {
-                name: "personalize_email",
-                description: "Generate personalized opening line and TA-relevant callout per",
-                input_schema: OUTPUT_JSON_SCHEMA as { type: "object"; [k: string]: unknown },
-            },
-        ],
-        tool_choice: { type: "tool", name: "personalize_email" },
+        output_config: {
+            format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },
+        },
         messages: [
             { role: "user", content: interpolate(PROMPT, input as Record<string, unknown>) },
         ],
     });
 
-    const toolUse = response.content.find((b) => b.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
-        throw new Error("LLM did not return a tool_use block for personalize_email");
+    // max_tokens truncates the answer and refusal replaces it: neither
+    // may reach a downstream step as data.
+    if (response.stop_reason !== "end_turn") {
+        throw new Error(`structured output for personalize_email ended with stop_reason ${response.stop_reason}, not end_turn, so it is not a complete answer`);
     }
-    return PersonalizeEmailOutput.parse(toolUse.input);
+    const text = response.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("");
+    let answer: unknown;
+    try {
+        answer = JSON.parse(text);
+    } catch {
+        throw new Error(
+            `structured output for personalize_email is not JSON: ${text.slice(0, 200)}`,
+        );
+    }
+    return PersonalizeEmailOutput.parse(answer);
 }
