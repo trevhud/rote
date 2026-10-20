@@ -213,8 +213,13 @@ def test_the_cache_key_changes_with_the_date(
     Day.value = datetime.date(2026, 10, 21)
     second = deps.install_vendor_deps(tmp_path / "app")
     assert first != second
-    # The new day's install of the set replaces the old one on disk.
-    assert second is not None and second.is_dir() and not first.exists()
+    # Yesterday's install stays: a run that began before midnight may still
+    # import an unloaded submodule from it.
+    assert second is not None and second.is_dir() and first.is_dir()
+    Day.value = datetime.date(2026, 10, 22)
+    third = deps.install_vendor_deps(tmp_path / "app")
+    # Two days on, the oldest goes; yesterday's (second) is kept.
+    assert third is not None and third.is_dir() and second.is_dir() and not first.exists()
     assert other is not None and other.is_dir()
 
 
