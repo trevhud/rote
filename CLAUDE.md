@@ -943,9 +943,12 @@ pure function implemented, tests green, node and kind accuracy at or
 above the `high` runs). BDR at `low` (judges, agent loops, gates): the
 first pass took 12 turns, $1.96 and 857 s, against 63-74 turns,
 $4.46-5.14 and 27-49 min at `high`. Kind accuracy, gates and judge/loop
-detection matched or beat the `high` run's. Its repair round was cut off
-by a usage limit, so a repaired BDR deliverable at `low` is still
-unverified. If one regresses, `medium` ($1.91 / 916 s on expense-audit)
+detection matched or beat the `high` run's. A full BDR rerun at `low`
+($2.85, 65 turns, 20 min, against $5.14, 74 turns, 49 min) ended with
+four citation "errors" that were verbatim but for an ASCII `--` for the
+skill's em dash and `\"` for its inner quotes. The provenance normalizer
+now treats both as punctuation, and the same deliverable then verifies
+clean (51/51 tests, dbos and cloudflare dry-emit ok). If one regresses, `medium` ($1.91 / 916 s on expense-audit)
 is the fallback. To profile a compile, read its
 transcript under `~/.claude/projects/<work-dir-slug>/<session_id>.jsonl`:
 the `cost-state` records carry `thinkingTokens` per invocation.
