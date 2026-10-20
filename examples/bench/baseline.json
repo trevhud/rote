@@ -1,0 +1,1523 @@
+{
+  "aggregate": {
+    "assumptions": 7.25,
+    "cache_read_tokens": 1338851.75,
+    "cache_write_tokens": 139536.25,
+    "citation_errors": 0.0,
+    "cost_usd": 10.5698,
+    "edge_f1": 0.7627,
+    "emit_ok": 1.0,
+    "exit_code": 0.0,
+    "fan_out_precision": 0.5,
+    "fan_out_recall": 0.3333,
+    "gate_payload_jaccard": 0.25,
+    "gate_signal_matches": 0.0,
+    "implemented_rate": 1.0,
+    "input_precision": 0.5833,
+    "input_recall": 0.5,
+    "input_tokens_total": 1478407.0,
+    "jobs": 4,
+    "kind_accuracy": 0.7489,
+    "kind_mix_overlap": 0.9242,
+    "mandatory_precision": 0.4424,
+    "mandatory_recall": 0.825,
+    "node_precision": 0.7815,
+    "node_recall": 0.8114,
+    "open_questions": 8.5,
+    "output_tokens": 93568.5,
+    "repair_rounds": 1.25,
+    "tests_passed": 1.0,
+    "tsc_passed": 0.75,
+    "turns": 37.25,
+    "verified": 1.0,
+    "wall_seconds": 5309.1,
+    "wave_order": 0.8888
+  },
+  "config": {
+    "agent": null,
+    "budget": 20.0,
+    "concurrency": 1,
+    "examples": "<examples>",
+    "model": null,
+    "python": "<python>",
+    "repeat": 1,
+    "runtime": "dbos",
+    "skills": [
+      "deal-monitor",
+      "expense-audit",
+      "ops-report",
+      "invoice-push"
+    ]
+  },
+  "finished_at": "2026-10-20T03:50:39.128445+00:00",
+  "jobs": [
+    {
+      "argv": [
+        "-m",
+        "rote",
+        "compile",
+        "<run>/expense-audit/r1/skill-src/expense-audit",
+        "--local",
+        "--runtime",
+        "dbos",
+        "--no-deploy",
+        "--no-eval",
+        "--json",
+        "--out",
+        "<run>/expense-audit/r1"
+      ],
+      "emit": {
+        "cloudflare": {
+          "ok": true,
+          "tsc": "passed",
+          "tsc_output": ""
+        },
+        "dbos": {
+          "ok": true
+        }
+      },
+      "fan_out": {
+        "compiled": 0,
+        "expected": 1,
+        "f1": null,
+        "missed": [
+          "audit_report"
+        ],
+        "precision": null,
+        "recall": 0.0,
+        "spurious": [],
+        "true_positive": 0
+      },
+      "gates": {
+        "compiled": 1,
+        "expected": 1,
+        "found": 1,
+        "gates": [
+          {
+            "compiled": "controller_review",
+            "expected": "controller_review",
+            "payload_compiled": [
+              "controller",
+              "decisions"
+            ],
+            "payload_expected": [
+              "approved_ids",
+              "rejected_ids",
+              "reviewer"
+            ],
+            "payload_jaccard": 0.0,
+            "signal_compiled": "controller_decisions_submitted",
+            "signal_expected": "controller_review",
+            "signal_match": false
+          }
+        ],
+        "payload_jaccard_mean": 0.0,
+        "signal_matches": 0
+      },
+      "graph": {
+        "compiled_edges": 4,
+        "compiled_waves": 6,
+        "edge_f1": 0.5455,
+        "edge_precision": 0.75,
+        "edge_recall": 0.4286,
+        "expected_edges": 7,
+        "expected_waves": 6,
+        "wave_order_agreement": 0.8571
+      },
+      "headline": {
+        "assumptions": 8,
+        "cache_read_tokens": 1536402,
+        "cache_write_tokens": 142869,
+        "citation_errors": 0,
+        "cost_usd": 2.6126496,
+        "edge_f1": 0.5455,
+        "emit_cloudflare": "ok",
+        "emit_dbos": "ok",
+        "emit_ok": 1,
+        "exit_code": 0,
+        "fan_out_precision": null,
+        "fan_out_recall": 0.0,
+        "gate_payload_jaccard": 0.0,
+        "gate_signal_matches": 0,
+        "gates": "1/1",
+        "implemented": "6/6",
+        "implemented_rate": 1.0,
+        "input_precision": 0.3333,
+        "input_recall": 0.5,
+        "input_tokens_total": 1679291,
+        "kind_accuracy": 0.625,
+        "kind_mix_overlap": 1.0,
+        "mandatory_precision": 0.7143,
+        "mandatory_recall": 1.0,
+        "node_precision": 0.875,
+        "node_recall": 0.875,
+        "nodes": "8/8",
+        "open_questions": 10,
+        "output_tokens": 86297,
+        "repair_rounds": 1,
+        "tests": "passed(82/82)",
+        "tests_passed": 1,
+        "tsc": "passed",
+        "tsc_passed": 1,
+        "turns": 39,
+        "verified": 1,
+        "wall_seconds": 1195.1,
+        "wave_order": 0.8571
+      },
+      "inputs": {
+        "compiled": [
+          "fx_rates",
+          "lines",
+          "period"
+        ],
+        "expected": [
+          "period",
+          "submissions"
+        ],
+        "jaccard": 0.25,
+        "precision": 0.3333,
+        "recall": 0.5
+      },
+      "mandatory": {
+        "compiled": 7,
+        "expected": 5,
+        "f1": 0.8333,
+        "missed": [],
+        "precision": 0.7143,
+        "recall": 1.0,
+        "spurious": [
+          "audit_employee_reports",
+          "summarize_audit"
+        ],
+        "true_positive": 5
+      },
+      "out_dir": "expense-audit/r1",
+      "repeat": 1,
+      "run": {
+        "agent_seconds": 1192.9,
+        "before_first_phase_seconds": 453.5,
+        "cache_read_tokens": 1536402,
+        "cache_write_tokens": 142869,
+        "cost_usd": 2.6126496,
+        "deliverable": "compiled",
+        "driver_duration_seconds": 1189.7,
+        "events": 68,
+        "exit_code": 0,
+        "input_tokens": 20,
+        "last_turn": 17,
+        "output_tokens": 86297,
+        "phases": [
+          {
+            "name": "Intake",
+            "phase": 1,
+            "seconds": 0.0
+          },
+          {
+            "name": "Node Classification",
+            "phase": 2,
+            "seconds": 0.0
+          },
+          {
+            "name": "Codification Scan",
+            "phase": 3,
+            "seconds": 277.8
+          },
+          {
+            "name": "LLM-Judge Extraction",
+            "phase": 4,
+            "seconds": 0.0
+          },
+          {
+            "name": "IR Assembly",
+            "phase": 5,
+            "seconds": 77.7
+          },
+          {
+            "name": "Adapter Invocation",
+            "phase": 6,
+            "seconds": 0.0
+          },
+          {
+            "name": "Compilation Report",
+            "phase": 7,
+            "seconds": 384.0
+          }
+        ],
+        "repair_rounds": 1,
+        "repair_warnings": 1,
+        "turns": 39,
+        "usage_complete": true,
+        "usage_source": "modelUsage",
+        "wall_seconds": 1195.1
+      },
+      "skill": "expense-audit",
+      "structure": {
+        "compiled_nodes": 8,
+        "confusion": {
+          "(extra)->pure_function": 1,
+          "external_call->pure_function": 1,
+          "hitl_gate->hitl_gate": 1,
+          "pure_function->(missing)": 1,
+          "pure_function->external_call": 1,
+          "pure_function->pure_function": 4
+        },
+        "expected_nodes": 8,
+        "extra": [
+          "audit_employee_reports"
+        ],
+        "kind_accuracy": 0.625,
+        "kind_accuracy_matched": 0.7143,
+        "kind_counts_compiled": {
+          "external_call": 1,
+          "hitl_gate": 1,
+          "pure_function": 6
+        },
+        "kind_counts_expected": {
+          "external_call": 1,
+          "hitl_gate": 1,
+          "pure_function": 6
+        },
+        "kind_mix_overlap": 1.0,
+        "matched": 7,
+        "matched_by_id": 2,
+        "matches": [
+          {
+            "compiled": "save_audit_report",
+            "compiled_kind": "external_call",
+            "expected": "audit_report",
+            "expected_kind": "pure_function",
+            "similarity": 0.3583
+          },
+          {
+            "compiled": "controller_review",
+            "compiled_kind": "hitl_gate",
+            "expected": "controller_review",
+            "expected_kind": "hitl_gate",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "convert_to_usd",
+            "compiled_kind": "pure_function",
+            "expected": "convert_to_usd",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "render_audit_report",
+            "compiled_kind": "pure_function",
+            "expected": "file_report",
+            "expected_kind": "external_call",
+            "similarity": 0.2765
+          },
+          {
+            "compiled": "check_duplicates",
+            "compiled_kind": "pure_function",
+            "expected": "find_duplicates",
+            "expected_kind": "pure_function",
+            "similarity": 0.4375
+          },
+          {
+            "compiled": "check_late_submissions",
+            "compiled_kind": "pure_function",
+            "expected": "find_late_submissions",
+            "expected_kind": "pure_function",
+            "similarity": 0.5625
+          },
+          {
+            "compiled": "summarize_batch",
+            "compiled_kind": "pure_function",
+            "expected": "summarize_audit",
+            "expected_kind": "pure_function",
+            "similarity": 0.6111
+          }
+        ],
+        "missing": [
+          "group_by_employee"
+        ],
+        "node_precision": 0.875,
+        "node_recall": 0.875
+      },
+      "verification": {
+        "error_kinds": {},
+        "errors": 0,
+        "implementation": {
+          "absent": 0,
+          "impl_nodes": 7,
+          "impl_nodes_implemented": 6,
+          "implemented": 6,
+          "pure_functions": 6,
+          "stub": 0
+        },
+        "ok": true,
+        "provenance": {
+          "assumptions": 8,
+          "citation_errors": 0,
+          "open_questions": 10,
+          "uncited_outcomes": 0,
+          "unlisted_assumption": 0
+        },
+        "tests": {
+          "passed": 82,
+          "status": "passed",
+          "summary": "82 passed in 0.08s"
+        }
+      }
+    },
+    {
+      "argv": [
+        "-m",
+        "rote",
+        "compile",
+        "<run>/ops-report/r1/skill-src/ops-report",
+        "--local",
+        "--runtime",
+        "dbos",
+        "--no-deploy",
+        "--no-eval",
+        "--json",
+        "--out",
+        "<run>/ops-report/r1"
+      ],
+      "emit": {
+        "cloudflare": {
+          "ok": true,
+          "tsc": "passed",
+          "tsc_output": ""
+        },
+        "dbos": {
+          "ok": true
+        }
+      },
+      "fan_out": {
+        "compiled": 0,
+        "expected": 0,
+        "f1": null,
+        "missed": [],
+        "precision": null,
+        "recall": null,
+        "spurious": [],
+        "true_positive": 0
+      },
+      "gates": {
+        "compiled": 1,
+        "expected": 1,
+        "found": 1,
+        "gates": [
+          {
+            "compiled": "request_manual_data",
+            "expected": "manual_data_gate",
+            "payload_compiled": [
+              "current_dwell",
+              "dock_appointment_completion",
+              "sorter_metrics"
+            ],
+            "payload_expected": [
+              "dock_appointment_completion",
+              "dwell_dashboard_rows",
+              "sorter_metrics"
+            ],
+            "payload_jaccard": 0.5,
+            "signal_compiled": "manual_data_submitted",
+            "signal_expected": "manual_data_provided",
+            "signal_match": false
+          }
+        ],
+        "payload_jaccard_mean": 0.5,
+        "signal_matches": 0
+      },
+      "graph": {
+        "compiled_edges": 13,
+        "compiled_waves": 5,
+        "edge_f1": 1.0,
+        "edge_precision": 1.0,
+        "edge_recall": 1.0,
+        "expected_edges": 13,
+        "expected_waves": 5,
+        "wave_order_agreement": 0.8
+      },
+      "headline": {
+        "assumptions": 9,
+        "cache_read_tokens": 952069,
+        "cache_write_tokens": 138622,
+        "citation_errors": 0,
+        "cost_usd": 2.5855377,
+        "edge_f1": 1.0,
+        "emit_cloudflare": "ok",
+        "emit_dbos": "ok",
+        "emit_ok": 1,
+        "exit_code": 0,
+        "fan_out_precision": null,
+        "fan_out_recall": null,
+        "gate_payload_jaccard": 0.5,
+        "gate_signal_matches": 0,
+        "gates": "1/1",
+        "implemented": "7/7",
+        "implemented_rate": 1.0,
+        "input_precision": 1.0,
+        "input_recall": 1.0,
+        "input_tokens_total": 1090706,
+        "kind_accuracy": 0.9091,
+        "kind_mix_overlap": 0.9167,
+        "mandatory_precision": 0.8182,
+        "mandatory_recall": 0.9,
+        "node_precision": 0.8333,
+        "node_recall": 0.9091,
+        "nodes": "12/11",
+        "open_questions": 9,
+        "output_tokens": 97876,
+        "repair_rounds": 1,
+        "tests": "passed(77/77)",
+        "tests_passed": 1,
+        "tsc": "passed",
+        "tsc_passed": 1,
+        "turns": 35,
+        "verified": 1,
+        "wall_seconds": 1564.7,
+        "wave_order": 0.8
+      },
+      "inputs": {
+        "compiled": [
+          "report_date"
+        ],
+        "expected": [
+          "report_date"
+        ],
+        "jaccard": 1.0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      "mandatory": {
+        "compiled": 11,
+        "expected": 10,
+        "f1": 0.8572,
+        "missed": [
+          "build_dock_email_query"
+        ],
+        "precision": 0.8182,
+        "recall": 0.9,
+        "spurious": [
+          "apply_dwell_alert_thresholds",
+          "apply_sorter_thresholds"
+        ],
+        "true_positive": 9
+      },
+      "out_dir": "ops-report/r1",
+      "repeat": 1,
+      "run": {
+        "agent_seconds": 1562.5,
+        "before_first_phase_seconds": 769.1,
+        "cache_read_tokens": 952069,
+        "cache_write_tokens": 138622,
+        "cost_usd": 2.5855377,
+        "deliverable": "compiled",
+        "driver_duration_seconds": 1558.9,
+        "events": 58,
+        "exit_code": 0,
+        "input_tokens": 15,
+        "last_turn": 11,
+        "output_tokens": 97876,
+        "phases": [
+          {
+            "name": "Intake",
+            "phase": 1,
+            "seconds": 0.0
+          },
+          {
+            "name": "Node Classification",
+            "phase": 2,
+            "seconds": 420.7
+          },
+          {
+            "name": "Codification Scan",
+            "phase": 3,
+            "seconds": 0.0
+          },
+          {
+            "name": "LLM-Judge Extraction",
+            "phase": 4,
+            "seconds": 0.0
+          },
+          {
+            "name": "IR Assembly",
+            "phase": 5,
+            "seconds": 0.0
+          },
+          {
+            "name": "Adapter Invocation",
+            "phase": 6,
+            "seconds": 0.0
+          },
+          {
+            "name": "Compilation Report",
+            "phase": 7,
+            "seconds": 372.7
+          }
+        ],
+        "repair_rounds": 1,
+        "repair_warnings": 1,
+        "turns": 35,
+        "usage_complete": true,
+        "usage_source": "modelUsage",
+        "wall_seconds": 1564.7
+      },
+      "skill": "ops-report",
+      "structure": {
+        "compiled_nodes": 12,
+        "confusion": {
+          "(extra)->pure_function": 2,
+          "external_call->external_call": 4,
+          "hitl_gate->hitl_gate": 1,
+          "pure_function->(missing)": 1,
+          "pure_function->pure_function": 5
+        },
+        "expected_nodes": 11,
+        "extra": [
+          "apply_dwell_alert_thresholds",
+          "apply_sorter_thresholds"
+        ],
+        "kind_accuracy": 0.9091,
+        "kind_accuracy_matched": 1.0,
+        "kind_counts_compiled": {
+          "external_call": 4,
+          "hitl_gate": 1,
+          "pure_function": 7
+        },
+        "kind_counts_expected": {
+          "external_call": 4,
+          "hitl_gate": 1,
+          "pure_function": 6
+        },
+        "kind_mix_overlap": 0.9167,
+        "matched": 10,
+        "matched_by_id": 4,
+        "matches": [
+          {
+            "compiled": "fetch_dock_pending_log",
+            "compiled_kind": "external_call",
+            "expected": "fetch_dock_pending",
+            "expected_kind": "external_call",
+            "similarity": 0.6562
+          },
+          {
+            "compiled": "fetch_dwell_tickets",
+            "compiled_kind": "external_call",
+            "expected": "fetch_dwell_tickets",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "fetch_shipment_containers",
+            "compiled_kind": "external_call",
+            "expected": "fetch_shipment_containers",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "render_report",
+            "compiled_kind": "pure_function",
+            "expected": "generate_report",
+            "expected_kind": "pure_function",
+            "similarity": 0.3509
+          },
+          {
+            "compiled": "request_manual_data",
+            "compiled_kind": "hitl_gate",
+            "expected": "manual_data_gate",
+            "expected_kind": "hitl_gate",
+            "similarity": 0.4337
+          },
+          {
+            "compiled": "parse_dock_activity_emails",
+            "compiled_kind": "pure_function",
+            "expected": "parse_dock_emails",
+            "expected_kind": "pure_function",
+            "similarity": 0.6141
+          },
+          {
+            "compiled": "parse_dock_pending_log",
+            "compiled_kind": "pure_function",
+            "expected": "parse_dock_pending",
+            "expected_kind": "pure_function",
+            "similarity": 0.625
+          },
+          {
+            "compiled": "parse_dwell_tickets",
+            "compiled_kind": "pure_function",
+            "expected": "parse_dwell_tickets",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "parse_shipment_containers",
+            "compiled_kind": "pure_function",
+            "expected": "parse_shipment_containers",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "fetch_dock_activity_emails",
+            "compiled_kind": "external_call",
+            "expected": "search_dock_emails",
+            "expected_kind": "external_call",
+            "similarity": 0.3429
+          }
+        ],
+        "missing": [
+          "build_dock_email_query"
+        ],
+        "node_precision": 0.8333,
+        "node_recall": 0.9091
+      },
+      "verification": {
+        "error_kinds": {},
+        "errors": 0,
+        "implementation": {
+          "absent": 0,
+          "impl_nodes": 11,
+          "impl_nodes_implemented": 7,
+          "implemented": 7,
+          "pure_functions": 7,
+          "stub": 0
+        },
+        "ok": true,
+        "provenance": {
+          "assumptions": 9,
+          "citation_errors": 0,
+          "open_questions": 9,
+          "uncited_outcomes": 0,
+          "unlisted_assumption": 0
+        },
+        "tests": {
+          "passed": 77,
+          "status": "passed",
+          "summary": "77 passed in 0.09s"
+        }
+      }
+    },
+    {
+      "argv": [
+        "-m",
+        "rote",
+        "compile",
+        "<run>/invoice-push/r1/skill-src/invoice-push",
+        "--local",
+        "--runtime",
+        "dbos",
+        "--no-deploy",
+        "--no-eval",
+        "--json",
+        "--out",
+        "<run>/invoice-push/r1"
+      ],
+      "emit": {
+        "cloudflare": {
+          "ok": true,
+          "tsc": "passed",
+          "tsc_output": ""
+        },
+        "dbos": {
+          "ok": true
+        }
+      },
+      "fan_out": {
+        "compiled": 0,
+        "expected": 1,
+        "f1": null,
+        "missed": [
+          "classify_invoice_row"
+        ],
+        "precision": null,
+        "recall": 0.0,
+        "spurious": [],
+        "true_positive": 0
+      },
+      "gates": {
+        "compiled": 0,
+        "expected": 0,
+        "found": 0,
+        "gates": [],
+        "payload_jaccard_mean": null,
+        "signal_matches": 0
+      },
+      "graph": {
+        "compiled_edges": 8,
+        "compiled_waves": 10,
+        "edge_f1": 0.7778,
+        "edge_precision": 0.875,
+        "edge_recall": 0.7,
+        "expected_edges": 10,
+        "expected_waves": 6,
+        "wave_order_agreement": 0.9524
+      },
+      "headline": {
+        "assumptions": 2,
+        "cache_read_tokens": 1276050,
+        "cache_write_tokens": 132853,
+        "citation_errors": 0,
+        "cost_usd": 2.5442430000000003,
+        "edge_f1": 0.7778,
+        "emit_cloudflare": "ok",
+        "emit_dbos": "ok",
+        "emit_ok": 1,
+        "exit_code": 0,
+        "fan_out_precision": null,
+        "fan_out_recall": 0.0,
+        "gate_payload_jaccard": null,
+        "gate_signal_matches": 0,
+        "gates": "0/0",
+        "implemented": "6/6",
+        "implemented_rate": 1.0,
+        "input_precision": 1.0,
+        "input_recall": 0.5,
+        "input_tokens_total": 1408923,
+        "kind_accuracy": 0.6154,
+        "kind_mix_overlap": 0.8571,
+        "mandatory_precision": 0.1538,
+        "mandatory_recall": 0.4,
+        "node_precision": 0.5714,
+        "node_recall": 0.6154,
+        "nodes": "14/13",
+        "open_questions": 7,
+        "output_tokens": 90950,
+        "repair_rounds": 1,
+        "tests": "passed(49/49)",
+        "tests_passed": 1,
+        "tsc": "passed",
+        "tsc_passed": 1,
+        "turns": 28,
+        "verified": 1,
+        "wall_seconds": 1255.7,
+        "wave_order": 0.9524
+      },
+      "inputs": {
+        "compiled": [
+          "run_date"
+        ],
+        "expected": [
+          "notify_email",
+          "run_date"
+        ],
+        "jaccard": 0.5,
+        "precision": 1.0,
+        "recall": 0.5
+      },
+      "mandatory": {
+        "compiled": 13,
+        "expected": 5,
+        "f1": 0.2222,
+        "missed": [
+          "capture_sent_date",
+          "classify_invoice_row",
+          "execute_push"
+        ],
+        "precision": 0.1538,
+        "recall": 0.4,
+        "spurious": [
+          "build_report_data",
+          "calculate_date_window",
+          "check_24_hour_rule",
+          "check_status_eligibility",
+          "clear_filters",
+          "format_completion_message",
+          "interpret_toast_result",
+          "navigate_to_imports",
+          "read_initial_metadata",
+          "set_page_size",
+          "write_google_sheet"
+        ],
+        "true_positive": 2
+      },
+      "out_dir": "invoice-push/r1",
+      "repeat": 1,
+      "run": {
+        "agent_seconds": 1253.4,
+        "before_first_phase_seconds": 913.9,
+        "cache_read_tokens": 1276050,
+        "cache_write_tokens": 132853,
+        "cost_usd": 2.5442430000000003,
+        "deliverable": "compiled",
+        "driver_duration_seconds": 1250.0,
+        "events": 53,
+        "exit_code": 0,
+        "input_tokens": 20,
+        "last_turn": 14,
+        "output_tokens": 90950,
+        "phases": [
+          {
+            "name": "Intake",
+            "phase": 1,
+            "seconds": 0.0
+          },
+          {
+            "name": "Node Classification",
+            "phase": 2,
+            "seconds": 0.0
+          },
+          {
+            "name": "Codification Scan",
+            "phase": 3,
+            "seconds": 155.4
+          },
+          {
+            "name": "LLM-Judge Extraction",
+            "phase": 4,
+            "seconds": 0.0
+          },
+          {
+            "name": "IR Assembly",
+            "phase": 5,
+            "seconds": 73.2
+          },
+          {
+            "name": "Adapter Invocation",
+            "phase": 6,
+            "seconds": 0.0
+          },
+          {
+            "name": "Compilation Report",
+            "phase": 7,
+            "seconds": 110.9
+          }
+        ],
+        "repair_rounds": 1,
+        "repair_warnings": 1,
+        "turns": 28,
+        "usage_complete": true,
+        "usage_source": "modelUsage",
+        "wall_seconds": 1255.7
+      },
+      "skill": "invoice-push",
+      "structure": {
+        "compiled_nodes": 14,
+        "confusion": {
+          "(extra)->external_call": 3,
+          "(extra)->pure_function": 3,
+          "agent_loop->agent_loop": 1,
+          "external_call->(missing)": 4,
+          "external_call->external_call": 4,
+          "pure_function->(missing)": 1,
+          "pure_function->pure_function": 3
+        },
+        "expected_nodes": 13,
+        "extra": [
+          "check_24_hour_rule",
+          "check_status_eligibility",
+          "clear_filters",
+          "format_completion_message",
+          "navigate_to_imports",
+          "set_page_size"
+        ],
+        "kind_accuracy": 0.6154,
+        "kind_accuracy_matched": 1.0,
+        "kind_counts_compiled": {
+          "agent_loop": 1,
+          "external_call": 7,
+          "pure_function": 6
+        },
+        "kind_counts_expected": {
+          "agent_loop": 1,
+          "external_call": 8,
+          "pure_function": 4
+        },
+        "kind_mix_overlap": 0.8571,
+        "matched": 8,
+        "matched_by_id": 4,
+        "matches": [
+          {
+            "compiled": "build_report_data",
+            "compiled_kind": "pure_function",
+            "expected": "build_report_data",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "calculate_date_window",
+            "compiled_kind": "pure_function",
+            "expected": "calculate_date_window",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "check_prerequisites",
+            "compiled_kind": "external_call",
+            "expected": "check_prerequisites",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "apply_filters",
+            "compiled_kind": "external_call",
+            "expected": "clear_and_apply_filters",
+            "expected_kind": "external_call",
+            "similarity": 0.4833
+          },
+          {
+            "compiled": "classify_toast_result",
+            "compiled_kind": "pure_function",
+            "expected": "interpret_toast_result",
+            "expected_kind": "pure_function",
+            "similarity": 0.34
+          },
+          {
+            "compiled": "process_invoices_loop",
+            "compiled_kind": "agent_loop",
+            "expected": "process_invoices_loop",
+            "expected_kind": "agent_loop",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "record_run_metadata",
+            "compiled_kind": "external_call",
+            "expected": "read_initial_metadata",
+            "expected_kind": "external_call",
+            "similarity": 0.36
+          },
+          {
+            "compiled": "create_report_sheet",
+            "compiled_kind": "external_call",
+            "expected": "write_google_sheet",
+            "expected_kind": "external_call",
+            "similarity": 0.3125
+          }
+        ],
+        "missing": [
+          "capture_sent_date",
+          "classify_invoice_row",
+          "ensure_archive_folder",
+          "execute_push",
+          "read_page_rows"
+        ],
+        "node_precision": 0.5714,
+        "node_recall": 0.6154
+      },
+      "verification": {
+        "error_kinds": {},
+        "errors": 0,
+        "implementation": {
+          "absent": 0,
+          "impl_nodes": 13,
+          "impl_nodes_implemented": 6,
+          "implemented": 6,
+          "pure_functions": 6,
+          "stub": 0
+        },
+        "ok": true,
+        "provenance": {
+          "assumptions": 2,
+          "citation_errors": 0,
+          "open_questions": 7,
+          "uncited_outcomes": 0,
+          "unlisted_assumption": 0
+        },
+        "tests": {
+          "passed": 49,
+          "status": "passed",
+          "summary": "49 passed in 0.07s"
+        }
+      }
+    },
+    {
+      "argv": [
+        "-m",
+        "rote",
+        "compile",
+        "<run>/deal-monitor/r1/skill-src/deal-monitor",
+        "--local",
+        "--runtime",
+        "dbos",
+        "--no-deploy",
+        "--no-eval",
+        "--json",
+        "--out",
+        "<run>/deal-monitor/r1"
+      ],
+      "emit": {
+        "cloudflare": {
+          "ok": true,
+          "tsc": "failed",
+          "tsc_output": "defined; warehouses?: Record<string, unknown>[] | undefined; needs_attention?: boolean | undefined; last_message_date?: string | ... 1 more ... | undefined; rationale?: st...'.\n        Type '{ thread_id: string; account_name: string; pipeline_step: 1 | 2 | 5 | 4 | 6 | 3; pipeline_step_name: string; thread_url?: string | undefined; warehouses?: Record<string, unknown>[] | undefined; needs_attention?: boolean | undefined; last_message_date?: string | ... 1 more ... | undefined; rationale?: string | undefi...' is not assignable to type '{ thread_id: Serializable<string>; account_name: Serializable<string>; pipeline_step: Serializable<1 | 2 | 5 | 4 | 6 | 3>; pipeline_step_name: Serializable<...>; ... 4 more ...; rationale?: Serializable<...>; }'.\n          Types of property '\"warehouses\"' are incompatible.\n            Type 'Record<string, unknown>[] | undefined' is not assignable to type 'Serializable<Record<string, unknown>[] | undefined>'.\n              Type 'Record<string, unknown>[]' is not assignable to type 'Serializable<Record<string, unknown>[] | undefined>'.\n                Type 'Record<string, unknown>[]' is not assignable to type 'Serializable<Record<string, unknown>>[]'.\n                  Type 'Record<string, unknown>' is not assignable to type 'Serializable<Record<string, unknown>>'.\n                    Type 'Record<string, unknown>' is missing the following properties from type 'Date': toDateString, toTimeString, toLocaleDateString, toLocaleTimeString, and 37 more.\n"
+        },
+        "dbos": {
+          "ok": true
+        }
+      },
+      "fan_out": {
+        "compiled": 4,
+        "expected": 2,
+        "f1": 0.6667,
+        "missed": [],
+        "precision": 0.5,
+        "recall": 1.0,
+        "spurious": [
+          "fetch_email_thread_content",
+          "parse_intake_messages"
+        ],
+        "true_positive": 2
+      },
+      "gates": {
+        "compiled": 0,
+        "expected": 0,
+        "found": 0,
+        "gates": [],
+        "payload_jaccard_mean": null,
+        "signal_matches": 0
+      },
+      "graph": {
+        "compiled_edges": 10,
+        "compiled_waves": 10,
+        "edge_f1": 0.7273,
+        "edge_precision": 0.8,
+        "edge_recall": 0.6667,
+        "expected_edges": 12,
+        "expected_waves": 10,
+        "wave_order_agreement": 0.9455
+      },
+      "headline": {
+        "assumptions": 10,
+        "cache_read_tokens": 1590886,
+        "cache_write_tokens": 143801,
+        "citation_errors": 0,
+        "cost_usd": 2.8273997999999994,
+        "edge_f1": 0.7273,
+        "emit_cloudflare": "ok",
+        "emit_dbos": "ok",
+        "emit_ok": 1,
+        "exit_code": 0,
+        "fan_out_precision": 0.5,
+        "fan_out_recall": 1.0,
+        "gate_payload_jaccard": null,
+        "gate_signal_matches": 0,
+        "gates": "0/0",
+        "implemented": "5/5",
+        "implemented_rate": 1.0,
+        "input_precision": 0.0,
+        "input_recall": 0.0,
+        "input_tokens_total": 1734708,
+        "kind_accuracy": 0.8462,
+        "kind_mix_overlap": 0.9231,
+        "mandatory_precision": 0.0833,
+        "mandatory_recall": 1.0,
+        "node_precision": 0.8462,
+        "node_recall": 0.8462,
+        "nodes": "13/13",
+        "open_questions": 8,
+        "output_tokens": 99151,
+        "repair_rounds": 2,
+        "tests": "passed(67/67)",
+        "tests_passed": 1,
+        "tsc": "failed",
+        "tsc_passed": 0,
+        "turns": 47,
+        "verified": 1,
+        "wall_seconds": 1293.6,
+        "wave_order": 0.9455
+      },
+      "inputs": {
+        "compiled": [
+          "account_owner_email",
+          "run_date"
+        ],
+        "expected": [
+          "output_path",
+          "scoring_rubric",
+          "user_email",
+          "warehouse_domains"
+        ],
+        "jaccard": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      "mandatory": {
+        "compiled": 12,
+        "expected": 1,
+        "f1": 0.1538,
+        "missed": [],
+        "precision": 0.0833,
+        "recall": 1.0,
+        "spurious": [
+          "classify_thread_step",
+          "fetch_email_thread_content",
+          "fetch_intake_messages",
+          "match_threads_to_opps",
+          "merge_deduplicate_threads",
+          "parse_intake_messages",
+          "render_dashboard",
+          "render_summary",
+          "save_dashboard",
+          "search_gmail_by_accounts",
+          "search_gmail_standard"
+        ],
+        "true_positive": 1
+      },
+      "out_dir": "deal-monitor/r1",
+      "repeat": 1,
+      "run": {
+        "agent_seconds": 1290.8,
+        "before_first_phase_seconds": 10.0,
+        "cache_read_tokens": 1590886,
+        "cache_write_tokens": 143801,
+        "cost_usd": 2.8273997999999994,
+        "deliverable": "compiled",
+        "driver_duration_seconds": 1286.3,
+        "events": 75,
+        "exit_code": 0,
+        "input_tokens": 21,
+        "last_turn": 15,
+        "output_tokens": 99151,
+        "phases": [
+          {
+            "name": "Intake",
+            "phase": 1,
+            "seconds": 735.6
+          },
+          {
+            "name": "Node Classification",
+            "phase": 2,
+            "seconds": 0.0
+          },
+          {
+            "name": "Codification Scan",
+            "phase": 3,
+            "seconds": 252.2
+          },
+          {
+            "name": "LLM-Judge Extraction",
+            "phase": 4,
+            "seconds": 0.0
+          },
+          {
+            "name": "IR Assembly",
+            "phase": 5,
+            "seconds": 121.3
+          },
+          {
+            "name": "Adapter Invocation",
+            "phase": 6,
+            "seconds": 0.0
+          },
+          {
+            "name": "Compilation Report",
+            "phase": 7,
+            "seconds": 171.7
+          }
+        ],
+        "repair_rounds": 2,
+        "repair_warnings": 2,
+        "turns": 47,
+        "usage_complete": true,
+        "usage_source": "modelUsage",
+        "wall_seconds": 1293.6
+      },
+      "skill": "deal-monitor",
+      "structure": {
+        "compiled_nodes": 13,
+        "confusion": {
+          "(extra)->pure_function": 2,
+          "external_call->(missing)": 1,
+          "external_call->external_call": 5,
+          "llm_judge->llm_judge": 3,
+          "pure_function->(missing)": 1,
+          "pure_function->pure_function": 3
+        },
+        "expected_nodes": 13,
+        "extra": [
+          "merge_deduplicate_threads",
+          "render_summary"
+        ],
+        "kind_accuracy": 0.8462,
+        "kind_accuracy_matched": 1.0,
+        "kind_counts_compiled": {
+          "external_call": 5,
+          "llm_judge": 3,
+          "pure_function": 5
+        },
+        "kind_counts_expected": {
+          "external_call": 6,
+          "llm_judge": 3,
+          "pure_function": 4
+        },
+        "kind_mix_overlap": 0.9231,
+        "matched": 11,
+        "matched_by_id": 6,
+        "matches": [
+          {
+            "compiled": "classify_thread_step",
+            "compiled_kind": "llm_judge",
+            "expected": "classify_thread_step",
+            "expected_kind": "llm_judge",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "fetch_thread_content",
+            "compiled_kind": "external_call",
+            "expected": "fetch_email_thread_content",
+            "expected_kind": "external_call",
+            "similarity": 0.5673
+          },
+          {
+            "compiled": "fetch_intake_messages",
+            "compiled_kind": "external_call",
+            "expected": "fetch_intake_messages",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "filter_intake_opps",
+            "compiled_kind": "pure_function",
+            "expected": "filter_opportunities",
+            "expected_kind": "pure_function",
+            "similarity": 0.275
+          },
+          {
+            "compiled": "match_threads_to_opps",
+            "compiled_kind": "pure_function",
+            "expected": "match_threads_to_opps",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "parse_intake_opps",
+            "compiled_kind": "llm_judge",
+            "expected": "parse_intake_messages",
+            "expected_kind": "llm_judge",
+            "similarity": 0.5
+          },
+          {
+            "compiled": "render_dashboard",
+            "compiled_kind": "pure_function",
+            "expected": "render_dashboard",
+            "expected_kind": "pure_function",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "save_dashboard",
+            "compiled_kind": "external_call",
+            "expected": "save_dashboard",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "score_new_opps",
+            "compiled_kind": "llm_judge",
+            "expected": "score_new_opportunities",
+            "expected_kind": "llm_judge",
+            "similarity": 0.3906
+          },
+          {
+            "compiled": "search_gmail_by_accounts",
+            "compiled_kind": "external_call",
+            "expected": "search_gmail_by_accounts",
+            "expected_kind": "external_call",
+            "similarity": 1.0
+          },
+          {
+            "compiled": "search_gmail_fixed_subjects",
+            "compiled_kind": "external_call",
+            "expected": "search_gmail_standard",
+            "expected_kind": "external_call",
+            "similarity": 0.3354
+          }
+        ],
+        "missing": [
+          "dedup_email_threads",
+          "load_scoring_rubric"
+        ],
+        "node_precision": 0.8462,
+        "node_recall": 0.8462
+      },
+      "verification": {
+        "error_kinds": {},
+        "errors": 0,
+        "implementation": {
+          "absent": 0,
+          "impl_nodes": 10,
+          "impl_nodes_implemented": 6,
+          "implemented": 5,
+          "pure_functions": 5,
+          "stub": 0
+        },
+        "ok": true,
+        "provenance": {
+          "assumptions": 10,
+          "citation_errors": 0,
+          "open_questions": 8,
+          "uncited_outcomes": 0,
+          "unlisted_assumption": 1
+        },
+        "tests": {
+          "passed": 67,
+          "status": "passed",
+          "summary": "67 passed in 0.09s"
+        }
+      }
+    }
+  ],
+  "label": "origin/main 3dc2e16 (0.15.0, pre-#144); 4 skills, bdr-outreach not run",
+  "per_skill": {
+    "deal-monitor": {
+      "jobs": 1,
+      "mean": {
+        "assumptions": 10.0,
+        "cache_read_tokens": 1590886.0,
+        "cache_write_tokens": 143801.0,
+        "citation_errors": 0.0,
+        "cost_usd": 2.8274,
+        "edge_f1": 0.7273,
+        "emit_ok": 1.0,
+        "exit_code": 0.0,
+        "fan_out_precision": 0.5,
+        "fan_out_recall": 1.0,
+        "gate_signal_matches": 0.0,
+        "implemented_rate": 1.0,
+        "input_precision": 0.0,
+        "input_recall": 0.0,
+        "input_tokens_total": 1734708.0,
+        "jobs": 1,
+        "kind_accuracy": 0.8462,
+        "kind_mix_overlap": 0.9231,
+        "mandatory_precision": 0.0833,
+        "mandatory_recall": 1.0,
+        "node_precision": 0.8462,
+        "node_recall": 0.8462,
+        "open_questions": 8.0,
+        "output_tokens": 99151.0,
+        "repair_rounds": 2.0,
+        "tests_passed": 1.0,
+        "tsc_passed": 0.0,
+        "turns": 47.0,
+        "verified": 1.0,
+        "wall_seconds": 1293.6,
+        "wave_order": 0.9455
+      },
+      "variance": {}
+    },
+    "expense-audit": {
+      "jobs": 1,
+      "mean": {
+        "assumptions": 8.0,
+        "cache_read_tokens": 1536402.0,
+        "cache_write_tokens": 142869.0,
+        "citation_errors": 0.0,
+        "cost_usd": 2.6126,
+        "edge_f1": 0.5455,
+        "emit_ok": 1.0,
+        "exit_code": 0.0,
+        "fan_out_recall": 0.0,
+        "gate_payload_jaccard": 0.0,
+        "gate_signal_matches": 0.0,
+        "implemented_rate": 1.0,
+        "input_precision": 0.3333,
+        "input_recall": 0.5,
+        "input_tokens_total": 1679291.0,
+        "jobs": 1,
+        "kind_accuracy": 0.625,
+        "kind_mix_overlap": 1.0,
+        "mandatory_precision": 0.7143,
+        "mandatory_recall": 1.0,
+        "node_precision": 0.875,
+        "node_recall": 0.875,
+        "open_questions": 10.0,
+        "output_tokens": 86297.0,
+        "repair_rounds": 1.0,
+        "tests_passed": 1.0,
+        "tsc_passed": 1.0,
+        "turns": 39.0,
+        "verified": 1.0,
+        "wall_seconds": 1195.1,
+        "wave_order": 0.8571
+      },
+      "variance": {}
+    },
+    "invoice-push": {
+      "jobs": 1,
+      "mean": {
+        "assumptions": 2.0,
+        "cache_read_tokens": 1276050.0,
+        "cache_write_tokens": 132853.0,
+        "citation_errors": 0.0,
+        "cost_usd": 2.5442,
+        "edge_f1": 0.7778,
+        "emit_ok": 1.0,
+        "exit_code": 0.0,
+        "fan_out_recall": 0.0,
+        "gate_signal_matches": 0.0,
+        "implemented_rate": 1.0,
+        "input_precision": 1.0,
+        "input_recall": 0.5,
+        "input_tokens_total": 1408923.0,
+        "jobs": 1,
+        "kind_accuracy": 0.6154,
+        "kind_mix_overlap": 0.8571,
+        "mandatory_precision": 0.1538,
+        "mandatory_recall": 0.4,
+        "node_precision": 0.5714,
+        "node_recall": 0.6154,
+        "open_questions": 7.0,
+        "output_tokens": 90950.0,
+        "repair_rounds": 1.0,
+        "tests_passed": 1.0,
+        "tsc_passed": 1.0,
+        "turns": 28.0,
+        "verified": 1.0,
+        "wall_seconds": 1255.7,
+        "wave_order": 0.9524
+      },
+      "variance": {}
+    },
+    "ops-report": {
+      "jobs": 1,
+      "mean": {
+        "assumptions": 9.0,
+        "cache_read_tokens": 952069.0,
+        "cache_write_tokens": 138622.0,
+        "citation_errors": 0.0,
+        "cost_usd": 2.5855,
+        "edge_f1": 1.0,
+        "emit_ok": 1.0,
+        "exit_code": 0.0,
+        "gate_payload_jaccard": 0.5,
+        "gate_signal_matches": 0.0,
+        "implemented_rate": 1.0,
+        "input_precision": 1.0,
+        "input_recall": 1.0,
+        "input_tokens_total": 1090706.0,
+        "jobs": 1,
+        "kind_accuracy": 0.9091,
+        "kind_mix_overlap": 0.9167,
+        "mandatory_precision": 0.8182,
+        "mandatory_recall": 0.9,
+        "node_precision": 0.8333,
+        "node_recall": 0.9091,
+        "open_questions": 9.0,
+        "output_tokens": 97876.0,
+        "repair_rounds": 1.0,
+        "tests_passed": 1.0,
+        "tsc_passed": 1.0,
+        "turns": 35.0,
+        "verified": 1.0,
+        "wall_seconds": 1564.7,
+        "wave_order": 0.8
+      },
+      "variance": {}
+    }
+  },
+  "replaced_jobs": [
+    {
+      "cost_usd": 2.2556864999999995,
+      "error": "no pipeline.yaml produced: compilation failed: Driver 'claude' failed after spending tokens in=538266 (538253 cached) out=108304; turns=30; cost=$2.2556864999999995: claude CLI exited with code 1\n\nYou've hit your weekly limit \u00b7 resets 8pm (America/Los_Angeles)\nrote compile: Driver 'claude' failed after spending tokens in=538266 (538253 cached) out=108304; turns=30; cost=$2.2556864999999995: claude CLI exited with code 1\n\nYou've hit your weekly limit \u00b7 resets 8pm (America/Los_Angeles)",
+      "repeat": 1,
+      "skill": "deal-monitor"
+    },
+    {
+      "cost_usd": 2.1879909,
+      "error": "no pipeline.yaml produced: compilation failed: Driver 'claude' failed after spending tokens in=357793 (357786 cached) out=90881; turns=31; cost=$2.1879909: claude CLI exited with code 1\n\nYou've hit your weekly limit \u00b7 resets 8pm (America/Los_Angeles)\nrote compile: Driver 'claude' failed after spending tokens in=357793 (357786 cached) out=90881; turns=31; cost=$2.1879909: claude CLI exited with code 1\n\nYou've hit your weekly limit \u00b7 resets 8pm (America/Los_Angeles)",
+      "repeat": 1,
+      "skill": "bdr-outreach"
+    }
+  ],
+  "rescored_at": "2026-10-20T03:51:45.197523+00:00",
+  "rote_version": "0.15.0",
+  "schema_version": 1,
+  "spent_usd": 15.0135,
+  "started_at": "2026-10-20T02:28:28.771823+00:00"
+}

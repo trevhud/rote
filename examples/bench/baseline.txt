@@ -1,0 +1,9 @@
+job              nodes  nodeR  nodeP  kind  kmix  edgeF1  waves  fanP  fanR  mandP  mandR  gates  sig  gateJ  inR   inP   impl  tests          citeE  assum  OQ   ok   exit  rep   turns  cost$  inTok      outTok   wall_s  dbos  cf  tsc   
+---------------  -----  -----  -----  ----  ----  ------  -----  ----  ----  -----  -----  -----  ---  -----  ----  ----  ----  -------------  -----  -----  ---  ---  ----  ----  -----  -----  ---------  -------  ------  ----  --  ------
+expense-audit#1  8/8    0.88   0.88   0.62  1.00  0.55    0.86   -     0.00  0.71   1.00   1/1    0    0.00   0.50  0.33  6/6   passed(82/82)  0      8      10   1    0     1     39     2.61   1679291    86297    1195    ok    ok  passed
+ops-report#1     12/11  0.91   0.83   0.91  0.92  1.00    0.80   -     -     0.82   0.90   1/1    0    0.50   1.00  1.00  7/7   passed(77/77)  0      9      9    1    0     1     35     2.59   1090706    97876    1565    ok    ok  passed
+invoice-push#1   14/13  0.62   0.57   0.62  0.86  0.78    0.95   -     0.00  0.15   0.40   0/0    0    -      0.50  1.00  6/6   passed(49/49)  0      2      7    1    0     1     28     2.54   1408923    90950    1256    ok    ok  passed
+deal-monitor#1   13/13  0.85   0.85   0.85  0.92  0.73    0.95   0.50  1.00  0.08   1.00   0/0    0    -      0.00  0.00  5/5   passed(67/67)  0      10     8    1    0     2     47     2.83   1734708    99151    1294    ok    ok  failed
+AGGREGATE        -      0.81   0.78   0.75  0.92  0.76    0.89   0.50  0.33  0.44   0.82   -      0.0  0.25   0.50  0.58  -     -              0.0    7.25   8.5  1.0  0.0   1.25  37.25  10.57  1478407.0  93568.5  5309    -     -   -     
+
+spent $15.01 over 4 job(s); aggregate cost$ and wall_s are sums, everything else is a mean
