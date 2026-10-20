@@ -35,7 +35,13 @@ from rote.contracts import ContractFinding, NodeImplementation
 from rote.ir import NodeKind, Pipeline
 
 #: ``# docs: https://...``: one per documentation page a function relies on.
-_DOCS_RE = re.compile(r"#[ \t]*docs:[ \t]*(?P<url>https?://[^\s'\"<>]+)")
+#: ``# docs: skill`` instead says the call's contract is the skill's own text
+#: (an internal API with no public reference), which its ``# skill:``
+#: citations quote.
+_DOCS_RE = re.compile(r"#[ \t]*docs:[ \t]*(?P<url>https?://[^\s'\"<>]+|skill\b)")
+
+#: The ``# docs:`` value for "the skill documents this API".
+SKILL_DOCS = "skill"
 
 #: Trailing punctuation a URL written in prose often picks up.
 _URL_TAIL = ".,;:)]}"
@@ -69,7 +75,13 @@ def brief() -> str:
         "the vendor's raw payload and not the MCP tool's.\n"
         "4. If the docs do not let you confirm a request or response shape, "
         "write a stub whose NotImplementedError message names the page and what "
-        "it left unconfirmed, rather than a call from memory."
+        "it left unconfirmed, rather than a call from memory. A page you cite "
+        "but never fetched in this compile is sent back to you.\n"
+        "5. An internal or undocumented API: if the skill or its references state "
+        "the endpoint and shapes, implement from that text, quote it in "
+        "`# skill:` citations, and write `# docs: skill` above the function. If "
+        "nothing documents it, write a stub naming what is missing. Never guess "
+        "an endpoint."
     )
 
 
@@ -95,6 +107,8 @@ def normalize_url(url: str) -> str:
     ``#section`` anchor points into the page that was fetched.
     """
     url = url.strip().rstrip(_URL_TAIL)
+    if url == SKILL_DOCS:
+        return url
     parts = urlsplit(url)
     path = parts.path.rstrip("/")
     return urlunsplit(("https", parts.netloc.lower(), path, parts.query, ""))
@@ -178,15 +192,23 @@ def _function_spans(tree: ast.Module, symbol: str) -> list[tuple[int, int]]:
 
 
 def docs_findings(
-    pipeline: Pipeline, root: Path, implementations: list[NodeImplementation]
+    pipeline: Pipeline,
+    root: Path,
+    implementations: list[NodeImplementation],
+    research: WebResearch | None = None,
 ) -> list[ContractFinding]:
-    """An implemented vendor call that cites no docs page, under ``--backend api``.
+    """What the vendor calls' docs citations fail to show, under ``--backend api``.
 
-    A stub is not held to it: its NotImplementedError message is where the
-    agent says which page left the shape unconfirmed. A citation counts when
-    :func:`cited_docs` attributes it to the node's function.
+    * An implemented vendor call that cites no docs page. A stub is not held
+      to it: its NotImplementedError message is where the agent says which
+      page left the shape unconfirmed. A citation counts when
+      :func:`cited_docs` attributes it to the node's function.
+    * A cited page the agent never fetched in this compile, when the driver
+      reports its fetches (``research.reported``): the call may come from
+      memory, with a real URL attached. ``# docs: skill`` is exempt.
     """
-    cited = {c.node_id for c in cited_docs(pipeline, root)}
+    cites = cited_docs(pipeline, root)
+    cited = {c.node_id for c in cites}
     kinds = {n.id: n.kind for n in pipeline.nodes}
     findings: list[ContractFinding] = []
     for impl in implementations:
@@ -209,6 +231,23 @@ def docs_findings(
                 path=rel,
             )
         )
+    if research is not None and research.reported:
+        for c in cites:
+            if c.url == SKILL_DOCS or research.was_fetched(c.url):
+                continue
+            findings.append(
+                ContractFinding(
+                    node_id=c.node_id,
+                    kind="unfetched_docs_page",
+                    severity="error",
+                    message=(
+                        f"{c.path}:{c.line} cites {c.url}, which this compile never "
+                        f"fetched. Fetch it and check the call against it, or cite the "
+                        f"page you did read (implementation.md, Regime 2)"
+                    ),
+                    path=c.path,
+                )
+            )
     return findings
 
 
@@ -272,11 +311,16 @@ def report_section(pipeline: Pipeline, root: Path, research: WebResearch | None)
     if cites:
         lines += ["| Node | Docs page | Where | Fetched in this compile |", "|---|---|---|---|"]
         for c in cites:
-            if research is None or not research.reported:
-                fetched = "unknown"
+            if c.url == SKILL_DOCS:
+                page, fetched = "the skill's own text (internal API)", "n/a"
+            elif research is None or not research.reported:
+                page, fetched = c.url, "unknown"
             else:
+                page = c.url
                 fetched = "yes" if research.was_fetched(c.url) else "**no**: check it first"
-            lines.append(f"| `{c.node_id}` | {c.url} | `{c.path}:{c.line}` | {fetched} |")
+            lines.append(
+                f"| `{c.node_id}` | {_cell(page)} | `{_cell(c.path)}:{c.line}` | {fetched} |"
+            )
     else:
         lines.append("No `external_call` module cites a docs page.")
     if research is not None and research.reported:
@@ -292,9 +336,15 @@ def report_section(pipeline: Pipeline, root: Path, research: WebResearch | None)
     return lines
 
 
+def _cell(text: str) -> str:
+    """One markdown table cell: a ``|`` in a URL would end it."""
+    return text.replace("|", "\\|")
+
+
 __all__ = [
     "FETCH_TOOLS",
     "SEARCH_TOOLS",
+    "SKILL_DOCS",
     "DocCitation",
     "WebResearch",
     "api_view",

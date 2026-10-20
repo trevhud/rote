@@ -373,6 +373,22 @@ class Compiler:
         # directly.
         return get_driver(probe.name, **driver_kwargs)
 
+    def _refuse_api_backend_on_typescript(self) -> None:
+        """``--backend api`` writes Python vendor calls; a TS runtime would stub them all.
+
+        Checked here so every caller (the CLI, the cloud container, the bench)
+        fails before the agent runs, not after a paid compile.
+        """
+        from rote.runners import _TS_RUNTIMES
+
+        if self.api_backend and self.emit_target and self.emit_target.runtime in _TS_RUNTIMES:
+            raise CompilerError(
+                f"--backend api writes the vendor calls as Python modules, and the "
+                f"{self.emit_target.runtime} runtime emits TypeScript, with a stub for "
+                f"every external_call. Use the dbos, python or temporal runtime, or "
+                f"--backend mcp for {self.emit_target.runtime}"
+            )
+
     def _emit(self, type_: str, message: str, **fields: Any) -> None:
         """Fire an orchestrator-level progress event (no-op without a sink)."""
         emit_safely(
@@ -467,6 +483,7 @@ class Compiler:
         sample: Sample | None = None,
     ) -> CompilationResult:
         """The compilation body, bracketed by ``compile``'s error event."""
+        self._refuse_api_backend_on_typescript()
         if not skill_dir.is_dir():
             raise CompilerError(f"Skill directory does not exist: {skill_dir}")
         if not (skill_dir / "SKILL.md").is_file():
@@ -600,6 +617,7 @@ class Compiler:
                     before_verify=settle_round,
                     grounding=grounding,
                     portable_judges=s1_plan is not None,
+                    web_research=research,
                 )
 
             try:
@@ -675,6 +693,7 @@ class Compiler:
                 strict_provenance=self.strict_provenance,
                 grounding=grounding,
                 portable_judges=s1_plan is not None,
+                web_research=research,
             )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
@@ -832,6 +851,7 @@ class Compiler:
         before_verify: Callable[[Path], object] | None = None,
         grounding: Grounding | None = None,
         portable_judges: bool = False,
+        web_research: api_docs.WebResearch | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -871,6 +891,7 @@ class Compiler:
                 strict_provenance=self.strict_provenance,
                 grounding=grounding,
                 portable_judges=portable_judges,
+                web_research=web_research,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:

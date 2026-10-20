@@ -224,9 +224,23 @@ async def test_a_cited_page_the_agent_never_fetched_is_flagged(
     tmp_path: Path, skill_dirs: tuple[Path, Path]
 ) -> None:
     driver = _ResearchingDriver(CITED_MODULE, ["https://example.com/some-other-page"])
-    report = await _compile(driver, skill_dirs, tmp_path / "out", "api")
+    skill, rubric = skill_dirs
+    compiler = Compiler(
+        compiler_skill_dir=rubric,
+        emit_target=EmitTarget("dbos", "api"),
+        run_generated_tests=False,
+        tool_discovery="none",
+    )
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+    result = await compiler.compile(skill, tmp_path / "out")
+    report = (tmp_path / "out" / "compile-report.md").read_text(encoding="utf-8")
     assert "**no**: check it first" in report
     assert "| yes |" not in report
+    # Not only a report column: the agent is sent back to fetch it, and the
+    # final verdict fails while the page stays unfetched.
+    assert driver.repairs and "which this compile never fetched" in driver.repairs[0]
+    assert result.verification is not None
+    assert "unfetched_docs_page" in _kinds(result.verification)
 
 
 @pytest.mark.asyncio
@@ -468,3 +482,67 @@ def test_the_api_backend_asks_nothing_about_an_uncalled_binding(tmp_path: Path) 
     pipeline = load_pipeline(root / "pipeline.yaml")
     assert [e["server"] for e in _mcp_requirements(pipeline)] == ["gmail"]
     assert _mcp_requirements(pipeline, "api") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime", ["cloudflare", "inngest", "dbos-ts"])
+async def test_the_compiler_itself_refuses_api_on_a_typescript_runtime(
+    tmp_path: Path, skill_dirs: tuple[Path, Path], runtime: str
+) -> None:
+    """The container and the bench build a Compiler directly, past the CLI's check."""
+    from rote.compiler import CompilerError
+
+    skill, rubric = skill_dirs
+    compiler = Compiler(compiler_skill_dir=rubric, emit_target=EmitTarget(runtime, "api"))
+
+    def _never() -> CompilerDriver:
+        raise AssertionError("a driver was selected")
+
+    compiler.select_driver = _never  # type: ignore[method-assign]
+    with pytest.raises(CompilerError, match=f"the {runtime} runtime emits TypeScript"):
+        await compiler.compile(skill, tmp_path / "out")
+    # The mcp backend on the same runtime is not refused.
+    Compiler(emit_target=EmitTarget(runtime, "mcp"))._refuse_api_backend_on_typescript()
+
+
+@pytest.mark.parametrize(
+    ("module", "fetched", "expected"),
+    [
+        (CITED_MODULE, [DOCS], set()),
+        (CITED_MODULE, ["https://elsewhere.example"], {"unfetched_docs_page"}),
+        # A driver that reports no fetches cannot say what was not fetched.
+        (CITED_MODULE, None, set()),
+        # The skill as the reference: cited, and exempt from the fetch check.
+        (
+            UNCITED_MODULE.replace(
+                "def search_dock_emails", "# docs: skill\ndef search_dock_emails"
+            ),
+            ["https://elsewhere.example"],
+            set(),
+        ),
+    ],
+)
+def test_a_cited_page_must_have_been_fetched_when_fetches_are_reported(
+    tmp_path: Path, module: str, fetched: list[str] | None, expected: set[str]
+) -> None:
+    root = _deliverable(tmp_path / "d", module)
+    research = None if fetched is None else api_docs.WebResearch(fetched=fetched)
+    verification = verify_deliverable(
+        root, run_tests=False, emit_target=EmitTarget("dbos", "api"), web_research=research
+    )
+    assert _kinds(verification) == expected
+
+
+def test_report_cells_escape_a_pipe_and_name_the_skill_reference(tmp_path: Path) -> None:
+    piped = "https://api.example/v1?fields=a|b"
+    module = UNCITED_MODULE.replace(
+        "def search_dock_emails", f"# docs: {piped}\n# docs: skill\ndef search_dock_emails"
+    )
+    root = _deliverable(tmp_path / "d", module)
+    lines = api_docs.report_section(
+        load_pipeline(root / "pipeline.yaml"), root, api_docs.WebResearch(fetched=[piped])
+    )
+    rows = [line for line in lines if line.startswith("| `search_dock_emails`")]
+    assert rows[0].startswith("| `search_dock_emails` | https://api.example/v1?fields=a\\|b |")
+    assert rows[0].count(" | ") == 3
+    assert "the skill's own text (internal API) |" in rows[1] and rows[1].endswith("| n/a |")

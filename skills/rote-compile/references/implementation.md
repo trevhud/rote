@@ -190,9 +190,20 @@ this compile targets `--backend api`. Now you are expected to write
    ```
 
    rote lists each cited URL in compile-report.md beside whether you
-   fetched it in this compile, and sends back an implemented vendor call
-   that cites none. If the docs do not let you confirm a shape, fall back
-   to Regime 1 for that function and name the page in its stub message.
+   fetched it in this compile. It sends back an implemented vendor call
+   that cites none, and a cited page you never fetched (cite what you
+   read, not what you remember). If the docs do not let you confirm a
+   shape, fall back to Regime 1 for that function and name the page in
+   its stub message.
+
+   **Internal or undocumented APIs.** A company's own service often has no
+   public reference. If the skill or its references state the endpoint,
+   auth and shapes, implement from that text: quote it in `# skill:`
+   citations and write `# docs: skill` above the function, which tells
+   rote the skill is the reference. If nothing you can read documents the
+   call, write a stub whose message names what is missing (the base URL,
+   the auth scheme, the response fields). Never guess an endpoint from the
+   service's name, and never cite a public page for a different API.
 3. **Credentials via environment variables only.** One variable per
    vendor, named `<VENDOR>_API_KEY` (or the vendor's own documented
    convention, e.g. `GOOGLE_APPLICATION_CREDENTIALS`). Read it at call

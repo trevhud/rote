@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from rote.compiler.api_docs import api_view, docs_findings
+from rote.compiler.api_docs import WebResearch, api_view, docs_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -343,6 +343,7 @@ def _deliverable_findings(
     artifact_dir: Path,
     implementations: list[NodeImplementation],
     api_backend: bool = False,
+    web_research: WebResearch | None = None,
 ) -> list[ContractFinding]:
     """The rules that hold for a fresh compile, but not for any IR on disk.
 
@@ -361,7 +362,7 @@ def _deliverable_findings(
     kinds = {n.id: n.kind for n in pipeline.nodes}
     held = {NodeKind.PURE_FUNCTION, *([NodeKind.EXTERNAL_CALL] if api_backend else [])}
     if api_backend:
-        findings += docs_findings(pipeline, artifact_dir, implementations)
+        findings += docs_findings(pipeline, artifact_dir, implementations, web_research)
     for impl in implementations:
         kind = kinds.get(impl.node_id)
         if kind not in held:
@@ -717,6 +718,7 @@ def verify_deliverable(
     strict_provenance: bool = False,
     grounding: Grounding | None = None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -736,6 +738,9 @@ def verify_deliverable(
 
     ``strict_provenance`` (``--strict-provenance``) makes every provenance
     finding an error, review gaps included.
+
+    ``web_research`` is what the agent fetched so far (``--backend api``):
+    with it, a cited docs page the agent never fetched is an error.
 
     ``grounding`` is what the compile's contracts are grounded in
     (:mod:`rote.compiler.grounding`). With a sample input, the pipeline's
@@ -759,6 +764,7 @@ def verify_deliverable(
             strict_provenance,
             grounding,
             portable_judges,
+            web_research,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -789,6 +795,7 @@ def _verify_or_raise(
     strict_provenance: bool,
     grounding: Grounding | None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -801,6 +808,7 @@ def _verify_or_raise(
             strict_provenance=strict_provenance,
             grounding=grounding,
             portable_judges=portable_judges,
+            web_research=web_research,
         )
     import shutil
     import tempfile
@@ -826,6 +834,7 @@ def _verify_or_raise(
             strict_provenance=strict_provenance,
             grounding=grounding,
             portable_judges=portable_judges,
+            web_research=web_research,
         )
 
 
@@ -839,6 +848,7 @@ def _verify(
     strict_provenance: bool,
     grounding: Grounding | None = None,
     portable_judges: bool = False,
+    web_research: WebResearch | None = None,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -853,6 +863,7 @@ def _verify(
             root,
             implementations,
             api_backend=api_backend,
+            web_research=web_research,
         )
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
