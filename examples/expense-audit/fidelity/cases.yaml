@@ -1,0 +1,68 @@
+# Behavioral fidelity cases for `rote bench` (docs/compile-bench.md).
+#
+# The skill runs as an agent on each case (the committed reference.json),
+# and each compiled pipeline runs on the same cases. Every case has more
+# than one employee and more than one finding, so a fan-out or a check that
+# silently does nothing cannot pass. The controller's decisions are fixed.
+
+output_fields:
+  period: the reporting period, YYYY-MM
+  batch_total_usd: the whole batch total in USD, a number
+  auto_approved_employees: list of the names of the employees whose reports were auto-approved
+  duplicate_ids: list of the expense ids flagged as duplicates
+  late_ids: list of the expense ids flagged as late
+  blocked_ids: list of the expense ids with at least one block finding
+  review_queue: >-
+    the review queue, a list with one object per finding, each with
+    `expense_id`, `employee` and `severity` (block or review)
+  reimbursable_usd: the reimbursable total in USD after the controller's decisions, a number
+  returned_usd: the total returned to employees in USD, a number
+  pending_usd: the total still pending a decision in USD, a number
+  report_status: the status the filed report is marked with (final or draft)
+  report_filename: the file name the audit report is saved as
+
+cases:
+  - id: base
+    description: the bundled September batch; the controller approves three review items and rejects one
+    input_file: ../input.json
+    gates:
+      - reviewer: Priya Shah
+        approved_ids: [EXP-2403, EXP-2413, EXP-2420]
+        rejected_ids: [EXP-2410]
+
+  - id: second_batch
+    description: >-
+      the same batch with a missing receipt (block), a line dated after the
+      period closed (late), a category the policy does not list (block), and
+      an entertainment line that now carries its pre-approval; the controller
+      approves two review items and rejects two
+    input_file: ../input.json
+    input_patches:
+      - {set: submissions.13.receipt, value: false}
+      - {set: submissions.14.date, value: "2026-10-02"}
+      - {set: submissions.8.preapproval_id, value: PA-118}
+      - append: submissions
+        value:
+          id: EXP-2442
+          employee: Emi Tanaka
+          department: Design
+          date: "2026-09-27"
+          category: gifts
+          merchant: Tokyu Hands
+          amount: 4500
+          currency: JPY
+          receipt: true
+    gates:
+      - reviewer: Priya Shah
+        approved_ids: [EXP-2410, EXP-2440]
+        rejected_ids: [EXP-2403, EXP-2413]
+
+  - id: unknown_currency
+    description: a line in a currency the rate table does not list, so the skill must stop before auditing
+    input_file: ../input.json
+    input_patches:
+      - {set: submissions.10.currency, value: CHF}
+    gates:
+      - reviewer: Priya Shah
+        approved_ids: [EXP-2403, EXP-2413, EXP-2420]
+        rejected_ids: [EXP-2410]

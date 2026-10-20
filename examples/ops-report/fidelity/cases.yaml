@@ -1,0 +1,149 @@
+# Behavioral fidelity cases for `rote bench` (docs/compile-bench.md).
+#
+# The skill reads three Drive spreadsheets and one Gmail search, then asks
+# the duty manager for three numbers that live behind dashboards. Both
+# the agent and the compiled pipeline talk to the fixture servers below,
+# so they see identical tool results. The duty manager's answers are fixed.
+# Every list has several rows and each case crosses different thresholds.
+
+output_fields:
+  active_sites: the number of active sites in the KPI header
+  dock_pending_count: the number of open (Resolved = FALSE) dock pending rows
+  avg_completion_pct: the average completion % across sites, a number
+  open_dwell_tickets: the number of open dwell tickets
+  sites_below_75_completion: list of the site codes below 75% completion
+  dock_pending_by_site: a list with one object per site that has open rows, each with `site` and `open_count`
+  approved_appointments: the number of approved dock appointments in the Gmail results
+  outstanding_requests: list of the PO numbers whose dock appointment request is not yet approved
+  open_ticket_alerts: >-
+    a list with one object per alert on an open dwell ticket, each with
+    `ticket` and `alert` (Missort Warning, Missort Alert or Possible Misload
+    Alert); a ticket with two alerts has two objects, one with none has none
+  non_compliant_appointments: the number of non-compliant dock appointments to escalate
+  sorter_action_sites: list of the site codes whose sorter fail rate is above 5%
+  dwell_alert_shippers: list of the shipper or brand names in the current dwell with an alert or warning
+
+servers:
+  google_drive:
+    aliases: [gdrive, drive, googledrive, google-drive, google_drive_mcp, googledrivemcp]
+    tools:
+      read_file_content:
+        description: >-
+          Read a Google Drive file by id and return its content as text.
+          A spreadsheet comes back as CSV of the named tab, or of its first
+          tab when none is named.
+        side_effect: false
+        parameters:
+          type: object
+          properties:
+            file_id: {type: string, description: The Drive file id}
+            tab: {type: string, description: Spreadsheet tab name (optional)}
+          required: [file_id]
+  gmail:
+    aliases: [google_mail, googlemail, gmail_mcp, gmailmcp, mail]
+    tools:
+      search_threads:
+        description: >-
+          Search Gmail with a Gmail query string and return the matching
+          threads, newest first, each with its id, subject, sender, date and
+          a snippet of the latest message.
+        side_effect: false
+        parameters:
+          type: object
+          properties:
+            query: {type: string, description: A Gmail search query}
+            max_results: {type: integer, description: Maximum threads to return}
+          required: [query]
+
+cases:
+  - id: busy_day
+    description: one site under 75%, open pending rows at every site, two outstanding requests, every dwell alert level
+    input: {report_date: "2026-10-19"}
+    gates:
+      - dock_appointment_completion: {green: 18, red: 2, grey: 1, other: 1}
+        sorter_metrics:
+          - {site: EAST1, volume: 52000, prior_day_volume: 54000, fail_rate_pct: 3.2}
+          - {site: WEST2, volume: 30000, prior_day_volume: 38000, fail_rate_pct: 6.1}
+        current_dwell:
+          - {shipper: Northwind Apparel, carrier: UPS, site: EAST1, packages: 33}
+          - {shipper: Lumen Home, carrier: FedEx, site: WEST2, packages: 52}
+          - {shipper: Acme Pet, carrier: USPS, site: SOUTH3, packages: 12}
+    fixtures:
+      google_drive:
+        read_file_content:
+          - when: {file_id: 1ExampleShipmentContainersFileId00000000000}
+            result: |
+              Site,Active,Loaded,Staged,Shipped,COMPLETION %
+              EAST1,40,12,8,20,82%
+              WEST2,35,5,10,20,71%
+              SOUTH3,22,6,2,14,90%
+          - when: {file_id: 1ExampleDockPendingLogFileId0000000000000000}
+            result: |
+              Date,Site,Issue Type,PO Number,Resolved
+              2026-10-18,EAST1,PO Number,PO-4471,FALSE
+              2026-10-18,EAST1,Pallet/Piece Count Discrepancy,PO-4473,FALSE
+              2026-10-18,WEST2,Pallet/Piece Count Discrepancy,PO-4480,FALSE
+              2026-10-17,EAST1,Pallet/Piece Count Discrepancy,PO-4459,TRUE
+              2026-10-17,SOUTH3,PO Number,PO-4462,FALSE
+              2026-10-16,WEST2,PO Number,PO-4440,TRUE
+          - when: {file_id: 1ExampleDwellTicketLogFileId0000000000000000}
+            result: |
+              Ticket,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description,Open/Closed
+              DW-101,2026-10-18,EAST1,30,Northwind Apparel,12,Missorted to the wrong lane,Open
+              DW-102,2026-10-18,WEST2,45,Lumen Home,85,Trailer loaded short,Open
+              DW-103,2026-10-17,SOUTH3,10,Acme Pet,5,Label reprint,Closed
+              DW-104,2026-10-17,EAST1,8,Orchid Beauty,3,Late carrier pickup,Open
+      gmail:
+        search_threads:
+          - when_contains: {query: dock-activity}
+            result:
+              - {id: t-901, subject: "Dock appointment APPROVED: EAST1 PO-4471 10/19 08:00", from: scheduler@example.com, date: "2026-10-18T16:02:00Z", snippet: "Your appointment request for PO-4471 is approved."}
+              - {id: t-902, subject: "Dock appointment REQUESTED: WEST2 PO-4480 10/19 10:00", from: carrier-ops@example.com, date: "2026-10-18T14:40:00Z", snippet: "Requesting a dock appointment for PO-4480."}
+              - {id: t-903, subject: "Dock appointment APPROVED: SOUTH3 PO-4462 10/19 13:00", from: scheduler@example.com, date: "2026-10-18T12:15:00Z", snippet: "Your appointment request for PO-4462 is approved."}
+              - {id: t-904, subject: "Dock appointment REQUESTED: WEST2 PO-4490 10/20 09:00", from: carrier-ops@example.com, date: "2026-10-18T11:05:00Z", snippet: "Requesting a dock appointment for PO-4490."}
+              - {id: t-905, subject: "Dock appointment REQUESTED: EAST1 PO-4471 10/19 08:00", from: carrier-ops@example.com, date: "2026-10-18T09:30:00Z", snippet: "Requesting a dock appointment for PO-4471."}
+              - {id: t-906, subject: "Dock appointment REQUESTED: SOUTH3 PO-4462 10/19 13:00", from: carrier-ops@example.com, date: "2026-10-18T08:55:00Z", snippet: "Requesting a dock appointment for PO-4462."}
+          - result: []
+
+  - id: quiet_day
+    description: every site above 75%, one open pending row, every request approved, no dwell over a threshold
+    input: {report_date: "2026-10-20"}
+    gates:
+      - dock_appointment_completion: {green: 21, red: 0, grey: 2, other: 0}
+        sorter_metrics:
+          - {site: EAST1, volume: 51000, prior_day_volume: 52000, fail_rate_pct: 2.1}
+          - {site: WEST2, volume: 37000, prior_day_volume: 36000, fail_rate_pct: 4.4}
+        current_dwell:
+          - {shipper: Northwind Apparel, carrier: UPS, site: EAST1, packages: 9}
+          - {shipper: Lumen Home, carrier: FedEx, site: WEST2, packages: 14}
+    fixtures:
+      google_drive:
+        read_file_content:
+          - when: {file_id: 1ExampleShipmentContainersFileId00000000000}
+            result: |
+              Site,Active,Loaded,Staged,Shipped,COMPLETION %
+              EAST1,38,10,6,22,88%
+              WEST2,30,8,4,18,79%
+              SOUTH3,25,5,3,17,92%
+              NORTH4,12,2,2,8,84%
+          - when: {file_id: 1ExampleDockPendingLogFileId0000000000000000}
+            result: |
+              Date,Site,Issue Type,PO Number,Resolved
+              2026-10-19,NORTH4,PO Number,PO-4501,FALSE
+              2026-10-18,EAST1,PO Number,PO-4471,TRUE
+              2026-10-18,WEST2,Pallet/Piece Count Discrepancy,PO-4480,TRUE
+          - when: {file_id: 1ExampleDwellTicketLogFileId0000000000000000}
+            result: |
+              Ticket,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description,Open/Closed
+              DW-104,2026-10-17,EAST1,8,Orchid Beauty,3,Late carrier pickup,Open
+              DW-105,2026-10-19,NORTH4,16,Acme Pet,20,Missing ASN,Open
+              DW-101,2026-10-18,EAST1,30,Northwind Apparel,12,Missorted to the wrong lane,Closed
+      gmail:
+        search_threads:
+          - when_contains: {query: dock-activity}
+            result:
+              - {id: t-911, subject: "Dock appointment APPROVED: NORTH4 PO-4501 10/20 07:30", from: scheduler@example.com, date: "2026-10-19T15:20:00Z", snippet: "Your appointment request for PO-4501 is approved."}
+              - {id: t-912, subject: "Dock appointment REQUESTED: NORTH4 PO-4501 10/20 07:30", from: carrier-ops@example.com, date: "2026-10-19T10:10:00Z", snippet: "Requesting a dock appointment for PO-4501."}
+              - {id: t-913, subject: "Dock appointment APPROVED: EAST1 PO-4510 10/20 11:00", from: scheduler@example.com, date: "2026-10-19T09:45:00Z", snippet: "Your appointment request for PO-4510 is approved."}
+              - {id: t-914, subject: "Dock appointment REQUESTED: EAST1 PO-4510 10/20 11:00", from: carrier-ops@example.com, date: "2026-10-19T08:00:00Z", snippet: "Requesting a dock appointment for PO-4510."}
+          - result: []

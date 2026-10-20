@@ -16,6 +16,7 @@ Number = int | float
 
 #: (key, column header, format). Order is the table's column order.
 COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("fidelity", "fidel", "{:.2f}"),
     ("nodes", "nodes", "{}"),
     ("node_recall", "nodeR", "{:.2f}"),
     ("node_precision", "nodeP", "{:.2f}"),
@@ -51,7 +52,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
 )
 
 #: Keys summed, not averaged, in the aggregate.
-SUMMED = frozenset({"cost_usd", "wall_seconds"})
+SUMMED = frozenset({"cost_usd", "wall_seconds", "fidelity_cost_usd"})
 
 #: Headline keys where a larger number is worse. ``--compare`` marks a
 #: delta as a regression by this, so the reader need not remember it.
@@ -62,6 +63,7 @@ LOWER_IS_BETTER = frozenset(
         "repair_rounds",
         "turns",
         "cost_usd",
+        "fidelity_cost_usd",
         "input_tokens_total",
         "output_tokens",
         "wall_seconds",
@@ -110,6 +112,8 @@ def headline(job: dict[str, Any]) -> dict[str, Any]:
 
     impl = _get(job, "verification", "implementation") or {}
     return {
+        "fidelity": _get(job, "fidelity", "score"),
+        "fidelity_cost_usd": _get(job, "fidelity", "cost_usd"),
         "nodes": _ratio(
             _get(job, "structure", "compiled_nodes"), _get(job, "structure", "expected_nodes")
         ),
