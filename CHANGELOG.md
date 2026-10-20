@@ -30,9 +30,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   drivers, each node's interface entry, module and tests, and each judge's
   prompt is its own schema-locked call, all at once (`--max-parallel`,
   default 8), checked by code as it arrives and repaired alone. On the bench
-  (3 compiles per skill), expense-audit went from 321 s and $0.69 to 76 s
-  and $0.48 at fidelity 0.92 to 0.95, and ops-report from 209 s and $0.57 to
-  52 s and $0.30 at fidelity 0.60 to 0.96. The prefix run on the sample now
+  (3 compiles per skill, subscription lane), expense-audit went from 321 s
+  and $0.69 to 63 s and $0.43 at fidelity 0.92 to 0.98, and ops-report from
+  209 s and $0.57 to 62 s and $0.33 at fidelity 0.60 to 0.93. The prefix run on the sample now
   checks each result against its node's `output_schema` and runs past gates
   the sample answers. See `docs/design/parallel-generation.md`.
 - **System-1 is the default `rote compile` path.** rote decides the pipeline

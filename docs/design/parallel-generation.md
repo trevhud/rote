@@ -12,38 +12,51 @@ calls that run at the same time, one or two per node.
 
 ## Result
 
-Measured 2026-10-20 with `rote bench`, 3 compiles per cell, wheels of both
-commits, subscription lane (`claude -p`), concurrency 2. Serial is main at
-e06c232 (the session on Sonnet 4.6, effort low). Parallel is this branch at
-500238f (Sonnet 5.5 for every call, effort low). Mean, with the range.
+Measured 2026-10-20 with `rote bench`, 3 compiles per cell, each path from
+a wheel of its commit, concurrency 2. Mean, with the range.
+
+- **serial**: main at e06c232, the single session (Sonnet 4.6, effort low),
+  subscription lane.
+- **parallel**: 56d5425, this PR on top of #170 (and #167, #163) on main.
+  Its code is identical to the PR head 9221b6b except one test line and
+  #170's last commit (a test and a SYSTEM1.md paragraph neither path
+  reads here). Sonnet 5.5 for every call, effort low, on both lanes. The
+  API lane's cost is list price from each call's own token counts.
 
 | skill | path | fidelity | wall (s) | cost ($) |
 |---|---|---|---|---|
 | expense-audit | serial | 0.92 (0.90 to 0.92) | 321 (281 to 376) | 0.69 (0.60 to 0.81) |
-| expense-audit | parallel | **0.95** (0.95 to 0.95) | **76** (67 to 83) | **0.48** (0.40 to 0.55) |
+| expense-audit | parallel, subscription | **0.98** (0.95 to 0.99) | **63** (54 to 74) | **0.43** (0.42 to 0.45) |
+| expense-audit | parallel, API | 0.96 (0.94 to 0.99) | 61 (58 to 66) | 0.37 (0.35 to 0.40) |
 | ops-report | serial | 0.60 (0.50 to 0.80) | 209 (194 to 221) | 0.57 (0.47 to 0.64) |
-| ops-report | parallel | **0.96** (0.96 to 0.96) | **52** (46 to 57) | **0.30** (0.27 to 0.33) |
+| ops-report | parallel, subscription | **0.93** (0.93 to 0.94) | **62** (56 to 68) | **0.33** (0.30 to 0.39) |
+| ops-report | parallel, API | 0.96 (0.95 to 0.96) | 52 (50 to 54) | 0.31 (0.29 to 0.34) |
 | customer-onboarding (holdout) | serial | n/a | 188 (108 to 246) | 0.45 (0.29 to 0.59) |
-| customer-onboarding (holdout) | parallel | n/a | **35** (32 to 38) | **0.15** (0.13 to 0.19) |
+| customer-onboarding (holdout) | parallel, subscription | n/a | **41** (35 to 50) | **0.15** (0.12 to 0.19) |
+| customer-onboarding (holdout) | parallel, API | n/a | 44 (37 to 56) | 0.15 (0.13 to 0.18) |
 | saas-spend-audit (holdout) | serial | n/a | 336 (185 to 412) | 0.74 (0.42 to 0.99) |
-| saas-spend-audit (holdout) | parallel | n/a | **51** (42 to 60) | **0.27** (0.25 to 0.31) |
+| saas-spend-audit (holdout) | parallel, subscription | n/a | **63** (57 to 73) | **0.32** (0.29 to 0.36) |
+| saas-spend-audit (holdout) | parallel, API | n/a | 50 (43 to 61) | 0.21 (0.19 to 0.23) |
 | incident-triage (holdout) | serial | n/a | 336 (289 to 407) | 0.84 (0.65 to 1.16) |
-| incident-triage (holdout) | parallel | n/a | **62** (60 to 64) | **0.44** (0.39 to 0.51) |
+| incident-triage (holdout) | parallel, subscription | n/a | **58** (54 to 62) | **0.34** (0.28 to 0.38) |
+| incident-triage (holdout) | parallel, API | n/a | 37 (36 to 39) | 0.25 (0.25 to 0.25) |
 
 The held-out skills have no fidelity cases, so they are judged by
-verification. Every compile in both columns verified with its tests passing,
-except incident-triage, which exits 1 on both paths for the same adapter
-defect (the emitted `signatures/_rote_inference.py` imports
-`extracted._rote_mcp`, which the dbos emit does not ship). Structural
-scores are identical across the two paths, because structure is decided
-before either runs.
+verification. All 30 parallel compiles verified with their tests passing and
+exited 0. The serial baseline's incident-triage exited 1 three times,
+because e06c232 predates #164's fix for an ImportError-guarded import
+counted as unshipped. Structural scores match across paths, since structure
+is decided before either runs.
 
-On the API lane (`--agent api`, the same branch plus effort on the API
-call), one compile each: expense-audit 0.94 in 66 s, ops-report 0.96 in
-61 s, about $0.37 and $0.29 at list prices from the token counts.
+An earlier parallel run at 500238f (before the review fixes and #170) is
+superseded: expense-audit 0.95, 76 s, $0.48, and ops-report 0.96, 52 s,
+$0.30. One of its API-lane expense-audit compiles scored 0.66 because the
+node after the gate saw only the request and the gate's answer. #170's
+through-gate inputs fixed that, and expense-audit's low end is now 0.94.
 
 Fidelity also stopped swinging. The serial path's ops-report scored 0.50,
-0.80 and 0.50. The parallel path scored 0.96 three times. The two fixes
+0.80 and 0.50. The parallel path scored 0.93 to 0.96 on every compile on
+both lanes. The two fixes
 behind that are below (the shared rule tables and unverified tool results).
 
 Parallel compiles write fewer tests: 16 to 55 against 28 to 72 for the same
@@ -212,19 +225,14 @@ Concurrency is bounded by `--max-parallel` (default 8).
 
 ## Open items
 
-1. Fixed on main by #164: incident-triage failed on both paths in the
-   bench above (base e06c232) because verification counted
-   `signatures/_rote_inference.py`'s ImportError-guarded
-   `extracted._rote_mcp` import as unshipped. On this branch, rebased on
-   #164, it verifies and exits 0 (API lane, 34 s).
+1. Fixed on main by #164: incident-triage failed on the e06c232 baseline
+   because verification counted `signatures/_rote_inference.py`'s
+   ImportError-guarded `extracted._rote_mcp` import as unshipped. All six
+   parallel incident-triage compiles above verified and exited 0.
 2. Test depth: parallel pieces write about half as many tests.
 3. The cloud lane's API driver gives the session agent live MCP tools for
    research. The parallel calls have no tools, so that context is lost
    there.
-4. One Sonnet expense-audit compile on the API lane scored 0.66: its
-   `file_audit_report` was a stub because the skeleton gives it only the
-   request and the gate's answer. #170's through-gate inputs fix that
-   decision.
-5. The per-node prefix probe from #170 (consumers of unrecorded MCP results
+4. The per-node prefix probe from #170 (consumers of unrecorded MCP results
    run on `[]` and `""`) could run inside each piece's own check, once #170
    lands.
