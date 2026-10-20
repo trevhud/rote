@@ -290,12 +290,15 @@ nothing can answer reliably anyway.
 | `--effort` / `ROTE_EFFORT` | how much the **compiler** thinks (claude driver; default `low`) |
 | `--inference` / `ROTE_INFERENCE` | which **judge provider** serves emitted judges |
 | `ROTE_MODEL_<NODE_ID>` | one **judge's** model |
+| `ROTE_EFFORT_<NODE_ID>` / `ROTE_JUDGE_EFFORT` | an Anthropic **judge's** `output_config.effort` (one node / every judge; unset sends none, empty omits it) |
 | `--backend` | how an `external_call` reaches its tool (`mcp` \| `api`) |
 
 `ROTE_MODEL` and `ROTE_MODEL_<NODE_ID>` are adjacent and mean
 different things. That is survivable because the suffixed form is
 always node-scoped, but do not add a bare `ROTE_TEMPERATURE` or
 `ROTE_BASE_URL` — the unsuffixed namespace belongs to the compiler.
+That is why the pipeline-wide judge effort is `ROTE_JUDGE_EFFORT` and
+not `ROTE_EFFORT`, which a developer may already set for compiles.
 
 ## References
 

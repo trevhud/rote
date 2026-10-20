@@ -105,9 +105,14 @@ export async function personalizeEmail(
         // Operator overrides — swap the model or endpoint without re-emitting.
         ROTE_MODEL_PERSONALIZE_EMAIL?: string;
         ROTE_BASE_URL_PERSONALIZE_EMAIL?: string;
+        ROTE_EFFORT_PERSONALIZE_EMAIL?: string;
+        ROTE_JUDGE_EFFORT?: string;
     },
 ): Promise<PersonalizeEmailOutput> {
     const input = PersonalizeEmailInput.parse(rawInput);
+    const EFFORT = (env.ROTE_EFFORT_PERSONALIZE_EMAIL ?? env.ROTE_JUDGE_EFFORT ?? "").trim() as
+        | Anthropic.OutputConfig["effort"]
+        | "";
     const client = new Anthropic({
         apiKey: env.ANTHROPIC_API_KEY,
         baseURL: env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
@@ -118,6 +123,7 @@ export async function personalizeEmail(
         max_tokens: 4096,
         output_config: {
             format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },
+            ...(EFFORT ? { effort: EFFORT } : {}),
         },
         messages: [
             { role: "user", content: interpolate(PROMPT, input as Record<string, unknown>) },

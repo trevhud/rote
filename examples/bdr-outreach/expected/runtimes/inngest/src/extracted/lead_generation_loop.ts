@@ -58,6 +58,8 @@ export async function leadGenerationLoop(
         ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
         ROTE_MODEL_VET_CONTACT: process.env.ROTE_MODEL_VET_CONTACT,
         ROTE_BASE_URL_VET_CONTACT: process.env.ROTE_BASE_URL_VET_CONTACT,
+        ROTE_EFFORT_VET_CONTACT: process.env.ROTE_EFFORT_VET_CONTACT,
+        ROTE_JUDGE_EFFORT: process.env.ROTE_JUDGE_EFFORT,
     }),
         },
     );

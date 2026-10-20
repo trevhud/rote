@@ -127,6 +127,8 @@ async function main(): Promise<void> {
             ANTHROPIC_API_KEY: "local-stub-key",
             ROTE_MODEL_GRADE_ESSAY: process.env.ROTE_MODEL_GRADE_ESSAY,
             ROTE_BASE_URL_GRADE_ESSAY: process.env.ROTE_BASE_URL_GRADE_ESSAY,
+            ROTE_EFFORT_GRADE_ESSAY: process.env.ROTE_EFFORT_GRADE_ESSAY,
+            ROTE_JUDGE_EFFORT: process.env.ROTE_JUDGE_EFFORT,
         });
         console.log(JSON.stringify({ output: result }));
     } catch (err) {
@@ -157,7 +159,7 @@ def judge_app(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return app
 
 
-def _run(app: Path, stub: str) -> dict[str, Any]:
+def _run(app: Path, stub: str, **knobs: str) -> dict[str, Any]:
     proc = subprocess.run(
         ["node", "dist/driver.js"],
         cwd=app,
@@ -165,11 +167,17 @@ def _run(app: Path, stub: str) -> dict[str, Any]:
         text=True,
         timeout=120,
         env={
-            **os.environ,
+            # An ambient effort knob must not decide what these tests see.
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith(("ROTE_JUDGE_EFFORT", "ROTE_JUDGE_EFFORT"))
+            },
             "ROTE_MODEL_GRADE_ESSAY": CURRENT_SONNET,
             "ROTE_BASE_URL_GRADE_ESSAY": stub,
             # Anything that ignored the override would reach a closed port.
             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+            **knobs,
         },
     )
     assert proc.returncode == 0, f"driver failed:\n{proc.stdout}\n{proc.stderr}"
@@ -203,3 +211,21 @@ def test_ts_judge_rejects_an_incomplete_answer(judge_app: Path, judge_stub: str,
         "error": f"structured output for grade_essay ended with stop_reason {stop}, "
         "not end_turn, so it is not a complete answer"
     }
+
+
+@pytest.mark.parametrize(
+    ("knobs", "sent"),
+    [
+        ({}, None),
+        ({"ROTE_JUDGE_EFFORT": "low"}, "low"),
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_GRADE_ESSAY": "medium"}, "medium"),
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_GRADE_ESSAY": ""}, None),
+    ],
+)
+def test_ts_judge_effort_is_the_same_operator_knob(
+    judge_app: Path, judge_stub: str, knobs: dict[str, str], sent: str | None
+) -> None:
+    assert _run(judge_app, judge_stub, **knobs) == {"output": ANSWER}
+    config = _JudgeStub.requests[0]["output_config"]
+    assert config.get("effort") == sent
+    assert ("effort" in config) is (sent is not None)

@@ -169,9 +169,14 @@ export async function vetContact(
         // Operator overrides — swap the model or endpoint without re-emitting.
         ROTE_MODEL_VET_CONTACT?: string;
         ROTE_BASE_URL_VET_CONTACT?: string;
+        ROTE_EFFORT_VET_CONTACT?: string;
+        ROTE_JUDGE_EFFORT?: string;
     },
 ): Promise<VetContactOutput> {
     const input = VetContactInput.parse(rawInput);
+    const EFFORT = (env.ROTE_EFFORT_VET_CONTACT ?? env.ROTE_JUDGE_EFFORT ?? "").trim() as
+        | Anthropic.OutputConfig["effort"]
+        | "";
     const client = new Anthropic({
         apiKey: env.ANTHROPIC_API_KEY,
         baseURL: env.ROTE_BASE_URL_VET_CONTACT,
@@ -182,6 +187,7 @@ export async function vetContact(
         max_tokens: 4096,
         output_config: {
             format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },
+            ...(EFFORT ? { effort: EFFORT } : {}),
         },
         messages: [
             { role: "user", content: interpolate(PROMPT, input as Record<string, unknown>) },

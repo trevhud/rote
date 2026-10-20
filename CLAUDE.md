@@ -713,6 +713,24 @@ The `claude-cli` lane (`claude -p --json-schema`) and the OpenAI lane
 are separate mechanisms and were unaffected (the CLI handles
 claude-sonnet-5-5 itself).
 
+Effort rides in the same `output_config`. Unset, the API runs `high`.
+`ROTE_EFFORT_<NODE_ID>` > `ROTE_JUDGE_EFFORT` set it for judges and agent
+loops on every lane, and an empty value omits it (the temperature knob's
+shape). On the `claude-cli` lane it is `claude -p --effort`, added by one
+function (`_cli_effort_flags`) to both the judge and the agent-loop
+command lines. The CLI does not fail on an unknown level: it warns on
+stderr and runs at its default, exit 0, so `_refuse_ignored_effort`
+reads that warning and raises; without it the knob is a silent no-op on
+a subscription while the SDK lanes 400. The default stays unset on
+data: on 2026-10-20, 8 example judges x 6 inputs, `low` cut output tokens
+15% (sonnet-4-6) and 33% (sonnet-5-5) but changed decisions the default
+made the same way twice, including dropping an ARR stated in the input.
+Don't name the pipeline-wide knob `ROTE_EFFORT`: that is the compiler's,
+and it would silently retune every judge a developer runs. On the Node
+TS runtimes a judge only sees the env vars `judge_env_arg` threads, so a
+new knob must be added there too (the temperature knob was missing until
+this was found).
+
 ### Vendor SDK errors do not survive a durable step boundary
 
 `anthropic.APIError` / `openai.APIError` subclasses take keyword-only
