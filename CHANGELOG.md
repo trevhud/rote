@@ -9,6 +9,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **`rote emit` ships every top-level `.py` in `compiled/extracted/`,** not only
+  the modules a node's `impl:` names, for the dbos and python runtimes. A shared
+  helper the agent wrote (`extracted/_common.py`) used to stay behind, and the
+  emitted app crashed on its first import. A scratch `.py` left in that folder
+  now ships too, and from there to a deploy. Subdirectories, `__pycache__` and
+  non-`.py` files do not. Verification's dry emit also flags any `extracted`
+  import the emitted runtime cannot satisfy.
+
 ### Added
 - **`rote bench --fidelity`: does the compiled pipeline behave like the
   skill?** Each compiled pipeline runs on fixed cases (input, gate answers,

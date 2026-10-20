@@ -612,6 +612,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.system1_decider != "rules" and not args.system1:
+        print(
+            f"error: --system1-decider {args.system1_decider} needs --system1",
+            file=sys.stderr,
+        )
+        return 2
 
     # ── Layered defaults ── flag > ROTE_* env > project rote.yaml >
     # user config > built-in. Resolved up front because the logged-in
@@ -4109,8 +4115,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "EXPERIMENTAL, with --system1: who decides each step's kind and whether a person "
             "must act. 'rules' (default) makes no call. 'clef' asks Cloudflare's Clef "
-            "decision model where it is confident and the rules elsewhere; it needs "
-            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN and costs about $0.01 a compile"
+            "decision model where it is confident and the rules elsewhere. It sends every "
+            "step's text to your Cloudflare account's Workers AI, needs CLOUDFLARE_ACCOUNT_ID "
+            "and CLOUDFLARE_API_TOKEN, and costs about $0.005 a compile"
         ),
     )
     compile_p.add_argument(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import shutil
+import socket
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,61 @@ _INFERENCE_CREDENTIAL_VARS = (
 #: to scrub. Exactly how two DBOS e2e suites quietly burned real
 #: inference on every run until it was caught by timing.
 _SUBSCRIPTION_CLIS = frozenset({"claude", "codex"})
+
+
+class NetworkBlocked(RuntimeError):
+    """A fast test tried to reach a host that is not this machine."""
+
+
+def _loopback(address: object) -> bool:
+    """True for an AF_UNIX path or an address on this machine."""
+    if not isinstance(address, tuple) or not address:
+        return True  # AF_UNIX socket paths, and anything that is not an IP pair
+    host = address[0]
+    if not isinstance(host, str):
+        return True
+    if host in ("localhost", ""):
+        return True
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False  # an unresolved hostname
+    return ip.is_loopback or ip.is_unspecified
+
+
+@pytest.fixture(autouse=True)
+def _no_network_in_fast_tests(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fast test may only connect to this machine.
+
+    Found the hard way (#150 review): with one credential check mutated
+    away, a Clef decider test made real, retried HTTPS calls to
+    api.cloudflare.com for 84 seconds, and every assertion still ran.
+    Loopback stays open for the fixture servers (fastmcp, local Messages
+    stubs, DBOS on localhost). Tests marked ``slow`` are exempt: they are
+    outside the default run and some legitimately download (npm install,
+    the inngest-cli binary). Subprocesses are not covered; this guards
+    in-process clients (urllib, httpx, SDKs), which is where a test's own
+    code calls out.
+    """
+    if request.node.get_closest_marker("slow") is not None:
+        return
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def connect(self: socket.socket, address: object) -> None:
+        if not _loopback(address):
+            raise NetworkBlocked(f"fast tests may not connect to {address!r}; stub the call")
+        real_connect(self, address)  # type: ignore[arg-type]
+
+    def connect_ex(self: socket.socket, address: object) -> int:
+        if not _loopback(address):
+            raise NetworkBlocked(f"fast tests may not connect to {address!r}; stub the call")
+        return real_connect_ex(self, address)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
 
 
 @pytest.fixture(autouse=True)

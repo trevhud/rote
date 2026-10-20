@@ -90,3 +90,21 @@ def test_every_local_import_form_is_resolved(tmp_path: Path) -> None:
     for name in "bcde":
         (ext / f"{name}.py").write_text("")
     assert unshipped_imports(tmp_path) == []
+
+
+@pytest.mark.parametrize("runtime", ["dbos", "python"])
+def test_only_top_level_python_modules_ship(tmp_path: Path, runtime: str) -> None:
+    """The property this change must keep: helpers ship, nothing else does."""
+    art = _artifact(tmp_path, helpers=True)
+    (art / "extracted" / "__pycache__").mkdir()
+    (art / "extracted" / "__pycache__" / "total_lines.cpython-311.pyc").write_bytes(b"\0")
+    (art / "extracted" / "sub").mkdir()
+    (art / "extracted" / "sub" / "deep.py").write_text("X = 1\n")
+    (art / "extracted" / "notes.txt").write_text("scratch\n")
+    (art / "tests").mkdir()
+    (art / "tests" / "test_total_lines.py").write_text("def test_x():\n    pass\n")
+    out = tmp_path / "runtime"
+    get_adapter(runtime, extracted_source_dir=art).emit(load_pipeline(art / "pipeline.yaml"), out)
+    shipped = sorted(str(p.relative_to(out / "extracted")) for p in (out / "extracted").rglob("*"))
+    assert shipped == ["__init__.py", "_common.py", "rule_tables.py", "total_lines.py"]
+    assert not (out / "tests").exists() or not list((out / "tests").glob("test_total_lines.py"))

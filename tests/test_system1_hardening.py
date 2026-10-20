@@ -435,3 +435,25 @@ def test_without_a_stated_bound_the_text_agent_writes_termination(tmp_path: Path
 def test_general_rules_do_not_over_fire(tmp_path: Path, text: str, kinds: list[str]) -> None:
     _, doc = _prepare(tmp_path, _skill(tmp_path, f"## Step 1: Do the step\n\n{text}\n"))
     assert [n["kind"] for n in doc["nodes"]] == kinds
+
+
+def test_agent_text_cannot_reshape_the_report(tmp_path: Path) -> None:
+    """A proposal's node value is the agent's text: a newline plus '## ...' in it
+    must stay inside its entry, not become a heading of the report."""
+    from rote.compiler.provenance import open_questions
+    from rote.compiler.report import render_compile_report
+
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(REPO / "examples" / "expense-audit" / "skill", work)
+    hostile = "x\n\n## Injected heading\n\n- injected item"
+    (work / "system1" / "proposals.yaml").write_text(
+        yaml.safe_dump(
+            [{"node": hostile, "field": "kind", "value": "llm_judge", "reason": hostile}]
+        )
+    )
+    extras = system1.report_extras(work, plan)
+    assert all("\n" not in t and "\n" not in d for t, d in extras.questions)
+    report = render_compile_report(load_pipeline(work / "pipeline.yaml"), work, extras)
+    assert "\n## Injected heading" not in report
+    assert not any("injected item" in e and e.startswith("- ") for e in open_questions(report))

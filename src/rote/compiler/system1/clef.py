@@ -82,6 +82,10 @@ class ClefUnavailable(RuntimeError):
     """--system1-decider clef was asked for and cannot run."""
 
 
+class ClefRejected(ClefUnavailable):
+    """Workers AI refused the request (a 4xx other than 429): retrying cannot help."""
+
+
 @dataclass(frozen=True)
 class Verdict:
     kind: str
@@ -130,7 +134,12 @@ def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=120) as r:
             loaded = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        raise ClefUnavailable(f"Workers AI answered HTTP {e.code}: {e.read()[:300]!r}") from None
+        detail = f"Workers AI answered HTTP {e.code}: {e.read()[:300]!r}"
+        if 400 <= e.code < 500 and e.code != 429:
+            # A bad token, a missing model or a malformed body fails the same
+            # way every time: fail now instead of six times with backoff.
+            raise ClefRejected(detail) from None
+        raise ClefUnavailable(detail) from None
     return loaded if isinstance(loaded, dict) else {}
 
 
@@ -142,6 +151,8 @@ def ask(account: str, token: str, state: dict[str, Any], variant: str) -> dict[s
     for attempt in range(6):
         try:
             resp = _post(url, token, body)
+        except ClefRejected:
+            raise
         except (ClefUnavailable, OSError) as e:
             last = e
             time.sleep(min(4 * (attempt + 1), 20))

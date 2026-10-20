@@ -115,10 +115,14 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     questions += [
         ("The agent edited a decision; rote restored it", c) for c in all_changes(work_dir)
     ]
+    # Details carry agent-written text (a proposal's node, a restored value):
+    # one line each, so a newline and "## ..." cannot reshape the report.
+    questions = [(" ".join(t.split()), " ".join(d.split())) for t, d in questions]
+    clef_used = _used_clef(work_dir)
     return ReportExtras(
         preamble=(
             "Compiled with `--system1`: rote decided the structure with rules"
-            f"{' and the Clef decision model' if _used_clef(work_dir) else ''}, and the "
+            f"{' and the Clef decision model' if clef_used else ''}, and the "
             "agent wrote the implementations and judge prompts. Every decision, with its "
             f"confidence and rule, is in `{BRIEF_DIRNAME}/{DECISIONS_FILENAME}`."
         ),
@@ -127,8 +131,14 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
             "Review every Open question above; each assumption is a rule the skill does "
             "not state, and each low-confidence decision took a conservative default.",
             "Run the pipeline once (`rote run`) and compare it with a run of the skill.",
-            "Recompile with `rote compile --system1` after the skill changes: the decisions "
-            "are deterministic, so only changed text costs tokens.",
+            (
+                "Recompile with `rote compile --system1` after the skill changes. The "
+                "decisions are model answers (Clef) where Clef was confident, and rules "
+                "elsewhere: compare decisions.json between runs before trusting a diff."
+                if clef_used
+                else "Recompile with `rote compile --system1` after the skill changes: the "
+                "rules are deterministic, so the same skill text gives the same decisions."
+            ),
         ),
     )
 

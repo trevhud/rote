@@ -155,6 +155,11 @@ async def test_asking_for_clef_without_credentials_fails_the_compile(
 ) -> None:
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+
+    def no_call(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("Clef was called without credentials")
+
+    monkeypatch.setattr(clef, "_post", no_call)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
     compiler = Compiler(system1=True, system1_decider="clef")
     with pytest.raises(CompilerError, match="CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN"):
@@ -182,3 +187,51 @@ def test_a_rate_limit_is_retried_and_a_dead_endpoint_is_loud(
     monkeypatch.setattr(clef, "_post", dead)
     with pytest.raises(clef.ClefUnavailable, match="did not answer after 6 tries"):
         clef.ask("a", "t", {}, "v0")
+
+
+def test_a_refused_request_fails_at_once(monkeypatch: pytest.MonkeyPatch, creds: None) -> None:
+    """A 401/403/404 fails the same way every time: no six rounds of backoff."""
+    attempts = {"n": 0}
+
+    def refused(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        attempts["n"] += 1
+        raise clef.ClefRejected("Workers AI answered HTTP 401: b'bad token'")
+
+    monkeypatch.setattr(clef, "_post", refused)
+    with pytest.raises(clef.ClefRejected, match="HTTP 401"):
+        clef.ask("a", "t", {}, "v0")
+    assert attempts["n"] == 1
+
+
+@pytest.mark.parametrize(
+    ("code", "rejected"), [(401, True), (403, True), (404, True), (429, False), (500, False)]
+)
+def test_http_status_maps_to_retry_or_not(
+    monkeypatch: pytest.MonkeyPatch, code: int, rejected: bool
+) -> None:
+    import io
+    import urllib.error
+
+    def raise_http(req: object, timeout: float) -> object:
+        raise urllib.error.HTTPError("u", code, "m", {}, io.BytesIO(b"body"))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(clef.urllib.request, "urlopen", raise_http)
+    with pytest.raises(clef.ClefUnavailable) as err:
+        clef._post("https://example.invalid", "t", {})
+    assert isinstance(err.value, clef.ClefRejected) is rejected
+
+
+def test_the_clef_decider_needs_system1(tmp_path: Path) -> None:
+    from rote import cli
+
+    code = cli.main(
+        [
+            "compile",
+            str(_skill(tmp_path)),
+            "--out",
+            str(tmp_path / "o"),
+            "--system1-decider",
+            "clef",
+        ]
+    )
+    assert code == 2

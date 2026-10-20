@@ -1228,6 +1228,11 @@ def helper_module_names(source_dir: Path | None, node_modules: set[str]) -> list
     """
     if source_dir is None or not (Path(source_dir) / "extracted").is_dir():
         return []
+    # Top level only, two ways: this glob, and resolve_extracted_source,
+    # which reads extracted/<name>.py and nothing deeper. Widening the glob
+    # alone is an equivalent mutant (a subdirectory or .txt name resolves to
+    # no top-level file and ships nothing), confirmed by
+    # tests/test_emit_helper_modules.py::test_only_top_level_python_modules_ship.
     return sorted(
         p.stem
         for p in (Path(source_dir) / "extracted").glob("*.py")
