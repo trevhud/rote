@@ -17,12 +17,14 @@ listed for review in the compile report.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from rote.compiler.system1.clef import HUMAN_THRESHOLD, KIND_THRESHOLD, Verdict
 from rote.compiler.system1.parse import SIGNALS, Constant, SkillParse, Unit, slug
+from rote.compiler.tool_grounding import parameters
+from rote.tool_schema import checkable
 
 #: At or above this, a decision is reported as settled; below, it is listed
 #: in the report for a person to check.
@@ -569,18 +571,24 @@ def _termination(text: str) -> dict[str, Any] | None:
     return {"condition": stop.group(0).strip(" ,;"), "max_iterations": int(bound.group(1))}
 
 
-def _schema_properties(
+def _schema_parameters(
     tools: Mapping[tuple[str, str], Any], server: str, tool: str
-) -> dict[str, Any] | None:
-    """The tool's input properties from grounding (``ToolSchema.input_schema``), if known."""
+) -> tuple[list[str], int] | None:
+    """The tool's parameter names from grounding, and how many were withheld.
+
+    A schema comes from the server, so it is untrusted: names pass through
+    ``tool_grounding.parameters``, the same filter the agent's brief uses, and
+    a name that is not identifier-shaped never becomes an ``mcp.args`` key.
+    ``None`` when no schema is known or it cannot be read as a flat object.
+    """
     schema = tools.get((server, tool))
-    if schema is None:
+    if schema is None or checkable(schema.input_schema) is None:
         return None
-    props = (getattr(schema, "input_schema", None) or {}).get("properties")
-    return props if isinstance(props, dict) else None
+    kept, withheld = parameters(schema)
+    return [p.name for p in kept], withheld
 
 
-def _match_property(name: str, props: dict[str, Any], taken: set[str]) -> str | None:
+def _match_property(name: str, props: Collection[str], taken: set[str]) -> str | None:
     """The tool parameter a stated label names: the same name, or the property
     whose words are all in the label ("search_query" names ``query``)."""
     if name in props and name not in taken:
@@ -611,8 +619,9 @@ def _bind_arguments(
         if c.name not in n.constants and c.value not in n.constants.values():
             n.constants[c.name] = c.value
     server, tool = bound[0], bound[1] or ""
-    props = _schema_properties(tools or {}, server, tool)
-    if props is not None:
+    found = _schema_parameters(tools or {}, server, tool)
+    if found is not None:
+        props, withheld = found
         args: dict[str, str] = {}
         for const in n.constants:
             prop = _match_property(const, props, set(args))
@@ -624,9 +633,14 @@ def _bind_arguments(
         n.decide(
             "mcp.args",
             dict(args),
-            0.9 if not unmatched else 0.6,
+            0.9 if not unmatched and not withheld else 0.6,
             "argument names from the tool's input schema"
-            + (f"; no parameter for {unmatched}" if unmatched else ""),
+            + (f"; no parameter for {unmatched}" if unmatched else "")
+            + (
+                f"; {withheld} parameter name(s) withheld as unsafe, never bound"
+                if withheld
+                else ""
+            ),
         )
         return
     n.mcp = {"server": server, "tool": tool, "args": {k: k for k in n.constants}}

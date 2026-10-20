@@ -10,6 +10,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Fixed
+- **`--system1` binds MCP arguments only from schema names that pass grounding's
+  filter.** It read raw property names from a server's tool schema, so a name
+  that is not identifier-shaped became an `mcp.args` key and the skeleton failed
+  IR validation: a hostile or sloppy server could break the compile. Such names
+  are now withheld and listed under Open questions, the same as in the agent's
+  brief.
 - **`mcp.args: {}` now calls the tool with no arguments, on every runtime.** It
   used to behave like an omitted `args` and send the step's whole payload as the
   tool's arguments. Only an omitted (null) `args` passes the payload through. A
