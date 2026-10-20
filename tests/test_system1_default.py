@@ -426,3 +426,22 @@ def test_each_half_of_a_judges_text_is_required(
     v = verify_deliverable(work, run_tests=False, portable_judges=True)
     messages = [f.message for f in v.findings if f.kind == "incomplete_signature_spec"]
     assert len(messages) == len(judges) and all(named in m for m in messages)
+
+
+def test_the_step_after_a_gate_also_reads_what_the_gate_saw(tmp_path: Path) -> None:
+    """A real expense-audit compile stubbed "file the report" because it only
+    received the controller's decision, not the batch it was filing."""
+    from rote.compiler import system1
+
+    plan = system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
+    by_id = {n.id: n for n in plan.nodes}
+    gate = next(n for n in plan.nodes if n.kind == "hitl_gate")
+    gate_reads = {ref.split(".")[0] for ref in gate.inputs.values()} - {"pipeline"}
+    after = [n for n in plan.nodes if f"{gate.id}.output" in n.inputs.values()]
+    assert after and gate_reads
+    for n in after:
+        assert gate_reads <= {ref.split(".")[0] for ref in n.inputs.values()}
+        assert "past the gate it also reads" in next(
+            d.rule for d in n.decisions if d.field == "inputs"
+        )
+    assert all(by_id[g].kind != "hitl_gate" for g in gate_reads)

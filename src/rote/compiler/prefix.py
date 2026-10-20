@@ -177,11 +177,12 @@ def findings_from_report(
                     kind="prefix_shape_assumption",
                     severity="error",
                     message=(
-                        f"{node_id} crashes when {upstream} returns a JSON list: "
+                        f"{node_id} crashes when {upstream} returns "
+                        f"{step.get('shape', 'a JSON list')}: "
                         f"{step.get('type')}: {step.get('message')}{_where(at)}. The tool "
-                        f"declares no result shape, and MCP tools often return a bare list "
-                        f"(Gmail's search_threads does), so read the result as either a list "
-                        f"or a dict holding the list, and test both"
+                        f"declares no result shape, and an MCP tool may return a bare list "
+                        f"(Gmail's search_threads does) or text (Drive's read_file_content "
+                        f"returns CSV), so accept a dict, a list or a string, and test each"
                     ),
                     path=at.get("path"),
                 )

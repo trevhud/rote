@@ -649,18 +649,25 @@ def test_a_recorded_tool_result_stands_in_for_the_call(tmp_path: Path) -> None:
     ("count_body", "flagged"),
     [
         # 7 of 9 real ops-report compiles: a dict assumed, a list returned.
-        ("return {'n': len(found.get('threads', []))}", True),
-        ("return {'n': len(found['threads'])}", True),
-        # Either shape: nothing to report.
+        ("return {'n': len(found.get('threads', []))}", "a JSON list"),
+        ("return {'n': len(found['threads'])}", "a JSON list"),
+        # A list handled, text not: Drive's CSV reaches the code as a string.
         (
             "threads = found if isinstance(found, list) else found.get('threads', [])\n"
             "    return {'n': len(threads)}",
-            False,
+            "text",
+        ),
+        # Every shape: nothing to report.
+        (
+            "if isinstance(found, str):\n        found = []\n"
+            "    threads = found if isinstance(found, list) else found.get('threads', [])\n"
+            "    return {'n': len(threads)}",
+            None,
         ),
     ],
 )
 def test_a_consumer_that_assumes_a_dict_is_probed_with_a_list(
-    count_body: str, flagged: bool, tmp_path: Path
+    count_body: str, flagged: str | None, tmp_path: Path
 ) -> None:
     ir = _MCP_IR.replace("threads: search.output.threads", "found: search.output")
     root = _write(
@@ -683,7 +690,7 @@ def test_a_consumer_that_assumes_a_dict_is_probed_with_a_list(
     kinds = [f.kind for f in run.findings]
     if flagged:
         assert kinds == ["prefix_shape_assumption"]
-        assert "count crashes when search returns a JSON list" in run.findings[0].message
+        assert f"count crashes when search returns {flagged}:" in run.findings[0].message
     else:
         assert kinds == [] and run.steps["count"]["status"] == "not_reached"
 
