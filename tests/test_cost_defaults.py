@@ -95,6 +95,6 @@ def test_compiler_effort_stays_below_the_cli_default() -> None:
     assert DEFAULT_EFFORT in _CHEAP_EFFORTS, (
         f"claude.DEFAULT_EFFORT is {DEFAULT_EFFORT!r}. At 'high' (Claude Code's "
         f"default) thinking dominated compile cost and wall time. Set "
-        f"CLAUDE_CODE_EFFORT_LEVEL for one hard skill instead of raising it "
+        f"`rote compile --effort` for one hard skill instead of raising it "
         f"for everyone."
     )

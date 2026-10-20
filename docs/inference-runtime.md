@@ -286,6 +286,7 @@ nothing can answer reliably anyway.
 | --- | --- |
 | `--agent` / `ROTE_AGENT` | which **compiler driver** runs the agent loop |
 | `--model` / `ROTE_MODEL` | the **compiler's** model |
+| `--effort` / `ROTE_EFFORT` | how much the **compiler** thinks (claude driver; default `low`) |
 | `--inference` / `ROTE_INFERENCE` | which **judge provider** serves emitted judges |
 | `ROTE_MODEL_<NODE_ID>` | one **judge's** model |
 | `--backend` | how an `external_call` reaches its tool (`mcp` \| `api`) |

@@ -55,6 +55,12 @@ def _inference_choices() -> tuple[str, ...]:
     return PROVIDERS
 
 
+def _effort_choices() -> tuple[str, ...]:
+    from rote.compiler.drivers.claude import EFFORT_LEVELS
+
+    return EFFORT_LEVELS
+
+
 @dataclass(frozen=True)
 class ConfigKey:
     """One configurable default: its name, env override, and validity."""
@@ -63,7 +69,7 @@ class ConfigKey:
     env: str
     description: str
     choices: tuple[str, ...] | None = None
-    # "runtime" | "agent" | "inference" — resolved on demand
+    # "runtime" | "agent" | "inference" | "effort" — resolved on demand
     lazy_choices: str | None = None
 
     def valid_choices(self) -> tuple[str, ...] | None:
@@ -73,6 +79,8 @@ class ConfigKey:
             return _agent_choices()
         if self.lazy_choices == "inference":
             return _inference_choices()
+        if self.lazy_choices == "effort":
+            return _effort_choices()
         return self.choices
 
 
@@ -102,6 +110,12 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         name="model",
         env="ROTE_MODEL",
         description="compiler model override (unset = driver default)",
+    ),
+    ConfigKey(
+        name="effort",
+        env="ROTE_EFFORT",
+        description="compiler thinking effort, claude driver (unset = low)",
+        lazy_choices="effort",
     ),
     ConfigKey(
         name="inference",

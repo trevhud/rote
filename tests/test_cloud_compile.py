@@ -226,6 +226,7 @@ def test_cloud_and_no_deploy_conflict_exits_2(
     [
         (["--runtime", "dbos"], "cloudflare runtime"),
         (["--agent", "claude"], "--agent runs locally"),
+        (["--effort", "high"], "--effort runs locally"),
         (["--backend", "api"], "--backend runs locally"),
         (["--baseline"], "--baseline runs locally"),
         (["--baseline-input", "x.json"], "--baseline-input runs locally"),

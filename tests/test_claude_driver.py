@@ -391,6 +391,41 @@ def test_zero_final_usage_is_not_replaced_with_stream_totals() -> None:
 
 
 @pytest.mark.asyncio
+async def test_effort_is_rotes_alone(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLAUDE_CODE_EFFORT_LEVEL in the caller's shell never reaches the child.
+
+    Claude Code ranks that env var above --effort, so an export meant for
+    interactive use would silently re-price every compile. The value rote
+    resolved is the one on the command line, and the only one.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    monkeypatch.setenv("CLAUDE_CODE_EFFORT_LEVEL", "max")
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok")),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    await ClaudeDriver(effort="medium").run(skill_dir, compiler_dir, work_dir)
+    args = list(recorder.calls[0]["args"])
+    assert args[args.index("--effort") + 1] == "medium"
+    assert "CLAUDE_CODE_EFFORT_LEVEL" not in recorder.calls[0]["env"]
+
+
+def test_effort_outside_the_accepted_levels_is_rejected() -> None:
+    with pytest.raises(ValueError, match="effort"):
+        ClaudeDriver(effort="max")
+
+
+def test_registry_kwargs_for_other_drivers_are_absorbed() -> None:
+    """The factory convention: a kwarg meant for another driver is not a crash."""
+    driver = ClaudeDriver(mcp_servers=[])
+    assert driver.effort == "low"
+
+
+@pytest.mark.asyncio
 async def test_prompt_and_system_prompt_content(
     fake_skills: tuple[Path, Path, Path],
     fake_claude_subprocess,  # noqa: ANN001

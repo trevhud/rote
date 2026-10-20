@@ -122,11 +122,19 @@ Every compile verified clean, with every pure function implemented and
 node and kind accuracy at or above the ``high`` runs'. The rubric does
 the structuring that the thinking used to do.
 
-The env var
-``CLAUDE_CODE_EFFORT_LEVEL`` takes precedence over the flag in Claude
-Code, so a user who wants ``high`` for a hard skill can still have it.
-Pinned by ``tests/test_cost_defaults.py``.
+A user who wants more for a hard skill passes ``rote compile --effort``
+(or sets ``ROTE_EFFORT`` / the ``effort`` config key). The child's
+``CLAUDE_CODE_EFFORT_LEVEL`` is scrubbed, because Claude Code ranks that
+env var above ``--effort``: one exported in a shell profile for
+interactive use would otherwise silently re-price every compile, and
+rote's own precedence (flag > env > project > user > this default) would
+be a lie. Pinned by ``tests/test_cost_defaults.py``.
 https://code.claude.com/docs/en/model-config"""
+
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+"""The levels ``--effort`` accepts. Claude Code also has ``xhigh`` and
+``max``; they are left out on purpose, since Sonnet 4.6 has no ``xhigh``
+(it runs as ``high``) and ``max`` is the costliest level there is."""
 
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
 """Conservative tool allowlist for the compiler. No Bash (no shell
@@ -373,7 +381,13 @@ class ClaudeDriver(CompilerDriver):
         claude_executable: str = "claude",
         web_tools: bool = False,
         effort: str = DEFAULT_EFFORT,
+        **_ignored: Any,
     ) -> None:
+        """``**_ignored`` absorbs registry kwargs meant for other drivers
+        (``mcp_servers`` for the in-process ones), per the driver-factory
+        convention."""
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"effort must be one of {', '.join(EFFORT_LEVELS)}, got {effort!r}")
         self.model = model
         self.max_turns = max_turns
         self.effort = effort
@@ -694,6 +708,8 @@ class ClaudeDriver(CompilerDriver):
         """
         env = build_subscription_env()
         env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS)
+        # Claude Code ranks this above --effort; see DEFAULT_EFFORT.
+        env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
         return env
 
     def _build_system_prompt(self, skill_md_text: str) -> str:

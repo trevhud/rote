@@ -386,7 +386,7 @@ through your API credentials.
 - **`rote config`**: print every configurable default with its
   effective value *and the layer that set it*. Resolution everywhere is
   `flag > ROTE_* env (ROTE_RUNTIME, ROTE_DEPLOY, ROTE_AGENT,
-  ROTE_MODEL) > project rote.yaml > user config > built-in`. Config
+  ROTE_MODEL, ROTE_EFFORT) > project rote.yaml > user config > built-in`. Config
   files are strict: a typo'd key or value is a loud error, never a
   silent fallback. `--json` for automation.
 - **`rote eval <compiled>`**: render the before/after scorecard (wall
