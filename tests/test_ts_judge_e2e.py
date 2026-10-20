@@ -37,22 +37,26 @@ pytestmark = [
 ]
 
 #: Two things structured outputs 400s on as written: a nested object
-#: without additionalProperties, and integer bounds.
+#: without additionalProperties, and integer bounds. Plus an enum and a
+#: const, which the TS SDK's own transformJSONSchema would move into
+#: descriptions: the emitted judge must not run it.
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "grade": {"type": "integer", "minimum": 1, "maximum": 10},
+        "verdict": {"type": "string", "enum": ["pass", "fail"]},
+        "rubric": {"type": "string", "const": "v1"},
         "notes": {
             "type": "object",
             "properties": {"text": {"type": "string"}},
             "required": ["text"],
         },
     },
-    "required": ["grade", "notes"],
+    "required": ["grade", "verdict", "rubric", "notes"],
     "additionalProperties": False,
 }
 
-ANSWER = {"grade": 9, "notes": {"text": "clear thesis"}}
+ANSWER = {"grade": 9, "verdict": "pass", "rubric": "v1", "notes": {"text": "clear thesis"}}
 
 
 class _JudgeStub(BaseHTTPRequestHandler):
@@ -181,6 +185,9 @@ def test_ts_judge_on_the_current_sonnet_is_schema_locked(judge_app: Path, judge_
     assert "tool_choice" not in request
     # The rewrite computed at emit time, by the same function the Python
     # helper runs per request.
+    sent = request["output_config"]["format"]["schema"]["properties"]
+    assert sent["verdict"]["enum"] == ["pass", "fail"]
+    assert sent["rubric"]["const"] == "v1"
     assert request["output_config"] == {
         "format": {
             "type": "json_schema",

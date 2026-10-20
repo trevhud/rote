@@ -16,7 +16,10 @@ from typing import Any
 import pytest
 import yaml
 
+from rote.adapters import ADAPTERS
+from rote.compiler.verify import EmitTarget, emit_findings
 from rote.inference import structured_output_schema
+from rote.ir import Pipeline
 from tests._messages_api import format_schema_problem
 
 REPO = Path(__file__).resolve().parent.parent
@@ -220,3 +223,54 @@ def test_the_input_schema_is_not_mutated() -> None:
     before = copy.deepcopy(schema)
     structured_output_schema(schema, node_id="n")
     assert json.dumps(schema, sort_keys=True) == json.dumps(before, sort_keys=True)
+
+
+# ───────── the compile's dry emit sees the refusal ─────────
+
+#: What a System-1 skeleton judge looks like before the agent fills in its
+#: output schema: a bare object.
+_UNFILLED_JUDGE = Pipeline.model_validate(
+    {
+        "name": "unfilled-judge",
+        "version": "0.1.0",
+        "source_skill": "tests/fixtures/unfilled-judge",
+        "description": "One judge whose output schema was never filled in.",
+        "input": {"type": "Essay", "required": ["essay"], "optional": []},
+        "nodes": [
+            {
+                "id": "grade_essay",
+                "kind": "llm_judge",
+                "description": "Grade an essay.",
+                "inputs": {"essay": "pipeline.input.essay"},
+                "signature_spec": {
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"essay": {"type": "string"}},
+                        "required": ["essay"],
+                    },
+                    "output_schema": {"type": "object"},
+                    "prompt": "Grade: {{ essay }}",
+                },
+            }
+        ],
+        "edges": [],
+        "entry_nodes": ["grade_essay"],
+        "exit_nodes": ["grade_essay"],
+    }
+)
+
+
+@pytest.mark.parametrize("runtime", sorted(ADAPTERS))
+def test_an_unexpressible_judge_schema_reaches_the_compile_repair_loop(
+    runtime: str, tmp_path: Path
+) -> None:
+    """Every runtime refuses it, and the compile's dry emit reports the
+    refusal as an error finding, so the agent fixes it before the compile
+    says it succeeded rather than at `rote emit` afterwards."""
+    findings = emit_findings(_UNFILLED_JUDGE, tmp_path, EmitTarget(runtime))
+    (finding,) = findings
+    assert finding.kind == "emit_refused"
+    assert finding.severity == "error"
+    assert "grade_essay: output schema at # is an object with no declared properties" in (
+        finding.message
+    )
