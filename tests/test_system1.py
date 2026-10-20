@@ -26,6 +26,7 @@ from rote.compiler import Compiler, system1
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.compiler.system1.enforce import check_proposals, enforce
 from rote.ir import load_pipeline
+from tests._helpers import fill_system1_judges
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -41,6 +42,7 @@ def _skeleton(tmp_path: Path, skill: str) -> tuple[system1.Plan, dict[str, Any]]
 @pytest.mark.parametrize("skill", SKILLS)
 def test_skeleton_is_a_valid_ir_that_emits(tmp_path: Path, skill: str) -> None:
     system1.prepare(EXAMPLES / skill / "skill", tmp_path)
+    fill_system1_judges(tmp_path)  # a judge's prompt and outputs are the agent's text
     pipeline = load_pipeline(tmp_path / "pipeline.yaml")
     assert pipeline.nodes
     out = tmp_path / "emit"
