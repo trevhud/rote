@@ -881,6 +881,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 # `rote baseline --out` here) are ground truth the agent
                 # reads during compilation — observed MCP traffic + schemas.
                 probe_dir=out_dir / _PROBE_BASELINE_DIRNAME,
+                sample_input=args.sample_input,
             )
         )
     except CompilerError as e:
@@ -1232,6 +1233,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "implementations": [i.as_dict() for i in deliverable.implementations],
             }
             payload["provenance"] = deliverable.provenance_report()
+            payload["grounding"] = {
+                "prefix": deliverable.prefix.as_dict() if deliverable.prefix else None,
+                "questions": [q.as_dict() for q in deliverable.questions],
+            }
         if deploy_entry is not None:
             payload["deploy"] = deploy_entry
         print(json.dumps(payload, indent=2))
@@ -1306,6 +1311,18 @@ def _provenance_lines(deliverable: Any, command: str) -> list[str]:
             lines += [f"    {a.path}:{a.line}  {a.text}" for a in entries]
     for finding in deliverable.review_gaps:
         lines.append(f"rote {command}: provenance warning ({finding.kind}): {finding.message}")
+    if deliverable.prefix is not None:
+        lines.append(
+            f"rote {command}: deterministic prefix on the sample input: "
+            f"{deliverable.prefix.summary}"
+        )
+    questions = deliverable.questions
+    if questions:
+        lines.append(
+            f"rote {command}: {len(questions)} contract(s) nothing grounded; review each one "
+            f"(also in compile-report.md):"
+        )
+        lines += [f"  {q.node_id}: {q.text}" for q in questions]
     return lines
 
 
@@ -1353,6 +1370,10 @@ def _record_verification_in_report(
         for node, entries in _assumptions_by_node(found):
             lines.append(f"  - {node}:")
             lines += [f"    - `{a.path}:{a.line}` {a.text}" for a in entries]
+        if deliverable.prefix is not None:
+            lines.append(
+                f"- Deterministic prefix on the sample input: {deliverable.prefix.summary}."
+            )
     text = report.read_text(encoding="utf-8")
     at = text.find("\n" + _VERIFICATION_HEADING)
     if at >= 0:
@@ -1424,6 +1445,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--backend", args.backend != "mcp"),
         ("--baseline", args.baseline),
         ("--baseline-input", args.baseline_input is not None),
+        ("--sample-input", args.sample_input is not None),
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
         ("--no-mcp", args.no_mcp),
@@ -4077,6 +4099,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Task payload for --baseline as a JSON object file. Omit to have "
             "one derived from SKILL.md and confirmed before spending."
+        ),
+    )
+    compile_p.add_argument(
+        "--sample-input",
+        default=None,
+        metavar="FILE",
+        help=(
+            "A sample input for the skill, as a JSON object file (or the "
+            '{"input": ..., "signals": ...} envelope `rote eval --run` takes). '
+            "rote extracts the input contract from it, field and row names "
+            "included, and runs the pipeline's deterministic steps on it before "
+            "the compile is done. Default: input.json (or examples/input.json) "
+            "in the skill dir, then the input a baseline ran on."
         ),
     )
     compile_p.add_argument(

@@ -1,0 +1,25 @@
+{
+  "input": {
+    "period": "2026-08",
+    "submissions": [
+      {"id": "EXP-3101", "employee": "Marta Kowalski", "department": "Finance", "date": "2026-08-04", "category": "airfare", "merchant": "LOT Polish Airlines", "amount": 455.1, "currency": "EUR", "receipt": true},
+      {"id": "EXP-3102", "employee": "Marta Kowalski", "department": "Finance", "date": "2026-08-05", "category": "lodging", "merchant": "Hotel Bristol Warsaw", "amount": 870.0, "currency": "EUR", "nights": 3, "receipt": true},
+      {"id": "EXP-3103", "employee": "Marta Kowalski", "department": "Finance", "date": "2026-08-05", "category": "ground_transport", "merchant": "Bolt", "amount": 31.6, "currency": "EUR", "receipt": true},
+      {"id": "EXP-3104", "employee": "Marta Kowalski", "department": "Finance", "date": "2026-08-05", "category": "ground_transport", "merchant": "BOLT", "amount": 31.6, "currency": "EUR", "receipt": true},
+      {"id": "EXP-3110", "employee": "Tomas Lindqvist", "department": "Legal", "date": "2026-08-11", "category": "office_supplies", "merchant": "Staples", "amount": 96.3, "currency": "USD", "receipt": true},
+      {"id": "EXP-3111", "employee": "Tomas Lindqvist", "department": "Legal", "date": "2026-05-20", "category": "meals", "merchant": "Chipotle", "amount": 21.9, "currency": "USD", "receipt": true},
+      {"id": "EXP-3120", "employee": "Priyanka Rao", "department": "Support", "date": "2026-08-14", "category": "entertainment", "merchant": "The Ivy", "amount": 265.0, "currency": "GBP", "preapproval_id": "PA-207", "receipt": true},
+      {"id": "EXP-3121", "employee": "Priyanka Rao", "department": "Support", "date": "2026-08-15", "category": "meals", "merchant": "Leon", "amount": 88.0, "currency": "GBP", "receipt": true},
+      {"id": "EXP-3130", "employee": "Kenji Watanabe", "department": "Research", "date": "2026-08-19", "category": "software", "merchant": "Adobe", "amount": 9800, "currency": "JPY", "receipt": true},
+      {"id": "EXP-3131", "employee": "Kenji Watanabe", "department": "Research", "date": "2026-08-20", "category": "meals", "merchant": "Afuri", "amount": 3650, "currency": "JPY", "receipt": false},
+      {"id": "EXP-3140", "employee": "Olivia Brennan", "department": "Product", "date": "2026-08-25", "category": "lodging", "merchant": "Chateau Laurier", "amount": 512.0, "currency": "CAD", "nights": 4, "receipt": true}
+    ]
+  },
+  "signals": {
+    "controller_review": {
+      "reviewer": "Daniel Osei",
+      "approved_ids": ["EXP-3111", "EXP-3121"],
+      "rejected_ids": ["EXP-3131"]
+    }
+  }
+}

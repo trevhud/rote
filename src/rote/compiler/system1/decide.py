@@ -157,6 +157,10 @@ class Plan:
     skill: SkillParse
     nodes: list[NodePlan]
     review: list[str]  # human-readable lines for the report
+    #: A sample run (:class:`rote.compiler.grounding.Sample`), when there is
+    #: one. Data outranks the skill's wording: its keys become the input
+    #: schema and the gates' payload keys.
+    sample: Any = None
 
 
 # ── kinds and segmentation ────────────────────────────────────────────────

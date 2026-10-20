@@ -475,6 +475,41 @@ runtimes) found:
 python and temporal have no MCP backend and refuse an MCP-bound node
 without an `impl`, so `mcp.args` never reaches them.
 
+### A compiled contract is decided by data, not by the model's reading of prose
+
+A skill run as an agent adapts to whatever input arrives. A compiled
+pipeline has fixed field names. Measured with `rote bench --fidelity`:
+every one of 36 expense-audit compiles failed on the skill's own input,
+because the skill describes it in prose and each compile invented names
+(`expense_lines`, `lines`, `reporting_period`), invented required inputs
+the skill never takes (`fx_rates`, though the skill reads
+references/fx-rates.md; `controller`), and indexed rows by
+`line["expense_id"]` where the data says `id`.
+
+`rote.compiler.grounding` decides the contract with code wherever data
+exists: a sample input (`--sample-input` > `input.json` in the skill dir >
+the input a baseline ran on) is reduced to a schema by
+`rote.probe.infer_schema` and handed to the agent as an `INPUT
+CONTRACT`. Verification then checks it, and `rote.compiler.prefix` runs
+the pipeline's pure functions (and MCP nodes a baseline recorded, matched
+on exact arguments) on the sample in the generated-test sandbox. A
+`KeyError` there goes back to the agent with the file and line. Things to
+preserve:
+
+- **The prefix runner is a dumb interpreter.** `_prefix_runner.py` is
+  stdlib-only and copied into the sandbox scratch dir. The semantics
+  (payload from `inputs:`, omitted optional fields left out, constants
+  merged last, `fan_out_element_param`, `mcp_tool_arguments`) live in
+  `prefix.build_plan`, which reuses the adapters' own helpers. If you
+  change how an emitted step builds its payload, the plan must follow,
+  or the prefix checks a different program than the one that runs.
+- **Never guess a tool result.** An MCP node with no recorded call, or
+  a recorded call with other arguments, ends the prefix on its branch
+  and becomes an open question (`contract_questions`), not a fixture.
+- **Generated tests cannot catch this.** The model that wrote
+  `line["expense_id"]` writes tests with `expense_id` rows. The sample is
+  the only input in the loop the agent did not write.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

@@ -131,6 +131,12 @@ def _validate_impl_ref(value: str, field_name: str) -> str:
     return value
 
 
+def is_field_name(name: str) -> bool:
+    """Whether ``name`` can be a pipeline input field: an identifier, the
+    only shape a ``pipeline.input.<field>`` reference can bind."""
+    return _IDENTIFIER_RE.fullmatch(name) is not None
+
+
 @dataclass(frozen=True)
 class InputRef:
     """A parsed ``inputs:`` source reference.
@@ -761,6 +767,20 @@ class Node(BaseModel):
 
         return self
 
+    @property
+    def output_keys(self) -> frozenset[str]:
+        """The field names of this node's result: ``output`` keys or schema properties.
+
+        For a ``hitl_gate`` these are the keys of the payload a person
+        sends. An ``output`` given as a single type name declares none.
+        """
+        keys: set[str] = set()
+        if isinstance(self.output, dict):
+            keys |= set(self.output)
+        if self.output_schema:
+            keys |= set((self.output_schema.get("properties") or {}).keys())
+        return frozenset(keys)
+
 
 class Edge(BaseModel):
     """A directed edge in the pipeline DAG."""
@@ -819,6 +839,21 @@ class PipelineInput(BaseModel):
             "that only declare required/optional field names."
         ),
     )
+
+    @field_validator("required", "optional")
+    @classmethod
+    def _validate_field_names(cls, v: list[str]) -> list[str]:
+        """Input field names reach emitted code (the entry check, payload
+        reads) and, since a sample input steers them, come from data rote
+        did not write. Same identifier shape as ``inputs:`` field
+        references (invariant #7), so a name can always be bound."""
+        for name in v:
+            if not is_field_name(name):
+                raise ValueError(
+                    f"pipeline input field name {name!r} must be an identifier "
+                    f"(letters, digits, underscores; not starting with a digit)"
+                )
+        return v
 
     @model_validator(mode="after")
     def _validate_required_and_optional_are_disjoint(self) -> Self:

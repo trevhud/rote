@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from rote.compiler.report import ReportExtras
 from rote.compiler.system1 import clef
@@ -53,8 +54,11 @@ TEXT_RUBRIC_REFERENCES = ("implementation.md", "llm-judge-extraction.md")
 DECIDERS = ("rules", "clef")
 
 
-def prepare(skill_dir: Path, work_dir: Path, decider: str = "rules") -> Plan:
+def prepare(skill_dir: Path, work_dir: Path, decider: str = "rules", sample: Any = None) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
+
+    ``sample`` (a :class:`rote.compiler.grounding.Sample`) decides the input
+    schema and gate payload keys, ahead of the skill's wording.
 
     ``rules`` makes no call at all. ``clef`` asks Cloudflare's Clef decision
     model (no generated text) about each step's kind and gate, and uses its
@@ -64,6 +68,7 @@ def prepare(skill_dir: Path, work_dir: Path, decider: str = "rules") -> Plan:
     skill = parse_skill(skill_dir)
     verdicts = clef.decide(skill) if decider == "clef" else None
     p = plan(skill, verdicts)
+    p.sample = sample
     write(p, work_dir)
     if verdicts is not None:
         _record_decider(work_dir, verdicts)

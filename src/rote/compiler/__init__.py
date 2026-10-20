@@ -21,6 +21,7 @@ compiler's only output is the validated IR + the stub files;
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import inspect
 import json
@@ -45,8 +46,16 @@ from rote.compiler.drivers import (
     get_driver,
 )
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
+from rote.compiler.grounding import (
+    Grounding,
+    Sample,
+    contract_brief,
+    find_sample,
+    materialize,
+    remove_materialized,
+)
 from rote.compiler.provenance import REPORT_FILENAME
-from rote.compiler.report import render_compile_report
+from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
@@ -340,6 +349,7 @@ class Compiler:
         update: bool = False,
         extra_instructions: str | None = None,
         probe_dir: Path | str | None = None,
+        sample_input: Path | str | None = None,
     ) -> CompilationResult:
         """Run the full compilation flow.
 
@@ -368,6 +378,12 @@ class Compiler:
             materialized into the agent's work dir as ground truth
             (observed MCP traffic + inferred schemas). Missing dir or
             artifacts is the normal no-baseline case, never an error.
+        sample_input
+            A JSON file with a sample input for the skill (``--sample-input``).
+            Without one, a sample bundled in the skill dir is used, then the
+            input a baseline in ``probe_dir`` ran on. The pipeline's input
+            contract is grounded in it and checked against it
+            (:mod:`rote.compiler.grounding`).
 
         Returns
         -------
@@ -388,8 +404,16 @@ class Compiler:
 
         resolved_probe_dir = Path(probe_dir).resolve() if probe_dir is not None else None
         try:
+            try:
+                sample = find_sample(
+                    skill_dir,
+                    Path(sample_input).resolve() if sample_input is not None else None,
+                    resolved_probe_dir,
+                )
+            except ValueError as e:
+                raise CompilerError(str(e)) from e
             return await self._compile_inner(
-                skill_dir, output_dir, update, extra_instructions, resolved_probe_dir
+                skill_dir, output_dir, update, extra_instructions, resolved_probe_dir, sample
             )
         except CompilerError as e:
             self._emit("error", f"compilation failed: {e}")
@@ -402,6 +426,7 @@ class Compiler:
         update: bool,
         extra_instructions: str | None = None,
         probe_dir: Path | None = None,
+        sample: Sample | None = None,
     ) -> CompilationResult:
         """The compilation body, bracketed by ``compile``'s error event."""
         if not skill_dir.is_dir():
@@ -446,7 +471,9 @@ class Compiler:
             s1_plan: system1.Plan | None = None
             if self.system1:
                 try:
-                    s1_plan = system1.prepare(skill_dir, work_dir, self.system1_decider)
+                    s1_plan = system1.prepare(
+                        skill_dir, work_dir, self.system1_decider, sample=sample
+                    )
                 except (system1.UnsafeSkillText, system1.ClefUnavailable) as e:
                     raise CompilerError(str(e)) from e
                 self._emit(
@@ -471,6 +498,21 @@ class Compiler:
                         "log", "probe artifacts found — feeding observed traffic to the agent"
                     )
                     instructions.append(probe_instructions)
+            # Imported here: rote.eval.empirical imports rote.compiler.drivers,
+            # which runs this package's __init__, so a module-level import of
+            # rote.eval.baseline would be circular.
+            from rote.eval.baseline import load_observations
+
+            grounding = Grounding(
+                sample=sample,
+                observations=tuple(load_observations(probe_dir)) if probe_dir else (),
+            )
+            ctx_dir = materialize(work_dir, sample) if sample is not None else None
+            if sample is not None:
+                self._emit("log", f"input contract grounded in a sample input: {sample.source}")
+            brief = contract_brief(sample, skill_dir, ctx_dir)
+            if brief:
+                instructions.append(brief)
             run_kwargs: dict[str, Any] = {}
             if instructions:
                 run_kwargs["extra_instructions"] = "\n\n".join(instructions)
@@ -487,7 +529,7 @@ class Compiler:
                     None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
                 )
                 run_kwargs["repair"] = self._deliverable_repairer(
-                    base_dir, skill_dir, before_verify=settle_round
+                    base_dir, skill_dir, before_verify=settle_round, grounding=grounding
                 )
 
             try:
@@ -559,8 +601,11 @@ class Compiler:
                 skill_dir=skill_dir,
                 emit_target=self.emit_target,
                 strict_provenance=self.strict_provenance,
+                grounding=grounding,
             )
             self._emit_verification(verification)
+            # The sample was reference material for the agent, not output.
+            remove_materialized(Path(result.pipeline_yaml_path).parent)
 
             # Stamp provenance: hash every SKILL.md section so a later
             # `compile --update` can tell exactly which nodes' source
@@ -586,8 +631,15 @@ class Compiler:
             # in it is already in pipeline.yaml and the extracted code (see
             # rote.compiler.report). Rendered from output_dir, after an
             # update's merge, so it describes the deliverable as kept.
+            # Contracts nothing grounded are rote's open questions, not the
+            # agent's: listed for the reviewer, never a failure.
+            contract_questions = [
+                (f"Contract: {q.node_id}", q.text) for q in verification.questions
+            ]
+            mode = s1_extras or ReportExtras()
+            extras = dataclasses.replace(mode, questions=[*mode.questions, *contract_questions])
             (output_dir / REPORT_FILENAME).write_text(
-                render_compile_report(pipeline, output_dir, s1_extras), encoding="utf-8"
+                render_compile_report(pipeline, output_dir, extras), encoding="utf-8"
             )
 
             # The agent records source_skill relative to its own temp
@@ -643,6 +695,8 @@ class Compiler:
                 f"{len(verification.assumptions)} assumption(s) the skill does not state; "
                 f"listed for review in the compile output and compile-report.md",
             )
+        if verification.prefix is not None:
+            self._emit("log", f"deterministic prefix on the sample: {verification.prefix.summary}")
         if verification.tests is not None and not verification.tests.passed:
             self._emit(
                 "warning",
@@ -654,6 +708,7 @@ class Compiler:
         base_dir: Path | None,
         skill_dir: Path,
         before_verify: Callable[[Path], object] | None = None,
+        grounding: Grounding | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -691,6 +746,7 @@ class Compiler:
                 skill_dir=skill_dir,
                 emit_target=self.emit_target,
                 strict_provenance=self.strict_provenance,
+                grounding=grounding,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:

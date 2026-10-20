@@ -46,10 +46,18 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from rote.compiler.grounding import (
+    ContractQuestion,
+    Grounding,
+    contract_questions,
+    grounding_findings,
+)
+from rote.compiler.prefix import PrefixRun, run_prefix
 from rote.compiler.provenance import (
     PROVENANCE_NODE,
     REPORT_FILENAME,
@@ -163,8 +171,6 @@ def run_generated_tests(
     rote-cli; it was dev-only once, and verification was silently off for
     every user, hiding a failing generated test from the repair loop.
     """
-    from rote.compiler import sandbox
-
     root = Path(artifact_dir).resolve()
     tests_dir = root / "tests"
     if not tests_dir.is_dir() or not any(tests_dir.glob("test_*.py")):
@@ -177,82 +183,137 @@ def run_generated_tests(
                 f"tests were NOT run. Reinstall rote-cli (pytest is a dependency)"
             ),
         )
+
+    def _pytest_args(scratch: Path) -> list[str]:
+        # pytest walks up from the tests looking for a config file and
+        # conftest.py files. Above the work dir is the user's project (or
+        # their home), which is none of the tests' business and which the
+        # sandbox denies reading. Pin the config, rootdir and conftest
+        # boundary to what rote controls.
+        ini = scratch / "pytest.ini"
+        ini.write_text("[pytest]\n", encoding="utf-8")
+        return [
+            "-m",
+            "pytest",
+            "tests",
+            "-c",
+            str(ini),
+            "--rootdir",
+            str(root),
+            "--confcutdir",
+            str(root),
+            "-q",
+            "--no-header",
+            "-p",
+            "no:cacheprovider",
+            "--tb=short",
+        ]
+
+    run = run_confined(
+        root, _pytest_args, trust_skill=trust_skill, timeout=GENERATED_TESTS_TIMEOUT_SECONDS
+    )
+    if run.unconfined_reason is not None:
+        return GeneratedTests(
+            status="unverified",
+            summary=(
+                f"generated tests NOT run: no OS sandbox ({run.unconfined_reason}). Review "
+                f"them, then pass --trust-skill to run them without one"
+            ),
+        )
+    if run.timed_out:
+        return GeneratedTests(
+            status="failed",
+            summary=f"timed out after {GENERATED_TESTS_TIMEOUT_SECONDS:.0f}s",
+            output="The generated tests did not finish; look for an unbounded loop.",
+        )
+    text = run.stdout + run.stderr
+    # pytest's summary is the last line of stdout. The last line of the
+    # combined text was whatever the interpreter wrote to stderr on its way
+    # out: a uv-managed Python's ncurses, finding no terminfo inside the
+    # sandbox, prints "using dumb terminal settings." there. stderr is the
+    # summary only when pytest never got that far (a crash at startup).
+    lines = run.stdout.strip().splitlines() or text.strip().splitlines()
+    return GeneratedTests(
+        status="passed" if run.returncode == 0 else "failed",
+        summary=lines[-1] if lines else f"pytest exited {run.returncode} with no output",
+        output=text[-_TEST_OUTPUT_CHARS:],
+    )
+
+
+@dataclass(frozen=True)
+class ConfinedRun:
+    """One run of agent-written code under :func:`run_confined`."""
+
+    returncode: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    #: Set when nothing ran: no OS sandbox, and ``--trust-skill`` was not given.
+    unconfined_reason: str | None = None
+    #: The scratch files named in ``read_back``, read before the scratch dir
+    #: is deleted (``None`` for one the run did not write).
+    files: dict[str, str | None] = field(default_factory=dict)
+
+
+def run_confined(
+    root: Path,
+    python_args: Callable[[Path], list[str]],
+    *,
+    trust_skill: bool,
+    timeout: float,
+    read_back: tuple[str, ...] = (),
+) -> ConfinedRun:
+    """Run the interpreter on agent-written code in ``root``, confined.
+
+    The one way rote executes what the agent wrote: the generated tests
+    and the deterministic prefix run both go through here. ``python_args``
+    gets a private scratch dir (readable and writable inside the sandbox)
+    and returns the interpreter arguments. The environment is
+    :func:`generated_test_env`; the OS sandbox is
+    :mod:`rote.compiler.sandbox`, skipped only with ``trust_skill``.
+    ``read_back`` names scratch files to return in :attr:`ConfinedRun.files`.
+    """
+    from rote.compiler import sandbox
+
     box: sandbox.Sandbox | None = None
     if not trust_skill:
         box, why = sandbox.detect()
         if box is None:
-            return GeneratedTests(
-                status="unverified",
-                summary=(
-                    f"generated tests NOT run: no OS sandbox ({why}). Review them, then "
-                    f"pass --trust-skill to run them without one"
-                ),
-            )
+            return ConfinedRun(unconfined_reason=why)
     try:
         with tempfile.TemporaryDirectory(prefix="rote-test-") as scratch_str:
             scratch = Path(scratch_str).resolve()
             home = scratch / "home"
             home.mkdir()
-            # pytest walks up from the tests looking for a config file and
-            # conftest.py files. Above the work dir is the user's project (or
-            # their home), which is none of the tests' business and which the
-            # sandbox denies reading. Pin the config, rootdir and conftest
-            # boundary to what rote controls.
-            ini = scratch / "pytest.ini"
-            ini.write_text("[pytest]\n", encoding="utf-8")
-            pytest_args = [
-                "-m",
-                "pytest",
-                "tests",
-                "-c",
-                str(ini),
-                "--rootdir",
-                str(root),
-                "--confcutdir",
-                str(root),
-                "-q",
-                "--no-header",
-                "-p",
-                "no:cacheprovider",
-                "--tb=short",
-            ]
+            args = python_args(scratch)
             env = generated_test_env(root, home)
             if box is None:
-                argv = [sys.executable, *pytest_args]
+                argv = [sys.executable, *args]
             else:
                 # -S: no site processing, so no .pth file (which can point
                 # anywhere and run code) is read. The site-packages dirs that
                 # hold pytest are passed explicitly instead.
                 env["PYTHONPATH"] = os.pathsep.join([str(root), *sandbox.import_path()])
                 argv, env = sandbox.wrap(
-                    box, [sandbox.launch_executable(), "-S", *pytest_args], root, scratch, env
+                    box, [sandbox.launch_executable(), "-S", *args], root, scratch, env
                 )
             proc = subprocess.run(
-                argv,
-                cwd=root,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=GENERATED_TESTS_TIMEOUT_SECONDS,
+                argv, cwd=root, env=env, capture_output=True, text=True, timeout=timeout
+            )
+            files = {
+                name: (scratch / name).read_text(encoding="utf-8")
+                if (scratch / name).is_file()
+                else None
+                for name in read_back
+            }
+            return ConfinedRun(
+                returncode=proc.returncode,
+                stdout=proc.stdout or "",
+                stderr=proc.stderr or "",
+                files=files,
             )
     except subprocess.TimeoutExpired:
-        return GeneratedTests(
-            status="failed",
-            summary=f"timed out after {GENERATED_TESTS_TIMEOUT_SECONDS:.0f}s",
-            output="The generated tests did not finish; look for an unbounded loop.",
-        )
-    text = (proc.stdout or "") + (proc.stderr or "")
-    # pytest's summary is the last line of stdout. The last line of the
-    # combined text was whatever the interpreter wrote to stderr on its way
-    # out: a uv-managed Python's ncurses, finding no terminfo inside the
-    # sandbox, prints "using dumb terminal settings." there. stderr is the
-    # summary only when pytest never got that far (a crash at startup).
-    lines = (proc.stdout or "").strip().splitlines() or text.strip().splitlines()
-    return GeneratedTests(
-        status="passed" if proc.returncode == 0 else "failed",
-        summary=lines[-1] if lines else f"pytest exited {proc.returncode} with no output",
-        output=text[-_TEST_OUTPUT_CHARS:],
-    )
+        return ConfinedRun(timed_out=True)
 
 
 def _tested_symbols(artifact_dir: Path) -> set[str]:
@@ -478,6 +539,13 @@ class Verification:
     tests: GeneratedTests | None = None
     #: Every ``# rote: assumption:`` marker, for review. Never a failure.
     assumptions: list[Assumption] = field(default_factory=list)
+    #: The pipeline's deterministic steps run on the sample input, when
+    #: there is one (:mod:`rote.compiler.prefix`). Its failures are in
+    #: ``findings``.
+    prefix: PrefixRun | None = None
+    #: Contracts nothing grounded (no sample input, unrecorded tool
+    #: results), listed for review. Never a failure.
+    questions: list[ContractQuestion] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ContractFinding]:
@@ -567,6 +635,7 @@ def verify_deliverable(
     trust_skill: bool = False,
     emit_target: EmitTarget | None = None,
     strict_provenance: bool = False,
+    grounding: Grounding | None = None,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -586,6 +655,13 @@ def verify_deliverable(
 
     ``strict_provenance`` (``--strict-provenance``) makes every provenance
     finding an error, review gaps included.
+
+    ``grounding`` is what the compile's contracts are grounded in
+    (:mod:`rote.compiler.grounding`). With a sample input, the pipeline's
+    input contract and gate payloads must match it, and its deterministic
+    prefix must run on it (when ``run_tests``, since that executes the
+    agent's code). Without one, the contract the agent chose is listed in
+    ``questions``.
     """
     try:
         return _verify_or_raise(
@@ -596,6 +672,7 @@ def verify_deliverable(
             trust_skill,
             emit_target,
             strict_provenance,
+            grounding,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -624,6 +701,7 @@ def _verify_or_raise(
     trust_skill: bool,
     emit_target: EmitTarget | None,
     strict_provenance: bool,
+    grounding: Grounding | None,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -634,6 +712,7 @@ def _verify_or_raise(
             trust_skill=trust_skill,
             emit_target=emit_target,
             strict_provenance=strict_provenance,
+            grounding=grounding,
         )
     import shutil
     import tempfile
@@ -657,6 +736,7 @@ def _verify_or_raise(
             trust_skill=trust_skill,
             emit_target=emit_target,
             strict_provenance=strict_provenance,
+            grounding=grounding,
         )
 
 
@@ -668,6 +748,7 @@ def _verify(
     trust_skill: bool,
     emit_target: EmitTarget | None,
     strict_provenance: bool,
+    grounding: Grounding | None = None,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -680,6 +761,21 @@ def _verify(
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
     )
+    prefix: PrefixRun | None = None
+    questions: list[ContractQuestion] = []
+    if grounding is not None:
+        findings += grounding_findings(pipeline, skill_dir, grounding.sample)
+        questions = contract_questions(pipeline, skill_dir, grounding)
+        if run_tests and grounding.sample is not None:
+            prefix = run_prefix(
+                pipeline,
+                root,
+                grounding.sample,
+                implementations,
+                observations=grounding.observations,
+                trust_skill=trust_skill,
+            )
+            findings += prefix.findings
     tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
     return Verification(
         pipeline=pipeline,
@@ -687,4 +783,6 @@ def _verify(
         implementations=implementations,
         tests=tests,
         assumptions=assumptions(pipeline, root),
+        prefix=prefix,
+        questions=questions,
     )

@@ -204,7 +204,10 @@ Assemble the full DAG as `pipeline.yaml`. Include:
 
 - `input.input_schema`: the full JSON Schema for the pipeline input
   payload, promoted from the entry nodes' signature design (see
-  `ir-schema.md`).
+  `ir-schema.md`). When your instructions carry an `INPUT CONTRACT`,
+  it is decided: use its field and row names exactly, and require no
+  other input. A file under the skill's `references/` is never an input
+  ("The input contract comes from data" in ir-schema.md).
 - `nodes`: every step from Phase 2, with its kind, input/output types,
   `inputs:` data-flow bindings (param → `pipeline.input[.field]` /
   `<node_id>.output[.field]`), timeout, retry policy, and (for
@@ -263,7 +266,10 @@ Checklist before declaring Phase 5 done:
   ir-schema.md rule 9). On a `fan_out` judge the element is ONE
   property holding the whole element, never its fields flattened.
 - Every `agent_loop` node has `tools:` listed.
-- Every `hitl_gate` node has a `signal:`.
+- Every `hitl_gate` node has a `signal:`, and its `output` is a mapping
+  whose keys are the skill's own names for what the person provides.
+- With a sample input, every pure function runs on it unchanged: rote
+  executes them on `grounding/sample-input.json` after you stop.
 - Every node mentioned in `entry_nodes`, `exit_nodes`, `edges.from`,
   `edges.to`, and `loop_body` exists in `nodes:`.
 - `pipeline.yaml` would pass `rote.ir.load_pipeline`. You have no
