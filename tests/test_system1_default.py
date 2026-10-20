@@ -160,14 +160,14 @@ def test_a_decider_with_no_system1_is_a_usage_error(tmp_path: Path) -> None:
         argv = [command, str(_skill(tmp_path / command)), "--no-system1"]
         if command == "compile":
             argv += ["--out", str(tmp_path / "o")]
-        assert cli.main([*argv, "--system1-decider", "clef"]) == 2
+        assert cli.main([*argv, "--decider", "clef"]) == 2
 
 
 def test_cloud_mode_rejects_the_local_system1_flags() -> None:
     assert cli._reject_local_only_cloud_flags(_parsed(["compile", "s"])) is None
     for flags, named in (
         (["--no-system1"], "--no-system1"),
-        (["--system1-decider", "clef"], "--system1-decider"),
+        (["--decider", "jev"], "--decider"),
     ):
         message = cli._reject_local_only_cloud_flags(_parsed(["compile", "s", *flags]))
         assert message is not None and message.startswith(f"rote compile: {named} runs locally")
@@ -223,3 +223,108 @@ async def test_the_compiler_checks_judge_specs_on_the_system1_path_only(
             _skill(tmp_path), tmp_path / "out"
         )
     assert seen and set(seen) == {flagged}
+
+
+def _compiler_kwargs(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every Compiler construction's kwargs; the construction then stops the command."""
+    seen: list[dict[str, Any]] = []
+
+    def init(self: Compiler, *a: Any, **kw: Any) -> None:
+        seen.append(kw)
+        raise _Stop
+
+    monkeypatch.setattr(Compiler, "__init__", init)
+    return seen
+
+
+def _compile_argv(tmp_path: Path, *flags: str) -> list[str]:
+    return [
+        "compile",
+        str(_skill(tmp_path)),
+        "--local",
+        "--runtime",
+        "dbos",
+        "--no-eval",
+        "--out",
+        str(tmp_path / "o"),
+        *flags,
+    ]
+
+
+@pytest.mark.parametrize("command", ["compile", "analyze"])
+def test_the_decider_is_a_layered_setting(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """flag > ROTE_DECIDER > project rote.yaml > user config > rules."""
+    seen = _compiler_kwargs(monkeypatch)
+    user = tmp_path / "user.yaml"
+    project = tmp_path / "rote.yaml"
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(user))
+    monkeypatch.setenv("ROTE_PROJECT_CONFIG_PATH", str(project))
+    skill = str(_skill(tmp_path))
+    argv = _compile_argv(tmp_path / "c") if command == "compile" else ["analyze", skill]
+
+    def decider(*flags: str) -> str:
+        with pytest.raises(_Stop):
+            cli.main([*argv, *flags])
+        return str(seen[-1]["system1_decider"])
+
+    assert decider() == "rules"
+    user.write_text("decider: clef\n")
+    assert decider() == "clef"
+    project.write_text("decider: jev\n")
+    assert decider() == "jev"
+    monkeypatch.setenv("ROTE_DECIDER", "rules")
+    assert decider() == "rules"
+    assert decider("--decider", "clef") == "clef"
+
+
+def test_a_bad_decider_setting_is_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _compiler_kwargs(monkeypatch)
+    monkeypatch.setenv("ROTE_DECIDER", "haiku")
+    assert cli.main(_compile_argv(tmp_path)) == 2
+    assert "ROTE_DECIDER: `decider: haiku` is not valid" in capsys.readouterr().err
+
+
+def test_a_configured_decider_steps_aside_for_update_but_a_flag_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--update runs the full-rubric agent. A standing `decider` setting must not
+    break every update, and a `--decider` flag must not go silently unused."""
+    seen = _compiler_kwargs(monkeypatch)
+    monkeypatch.setenv("ROTE_DECIDER", "jev")
+    with pytest.raises(_Stop):
+        cli.main(_compile_argv(tmp_path / "a", "--update"))
+    assert seen[-1]["system1_decider"] == "rules"
+    err = capsys.readouterr().err
+    assert "env ROTE_DECIDER sets `decider: jev`, which applies only to System-1" in err
+    with pytest.raises(_Stop):
+        cli.main(_compile_argv(tmp_path / "b", "--no-system1"))
+    assert seen[-1]["system1_decider"] == "rules"
+    assert len(seen) == 2
+    for flags in (["--update"], ["--no-system1"]):
+        assert cli.main(_compile_argv(tmp_path / flags[0][2:], *flags, "--decider", "jev")) == 2
+    assert len(seen) == 2
+
+
+def test_cloud_mode_ignores_a_configured_decider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Like agent and model, a configured decider is a local preference: it does
+    not trip the cloud mode's local-only flag check (which reads flags only)."""
+    monkeypatch.setenv("ROTE_DECIDER", "clef")
+    assert cli._reject_local_only_cloud_flags(_parsed(["compile", "s"])) is None
+
+
+def test_rote_config_reports_the_decider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    assert cli.main(["config", "--json"]) == 0
+    setting = json.loads(capsys.readouterr().out)["settings"]["decider"]
+    assert setting == {"value": "rules", "source": "built-in default"}
+    monkeypatch.setenv("ROTE_DECIDER", "jev")
+    assert cli.main(["config", "--json"]) == 0
+    setting = json.loads(capsys.readouterr().out)["settings"]["decider"]
+    assert setting == {"value": "jev", "source": "env ROTE_DECIDER"}

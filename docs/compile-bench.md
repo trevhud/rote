@@ -131,7 +131,7 @@ model-specific defects under that are real, though: DeepSeek demands an
 against 0.38 to 0.75 for Sonnet 4.6 compiles, with a fixture caveat on the
 Gmail and Drive result shapes.
 
-With `--compile-flag=--system1` (opt-in at the time; rules decide, the model writes modules and
+On the System-1 path (rules decide, the model writes modules and
 text) on expense-audit: gpt-oss-120b on Groq ran in 31 s at low effort and 67 s
 at medium, but stubbed 7 of 7 and 1 of 7 modules and did not verify (fidelity
 0.17 and 0.11). DeepSeek wrote 0 of 7 in 454 s for $0.12. At high effort
@@ -165,6 +165,20 @@ mandatory or fan_out, and the current mandatory rule beats every model on
 held-out steps. Clef's kind choice was right on 14 of 14 held-out steps
 where its confidence was 0.85 or more. The holdout has 3 gates, so the gate
 result is small-sample.
+
+Clef and Jev are both wired in as `--decider clef` and `--decider jev`
+(a layered `decider` setting). Measured as the shipped deciders, on the
+compiled skeleton (end to end, `research/system1-routing/score_deciders.py`),
+with Jev's thresholds fitted on dev and frozen before the held-out run:
+
+| Decider | Kind dev / held-out | Gates found dev / held-out | False gates dev / held-out | $ / compile |
+| --- | --- | --- | --- | --- |
+| rules | 0.64 / 0.49 | 4/4 / 2/3 | 1 / 0 | 0 |
+| clef | 0.64 / 0.66 | 4/4 / 3/3 | 2 / 0 | 0.0049 |
+| jev | 0.62 / 0.67 | 4/4 / 3/3 | 2 / 1 | 0.0011 |
+
+The method and the fitted thresholds are in
+[`docs/design/system1-compile.md`](design/system1-compile.md#--decider-jev).
 
 ## What it reports
 

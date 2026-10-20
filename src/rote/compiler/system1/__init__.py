@@ -20,9 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from rote.compiler.report import ReportExtras
-from rote.compiler.system1 import clef
-from rote.compiler.system1.clef import ClefUnavailable
+from rote.compiler.system1 import decision_model
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan
+from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
 from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
 from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME, write
@@ -30,7 +30,7 @@ from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME, wr
 __all__ = [
     "DECIDERS",
     "REVIEW_BELOW",
-    "ClefUnavailable",
+    "DeciderUnavailable",
     "Plan",
     "all_changes",
     "TEXT_RUBRIC_FILE",
@@ -52,7 +52,8 @@ TEXT_RUBRIC_REFERENCES = ("implementation.md", "llm-judge-extraction.md")
 
 
 #: Who decides step kinds and gates. Mandatory and fan_out are always rules.
-DECIDERS = ("rules", "clef")
+#: ``rules`` makes no call. The others are decision models on Workers AI.
+DECIDERS = ("rules", *decision_model.MODELS)
 
 
 def prepare(
@@ -68,13 +69,14 @@ def prepare(
     schema and gate payload keys, ahead of the skill's wording. ``tools``
     (grounding's tool schemas, keyed ``(server, tool)``) names MCP arguments.
 
-    ``rules`` makes no call at all. ``clef`` asks Cloudflare's Clef decision
-    model (no generated text) about each step's kind and gate, and uses its
-    answers where it is confident (:mod:`rote.compiler.system1.clef`)."""
+    ``rules`` makes no call at all. ``clef`` and ``jev`` ask that decision
+    model (no generated text) about each step's kind and gate, and use its
+    answers where it is confident (:mod:`rote.compiler.system1.decision_model`)."""
     if decider not in DECIDERS:
-        raise ValueError(f"unknown --system1-decider {decider!r}; choose from {DECIDERS}")
+        raise ValueError(f"unknown --decider {decider!r}; choose from {DECIDERS}")
     skill = parse_skill(skill_dir)
-    verdicts = clef.decide(skill) if decider == "clef" else None
+    model = decision_model.MODELS.get(decider)
+    verdicts = decision_model.decide(model, skill) if model is not None else None
     p = plan(skill, verdicts, tools)
     p.sample = sample
     write(p, work_dir)
@@ -83,15 +85,16 @@ def prepare(
     return p
 
 
-def _record_decider(work_dir: Path, verdicts: dict[int, clef.Verdict]) -> None:
+def _record_decider(work_dir: Path, verdicts: Verdicts) -> None:
     path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["decider"] = {
-        "model": clef.MODEL_ROUTE,
-        "cost_usd": round(sum(v.cost_usd for v in verdicts.values()), 6),
+        "name": verdicts.model.name,
+        "model": verdicts.model.route,
+        "cost_usd": round(verdicts.cost_usd, 6),
         "units": {
             str(i): {"kind": v.kind, "kind_confidence": v.kind_confidence, "human": v.human}
-            for i, v in verdicts.items()
+            for i, v in verdicts.by_unit.items()
         },
     }
     path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
@@ -131,11 +134,11 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     # Details carry agent-written text (a proposal's node, a restored value):
     # one line each, so a newline and "## ..." cannot reshape the report.
     questions = [(" ".join(t.split()), " ".join(d.split())) for t, d in questions]
-    clef_used = _used_clef(work_dir)
+    model = _decider_used(work_dir)
     return ReportExtras(
         preamble=(
             "Compiled with System-1: rote decided the structure with rules"
-            f"{' and the Clef decision model' if clef_used else ''}, and the "
+            f"{f' and the {model.label} decision model' if model else ''}, and the "
             "agent wrote the implementations and judge prompts. Every decision, with its "
             f"confidence and rule, is in `{BRIEF_DIRNAME}/{DECISIONS_FILENAME}`."
         ),
@@ -146,9 +149,10 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
             "Run the pipeline once (`rote run`) and compare it with a run of the skill.",
             (
                 "Recompile with `rote compile` after the skill changes. The "
-                "decisions are model answers (Clef) where Clef was confident, and rules "
-                "elsewhere: compare decisions.json between runs before trusting a diff."
-                if clef_used
+                f"decisions are model answers ({model.label}) where {model.label} was "
+                "confident, and rules elsewhere: compare decisions.json between runs "
+                "before trusting a diff."
+                if model
                 else "Recompile with `rote compile` after the skill changes: the "
                 "rules are deterministic, so the same skill text gives the same decisions."
             ),
@@ -156,6 +160,10 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     )
 
 
-def _used_clef(work_dir: Path) -> bool:
+def _decider_used(work_dir: Path) -> decision_model.DecisionModel | None:
+    """The decision model this compile asked, from decisions.json, else None."""
     path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
-    return path.is_file() and "decider" in json.loads(path.read_text(encoding="utf-8"))
+    if not path.is_file():
+        return None
+    decider = json.loads(path.read_text(encoding="utf-8")).get("decider")
+    return None if decider is None else decision_model.MODELS[decider["name"]]

@@ -61,6 +61,12 @@ def _effort_choices() -> tuple[str, ...]:
     return EFFORT_LEVELS
 
 
+def _decider_choices() -> tuple[str, ...]:
+    from rote.compiler.system1 import DECIDERS
+
+    return DECIDERS
+
+
 @dataclass(frozen=True)
 class ConfigKey:
     """One configurable default: its name, env override, and validity."""
@@ -69,7 +75,7 @@ class ConfigKey:
     env: str
     description: str
     choices: tuple[str, ...] | None = None
-    # "runtime" | "agent" | "inference" | "effort" — resolved on demand
+    # "runtime" | "agent" | "inference" | "effort" | "decider" — resolved on demand
     lazy_choices: str | None = None
 
     def valid_choices(self) -> tuple[str, ...] | None:
@@ -81,6 +87,8 @@ class ConfigKey:
             return _inference_choices()
         if self.lazy_choices == "effort":
             return _effort_choices()
+        if self.lazy_choices == "decider":
+            return _decider_choices()
         return self.choices
 
 
@@ -116,6 +124,15 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         env="ROTE_EFFORT",
         description="compiler thinking effort, claude + openai-api drivers (unset = low on claude)",
         lazy_choices="effort",
+    ),
+    ConfigKey(
+        name="decider",
+        env="ROTE_DECIDER",
+        description=(
+            "who decides System-1's step kinds and gates: rules (no call), clef or jev "
+            "(Workers AI on your Cloudflare account); unset = rules"
+        ),
+        lazy_choices="decider",
     ),
     ConfigKey(
         name="inference",
