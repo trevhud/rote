@@ -118,6 +118,7 @@ nodes:
       transactions: TransactionList
     output:
       merchant_groups: list[MerchantGroup]
+    mandatory: true
 
   # ── Wave 3: seat usage per app and vendor per descriptor (both fan_out) ──
 
@@ -240,6 +241,7 @@ nodes:
       registered: bool
       rationale: str
     timeout: 60s
+    mandatory: true
 
   # ── Wave 4: the rules ──
 
@@ -280,7 +282,6 @@ nodes:
       over_contract_pct: 10
       idle_seat_threshold_pct: 80
       renewal_window_days: 45
-      severity_order: [high, medium, low, info]
     mandatory: true
 
   # ── Wave 5: the report ──
@@ -301,6 +302,9 @@ nodes:
       audit: AuditResult
     output:
       report_markdown: str
+    constants:
+      severity_order: [high, medium, low, info]
+    mandatory: true
 
   # ── Wave 6: the finance lead decides ──
 
@@ -312,12 +316,22 @@ nodes:
       Park until the finance lead answers keep, cancel or renegotiate (with
       an optional note) for every vendor with a finding.
     signal: finance_lead_review
+    inputs:
+      start_date: pipeline.input.start_date
+      report_markdown: render_audit_report.output.report_markdown
+    input:
+      start_date: str
+      report_markdown: str
     notify:
       channel: slack
       target: "#finance-ops"
       message_template: |
-        The SaaS spend audit for {month} is ready. Reply with keep, cancel or
-        renegotiate for every vendor with a finding.
+        SaaS spend audit for the month starting {start_date}:
+
+        {report_markdown}
+
+        Reply with keep, cancel or renegotiate (and an optional note) for every
+        vendor with a finding.
     output:
       reviewer: str
       decisions: list[VendorDecision]

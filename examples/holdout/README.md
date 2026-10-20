@@ -20,7 +20,7 @@ rote bench --examples ~/rote/examples/holdout --out /tmp/bench/holdout
 
 `--examples examples/` never picks these up: discovery only looks one
 level down, and `holdout/` is not itself a skill. The gold labels'
-judgment calls are recorded in the PR that added them (trevhud/rote,
-`bench/holdout-skills`). `tests/test_examples.py` emits every
+judgment calls are recorded in the PR that added them,
+[#149](https://github.com/trevhud/rote/pull/149). `tests/test_examples.py` emits every
 `expected/pipeline.yaml` here on every adapter, so the labels stay valid
 IR as the schema moves.

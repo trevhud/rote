@@ -91,7 +91,10 @@ nodes:
       Look the incident's PagerDuty service up in the service catalog
       (references/service-catalog.md): repo, owning team, incident channel,
       tier, customer-facing, Datadog log query, runbook. A service missing
-      from the catalog is an error, never a guessed owner.
+      from the catalog stops the run with an error that names the service
+      and says to ask in #platform-oncall, never a guessed owner. (The IR
+      has no conditional gate, and an unconditional one would park every
+      page to cover a rare miss.)
     impl: extracted/catalog.py:resolve_service
     inputs:
       incident: fetch_incident.output
@@ -203,14 +206,14 @@ nodes:
       matched_rows: list[int]
     constants:
       severity_matrix:
-        - {severity: SEV1, priorities: [P1], tiers: [1], customer_facing: any}
-        - {severity: SEV1, priorities: [P2], tiers: [1], customer_facing: "yes"}
-        - {severity: SEV2, priorities: [P1], tiers: [2, 3], customer_facing: any}
-        - {severity: SEV2, priorities: [P2], tiers: [1, 2], customer_facing: any}
-        - {severity: SEV2, priorities: [P3], tiers: [1], customer_facing: "yes"}
-        - {severity: SEV3, priorities: [P2], tiers: [3], customer_facing: any}
-        - {severity: SEV3, priorities: [P3], tiers: [1, 2, 3], customer_facing: any}
-        - {severity: SEV4, priorities: [P4, P5], tiers: [1, 2, 3], customer_facing: any}
+        - {severity: SEV1, priorities: [P1], tiers: [1], customer_facing: [true, false]}
+        - {severity: SEV1, priorities: [P2], tiers: [1], customer_facing: [true]}
+        - {severity: SEV2, priorities: [P1], tiers: [2, 3], customer_facing: [true, false]}
+        - {severity: SEV2, priorities: [P2], tiers: [1, 2], customer_facing: [true, false]}
+        - {severity: SEV2, priorities: [P3], tiers: [1], customer_facing: [true]}
+        - {severity: SEV3, priorities: [P2], tiers: [3], customer_facing: [true, false]}
+        - {severity: SEV3, priorities: [P3], tiers: [1, 2, 3], customer_facing: [true, false]}
+        - {severity: SEV4, priorities: [P4, P5], tiers: [1, 2, 3], customer_facing: [true, false]}
     mandatory: true
 
   - id: fetch_recent_deploys
@@ -347,6 +350,7 @@ nodes:
       evidence: str
       confidence: str
     timeout: 60s
+    mandatory: true
 
   # ── Wave 5: investigate (the one genuinely open-ended step) ──
 
@@ -378,6 +382,7 @@ nodes:
       - query_metrics
       - list_monitors
       - get_commit
+      - fetch_runbook
     tool_servers:
       search_logs: datadog
       query_metrics: datadog
@@ -452,8 +457,11 @@ nodes:
       Park until the incident commander replies with the confirmed severity.
       Rollback is the IC's decision and action, never this workflow's.
     signal: ic_confirmed_severity
+    # The skill: no IC reply within 15 minutes and PagerDuty's own escalation
+    # takes over. The gate times out and triage ends there; the priority
+    # write-back only runs on a confirmed severity.
+    timeout: 15m
     output:
-      incident_commander: str
       confirmed_severity: str
 
   # ── Wave 9-10: record it on the incident ──

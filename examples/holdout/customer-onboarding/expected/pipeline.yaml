@@ -193,6 +193,7 @@ nodes:
       standard: bool
       flagged_clauses: list[FlaggedClause]
     timeout: 60s
+    mandatory: true
 
   # ── Wave 3: CS lead sign-off ──
 
@@ -202,15 +203,24 @@ nodes:
       section: "5. CS lead sign-off"
     description: >-
       Send the CS lead the deal summary, the screen result and the
-      non-standard items, and park until they approve. The approval may
-      change the plan, the seat count or the region.
+      non-standard items (commercial deviations and flagged MSA clauses),
+      and park until they approve. The approval may change the plan, the
+      seat count or the region (region defaults to us-east-1 "unless the CS
+      lead says otherwise").
     signal: cs_lead_approval
-    notify:
-      channel: slack
-      target: "#cs-leads"
-      message_template: |
-        {company_name} is ready to onboard. Review the screen result and the
-        non-standard terms, then approve with the plan, seats and region.
+    # No notify: the skill says "send the CS lead" but names no channel or
+    # address, so the gate carries what to send (inputs) and leaves the
+    # delivery channel to the deployment.
+    inputs:
+      deal: fetch_deal.output
+      screen: screen_company.output
+      commercial_terms: check_commercial_terms.output
+      special_terms: review_special_terms.output
+    input:
+      deal: Deal
+      screen: ScreenResult
+      commercial_terms: CommercialTermsCheck
+      special_terms: SpecialTermsReview
     output:
       approver: str
       plan: str
@@ -249,6 +259,7 @@ nodes:
       backoff: exponential
       retry_on: [server_error, network]
     timeout: 60s
+    mandatory: true
 
   - id: create_onboarding_project
     kind: external_call
@@ -274,6 +285,7 @@ nodes:
       backoff: exponential
       retry_on: [rate_limit, network]
     timeout: 30s
+    mandatory: true
 
   # ── Wave 5: one invite per admin contact (fan_out) ──
 
@@ -303,6 +315,7 @@ nodes:
       backoff: exponential
       retry_on: [server_error, network]
     timeout: 30s
+    mandatory: true
 
   # ── Wave 6: announce ──
 
@@ -324,6 +337,7 @@ nodes:
       project: LinearProject
     output:
       text: str
+    mandatory: true
 
   - id: post_welcome
     kind: external_call
@@ -347,6 +361,7 @@ nodes:
       backoff: exponential
       retry_on: [rate_limit, network]
     timeout: 30s
+    mandatory: true
 
 edges:
   - {from: fetch_deal, to: screen_company}
