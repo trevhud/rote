@@ -19,3 +19,9 @@ value is the vendor's own:
 
 The directory fixture lists the APIs above plus `admin reports_v1`, so the
 Admin URL resolution has a version to choose against.
+
+`slack_conversations_history.txt` is the text of
+https://docs.slack.dev/reference/methods/conversations.history, fetched
+2026-10-20 and passed through `rote.vendor_specs.grounding.to_text` (scripts,
+styles and tags removed, whitespace collapsed). `deal_monitor_slack.web.v1.json`
+is the docs spec a real deal-monitor `--backend api` compile wrote for it.

@@ -1,0 +1,38 @@
+{
+  "vendor": "slack",
+  "api": "web",
+  "version": "v1",
+  "sources": [
+    "https://docs.slack.dev/reference/methods/conversations.history"
+  ],
+  "operations": [
+    {
+      "id": "conversations.history",
+      "method": "GET",
+      "url_template": "https://slack.com/api/conversations.history",
+      "params": {
+        "channel": {"location": "query", "type": "string", "required": true},
+        "limit": {"location": "query", "type": "integer"},
+        "cursor": {"location": "query", "type": "string"},
+        "oldest": {"location": "query", "type": "string"},
+        "latest": {"location": "query", "type": "string"},
+        "inclusive": {"location": "query", "type": "boolean"},
+        "include_all_metadata": {"location": "query", "type": "boolean"}
+      },
+      "response_example": {
+        "ok": true,
+        "messages": [
+          {
+            "type": "message",
+            "user": "U0EXAMPLE1",
+            "text": "Account Name: Acme Corp\nSKU Count: 500",
+            "ts": "1700000000.000100"
+          }
+        ],
+        "has_more": false,
+        "response_metadata": {"next_cursor": ""},
+        "error": "channel_not_found"
+      }
+    }
+  ]
+}

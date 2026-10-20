@@ -623,6 +623,20 @@ Things that will bite if you touch it:
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
   import is an error, never a guessed package name.
 
+### A docs spec is grounded in the pages it cites, not in the code
+
+The agent writes both a docs spec and the code checked against it, so the
+check alone is circular (in #173's own run it bounced a read of `error`,
+and the agent added `error` to its spec). `rote.vendor_specs.grounding`
+fetches every cited page itself (a plain GET, cached a day) and requires
+each operation's last path segment, every parameter name and every key of
+its examples to occur in a cited source's text, on word boundaries;
+`skill` means SKILL.md and references. A miss is `docs_spec_unsupported`,
+into the repair loop; a spec none of whose sources can be read is
+`docs_spec_ungrounded`, a warning. This is layer 2 of three: the spec is
+to be written by its own generation call that never sees the code
+(layer 1), and a decision model double-checks each grounded name (layer 3).
+
 ### Vendor requests are checked against the vendor's spec, in code
 
 On `--backend api`, verification reads every request an external_call
