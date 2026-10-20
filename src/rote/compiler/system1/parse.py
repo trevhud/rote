@@ -83,10 +83,16 @@ def walk(sec: Section) -> Iterator[Section]:
 
 # ── signals (written from node-kinds.md) ──────────────────────────────────
 
+#: Headings that are about the skill, not a step of it.
 _META = re.compile(
-    r"\b(trigger|routing|available tools|tools?$|limits|gotchas|related|objective|overview|"
-    r"when to use|background|notes?$|examples?$|glossary|faq|reference|failure code)\b",
+    r"\b(trigger phrases?|triggers|routing|available tools|limits|gotchas|related skills?"
+    r"|glossary|faq|when to use)\b",
     re.I,
+)
+#: Single-word meta headings, matched only as the whole heading: "Notes" is
+#: meta, "Step 2: Tidy the notes" is a step.
+_META_WHOLE = re.compile(
+    r"^\W*(?:tools|notes|examples?|objective|overview|background|references?)\W*$", re.I
 )
 
 
@@ -436,7 +442,7 @@ class SkillParse:
 
 
 def _is_meta(sec: Section) -> bool:
-    return bool(_META.search(sec.title)) or sec.level == 1
+    return bool(_META.search(sec.title) or _META_WHOLE.match(sec.title)) or sec.level == 1
 
 
 def _subunits(sec: Section) -> list[tuple[str, int, str]]:

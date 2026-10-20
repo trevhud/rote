@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from rote.compiler.system1.clef import HUMAN_THRESHOLD, KIND_THRESHOLD, Verdict
 from rote.compiler.system1.parse import Constant, SkillParse, Unit, slug
 
 #: At or above this, a decision is reported as settled; below, it is listed
@@ -478,7 +479,59 @@ def _loop_tools(u: Unit, skill: SkillParse) -> tuple[list[str], dict[str, str], 
 # ── the plan ──────────────────────────────────────────────────────────────
 
 
-def plan(skill: SkillParse) -> Plan:
+_ROLE_OF_KIND = {
+    "pure_function": "process",
+    "external_call": "fetch",
+    "llm_judge": "judge",
+    "agent_loop": "loop",
+    "hitl_gate": "gate",
+}
+
+
+def _route(
+    segments: list[tuple[str, str, float, str]], verdict: Verdict
+) -> list[tuple[str, str, float, str]]:
+    """Clef's answers over the rules' segmentation, only where Clef is confident.
+
+    * Clef says a person must act (p >= HUMAN_THRESHOLD): one gate.
+    * Clef's kind at or above KIND_THRESHOLD that the rules did not find: one
+      node of that kind (the rules' split is kept when they already include it).
+    * Otherwise the rules decide. Where Clef disagrees below its threshold,
+      the rules' decision drops below REVIEW_BELOW so the report lists it.
+    """
+    rule_kinds = [k for _, k, _, _ in segments]
+    if verdict.human >= HUMAN_THRESHOLD:
+        if rule_kinds == ["hitl_gate"]:
+            return segments
+        return [("gate", "hitl_gate", 0.9, f"Clef: a person must act (p={verdict.human:.2f})")]
+    if verdict.kind_confidence >= KIND_THRESHOLD:
+        if verdict.kind in rule_kinds and "hitl_gate" not in rule_kinds:
+            return segments
+        return [
+            (
+                _ROLE_OF_KIND[verdict.kind],
+                verdict.kind,
+                round(verdict.kind_confidence, 2),
+                f"Clef kind (p={verdict.kind_confidence:.2f}) over the rules' {rule_kinds}",
+            )
+        ]
+    if verdict.kind not in rule_kinds or (rule_kinds == ["hitl_gate"]):
+        return [
+            (
+                role,
+                kind,
+                min(conf, 0.6),
+                f"{rule}; Clef disagrees below its threshold "
+                f"({verdict.kind} p={verdict.kind_confidence:.2f}, person p={verdict.human:.2f})",
+            )
+            for role, kind, conf, rule in segments
+        ]
+    return segments
+
+
+def plan(skill: SkillParse, verdicts: dict[int, Verdict] | None = None) -> Plan:
+    """Every decision for ``skill``. With ``verdicts`` (``--system1-decider clef``),
+    Clef's confident kind and gate answers override the rules per step."""
     nodes: list[NodePlan] = []
     used: set[str] = set()
     last_of: dict[int, str] = {}
@@ -491,6 +544,8 @@ def plan(skill: SkillParse) -> Plan:
             if u.loop_container
             else _segment(u)
         )
+        if verdicts is not None and not u.loop_container and u.index in verdicts:
+            segments = _route(segments, verdicts[u.index])
         unit_nodes: list[NodePlan] = []
         for role, kind, conf, rule in segments:
             nid = _ROLE_IDS[role].format(b=_base(u.title, u.section if u.sibling_group else None))

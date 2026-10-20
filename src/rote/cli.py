@@ -856,6 +856,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
         system1=args.system1,
+        system1_decider=args.system1_decider,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
@@ -4099,6 +4100,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "flow, fan_out, mandatory, gates, constants, rule tables as code) before the "
             "agent runs; the agent then writes only text (implementations, judge "
             "prompts, the report). See docs/design/system1-compile.md"
+        ),
+    )
+    compile_p.add_argument(
+        "--system1-decider",
+        choices=["rules", "clef"],
+        default="rules",
+        help=(
+            "EXPERIMENTAL, with --system1: who decides each step's kind and whether a person "
+            "must act. 'rules' (default) makes no call. 'clef' asks Cloudflare's Clef "
+            "decision model where it is confident and the rules elsewhere; it needs "
+            "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN and costs about $0.01 a compile"
         ),
     )
     compile_p.add_argument(

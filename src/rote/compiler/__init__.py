@@ -209,6 +209,7 @@ class Compiler:
         emit_target: EmitTarget | None = None,
         strict_provenance: bool = False,
         system1: bool = False,
+        system1_decider: str = "rules",
     ) -> None:
         """
         Parameters
@@ -270,6 +271,7 @@ class Compiler:
         self.emit_target = emit_target
         self.strict_provenance = strict_provenance
         self.system1 = system1
+        self.system1_decider = system1_decider
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -444,8 +446,8 @@ class Compiler:
             s1_plan: system1.Plan | None = None
             if self.system1:
                 try:
-                    s1_plan = system1.prepare(skill_dir, work_dir)
-                except system1.UnsafeSkillText as e:
+                    s1_plan = system1.prepare(skill_dir, work_dir, self.system1_decider)
+                except (system1.UnsafeSkillText, system1.ClefUnavailable) as e:
                     raise CompilerError(str(e)) from e
                 self._emit(
                     "log",
