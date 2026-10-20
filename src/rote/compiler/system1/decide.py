@@ -211,6 +211,8 @@ def _segment(
     out: list[tuple[str, str, float, str]] = []
     if s.get("fetch") or any(tool for _, tool in u.mcp):
         out.append(("fetch", "external_call", _kind_confidence(s, "fetch"), "tool-call signal"))
+    elif _reads_a_named_api(u.text):
+        out.append(("fetch", "external_call", 0.8, "reads from a named API or product"))
     grouped = _GROUP_BY.search(u.text) and _FOR_EACH.search(u.text)
     if grouped:
         out.append(("group", "pure_function", 0.8, "'group ... by' before 'for each'"))
@@ -877,6 +879,16 @@ def _names_a_product(text: str) -> bool:
     if _HANDLE.search(text):
         return True
     return any(m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(text))
+
+
+def _reads_a_named_api(text: str) -> bool:
+    """A read whose source is a named API or product: "query the AniList
+    GraphQL API", "fetch the rates from https://...". The parser's fetch
+    signal misses both, and a --backend api compile then made no vendor
+    call at all (the step became a judge or a pure_function)."""
+    return bool(_READS.search(text)) and bool(
+        _NAMED_API.search(text) or re.search(r"\bAPIs?\b", text) or _names_a_product(text)
+    )
 
 
 def role_of_kind(kind: str) -> str:

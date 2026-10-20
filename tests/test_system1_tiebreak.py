@@ -632,3 +632,28 @@ def test_a_bench_job_costs_the_agent_run_plus_the_decision_calls(tmp_path: Path)
     )["run"]
     assert run["cost_usd"] == pytest.approx(0.506)
     assert run["driver_cost_usd"] == 0.5 and run["decisions_cost_usd"] == pytest.approx(0.006)
+
+
+@pytest.mark.parametrize(
+    ("text", "fetches"),
+    [
+        # A read from a named API or product is a call (apibackend's finding:
+        # the AniList step became a judge and the compile made no vendor call).
+        ("Query the AniList GraphQL API for the user's watch list.", True),
+        ("Fetch the rates from https://api.example.com/v1/rates.", True),
+        ("Pull this week's tickets from the Zendesk API.", True),
+        ("Look up the customer in Salesforce.", True),
+        # No named source: the rules' default, not a call.
+        ("Load the last 7 days of tickets.", False),
+        ("Classify each deal by stage.", False),
+    ],
+)
+def test_a_read_from_a_named_api_is_a_call(text: str, fetches: bool, tmp_path: Path) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        f"---\nname: tiny\ndescription: x\n---\n\n# Tiny\n\n## Step 1: Get data\n\n{text}\n"
+    )
+    parsed = parse_skill(skill)
+    kinds = [kind for _, kind, _, _ in unit_segments(parsed)[0]]
+    assert ("external_call" in kinds) is fetches
