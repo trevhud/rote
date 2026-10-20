@@ -73,13 +73,40 @@ def _merge_output(skeleton: Any, agent: Any) -> Any:
     return agent if isinstance(agent, (str, dict)) else skeleton
 
 
-def _merge_spec(base: Any, agent: Any) -> Any:
-    """A judge's spec: the skeleton's (code-decided input schema), with each key
-    the agent wrote laid over it. The agent writes the prompt and the output
-    schema, and may type the inputs more precisely."""
+def _merge_spec(base: Any, agent: Any, node_id: str, changes: list[str]) -> Any:
+    """A judge's spec: the skeleton's, with each key the agent wrote laid over it.
+
+    The agent writes the prompt and the output schema. The input schema is a
+    decision: its properties are exactly the node's ``inputs`` (the IR
+    rejects anything else). The agent may type those inputs more precisely,
+    but an input schema with any other property names, or that requires a
+    name the node does not have, is replaced by the skeleton's and recorded.
+    A real cloud compile shipped judges whose input schemas required
+    ``ticket`` and ``deadline_hours`` for a node whose inputs were
+    ``request`` and ``compute_response_deadline``, and failed IR validation
+    after the agent's last stop."""
     if not isinstance(agent, dict):
         return copy.deepcopy(base)
-    return {**copy.deepcopy(base), **copy.deepcopy(agent)}
+    merged = {**copy.deepcopy(base), **copy.deepcopy(agent)}
+    decided = base.get("input_schema") if isinstance(base, dict) else None
+    mine = agent.get("input_schema")
+    if isinstance(decided, dict) and "input_schema" in agent:
+        names = set(decided.get("properties") or {})
+        props = mine.get("properties") if isinstance(mine, dict) else None
+        required = mine.get("required") if isinstance(mine, dict) else None
+        fits = (
+            isinstance(props, dict)
+            and set(props) == names
+            and (required is None or (isinstance(required, list) and set(required) <= names))
+        )
+        if not fits:
+            merged["input_schema"] = copy.deepcopy(decided)
+            got = sorted(props) if isinstance(props, dict) else props
+            changes.append(
+                f"`{node_id}` signature_spec.input_schema: agent wrote properties {got!r}, "
+                f"kept the node's inputs {sorted(names)!r}"
+            )
+    return merged
 
 
 def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
@@ -137,12 +164,16 @@ def enforce(work_dir: Path, *, final: bool = False) -> list[str]:
                 )
         node["output"] = _merge_output(sk.get("output"), mine.get("output"))
         if "signature_spec" in sk:
-            node["signature_spec"] = _merge_spec(sk["signature_spec"], mine.get("signature_spec"))
+            node["signature_spec"] = _merge_spec(
+                sk["signature_spec"], mine.get("signature_spec"), sk["id"], changes
+            )
         for key, value in text.get(sk["id"], {}).items():
             if key == "output":
                 node["output"] = _merge_output(sk.get("output"), value)
             elif key == "signature_spec" and "signature_spec" in sk:
-                node["signature_spec"] = _merge_spec(node["signature_spec"], value)
+                node["signature_spec"] = _merge_spec(
+                    node["signature_spec"], value, sk["id"], changes
+                )
             elif key not in decided and key != "id":
                 node[key] = value
         merged_nodes.append(node)

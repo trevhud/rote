@@ -76,9 +76,9 @@ vet_contact_judge:
     prompt: "..."          # {{ var }} names one of the node's inputs: keys
 ```
 
-Every object in a judge's `output_schema`, nested ones included, declares
-its `properties`: the judge answers through structured output, which cannot
-express a free-form object or an untyped value, and the emit refuses one.
+Declare the `properties` of every object in a judge's `output_schema`,
+nested ones included: structured outputs reject free-form objects and
+untyped values.
 
 rote has already written each judge's `input_schema`, one property per
 `inputs:` key. Leave it out unless you type an input more precisely; the
