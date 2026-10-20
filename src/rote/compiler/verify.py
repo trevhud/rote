@@ -468,29 +468,49 @@ class EmitTarget:
 
 
 def judge_spec_findings(pipeline: Pipeline) -> list[ContractFinding]:
-    """Every llm_judge without a ``signature_spec``.
+    """Every llm_judge whose ``signature_spec`` is missing or still the skeleton's.
 
     The legacy ``signature`` path only emits on the Python runtimes. The
     TypeScript adapters need the spec, and a logged-in compile emits
     cloudflare by default, so a judge without one is a pipeline that breaks
     the moment it is emitted for another runtime. A real System-1 compile
-    shipped exactly that and failed at the cloudflare emit.
+    shipped exactly that and failed at the cloudflare emit. System-1 now
+    writes each spec's input schema itself; the agent owes the prompt and
+    the output fields, and an empty one of either is a judge that answers
+    nothing useful.
     """
-    return [
-        ContractFinding(
-            node_id=n.id,
-            kind="missing_signature_spec",
-            severity="error",
-            message=(
-                f"llm_judge `{n.id}` has no signature_spec. Write one for it in "
-                "system1/text.yaml (input_schema, output_schema, prompt, client), so "
-                "the pipeline emits on every runtime, not only the Python ones"
-            ),
-            path="pipeline.yaml",
+    findings: list[ContractFinding] = []
+    for n in pipeline.nodes:
+        if n.kind.value != "llm_judge":
+            continue
+        spec = n.signature_spec
+        missing = (
+            ["signature_spec"]
+            if spec is None
+            else [
+                part
+                for part, empty in (
+                    ("a prompt", not spec.prompt.strip()),
+                    ("output fields", not spec.output_schema.get("properties")),
+                )
+                if empty
+            ]
         )
-        for n in pipeline.nodes
-        if n.kind.value == "llm_judge" and n.signature_spec is None
-    ]
+        if missing:
+            findings.append(
+                ContractFinding(
+                    node_id=n.id,
+                    kind="incomplete_signature_spec",
+                    severity="error",
+                    message=(
+                        f"llm_judge `{n.id}` is missing {' and '.join(missing)}. Write it "
+                        "under its signature_spec in system1/text.yaml (prompt, "
+                        "output_schema with properties), so the judge emits on every runtime"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+    return findings
 
 
 def emit_findings(

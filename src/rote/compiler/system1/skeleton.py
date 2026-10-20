@@ -1,8 +1,10 @@
 """Render a System-1 plan into the files the text agent starts from. No inference.
 
 * ``pipeline.yaml``: the complete IR skeleton. Every decision field is
-  final; the agent only fills text (descriptions, type strings, judge
-  ``signature_spec``).
+  final; the agent only fills text (descriptions, type strings, a judge's
+  prompt and output fields). Each judge's ``signature_spec`` starts with an
+  input schema decided from its ``inputs`` (:func:`judge_input_schema`), so
+  the IR emits on every runtime without the agent writing one.
 * ``extracted/rule_tables.py`` + ``tests/test_rule_tables.py``: the skill's
   markdown rule tables as typed literals, each row cited verbatim.
 * ``eval.yaml``: per-step agent-turn estimates from a fixed table by kind.
@@ -50,8 +52,46 @@ def _description(n: NodePlan) -> str:
     return f"{n.unit.title}: {first}"[:400]
 
 
+def judge_input_schema(
+    n: NodePlan, request_schema: dict[str, Any], fanned: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """A judge's input schema, decided from its ``inputs``: one required
+    property per input. ``request`` is the pipeline input. A list it reads
+    whole is an array: ``<node>.output.items`` on a judge that does not fan
+    out over it, and the whole result of a node in ``fanned`` (a fan_out
+    node's result binds as the list of its per-element results). Everything
+    else is untyped: an upstream result's shape is whatever that node's code
+    returns, which nothing has decided yet, and a fanned element is one item
+    of it. Typing those ``object`` refused a
+    judge fed a list or a string.
+
+    The IR requires a judge's inputs to satisfy this schema, so its property
+    set is exactly the node's input names."""
+    props: dict[str, Any] = {}
+    for param, ref in n.inputs.items():
+        source = ref.split(".", 1)[0]
+        if ref == "pipeline.input":
+            props[param] = request_schema
+        elif ref.endswith(".output.items") and n.fan_out and n.element_source == source:
+            props[param] = {"description": f"one element of {ref.removesuffix('.items')}"}
+        elif ref.endswith(".output.items"):
+            props[param] = {"type": "array", "description": f"the list {ref}"}
+        elif ref == f"{source}.output" and source in fanned:
+            props[param] = {"type": "array", "description": f"the per-element results of {source}"}
+        else:
+            props[param] = {"description": f"the result of {ref}"}
+    return {"type": "object", "properties": props, "required": list(props)}
+
+
+#: What a judge's spec starts with before the agent writes its text.
+SKELETON_PROMPT = ""
+SKELETON_OUTPUT_SCHEMA: dict[str, Any] = {"type": "object"}
+
+
 def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
+    request_schema = input_schema(plan)
+    fanned = frozenset(x.id for x in plan.nodes if x.fan_out)
     edges: list[dict[str, Any]] = []
     for n in plan.nodes:
         node: dict[str, Any] = {
@@ -75,7 +115,12 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             if n.mcp is not None:
                 node["mcp"] = dict(n.mcp)
         if n.kind == "llm_judge":
-            node["signature"] = f"signatures/{n.id}.py:{_camel(n.id)}"
+            node["signature_spec"] = {
+                "input_schema": judge_input_schema(n, request_schema, fanned),
+                "output_schema": dict(SKELETON_OUTPUT_SCHEMA),
+                "prompt": SKELETON_PROMPT,
+                "client": "anthropic",
+            }
         if n.kind == "agent_loop":
             node["tools"] = list(n.tools)
             if n.loop_body:

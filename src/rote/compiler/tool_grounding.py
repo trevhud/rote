@@ -80,6 +80,9 @@ class ToolSchema:
     #: True from the server's own ``tools/list``; False when inferred from
     #: recorded calls, which cannot say which keys the tool does not take.
     declared: bool
+    #: The result's JSON Schema, when the server declares one (MCP
+    #: ``outputSchema``). ``None`` means the shape is unknown.
+    output_schema: dict[str, Any] | None = None
 
 
 ToolSchemas = dict[tuple[str, str], ToolSchema]
@@ -221,9 +224,15 @@ async def discover(
     for name, tools in zip(names, await asyncio.gather(*(_list(n) for n in names)), strict=True):
         for tool in tools or []:
             schema = tool.input_schema  # MCP's inputSchema (SDK v2 name)
+            output = getattr(tool, "output_schema", None)  # MCP's outputSchema
             if isinstance(schema, dict):
                 found[(name, tool.name)] = ToolSchema(
-                    name, tool.name, schema, f"tools/list on the registered {name!r}", True
+                    name,
+                    tool.name,
+                    schema,
+                    f"tools/list on the registered {name!r}",
+                    True,
+                    output if isinstance(output, dict) else None,
                 )
     return found
 
