@@ -274,7 +274,9 @@ def record_reference(
         case.id: {
             "description": case.description,
             "runs": runs[case.id],
-            "stable": stable_reference(runs[case.id]),
+            "stable": stable_reference(
+                runs[case.id], contract=[*casefile.output_fields, "outcome"]
+            ),
         }
         for case in casefile.cases
     }
@@ -453,7 +455,13 @@ def pipeline_fidelity(
     usage: list[dict[str, Any]] = []
     try:
         for case in casefile.cases:
-            ref = reference["cases"][case.id]["stable"]
+            # Re-derived from the recorded runs rather than read from the
+            # stored summary, so a change to the stability rule applies to
+            # existing references without paying to record them again.
+            ref = stable_reference(
+                reference["cases"][case.id]["runs"],
+                contract=[*casefile.output_fields, "outcome"],
+            )
             try:
                 trace = run_pipeline_case(compiled_dir, casefile, case, root / case.id)
             except Exception as e:  # noqa: BLE001 (an unrunnable pipeline is a result)

@@ -78,6 +78,14 @@ def test_only_fields_every_successful_run_agrees_on_are_stable() -> None:
     assert ref["unstable_fields"] == ["summary"]
 
 
+def test_fields_outside_the_contract_do_not_count() -> None:
+    runs = [_run({"total": 1, "extra": {"a": 1}}), _run({"total": 1, "extra": {"a": 2}})]
+    assert stable_reference(runs)["unstable_fields"] == ["extra.a"]
+    limited = stable_reference(runs, contract=["total"])
+    assert limited["fields"] == {"total": 1.0}
+    assert limited["unstable_fields"] == []
+
+
 def test_a_field_missing_from_one_run_is_unstable() -> None:
     ref = stable_reference([_run({"a": 1, "b": 2}), _run({"a": 1})])
     assert ref["fields"] == {"a": 1.0}

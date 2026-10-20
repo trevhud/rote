@@ -196,7 +196,9 @@ def _lcs(a: list[str], b: list[str]) -> int:
 # ───────── the reference ─────────
 
 
-def stable_reference(runs: list[dict[str, Any]]) -> dict[str, Any]:
+def stable_reference(
+    runs: list[dict[str, Any]], contract: Iterable[str] | None = None
+) -> dict[str, Any]:
     """What every successful reference run agrees on.
 
     ``runs`` are ``{"output": {...} | None, "calls": [...], "error": ...}``.
@@ -205,9 +207,21 @@ def stable_reference(runs: list[dict[str, Any]]) -> dict[str, Any]:
     the ordered sequence, when every run made the same one; otherwise
     only the calls every run made, unordered. ``seen_calls`` is every call
     any run made: a pipeline call outside it is one no agent run ever made.
+
+    ``contract`` limits fields to the output contract's top-level names: an
+    agent that adds its own extra sections to result.json in one run
+    should not make the reference look unstable.
     """
     ok = [r for r in runs if r.get("output") is not None and not r.get("error")]
-    flats = [flatten(r["output"]) for r in ok]
+    keep = None if contract is None else set(contract)
+    flats = [
+        {
+            p: v
+            for p, v in flatten(r["output"]).items()
+            if keep is None or re.split(r"[.\[]", p, maxsplit=1)[0] in keep
+        }
+        for r in ok
+    ]
     stable: dict[str, Value] = {}
     unstable: list[str] = []
     for path in sorted({p for f in flats for p in f}):
