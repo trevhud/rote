@@ -203,6 +203,11 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"error: failed to load pipeline: {e}", file=sys.stderr)
         return 1
 
+    backend = _resolve_backend("emit", args.backend, pipeline_path.parent)
+    if backend is None:
+        return 2
+    args.backend = backend
+
     try:
         adapter = get_adapter(
             args.runtime,
@@ -232,7 +237,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     record_app(out_dir, args.runtime, pipeline.name)
 
-    mcp_servers = _mcp_requirements(pipeline, args.backend)
+    mcp_servers = _mcp_requirements(pipeline, args.backend, args.runtime)
 
     # The IR's `impl` refs point at modules beside the pipeline.yaml, which
     # is exactly what was just sourced into the runtime dir — so this is
@@ -755,6 +760,16 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     else:
         auto_deploy = cloud_cred is not None and args.runtime == "cloudflare"
 
+    # An update keeps the backend the previous compile recorded unless the
+    # flag says otherwise; a fresh compile defaults to mcp.
+    if args.update:
+        backend = _resolve_backend("compile", args.backend, Path(args.out) / "compiled")
+        if backend is None:
+            return 2
+        args.backend = backend
+    else:
+        args.backend = args.backend or "mcp"
+
     from rote.runners import _TS_RUNTIMES
 
     if args.backend == "api" and args.runtime in _TS_RUNTIMES:
@@ -1081,7 +1096,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
     # user now beats discovering it mid-flight.
-    mcp_servers = _mcp_requirements(pipeline, args.backend)
+    mcp_servers = _mcp_requirements(pipeline, args.backend, args.runtime)
     if mcp_servers:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}", file=summary_stream)
@@ -1410,7 +1425,7 @@ def _print_emit_failure_after_compile(
     pipeline_yaml = compiled_dir / "pipeline.yaml"
     retry = ["rote", "emit", str(pipeline_yaml), "--runtime", args.runtime]
     if args.backend != "mcp":
-        retry += ["--backend", args.backend]
+        retry += ["--backend", args.backend]  # backend.json records it too
     retry += ["--out", str(runtime_dir)]
     from rote.adapters._py_common import ConstantsNotAccepted
 
@@ -1447,7 +1462,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
     (a chosen driver/backend, the local baseline pass, the local eval
     scorecard) are rejected with a pointer to ``--local``. ``--agent``
     defaults to ``None`` (auto-detect) so it only counts as set when the
-    user passed a value; ``--backend`` defaults to ``mcp``.
+    user passed a value; so does ``--backend``.
     """
     if args.runtime not in (None, "cloudflare"):
         return (
@@ -1457,7 +1472,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
     for flag, is_set in (
         ("--agent", args.agent is not None),
         ("--effort", args.effort is not None),
-        ("--backend", args.backend != "mcp"),
+        ("--backend", args.backend is not None),
         ("--baseline", args.baseline),
         ("--baseline-input", args.baseline_input is not None),
         ("--sample-input", args.sample_input is not None),
@@ -2290,10 +2305,53 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
     return 0
 
 
-def _mcp_requirements(pipeline: Pipeline, backend: str = "mcp") -> list[dict[str, object]]:
+def _resolve_backend(command: str, flag: str | None, compiled_dir: Path) -> str | None:
+    """``--backend`` for a command on an existing compiled IR, or ``None`` after an error.
+
+    The flag wins; with none, the backend recorded at compile time
+    (``backend.json``, :mod:`rote.compiler.backend`), else ``mcp``. A flag
+    that contradicts the record is honored with a warning, since emitting
+    the other backend drops code the compile wrote for this one.
+    """
+    from rote.compiler.backend import BACKEND_FILENAME, BackendRecordError, read_backend
+
+    try:
+        recorded = read_backend(compiled_dir)
+    except BackendRecordError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return None
+    record = compiled_dir / BACKEND_FILENAME
+    if flag is None:
+        if recorded is not None:
+            print(
+                f"rote {command}: using --backend {recorded}, recorded when this pipeline "
+                f"was compiled ({record})",
+                file=sys.stderr,
+            )
+        return recorded or "mcp"
+    if recorded is not None and flag != recorded:
+        lost = (
+            "the vendor-API modules the compile wrote and researched are not called for "
+            "mcp-bound nodes"
+            if recorded == "api"
+            else "its mcp-bound nodes were compiled as tool calls, so their impl modules "
+            "may be stubs"
+        )
+        print(
+            f"warning: this pipeline was compiled for --backend {recorded} ({record}); "
+            f"using --backend {flag} as asked: {lost}",
+            file=sys.stderr,
+        )
+    return flag
+
+
+def _mcp_requirements(
+    pipeline: Pipeline, backend: str = "mcp", runtime: str | None = None
+) -> list[dict[str, object]]:
     """Per required MCP server: the binding nodes, tools, and current auth state.
 
-    ``backend="api"`` counts no ``mcp:`` binding, since none is called
+    ``backend="api"``, and the python and temporal runtimes, count no
+    ``mcp:`` binding, since none is called
     (:func:`rote.compiler.api_docs.api_view`); an agent loop's servers
     still count.
 
@@ -2306,10 +2364,11 @@ def _mcp_requirements(pipeline: Pipeline, backend: str = "mcp") -> list[dict[str
     gates anything — callers render recommendations, and park-on-auth
     remains the runtime backstop.
     """
+    from rote.compiler.backend import bindings_called
     from rote.mcp import auth_status, load_registry, read_token_file
     from rote.mcp.learned import learned_auth
 
-    if backend == "api":
+    if not bindings_called(runtime or "", backend):
         from rote.compiler.api_docs import api_view
 
         pipeline = api_view(pipeline)
@@ -3998,7 +4057,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     emit.add_argument(
         "--backend",
-        default="mcp",
+        default=None,
         choices=["mcp", "api"],
         help=(
             "For external_call nodes with an mcp binding (dbos, dbos-ts, "
@@ -4072,7 +4131,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     compile_p.add_argument(
         "--backend",
-        default="mcp",
+        default=None,
         choices=["mcp", "api"],
         help=(
             "For external_call nodes with an mcp binding: 'mcp' (default) "

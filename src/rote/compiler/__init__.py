@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.compiler import api_docs, system1, tool_grounding
+from rote.compiler.backend import BACKENDS, write_backend
 from rote.compiler.drivers import (
     CompilerDriver,
     DriverError,
@@ -718,6 +719,10 @@ class Compiler:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
             _write_compile_metrics(result, output_dir)
+            if self.emit_target is not None and self.emit_target.external_backend in BACKENDS:
+                # Beside the IR, never in it: a later `rote emit` must not
+                # silently swap the researched vendor calls for MCP calls.
+                write_backend(output_dir, self.emit_target.external_backend)
 
             # The report is rendered, not written by the agent: everything
             # in it is already in pipeline.yaml and the extracted code (see

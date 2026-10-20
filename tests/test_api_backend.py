@@ -548,3 +548,109 @@ def test_report_cells_escape_a_pipe_and_name_the_skill_reference(tmp_path: Path)
     assert rows[0].startswith("| `search_dock_emails` | https://api.example/v1?fields=a\\|b |")
     assert rows[0].count(" | ") == 3
     assert "the skill's own text (internal API) |" in rows[1] and rows[1].endswith("| n/a |")
+
+
+# ───────── The System-1 path (the default) ─────────
+
+
+class _System1TextAgent(CompilerDriver):
+    """Writes each System-1 impl module; vendor calls cite docs or not, as told."""
+
+    name = "fake-s1"
+
+    def __init__(self, cite: bool) -> None:
+        self.cite = cite
+        self.instructions: str | None = None
+        self.rubric: Path | None = None
+        self.rubric_text = ""
+
+    def is_available(self) -> tuple[bool, str]:
+        return (True, "")
+
+    async def run(
+        self,
+        skill_dir: Path,
+        compiler_skill_dir: Path,
+        work_dir: Path,
+        extra_instructions: str | None = None,
+        on_event: Any = None,
+    ) -> DriverResult:
+        import yaml
+
+        self.instructions = extra_instructions
+        self.rubric = compiler_skill_dir
+        self.rubric_text = (compiler_skill_dir / "SKILL.md").read_text()
+        emit_safely(on_event, CompilationEvent(type="tool", ts=0.0, tool_name="WebFetch", url=DOCS))
+        doc = yaml.safe_load((work_dir / "pipeline.yaml").read_text())
+        for n in doc["nodes"]:
+            if "impl" not in n:
+                continue
+            path, fn = n["impl"].split(":")
+            params = [*n["inputs"], *(n.get("constants") or {})]
+            cite = f"# docs: {DOCS}\n" if self.cite and n["kind"] == "external_call" else ""
+            (work_dir / path).parent.mkdir(exist_ok=True)
+            (work_dir / path).write_text(
+                f"{cite}def {fn}({', '.join(params)}):\n    return {{'items': []}}\n"
+            )
+        return DriverResult(work_dir / "pipeline.yaml", work_dir, self.name, {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cite", [True, False])
+async def test_the_system1_path_briefs_researches_and_holds_vendor_calls_to_docs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cite: bool
+) -> None:
+    """System-1 is the default compile path, so the api backend's guarantees
+    must hold there, not only on the legacy rubric."""
+    import shutil
+
+    from rote.compiler.verify import EmitTarget
+
+    repo = Path(__file__).resolve().parent.parent
+    skill = tmp_path / "skill"
+    shutil.copytree(repo / "examples" / "ops-report" / "skill", skill)
+    agent = _System1TextAgent(cite)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: agent)
+    out = tmp_path / "out"
+    result = await Compiler(
+        emit_target=EmitTarget("dbos", "api"), run_generated_tests=False, tool_discovery="none"
+    ).compile(skill, out)
+
+    assert agent.rubric is not None and agent.rubric.name.startswith("rote-system1-rubric-")
+    assert "With `--backend api`" in agent.rubric_text
+    assert agent.instructions is not None and api_docs.brief() in agent.instructions
+    external = [n for n in result.pipeline.nodes if n.kind.value == "external_call"]
+    assert external, "ops-report's System-1 plan has vendor reads"
+    assert result.verification is not None
+    uncited = {f.node_id for f in result.verification.errors if f.kind == "uncited_api_call"}
+    assert uncited == (set() if cite else {n.id for n in external})
+    report = (out / "compile-report.md").read_text()
+    assert "## Vendor API docs" in report
+
+
+def test_the_api_backend_grants_web_tools_whatever_the_compile_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.compiler.verify import EmitTarget
+
+    captured: dict[str, Any] = {}
+
+    class _Probe(CompilerDriver):
+        name = "probe"
+
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def is_available(self) -> tuple[bool, str]:
+            return (True, "")
+
+        async def run(self, *args: Any, **kwargs: Any) -> DriverResult:
+            raise AssertionError("not run")
+
+    monkeypatch.setitem(DRIVERS, "probe", _Probe)
+    for system1 in (True, False, None):
+        captured.clear()
+        Compiler(
+            agent="probe", emit_target=EmitTarget("dbos", "api"), system1=system1
+        ).select_driver()
+        assert captured.get("web_tools") is True, system1
