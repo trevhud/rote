@@ -24,15 +24,25 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote_plus
 
 from rote.contracts import ContractFinding
 from rote.ir import NodeKind, Pipeline
 from rote.vendor_specs import docs, google, openapi
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of, path_segments
+from rote.vendor_specs.model import (
+    ApiSpec,
+    Operation,
+    ParamSpec,
+    host_of,
+    path_segments,
+    split_query,
+)
 from rote.vendor_specs.store import SpecStore, SpecUnavailable
 
-CheckStatus = Literal["ok", "violations", "unresolved", "spec_unavailable"]
+#: ``partial``: no violation in what was checked, and some part of the
+#: request (named in ``unchecked``) could not be checked against the spec.
+CheckStatus = Literal["ok", "partial", "violations", "unresolved", "spec_unavailable"]
 
 
 @dataclass
@@ -48,6 +58,8 @@ class RequestCheck:
     #: Why a request is unresolved or its spec unavailable.
     note: str | None = None
     findings: list[ContractFinding] = field(default_factory=list)
+    #: The parts of a resolved request the spec could not check, and why.
+    unchecked: list[str] = field(default_factory=list)
 
 
 def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[RequestCheck]:
@@ -87,6 +99,23 @@ def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[
         for site in sites:
             checks.append(_check(site, tuple(node_ids), rel, store, written))
     return checks
+
+
+def spec_for_key(key: str, store: SpecStore, written: list[ApiSpec]) -> ApiSpec | None:
+    """The spec for ``<vendor>/<api>/<version>``: the vendor's own (OpenAPI,
+    Google Discovery) over a docs spec the compile wrote for the same key.
+
+    The one precedence rule, for the request check, the live check and the
+    bench's fake alike. Raises :class:`SpecUnavailable` when the vendor's
+    spec cannot be fetched.
+    """
+    vendor, api, version = key.split("/")
+    found: ApiSpec | None = None
+    if (published := openapi.by_key(key)) is not None:
+        found = store.openapi(published)
+    elif vendor == "google":
+        found = store.google(api, version)
+    return found or next((s for s in written if s.key == key), None)
 
 
 def spec_findings(checks: list[RequestCheck]) -> list[ContractFinding]:
@@ -249,11 +278,13 @@ def _against(
                 )
             ],
         )
+    violations, unchecked = _violations(site, op, spec, matched_path)
     findings = [
         _finding(node_ids[0], rel, site.line, kind, f"line {site.line}: {op.id}: {text}")
-        for kind, text in _violations(site, op, spec, matched_path)
+        for kind, text in violations
     ]
-    return done("violations" if findings else "ok", operation=op.id, spec=label, findings=findings)
+    status: CheckStatus = "violations" if findings else "partial" if unchecked else "ok"
+    return done(status, operation=op.id, spec=label, findings=findings, unchecked=unchecked)
 
 
 def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[str, str]]:
@@ -405,8 +436,10 @@ def match_path(template: list[str], call: list[str]) -> dict[str, str] | None:
 
 def _violations(
     site: CallSite, op: Operation, spec: ApiSpec, path_params: dict[str, str]
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """The request's violations as ``(kind, text)``, and what could not be checked."""
     out: list[tuple[str, str]] = []
+    unchecked: list[str] = []
     sent: dict[str, object] = dict(site.params)
     complete = site.params_complete
     if site.kind == "google_client":
@@ -424,11 +457,11 @@ def _violations(
                             f"passes {kwarg}, but this operation takes no upload",
                         )
                     )
-    if site.kind == "http" and site.url and "?" in site.url:
-        for pair in site.url.split("?", 1)[1].split("&"):
-            key, _, raw = pair.partition("=")
-            if key:
-                sent.setdefault(key, raw if "{" not in raw else UNKNOWN)
+    query = split_query(site.url)[1] if site.kind == "http" and site.url else None
+    for pair in (query or "").split("&"):
+        key, _, raw = pair.partition("=")
+        if key:
+            sent.setdefault(unquote_plus(key), unquote_plus(raw) if "{" not in raw else UNKNOWN)
     allowed = {**spec.global_params, **op.params}
     client = site.kind == "google_client"
     if client:
@@ -442,6 +475,13 @@ def _violations(
         }
     for name, value in sent.items():
         param = allowed.get(name)
+        deep = _DEEP_KEY.fullmatch(name) if param is None and not client else None
+        base = allowed.get(deep.group(1)) if deep is not None else None
+        if deep is not None and base is not None and base.deep_object:
+            found = _deep_problem(base, name, re.findall(r"\[([^\[\]]*)\]", deep.group(2)), value)
+            if found is not None:
+                out.append(found)
+            continue
         if param is None or (site.kind == "http" and param.location == "path"):
             names = sorted(n for n, p in op.params.items() if p.location == "query")
             out.append(
@@ -453,7 +493,16 @@ def _violations(
                 )
             )
             continue
-        problem = _value_problem(param, value)
+        if param.deep_object and not param.bare:
+            out.append(
+                (
+                    "spec_param_value",
+                    f"parameter {name!r} is a deepObject parameter with no plain value: send "
+                    f"it as {_deep_forms(param)}",
+                )
+            )
+            continue
+        problem = _value_problem(param, value, single_list_ok=site.kind == "http")
         if problem:
             out.append(("spec_param_value", f"parameter {name!r}: {problem}"))
     for name, param in op.params.items():
@@ -463,45 +512,86 @@ def _violations(
             name in path_params
             if site.kind == "http" and param.location == "path"
             else ((google.client_param(name) if client else name) in sent)
+            or (param.deep_object and any(k.startswith(name + "[") for k in sent))
         )
         if not given and complete:
             out.append(("spec_missing_required", f"required parameter {name!r} is not sent"))
-    if site.body_keys:
-        request = spec.resolve(op.request_schema)
-        props = (request or {}).get("properties")
-        if props is not None and not (request or {}).get("additionalProperties"):
-            for key in site.body_keys:
-                if key not in props:
-                    out.append(
-                        (
-                            "spec_unknown_body_field",
-                            f"request body field {key!r} is not in the request schema",
-                        )
+    if (
+        site.body_media is not None
+        and op.request_media_types
+        and not any(_media_matches(site.body_media, m) for m in op.request_media_types)
+    ):
+        out.append(
+            (
+                "spec_body_media",
+                f"sends a {_MEDIA_LABEL[site.body_media]} body, but the operation takes "
+                f"{', '.join(op.request_media_types)}",
+            )
+        )
+    if site.body_keys and op.request_schema is None:
+        unchecked.append("request body: the spec gives no schema for it")
+    elif site.body_keys:
+        assert op.request_schema is not None
+        for key in site.body_keys:
+            # A form key names its nesting in brackets: metadata[order],
+            # items[0][price].
+            head = re.match(r"[^\[]*", key)
+            assert head is not None
+            subs = re.findall(r"\[([^\[\]]*)\]", key[head.end() :])
+            path = (head.group(0), *("[]" if s == "" or s.isdigit() else s for s in subs))
+            outcome, at = _walk(
+                spec, op.request_schema, path if site.body_media != "json" else (key,)
+            )
+            if outcome == "missing":
+                out.append(
+                    (
+                        "spec_unknown_body_field",
+                        f"request body field {key!r} is not in the request schema"
+                        + (f" (no {at!r} there)" if at != key else ""),
                     )
+                )
+            elif outcome == "unchecked" and at == path[0]:
+                unchecked.append(
+                    f"request body field {key!r}: the request schema does not say which "
+                    f"fields it takes"
+                )
     media = (
         op.media_download
         or (site.google_method_id or "").endswith("_media")
         or (op.supports_media and str(sent.get("alt")) == "media")
     )
+    if op.response_schema is None and not media and site.response_reads:
+        unchecked.append(
+            f"the response fields it reads ({_dotted(site.response_reads[0][0])}): the spec "
+            f"gives no JSON response for this operation"
+        )
     if op.response_schema is not None and not media:
         reported: list[tuple[str, ...]] = []
         for path, line in sorted(site.response_reads, key=lambda r: len(r[0])):
-            missing = _unknown_field(spec, op.response_schema, path)
-            if missing is None:
+            outcome, at = _walk(spec, op.response_schema, path)
+            if outcome == "ok":
                 continue
+            assert at is not None
             # One mistake, once: `t["id"]` under an unknown `resp["messages"]`
             # is the same missing field.
-            stem = path[: path.index(missing) + 1]
+            stem = path[: path.index(at) + 1]
             if any(stem[: len(r)] == r for r in reported):
                 continue
             reported.append(stem)
-            out.append(
-                (
-                    "spec_unknown_response_field",
-                    f"line {line} reads {_dotted(path)}, but the response schema has no "
-                    f"{missing!r} there",
+            if outcome == "missing":
+                out.append(
+                    (
+                        "spec_unknown_response_field",
+                        f"line {line} reads {_dotted(path)}, but the response schema has no "
+                        f"{at!r} there",
+                    )
                 )
-            )
+            else:
+                where = _dotted(stem[:-1]) or "the response"
+                unchecked.append(
+                    f"line {line} reads {_dotted(path)}: the spec does not list the fields of "
+                    f"{where}, so {at!r} is not checked"
+                )
     elif media and site.response_reads:
         out.append(
             (
@@ -510,14 +600,80 @@ def _violations(
                 f"operation returns the file's bytes, not JSON",
             )
         )
-    return out
+    return out, unchecked
 
 
-def _value_problem(param: ParamSpec, value: object) -> str | None:
+#: A deepObject key: ``created[gte]``, ``expand[]``, ``items[0][price]``.
+_DEEP_KEY = re.compile(r"([^\[\]]+)((?:\[[^\[\]]*\])+)")
+
+_MEDIA_LABEL = {"json": "JSON", "form": "form-encoded", "multipart": "multipart"}
+
+
+def _media_matches(media: str, declared: str) -> bool:
+    declared = declared.split(";", 1)[0].strip().lower()
+    if media == "json":
+        return "json" in declared
+    if media == "form":
+        return declared == "application/x-www-form-urlencoded"
+    return declared == "multipart/form-data"
+
+
+def _deep_forms(param: ParamSpec) -> str:
+    forms = []
+    if param.items is not None:
+        forms.append(f"{param.name}[]=...")
+    if param.members is None or param.members:
+        forms.append(f"{param.name}[<key>]=...")
+    return " or ".join(forms) or f"{param.name}[...]"
+
+
+def _deep_problem(
+    param: ParamSpec, name: str, subs: list[str], value: object
+) -> tuple[str, str] | None:
+    """What is wrong with ``name`` (``created[gte]``) sent for deepObject ``param``."""
+    first = subs[0]
+    if first == "" or first.isdigit():
+        if param.items is not None:
+            if len(subs) > 1:
+                return None  # a member of an array item: not described here
+            item = param.items.model_copy(update={"repeated": first == ""})
+            problem = _value_problem(item, value, single_list_ok=True)
+            return ("spec_param_value", f"parameter {name!r}: {problem}") if problem else None
+        if param.members is None:
+            return None  # an open object: any key, "0" too
+        return (
+            "spec_unknown_param",
+            f"sends {name!r}, but {param.name!r} takes no list (send it as {_deep_forms(param)})",
+        )
+    if param.members is None:
+        return None
+    member = param.members.get(first)
+    if member is None:
+        return (
+            "spec_unknown_param",
+            f"sends {name!r}, but {param.name!r} has no member {first!r}. Members: "
+            f"{', '.join(sorted(param.members)) or 'none'}",
+        )
+    if len(subs) > 1:
+        return None
+    problem = _value_problem(member, value, single_list_ok=True)
+    return ("spec_param_value", f"parameter {name!r}: {problem}") if problem else None
+
+
+def _value_problem(param: ParamSpec, value: object, single_list_ok: bool = False) -> str | None:
+    """What is wrong with ``value`` for ``param``.
+
+    ``single_list_ok``: an HTTP client sends a one-element list exactly as
+    its element (``sort=a``), so only a longer list is a repeated name.
+    """
     if value is UNKNOWN or isinstance(value, Expr):
         return None
     values = value if isinstance(value, list | tuple) else [value]
-    if isinstance(value, list | tuple) and not param.repeated:
+    if (
+        isinstance(value, list | tuple)
+        and not param.repeated
+        and not (single_list_ok and len(value) <= 1)
+    ):
         return "a list was sent, but the parameter is not repeated"
     for v in values:
         if param.enum is not None and isinstance(v, str) and v not in param.enum:
@@ -536,23 +692,187 @@ def _value_problem(param: ParamSpec, value: object) -> str | None:
     return None
 
 
-def _unknown_field(spec: ApiSpec, schema: dict[str, Any], path: tuple[str, ...]) -> str | None:
-    """The first key of ``path`` the schema does not have, or ``None`` if all are there."""
-    node: dict[str, Any] | None = spec.resolve(schema)
-    for key in path:
-        if node is None:
-            return None
-        if key == "[]":
-            node = spec.resolve(node.get("items"))
-            continue
-        props = node.get("properties")
-        if props is None:
+WalkOutcome = Literal["ok", "missing", "unchecked"]
+
+_SCALARS = {"string", "integer", "number", "boolean", "null"}
+
+
+def _walk(
+    spec: ApiSpec, schema: dict[str, Any], path: tuple[str, ...]
+) -> tuple[WalkOutcome, str | None]:
+    """Whether the schema has the field ``path`` reads, and the key it stopped at.
+
+    ``missing``: no branch of the schema has that key, and every branch
+    says what it holds. ``unchecked``: a branch on the way is open (no
+    ``properties``, ``additionalProperties: true``, a reference rote cannot
+    follow), so the key may be there. ``anyOf`` / ``oneOf`` is any branch
+    having the key; ``allOf`` merges its parts' properties.
+    """
+    frontier, open_ = schema_branches(spec, schema)
+    for i, key in enumerate(path):
+        nxt: list[dict[str, Any]] = []
+        # Whether some branch has the key (holding anything, maybe).
+        has = False
+        for node in frontier:
+            kind = _kind(node)
+            if key == "[]":
+                if kind == "array":
+                    has = True
+                    found, more_open = schema_branches(spec, node.get("items"))
+                    nxt += found
+                    open_ = open_ or more_open
+                continue
+            if kind != "object":
+                continue  # a list or a plain value has no fields
+            props = node.get("properties")
             extra = node.get("additionalProperties")
-            node = spec.resolve(extra) if isinstance(extra, dict) else None
+            if isinstance(props, dict) and key in props:
+                target: Any = props[key]
+            elif isinstance(extra, dict) and extra:
+                target = extra
+            elif extra is True or extra == {} or (props is None and extra is None):
+                # Open: any key is allowed, or the object lists no fields.
+                open_ = True
+                continue
+            else:
+                continue  # closed: it lists its fields, and this is not one
+            has = True
+            found, more_open = schema_branches(spec, target)
+            nxt += found
+            open_ = open_ or more_open
+        frontier = nxt
+        if not frontier:
+            if has and i == len(path) - 1:
+                return "ok", None  # the field is there; what it holds is not read
+            if has:
+                return "unchecked", path[i + 1]
+            return ("unchecked" if open_ else "missing"), key
+    return "ok", None
+
+
+def schema_branches(
+    spec: ApiSpec, schema: Any, seen: frozenset[str] = frozenset()
+) -> tuple[list[dict[str, Any]], bool]:
+    """``schema`` as the concrete shapes it allows, and whether any is open."""
+    if not isinstance(schema, dict):
+        return [], True
+    ref = schema.get("$ref")
+    if isinstance(ref, str):
+        target = spec.schemas.get(ref.removeprefix("#/$defs/"))
+        if not ref.startswith("#/$defs/") or target is None or ref in seen:
+            return [], True
+        return schema_branches(spec, target, seen | {ref})
+    own = {k: v for k, v in schema.items() if k not in ("anyOf", "oneOf", "allOf")}
+    parts = [p for p in schema.get("allOf") or [] if not _shapeless(p)]
+    choices = schema.get("anyOf") or schema.get("oneOf") or []
+    alternatives = [a for a in choices if not _shapeless(a)]
+    if parts:
+        base, open_ = _merge(spec, [own, *parts], seen)
+        bases = [base]
+    elif _kind(own) is not None:
+        bases, open_ = [own], False
+    else:
+        # Beside no shape, a shapeless alternative ({}) is anything at all;
+        # beside one, it only constrains it ({required: [...]}).
+        bases, open_ = [], len(alternatives) < len(choices) or not choices
+    if not alternatives:
+        return bases, open_
+    out: list[dict[str, Any]] = []
+    for alt in alternatives:
+        # {properties: ..., oneOf: [...]}: each alternative on top of the
+        # shape beside it.
+        found, alt_open = (
+            _merge(spec, [*bases, alt], seen) if bases else schema_branches(spec, alt, seen)
+        )
+        out += [found] if isinstance(found, dict) else found
+        open_ = open_ or alt_open
+    return out, open_
+
+
+#: Keys that give a schema a shape; one with none of them only constrains
+#: (``{required: [...]}``) or says nothing at all.
+_SHAPE_KEYS = {
+    "$ref",
+    "type",
+    "properties",
+    "additionalProperties",
+    "items",
+    "enum",
+    "const",
+    "anyOf",
+    "oneOf",
+    "allOf",
+}
+
+
+def _shapeless(schema: Any) -> bool:
+    return isinstance(schema, dict) and not (set(schema) & _SHAPE_KEYS)
+
+
+def _merge(spec: ApiSpec, parts: list[Any], seen: frozenset[str]) -> tuple[dict[str, Any], bool]:
+    """One shape from ``allOf`` parts (or a shape and an alternative).
+
+    Object properties are united; one both parts declare is the ``allOf``
+    of the two, so a read below it is checked against both. The value must
+    satisfy every part, so the shape is open only when no part lists its
+    fields and stops there (GitHub's check-run variants say
+    ``additionalProperties: true`` beside a base that lists every field).
+    Parts that are no object merge to the first of them, as it is.
+    """
+    props: dict[str, Any] = {}
+    listed = False
+    closed = False
+    extra: Any = None
+    first: dict[str, Any] | None = None
+    is_object = False
+    open_ = False
+    for part in parts:
+        if _shapeless(part):
             continue
-        if key not in props:
-            return key
-        node = spec.resolve(props[key])
+        found, part_open = schema_branches(spec, part, seen)
+        open_ = open_ or part_open
+        for node in found:
+            first = first if first is not None else node
+            if _kind(node) != "object":
+                continue
+            is_object = True
+            lists = isinstance(node.get("properties"), dict)
+            listed = listed or lists
+            for key, value in (node.get("properties") or {}).items():
+                props[key] = {"allOf": [props[key], value]} if key in props else value
+            if node.get("additionalProperties") not in (None, False):
+                extra = node["additionalProperties"]
+            elif lists:
+                closed = True
+    if not is_object:
+        return (first or {}), open_ or first is None
+    merged: dict[str, Any] = {"type": "object"}
+    if listed:
+        merged["properties"] = props
+    if extra is not None and not closed:
+        merged["additionalProperties"] = extra
+    return merged, open_
+
+
+def _kind(node: dict[str, Any]) -> str | None:
+    """``object``, ``array`` or ``scalar`` for a shape; ``None`` when it says none."""
+    kind = node.get("type")
+    if isinstance(kind, list):
+        kinds = [k for k in kind if k != "null"]
+        if "object" in kinds:
+            kind = "object"
+        elif "array" in kinds:
+            kind = "array"
+        else:
+            kind = kinds[0] if kinds else "null"
+    if kind == "object" or (
+        kind is None and ("properties" in node or "additionalProperties" in node)
+    ):
+        return "object"
+    if kind == "array" or (kind is None and "items" in node):
+        return "array"
+    if kind in _SCALARS or (kind is None and ("enum" in node or "const" in node)):
+        return "scalar"
     return None
 
 
@@ -585,6 +905,7 @@ def report_section(checks: list[RequestCheck]) -> list[str]:
     for c in checks:
         result = {
             "ok": "ok",
+            "partial": f"no violations; not checked: {'; '.join(c.unchecked)}",
             "violations": f"**{len(c.findings)} violation(s)**",
             "unresolved": f"not checked: {c.note}",
             "spec_unavailable": f"not checked: {c.note}",
@@ -602,6 +923,8 @@ def report_section(checks: list[RequestCheck]) -> list[str]:
 __all__ = [
     "CheckStatus",
     "RequestCheck",
+    "schema_branches",
+    "spec_for_key",
     "check_deliverable",
     "report_section",
     "spec_findings",

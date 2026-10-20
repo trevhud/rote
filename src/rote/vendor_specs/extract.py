@@ -79,6 +79,10 @@ class CallSite:
     #: Whether every parameter the call sends is known (no ``**kwargs``).
     params_complete: bool = True
     body_keys: tuple[str, ...] = ()
+    #: How an ``http`` request sends its body: ``json=`` is ``json``, a
+    #: ``data=`` dict is ``form``, ``files=`` makes it ``multipart``;
+    #: ``None`` when it sends none rote can read.
+    body_media: Literal["json", "form", "multipart"] | None = None
     #: Response field paths the code reads: ``("threads", "[]", "id")``.
     response_reads: list[tuple[tuple[str, ...], int]] = field(default_factory=list)
     #: Request headers (``http``): name -> literal or :class:`Expr`; ``None``
@@ -631,6 +635,21 @@ class _Scope:
         params, complete = self._kw_dict(kwargs.get("params"))
         body, _ = self._kw_dict(kwargs.get("json"))
         headers, headers_known = self._kw_dict(kwargs.get("headers"))
+        media: Literal["json", "form", "multipart"] | None = (
+            "json" if kwargs.get("json") is not None else None
+        )
+        if media is None:
+            # data= as a dict is form-encoded; a string or bytes could be
+            # anything already encoded, so it says nothing about the media.
+            form, _ = self._kw_dict(kwargs.get("data"))
+            files, _ = self._kw_dict(kwargs.get("files"))
+            if "files" in kwargs:
+                media, body = "multipart", {**form, **files}
+            elif kwargs.get("data") is not None and (
+                isinstance(kwargs["data"], ast.Dict)
+                or (isinstance(kwargs["data"], ast.Name) and kwargs["data"].id in self.dicts)
+            ):
+                media, body = "form", form
         return CallSite(
             line=call.lineno,
             function=self.name,
@@ -642,6 +661,7 @@ class _Scope:
             body_keys=tuple(body),
             headers=headers if headers_known else None,
             auth_kwarg="auth" in kwargs,
+            body_media=media,
         )
 
     def _google(self, call: ast.Call) -> CallSite | None:

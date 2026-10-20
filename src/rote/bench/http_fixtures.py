@@ -23,7 +23,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from rote.vendor_specs import docs, openapi
+from rote.vendor_specs import docs
+from rote.vendor_specs.check import spec_for_key
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixture_store import FixtureStore
@@ -73,28 +74,20 @@ def specs_for(
 ) -> list[ApiSpec]:
     """The spec each fixture set answers for: the vendor's own, else the
     compile's docs spec (``vendor_specs/``, lower trust)."""
-    written = {s.key: s for _, s in docs.load(compiled_dir)} if compiled_dir else {}
+    written = [s for _, s in docs.load(compiled_dir)] if compiled_dir else []
     out: list[ApiSpec] = []
     for key in fixtures:
-        vendor, api, version = key.split("/")
-        if key in written:
-            out.append(written[key])
-            continue
-        if (published := openapi.by_key(key)) is not None:
-            out.append(store.openapi(published))
-            continue
-        if vendor != "google":
-            raise HttpFixtureError(
-                f"no spec for {key}: neither a source rote reads nor a docs spec in the compile"
-            )
         try:
-            spec = store.google(api, version)
+            spec = spec_for_key(key, store, written)
         except SpecUnavailable as e:
-            # The bench's environment (Discovery unreachable), not the
+            # The bench's environment (a spec service unreachable), not the
             # pipeline's: it stops the bench instead of scoring a 0.0.
             raise HttpFixtureError(f"the spec for the fixtures {key} is unavailable: {e}") from e
         if spec is None:
-            raise HttpFixtureError(f"Google lists no {api} {version} for the fixtures {key}")
+            raise HttpFixtureError(
+                f"no spec for {key}: the vendor publishes none rote reads (or Google lists no "
+                f"such API), and the compile wrote no docs spec for it"
+            )
         out.append(spec)
     return out
 

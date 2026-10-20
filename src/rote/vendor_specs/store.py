@@ -136,12 +136,13 @@ class SpecStore:
             return memo
         try:
             raw = self._read_fresh(self.root / f"{key}.json")
-            if not isinstance(raw, dict) or raw.get("source_url") != source.url:
-                doc = self._get(source.url)
-                self._write(key, {"source_url": source.url, "document": doc})
-            else:
-                doc = raw["document"]
+            fresh = not isinstance(raw, dict) or raw.get("source_url") != source.url
+            doc = self._get(source.url) if fresh else raw["document"]
             spec = openapi.from_openapi(doc, source)
+            if fresh:
+                # Only a document rote can read is cached: a malformed one
+                # is fetched again next time, not served for the TTL.
+                self._write(key, {"source_url": source.url, "document": doc})
         except openapi.OpenApiError as e:
             error = SpecUnavailable(str(e))
             self._memo[key] = error
