@@ -15,7 +15,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   hand-written `expected/pipeline.yaml` (node and kind match, edges, wave
   order, fan_out, mandatory, gates, inputs), re-verifies the deliverable,
   checks the dbos and cloudflare emits, and writes a diffable
-  `results.json` (`--compare`). Hidden from `rote --help`. The origin/main
+  `results.json` (`--compare`). Hidden from `rote --help`. A pre-#144
   baseline is in `examples/bench/baseline.json`. See
   `docs/compile-bench.md`.
 - **`rote serve` always exposes two built-in tools.** With no registry
