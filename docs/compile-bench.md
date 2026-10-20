@@ -124,8 +124,21 @@ each other rather than chasing 1.0.
 
 ## The committed baseline
 
-[`examples/bench/baseline.json`](../examples/bench/baseline.json) is one
-repeat of all five skills on the origin/main commit in its `label`. It
-holds metrics only, no compiled outputs. Diff against it with `--compare`,
-and when a change lands that moves the numbers on purpose, re-run the
-full set and replace the file in the same PR.
+[`examples/bench/baseline.json`](../examples/bench/baseline.json) (and its
+table, `baseline.txt`) is one repeat on origin/main `3dc2e16`, the 0.15.0
+release, with the default compiler model. It **predates #144** (compiler
+effort low), so it is the reference for "before #144", not for current
+main. A same-day bench of main plus #144 replaces it as the reference.
+
+It covers four skills: expense-audit, ops-report, invoice-push and
+deal-monitor. bdr-outreach is not in it. Its first attempt hit the weekly
+usage limit after $2.19, and it was not re-run, to save money. The run
+spent $15.01 in all: $10.57 on the four scored compiles, plus $2.26
+(a deal-monitor attempt) and $2.19 (bdr-outreach), both killed by the
+usage limit. Those two are listed under `replaced_jobs`. It holds metrics
+only, no compiled outputs.
+
+Diff against it with `--compare`, or print it with
+`rote bench --report examples/bench/baseline.json`. When a change lands
+that moves the numbers on purpose, re-run the set and replace the file in
+the same PR.
