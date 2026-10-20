@@ -162,7 +162,10 @@ def test_the_store_caches_by_vendor_api_version_and_never_reads_stale(tmp_path: 
     fetch = _Fetch()
     root = tmp_path / "specs"
     assert SpecStore(root=root, fetch=fetch).google("gmail", "v1") is not None
-    assert (root / "google" / "gmail" / "v1.json").is_file()
+    cached = json.loads((root / "google" / "gmail" / "v1.json").read_text())
+    # The vendor's document is what is cached, not rote's conversion of it.
+    assert cached["body"]["document"]["revision"] == "20261012"
+    assert cached["body"]["source_url"] == GMAIL_URL
     assert len(fetch.calls) == 2  # the directory, then the document
 
     def offline(url: str) -> Any:
@@ -403,3 +406,30 @@ def _write_into(work_dir: Path, module: str) -> None:
         "def test_named():\n    assert fetch_emails and fetch_sheet\n",
         encoding="utf-8",
     )
+
+
+def test_the_client_librarys_media_variants_are_real_operations(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    """files().export_media() and files().get_media() are drive.files.export /
+    drive.files.get returning bytes. A real compile was bounced for
+    export_media when the check did not know the variant."""
+    module = """
+    from googleapiclient.discovery import build
+
+    def fetch_emails(query):
+        return {"x": build("gmail", "v1").users().threads().list_media(userId="me").execute()}
+
+    def fetch_sheet(file_id):
+        drive = build("drive", "v3")
+        data = drive.files().export_media(fileId=file_id, mimeType="text/csv").execute()
+        raw = drive.files().get_media(fileId=file_id).execute()
+        return {"content": data.decode("utf-8"), "raw": raw}
+    """
+    root = _deliverable(tmp_path, module)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, c.status) for c in checks] == [
+        (None, "violations"),  # threads.list has no media download
+        ("drive.files.export", "ok"),
+        ("drive.files.get", "ok"),
+    ]

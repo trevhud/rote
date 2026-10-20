@@ -103,6 +103,7 @@ def _walk(
                 request_schema=_schema(request) if request else None,
                 response_schema=_schema(response) if response else None,
                 media_download=bool(method.get("supportsMediaDownload")) and response is None,
+                supports_media=bool(method.get("supportsMediaDownload")),
                 scopes=tuple(method.get("scopes") or ()),
             )
         )

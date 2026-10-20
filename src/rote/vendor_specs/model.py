@@ -52,8 +52,12 @@ class Operation(BaseModel):
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     request_schema: dict[str, Any] | None = None
     response_schema: dict[str, Any] | None = None
-    #: The response is a file's bytes, not JSON (``alt=media`` / export).
+    #: The response is always a file's bytes, not JSON (Drive's export).
     media_download: bool = False
+    #: The operation can return the file's bytes instead of its JSON
+    #: (Discovery ``supportsMediaDownload``): with ``alt=media`` over HTTP,
+    #: and as ``<method>_media`` in Google's client library.
+    supports_media: bool = False
     scopes: tuple[str, ...] = ()
 
     def segments(self) -> list[str]:

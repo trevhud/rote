@@ -3,8 +3,13 @@
 Layout, chosen so a shared store (rote-cloud, later) can hold the same
 files under the same keys::
 
-    <root>/<vendor>/<api>/<version>.json   one ApiSpec (rote.vendor_specs.model)
+    <root>/<vendor>/<api>/<version>.json   the vendor's own spec document, verbatim
     <root>/google/_directory.json          the Discovery directory
+
+The vendor's bytes are what is cached, not rote's conversion of them: the
+conversion (:func:`rote.vendor_specs.google.from_discovery`) runs on every
+read, so a change to it can never be hidden behind a cache written by an
+older rote.
 
 ``<root>`` is ``ROTE_SPEC_CACHE_DIR``, else ``~/.cache/rote/specs``. A cached
 spec is used while younger than the TTL; after that it is refetched, and a
@@ -94,11 +99,8 @@ class SpecStore:
         if url is None:
             return None
         doc = self._get(url)
-        try:
-            spec = google.from_discovery(doc, url)
-        except (KeyError, TypeError, ValueError) as e:
-            raise SpecUnavailable(f"{url} is not a Discovery document: {e}") from e
-        self._write(spec.key, spec.model_dump(mode="json"))
+        spec = _convert(doc, url)
+        self._write(f"google/{api}/{version}", {"source_url": url, "document": doc})
         return spec
 
     def _directory(self) -> dict[str, Any]:
@@ -114,12 +116,9 @@ class SpecStore:
 
     def _cached(self, key: str) -> ApiSpec | None:
         raw = self._read_fresh(self.root / f"{key}.json")
-        if raw is None:
+        if not isinstance(raw, dict) or "document" not in raw:
             return None
-        try:
-            return ApiSpec.model_validate(raw)
-        except ValueError:
-            return None  # an older or damaged file is refetched
+        return _convert(raw["document"], str(raw.get("source_url") or ""))
 
     def _read_fresh(self, path: Path) -> Any:
         try:
@@ -138,6 +137,13 @@ class SpecStore:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps({"fetched_at": time.time(), "body": body}), encoding="utf-8")
         os.replace(tmp, path)
+
+
+def _convert(doc: Any, url: str) -> ApiSpec:
+    try:
+        return google.from_discovery(doc, url)
+    except (KeyError, TypeError, ValueError) as e:
+        raise SpecUnavailable(f"{url} is not a Discovery document: {e}") from e
 
 
 __all__ = ["DEFAULT_TTL_SECONDS", "SpecStore", "SpecUnavailable", "default_root", "http_get_json"]

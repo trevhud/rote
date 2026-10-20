@@ -130,7 +130,15 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
 def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[str, str]]:
     """The operation ``site`` calls, and the path parameters its URL supplies."""
     if site.kind == "google_client":
-        return spec.operation(site.google_method_id or ""), {}
+        op_id = site.google_method_id or ""
+        op = spec.operation(op_id)
+        if op is None and op_id.endswith("_media"):
+            # The client library's media variant: files().export_media() is
+            # drive.files.export, returning the file's bytes.
+            base = spec.operation(op_id.removesuffix("_media"))
+            if base is not None and base.supports_media:
+                return base, {}
+        return op, {}
     assert site.url is not None
     call = path_segments(site.url)
     for op in spec.operations:
@@ -218,7 +226,12 @@ def _violations(
                             f"request body field {key!r} is not in the request schema",
                         )
                     )
-    if op.response_schema is not None:
+    media = (
+        op.media_download
+        or (site.google_method_id or "").endswith("_media")
+        or (op.supports_media and str(sent.get("alt")) == "media")
+    )
+    if op.response_schema is not None and not media:
         for path, line in site.response_reads:
             missing = _unknown_field(spec, op.response_schema, path)
             if missing is not None:
@@ -229,7 +242,7 @@ def _violations(
                         f"{missing!r} there",
                     )
                 )
-    elif op.media_download and site.response_reads:
+    elif media and site.response_reads:
         out.append(
             (
                 "spec_unknown_response_field",
