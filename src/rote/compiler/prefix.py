@@ -79,6 +79,7 @@ def build_plan(
     sample: Sample,
     implementations: list[NodeImplementation],
     observations: tuple[Any, ...] = (),
+    tools: dict[tuple[str, str], Any] | None = None,
 ) -> dict[str, Any]:
     """The JSON plan :mod:`rote.compiler._prefix_runner` executes."""
     from rote.adapters._common import mcp_tool_arguments
@@ -103,10 +104,12 @@ def build_plan(
                     bindings.append([param, "node", parsed.node_id, parsed.field])
             step: dict[str, Any] = {"id": node.id, "bindings": bindings}
             if node.mcp is not None:
+                declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
                 step |= {
                     "kind": "mcp",
                     "args": mcp_tool_arguments(node),
                     "observed": recorded.get((node.mcp.server, node.mcp.tool), []),
+                    "probe_shapes": probe_shapes(getattr(declared, "output_schema", None)),
                 }
             elif (
                 node.kind is NodeKind.PURE_FUNCTION
@@ -134,6 +137,28 @@ def build_plan(
                 step |= {"kind": "skip", "reason": reason}
             steps.append(step)
     return {"root": str(root.resolve()), "sample": sample.payload, "steps": steps}
+
+
+#: What an MCP result may be when the tool declares no output schema: a bare
+#: JSON list (Gmail's search_threads) or text (Drive's read_file_content).
+UNDECLARED_SHAPES = ("list", "text")
+_SHAPE_OF_TYPE = {"array": "list", "string": "text", "object": "object"}
+
+
+def probe_shapes(output_schema: dict[str, Any] | None) -> list[str]:
+    """The result shapes to probe a consumer with: the declared one, else both
+    shapes an undeclared result is known to take.
+
+    FastMCP wraps a non-object result as ``{"result": ...}`` and marks it
+    ``x-fastmcp-wrap-result``; rote's MCP helper unwraps it, so the declared
+    shape is the inner one."""
+    schema = output_schema
+    if isinstance(schema, dict) and schema.get("x-fastmcp-wrap-result"):
+        schema = (schema.get("properties") or {}).get("result")
+    kind = schema.get("type") if isinstance(schema, dict) else None
+    if isinstance(kind, str) and kind in _SHAPE_OF_TYPE:
+        return [_SHAPE_OF_TYPE[kind]]
+    return list(UNDECLARED_SHAPES)
 
 
 def _where(at: dict[str, Any] | None) -> str:
@@ -285,7 +310,7 @@ def run_prefix(
     """
     from rote.compiler.verify import run_confined
 
-    plan = build_plan(pipeline, root, sample, implementations, observations)
+    plan = build_plan(pipeline, root, sample, implementations, observations, tools)
 
     def _args(scratch: Path) -> list[str]:
         runner = scratch / RUNNER_PATH.name
