@@ -62,7 +62,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   skills and then measured once on the held-out set: kind 0.67 against the
   rules' 0.49, 3 of 3 gates against 2 of 3, one false gate, about $0.001 a
   compile. Clef there: kind 0.66, 3 of 3 gates, no false gate, about $0.005.
-  The built-in default stays `rules`.
+  The built-in default stays `rules`. Not yet verified live: an end-to-end
+  compile with `--decider jev`, and Jev's calls tagged with
+  `CLOUDFLARE_AI_GATEWAY_METADATA` in the gateway logs. Jev's own calls ran
+  live in the skeleton measurement, and the shared metadata code is proven
+  live through Clef.
 - **The decider is a layered setting.** `--decider`, `ROTE_DECIDER`, or `decider:` in `rote.yaml` or the user
   config, with strict validation. `rote init` asks for it and `rote config`
   shows it. A model decider without `CLOUDFLARE_ACCOUNT_ID` and
