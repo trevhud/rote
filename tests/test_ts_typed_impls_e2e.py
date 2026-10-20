@@ -114,6 +114,8 @@ nodes:
       # Free-form objects, in an array and nested, plus an untyped field:
       # a Cloudflare step.do result must be Rpc.Serializable, which
       # Record<string, unknown> is not (deal-monitor's shape, from rote bench).
+      # The client is openai because an anthropic judge with this schema is
+      # refused at emit: structured outputs cannot express free-form objects.
       output_schema:
         type: object
         properties:
@@ -127,7 +129,7 @@ nodes:
             required: [extra, anything]
         required: [records, meta, nested]
       prompt: "Extract from {{ page }}"
-      client: anthropic
+      client: openai
 edges:
   - {from: list_items, to: score_item}
   - {from: score_item, to: summarize}

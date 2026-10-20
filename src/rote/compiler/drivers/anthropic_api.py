@@ -260,28 +260,40 @@ def cached_system(system_prompt: str) -> list[dict[str, Any]]:
 
 
 def cached_messages(messages: list[Any]) -> list[Any]:
-    """``messages`` with one rolling breakpoint on the last user turn's last block.
+    """``messages`` with breakpoints on its last two user turns' last blocks.
 
-    Without it every turn re-bills the whole conversation at the full input
+    Without them every turn re-bills the whole conversation at the full input
     rate: a measured expense-audit compile spent $3.67 over 28 turns on 948k
-    uncached input tokens. With it each turn reads the prefix the previous
-    turn wrote. The history itself is not changed (a copy is returned), so
-    exactly one message breakpoint is sent: with the tools' and the system's,
-    three of the four the API allows. A trailing assistant turn (a resumed
-    ``pause_turn``) keeps the breakpoint on the user turn before it.
+    uncached input tokens. The last user turn's breakpoint writes this
+    request's prefix. The one before it is where the previous request wrote
+    its own, so it reads that entry however wide the turn in between was. A
+    breakpoint only looks back 20 positions for an earlier entry. A run of
+    consecutive tool_use (or tool_result) blocks is one position, so plain
+    parallel calls never reach that; alternating blocks do: text between
+    calls, or web research, whose server_tool_use and result blocks
+    interleave with text. Measured live: a 24-block alternating turn lost
+    the previous entry under one rolling breakpoint and kept it with two.
+
+    With the tools' and the system's that is all four breakpoints the API
+    allows. The history itself is not changed (a copy is returned), so the
+    breakpoints never accumulate. A trailing assistant turn (a resumed
+    ``pause_turn``) keeps them on the user turns before it.
     """
     out = list(messages)
+    marked = 0
     for i in range(len(out) - 1, -1, -1):
+        if marked == 2:
+            break
         message = out[i]
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         content = message["content"]
         blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
         if not blocks or not isinstance(blocks[-1], dict):
-            return out
+            continue
         blocks[-1] = {**blocks[-1], "cache_control": _CACHE}
         out[i] = {**message, "content": blocks}
-        return out
+        marked += 1
     return out
 
 

@@ -8,7 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
+    "@anthropic-ai/sdk": "^0.136.0",
     "@modelcontextprotocol/client": "^2.3.1",
     "inngest": "^4.11.0",
     "zod": "^4.4.3"

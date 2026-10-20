@@ -26,6 +26,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.ir import Pipeline, load_pipeline
+from tests._messages_api import CURRENT_SONNET
 from tests.test_agent_loop_output_parity import (
     EXPECTED,
     PIPELINE,
@@ -188,9 +189,25 @@ def test_ts_loop_that_never_submits_gets_one_forced_turn(
     result = _drive(loop_app, loop_env(messages_stub, mcp_server, tmp_path))
     assert result == {"output": SUBMITTED}
     forced = MessagesStub.requests[-1]
-    assert forced["tool_choice"] == {"type": "tool", "name": "submit_result"}
+    # Schema-locked, never a forced tool_choice: the stub 400s that on the
+    # current Sonnet the loop runs on, as the real API does.
+    assert forced["model"] == CURRENT_SONNET
+    assert forced["tool_choice"] == {"type": "none"}
+    assert forced["output_config"] == {
+        "format": {
+            "type": "json_schema",
+            "schema": {
+                "type": "object",
+                "properties": {"summary": {"type": "string"}, "score": {"type": "integer"}},
+                "required": ["summary", "score"],
+                "additionalProperties": False,
+            },
+        }
+    }
     assert "tool_choice" not in MessagesStub.requests[0]
-    assert forced["messages"][-1]["content"][-1]["text"].startswith("Call submit_result now")
+    assert (
+        forced["messages"][-1]["content"][-1]["text"] == "Reply now with the step's final answer."
+    )
 
 
 def test_ts_submission_is_validated_with_the_shared_message(

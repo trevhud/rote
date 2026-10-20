@@ -100,8 +100,6 @@ PROMPT = (
     "ia the structured output tool."
 )
 
-TOOL_DESCRIPTION = "Generate personalized opening line and TA-relevant callout per"
-
 OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(
     "{\"additionalProperties\":false,\"properties\":{\"opening_line\":{\"title\":\"Openin"
     "g Line\",\"type\":\"string\"},\"ta_callout\":{\"title\":\"Ta Callout\",\"type\":\"st"
@@ -157,6 +155,5 @@ class PersonalizeEmail:
             base_url=BASE_URL,
             prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),
             output_schema=OUTPUT_JSON_SCHEMA,
-            tool_description=TOOL_DESCRIPTION,
         )
         return PersonalizeEmailOutput.model_validate(payload)

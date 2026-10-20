@@ -22,6 +22,7 @@ from rote.adapters import ADAPTERS
 from rote.inference import _runtime_helper as helper
 from rote.ir import Node, NodeKind, Pipeline
 from tests._helpers import mini_pipeline
+from tests._messages_api import CURRENT_SONNET, reject_like_the_api, send_json, structured_message
 
 # ───────── fixtures / doubles ─────────
 
@@ -48,9 +49,19 @@ def _fake_anthropic(create: Any) -> types.ModuleType:
     return module
 
 
-def _tool_use_response(payload: dict[str, Any]) -> Any:
+#: A closed output schema: what structured outputs accepts as is.
+_GRADE = {
+    "type": "object",
+    "properties": {"grade": {"type": "integer"}},
+    "required": ["grade"],
+    "additionalProperties": False,
+}
+
+
+def _structured_response(payload: dict[str, Any]) -> Any:
     return types.SimpleNamespace(
-        content=[types.SimpleNamespace(type="tool_use", input=payload)],
+        stop_reason="end_turn",
+        content=[types.SimpleNamespace(type="text", text=json.dumps(payload))],
         usage=types.SimpleNamespace(
             input_tokens=11,
             output_tokens=7,
@@ -222,7 +233,7 @@ def test_judge_translates_sdk_errors_so_they_survive_a_durable_step(
             client="anthropic",
             model="claude-sonnet-5",
             prompt="Grade it.",
-            output_schema={"type": "object", "properties": {}},
+            output_schema=_GRADE,
         )
 
     message = str(excinfo.value)
@@ -241,7 +252,7 @@ def test_api_provider_leaves_credentials_to_the_sdk(monkeypatch: pytest.MonkeyPa
     seen: dict[str, Any] = {}
 
     def _create(**kwargs: Any) -> Any:
-        return _tool_use_response({"grade": 9})
+        return _structured_response({"grade": 9})
 
     module = _fake_anthropic(_create)
 
@@ -259,7 +270,7 @@ def test_api_provider_leaves_credentials_to_the_sdk(monkeypatch: pytest.MonkeyPa
         model="anthropic/claude-sonnet-5",
         base_url="https://gateway.example/ai",
         prompt="Grade it.",
-        output_schema={"type": "object", "properties": {}},
+        output_schema=_GRADE,
     )
     assert seen == {"base_url": "https://gateway.example/ai"}
 
@@ -278,7 +289,7 @@ def test_rote_cloud_passes_its_token_explicitly_so_no_key_rides_along(
     seen: dict[str, Any] = {}
 
     def _create(**kwargs: Any) -> Any:
-        return _tool_use_response({"grade": 9})
+        return _structured_response({"grade": 9})
 
     module = _fake_anthropic(_create)
 
@@ -294,7 +305,7 @@ def test_rote_cloud_passes_its_token_explicitly_so_no_key_rides_along(
         client="anthropic",
         model="claude-sonnet-5",
         prompt="Grade it.",
-        output_schema={"type": "object", "properties": {}},
+        output_schema=_GRADE,
     )
     assert result == {"grade": 9}
     assert seen == {
@@ -314,7 +325,7 @@ def test_usage_log_records_the_provider_that_served_the_call(
     monkeypatch.setitem(
         sys.modules,
         "anthropic",
-        _fake_anthropic(lambda **_kwargs: _tool_use_response({"grade": 9})),
+        _fake_anthropic(lambda **_kwargs: _structured_response({"grade": 9})),
     )
 
     helper.call_judge(
@@ -322,7 +333,7 @@ def test_usage_log_records_the_provider_that_served_the_call(
         client="anthropic",
         model="claude-sonnet-5",
         prompt="Grade it.",
-        output_schema={"type": "object", "properties": {}},
+        output_schema=_GRADE,
     )
     record = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
     assert record == {
@@ -460,6 +471,138 @@ def test_cli_transport_falls_back_to_the_result_string(monkeypatch: pytest.Monke
         prompt="Grade it.",
         output_schema={"type": "object", "properties": {}},
     ) == {"grade": 9}
+
+
+# ───────── schema-locked judges: output_config.format ─────────
+
+
+class _JudgeStub(BaseHTTPRequestHandler):
+    """A Messages endpoint that refuses what the real API refuses, then
+    answers ``answer`` as structured output, ending on ``stop``."""
+
+    requests: list[dict[str, Any]] = []
+    answer: Any = {"grade": 9}
+    stop = "end_turn"
+
+    def do_POST(self) -> None:  # noqa: N802 (BaseHTTPRequestHandler API)
+        payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
+        type(self).requests.append(payload)
+        if reject_like_the_api(self, payload):
+            return
+        send_json(self, structured_message(payload, type(self).answer, stop_reason=type(self).stop))
+
+    def log_message(self, *args: object) -> None:
+        return
+
+
+@pytest.fixture()
+def judge_stub(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    monkeypatch.setenv("ROTE_INFERENCE", "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    _JudgeStub.requests = []
+    _JudgeStub.answer = {"grade": 9}
+    _JudgeStub.stop = "end_turn"
+    server = HTTPServer(("127.0.0.1", 0), _JudgeStub)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _judge(stub: str, schema: dict[str, Any] = _GRADE) -> dict[str, Any]:
+    return helper.call_judge(
+        node_id="grade_essay",
+        client="anthropic",
+        model=CURRENT_SONNET,
+        base_url=stub,
+        prompt="Grade it.",
+        output_schema=schema,
+    )
+
+
+def test_a_judge_on_the_current_sonnet_is_schema_locked_without_forcing_a_tool(
+    judge_stub: str,
+) -> None:
+    """claude-sonnet-5-5 400s on tool_choice "tool"/"any", so a forced
+    tool call made every judge dead on arrival there. The stub refuses
+    forcing the way the API does; output_config.format is the mechanism."""
+    assert _judge(judge_stub) == {"grade": 9}
+    (request,) = _JudgeStub.requests
+    assert request["model"] == CURRENT_SONNET
+    assert request["output_config"] == {"format": {"type": "json_schema", "schema": _GRADE}}
+    assert "tools" not in request
+    assert "tool_choice" not in request
+
+
+def test_a_judge_sends_the_rewritten_schema(judge_stub: str) -> None:
+    """A nested object without additionalProperties and a bounded integer
+    are both 400s as written; the request carries the rewrite."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "grade": {"type": "integer", "minimum": 1, "maximum": 10},
+            "notes": {"type": "object", "properties": {"text": {"type": "string"}}},
+        },
+        "required": ["grade"],
+    }
+    _JudgeStub.answer = {"grade": 9, "notes": {"text": "fine"}}
+    assert _judge(judge_stub, schema) == {"grade": 9, "notes": {"text": "fine"}}
+    sent = _JudgeStub.requests[0]["output_config"]["format"]["schema"]
+    assert sent == helper.structured_output_schema(schema, node_id="grade_essay")
+    assert sent["properties"]["notes"]["additionalProperties"] is False
+    assert "minimum" not in sent["properties"]["grade"]
+
+
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+def test_an_incomplete_judge_answer_is_a_durable_error_never_data(
+    judge_stub: str, stop: str
+) -> None:
+    _JudgeStub.stop = stop
+    with pytest.raises(RuntimeError) as excinfo:
+        _judge(judge_stub)
+    message = str(excinfo.value)
+    assert message == (
+        f"structured output for grade_essay ended with stop_reason {stop!r}, not end_turn, "
+        "so it is not a complete answer"
+    )
+    assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
+
+
+def test_a_judge_answer_that_is_not_an_object_is_an_error(judge_stub: str) -> None:
+    _JudgeStub.answer = ["grade", 9]
+    with pytest.raises(
+        RuntimeError, match="structured output for grade_essay is not a JSON object"
+    ):
+        _judge(judge_stub)
+
+
+def test_an_api_refusal_of_the_schema_crosses_a_durable_step(
+    judge_stub: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What the API 400s on reaches the user with its message, as a
+    RuntimeError that survives pickling. The normalizer is bypassed so
+    the stub's schema check, standing in for the API, sees the original."""
+    monkeypatch.setattr(helper, "structured_output_schema", lambda schema, *, node_id: schema)
+    with pytest.raises(RuntimeError) as excinfo:
+        _judge(judge_stub, {**_GRADE, "additionalProperties": True})
+    message = str(excinfo.value)
+    assert "HTTP 400" in message
+    assert "'additionalProperties' must be explicitly set to false" in message
+    assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
+
+
+def test_a_judge_schema_structured_outputs_cannot_express_fails_before_any_request(
+    judge_stub: str,
+) -> None:
+    with pytest.raises(RuntimeError, match=r"grade_essay: output schema at #/properties/extra"):
+        _judge(
+            judge_stub,
+            {**_GRADE, "properties": {**_GRADE["properties"], "extra": {"type": "object"}}},
+        )
+    assert _JudgeStub.requests == []
 
 
 # ───────── the verbatim-copy contract ─────────
@@ -829,6 +972,8 @@ class _ToolLoopStub(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
         payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         type(self).requests.append(payload)
+        if reject_like_the_api(self, payload):
+            return
         turn = len(type(self).requests)
         message: dict[str, Any] = {
             "id": f"msg_{turn}",
@@ -1115,7 +1260,11 @@ _DECLARED = {
 
 
 class _SubmitStub(BaseHTTPRequestHandler):
-    """Turn 1 calls ``submit_result`` with ``answer``; turn 2 ends."""
+    """Turn 1 calls ``submit_result`` with ``answer``; turn 2 ends.
+
+    With no ``answer`` the model never submits, and refuses the final
+    schema-locked turn too.
+    """
 
     requests: list[dict[str, Any]] = []
     answer: dict[str, Any] | None = None
@@ -1123,6 +1272,11 @@ class _SubmitStub(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
         payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         type(self).requests.append(payload)
+        if reject_like_the_api(self, payload):
+            return
+        if "output_config" in payload:
+            send_json(self, structured_message(payload, None, stop_reason="refusal", content=[]))
+            return
         first = len(type(self).requests) == 1
         if first and type(self).answer is not None:
             content: list[dict[str, Any]] = [
@@ -1172,14 +1326,14 @@ def submit_stub(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
 
 def _loop(stub: str, **kwargs: Any) -> Any:
+    kwargs.setdefault("output_schema", _DECLARED)
     return helper.run_agent_loop(
         node_id="research",
         description="Research the account.",
         task='{"account": "acme"}',
-        model="claude-sonnet-4-6",
+        model=CURRENT_SONNET,
         max_iterations=4,
         base_url=stub,
-        output_schema=_DECLARED,
         **kwargs,
     )
 
@@ -1214,7 +1368,7 @@ def test_sdk_loop_unwraps_a_single_type_output(submit_stub: str) -> None:
 
 def test_sdk_loop_that_never_submits_fails_naming_the_node(submit_stub: str) -> None:
     _SubmitStub.answer = None
-    with pytest.raises(RuntimeError, match="agent loop research .*never called submit_result"):
+    with pytest.raises(RuntimeError, match="research ended with stop_reason 'refusal'"):
         _loop(submit_stub)
 
 
@@ -1267,29 +1421,49 @@ class _ForceStub(BaseHTTPRequestHandler):
     """A model that does not submit on its own.
 
     ``first`` is the loop's first reply: ``"text"`` ends the turn, and
-    ``"tool"`` calls ``lookup`` (which hits a cap of 1). A request that
-    forces ``submit_result`` gets ``forced_answer``, or a text reply when
-    that is None.
+    ``"tool"`` calls ``lookup`` (which hits a cap of 1). A schema-locked
+    request (``output_config``) gets ``forced_answer`` as JSON text, or
+    ends on ``forced_stop`` with no answer when that is None.
     """
 
     requests: list[dict[str, Any]] = []
     first = "text"
     forced_answer: dict[str, Any] | None = None
+    forced_stop = "refusal"
 
     def do_POST(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler's API
         payload = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
         type(self).requests.append(payload)
-        forced = payload.get("tool_choice", {}).get("name") == "submit_result"
-        if forced and type(self).forced_answer is not None:
-            content: list[dict[str, Any]] = [
-                {
-                    "type": "tool_use",
-                    "id": "t_submit",
-                    "name": "submit_result",
-                    "input": type(self).forced_answer,
-                }
-            ]
-        elif not forced and type(self).first == "tool":
+        if reject_like_the_api(self, payload):
+            return
+        last = payload["messages"][-1]["content"]
+        asked = isinstance(last, list) and str(last[-1].get("text", "")).startswith(
+            "Call submit_result now"
+        )
+        if asked and type(self).forced_answer is not None:
+            submit = {
+                "type": "tool_use",
+                "id": "t_submit",
+                "name": "submit_result",
+                "input": type(self).forced_answer,
+            }
+            send_json(
+                self, structured_message(payload, None, stop_reason="tool_use", content=[submit])
+            )
+            return
+        if "output_config" in payload:
+            answer = type(self).forced_answer
+            if answer is not None:
+                reply = structured_message(payload, answer)
+            else:
+                partial = [{"type": "text", "text": '{"summary": "acme'}]
+                reply = structured_message(
+                    payload, None, stop_reason=type(self).forced_stop, content=partial
+                )
+            send_json(self, reply)
+            return
+        content: list[dict[str, Any]]
+        if type(self).first == "tool":
             content = [{"type": "tool_use", "id": "t_lookup", "name": "lookup", "input": {}}]
         else:
             content = [{"type": "text", "text": "Done, I think."}]
@@ -1322,6 +1496,7 @@ def force_stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[str]
     _ForceStub.requests = []
     _ForceStub.first = "text"
     _ForceStub.forced_answer = None
+    _ForceStub.forced_stop = "refusal"
     server = HTTPServer(("127.0.0.1", 0), _ForceStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -1335,16 +1510,25 @@ def force_stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[str]
 def test_a_loop_that_ends_without_submitting_gets_one_forced_turn(
     force_stub: str, tmp_path: Path
 ) -> None:
-    """The judge mechanism: tool_choice forced to submit_result, once."""
+    """The judge mechanism, once: the answer schema-locked by
+    ``output_config.format``. Forcing ``tool_choice`` instead is a 400 on
+    the current Sonnet, which the stub enforces."""
     _ForceStub.forced_answer = {"summary": "acme is gold", "score": 7}
     assert _loop(force_stub) == {"summary": "acme is gold", "score": 7}
 
     loop_turn, forced = _ForceStub.requests
     assert "tool_choice" not in loop_turn
-    assert forced["tool_choice"] == {"type": "tool", "name": "submit_result"}
+    assert "output_config" not in loop_turn
+    assert forced["model"] == CURRENT_SONNET
+    assert forced["tool_choice"] == {"type": "none"}
+    assert forced["output_config"] == {"format": {"type": "json_schema", "schema": _DECLARED}}
+    # The tools stay defined: the history holds tool_use blocks.
+    assert {tool["name"] for tool in forced["tools"]} == {"submit_result"}
     # The turn the loop ended on is in the forced request, then the nudge.
     assert forced["messages"][-2]["content"][0]["text"] == "Done, I think."
-    assert forced["messages"][-1]["content"][-1]["text"].startswith("Call submit_result now")
+    assert (
+        forced["messages"][-1]["content"][-1]["text"] == "Reply now with the step's final answer."
+    )
     (record,) = _logged(tmp_path / "usage.jsonl")
     assert record["iterations"] == 2  # the forced turn counts
 
@@ -1366,7 +1550,7 @@ def test_a_loop_at_its_cap_is_forced_without_rerunning_its_tools(force_stub: str
         node_id="research",
         description="Research.",
         task="{}",
-        model="claude-sonnet-4-6",
+        model=CURRENT_SONNET,
         max_iterations=1,
         base_url=force_stub,
         local_tools={"lookup": lookup},
@@ -1381,7 +1565,62 @@ def test_a_loop_at_its_cap_is_forced_without_rerunning_its_tools(force_stub: str
     assert [block["type"] for block in last] == ["tool_result", "text"]
 
 
-def test_no_submission_even_when_forced_fails_with_the_shared_message(force_stub: str) -> None:
+@pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
+def test_an_incomplete_forced_answer_fails_naming_the_stop_reason(
+    force_stub: str, stop: str
+) -> None:
+    """A refusal or a truncation is not an answer, even when its text
+    happens to start like one; the failure crosses a durable step."""
+    _ForceStub.forced_stop = stop
+    with pytest.raises(RuntimeError) as excinfo:
+        _loop(force_stub)
+    message = str(excinfo.value)
+    assert message == (
+        f"structured output for research ended with stop_reason {stop!r}, not end_turn, "
+        "so it is not a complete answer"
+    )
+    assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
+    assert len(_ForceStub.requests) == 2
+
+
+_UNTYPED = {
+    "type": "object",
+    "properties": {"result": {"description": "Value of type Account."}},
+    "required": ["result"],
+    "additionalProperties": False,
+}
+
+
+def test_an_output_no_schema_can_lock_gets_asked_once_more_never_forced(
+    force_stub: str,
+) -> None:
+    """An output naming a type the IR never defines has no JSON type, so
+    structured outputs cannot lock it. The last turn only asks for the
+    submit call: no output_config the API would 400, and no forced
+    tool_choice, which the current Sonnet would 400."""
+    _ForceStub.forced_answer = {"result": {"name": "acme"}}
+    assert _loop(force_stub, output_schema=_UNTYPED) == {"result": {"name": "acme"}}
+    loop_turn, asked = _ForceStub.requests
+    assert "output_config" not in asked
+    assert "tool_choice" not in asked
+    assert asked["messages"][-1]["content"][-1]["text"].startswith("Call submit_result now")
+
+
+def test_a_malformed_output_schema_fails_rather_than_asking_for_submit_result(
+    force_stub: str,
+) -> None:
+    """Only an inexpressible schema switches the last turn to asking for
+    the submit tool. A malformed one is a bug in the emitted call and
+    surfaces as one, before the extra request is sent."""
+    malformed = {"type": "object", "properties": {"summary": 3}, "additionalProperties": False}
+    with pytest.raises(RuntimeError, match=r"#/properties/summary is not a JSON Schema object"):
+        _loop(force_stub, output_schema=malformed)
+    assert len(_ForceStub.requests) == 1
+
+
+def test_an_unlockable_output_never_submitted_fails_with_the_shared_message(
+    force_stub: str,
+) -> None:
     with pytest.raises(
         RuntimeError,
         match=(
@@ -1389,7 +1628,7 @@ def test_no_submission_even_when_forced_fails_with_the_shared_message(force_stub
             r"it never called submit_result, even when asked once more"
         ),
     ):
-        _loop(force_stub)
+        _loop(force_stub, output_schema=_UNTYPED)
     assert len(_ForceStub.requests) == 2
 
 

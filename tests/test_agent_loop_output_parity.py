@@ -35,6 +35,7 @@ import pytest
 from rote.adapters import get_adapter
 from rote.eval.empirical import run_pipeline_trial
 from rote.ir import Pipeline
+from tests._messages_api import CURRENT_SONNET, reject_like_the_api, send_json, structured_message
 from tests.test_ts_agent_loop_e2e import _MOCK_MCP, _serve_mcp
 
 pytestmark = pytest.mark.slow
@@ -86,9 +87,11 @@ SERVER = "research_tools"
 class MessagesStub(BaseHTTPRequestHandler):
     """Plays the model: turn 1 calls ``submit_result``, turn 2 ends.
 
-    ``mode`` varies that: ``"forced"`` ends turn 1 with text and submits
-    only when a request forces ``submit_result``; ``"bad"`` submits a
-    score of the wrong type. ``POST /token`` answers a refresh grant, which
+    ``mode`` varies that: ``"forced"`` ends turn 1 with text and answers
+    only the schema-locked (``output_config``) turn that follows; ``"bad"``
+    submits a score of the wrong type. A request the real API would refuse
+    (forced ``tool_choice`` on the current Sonnet, which ``loop_env`` runs
+    the loop on) gets the real API's 400. ``POST /token`` answers a refresh grant, which
     the Workers MCP helper needs before it will call even an
     unauthenticated server.
     """
@@ -103,21 +106,25 @@ class MessagesStub(BaseHTTPRequestHandler):
             return
         payload = json.loads(body or b"{}")
         type(self).requests.append(payload)
+        if reject_like_the_api(self, payload):
+            return
+        if type(self).mode == "forced" and "output_config" in payload:
+            send_json(self, structured_message(payload, SUBMITTED))
+            return
         submitted = any(
             isinstance(block, dict) and block.get("type") == "tool_result"
             for message in payload.get("messages", [])
             if isinstance(message.get("content"), list)
             for block in message["content"]
         )
-        forced = payload.get("tool_choice", {}).get("name") == "submit_result"
         answer = {**SUBMITTED, "score": "7"} if type(self).mode == "bad" else SUBMITTED
         submit = [
             {"type": "tool_use", "id": "toolu_submit", "name": "submit_result", "input": answer}
         ]
         content: list[dict[str, Any]]
         if type(self).mode == "forced":
-            content = submit if forced else [{"type": "text", "text": "Done, I think."}]
-            submitted = not forced
+            content = [{"type": "text", "text": "Done, I think."}]
+            submitted = True
         else:
             content = [{"type": "text", "text": "Submitted."}] if submitted else submit
         self._send(
@@ -171,6 +178,8 @@ def loop_env(messages_stub: str, mcp_server: str, tmp_path: Path) -> dict[str, s
         "ROTE_INFERENCE": "api",
         "ANTHROPIC_API_KEY": "local-stub-key",
         "ROTE_BASE_URL_RESEARCH": messages_stub,
+        # The model that refuses forced tool choice, so the stub catches it.
+        "ROTE_MODEL_RESEARCH": CURRENT_SONNET,
         # Belt and braces: anything that ignored the per-node override would
         # reach a closed port, never the real API.
         "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",

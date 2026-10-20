@@ -16,9 +16,11 @@ from __future__ import annotations
 from rote.inference._runtime_helper import (
     CLI_CONTEXT_ISOLATION_FLAGS,
     PROVIDERS,
+    STRUCTURED_INEXPRESSIBLE,
     build_subscription_env,
     provider_availability,
     select_provider,
+    structured_output_schema,
 )
 
 #: Providers that cannot exist in a deployed image. A Claude
@@ -31,7 +33,9 @@ __all__ = [
     "CLI_CONTEXT_ISOLATION_FLAGS",
     "LOCAL_ONLY_PROVIDERS",
     "PROVIDERS",
+    "STRUCTURED_INEXPRESSIBLE",
     "build_subscription_env",
     "provider_availability",
     "select_provider",
+    "structured_output_schema",
 ]

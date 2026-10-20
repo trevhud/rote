@@ -99,7 +99,8 @@ in the IR. The provider does not, ever.
 
 The distinction is *wire format* versus *who pays and by what
 transport*. The former is behavior — it determines whether the judge
-gets a forced tool call or a `json_schema` response, which changes
+gets an `output_config.format` structured output or a `json_schema`
+response, which changes
 what the pipeline does. The latter is a deployment fact about one
 person's machine on one day.
 

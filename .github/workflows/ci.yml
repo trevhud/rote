@@ -90,6 +90,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-26.04 (ubuntu-latest's new target) mounts /tmp as a
+      # RAM-backed tmpfs with systemd's per-user quota, which caps the
+      # runner user at about 6.3G. The slow suites npm-install into one
+      # pytest tmp dir per test (about 6.2G for the TypeScript job alone)
+      # and failed with EDQUOT. Point pytest, npm, and wrangler at the
+      # root disk instead. It must stay outside $HOME, because the
+      # sandbox tests assert that nothing under the home is exposed.
+      - name: Keep temp files on disk, off the quota-limited /tmp
+        run: |
+          dir=/var/tmp/rote-ci
+          mkdir -p "$dir"
+          fstype=$(findmnt -no FSTYPE --target "$dir")
+          if [ "$fstype" = tmpfs ]; then
+            echo "::error::$dir is on tmpfs, so it would hit the same quota"
+            exit 1
+          fi
+          echo "TMPDIR=$dir" >> "$GITHUB_ENV"
+
       # The locked environment, as in the test job.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
@@ -146,6 +164,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-26.04 (ubuntu-latest's new target) mounts /tmp as a
+      # RAM-backed tmpfs with systemd's per-user quota, which caps the
+      # runner user at about 6.3G. The slow suites npm-install into one
+      # pytest tmp dir per test (about 6.2G for the TypeScript job alone)
+      # and failed with EDQUOT. Point pytest, npm, and wrangler at the
+      # root disk instead. It must stay outside $HOME, because the
+      # sandbox tests assert that nothing under the home is exposed.
+      - name: Keep temp files on disk, off the quota-limited /tmp
+        run: |
+          dir=/var/tmp/rote-ci
+          mkdir -p "$dir"
+          fstype=$(findmnt -no FSTYPE --target "$dir")
+          if [ "$fstype" = tmpfs ]; then
+            echo "::error::$dir is on tmpfs, so it would hit the same quota"
+            exit 1
+          fi
+          echo "TMPDIR=$dir" >> "$GITHUB_ENV"
+
       # The locked environment, as in the test job.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
@@ -178,6 +214,7 @@ jobs:
             tests/test_cloudflare_e2e.py \
             tests/test_inngest_e2e.py \
             tests/test_ts_agent_loop_e2e.py \
+            tests/test_ts_judge_e2e.py \
             tests/test_constants_parity_ts_e2e.py \
             tests/test_mcp_args_literal_parity_ts_e2e.py \
             tests/test_agent_loop_output_parity_ts_e2e.py \
@@ -200,6 +237,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      # ubuntu-26.04 (ubuntu-latest's new target) mounts /tmp as a
+      # RAM-backed tmpfs with systemd's per-user quota, which caps the
+      # runner user at about 6.3G. The slow suites npm-install into one
+      # pytest tmp dir per test (about 6.2G for the TypeScript job alone)
+      # and failed with EDQUOT. Point pytest, npm, and wrangler at the
+      # root disk instead. It must stay outside $HOME, because the
+      # sandbox tests assert that nothing under the home is exposed.
+      - name: Keep temp files on disk, off the quota-limited /tmp
+        run: |
+          dir=/var/tmp/rote-ci
+          mkdir -p "$dir"
+          fstype=$(findmnt -no FSTYPE --target "$dir")
+          if [ "$fstype" = tmpfs ]; then
+            echo "::error::$dir is on tmpfs, so it would hit the same quota"
+            exit 1
+          fi
+          echo "TMPDIR=$dir" >> "$GITHUB_ENV"
 
       # The locked environment, as in the test job.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0

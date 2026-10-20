@@ -960,8 +960,11 @@ class Compiler:
             cached_note = f" ({cached} cached)" if cached else ""
             output = "pending" if meta.get("usage_complete") is False else str(out_tok or 0)
             parts.append(f"tokens in={total_in}{cached_note} out={output}")
-        if meta.get("num_turns") is not None:
-            parts.append(f"turns={meta['num_turns']}")
+        # claude reports num_turns; the in-process drivers report the same
+        # count (assistant turns) as iterations.
+        turns = meta.get("num_turns", meta.get("iterations"))
+        if turns is not None:
+            parts.append(f"turns={turns}")
         if meta.get("cost_usd") is not None:
             parts.append(f"cost=${meta['cost_usd']}")
         return "; ".join(parts)

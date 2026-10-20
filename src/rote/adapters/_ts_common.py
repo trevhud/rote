@@ -48,6 +48,7 @@ from rote.adapters._common import (
     safe_block_comment_line,
     temperature_env_var,
 )
+from rote.inference import structured_output_schema
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
@@ -251,16 +252,17 @@ def emit_signature_anthropic(
     temperature: float | None,
     generated_by: str,
 ) -> str:
-    """Emit a signatures/<id>.ts module calling Anthropic with tool-use output.
+    """Emit a signatures/<id>.ts module calling Anthropic with structured output.
 
-    ``generated_by`` names the emitting adapter module in the header
-    JSDoc (e.g. ``rote.adapters.cloudflare``) so regeneration
-    instructions point at the right runtime.
+    ``output_schema_json`` is the request schema, already rewritten by
+    :func:`rote.inference.structured_output_schema`; the Zod model built
+    from the original schema validates the answer. ``generated_by`` names
+    the emitting adapter module in the header JSDoc (e.g.
+    ``rote.adapters.cloudflare``) so regeneration instructions point at
+    the right runtime.
     """
     desc_first = safe_block_comment_line(description, fallback=node_id)
     temp_env_line, temp_const_line, temp_line = _temperature_block(node_id, temperature)
-    quoted_id = json.dumps(node_id)
-    quoted_desc = json.dumps(desc_first)
     quoted_model = json.dumps(model)
     quoted_prompt = json.dumps(prompt_template)
     model_var, base_var = override_env_vars(node_id)
@@ -315,31 +317,41 @@ def emit_signature_anthropic(
     ]
     if temp_line:
         parts.append(temp_line)
-    schema_cast = 'as { type: "object"; [k: string]: unknown }'
     msg_line = (
         '            { role: "user", '
         "content: interpolate(PROMPT, input as Record<string, unknown>) },"
     )
+    stop_error = (
+        f"structured output for {node_id} ended with stop_reason "
+        "${response.stop_reason}, not end_turn, so it is not a complete answer"
+    )
     parts.extend(
         [
-            "        tools: [",
-            "            {",
-            f"                name: {quoted_id},",
-            f"                description: {quoted_desc},",
-            f"                input_schema: OUTPUT_JSON_SCHEMA {schema_cast},",
-            "            },",
-            "        ],",
-            f'        tool_choice: {{ type: "tool", name: {quoted_id} }},',
+            "        output_config: {",
+            '            format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },',
+            "        },",
             "        messages: [",
             msg_line,
             "        ],",
             "    });",
             "",
-            '    const toolUse = response.content.find((b) => b.type === "tool_use");',
-            '    if (!toolUse || toolUse.type !== "tool_use") {',
-            f'        throw new Error("LLM did not return a tool_use block for {node_id}");',
+            "    // max_tokens truncates the answer and refusal replaces it: neither",
+            "    // may reach a downstream step as data.",
+            '    if (response.stop_reason !== "end_turn") {',
+            f"        throw new Error(`{stop_error}`);",
             "    }",
-            f"    return {pascal}Output.parse(toolUse.input);",
+            "    const text = response.content",
+            '        .map((block) => (block.type === "text" ? block.text : ""))',
+            '        .join("");',
+            "    let answer: unknown;",
+            "    try {",
+            "        answer = JSON.parse(text);",
+            "    } catch {",
+            "        throw new Error(",
+            f"            `structured output for {node_id} is not JSON: ${{text.slice(0, 200)}}`,",
+            "        );",
+            "    }",
+            f"    return {pascal}Output.parse(answer);",
             "}",
             "",
         ]
@@ -903,9 +915,12 @@ def emit_ts_signature_module(
     name for the header JSDoc.
     """
     spec = require_signature_spec(node)
+    request_schema = spec.output_schema
     if spec.client == "anthropic":
         emitter = emit_signature_anthropic
         model = spec.model or anthropic_default_model
+        # Raises at emit time for a schema structured outputs cannot express.
+        request_schema = structured_output_schema(spec.output_schema, node_id=node.id)
     elif spec.client == "openai":
         emitter = emit_signature_openai
         model = spec.model or openai_default_model
@@ -921,7 +936,7 @@ def emit_ts_signature_module(
         description=node.description,
         input_zod=json_schema_to_zod(spec.input_schema, indent=0),
         output_zod=json_schema_to_zod(spec.output_schema, indent=0),
-        output_schema_json=json.dumps(spec.output_schema, indent=2),
+        output_schema_json=json.dumps(request_schema, indent=2),
         prompt_template=spec.prompt,
         model=model,
         base_url=spec.base_url,
@@ -2655,10 +2670,12 @@ export async function bindAgentTools(
 #: operator who picks the Cloudflare lane gets one model story.
 WORKERS_AI_AGENT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
-#: The Anthropic TypeScript SDK version the agent loop needs.
-#: ``beta.messages.toolRunner`` plus the ``BetaRunnableTool`` shape used
-#: below; older pins (0.91 / 0.110) predate it.
-ANTHROPIC_SDK_NPM_VERSION = "^0.115.0"
+#: The Anthropic TypeScript SDK every emitted TS app installs: the
+#: current release when last bumped. The agent loop needs at least 0.115
+#: (``beta.messages.toolRunner`` plus the ``BetaRunnableTool`` shape used
+#: below; 0.91 and 0.110 predate it). A caret on a 0.x version pins the
+#: minor, so this does not drift forward on its own.
+ANTHROPIC_SDK_NPM_VERSION = "^0.136.0"
 
 #: Cloudflare's embedded function-calling toolkit — the workers-ai lane.
 AI_UTILS_NPM_VERSION = "^1.0.1"
@@ -2982,6 +2999,7 @@ async function runViaAnthropic(
     env: AgentEnv,
     baseUrl: string | null,
     submitted: Record<string, unknown>[] | null,
+    outputFormat: Record<string, unknown> | null,
 ): Promise<LaneAnswer> {
     const target = sdkTarget(provider, env, baseUrl);
     const client = new Anthropic({
@@ -3024,13 +3042,23 @@ async function runViaAnthropic(
     let iterations = runner.params.messages.filter((m) => m.role === "assistant").length;
     if (submitted && submitted.length === 0) {
         // The loop ended (or hit its cap) without handing anything back.
-        // One more turn with the submit tool forced, the mechanism a judge
-        // uses, before failing. The runner's conversation already holds the
-        // turn it ended on, and at the cap that turn's tool results too, so
-        // the nudge joins a trailing user message: nothing runs twice.
+        // One more turn, schema-locked the way a judge is whenever the
+        // schema allows it, before failing. Never tool_choice forced to the
+        // submit tool: claude-sonnet-5-5 rejects forced tool choice outright.
+        // With outputFormat, tool_choice "none" keeps the tools defined (the
+        // history holds tool_use blocks) while output_config.format makes
+        // the text answer the output. Without it (an output naming a type
+        // the IR never defines has no JSON type) the turn only asks for the
+        // submit call, and declaredOutput reports it if none comes.
+        // The runner's conversation already holds the turn it ended on, and
+        // at the cap that turn's tool results too, so the nudge joins a
+        // trailing user message: nothing runs twice.
         const nudge = {
             type: "text" as const,
-            text: `Call ${SUBMIT_TOOL} now with the final answer.`,
+            text:
+                outputFormat !== null
+                    ? "Reply now with the step's final answer."
+                    : `Call ${SUBMIT_TOOL} now with the final answer.`,
         };
         const history = [...runner.params.messages];
         const last = history.at(-1);
@@ -3054,13 +3082,39 @@ async function runViaAnthropic(
             max_tokens: 4096,
             system: SYSTEM_PROMPT,
             tools: runnable.map(({ run: _run, parse: _parse, ...wire }) => wire),
-            tool_choice: { type: "tool", name: SUBMIT_TOOL },
+            ...(outputFormat !== null
+                ? {
+                      tool_choice: { type: "none" as const },
+                      output_config: {
+                          format: { type: "json_schema" as const, schema: outputFormat },
+                      },
+                  }
+                : {}),
             messages,
         });
         iterations += 1;
-        for (const block of forced.content) {
-            if (block.type === "tool_use" && block.name === SUBMIT_TOOL) {
-                submitted.push(block.input as Record<string, unknown>);
+        if (outputFormat === null) {
+            for (const block of forced.content) {
+                if (block.type === "tool_use" && block.name === SUBMIT_TOOL) {
+                    submitted.push(block.input as Record<string, unknown>);
+                }
+            }
+        } else {
+            if (forced.stop_reason !== "end_turn") {
+                throw new Error(
+                    `structured output for ${nodeId} ended with stop_reason ` +
+                        `${forced.stop_reason}, not end_turn, so it is not a complete answer`,
+                );
+            }
+            const text = forced.content
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("");
+            try {
+                submitted.push(JSON.parse(text) as Record<string, unknown>);
+            } catch {
+                throw new Error(
+                    `structured output for ${nodeId} is not JSON: ${text.slice(0, 200)}`,
+                );
             }
         }
     }
@@ -3146,6 +3200,9 @@ export async function runAgentLoop(opts: {
     env: AgentEnv;
     workersAi?: WorkersAiLane | null;
     outputSchema?: Record<string, unknown> | null;
+    /** `outputSchema` rewritten for Anthropic structured outputs at emit
+     *  time; null when that subset cannot express it. */
+    outputFormat?: Record<string, unknown> | null;
     unwrapKey?: string | null;
     outputStrict?: boolean;
 }): Promise<unknown> {
@@ -3192,6 +3249,7 @@ export async function runAgentLoop(opts: {
                   opts.env,
                   opts.baseUrl ?? null,
                   submitted,
+                  opts.outputFormat ?? null,
               );
     console.error(
         `rote: agent loop ${opts.nodeId} ran ${ran.iterations ?? "an unreported number of"} ` +
@@ -3519,6 +3577,11 @@ def emit_agent_loop_module(
             *(
                 [f"        outputSchema: {json.dumps(contract.schema)},"]
                 if contract.schema is not None
+                else []
+            ),
+            *(
+                [f"        outputFormat: {json.dumps(contract.format_schema)},"]
+                if contract.format_schema is not None
                 else []
             ),
             *(
