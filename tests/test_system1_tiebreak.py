@@ -680,6 +680,7 @@ def test_a_read_from_a_named_api_is_a_call(text: str, fetches: bool, tmp_path: P
         "Load the request from the Controller.",
         # The source must come after the read verb.
         "HubSpot is down today, so load the cached copy.",
+        "With the Stripe API down, read the cached copy.",
         # The source must follow the read verb in the same sentence.
         "Read the error log lines. The API latency doubled overnight.",
         "Read `references/enrich.md` first. Then enrich via ZoomInfo in batches.",
