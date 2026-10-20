@@ -131,8 +131,6 @@ PROMPT = (
     "ured output tool."
 )
 
-TOOL_DESCRIPTION = "Apply the red-flags rubric (MSL, biomarker, translational, indication"
-
 OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(
     "{\"$defs\":{\"ContactTier\":{\"enum\":[\"ideal\",\"strong\",\"good\"],\"title\":\"Co"
     "ntactTier\",\"type\":\"string\"},\"DiscardReason\":{\"enum\":[\"indication_mismatch\""
@@ -196,6 +194,5 @@ class VetContact:
             base_url=BASE_URL,
             prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),
             output_schema=OUTPUT_JSON_SCHEMA,
-            tool_description=TOOL_DESCRIPTION,
         )
         return VetContactOutput.model_validate(payload)

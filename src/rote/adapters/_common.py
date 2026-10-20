@@ -21,6 +21,7 @@ from typing import Any
 
 from pydantic_core import PydanticSerializationError
 
+from rote.inference import STRUCTURED_INEXPRESSIBLE, structured_output_schema
 from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
@@ -936,7 +937,8 @@ class AgentLoopOutput:
     return type of the emitted loop function. ``named_types`` maps each
     declared key (``"result"`` for a single type) to the IR names in it
     that the IR does not define, whose shape nothing checks. ``strict`` says
-    whether the submit tool can be a strict tool.
+    whether the submit tool can be a strict tool. ``format_schema`` is the
+    structured-output form of ``schema`` (see :func:`_format_schema`).
     """
 
     def __init__(
@@ -951,6 +953,27 @@ class AgentLoopOutput:
         self.ts_type = ts_type
         self.named_types = named_types
         self.strict = schema is not None and strict_compatible(schema)
+        self.format_schema = _format_schema(schema)
+
+
+def _format_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``schema`` as an Anthropic structured-output schema, or None.
+
+    What a TS agent loop sends on its one schema-locked final turn. The
+    Python helper rewrites the schema at run time with the same function;
+    TS cannot import it, so the rewrite happens here, at emit time. None
+    means the subset cannot express the schema (an output naming a type
+    the IR does not define, typically), and that turn then only asks the
+    model to call the submit tool.
+    """
+    if schema is None:
+        return None
+    try:
+        return structured_output_schema(schema, node_id="agent_loop")
+    except RuntimeError as exc:
+        if STRUCTURED_INEXPRESSIBLE not in str(exc):
+            raise
+        return None
 
 
 def agent_loop_output(node: Node) -> AgentLoopOutput:
