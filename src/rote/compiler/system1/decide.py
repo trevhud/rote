@@ -178,7 +178,9 @@ def _kind_confidence(signals: dict[str, list[str]], kind_key: str) -> float:
     return 0.8 if mine >= rivals else 0.6
 
 
-def _segment(u: Unit) -> list[tuple[str, str, float, str]]:
+def _segment(
+    u: Unit, registry: Mapping[str, str] | None = None
+) -> list[tuple[str, str, float, str]]:
     """(role, kind, confidence, rule) for each node a unit becomes, in data-flow order.
 
     Rules, in precedence order, from node-kinds.md:
@@ -222,11 +224,11 @@ def _segment(u: Unit) -> list[tuple[str, str, float, str]]:
         out.append(
             (role, "pure_function", _kind_confidence(s, "pure_function"), "fixed-logic signal")
         )
-    if s.get("write") and _names_a_system(u):
+    if s.get("write") and _names_a_system(u, registry):
         out.append(("write", "external_call", _kind_confidence(s, "write"), "side-effect signal"))
     if not out:
         out.append(("process", "pure_function", 0.3, "no signal: most deterministic kind"))
-    if s.get("write") and not _names_a_system(u):
+    if s.get("write") and not _names_a_system(u, registry):
         role, kind, conf, rule = out[-1]
         out[-1] = (
             role,
@@ -313,7 +315,54 @@ _NOT_SYSTEMS = frozenset(
 )
 
 
-def _names_a_system(u: Unit) -> bool:
+#: Tool-name words that say what a tool does, not what it acts on.
+_TOOL_VERBS = frozenset(
+    [
+        "create",
+        "update",
+        "get",
+        "list",
+        "search",
+        "add",
+        "remove",
+        "delete",
+        "read",
+        "write",
+        "batch",
+        "upsert",
+        "send",
+        "set",
+        "edit",
+        "find",
+        "fetch",
+        "post",
+        "put",
+        "patch",
+    ]
+)
+
+
+#: The verbs that make a tool a write.
+_WRITE_VERBS = frozenset(["create", "update", "upsert", "post", "send", "add", "save", "write"])
+
+
+def _registry_tool_for(sentence: str, registry: Mapping[str, str]) -> str | None:
+    """A write tool the skill lists (its tool tables, its reference files)
+    whose object the sentence names: "create or edit sales email templates"
+    names ``hubspot_create_sales_template`` through "template"."""
+    words = {w.rstrip("s") for w in slug(sentence).split("_") if w}
+    for tool in sorted(registry):
+        parts = tool.split("_")
+        if not set(parts) & _WRITE_VERBS:
+            continue
+        # The first word names the vendor ("hubspot"), not the object.
+        objects = {w.rstrip("s") for w in parts[1:]} - _TOOL_VERBS
+        if objects & words:
+            return tool
+    return None
+
+
+def _names_a_system(u: Unit, registry: Mapping[str, str] | None = None) -> bool:
     """Does the step's write go somewhere named, outside the pipeline?
 
     "Save it to the finance shared folder" names no system: that step is the
@@ -325,6 +374,8 @@ def _names_a_system(u: Unit) -> bool:
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", u.text):
         if not SIGNALS["write"].search(sentence):
             continue
+        if registry and _registry_tool_for(sentence, registry):
+            return True
         for m in _NAMED.finditer(sentence.strip()):
             if m.group(0).strip("#@").upper() not in _NOT_SYSTEMS or m.group(0)[0] in "#@h":
                 return True
@@ -534,6 +585,8 @@ def _match_property(name: str, props: dict[str, Any], taken: set[str]) -> str | 
         return name
     words = set(name.split("_"))
     fits = [p for p in props if p not in taken and set(slug(p).split("_")) <= words]
+    # Two properties both fitting the label is ambiguous: bind neither, and
+    # the unbound value goes to review, rather than guessing the first.
     return fits[0] if len(fits) == 1 else None
 
 
@@ -675,7 +728,7 @@ def plan(
         segments = (
             [("loop", "agent_loop", 0.7, "a heading whose sub-steps run per item")]
             if u.loop_container
-            else _segment(u)
+            else _segment(u, skill.tool_registry)
         )
         if verdicts is not None and not u.loop_container and u.index in verdicts:
             segments = _route(segments, verdicts[u.index])

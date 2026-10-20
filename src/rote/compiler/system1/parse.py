@@ -530,6 +530,16 @@ def parse_skill(skill_dir: Path) -> SkillParse:
             if line.strip().startswith("|"):
                 for t in _BACKTICK_TOOL.findall(line):
                     registry[t] = slug(s.title.split("(")[0])
+    ref_dir = skill_dir / "references"
+    if ref_dir.is_dir():
+        # A reference file's tool tables name tools as surely as SKILL.md's do.
+        for ref in sorted(ref_dir.glob("*.md")):
+            _, ref_body, ref_offset = parse_frontmatter(ref.read_text(encoding="utf-8"))
+            for s in walk(parse_sections(ref_body, ref_offset)):
+                for line in s.body.splitlines():
+                    if line.strip().startswith("|"):
+                        for t in _BACKTICK_TOOL.findall(line):
+                            registry.setdefault(t, slug(s.title.split("(")[0]))
     h1 = next((s for s in walk(root) if s.level == 1), None)
     units: list[Unit] = []
     group = 0

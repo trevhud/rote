@@ -10,6 +10,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Fixed
+- **`mcp.args: {}` now calls the tool with no arguments, on every runtime.** It
+  used to behave like an omitted `args` and send the step's whole payload as the
+  tool's arguments. Only an omitted (null) `args` passes the payload through. A
+  hand-written pipeline that relied on `args: {}` as a pass-through must drop the
+  key; none of the examples does.
 - **`--system1`: an MCP step's arguments come from the step, never the whole input.**
   The skeleton binds the parameters the step states (`Search query: ...`,
   `File ID: ...`, `Tab: ...`) as constants in `mcp.args`, named by the tool's input

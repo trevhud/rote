@@ -393,7 +393,8 @@ class MCPBinding(BaseModel):
             "Optional map: MCP tool-argument name → where its value comes from. "
             "A string names a key in the node's runtime payload, or one of its "
             "constants; {literal: <string, number or boolean>} is a fixed value. "
-            "Omit to pass the payload through unchanged."
+            "Omit (null) to pass the payload through unchanged; {} calls the tool "
+            "with no arguments."
         ),
     )
     url: str | None = Field(

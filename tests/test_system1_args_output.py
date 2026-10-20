@@ -138,3 +138,99 @@ def test_only_a_named_destination_is_an_external_write(
 ) -> None:
     _, doc = _prepare(tmp_path, _tiny(tmp_path, f"## Step 1: Do it\n\n{text}\n"))
     assert [n["kind"] for n in doc["nodes"]] == kinds
+
+
+def _mcp_pipeline(tmp_path: Path, args: Any) -> Path:
+    mcp: dict[str, Any] = {"server": "gmail", "tool": "search_threads"}
+    if args is not None:
+        mcp["args"] = args
+    doc = {
+        "name": "mcp-args",
+        "input": {"type": "In"},
+        "nodes": [
+            {
+                "id": "search_mail",
+                "kind": "external_call",
+                "description": "Search the mailbox.",
+                "inputs": {"request": "pipeline.input"},
+                "mcp": mcp,
+            }
+        ],
+        "edges": [],
+        "entry_nodes": ["search_mail"],
+        "exit_nodes": ["search_mail"],
+    }
+    path = tmp_path / "pipeline.yaml"
+    path.write_text(yaml.safe_dump(doc, sort_keys=False))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("runtime", "glob", "no_args", "passthrough"),
+    [
+        ("dbos", "main.py", "arguments = {}", "arguments = payload"),
+        ("dbos-ts", "src/**/*.ts", "const args = {  };", "const args = payload;"),
+    ],
+)
+def test_empty_args_means_no_arguments_on_every_runtime_family(
+    tmp_path: Path, runtime: str, glob: str, no_args: str, passthrough: str
+) -> None:
+    """#158 review: `{}` was falsy, so it passed the whole payload through."""
+    for args, want, refuse in (({}, no_args, passthrough), (None, passthrough, no_args)):
+        sub = tmp_path / f"{runtime}-{args is None}"
+        sub.mkdir()
+        out = sub / "out"
+        get_adapter(runtime).emit(load_pipeline(_mcp_pipeline(sub, args)), out)
+        text = "\n".join(p.read_text() for p in out.glob(glob))
+        assert want in text, (runtime, args)
+        assert refuse not in text, (runtime, args)
+
+
+def test_mcp_tool_arguments_distinguishes_none_from_empty(tmp_path: Path) -> None:
+    from rote.adapters._common import mcp_tool_arguments
+
+    empty = load_pipeline(_mcp_pipeline(tmp_path, {})).nodes[0]
+    assert mcp_tool_arguments(empty) == []
+    (tmp_path / "n").mkdir()
+    omitted = load_pipeline(_mcp_pipeline(tmp_path / "n", None)).nodes[0]
+    assert mcp_tool_arguments(omitted) is None
+
+
+def test_a_listed_write_tool_names_the_destination(tmp_path: Path) -> None:
+    """BDR: "Create or edit sales email templates" names no system in the
+    sentence, but the skill lists hubspot_create_sales_template: an external write."""
+    _, doc = _prepare(tmp_path, EXAMPLES / "bdr-outreach" / "skill")
+    phase6 = [n["kind"] for n in doc["nodes"] if n["source"]["section"].startswith("Phase 6")]
+    assert "external_call" in phase6
+
+
+def test_a_write_tool_listed_only_in_a_reference_file_counts(tmp_path: Path) -> None:
+    skill = _tiny(tmp_path, "## Step 1: File it\n\nCreate the ticket for the incident.\n")
+    (skill / "references").mkdir()
+    (skill / "references" / "tools.md").write_text(
+        "# Tools\n\n## Tracker\n\n| Tool | Purpose |\n|---|---|\n"
+        "| `tracker_create_ticket` | new ticket |\n"
+    )
+    _, doc = _prepare(tmp_path / "w", skill)
+    assert [n["kind"] for n in doc["nodes"]] == ["external_call"]
+    plain = _tiny(tmp_path / "p", "## Step 1: File it\n\nCreate the ticket for the incident.\n")
+    _, doc = _prepare(tmp_path / "pw", plain)
+    assert [n["kind"] for n in doc["nodes"]] == ["pure_function"]
+
+
+def test_two_matching_schema_properties_bind_neither(tmp_path: Path) -> None:
+    from rote.compiler.system1.decide import _match_property
+
+    props = {"query": {}, "text": {}}
+    assert _match_property("query_text", props, set()) is None
+    assert _match_property("query", props, set()) == "query"
+    skill = _tiny(
+        tmp_path,
+        "## Step 1: Search mail\n\nSearch with the (Gmail MCP - search_threads) tool.\n\n"
+        "Query text: label:inbox\n",
+    )
+    schema = _Schema({"type": "object", "properties": props})
+    plan, doc = _prepare(tmp_path / "w", skill, tools={("gmail", "search_threads"): schema})
+    node = _gmail(doc)
+    assert node["mcp"]["args"] == {}
+    assert any("no parameter for ['query_text']" in r for r in plan.review)
