@@ -157,27 +157,56 @@ def test_the_answer_replaces_only_the_unsure_step(
 def test_a_rule_constraint_overrules_the_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """ "Tidy the notes for the file" reads nothing and names no system: it can
-    never be an external_call, whatever the model says (a real expense-audit
-    compile died on exactly that stub)."""
-    _install(monkeypatch, _Stub(_answer("external_call", "llm_judge")))
+    """A step that saves to a target it never names can never be an
+    external_call, whatever the model says: a real expense-audit compile
+    died on exactly that stub ("save it to the finance shared folder")."""
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: tiny\ndescription: x\n---\n\n# Tiny\n\n"
+        "## Step 1: Total the batch\n\nTotal every line in USD.\n\n"
+        "## Step 2: File the summary\n\nSave it to the shared folder as `<period>.md`.\n"
+    )
     work = tmp_path / "work"
     work.mkdir()
-    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
-    assert [n.kind for n in plan.nodes if n.unit.index == UNSURE] == ["llm_judge"]
+    parsed = parse_skill(skill)
+    assert [u.index for u in unsure_units(parsed, unit_segments(parsed))] == [1]
+    _install(monkeypatch, _Stub(_answer("pure_function", "external_call")))
+    plan = system1.prepare(skill, work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    assert [n.kind for n in plan.nodes if n.unit.index == 1] == ["pure_function"]
     doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
     assert doc["overruled"] == {
-        str(UNSURE): [
-            "external_call: the step reads nothing and writes to no named system, so its "
-            "result is the pipeline's output"
+        "1": [
+            "external_call: the step writes to no named system, so its result is the "
+            "pipeline's output"
         ]
     }
 
-    # Nothing allowed left: the rules' decision stands.
-    _install(monkeypatch, _Stub(_answer("external_call")))
-    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
-    assert [n.kind for n in plan.nodes if n.unit.index == UNSURE] == ["pure_function"]
-    assert any("no signal" in line for line in plan.review)
+
+@pytest.mark.parametrize(
+    ("text", "forbidden"),
+    [
+        ("Save it to the shared folder as `<period>.md`.", True),
+        # A sentence's first word is not a system name.
+        ("Save it to the shared folder. Payroll pays from it.", True),
+        ("Save it to the folder in Dropbox.", False),
+        ("Save it with `append_sheet_values`.", False),
+        ("Save it: `POST /v1/reports` with the body.", False),
+        ("Save it to ~/reports/ as a file.", False),
+        # No write at all: nothing to constrain.
+        ("Total the lines.", False),
+    ],
+)
+def test_the_constraint_is_narrow(text: str, forbidden: bool, tmp_path: Path) -> None:
+    from rote.compiler.system1.decide import infeasible_kinds
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        f"---\nname: tiny\ndescription: x\n---\n\n# Tiny\n\n## Step 1: Do it\n\n{text}\n"
+    )
+    parsed = parse_skill(skill)
+    assert ("external_call" in infeasible_kinds(parsed.units[0], parsed.tool_registry)) is forbidden
 
 
 def test_without_a_lane_nothing_is_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
