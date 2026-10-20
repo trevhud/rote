@@ -323,9 +323,9 @@ against a current model, which is exactly where an operator's
 pipeline whose every judge call 400'd on the first real run.
 
 Determinism does not come from temperature anyway. It comes from the
-schema-locked decoding the adapters already emit: a forced tool call
-(Anthropic), `response_format: json_schema` (OpenAI / Workers AI). The
-output shape is pinned whatever the sampler does.
+schema-locked decoding the adapters already emit: `output_config.format`
+structured outputs (Anthropic), `response_format: json_schema` (OpenAI /
+Workers AI). The output shape is pinned whatever the sampler does.
 
 If a source skill *explicitly* names a temperature, set it and know
 that emitted code turns it into a `ROTE_TEMPERATURE_<NODE_ID>`
@@ -363,6 +363,23 @@ For nested Pydantic models, hoist the inner model into a `$defs`
 entry and use `{"$ref": "#/$defs/InnerModelName"}` at the use site.
 This matches Pydantic's own emission shape and lets adapters resolve
 references with a single helper.
+
+#### Every object in an output schema declares its properties
+
+Anthropic structured outputs, which locks a judge's answer to its
+output schema, cannot express an object with no declared properties
+(`dict[str, X]`, a bare `{"type": "object"}`) or a value with no type
+(`Any`, `{}`). `rote emit` refuses an anthropic judge whose
+`output_schema` contains either, naming the node and the path. So
+model every object the judge returns as a Pydantic model with named
+fields. A map keyed by data (`{"acme": 3, "globex": 5}`) becomes a list
+of objects (`[{"account": "acme", "count": 3}, ...]`). Input schemas
+have no such limit.
+
+Bounds and patterns (`minimum`, `maxLength`, `pattern`, `maxItems`) are
+fine to keep. Structured outputs does not accept them, so emitted code
+moves them into the field's description for the model and still
+enforces them when it validates the answer.
 
 #### A key that can be null is not a required string
 

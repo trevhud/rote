@@ -10,10 +10,11 @@
     "extracted/report.py": "5e2092f143c1a7e4182e0298fd5d454d83cb84822019c800a250579acc658bd9",
     "extracted/taxonomy.py": "b69d4ce23403f89ffc7dec921ed0ac7a375a851ad45bdb425d3fde277c632c59",
     "extracted/zoominfo.py": "fa1c524a3c98440dde9fb4c8861e2400b9d9919221f9cc21d48917e0f8ca74b5",
+    "requirements.txt": "7a557419e908b8685e9f5de692725d4b92390aa97840635b80e3b4ee8170e28c",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "d8267b69452707d298a0888244aced16c40c3fec89c6557813ee905722563612",
-    "signatures/personalize_email.py": "06f4bdb99a70a74216e68cde30ed3f9a9c10f3d74405df5777fd1ab2dff3cc5f",
-    "signatures/vet_contact.py": "58ed0d55e2e9cd47848e0f483075cf996bc267bd68986f9d7d0b2db6b2a6667c",
+    "signatures/_rote_inference.py": "ca4885b756a4b4ba2a9c347296ef6d082ac2e073f02c34aa99ca180a6f72fdd8",
+    "signatures/personalize_email.py": "e6f6a9d698e015900e628a2bf1d917461b69d587840112cc9cd2b54828736300",
+    "signatures/vet_contact.py": "edfa9fdb847071cc622e38a7cb5964ca6a5f0babcd259280288cd107664aa9f9",
     "workflow.py": "ff059af42358d0bb344ba41ae04ea8a097175e62f29b718dbf30663b75dc2800"
   }
 }

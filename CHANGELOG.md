@@ -25,6 +25,22 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   rote-cloud get System-1 too.
 
 ### Fixed
+- **Emitted judges work on claude-sonnet-5-5.** That model rejects a forced
+  `tool_choice` with HTTP 400, and every Anthropic judge forced one, so
+  pointing `ROTE_MODEL_<ID>` at it failed every judge call. Judges on every
+  Anthropic lane (Python and TypeScript) now use structured outputs
+  (`output_config.format`), on every model. The request schema is rewritten
+  into the subset structured outputs accepts (objects closed, `oneOf` as
+  `anyOf`, bounds moved into descriptions). The judge still validates the
+  answer against the original. A `refusal` or `max_tokens` stop is an
+  error, never data. An anthropic judge whose output schema has an object that
+  admits undeclared keys (no properties, or `additionalProperties: true`
+  or a schema) or an untyped value now fails at `rote emit` and in the
+  compile's dry emit, naming the path. The dbos README and a new temporal
+  `requirements.txt` pin `anthropic>=1.15`, the SDK floor with
+  `output_config`. An
+  agent loop's one extra turn after it ends without `submit_result` uses
+  the same mechanism.
 - **System-1 binds MCP arguments only from schema names that pass grounding's
   filter.** It read raw property names from a server's tool schema, so a name
   that is not identifier-shaped became an `mcp.args` key and the skeleton failed

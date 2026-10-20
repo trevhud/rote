@@ -100,7 +100,6 @@ const OUTPUT_JSON_SCHEMA = {
       "type": "string"
     }
   },
-  "additionalProperties": false,
   "properties": {
     "decision": {
       "$ref": "#/$defs/VetDecision"
@@ -114,7 +113,7 @@ const OUTPUT_JSON_SCHEMA = {
           "type": "null"
         }
       ],
-      "default": null
+      "description": "{\"default\": null}"
     },
     "discard_reason": {
       "anyOf": [
@@ -125,7 +124,7 @@ const OUTPUT_JSON_SCHEMA = {
           "type": "null"
         }
       ],
-      "default": null
+      "description": "{\"default\": null}"
     },
     "relevance_evidence": {
       "title": "Relevance Evidence",
@@ -137,7 +136,8 @@ const OUTPUT_JSON_SCHEMA = {
     "relevance_evidence"
   ],
   "title": "VetContactOutput",
-  "type": "object"
+  "type": "object",
+  "additionalProperties": false
 };
 
 function interpolate(template: string, vars: Record<string, unknown>): string {
@@ -180,22 +180,29 @@ export async function vetContact(
     const response = await client.messages.create({
         model: env.ROTE_MODEL_VET_CONTACT ?? "claude-sonnet-4-6",
         max_tokens: 4096,
-        tools: [
-            {
-                name: "vet_contact",
-                description: "Apply the red-flags rubric (MSL, biomarker, translational, indication",
-                input_schema: OUTPUT_JSON_SCHEMA as { type: "object"; [k: string]: unknown },
-            },
-        ],
-        tool_choice: { type: "tool", name: "vet_contact" },
+        output_config: {
+            format: { type: "json_schema", schema: OUTPUT_JSON_SCHEMA },
+        },
         messages: [
             { role: "user", content: interpolate(PROMPT, input as Record<string, unknown>) },
         ],
     });
 
-    const toolUse = response.content.find((b) => b.type === "tool_use");
-    if (!toolUse || toolUse.type !== "tool_use") {
-        throw new Error("LLM did not return a tool_use block for vet_contact");
+    // max_tokens truncates the answer and refusal replaces it: neither
+    // may reach a downstream step as data.
+    if (response.stop_reason !== "end_turn") {
+        throw new Error(`structured output for vet_contact ended with stop_reason ${response.stop_reason}, not end_turn, so it is not a complete answer`);
     }
-    return VetContactOutput.parse(toolUse.input);
+    const text = response.content
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("");
+    let answer: unknown;
+    try {
+        answer = JSON.parse(text);
+    } catch {
+        throw new Error(
+            `structured output for vet_contact is not JSON: ${text.slice(0, 200)}`,
+        );
+    }
+    return VetContactOutput.parse(answer);
 }
