@@ -623,7 +623,11 @@ async def test_the_system1_path_briefs_researches_and_holds_vendor_calls_to_docs
     monkeypatch.setattr(Compiler, "select_driver", lambda self: agent)
     out = tmp_path / "out"
     result = await Compiler(
-        emit_target=EmitTarget("dbos", "api"), run_generated_tests=False, tool_discovery="none"
+        emit_target=EmitTarget("dbos", "api"),
+        run_generated_tests=False,
+        tool_discovery="none",
+        # The fake driver has no inference lane for the Haiku tie-break.
+        system1_tiebreak="none",
     ).compile(skill, out)
 
     assert agent.rubric is not None and agent.rubric.name.startswith("rote-system1-rubric-")
