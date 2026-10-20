@@ -109,12 +109,16 @@ _PERSON = (
 #: name such as Zendesk) or a word for a service. "From the table" or "in the
 #: row" is data the step already has, and the skill's own references are not
 #: a service either.
-#: What a system holds, as the thing a read takes from a named product: the
-#: object after "each Gmail ...", "every HubSpot ...". A closed list, shared
-#: with :data:`_SYSTEM_NOUN` (the system itself).
+#: What only a system holds, as the thing a read takes from a named product:
+#: the object after "each Gmail ...", "every Zendesk ...". A closed list of
+#: words that do not also name a row of data: row, cell, record, deal,
+#: invoice, order and file are left out ("each Q3 row", "each Customer
+#: order"), and a product named by evidence (a registered server, see
+#: rote.compiler.system1.decide) covers "each Salesforce deal". A spurious
+#: unbound call is a guaranteed stub, so this errs toward a plain step.
 _SYSTEM_OBJECT = (
-    r"(?:thread|ticket|issue|message|email|e-mail|document|doc|page|record|board|file"
-    r"|event|contact|deal|invoice|order|pull request|PR|commit|row|cell)s?\b"
+    r"(?:thread|ticket|issue|message|email|e-mail|document|doc|page|board"
+    r"|event|contact|pull request|commit)s?\b"
 )
 _SYSTEM_NOUN = (
     r"(?:portal|api|database|db|server|endpoint|inbox|channel|crm|system"
