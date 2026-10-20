@@ -40,6 +40,7 @@ hand.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -384,6 +385,7 @@ def emit_findings(
     with tempfile.TemporaryDirectory(prefix="rote-dry-emit-") as out:
         try:
             adapter.emit(pipeline, Path(out) / "runtime")
+            unshipped = unshipped_imports(Path(out) / "runtime")
         except Exception as e:  # noqa: BLE001 (every refusal is the agent's to fix)
             return [
                 ContractFinding(
@@ -397,7 +399,59 @@ def emit_findings(
                     path="pipeline.yaml",
                 )
             ]
-    return []
+    return [
+        ContractFinding(
+            node_id="(pipeline)",
+            kind="unshipped_module",
+            severity="error",
+            message=(
+                f"{path} imports extracted.{module}, but the emitted runtime has no "
+                f"extracted/{module}.py: write it beside pipeline.yaml, or import "
+                "only modules that exist"
+            ),
+            path=path,
+        )
+        for path, module in unshipped
+    ]
+
+
+def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
+    """(file, module) for every ``extracted`` import the emitted runtime cannot satisfy.
+
+    Checked on the EMITTED output, not the work dir: two real --system1
+    deliverables passed verification and then crashed at run time on
+    ``extracted._common`` / ``extracted.rule_tables``, which the work dir
+    had and the emitted runtime did not. Static (AST) resolution, so no
+    deliverable code runs outside the test sandbox.
+    """
+    extracted = runtime_dir / "extracted"
+    have = {p.stem for p in extracted.glob("*.py")} if extracted.is_dir() else set()
+    missing: list[tuple[str, str]] = []
+    for path in sorted(runtime_dir.rglob("*.py")):
+        rel = str(path.relative_to(runtime_dir))
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        except SyntaxError:
+            continue  # reported by the syntax check, not here
+        inside = path.parent == extracted
+        for node in ast.walk(tree):
+            wanted: list[str] = []
+            if isinstance(node, ast.Import):
+                wanted = [
+                    a.name.split(".")[1] for a in node.names if a.name.startswith("extracted.")
+                ]
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if node.level == 0 and mod.startswith("extracted."):
+                    wanted = [mod.split(".")[1]]
+                elif node.level == 0 and mod == "extracted":
+                    wanted = [a.name for a in node.names]
+                elif node.level == 1 and inside:
+                    wanted = [mod.split(".")[0]] if mod else [a.name for a in node.names]
+            for module in wanted:
+                if module not in have and (rel, module) not in missing:
+                    missing.append((rel, module))
+    return missing
 
 
 #: The rubric's write-once rules, restated in every repair turn. A resumed

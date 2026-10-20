@@ -21,6 +21,7 @@ compiler's only output is the validated IR + the stub files;
 
 from __future__ import annotations
 
+import functools
 import inspect
 import json
 import math
@@ -34,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rote.compiler import system1
 from rote.compiler.drivers import (
     CompilerDriver,
     DriverError,
@@ -206,6 +208,8 @@ class Compiler:
         trust_skill: bool = False,
         emit_target: EmitTarget | None = None,
         strict_provenance: bool = False,
+        system1: bool = False,
+        system1_decider: str = "rules",
     ) -> None:
         """
         Parameters
@@ -251,6 +255,11 @@ class Compiler:
             ``--strict-provenance``: every unresolved provenance finding is an
             error, review gaps included. By default only a citation the skill
             does not contain fails; assumptions never do.
+        system1
+            EXPERIMENTAL (``--system1``): every structural decision is made by
+            rules before the agent runs (:mod:`rote.compiler.system1`), and
+            the agent, under a smaller rubric, writes only text. rote holds
+            the agent to the decisions after every stop.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -261,6 +270,8 @@ class Compiler:
         self.trust_skill = trust_skill
         self.emit_target = emit_target
         self.strict_provenance = strict_provenance
+        self.system1 = system1
+        self.system1_decider = system1_decider
 
     @property
     def compiler_skill_dir(self) -> Path:
@@ -399,6 +410,8 @@ class Compiler:
             raise CompilerError(f"Not a skill bundle (no SKILL.md found): {skill_dir}")
 
         skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        if self.system1 and update:
+            raise CompilerError("--system1 does not support --update yet; run a full compile")
 
         plan: UpdatePlan | None = None
         if update:
@@ -424,8 +437,27 @@ class Compiler:
         driver = self.select_driver()
         self._emit("log", f"driver selected: {driver.name}")
 
-        with tempfile.TemporaryDirectory(prefix="rote-compile-") as work_dir_str:
+        with (
+            tempfile.TemporaryDirectory(prefix="rote-compile-") as work_dir_str,
+            tempfile.TemporaryDirectory(prefix="rote-system1-rubric-") as rubric_dir_str,
+        ):
             work_dir = Path(work_dir_str)
+            compiler_skill_dir = self.compiler_skill_dir
+            s1_plan: system1.Plan | None = None
+            if self.system1:
+                try:
+                    s1_plan = system1.prepare(skill_dir, work_dir, self.system1_decider)
+                except (system1.UnsafeSkillText, system1.ClefUnavailable) as e:
+                    raise CompilerError(str(e)) from e
+                self._emit(
+                    "log",
+                    f"system1: decided {len(s1_plan.nodes)} node(s) with rules; "
+                    f"{len(s1_plan.review)} decision(s) below {system1.REVIEW_BELOW} "
+                    "confidence go to the report",
+                )
+                compiler_skill_dir = system1.materialize_text_rubric(
+                    compiler_skill_dir, Path(rubric_dir_str)
+                )
 
             instructions: list[str] = []
             if extra_instructions:
@@ -451,12 +483,17 @@ class Compiler:
             # (the in-process drivers, and claude via `--resume`).
             base_dir = output_dir if plan is not None else None
             if "repair" in inspect.signature(driver.run).parameters:
-                run_kwargs["repair"] = self._deliverable_repairer(base_dir, skill_dir)
+                settle_round = (
+                    None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
+                )
+                run_kwargs["repair"] = self._deliverable_repairer(
+                    base_dir, skill_dir, before_verify=settle_round
+                )
 
             try:
                 result = await driver.run(
                     skill_dir=skill_dir,
-                    compiler_skill_dir=self.compiler_skill_dir,
+                    compiler_skill_dir=compiler_skill_dir,
                     work_dir=work_dir,
                     on_event=self.on_event,
                     **run_kwargs,
@@ -471,6 +508,18 @@ class Compiler:
                     self._emit("log", f"usage before the failure: {usage}")
                     spent = f" after spending {usage}"
                 raise CompilerError(f"Driver {driver.name!r} failed{spent}: {e}{detail}") from e
+
+            s1_extras = None
+            if s1_plan is not None:
+                try:
+                    system1.settle(result.work_dir, s1_plan, final=True)
+                    s1_extras = system1.report_extras(result.work_dir, s1_plan)
+                except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
+                    kept = self._keep_rejected_work(result.work_dir, output_dir)
+                    raise CompilerError(
+                        f"--system1 could not settle the agent's deliverable: "
+                        f"{type(e).__name__}: {e}. The agent's work is kept at {kept}."
+                    ) from e
 
             try:
                 pipeline = load_pipeline(result.pipeline_yaml_path)
@@ -538,7 +587,7 @@ class Compiler:
             # rote.compiler.report). Rendered from output_dir, after an
             # update's merge, so it describes the deliverable as kept.
             (output_dir / REPORT_FILENAME).write_text(
-                render_compile_report(pipeline, output_dir), encoding="utf-8"
+                render_compile_report(pipeline, output_dir, s1_extras), encoding="utf-8"
             )
 
             # The agent records source_skill relative to its own temp
@@ -601,7 +650,10 @@ class Compiler:
             )
 
     def _deliverable_repairer(
-        self, base_dir: Path | None, skill_dir: Path
+        self,
+        base_dir: Path | None,
+        skill_dir: Path,
+        before_verify: Callable[[Path], object] | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -616,12 +668,21 @@ class Compiler:
         :data:`MAX_VALIDATION_REPAIRS` rounds; after that the callback
         accepts the deliverable as-is, the orchestrator fails an invalid
         IR with its last error, and anything else is reported.
+
+        ``before_verify`` runs on the artifact dir first: ``--system1``
+        restores its decisions there, so what is verified (and repaired)
+        is the pipeline rote will actually ship.
         """
         attempts = 0
 
         def _repair(pipeline_yaml_path: Path) -> str | None:
             nonlocal attempts
             artifact_dir = pipeline_yaml_path.parent
+            if before_verify is not None:
+                try:
+                    before_verify(artifact_dir)
+                except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
+                    self._emit("warning", f"preparing the deliverable for verification failed: {e}")
             verification = verify_deliverable(
                 artifact_dir,
                 base_dir=base_dir,

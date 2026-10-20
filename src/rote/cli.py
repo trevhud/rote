@@ -612,6 +612,12 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.system1_decider != "rules" and not args.system1:
+        print(
+            f"error: --system1-decider {args.system1_decider} needs --system1",
+            file=sys.stderr,
+        )
+        return 2
 
     # ── Layered defaults ── flag > ROTE_* env > project rote.yaml >
     # user config > built-in. Resolved up front because the logged-in
@@ -855,6 +861,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         run_generated_tests=not args.no_verify_tests,
         trust_skill=args.trust_skill,
         strict_provenance=args.strict_provenance,
+        system1=args.system1,
+        system1_decider=args.system1_decider,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
@@ -1422,6 +1430,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-verify-tests", args.no_verify_tests),
         ("--trust-skill", args.trust_skill),
         ("--strict-provenance", args.strict_provenance),
+        ("--system1", args.system1),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -4088,6 +4097,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-verify-tests",
         action="store_true",
         help=("Don't run the tests the compiler agent writes. Static checks still run."),
+    )
+    compile_p.add_argument(
+        "--system1",
+        action="store_true",
+        help=(
+            "EXPERIMENTAL: decide the whole pipeline structure with rules (kinds, data "
+            "flow, fan_out, mandatory, gates, constants, rule tables as code) before the "
+            "agent runs; the agent then writes only text (implementations, judge "
+            "prompts, the report). See docs/design/system1-compile.md"
+        ),
+    )
+    compile_p.add_argument(
+        "--system1-decider",
+        choices=["rules", "clef"],
+        default="rules",
+        help=(
+            "EXPERIMENTAL, with --system1: who decides each step's kind and whether a person "
+            "must act. 'rules' (default) makes no call. 'clef' asks Cloudflare's Clef "
+            "decision model where it is confident and the rules elsewhere. It sends every "
+            "step's text to your Cloudflare account's Workers AI, needs CLOUDFLARE_ACCOUNT_ID "
+            "and CLOUDFLARE_API_TOKEN, and costs about $0.005 a compile"
+        ),
     )
     compile_p.add_argument(
         "--strict-provenance",
