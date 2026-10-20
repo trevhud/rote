@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from rote.compiler.api_docs import docs_findings
+from rote.compiler.api_docs import api_view, docs_findings
 from rote.compiler.grounding import (
     ContractQuestion,
     Grounding,
@@ -813,13 +813,14 @@ def _verify(
     except Exception as e:  # noqa: BLE001 (any load failure is the agent's to fix)
         return Verification(pipeline=None, pipeline_error=str(e))
     implementations = implementation_status(pipeline, root)
+    api_backend = emit_target is not None and emit_target.external_backend == "api"
     findings = (
         check_contracts(pipeline, root)
         + _deliverable_findings(
             pipeline,
             root,
             implementations,
-            api_backend=emit_target is not None and emit_target.external_backend == "api",
+            api_backend=api_backend,
         )
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
@@ -828,15 +829,19 @@ def _verify(
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     if grounding is not None:
-        findings += grounding_findings(pipeline, skill_dir, grounding.sample)
-        findings += tool_findings(pipeline, grounding.tools)
-        questions = contract_questions(pipeline, skill_dir, grounding) + [
+        # On the api backend no binding is called: its tool's arguments and
+        # result shape are not the pipeline's contract, and a recorded tool
+        # result cannot stand in for the vendor call in the prefix.
+        called = api_view(pipeline) if api_backend else pipeline
+        findings += grounding_findings(called, skill_dir, grounding.sample)
+        findings += tool_findings(called, grounding.tools)
+        questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
-            for node_id, text in tool_questions(pipeline, grounding.tools)
+            for node_id, text in tool_questions(called, grounding.tools)
         ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(
-                pipeline,
+                called,
                 root,
                 grounding.sample,
                 implementations,

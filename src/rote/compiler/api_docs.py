@@ -23,6 +23,7 @@ Three parts, one per party:
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -72,6 +73,21 @@ def brief() -> str:
     )
 
 
+def api_view(pipeline: Pipeline) -> Pipeline:
+    """``pipeline`` as the api backend runs it: no ``mcp:`` binding is called.
+
+    Every bound external_call runs its ``impl:`` instead (an
+    ``agent_loop``'s tools are untouched: they are MCP on every backend).
+    Checks about a binding's tool, its arguments, its recorded result and
+    the server's auth, run on this view, have nothing to report.
+    """
+    nodes = [
+        n.model_copy(update={"mcp": None}) if n.kind is NodeKind.EXTERNAL_CALL else n
+        for n in pipeline.nodes
+    ]
+    return pipeline.model_copy(update={"nodes": nodes})
+
+
 def normalize_url(url: str) -> str:
     """One spelling per page: no fragment, no trailing slash, lowercase host.
 
@@ -104,23 +120,61 @@ def module_docs(source: str) -> list[tuple[int, str]]:
 
 
 def cited_docs(pipeline: Pipeline, root: Path) -> list[DocCitation]:
-    """Every ``# docs:`` URL in the modules the pipeline's ``external_call`` nodes use.
+    """Every ``# docs:`` page an ``external_call`` node's function relies on, once each.
 
-    A citation belongs to the node whose ``impl:`` module holds it. Two
-    nodes that share a module share its citations, since nothing finer
-    than the module says which call a page documents.
+    A citation belongs to a node's function when it sits in the function,
+    in the lines between the previous top-level statement and the ``def``
+    (the comment directly above it), or in the module's header before the
+    first top-level ``def`` or ``class``, which speaks for every function
+    in the module.
     """
     out: list[DocCitation] = []
     for node in pipeline.nodes:
         if node.kind is not NodeKind.EXTERNAL_CALL or not node.impl:
             continue
-        rel = node.impl.partition(":")[0]
+        rel, _, symbol = node.impl.partition(":")
         try:
             source = (root / rel).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            tree = ast.parse(source)
+        except (OSError, UnicodeDecodeError, SyntaxError):
             continue
-        out += [DocCitation(node.id, url, rel, line) for line, url in module_docs(source)]
+        spans = _function_spans(tree, symbol)
+        seen: set[str] = set()
+        for line, url in module_docs(source):
+            key = normalize_url(url)
+            if key in seen or not any(lo <= line <= hi for lo, hi in spans):
+                continue
+            seen.add(key)
+            out.append(DocCitation(node.id, url, rel, line))
     return out
+
+
+def _function_spans(tree: ast.Module, symbol: str) -> list[tuple[int, int]]:
+    """The line ranges whose ``# docs:`` comments speak for ``symbol``.
+
+    The header runs to the end of the last statement before the first
+    top-level ``def`` or ``class``; a comment after that and above a
+    ``def`` is that function's.
+    """
+    defs = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    header_end = 0
+    for stmt in tree.body:
+        if isinstance(stmt, defs):
+            break
+        header_end = stmt.end_lineno or header_end
+    else:
+        header_end = 10**9  # no def at all: the whole module is header
+    spans = [(1, header_end)]
+    previous_end = 0
+    for stmt in tree.body:
+        if (
+            isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef)
+            and stmt.name == symbol
+            and stmt.end_lineno is not None
+        ):
+            spans.append((previous_end + 1, stmt.end_lineno))
+        previous_end = stmt.end_lineno or previous_end
+    return spans
 
 
 def docs_findings(
@@ -129,7 +183,8 @@ def docs_findings(
     """An implemented vendor call that cites no docs page, under ``--backend api``.
 
     A stub is not held to it: its NotImplementedError message is where the
-    agent says which page left the shape unconfirmed.
+    agent says which page left the shape unconfirmed. A citation counts when
+    :func:`cited_docs` attributes it to the node's function.
     """
     cited = {c.node_id for c in cited_docs(pipeline, root)}
     kinds = {n.id: n.kind for n in pipeline.nodes}
@@ -242,6 +297,7 @@ __all__ = [
     "SEARCH_TOOLS",
     "DocCitation",
     "WebResearch",
+    "api_view",
     "brief",
     "cited_docs",
     "docs_findings",

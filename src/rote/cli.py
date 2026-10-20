@@ -232,7 +232,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
 
     record_app(out_dir, args.runtime, pipeline.name)
 
-    mcp_servers = _mcp_requirements(pipeline)
+    mcp_servers = _mcp_requirements(pipeline, args.backend)
 
     # The IR's `impl` refs point at modules beside the pipeline.yaml, which
     # is exactly what was just sourced into the runtime dir — so this is
@@ -1081,7 +1081,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # ── Required MCP servers ── advisory only: the run parks-on-auth as
     # the backstop, so a dead credential is never fatal — but telling the
     # user now beats discovering it mid-flight.
-    mcp_servers = _mcp_requirements(pipeline)
+    mcp_servers = _mcp_requirements(pipeline, args.backend)
     if mcp_servers:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}", file=summary_stream)
@@ -2290,8 +2290,12 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
     return 0
 
 
-def _mcp_requirements(pipeline: Pipeline) -> list[dict[str, object]]:
+def _mcp_requirements(pipeline: Pipeline, backend: str = "mcp") -> list[dict[str, object]]:
     """Per required MCP server: the binding nodes, tools, and current auth state.
+
+    ``backend="api"`` counts no ``mcp:`` binding, since none is called
+    (:func:`rote.compiler.api_docs.api_view`); an agent loop's servers
+    still count.
 
     Requirement detection is pure IR (``Pipeline.required_mcp_servers``);
     the ``auth`` column reads the local registry + token store — no
@@ -2305,6 +2309,10 @@ def _mcp_requirements(pipeline: Pipeline) -> list[dict[str, object]]:
     from rote.mcp import auth_status, load_registry, read_token_file
     from rote.mcp.learned import learned_auth
 
+    if backend == "api":
+        from rote.compiler.api_docs import api_view
+
+        pipeline = api_view(pipeline)
     required = pipeline.required_mcp_servers
     if not required:
         return []

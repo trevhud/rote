@@ -405,3 +405,66 @@ def test_a_web_tool_event_carries_its_page_through_the_jsonl_sink(tmp_path: Path
     sink.close()
     [line] = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines() if x]
     assert line["url"] == DOCS
+
+
+def test_a_citation_belongs_to_the_function_it_sits_on(tmp_path: Path) -> None:
+    """A page cited on one function does not cite another in the same module,
+    and a page in the module header speaks for every function, once."""
+    two = (
+        PIPELINE_YAML.replace(
+            "exit_nodes: [search_dock_emails]",
+            "exit_nodes: [search_dock_emails, other_call]",
+        )
+        .replace(
+            "edges: []",
+            "  - id: other_call\n"
+            "    kind: external_call\n"
+            "    description: Another Gmail call.\n"
+            "    impl: extracted/gmail.py:other_call\n"
+            "edges: []",
+        )
+        .replace(
+            "entry_nodes: [search_dock_emails]", "entry_nodes: [search_dock_emails, other_call]"
+        )
+    )
+    module = (
+        '"""Gmail.\n\n# docs: https://header.example/guide\n"""\n\n'
+        "# docs: https://header.example/guide#again\n"
+        f"# docs: {DOCS}\n"
+        "def search_dock_emails(query):\n"
+        "    return {}\n\n\n"
+        "def other_call():\n"
+        "    return {}\n"
+    )
+    root = tmp_path / "d"
+    _write(root, {"pipeline.yaml": two, "extracted/gmail.py": module})
+    cites = api_docs.cited_docs(load_pipeline(root / "pipeline.yaml"), root)
+    by_node: dict[str, list[str]] = {}
+    for c in cites:
+        by_node.setdefault(c.node_id, []).append(c.url)
+    assert by_node == {
+        "search_dock_emails": ["https://header.example/guide", DOCS],
+        "other_call": ["https://header.example/guide"],
+    }
+
+
+def test_the_api_backend_asks_nothing_about_an_uncalled_binding(tmp_path: Path) -> None:
+    """No tool-argument or tool-result question, and no MCP server to log in
+    to, for a binding the api backend never calls."""
+    from rote.cli import _mcp_requirements
+    from rote.compiler.grounding import Grounding
+
+    root = _deliverable(tmp_path / "d", CITED_MODULE)
+    grounding = Grounding(sample=None, observations=(), tools={})
+    mcp = verify_deliverable(
+        root, run_tests=False, emit_target=EmitTarget("dbos", "mcp"), grounding=grounding
+    )
+    api = verify_deliverable(
+        root, run_tests=False, emit_target=EmitTarget("dbos", "api"), grounding=grounding
+    )
+    assert any("gmail.search_threads" in q.text for q in mcp.questions)
+    assert not any("gmail.search_threads" in q.text for q in api.questions)
+
+    pipeline = load_pipeline(root / "pipeline.yaml")
+    assert [e["server"] for e in _mcp_requirements(pipeline)] == ["gmail"]
+    assert _mcp_requirements(pipeline, "api") == []
