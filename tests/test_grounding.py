@@ -584,6 +584,37 @@ def test_a_binding_the_upstream_result_cannot_satisfy_names_both_sides(tmp_path:
     assert "`cap` is bound to dupes.output.cap, but dupes returned keys flagged" in finding.message
 
 
+def test_a_result_that_is_not_plain_json_fails_by_path(tmp_path: Path) -> None:
+    """A real compile's duplicate check returned a Python set: it pickles in
+    DBOS and silently becomes its repr anywhere JSON carries it."""
+    root = _prefix_root(tmp_path)
+    checks = root / "extracted" / "checks.py"
+    checks.write_text(
+        checks.read_text().replace(
+            'return {"flagged": flagged, "cap": 25}', 'return {"flagged": set(flagged), "cap": 25}'
+        )
+    )
+    run = _run(root)
+    [finding] = run.findings
+    assert finding.kind == "prefix_not_json" and finding.node_id == "dupes"
+    assert "result.flagged is a set" in finding.message
+    # Nothing downstream runs on a result no runtime could carry.
+    assert run.steps["summary"]["status"] == "not_reached"
+
+
+def test_a_non_string_key_is_not_plain_json(tmp_path: Path) -> None:
+    """JSON turns 1 into "1": the result a later step reads is not the one returned."""
+    root = _prefix_root(tmp_path)
+    checks = root / "extracted" / "checks.py"
+    checks.write_text(
+        checks.read_text().replace(
+            'return {"flagged": flagged, "cap": 25}', 'return {"flagged": {1: flagged}, "cap": 25}'
+        )
+    )
+    [finding] = _run(root).findings
+    assert finding.kind == "prefix_not_json" and "result.flagged has a int key 1" in finding.message
+
+
 def test_a_fanned_input_that_is_not_a_list_fails(tmp_path: Path) -> None:
     run = _run(_prefix_root(tmp_path), {**_ROWS, "submissions": {"E1": {}}})
     kinds = {f.node_id: f.kind for f in run.findings}
@@ -625,6 +656,248 @@ def test_a_recorded_tool_result_stands_in_for_the_call(tmp_path: Path) -> None:
         trust_skill=True,
     )
     assert other.steps["search"]["status"] == "no_recording" and other.findings == []
+
+
+@pytest.mark.parametrize(
+    ("count_body", "flagged"),
+    [
+        # 7 of 9 real ops-report compiles: a dict assumed, a list returned.
+        ("return {'n': len(found.get('threads', []))}", "a JSON list"),
+        ("return {'n': len(found['threads'])}", "a JSON list"),
+        # A list handled, text not: Drive's CSV reaches the code as a string.
+        (
+            "threads = found if isinstance(found, list) else found.get('threads', [])\n"
+            "    return {'n': len(threads)}",
+            "text",
+        ),
+        # Every shape: nothing to report.
+        (
+            "if isinstance(found, str):\n        found = []\n"
+            "    threads = found if isinstance(found, list) else found.get('threads', [])\n"
+            "    return {'n': len(threads)}",
+            None,
+        ),
+    ],
+)
+def test_a_consumer_that_assumes_a_dict_is_probed_with_a_list(
+    count_body: str, flagged: str | None, tmp_path: Path
+) -> None:
+    ir = _MCP_IR.replace("threads: search.output.threads", "found: search.output")
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def count(found):\n    {count_body}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.steps["search"]["status"] == "no_recording"
+    kinds = [f.kind for f in run.findings]
+    if flagged:
+        assert kinds == ["prefix_shape_assumption"]
+        assert f"count crashes when search returns {flagged}:" in run.findings[0].message
+    else:
+        assert kinds == [] and run.steps["count"]["status"] == "not_reached"
+
+
+def _probe_run(tmp_path: Path, count_body: str, output_schema: dict | None = None):
+    from rote.compiler.tool_grounding import ToolSchema
+
+    ir = _MCP_IR.replace("threads: search.output.threads", "found: search.output")
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": ir,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def count(found):\n    {count_body}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    tools = {
+        ("gmail", "search_threads"): ToolSchema(
+            "gmail",
+            "search_threads",
+            {"type": "object", "properties": {"query": {"type": "string"}}},
+            "test",
+            True,
+            output_schema,
+        )
+    }
+    return run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+        tools=tools,
+    )
+
+
+def test_a_declared_output_shape_is_the_only_one_probed(tmp_path: Path) -> None:
+    """A list-only consumer is right when the tool declares an array result."""
+    lists_only = "return {'n': len([t for t in found if t])}"
+    array = {"type": "array", "items": {"type": "object"}}
+    assert _probe_run(tmp_path / "a", lists_only, array).findings == []
+    # FastMCP wraps a non-object result; rote's helper unwraps it.
+    wrapped = {
+        "type": "object",
+        "x-fastmcp-wrap-result": True,
+        "properties": {"result": array},
+    }
+    assert _probe_run(tmp_path / "b", lists_only, wrapped).findings == []
+    # Declared as an object: a dict reader is right, nothing to report.
+    dict_reader = "return {'n': len(found.get('threads', []))}"
+    assert _probe_run(tmp_path / "c", dict_reader, {"type": "object"}).findings == []
+    # Undeclared: the same dict reader fails on a list.
+    [finding] = _probe_run(tmp_path / "d", dict_reader).findings
+    assert finding.kind == "prefix_shape_assumption"
+
+
+_TWO_UPSTREAMS_IR = """\
+name: ops
+input:
+  type: Day
+  required: [report_date]
+nodes:
+  - id: search
+    kind: external_call
+    description: search mail
+    impl: extracted/mail.py:search
+    mcp: {server: gmail, tool: search_threads}
+    inputs:
+      query: pipeline.input.report_date
+  - id: other
+    kind: pure_function
+    description: a step that does not run on the sample
+    impl: extracted/mail.py:other
+    inputs:
+      day: pipeline.input.report_date
+  - id: count
+    kind: pure_function
+    description: count threads
+    impl: extracted/mail.py:count
+    constants: {cap: 5}
+    inputs:
+      found: search.output
+      prior: other.output
+edges:
+  - {from: search, to: count}
+  - {from: other, to: count}
+entry_nodes: [search, other]
+exit_nodes: [count]
+"""
+
+
+def _two_upstream_run(tmp_path: Path, other_body: str):
+    root = _write(
+        tmp_path,
+        {
+            "pipeline.yaml": _TWO_UPSTREAMS_IR,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            f"def other(day):\n    {other_body}\n\n"
+            "def count(found, cap, prior=None):\n"
+            "    return {'n': min(cap, len(found.get('threads', [])))}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    return run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+
+
+def test_a_consumer_is_probed_only_when_its_other_inputs_ran(tmp_path: Path) -> None:
+    """The probe passes made-up data for the unrecorded result only. A
+    consumer whose other upstream did not run is never called, even when a
+    default would let it run (and fail on the dict read, falsely)."""
+    ran = _two_upstream_run(tmp_path / "ran", "return {'ok': True}")
+    # Its constant is passed too: without it the call fails on the signature.
+    assert [f.kind for f in ran.findings] == ["prefix_shape_assumption"]
+    stub = _two_upstream_run(tmp_path / "stub", "raise NotImplementedError('later')")
+    assert stub.steps["other"]["status"] != "ok"
+    assert stub.findings == [] and stub.steps["count"]["status"] == "not_reached"
+
+
+def test_a_wrapped_text_result_is_probed_as_text(tmp_path: Path) -> None:
+    """FastMCP wraps a string result as {"result": ...}; the helper unwraps it."""
+    wrapped = {
+        "type": "object",
+        "x-fastmcp-wrap-result": True,
+        "properties": {"result": {"type": "string"}},
+    }
+    dict_reader = "return {'n': len(found.get('threads', []))}"
+    [finding] = _probe_run(tmp_path, dict_reader, wrapped).findings
+    assert "returns text:" in finding.message
+
+
+def test_a_field_binding_or_a_fanned_consumer_is_not_probed(tmp_path: Path) -> None:
+    """Only a consumer that reads the whole result is probed: a field of an
+    unknown result, or one element of it, says nothing about the shape."""
+
+    field = _MCP_IR
+    root = _write(
+        tmp_path / "field",
+        {
+            "pipeline.yaml": field,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            "def count(threads):\n    return {'n': len(threads.get('items', []))}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.findings == [] and run.steps["count"]["status"] == "not_reached"
+
+    fanned = _MCP_IR.replace("threads: search.output.threads", "found: search.output").replace(
+        "    impl: extracted/mail.py:count\n",
+        "    impl: extracted/mail.py:count\n    fan_out: true\n",
+    )
+    root = _write(
+        tmp_path / "fanned",
+        {
+            "pipeline.yaml": fanned,
+            "extracted/mail.py": "def search(query):\n    raise NotImplementedError('mcp')\n\n"
+            "def count(found):\n    return {'subject': found.get('subject')}\n",
+        },
+    )
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"report_date": "2026-10-19"}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+    assert run.findings == [] and run.steps["count"]["status"] == "not_reached"
+
+
+@pytest.mark.parametrize(
+    "count_body",
+    [
+        "return {'n': int(found)}",  # TypeError, but not a dict assumption
+        "return {'n': found.total}",  # AttributeError on list: not dict-shaped access
+    ],
+)
+def test_only_dict_assumptions_count_as_shape_findings(count_body: str, tmp_path: Path) -> None:
+    run = _probe_run(tmp_path, count_body)
+    assert [f.kind for f in run.findings] == []
+    assert run.steps["count"]["status"] == "not_reached"
 
 
 def test_the_prefix_runs_in_the_os_sandbox(tmp_path: Path) -> None:

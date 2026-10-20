@@ -20,6 +20,7 @@ from rote import cli
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.ir import load_pipeline
+from tests._helpers import fill_system1_judges as _fill_judges
 
 REPO = Path(__file__).resolve().parents[1]
 EXAMPLES = REPO / "examples"
@@ -176,7 +177,8 @@ def test_cloud_mode_rejects_the_local_system1_flags() -> None:
 
 def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> None:
     """The legacy `signature` path emits only on Python runtimes; System-1's
-    deliverable must emit everywhere, so a judge without a spec is an error."""
+    deliverable must emit everywhere, so a judge whose spec is missing or
+    still the skeleton's (no prompt, no output fields) is an error."""
     from rote.compiler import system1
     from rote.compiler.verify import verify_deliverable
 
@@ -184,14 +186,52 @@ def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> Non
     work.mkdir()
     system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
     judges = [n for n in load_pipeline(work / "pipeline.yaml").nodes if n.kind.value == "llm_judge"]
-    assert judges and all(j.signature_spec is None for j in judges)
+    assert len(judges) == 2
 
-    def missing(portable: bool) -> set[str]:
+    def flagged(portable: bool) -> set[str]:
         v = verify_deliverable(work, run_tests=False, portable_judges=portable)
-        return {f.node_id for f in v.findings if f.kind == "missing_signature_spec"}
+        return {f.node_id for f in v.findings if f.kind == "incomplete_signature_spec"}
 
-    assert missing(True) == {j.id for j in judges}
-    assert missing(False) == set()
+    assert flagged(True) == {j.id for j in judges}
+    assert flagged(False) == set()
+
+
+def test_the_skeleton_decides_each_judges_input_schema(tmp_path: Path) -> None:
+    from rote.compiler import system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    for j in (n for n in pipeline.nodes if n.kind.value == "llm_judge"):
+        assert j.signature is None  # one judge form: the spec
+        spec = j.signature_spec
+        assert spec is not None and spec.prompt == "Decide from {{ request }}."
+        props = spec.input_schema["properties"]
+        assert set(props) == set(j.inputs) == set(spec.input_schema["required"])
+        assert props["request"] == pipeline.input.input_schema
+        assert spec.output_schema["required"] == ["verdict"]
+
+
+@pytest.mark.parametrize("runtime", ["cloudflare", "dbos", "temporal", "python"])
+def test_a_system1_judge_pipeline_emits_on_every_runtime(runtime: str, tmp_path: Path) -> None:
+    """System-1 plus a judge plus a TypeScript target: the emit that broke."""
+    from rote.adapters import get_adapter
+    from rote.compiler import system1
+    from rote.compiler.verify import verify_deliverable
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    v = verify_deliverable(work, run_tests=False, portable_judges=True)
+    assert not [f for f in v.findings if f.kind == "incomplete_signature_spec"]
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    if runtime == "python" and pipeline.requires_durable_execution:
+        pytest.skip("deal-monitor has a gate; the python adapter refuses gates by design")
+    get_adapter(runtime, extracted_source_dir=work).emit(pipeline, tmp_path / "out")
+    assert any((tmp_path / "out").rglob("*"))
 
 
 @pytest.mark.asyncio
@@ -329,3 +369,351 @@ def test_rote_config_reports_the_decider(
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["decider"]
     assert setting == {"value": "jev", "source": "env ROTE_DECIDER"}
+
+
+@pytest.mark.parametrize(
+    ("written", "named"),
+    [
+        ({"prompt": "Decide from {{ request }}."}, "is missing output fields"),
+        (
+            {"output_schema": {"type": "object", "properties": {"v": {"type": "string"}}}},
+            "is missing a prompt",
+        ),
+    ],
+)
+def test_each_half_of_a_judges_text_is_required(
+    written: dict[str, Any], named: str, tmp_path: Path
+) -> None:
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+    from rote.compiler.verify import verify_deliverable
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judges = [n["id"] for n in doc["nodes"] if n["kind"] == "llm_judge"]
+    (work / "system1" / "text.yaml").write_text(
+        yaml.safe_dump({j: {"signature_spec": written} for j in judges})
+    )
+    enforce(work, final=True)
+    v = verify_deliverable(work, run_tests=False, portable_judges=True)
+    messages = [f.message for f in v.findings if f.kind == "incomplete_signature_spec"]
+    assert len(messages) == len(judges) and all(named in m for m in messages)
+
+
+def test_the_step_after_a_gate_also_reads_what_the_gate_saw(tmp_path: Path) -> None:
+    """A real expense-audit compile stubbed "file the report" because it only
+    received the controller's decision, not the batch it was filing."""
+    from rote.compiler import system1
+
+    plan = system1.prepare(EXAMPLES / "expense-audit" / "skill", tmp_path)
+    by_id = {n.id: n for n in plan.nodes}
+    gate = next(n for n in plan.nodes if n.kind == "hitl_gate")
+    gate_reads = {ref.split(".")[0] for ref in gate.inputs.values()} - {"pipeline"}
+    after = [n for n in plan.nodes if f"{gate.id}.output" in n.inputs.values()]
+    assert after and gate_reads
+    for n in after:
+        assert gate_reads <= {ref.split(".")[0] for ref in n.inputs.values()}
+        assert "past the gate it also reads" in next(
+            d.rule for d in n.decisions if d.field == "inputs"
+        )
+    assert all(by_id[g].kind != "hitl_gate" for g in gate_reads)
+
+
+def test_judge_inputs_accept_what_their_upstream_really_returns(tmp_path: Path) -> None:
+    """Emit deal-monitor's System-1 judges and validate real-shaped inputs.
+
+    `score_new_opportunities_judge` reads the fanned classify judge's result,
+    which binds as a LIST. Typing an upstream result as an object refused it.
+    The fanned judge gets one element, whatever its shape."""
+    import importlib.util
+    import sys
+
+    from rote.adapters import get_adapter
+    from rote.compiler import system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    _fill_judges(work)
+    pipeline = load_pipeline(work / "pipeline.yaml")
+    out = tmp_path / "out"
+    get_adapter("dbos", extracted_source_dir=work).emit(pipeline, out)
+    from rote.ir import fan_out_element_param
+
+    request = {"report_date": "2026-10-19"}
+    cases: dict[str, dict[str, Any]] = {}
+    for node in pipeline.nodes:
+        if node.kind.value != "llm_judge":
+            continue
+        element = fan_out_element_param(node, pipeline) if node.fan_out else None
+        cases[node.id] = {
+            # one element of the fanned list, any shape; any other upstream
+            # result as the list a fanned node returns
+            param: {"id": "t1", "subject": "PO 4411"}
+            if param == element
+            else [{"verdict": "a"}, {"verdict": "b"}]
+            for param, ref in node.inputs.items()
+            if ref != "pipeline.input"
+        }
+    assert len(cases) == 2 and any(cases.values())
+    by_id = {n.id: n for n in pipeline.nodes}
+    sys.path.insert(0, str(out))
+    try:
+        for judge, inputs in cases.items():
+            pascal = "".join(w.title() for w in judge.split("_"))
+            path = out / "signatures" / f"{judge}.py"
+            spec = importlib.util.spec_from_file_location(f"sig_{judge}", path)
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module  # pydantic resolves annotations through it
+            spec.loader.exec_module(module)
+            model = getattr(module, f"{pascal}Input")
+            model.model_validate({"request": request, **inputs})
+            # Only an untyped input takes a string: nothing typed it yet. A
+            # fanned upstream's whole result is a list, and is typed one.
+            schema = by_id[judge].signature_spec.input_schema["properties"]  # type: ignore[union-attr]
+            untyped = {k for k in inputs if "type" not in schema[k]}
+            listed = {k for k in inputs if schema[k].get("type") == "array"}
+            assert untyped | listed == set(inputs)
+            model.model_validate(
+                {
+                    "request": request,
+                    **{k: "plain text" for k in untyped},
+                    **{k: inputs[k] for k in listed},
+                }
+            )
+            for k in listed:
+                with pytest.raises(Exception, match="valid list"):
+                    model.model_validate({"request": request, **inputs, k: "plain text"})
+    finally:
+        sys.path.remove(str(out))
+
+
+def test_a_list_a_judge_reads_whole_is_an_array(tmp_path: Path) -> None:
+    from rote.compiler.system1 import decide
+    from rote.compiler.system1.parse import parse_skill
+    from rote.compiler.system1.skeleton import judge_input_schema
+
+    unit = parse_skill(EXAMPLES / "deal-monitor" / "skill").units[0]
+    node = decide.NodePlan("j", "llm_judge", "judge", unit)
+    node.inputs = {"request": "pipeline.input", "rows": "fetch.output.items", "prev": "x.output"}
+    props = judge_input_schema(node, {"type": "object"})["properties"]
+    assert props["rows"]["type"] == "array"
+    assert "type" not in props["prev"]
+    node.fan_out, node.element_source = True, "fetch"
+    node.inputs["others"] = "other.output.items"
+    props = judge_input_schema(node, {"type": "object"})["properties"]
+    assert "type" not in props["rows"]  # the fanned list: one element
+    assert props["others"]["type"] == "array"  # another list, read whole
+
+
+def test_a_spec_written_into_pipeline_yaml_keeps_the_decided_inputs(tmp_path: Path) -> None:
+    """The agent may write a judge's prompt in pipeline.yaml instead of
+    text.yaml: it is laid over the skeleton's spec the same way."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judge = next(n for n in doc["nodes"] if n["kind"] == "llm_judge")
+    decided = judge["signature_spec"]["input_schema"]
+    judge["signature_spec"] = {
+        "prompt": "Decide from {{ request }}.",
+        "output_schema": {"type": "object", "properties": {"v": {"type": "string"}}},
+    }
+    (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    enforce(work, final=True)
+    merged = next(
+        n for n in load_pipeline(work / "pipeline.yaml").nodes if n.id == judge["id"]
+    ).signature_spec
+    assert merged is not None and merged.input_schema == decided
+    assert merged.prompt == "Decide from {{ request }}."
+
+
+def test_a_judge_input_schema_with_its_own_names_is_replaced(tmp_path: Path) -> None:
+    """The cloud failure: the agent named a judge's inputs `ticket` and
+    `deadline_hours`; the node's inputs were `request` and an upstream node.
+    The IR rejected it after the agent's last stop."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judges = [n for n in doc["nodes"] if n["kind"] == "llm_judge"]
+    own_names = {
+        "type": "object",
+        "properties": {"ticket": {"type": "object"}, "deadline_hours": {"type": "number"}},
+        "required": ["ticket", "deadline_hours"],
+    }
+    typed = {j["id"]: dict(j["signature_spec"]["input_schema"]) for j in judges}
+    first, second = judges[0]["id"], judges[1]["id"]
+    # The second judge types its own inputs more precisely, compatibly: kept.
+    typed[second]["properties"] = {
+        k: {**v, "items": {"type": "object"}}
+        if v.get("type") == "array"
+        else {**v, "description": "typed by the agent"}
+        for k, v in typed[second]["properties"].items()
+    }
+    out_schema = {"type": "object", "properties": {"v": {"type": "string"}}}
+    text = {
+        first: {
+            "signature_spec": {
+                "input_schema": own_names,
+                "prompt": "p",
+                "output_schema": out_schema,
+            }
+        },
+        second: {
+            "signature_spec": {
+                "input_schema": typed[second],
+                "prompt": "p",
+                "output_schema": out_schema,
+            }
+        },
+    }
+    (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
+    changes = enforce(work, final=True)
+    pipeline = load_pipeline(work / "pipeline.yaml")  # validates: judge inputs vs schema
+    by_id = {n.id: n for n in pipeline.nodes}
+    kept = by_id[first].signature_spec
+    assert kept is not None and set(kept.input_schema["properties"]) == set(by_id[first].inputs)
+    assert any(f"`{first}` signature_spec.input_schema" in c for c in changes)
+    assert by_id[second].signature_spec.input_schema == typed[second]  # type: ignore[union-attr]
+    assert not any(f"`{second}` signature_spec.input_schema" in c for c in changes)
+
+
+def test_a_system1_validation_repair_points_at_text_yaml(tmp_path: Path) -> None:
+    from rote.compiler import SYSTEM1_REPAIR_NOTE, system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    (work / "pipeline.yaml").write_text("not: [a pipeline\n")
+    compiler = Compiler(run_generated_tests=False, system1_tiebreak="none")
+    repair = compiler._deliverable_repairer(
+        None,
+        EXAMPLES / "deal-monitor" / "skill",
+        before_verify=lambda d: None,
+        portable_judges=True,
+    )
+    instruction = repair(work / "pipeline.yaml")
+    assert instruction is not None and "fails IR validation" in instruction
+    assert instruction.endswith(SYSTEM1_REPAIR_NOTE)
+    plain = Compiler(run_generated_tests=False)._deliverable_repairer(
+        None, EXAMPLES / "deal-monitor" / "skill"
+    )(work / "pipeline.yaml")
+    assert plain is not None and SYSTEM1_REPAIR_NOTE not in plain
+
+
+@pytest.mark.parametrize("bad", ["extra_property", "requires_a_stranger"])
+def test_an_input_schema_must_name_exactly_the_inputs(bad: str, tmp_path: Path) -> None:
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judge = next(n for n in doc["nodes"] if n["kind"] == "llm_judge")
+    schema = dict(judge["signature_spec"]["input_schema"])
+    decided = dict(schema)
+    if bad == "extra_property":
+        schema["properties"] = {**schema["properties"], "ticket": {"type": "object"}}
+    else:
+        schema["required"] = [*schema["required"], "ticket"]
+    (work / "system1" / "text.yaml").write_text(
+        yaml.safe_dump({judge["id"]: {"signature_spec": {"input_schema": schema}}})
+    )
+    changes = enforce(work, final=True)
+    merged = yaml.safe_load((work / "pipeline.yaml").read_text())
+    node = next(n for n in merged["nodes"] if n["id"] == judge["id"])
+    assert node["signature_spec"]["input_schema"] == decided
+    assert any(f"`{judge['id']}` signature_spec.input_schema" in c for c in changes)
+
+
+def test_a_fanned_upstream_typed_as_an_object_is_replaced(tmp_path: Path) -> None:
+    """review6: the agent typed a fanned judge's whole result (a list at run
+    time) as an object. The emitted judge then refused every call."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    fanned = {n["id"] for n in doc["nodes"] if n.get("fan_out")}
+    judge = next(
+        n
+        for n in doc["nodes"]
+        if n["kind"] == "llm_judge"
+        and any(ref == f"{f}.output" for ref in n["inputs"].values() for f in fanned)
+    )
+    param = next(k for k, ref in judge["inputs"].items() if ref.split(".")[0] in fanned)
+    decided = judge["signature_spec"]["input_schema"]
+    assert decided["properties"][param]["type"] == "array"
+
+    def merged_with(prop: dict[str, Any]) -> dict[str, Any]:
+        schema = {**decided, "properties": {**decided["properties"], param: prop}}
+        (work / "system1" / "text.yaml").write_text(
+            yaml.safe_dump({judge["id"]: {"signature_spec": {"input_schema": schema}}})
+        )
+        enforce(work, final=True)
+        out = yaml.safe_load((work / "pipeline.yaml").read_text())
+        node = next(n for n in out["nodes"] if n["id"] == judge["id"])
+        return node["signature_spec"]["input_schema"]["properties"][param]
+
+    assert merged_with({"type": "object"}) == decided["properties"][param]
+    # An array of objects is compatible: kept.
+    kept = {"type": "array", "items": {"type": "object"}}
+    assert merged_with(kept) == kept
+    # The check is against the decided schema, not the copy pipeline.yaml now
+    # holds: decided items are untyped, so other items still fit.
+    other = {"type": "array", "items": {"type": "string"}}
+    assert merged_with(other) == other
+
+
+@pytest.mark.parametrize(
+    ("decided", "agent", "fits"),
+    [
+        ({}, {"type": "object"}, True),
+        ({"type": "array"}, {}, True),
+        ({"type": "array"}, {"type": "object"}, False),
+        ({"type": "array"}, {"type": ["array", "null"]}, True),
+        ({"type": "array"}, {"type": ["object", "null"]}, False),
+        ({"type": "array"}, {"anyOf": [{"type": "object"}]}, False),
+        ({"type": "array"}, {"oneOf": [{"type": "array"}, {"type": "null"}]}, True),
+        ({"type": "array"}, {"anyOf": [{"type": "object"}, {}]}, True),
+        (
+            {"type": "array", "items": {"type": "object"}},
+            {"type": "array", "items": {"type": "string"}},
+            False,
+        ),
+        (
+            {"type": "array", "items": {"type": "object"}},
+            {"type": "array", "items": {"type": "object"}},
+            True,
+        ),
+        ({"type": "array", "items": {"type": "object"}}, {"type": "array"}, True),
+    ],
+)
+def test_input_type_compatibility(decided: Any, agent: Any, fits: bool) -> None:
+    from rote.compiler.system1.enforce import _compatible
+
+    assert _compatible(decided, agent) is fits

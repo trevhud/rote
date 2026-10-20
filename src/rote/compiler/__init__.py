@@ -81,6 +81,13 @@ PROBE_CONTEXT_DIRNAME = "probe-context"
 #: for repair before the run fails with the last validation error. Caps
 #: the token cost of the repair loop.
 MAX_VALIDATION_REPAIRS = 2
+#: Appended to a System-1 IR-validation repair: where the agent's fix belongs.
+SYSTEM1_REPAIR_NOTE = (
+    "\n\nOn this compile rote restores every decision in pipeline.yaml after each "
+    "stop and then applies system1/text.yaml over it: fix the text fields you wrote "
+    "(descriptions, a judge's prompt and output_schema) in system1/text.yaml, not in "
+    "pipeline.yaml."
+)
 
 COMPILE_METRICS_FILENAME = "compile-metrics.json"
 
@@ -945,6 +952,11 @@ class Compiler:
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
                 return None
+            if portable_judges and verification.pipeline_error is not None:
+                # System-1 restores pipeline.yaml's decisions after every stop
+                # and lays text.yaml over it, so an edit to pipeline.yaml alone
+                # is undone and the same error comes back.
+                instruction += SYSTEM1_REPAIR_NOTE
             attempts += 1
             if verification.pipeline_error is not None:
                 what = "pipeline.yaml failed validation"
