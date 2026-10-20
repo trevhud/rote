@@ -165,7 +165,15 @@ def _drive(app: Path, env: dict[str, str]) -> dict[str, Any]:
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, **env},
+        # An ambient effort knob must not decide what these tests see.
+        env={
+            **{
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith(("ROTE_EFFORT", "ROTE_JUDGE"))
+            },
+            **env,
+        },
     )
     assert run.returncode == 0, run.stderr
     result: dict[str, Any] = json.loads(run.stdout.strip().splitlines()[-1])
@@ -201,6 +209,33 @@ def test_ts_loop_that_never_submits_gets_one_forced_turn(
     assert (
         forced["messages"][-1]["content"][-1]["text"] == "Reply now with the step's final answer."
     )
+
+
+def test_ts_loop_runs_at_the_configured_effort_through_its_last_turn(
+    loop_app: Path,
+    messages_stub: str,  # noqa: F811
+    mcp_server: str,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    """The same knob as the Python helper's node_effort, on every turn
+    including the schema-locked last one."""
+    MessagesStub.mode = "forced"
+    env = {**loop_env(messages_stub, mcp_server, tmp_path), "ROTE_EFFORT_RESEARCH": "low"}
+    assert _drive(loop_app, env) == {"output": SUBMITTED}
+    first, forced = MessagesStub.requests[0], MessagesStub.requests[-1]
+    assert first["output_config"] == {"effort": "low"}
+    assert forced["output_config"]["effort"] == "low"
+    assert forced["output_config"]["format"]["type"] == "json_schema"
+
+
+def test_ts_loop_sends_no_effort_by_default(
+    loop_app: Path,
+    messages_stub: str,  # noqa: F811
+    mcp_server: str,  # noqa: F811
+    tmp_path: Path,
+) -> None:
+    _drive(loop_app, loop_env(messages_stub, mcp_server, tmp_path))
+    assert all("effort" not in r.get("output_config", {}) for r in MessagesStub.requests)
 
 
 def test_ts_submission_is_validated_with_the_shared_message(

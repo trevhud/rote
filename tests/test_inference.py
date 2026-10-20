@@ -537,6 +537,41 @@ def test_a_judge_on_the_current_sonnet_is_schema_locked_without_forcing_a_tool(
     assert "tool_choice" not in request
 
 
+@pytest.mark.parametrize(
+    ("env", "sent"),
+    [
+        ({}, None),
+        ({"ROTE_JUDGE_EFFORT": "low"}, "low"),
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_GRADE_ESSAY": "medium"}, "medium"),
+        # Set but empty omits the parameter, even over a pipeline-wide value.
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_GRADE_ESSAY": ""}, None),
+        ({"ROTE_EFFORT_OTHER_NODE": "low"}, None),
+        # The compiler's knob (rote compile --effort) never reaches a judge.
+        ({"ROTE_EFFORT": "low"}, None),
+    ],
+)
+def test_judge_effort_is_an_operator_knob(
+    judge_stub: str, monkeypatch: pytest.MonkeyPatch, env: dict[str, str], sent: str | None
+) -> None:
+    """Unset sends no effort: measured 2026-10-20 on 8 example judges, low
+    effort changed decisions the default made consistently (it dropped an
+    ARR stated in the message and missed a deploy as the cause), so the
+    API's own default (high) stays the default."""
+    for var in (
+        "ROTE_JUDGE_EFFORT",
+        "ROTE_EFFORT",
+        "ROTE_EFFORT_GRADE_ESSAY",
+        "ROTE_EFFORT_OTHER_NODE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    _judge(judge_stub)
+    config = _JudgeStub.requests[0]["output_config"]
+    assert config.get("effort") == sent
+    assert ("effort" in config) is (sent is not None)
+
+
 def test_a_judge_sends_the_rewritten_schema(judge_stub: str) -> None:
     """A nested object without additionalProperties and a bounded integer
     are both 400s as written; the request carries the rewrite."""
@@ -673,14 +708,16 @@ def _agent_envelope(**overrides: Any) -> str:
     return json.dumps(envelope)
 
 
-def _capture_cli(monkeypatch: pytest.MonkeyPatch, envelope: str) -> dict[str, Any]:
+def _capture_cli(
+    monkeypatch: pytest.MonkeyPatch, envelope: str, stderr: str = ""
+) -> dict[str, Any]:
     monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
     seen: dict[str, Any] = {}
 
     def _run(command: list[str], **kwargs: Any) -> Any:
         seen["command"] = command
         seen["input"] = kwargs["input"]
-        return types.SimpleNamespace(stdout=envelope, stderr="", returncode=0)
+        return types.SimpleNamespace(stdout=envelope, stderr=stderr, returncode=0)
 
     monkeypatch.setattr(helper.subprocess, "run", _run)
     return seen
@@ -1077,7 +1114,9 @@ def test_agent_loop_sdk_reports_turns_run_and_usage_of_every_turn(
 # MCP tool still bound.
 
 
-def _run_cli_path(path: str, monkeypatch: pytest.MonkeyPatch, envelope: str) -> dict[str, Any]:
+def _run_cli_path(
+    path: str, monkeypatch: pytest.MonkeyPatch, envelope: str, stderr: str = ""
+) -> dict[str, Any]:
     """Drive one CLI path through the public entry point and capture argv."""
     if path == "agent_loop_with_servers":
         servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
@@ -1085,7 +1124,7 @@ def _run_cli_path(path: str, monkeypatch: pytest.MonkeyPatch, envelope: str) -> 
         monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
     else:
         monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
-    seen = _capture_cli(monkeypatch, envelope)
+    seen = _capture_cli(monkeypatch, envelope, stderr)
     if path == "judge":
         helper.call_judge(
             node_id="grade_essay",
@@ -1141,6 +1180,67 @@ _CACHED_USAGE = {
     "cache_creation_input_tokens": 1220,
     "cache_read_input_tokens": 28474,
 }
+
+
+_EFFORT_VARS = (
+    "ROTE_JUDGE_EFFORT",
+    "ROTE_EFFORT",
+    "ROTE_EFFORT_GRADE_ESSAY",
+    "ROTE_EFFORT_TARGET_RESEARCH",
+    "ROTE_EFFORT_RESEARCH",
+)
+
+
+def _set_effort(monkeypatch: pytest.MonkeyPatch, env: dict[str, str]) -> None:
+    for var in _EFFORT_VARS:
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+@pytest.mark.parametrize(
+    ("env", "sent"),
+    [
+        ({}, None),
+        ({"ROTE_JUDGE_EFFORT": "low"}, "low"),
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_{NODE}": "max"}, "max"),
+        ({"ROTE_JUDGE_EFFORT": "low", "ROTE_EFFORT_{NODE}": ""}, None),
+        ({"ROTE_EFFORT": "low"}, None),
+    ],
+)
+def test_every_cli_path_passes_the_effort_knob(
+    path: str, env: dict[str, str], sent: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a subscription the knob is ``claude -p --effort``. The judge and
+    agent-loop command lines are separate copies, so both are checked: the
+    loop copy is the one that drifted every time before."""
+    node = "GRADE_ESSAY" if path == "judge" else "TARGET_RESEARCH"
+    _set_effort(monkeypatch, {var.replace("{NODE}", node): value for var, value in env.items()})
+    envelope = _cli_envelope() if path == "judge" else _agent_envelope()
+    command = _run_cli_path(path, monkeypatch, envelope)["command"]
+    if sent is None:
+        assert "--effort" not in command
+    else:
+        assert _cli_flag(command, "--effort") == sent
+        assert command.count("--effort") == 1
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+def test_every_cli_path_refuses_an_effort_the_cli_ignored(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``claude -p`` warns and runs at its default on an unknown level,
+    exit 0 (Claude Code 2.1.304). The SDK lanes 400 on the same value, so
+    the CLI lane must not quietly succeed."""
+    _set_effort(monkeypatch, {"ROTE_JUDGE_EFFORT": "bogus"})
+    warning = (
+        "Warning: Unknown --effort value 'bogus' — ignoring it and using the "
+        "default effort. Valid values: low, medium, high, xhigh, max."
+    )
+    envelope = _cli_envelope() if path == "judge" else _agent_envelope()
+    with pytest.raises(RuntimeError, match=r"Unknown --effort value 'bogus'"):
+        _run_cli_path(path, monkeypatch, envelope, stderr=warning)
 
 
 @pytest.mark.parametrize("path", _CLI_PATHS)
@@ -1274,7 +1374,7 @@ class _SubmitStub(BaseHTTPRequestHandler):
         type(self).requests.append(payload)
         if reject_like_the_api(self, payload):
             return
-        if "output_config" in payload:
+        if "format" in payload.get("output_config", {}):
             send_json(self, structured_message(payload, None, stop_reason="refusal", content=[]))
             return
         first = len(type(self).requests) == 1
@@ -1451,7 +1551,7 @@ class _ForceStub(BaseHTTPRequestHandler):
                 self, structured_message(payload, None, stop_reason="tool_use", content=[submit])
             )
             return
-        if "output_config" in payload:
+        if "format" in payload.get("output_config", {}):
             answer = type(self).forced_answer
             if answer is not None:
                 reply = structured_message(payload, answer)
@@ -1650,6 +1750,38 @@ def test_a_submission_is_validated_against_the_declared_schema(
     assert str(excinfo.value) == (
         f"agent loop research (api) did not hand back its declared output: {reason}"
     )
+
+
+def test_an_sdk_loop_runs_at_the_configured_effort(
+    submit_stub: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_effort(monkeypatch, {"ROTE_EFFORT_RESEARCH": "low"})
+    _SubmitStub.answer = {"summary": "s", "score": 1}
+    _loop(submit_stub)
+    assert all(r["output_config"] == {"effort": "low"} for r in _SubmitStub.requests)
+
+
+def test_an_sdk_loop_sends_no_effort_by_default(
+    submit_stub: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_effort(monkeypatch, {})
+    _SubmitStub.answer = {"summary": "s", "score": 1}
+    _loop(submit_stub)
+    assert all("output_config" not in r for r in _SubmitStub.requests)
+
+
+def test_a_loops_last_turn_keeps_its_effort(
+    force_stub: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _set_effort(monkeypatch, {"ROTE_JUDGE_EFFORT": "medium"})
+    _ForceStub.forced_answer = {"summary": "s", "score": 1}
+    _loop(force_stub)
+    loop_turn, forced = _ForceStub.requests
+    assert loop_turn["output_config"] == {"effort": "medium"}
+    assert forced["output_config"] == {
+        "effort": "medium",
+        "format": {"type": "json_schema", "schema": _DECLARED},
+    }
 
 
 def test_strict_marks_the_submit_tool_only_when_asked(submit_stub: str) -> None:

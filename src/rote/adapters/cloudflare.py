@@ -42,6 +42,7 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
+    effort_env_vars,
     escape_invisible,
     fan_out_nodes,
     override_env_vars,
@@ -1066,6 +1067,10 @@ def emit_dev_vars_example(pipeline: Pipeline, cfg: CloudflareAdapterConfig | Non
             model_var, base_var = override_env_vars(node.id)
             lines.append(f"# {model_var}=")
             lines.append(f"# {base_var}=")
+            if node.signature_spec is not None and node.signature_spec.client == "anthropic":
+                lines.append(f"# {effort_env_vars(node.id)[0]}=")
+        if any(n.signature_spec and n.signature_spec.client == "anthropic" for n in judges):
+            lines.append("# ROTE_JUDGE_EFFORT=")
     return "\n".join(lines) + "\n"
 
 

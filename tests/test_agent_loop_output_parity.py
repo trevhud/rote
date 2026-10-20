@@ -108,7 +108,7 @@ class MessagesStub(BaseHTTPRequestHandler):
         type(self).requests.append(payload)
         if reject_like_the_api(self, payload):
             return
-        if type(self).mode == "forced" and "output_config" in payload:
+        if type(self).mode == "forced" and "format" in payload.get("output_config", {}):
             send_json(self, structured_message(payload, SUBMITTED))
             return
         submitted = any(

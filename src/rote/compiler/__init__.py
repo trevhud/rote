@@ -69,6 +69,7 @@ from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.extras import install_hint
 from rote.ir import Pipeline, load_pipeline
 from rote.skill_source import PROVENANCE_FILENAME, load_provenance, write_provenance
+from rote.vendor_specs import SpecStore
 
 #: Work-dir directory the baseline's probe artifacts are materialized
 #: into for the agent (mirrors update-context's convention).
@@ -581,9 +582,11 @@ class Compiler:
             if extra_instructions:
                 instructions.append(extra_instructions)
             research: api_docs.WebResearch | None = None
+            specs: SpecStore | None = None
             if self.api_backend:
                 instructions.append(api_docs.brief())
                 research = api_docs.WebResearch()
+                specs = SpecStore()
             if plan is not None:
                 instructions.append(self._materialize_update_context(work_dir, output_dir, plan))
             if probe_dir is not None:
@@ -624,6 +627,7 @@ class Compiler:
                     grounding=grounding,
                     portable_judges=s1_plan is not None,
                     web_research=research,
+                    spec_store=specs,
                 )
 
             try:
@@ -700,6 +704,7 @@ class Compiler:
                 grounding=grounding,
                 portable_judges=s1_plan is not None,
                 web_research=research,
+                spec_store=specs,
             )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
@@ -744,6 +749,7 @@ class Compiler:
                 questions=[*mode.questions, *contract_questions],
                 api_backend=self.api_backend,
                 web_research=research,
+                spec_checks=verification.spec_checks,
             )
             (output_dir / REPORT_FILENAME).write_text(
                 render_compile_report(pipeline, output_dir, extras), encoding="utf-8"
@@ -862,6 +868,7 @@ class Compiler:
         grounding: Grounding | None = None,
         portable_judges: bool = False,
         web_research: api_docs.WebResearch | None = None,
+        spec_store: SpecStore | None = None,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -902,6 +909,7 @@ class Compiler:
                 grounding=grounding,
                 portable_judges=portable_judges,
                 web_research=web_research,
+                spec_store=spec_store,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:

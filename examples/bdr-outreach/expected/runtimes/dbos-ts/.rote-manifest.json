@@ -1,9 +1,9 @@
 {
   "version": 1,
   "files": {
-    "README.md": "66409df123718a2dc47d89db4e2bc82dffcf98d436ac1889746f02d9a6e37e5e",
+    "README.md": "6cf0857e38ed4705fc3853a02773222c7fdf2e6ff1bd5e1d0796e8a645feecb8",
     "dbos-config.yaml": "86666ea15b0722fc57e70d4fa09812ede6cffe785090118e968ed555bc060ea6",
-    "package.json": "2673fd79e19b76510c9ae183b131ca2db5770d7fb39a2abe2ccd41d058b62d1b",
+    "package.json": "85e19a1c602a3fcf0eebadd08b87443698a4a309d3774cfa311a3f864b271f9f",
     "src/extracted/_roteMcp.ts": "24ead115f858fd08cc2bbdd9ea31ad7540d501d9bbfdef0b86fcd538d552dde8",
     "src/extracted/create_sales_template.ts": "8d81895711ce2773f80a8dfc8353ac5e655407e81594f7b2fc16910b245b8879",
     "src/extracted/enrich_contact_batch.ts": "d1ff8e879c50e8f71e5c8d516a7a114f76dfdf4f4bd46dc35a39106845f33070",
@@ -12,14 +12,14 @@
     "src/extracted/exclusion_check_sequence.ts": "112809cf0a5fecffb6c112428731005d7e5d1e3f439dde4558ab9a36e5e51bc1",
     "src/extracted/hubspot_create_list.ts": "45cf3e69e12cddf62261618a6fc1dec9d46731014944c06d7915367afda15844",
     "src/extracted/hubspot_upsert.ts": "9daa4fdbf6b8da58c0b5093e6a5ab67725b0ec15021179fc993a8cd94827c0e0",
-    "src/extracted/lead_generation_loop.ts": "5967873c764655ca1387ed01b19fb30776a596d377b9121191ce06fc37eeaf70",
+    "src/extracted/lead_generation_loop.ts": "1e25a2c341e1bb883be23ab4cf8fefd2838314851f7f0adcdbf2f3c0381161c1",
     "src/extracted/pre_enrollment_report.ts": "fb76636f9b586901c2f9be122b474459c95dca8c7d465d745748afd751336c84",
     "src/extracted/target_research.ts": "7f4cab03391be57e0e4281f526a7c6f1aac194aa7d10d5c1b1f62797ace3c66d",
     "src/extracted/taxonomy_lookup.ts": "4690d64d13d2f1b317ce27d20d0dfb2c416ee1475d82090560fa93e3076ec6aa",
-    "src/main.ts": "c928e4e07b7d35fa541cb6b55bb1d264a182befb4c065c0c2a28c12a8078ead2",
-    "src/signatures/_roteInference.ts": "ba216f5a2e298ea79154db9d0e1f4d36fb4219b5d83c9214adf6e5bae8286246",
-    "src/signatures/personalize_email.ts": "ec4d2d45f38b71bcc84049d3ae5e8ad3287af13c3633f883a25fa0f7a08d0a16",
-    "src/signatures/vet_contact.ts": "8a923cf898bc9c4b8f2c5d083d99aaa8a9bd25280563535cad901e0ffc911969",
+    "src/main.ts": "c4daf73ea99e2278d7987a74f202253f307b4c0cccc5b2f77edd3bdba30fed82",
+    "src/signatures/_roteInference.ts": "2b42794a855732025252928c249a11bd3843470a4aaab2214fc45a2fbbbe2d14",
+    "src/signatures/personalize_email.ts": "5855863a7611cb36027edd902efa57a4c8e793d9704d65ec3508bdb95a150049",
+    "src/signatures/vet_contact.ts": "15a73692c4b58997435619c46d05ed51dce8aa071a25b4ce56ef464c4dd441d9",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }

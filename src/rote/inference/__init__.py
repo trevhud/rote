@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from rote.inference._runtime_helper import (
     CLI_CONTEXT_ISOLATION_FLAGS,
+    DEFAULT_JUDGE_EFFORT,
     PROVIDERS,
     STRUCTURED_INEXPRESSIBLE,
     build_subscription_env,
@@ -31,6 +32,7 @@ LOCAL_ONLY_PROVIDERS: frozenset[str] = frozenset({"claude-cli"})
 
 __all__ = [
     "CLI_CONTEXT_ISOLATION_FLAGS",
+    "DEFAULT_JUDGE_EFFORT",
     "LOCAL_ONLY_PROVIDERS",
     "PROVIDERS",
     "STRUCTURED_INEXPRESSIBLE",

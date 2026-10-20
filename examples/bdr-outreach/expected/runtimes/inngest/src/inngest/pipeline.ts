@@ -233,6 +233,8 @@ export const runPipeline = inngest.createFunction(
         ANTHROPIC_API_KEY: requireEnv("ANTHROPIC_API_KEY"),
         ROTE_MODEL_PERSONALIZE_EMAIL: process.env.ROTE_MODEL_PERSONALIZE_EMAIL,
         ROTE_BASE_URL_PERSONALIZE_EMAIL: process.env.ROTE_BASE_URL_PERSONALIZE_EMAIL,
+        ROTE_EFFORT_PERSONALIZE_EMAIL: process.env.ROTE_EFFORT_PERSONALIZE_EMAIL,
+        ROTE_JUDGE_EFFORT: process.env.ROTE_JUDGE_EFFORT,
     })),
             ),
         );

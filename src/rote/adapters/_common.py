@@ -67,6 +67,17 @@ def temperature_env_var(node_id: str) -> str:
     return f"ROTE_TEMPERATURE_{node_id.upper()}"
 
 
+def effort_env_vars(node_id: str) -> tuple[str, str]:
+    """``(per-node, pipeline-wide)`` env var names for an Anthropic judge's effort.
+
+    ``ROTE_EFFORT_<ID>`` beats ``ROTE_JUDGE_EFFORT`` (not ``ROTE_EFFORT``,
+    which is the compiler's); a variable that is set but
+    empty omits ``output_config.effort`` (the API then runs ``high``). The
+    Python helper reads the same names (``node_effort``).
+    """
+    return f"ROTE_EFFORT_{node_id.upper()}", "ROTE_JUDGE_EFFORT"
+
+
 def judge_override_readme(pipeline: Pipeline) -> str:
     """The emitted README's paragraph on judge credentials and env knobs.
 
@@ -100,6 +111,13 @@ def judge_override_readme(pipeline: Pipeline) -> str:
         rows.append((f"export {model_var}=...", f"`{node.id}`: model id"))
         rows.append((f"export {base_var}=...", f"`{node.id}`: custom endpoint"))
         assert node.signature_spec is not None
+        if node.signature_spec.client == "anthropic":
+            rows.append(
+                (
+                    f"export {effort_env_vars(node.id)[0]}=low",
+                    f"`{node.id}`: effort (empty value omits it)",
+                )
+            )
         if node.signature_spec.temperature is not None:
             rows.append(
                 (
@@ -107,6 +125,8 @@ def judge_override_readme(pipeline: Pipeline) -> str:
                     f"`{node.id}`: empty value drops the parameter",
                 )
             )
+    if any(n.signature_spec.client == "anthropic" for n in knobbed if n.signature_spec):
+        rows.append(("export ROTE_JUDGE_EFFORT=low", "effort for every Anthropic judge"))
     width = max(len(cmd) for cmd, _ in rows)
     lines += [f"{cmd.ljust(width)}  # {note}" for cmd, note in rows]
     lines.append("```")

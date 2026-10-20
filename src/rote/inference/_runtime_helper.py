@@ -641,6 +641,71 @@ def structured_answer(response: Any, *, node_id: str) -> Any:
         raise RuntimeError(f"structured output for {node_id} is not JSON: {text[:200]!r}") from None
 
 
+# ───────── effort ─────────
+
+#: The effort a judge or agent loop runs at when no operator sets one.
+#: None sends no effort, which the API runs as ``high``. Measured on
+#: 2026-10-20 over 8 example judges x 6 inputs: ``low`` cut output tokens
+#: 15% on claude-sonnet-4-6 and 33% on claude-sonnet-5-5, but changed
+#: decisions the default made the same way twice (it dropped an ARR and a
+#: go-live date stated in the message, and missed a deploy as the cause),
+#: so accuracy keeps the API's default.
+DEFAULT_JUDGE_EFFORT: str | None = None
+
+
+def node_effort(node_id: str) -> str | None:
+    """The effort this judge or agent loop runs at, or None for none.
+
+    Every lane reads it: the SDK lanes send it as ``output_config.effort``
+    and the ``claude-cli`` lane as ``claude -p --effort`` (see
+    :func:`_cli_effort_flags`), so the knob is never a silent no-op on a
+    subscription.
+
+    ``ROTE_EFFORT_<NODE_ID>`` > ``ROTE_JUDGE_EFFORT`` > :data:`DEFAULT_JUDGE_EFFORT`,
+    the same shape as the ``ROTE_TEMPERATURE_<NODE_ID>`` knob: a variable
+    that is set but empty omits the parameter, so an operator can always
+    get back to the API's own default without a re-emit. The value is not
+    checked here; the levels differ per model (claude-sonnet-4-6 has no
+    ``xhigh``), and the API's 400 names the ones it accepts.
+
+    The pipeline-wide name is not ``ROTE_EFFORT``: that one is the
+    compiler's (``rote compile --effort``), and a developer who sets it
+    for compiles must not silently change every judge they run.
+    """
+    for var in (f"ROTE_EFFORT_{node_id.upper()}", "ROTE_JUDGE_EFFORT"):
+        value = os.environ.get(var)
+        if value is not None:
+            return value.strip() or None
+    return DEFAULT_JUDGE_EFFORT
+
+
+def _cli_effort_flags(node_id: str) -> list[str]:
+    """``claude -p`` flags for this node's effort: ``--effort <level>`` or none.
+
+    One function for the judge and the agent-loop command lines, because
+    their flag blocks are separate copies and the agent-loop copy is the
+    one that drifted every time before (see ``_CLI_ISOLATION_FLAGS``).
+    ``claude --help`` (2026-10-20) lists low, medium, high, xhigh, max.
+    """
+    effort = node_effort(node_id)
+    return [] if effort is None else ["--effort", effort]
+
+
+def _refuse_ignored_effort(node_id: str, stderr: str | None) -> None:
+    """Raise when ``claude -p`` ignored the ``--effort`` it was given.
+
+    The CLI does not fail on an unknown level: it warns on stderr
+    ("Unknown --effort value 'x' — ignoring it and using the default
+    effort", Claude Code 2.1.304) and runs at its default, so the knob would
+    be a silent no-op on the subscription lane while the SDK lanes 400 on
+    the same value. Reading the warning keeps both lanes loud without
+    copying the CLI's list of levels here.
+    """
+    for line in (stderr or "").splitlines():
+        if "Unknown --effort value" in line:
+            raise RuntimeError(f"claude -p for {node_id}: {line.strip()[:300]}")
+
+
 # ───────── transport: vendor SDK ─────────
 
 
@@ -692,12 +757,18 @@ def _call_anthropic(
         else anthropic.Anthropic(base_url=endpoint, auth_token=token)
     )
     request_schema = structured_output_schema(output_schema, node_id=node_id)
+    effort = node_effort(node_id)
+    # Any: the SDK types this as a TypedDict, which a dict built at run
+    # time cannot satisfy statically.
+    output_config: Any = {"format": {"type": "json_schema", "schema": request_schema}}
+    if effort is not None:
+        output_config["effort"] = effort
     try:
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
             **sampling,
-            output_config={"format": {"type": "json_schema", "schema": request_schema}},
+            output_config=output_config,
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError as exc:
@@ -792,6 +863,7 @@ def _call_claude_cli(
         # A judge reasons over its prompt and answers; it must not read
         # files, run commands, or see anything of the user's setup.
         *_CLI_ISOLATION_FLAGS,
+        *_cli_effort_flags(node_id),
     ]
     try:
         completed = subprocess.run(
@@ -807,6 +879,7 @@ def _call_claude_cli(
             f"claude -p did not answer within {timeout:.0f}s for {node_id}"
         ) from None
 
+    _refuse_ignored_effort(node_id, completed.stderr)
     try:
         envelope = json.loads(completed.stdout)
     except ValueError:
@@ -1117,6 +1190,7 @@ def _run_agent_via_cli(
         "--system-prompt",
         _AGENT_SYSTEM_PROMPT,
         *_CLI_ISOLATION_FLAGS,
+        *_cli_effort_flags(node_id),
         "--max-turns",
         str(max_iterations),
     ]
@@ -1141,6 +1215,7 @@ def _run_agent_via_cli(
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"claude -p agent loop for {node_id} exceeded {timeout:.0f}s") from None
 
+    _refuse_ignored_effort(node_id, completed.stderr)
     try:
         envelope = json.loads(completed.stdout)
     except ValueError:
@@ -1262,6 +1337,9 @@ def _run_agent_via_sdk(
     }
     if mcp_servers:
         kwargs["mcp_servers"] = mcp_servers
+    effort = node_effort(node_id)
+    if effort is not None:
+        kwargs["output_config"] = {"effort": effort}
     # Drive the runner ourselves before until_done(): each yielded item is
     # one assistant message, i.e. one turn that actually ran. That count is
     # what the result reports, never the cap, which would make every loop
@@ -1375,7 +1453,11 @@ def _force_submission(
     request["tools"] = [tool.to_dict() for tool in bound]
     if request_schema is not None:
         request["tool_choice"] = {"type": "none"}
-        request["output_config"] = {"format": {"type": "json_schema", "schema": request_schema}}
+        # Merged, so the loop's effort carries into its last turn.
+        request["output_config"] = {
+            **request.get("output_config", {}),
+            "format": {"type": "json_schema", "schema": request_schema},
+        }
     request["messages"] = messages
     return client.beta.messages.create(**request)
 
