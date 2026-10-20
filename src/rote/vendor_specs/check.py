@@ -27,7 +27,7 @@ from rote.contracts import ContractFinding
 from rote.ir import NodeKind, Pipeline
 from rote.vendor_specs import google
 from rote.vendor_specs.extract import UNKNOWN, CallSite, extract
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, _path_segments, host_of
+from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of, path_segments
 from rote.vendor_specs.store import SpecStore, SpecUnavailable
 
 CheckStatus = Literal["ok", "violations", "unresolved", "spec_unavailable"]
@@ -132,17 +132,17 @@ def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[st
     if site.kind == "google_client":
         return spec.operation(site.google_method_id or ""), {}
     assert site.url is not None
-    call = _path_segments(site.url)
+    call = path_segments(site.url)
     for op in spec.operations:
         if site.method is not None and op.method != site.method:
             continue
-        bound = _match(op.segments(), call)
+        bound = match_path(op.segments(), call)
         if bound is not None:
             return op, bound
     return None, {}
 
 
-def _match(template: list[str], call: list[str]) -> dict[str, str] | None:
+def match_path(template: list[str], call: list[str]) -> dict[str, str] | None:
     """Path parameter -> the call's segment, or ``None`` when the paths differ."""
     bound: dict[str, str] = {}
     for i, seg in enumerate(template):

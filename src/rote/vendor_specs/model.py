@@ -57,7 +57,7 @@ class Operation(BaseModel):
     scopes: tuple[str, ...] = ()
 
     def segments(self) -> list[str]:
-        return _path_segments(self.url_template)
+        return path_segments(self.url_template)
 
 
 class ApiSpec(BaseModel):
@@ -100,7 +100,7 @@ class ApiSpec(BaseModel):
 _SCHEME_HOST = re.compile(r"^[a-z]+://[^/]+")
 
 
-def _path_segments(url: str) -> list[str]:
+def path_segments(url: str) -> list[str]:
     """The path of ``url`` as segments, scheme, host, query and empty parts dropped."""
     path = _SCHEME_HOST.sub("", url).split("?", 1)[0]
     return [s for s in path.split("/") if s]
@@ -113,7 +113,7 @@ def host_of(url: str) -> str | None:
 
 __all__ = [
     "FORMAT_VERSION",
-    "_path_segments",
+    "path_segments",
     "ApiSpec",
     "Operation",
     "ParamSpec",
