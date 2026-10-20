@@ -4,7 +4,7 @@ description: >-
   The text half of a System-1 `rote compile` run (the default). rote has
   already decided the whole pipeline with rules. You write only the code
   and prompts those decisions need: module implementations and their
-  tests, and judge signatures and prompts.
+  tests, and judge prompts and output schemas.
 ---
 
 # Writing the code of a decided pipeline
@@ -16,7 +16,8 @@ the compile report itself. Your job is the implementations, and only those.
 **Already in the work directory, decided, and final:**
 
 - `pipeline.yaml`: every node, its kind, `source.section`, `inputs:`,
-  `fan_out`, `mandatory`, `constants`, `impl:` / `signature:` paths, MCP
+  `fan_out`, `mandatory`, `constants`, `impl:` paths, each judge's
+  `signature_spec.input_schema`, MCP
   bindings, gate signals, edges. **Do not edit `pipeline.yaml`.** rote
   restores it after you stop, so an edit only wastes a turn.
 - `system1/brief.md`: the same decisions as a table, with their confidence.
@@ -45,9 +46,8 @@ cost. Put many tool calls in one turn: they run in parallel.
    written from memory, which fails at run time.
 2. **Turn 2, every module at once:** one Write per `pure_function` /
    `external_call` node, at its `impl:` path, following
-   `references/implementation.md`, and one Write per `llm_judge` node at
-   its `signature:` path, following `references/llm-judge-extraction.md`.
-   All of them in this one turn.
+   `references/implementation.md`. All of them in this one turn. A judge
+   has no module: its prompt and output fields go in `system1/text.yaml`.
 3. **Turn 3, every test at once:** `tests/test_<module>.py` for each module
    from turn 2, all in this one turn, plus `system1/text.yaml` (below).
 4. **Stop.** rote runs the tests and checks the citations, and sends you
@@ -71,21 +71,23 @@ How the modules plug in:
 ```yaml
 vet_contact_judge:
   description: One sentence on what the node does.
-  signature_spec:          # every llm_judge node needs one
-    input_schema: {...}    # properties are exactly the node's inputs: keys
-    output_schema: {...}
-    prompt: "..."
-    client: anthropic
+  signature_spec:          # every llm_judge node needs these two
+    output_schema: {...}   # an object schema with properties
+    prompt: "..."          # {{ var }} names one of the node's inputs: keys
 ```
+
+rote has already written each judge's `input_schema`, one property per
+`inputs:` key. Leave it out unless you type an input more precisely; the
+property names must stay exactly the `inputs:` keys.
 
 An `agent_loop` with no `termination` in `pipeline.yaml` needs one in
 `text.yaml`: `termination: {condition: "...", max_iterations: N}`, with the
 condition in the skill's own words and the smallest bound its wording
 supports. A loop without one has no stop.
 
-Write `description` only where the generated one is wrong. Write
-`signature_spec` for every judge (llm-judge-extraction.md, "Cross-runtime
-signature_spec"). Quote every string that contains a colon.
+Write `description` only where the generated one is wrong. Write the
+prompt and output schema for every judge (llm-judge-extraction.md,
+"Cross-runtime signature_spec"). Quote every string that contains a colon.
 
 The five provenance mistakes behind most repair rounds:
 
