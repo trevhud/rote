@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -109,7 +110,8 @@ def install_vendor_deps(app: Path) -> Path | None:
     wanted = vendor_requirements(app)
     if not wanted:
         return None
-    key = "\n".join([sys.version, date.today().isoformat(), *wanted])
+    today = date.today().isoformat()
+    key = "\n".join([sys.version, today, *wanted])
     target = default_root().parent / "vendor-deps" / hashlib.sha256(key.encode()).hexdigest()[:16]
     if (target / ".complete").is_file():
         return target
@@ -117,7 +119,8 @@ def install_vendor_deps(app: Path) -> Path | None:
     staging = Path(tempfile.mkdtemp(prefix=f"{target.name}.", dir=target.parent))
     try:
         _uv_install(wanted, staging)
-        (staging / ".complete").write_text("\n".join(wanted), encoding="utf-8")
+        record = {"python": sys.version, "date": today, "requirements": wanted}
+        (staging / ".complete").write_text(json.dumps(record), encoding="utf-8")
         if target.exists() and not (target / ".complete").is_file():
             # Left by a run that died mid-install under the old in-place scheme.
             shutil.rmtree(target, ignore_errors=True)
@@ -129,7 +132,30 @@ def install_vendor_deps(app: Path) -> Path | None:
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
+    _prune_older(target, wanted, today)
     return target
+
+
+def _prune_older(target: Path, wanted: list[str], today: str) -> None:
+    """Remove installs of the same set on this Python from earlier days.
+
+    A run that is still using one keeps working from its open files on
+    POSIX; the next run of that set installs today's anyway.
+    """
+    for sibling in target.parent.iterdir():
+        if sibling == target or not (sibling / ".complete").is_file():
+            continue
+        try:
+            record = json.loads((sibling / ".complete").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            isinstance(record, dict)
+            and record.get("python") == sys.version
+            and record.get("requirements") == wanted
+            and str(record.get("date", "")) < today
+        ):
+            shutil.rmtree(sibling, ignore_errors=True)
 
 
 def _uv_install(wanted: list[str], target: Path) -> None:
