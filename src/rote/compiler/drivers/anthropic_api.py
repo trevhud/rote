@@ -51,6 +51,7 @@ from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     anthropic_tool_schemas,
     build_system_prompt,
+    build_task_prompt,
     dispatch_tool,
     emit_progress_phases,
 )
@@ -181,6 +182,91 @@ async def _streamed_message(client: Any, request_kwargs: dict[str, Any]) -> Any:
         async for _ in stream:
             pass
         return await stream.get_final_message()
+
+
+#: The prompt cache breakpoint rote sets (5-minute TTL; reads bill at a
+#: tenth of the input rate on Sonnet 4.6, writes at 1.25x).
+#: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+_CACHE = {"type": "ephemeral"}
+
+
+def cached_tools(tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The tool list with a breakpoint on its last entry: tools are the head
+    of the cached prefix (``tools`` -> ``system`` -> ``messages``)."""
+    if not tool_schemas:
+        return tool_schemas
+    return [*tool_schemas[:-1], {**tool_schemas[-1], "cache_control": _CACHE}]
+
+
+def cached_system(system_prompt: str) -> list[dict[str, Any]]:
+    """The system prompt as one text block carrying a breakpoint."""
+    return [{"type": "text", "text": system_prompt, "cache_control": _CACHE}]
+
+
+def cached_messages(messages: list[Any]) -> list[Any]:
+    """``messages`` with one rolling breakpoint on the last user turn's last block.
+
+    Without it every turn re-bills the whole conversation at the full input
+    rate: a measured expense-audit compile spent $3.67 over 28 turns on 948k
+    uncached input tokens. With it each turn reads the prefix the previous
+    turn wrote. The history itself is not changed (a copy is returned), so
+    exactly one message breakpoint is sent: with the tools' and the system's,
+    three of the four the API allows. A trailing assistant turn (a resumed
+    ``pause_turn``) keeps the breakpoint on the user turn before it.
+    """
+    out = list(messages)
+    for i in range(len(out) - 1, -1, -1):
+        message = out[i]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message["content"]
+        blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+        if not blocks or not isinstance(blocks[-1], dict):
+            return out
+        blocks[-1] = {**blocks[-1], "cache_control": _CACHE}
+        out[i] = {**message, "content": blocks}
+        return out
+    return out
+
+
+def usage_buckets(usage: Any) -> dict[str, int]:
+    """One response's four token buckets (``input`` is after the last breakpoint)."""
+    return {
+        "input": getattr(usage, "input_tokens", 0) or 0,
+        "output": getattr(usage, "output_tokens", 0) or 0,
+        "cache_write": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
+    }
+
+
+def run_cost_usd(model: str, totals: dict[str, int]) -> float | None:
+    """The run's cost from the live price catalog, or ``None`` when it cannot be priced.
+
+    ``None`` rather than a guess, as everywhere in rote: no catalog
+    (offline), an unlisted model, or cache tokens with no published cache
+    rate. The model id is normalized by the catalog (a gateway's
+    ``anthropic/claude-haiku-5.5`` prices as ``claude-haiku-5-5``).
+    """
+    from rote.eval.pricing import PricingError, fetch_catalog
+
+    try:
+        rates = fetch_catalog(provider="anthropic").rates_for(model)
+    except PricingError:
+        return None
+    if rates is None:
+        return None
+    inp, out, cache_read, cache_write = rates
+    if (totals["cache_read"] and cache_read is None) or (
+        totals["cache_write"] and cache_write is None
+    ):
+        return None
+    cost = (
+        totals["input"] * inp
+        + totals["output"] * out
+        + totals["cache_read"] * (cache_read or 0.0)
+        + totals["cache_write"] * (cache_write or 0.0)
+    ) / 1e6
+    return round(cost, 6)
 
 
 # ───────── The driver ─────────
@@ -382,19 +468,15 @@ class AnthropicApiDriver(CompilerDriver):
         if live is not None:
             tool_schemas = tool_schemas + live.anthropic_tool_schemas()
 
-        task_prompt = (
-            f"Compile the skill at {skill_dir}. "
-            f"Begin by reading {skill_dir}/SKILL.md and the reference "
-            f"files in {compiler_skill_dir}/references/, then produce "
-            f"the pipeline.yaml at {work_dir}/pipeline.yaml."
-        )
+        task_prompt = build_task_prompt(skill_dir, compiler_skill_dir, work_dir)
         if extra_instructions:
             task_prompt = f"{task_prompt}\n\n{extra_instructions}"
 
         messages: list[MessageParam] = [{"role": "user", "content": task_prompt}]
 
-        total_input_tokens = 0
-        total_output_tokens = 0
+        totals = {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+        tools_param = cached_tools(tool_schemas)
+        system_param = cached_system(system_prompt)
         last_text = ""
         completed_iterations = 0
         #: Repair turns the orchestrator's verifier bounced back (the claude
@@ -418,12 +500,14 @@ class AnthropicApiDriver(CompilerDriver):
                     {
                         "model": self.model,
                         "max_tokens": self.max_tokens_per_turn,
-                        "system": system_prompt,
+                        # Prompt-cached: tools, system and the latest user
+                        # turn each carry a breakpoint (see cached_messages).
+                        "system": system_param,
                         # The shared builder returns plain dicts
                         # (wire-shape-neutral, shared with the OpenAI
                         # driver); the SDK validates them at runtime.
-                        "tools": tool_schemas,
-                        "messages": messages,
+                        "tools": tools_param,
+                        "messages": cached_messages(messages),
                     },
                 ),
                 on_event,
@@ -432,8 +516,8 @@ class AnthropicApiDriver(CompilerDriver):
 
             usage = getattr(response, "usage", None)
             if usage is not None:
-                total_input_tokens += getattr(usage, "input_tokens", 0) or 0
-                total_output_tokens += getattr(usage, "output_tokens", 0) or 0
+                for bucket, n in usage_buckets(usage).items():
+                    totals[bucket] += n
 
             # The AI Gateway unified endpoint can return `content: null` for
             # a turn that was entirely (stripped) thinking blocks — normalize
@@ -447,7 +531,7 @@ class AnthropicApiDriver(CompilerDriver):
                     type="turn",
                     ts=time.time(),
                     turn=iteration,
-                    tokens={"input": total_input_tokens, "output": total_output_tokens},
+                    tokens=dict(totals),
                     message=f"turn {iteration}: {snippet}",
                 ),
             )
@@ -593,6 +677,7 @@ class AnthropicApiDriver(CompilerDriver):
             raise DriverError(
                 f"Agent did not complete within {self.max_iterations} iterations.",
                 details=f"Last assistant text: {last_text!r}",
+                metadata=self._metadata(totals, completed_iterations, repair_rounds),
             )
 
         pipeline_yaml = work_dir / "pipeline.yaml"
@@ -600,17 +685,31 @@ class AnthropicApiDriver(CompilerDriver):
             raise DriverError(
                 f"Agent finished but did not produce {pipeline_yaml}.",
                 details=f"Last assistant text: {last_text!r}",
+                metadata=self._metadata(totals, completed_iterations, repair_rounds),
             )
 
         return DriverResult(
             pipeline_yaml_path=pipeline_yaml,
             work_dir=work_dir,
             driver_name=self.name,
-            metadata={
-                "model": self.model,
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-                "iterations": completed_iterations,
-                "repair_rounds": repair_rounds,
-            },
+            metadata=self._metadata(totals, completed_iterations, repair_rounds),
         )
+
+    def _metadata(
+        self, totals: dict[str, int], iterations: int, repair_rounds: int
+    ) -> dict[str, Any]:
+        """Usage in the keys every driver reports, priced into ``cost_usd``.
+
+        The cost lands in compile-metrics.json, which is what ``rote bench
+        --budget`` sums: without it an api-driver compile counted as $0.
+        """
+        return {
+            "model": self.model,
+            "input_tokens": totals["input"],
+            "output_tokens": totals["output"],
+            "cache_write_tokens": totals["cache_write"],
+            "cache_read_tokens": totals["cache_read"],
+            "cost_usd": run_cost_usd(self.model, totals),
+            "iterations": iterations,
+            "repair_rounds": repair_rounds,
+        }

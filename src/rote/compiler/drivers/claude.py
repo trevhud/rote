@@ -38,6 +38,7 @@ from shutil import which
 from typing import Any
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.compiler.drivers._fs_tools import build_task_prompt
 from rote.compiler.events import (
     CompilationEvent,
     EventCallback,
@@ -779,22 +780,7 @@ class ClaudeDriver(CompilerDriver):
         prompt. The goal is to tell the agent which specific paths to
         read from and write to, and what the final deliverable is.
         """
-        return (
-            f"Compile the skill at {skill_dir}.\n\n"
-            f"Paths for this run:\n"
-            f"  - Source skill (read): {skill_dir}\n"
-            f"  - Rote-compile rubric (read): {compiler_skill_dir}\n"
-            f"  - Work directory (write): {work_dir}\n\n"
-            f"The rubric's SKILL.md is already in your system prompt, so do "
-            f"not Read it again. In your first turn, Read every reference "
-            f"file under {compiler_skill_dir}/references/ and every file of "
-            f"the source skill, all in that one turn, then follow the "
-            f"procedure.\n\n"
-            f"Your final deliverable is {work_dir}/pipeline.yaml. Write "
-            f"any extracted Python modules to {work_dir}/extracted/, "
-            f"their tests to {work_dir}/tests/, and any signature stubs "
-            f"to {work_dir}/signatures/, as the rubric instructs."
-        )
+        return build_task_prompt(skill_dir, compiler_skill_dir, work_dir)
 
     async def _consume_stream(
         self,

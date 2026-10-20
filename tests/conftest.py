@@ -113,6 +113,18 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     )
     # `rote run`'s judge-usage line prices rows the same way.
     monkeypatch.setattr("rote.cli._judge_price_catalog", _offline_price_catalog)
+    # And the api driver prices its own run (cost_usd in its metadata): no
+    # test may reach the live catalog or read the developer's cached copy.
+    monkeypatch.setattr("rote.eval.pricing._get_json", _offline_price_fetch)
+    monkeypatch.setattr(
+        "rote.eval.pricing._default_cache_path", lambda: tmp_path / "pricing-cache.json"
+    )
+
+
+def _offline_price_fetch(*args: object, **kwargs: object) -> object:
+    from rote.eval.pricing import PricingError
+
+    raise PricingError("tests never fetch live prices")
 
 
 def _offline_price_catalog() -> object:

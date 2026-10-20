@@ -144,6 +144,14 @@ def fake_anthropic(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
 # ───────── Helpers for building canned responses ─────────
 
 
+def _sent_text(message: dict[str, Any]) -> str:
+    """The text of a sent user turn (the driver sends it as cached blocks)."""
+    content = message["content"]
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content if isinstance(b, dict))
+
+
 def _tool_use(tool_id: str, name: str, input_: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(
         type="tool_use",
@@ -609,8 +617,8 @@ async def test_run_emits_turn_tool_and_phase_events(
     # One turn event per messages.create (4 responses)
     assert [e.turn for e in turns] == [1, 2, 3, 4]
     # Cumulative token accounting on the turn events
-    assert turns[0].tokens == {"input": 200, "output": 40}
-    assert turns[-1].tokens == {"input": 450, "output": 280}
+    assert turns[0].tokens == {"input": 200, "output": 40, "cache_write": 0, "cache_read": 0}
+    assert turns[-1].tokens == {"input": 450, "output": 280, "cache_write": 0, "cache_read": 0}
     assert turns[0].message.startswith("turn 1: Reading.")
 
     # Tool events: read_file, then the two write_files
@@ -827,7 +835,7 @@ async def test_max_tokens_truncation_continues_and_warns(
     # user "continue" nudge after the truncated assistant turn.
     turn2_messages = client.messages.calls[1]["messages"]
     assert turn2_messages[-1]["role"] == "user"
-    assert "output-token limit" in turn2_messages[-1]["content"]
+    assert "output-token limit" in _sent_text(turn2_messages[-1])
 
 
 def test_default_max_tokens_per_turn_is_generous() -> None:
@@ -887,7 +895,7 @@ async def test_null_content_turn_continues_and_warns(
     # the nudge user message went out instead.
     turn2_messages = client.messages.calls[1]["messages"]
     assert turn2_messages[-1]["role"] == "user"
-    assert "no visible output" in turn2_messages[-1]["content"]
+    assert "no visible output" in _sent_text(turn2_messages[-1])
     assert all(m.get("content") for m in turn2_messages)
 
 
@@ -1014,4 +1022,4 @@ async def test_repair_callback_resumes_the_same_conversation(
     # The instruction rode the SAME conversation as a user turn.
     turn3_messages = client.messages.calls[2]["messages"]
     assert turn3_messages[-1]["role"] == "user"
-    assert "fix pipeline.yaml" in turn3_messages[-1]["content"]
+    assert "fix pipeline.yaml" in _sent_text(turn3_messages[-1])

@@ -239,15 +239,47 @@ def emit_progress_phases(
 # ───────── System prompt assembly ─────────
 
 
+def build_task_prompt(skill_dir: Path, compiler_skill_dir: Path, work_dir: Path) -> str:
+    """The first user turn, the same for every driver.
+
+    The in-process drivers once had their own: it never mentioned tests/,
+    and the system prompt told the agent to stop the moment pipeline.yaml
+    was written. A pilot api-lane compile then went to a second repair round
+    with 11 contract problems (implementations with no tests among them)
+    where the claude lane, given this text, did not.
+    """
+    return (
+        f"Compile the skill at {skill_dir}.\n\n"
+        f"Paths for this run:\n"
+        f"  - Source skill (read): {skill_dir}\n"
+        f"  - Rote-compile rubric (read): {compiler_skill_dir}\n"
+        f"  - Work directory (write): {work_dir}\n\n"
+        f"The rubric's SKILL.md is already in your system prompt, so do "
+        f"not Read it again. In your first turn, Read every reference "
+        f"file under {compiler_skill_dir}/references/ and every file of "
+        f"the source skill, all in that one turn, then follow the "
+        f"procedure.\n\n"
+        f"Your final deliverable is {work_dir}/pipeline.yaml. Write "
+        f"any extracted Python modules to {work_dir}/extracted/, "
+        f"their tests to {work_dir}/tests/, and any signature stubs "
+        f"to {work_dir}/signatures/, as the rubric instructs."
+    )
+
+
 def build_system_prompt(
     skill_dir: Path,
     compiler_skill_dir: Path,
     work_dir: Path,
     skill_md_text: str,
 ) -> str:
+    references = (
+        "\n".join(f"- {p}" for p in sorted((compiler_skill_dir / "references").glob("*.md")))
+        or "- (none)"
+    )
     return f"""You are the rote compiler. Your job is to read a source AI skill
 bundle and produce a runnable, deterministic pipeline IR (`pipeline.yaml`)
-plus any extracted Python modules and typed signature stubs the IR refers to.
+plus the extracted Python modules, their tests and the typed signatures the
+IR refers to.
 
 Available paths for this run:
 
@@ -261,19 +293,13 @@ You have three tools:
 - `list_directory(path)` — list entries in an allowed directory
 - `write_file(path, content)` — write a file into the work directory only
 
-The rote-compile skill below tells you the procedure to follow. Reference
-files for each phase live at:
+The rote-compile skill below tells you the procedure to follow. Its
+reference files are:
 
-- {compiler_skill_dir}/references/node-kinds.md
-- {compiler_skill_dir}/references/crystallization-heuristics.md
-- {compiler_skill_dir}/references/ir-schema.md
-- {compiler_skill_dir}/references/llm-judge-extraction.md
+{references}
 
-Read each one when the SKILL.md instructs you to.
-
-Your final deliverable is `{work_dir}/pipeline.yaml`. Once you have written
-it (and any extracted modules / signatures it references), end your turn.
-Do not call any further tools after writing the final pipeline.yaml.
+Once every file the procedure asks for is written (pipeline.yaml, the
+extracted modules, their tests, the signatures), end your turn.
 
 ==================== ROTE COMPILE SKILL ====================
 {skill_md_text}
