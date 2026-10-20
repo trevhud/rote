@@ -598,6 +598,32 @@ server tool it did not ask for, and stops when one request bills more than
 versions without a measured run. The ceiling is checked on the response,
 so it stops the next request, not the one that crossed it.
 
+### Vendor requests are checked against the vendor's spec, in code
+
+On `--backend api`, verification reads every request an external_call
+module makes (`rote.vendor_specs.extract`: httpx/requests calls with URL
+templates rebuilt from literals and constants, and Google client-library
+`build(...)` chains, including helpers that wrap `build` and resources
+bound to names) and checks it against the vendor's machine-readable spec
+(`rote.vendor_specs.check`): operation, parameter names, types, enums,
+required parameters, body fields, and the response fields the code reads.
+Violations are errors that go back to the agent. Three rules:
+
+- **The spec comes from the vendor, never from memory.** Google: the
+  Discovery directory (`https://discovery.googleapis.com/discovery/v1/apis`)
+  names each API version's document. Specs are cached under
+  `ROTE_SPEC_CACHE_DIR` (default `~/.cache/rote/specs`) as
+  `<vendor>/<api>/<version>.json`, the `ApiSpec` model, which is also the
+  shareable format. An expired cache is refetched; a failed refetch is
+  `SpecUnavailable`, never a stale read.
+- **What cannot be checked is listed, not failed.** A URL built at run
+  time, a host with no spec source yet, or a spec service that is down
+  shows in the report as "not checked: <why>". An unreachable spec must
+  never fail a paid compile.
+- **Tests never fetch a spec.** conftest replaces `http_get_json` and
+  points `ROTE_SPEC_CACHE_DIR` at the test's tmp dir. Tests use the trimmed
+  real documents in `tests/fixtures/vendor_specs/` through an injected fetch.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

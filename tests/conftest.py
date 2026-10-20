@@ -119,12 +119,23 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         "rote.eval.pricing._default_cache_path", lambda: tmp_path / "pricing-cache.json"
     )
+    # Vendor specs (--backend api) are fetched from the vendor. Tests use
+    # the trimmed real documents in tests/fixtures/vendor_specs through an
+    # injected fetch, never the network, and never the developer's cache.
+    monkeypatch.setenv("ROTE_SPEC_CACHE_DIR", str(tmp_path / "vendor-specs"))
+    monkeypatch.setattr("rote.vendor_specs.store.http_get_json", _offline_spec_fetch)
 
 
 def _offline_price_fetch(*args: object, **kwargs: object) -> object:
     from rote.eval.pricing import PricingError
 
     raise PricingError("tests never fetch live prices")
+
+
+def _offline_spec_fetch(url: str) -> object:
+    from rote.vendor_specs.store import SpecUnavailable
+
+    raise SpecUnavailable(f"tests never fetch vendor specs ({url})")
 
 
 def _offline_price_catalog() -> object:
