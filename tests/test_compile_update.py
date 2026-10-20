@@ -160,7 +160,7 @@ async def _full_compilation(
             "extracted/judge.py": "def judge():\n    raise NotImplementedError\n",
         },
     )
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
     await compiler.compile(skill_dir, output_dir)
     return driver
@@ -233,7 +233,7 @@ def _load_yaml_pipeline(tmp_path: Path):  # noqa: ANN202
 async def test_update_requires_previous_run(
     skill_dir: Path, compiler_skill_dir: Path, tmp_path: Path
 ) -> None:
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     with pytest.raises(CompilerError, match="previous compilation"):
         await compiler.compile(skill_dir, tmp_path / "empty-out", update=True)
 
@@ -246,7 +246,7 @@ async def test_update_requires_provenance_sidecar(
     output_dir.mkdir()
     (output_dir / "pipeline.yaml").write_text(PIPELINE_YAML, encoding="utf-8")
 
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     with pytest.raises(CompilerError, match="provenance"):
         await compiler.compile(skill_dir, output_dir, update=True)
 
@@ -259,7 +259,7 @@ async def test_update_with_unchanged_skill_skips_the_agent(
     await _full_compilation(skill_dir, compiler_skill_dir, output_dir)
 
     update_driver = _RecordingDriver(PIPELINE_YAML)
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     compiler.select_driver = lambda: update_driver  # type: ignore[method-assign]
 
     result = await compiler.compile(skill_dir, output_dir, update=True)
@@ -287,7 +287,7 @@ async def test_update_run_gets_context_and_merges_output(
         PIPELINE_YAML,
         extras={"extracted/judge.py": "def judge():\n    raise NotImplementedError  # v2\n"},
     )
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     compiler.select_driver = lambda: update_driver  # type: ignore[method-assign]
 
     result = await compiler.compile(skill_dir, output_dir, update=True)
@@ -325,7 +325,7 @@ async def test_update_rejects_dropped_preserved_node(
     before = (output_dir / "pipeline.yaml").read_text()
 
     update_driver = _RecordingDriver(PIPELINE_YAML_WITHOUT_GATHER)
-    compiler = Compiler(compiler_skill_dir=compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_skill_dir)
     compiler.select_driver = lambda: update_driver  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError, match="gather"):

@@ -785,7 +785,7 @@ async def test_the_compiler_grounds_the_agent_and_repairs_a_renamed_row_key(
 ) -> None:
     skill = _write(tmp_path / "skill", {"SKILL.md": "# s\n", "input.json": json.dumps(_ROWS)})
     driver = _GroundedDriver()
-    compiler = Compiler(compiler_skill_dir=tmp_path, trust_skill=True)
+    compiler = Compiler(system1=False, compiler_skill_dir=tmp_path, trust_skill=True)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     result = await compiler.compile(skill, tmp_path / "out")
@@ -807,7 +807,7 @@ async def test_without_a_sample_the_report_lists_the_chosen_contract(tmp_path: P
         tmp_path / "skill", {"SKILL.md": "# s\n\nThe input is a batch of expense lines.\n"}
     )
     driver = _GroundedDriver()
-    compiler = Compiler(compiler_skill_dir=tmp_path, trust_skill=True)
+    compiler = Compiler(system1=False, compiler_skill_dir=tmp_path, trust_skill=True)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     result = await compiler.compile(skill, tmp_path / "out")
@@ -825,7 +825,7 @@ async def test_a_missing_sample_input_file_fails_before_any_run(tmp_path: Path) 
     from rote.compiler import CompilerError
 
     skill = _write(tmp_path / "skill", {"SKILL.md": "# s\n"})
-    compiler = Compiler(compiler_skill_dir=tmp_path)
+    compiler = Compiler(system1=False, compiler_skill_dir=tmp_path)
     compiler.select_driver = lambda: pytest.fail("no driver may run")  # type: ignore[method-assign]
     with pytest.raises(CompilerError, match="--sample-input file not found"):
         await compiler.compile(skill, tmp_path / "out", sample_input=tmp_path / "nope.json")

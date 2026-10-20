@@ -418,7 +418,7 @@ def test_the_compiler_contacts_a_server_named_only_by_the_tool_table(
     skill = tmp_path / "skill"
     shutil.copytree(REPO / "examples" / "bdr-outreach" / "skill", skill)
     assert tool_grounding.servers_to_contact(["zoominfo"], (skill / "SKILL.md").read_text()) == {}
-    compiler = Compiler(compiler_skill_dir=tmp_path, trust_skill=True)
+    compiler = Compiler(system1=False, compiler_skill_dir=tmp_path, trust_skill=True)
     compiler.select_driver = lambda: _Driver()  # type: ignore[method-assign]
     asyncio.run(compiler.compile(skill, tmp_path / "out"))
     assert calls == [["zoominfo"]]
@@ -457,7 +457,9 @@ def test_the_compiler_lists_only_the_servers_its_mode_allows(
     skill.mkdir()
     (skill / "SKILL.md").write_text("# s\n\nSearch Gmail (search_threads).\n")
     driver = _Driver()
-    compiler = Compiler(compiler_skill_dir=tmp_path, trust_skill=True, tool_discovery=mode)  # type: ignore[arg-type]
+    compiler = Compiler(
+        system1=False, compiler_skill_dir=tmp_path, trust_skill=True, tool_discovery=mode
+    )  # type: ignore[arg-type]
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
     asyncio.run(compiler.compile(skill, tmp_path / "out"))
     assert calls == ([contacted] if contacted else [])

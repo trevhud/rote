@@ -1,7 +1,7 @@
 ---
 name: rote-compile-text
 description: >-
-  The text half of an experimental `rote compile --system1` run. rote has
+  The text half of a System-1 `rote compile` run (the default). rote has
   already decided the whole pipeline with rules. You write only the code
   and prompts those decisions need: module implementations and their
   tests, and judge signatures and prompts.

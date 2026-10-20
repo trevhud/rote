@@ -200,7 +200,7 @@ async def test_a_failed_compile_says_what_it_cost_in_the_error_and_the_feed(
     exe = _fake_cli(tmp_path, monkeypatch, [_cap(3.10), _cap(4.20, turns=2)])
     skill, compiler_dir, _ = dirs
     events: list[Any] = []
-    compiler = Compiler(compiler_skill_dir=compiler_dir, on_event=events.append)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_dir, on_event=events.append)
     compiler.select_driver = lambda: ClaudeDriver(claude_executable=str(exe))  # type: ignore[method-assign]
     with pytest.raises(CompilerError) as exc:
         await compiler.compile(skill, tmp_path / "out")
@@ -226,7 +226,8 @@ def test_rote_compile_writes_the_failed_runs_cost_to_progress_jsonl(
     )
     out = tmp_path / "run"
     rc = main(
-        ["compile", str(dirs[0]), "--local", "--runtime", "dbos", "--no-eval"] + ["--out", str(out)]
+        ["compile", str(dirs[0]), "--local", "--no-system1", "--runtime", "dbos", "--no-eval"]
+        + ["--out", str(out)]
     )
     assert rc == 1
     assert "cost=$4.2" in capsys.readouterr().err

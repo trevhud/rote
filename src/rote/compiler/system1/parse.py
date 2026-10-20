@@ -393,7 +393,7 @@ class UnsafeSkillText(ValueError):
 def safe_reference_name(name: str) -> str:
     if not _SAFE_REFERENCE_NAME.fullmatch(name):
         raise UnsafeSkillText(
-            f"reference file name {name!r} is not allowed in a --system1 compile: use "
+            f"reference file name {name!r} is not allowed in a System-1 compile: use "
             "letters, digits, '.', '_' and '-' only"
         )
     return name
