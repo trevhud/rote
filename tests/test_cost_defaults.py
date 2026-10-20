@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 
 from rote.compiler.drivers.anthropic_api import DEFAULT_MODEL as API_DEFAULT_MODEL
-from rote.compiler.drivers.claude import DEFAULT_MAX_TURNS
+from rote.compiler.drivers.claude import DEFAULT_EFFORT, DEFAULT_MAX_TURNS
 from rote.compiler.drivers.claude import DEFAULT_MODEL as CLI_DEFAULT_MODEL
 
 #: Compiling BDR ran ~$3.50 per attempt on Opus and exhausted a Claude
@@ -76,4 +76,25 @@ def test_max_turns_leaves_headroom_for_bdr_scale_skills() -> None:
         f"~25 tool calls minimum and 40-50 with exploration; the original "
         f"default of 30 caused a hard error_max_turns failure on the first "
         f"real run. Don't reduce it without measuring."
+    )
+
+
+#: Effort levels that size Sonnet 4.6's adaptive thinking below Claude
+#: Code's own default of ``high``.
+_CHEAP_EFFORTS = {"low", "medium"}
+
+
+def test_compiler_effort_stays_below_the_cli_default() -> None:
+    """The compiler runs at ``low`` or ``medium`` effort, never the CLI's ``high``.
+
+    At ``high``, thinking was 62-76% of a real compile's output tokens, and
+    output tokens were most of its cost and nearly all of its wall time: one
+    ops-report compile thought 64,000 tokens (14 minutes) into two responses
+    that hit the output cap and were thrown away before its first Write.
+    """
+    assert DEFAULT_EFFORT in _CHEAP_EFFORTS, (
+        f"claude.DEFAULT_EFFORT is {DEFAULT_EFFORT!r}. At 'high' (Claude Code's "
+        f"default) thinking dominated compile cost and wall time. Set "
+        f"CLAUDE_CODE_EFFORT_LEVEL for one hard skill instead of raising it "
+        f"for everyone."
     )

@@ -98,6 +98,36 @@ with exploration, list_directory calls, and between-phase thinking.
 limit with BDR. 60 leaves headroom for more complex skills and for
 the agent to recover from tool errors."""
 
+DEFAULT_EFFORT = "low"
+"""Claude Code effort level for the compiler (``--effort``).
+
+Effort is what sizes adaptive thinking on Sonnet 4.6, and Claude Code's
+default for it is ``high``. Measured on six real compiles (2026-10-18,
+expense-audit and ops-report, Sonnet 4.6 at the default): thinking was
+62 to 76 percent of all output tokens (62,901 of 94,428; 123,597 of
+162,506), and output tokens were most of the bill and nearly all of the
+wall time, since the CLI streams them at about 75 per second. Most of it
+came in one block right after the rubric was read: the agent drafted the
+whole compile in its head, hit the per-response output cap with no tool
+call made, and the CLI discarded the block and started over. One ops-report
+compile did that twice, 64,000 tokens and 14 minutes gone before its
+first Write.
+
+Measured on the "think in files" rubric (2026-10-19, rote bench scorer),
+against a same-day ``high`` baseline of $2.25 and 986 s on expense-audit:
+``medium`` was $1.91 and 916 s (25k thinking tokens), ``low`` was $1.31
+and $1.20, 513 s and 423 s (under 10k), and ops-report at ``low`` was
+$0.87 and 329 s against $2.46 to $3.54 and 17 to 30 minutes at ``high``.
+Every compile verified clean, with every pure function implemented and
+node and kind accuracy at or above the ``high`` runs'. The rubric does
+the structuring that the thinking used to do.
+
+The env var
+``CLAUDE_CODE_EFFORT_LEVEL`` takes precedence over the flag in Claude
+Code, so a user who wants ``high`` for a hard skill can still have it.
+Pinned by ``tests/test_cost_defaults.py``.
+https://code.claude.com/docs/en/model-config"""
+
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
 """Conservative tool allowlist for the compiler. No Bash (no shell
 access needed), no WebFetch / WebSearch by default (no external
@@ -342,9 +372,11 @@ class ClaudeDriver(CompilerDriver):
         allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
         claude_executable: str = "claude",
         web_tools: bool = False,
+        effort: str = DEFAULT_EFFORT,
     ) -> None:
         self.model = model
         self.max_turns = max_turns
+        self.effort = effort
         if web_tools:
             allowed_tools = ",".join([allowed_tools, WEB_TOOLS])
         self.allowed_tools = allowed_tools
@@ -423,6 +455,8 @@ class ClaudeDriver(CompilerDriver):
                 prompt,
                 "--model",
                 self.model,
+                "--effort",
+                self.effort,
                 "--append-system-prompt",
                 system_prompt,
                 "--add-dir",
@@ -700,9 +734,11 @@ class ClaudeDriver(CompilerDriver):
             f"  - Source skill (read): {skill_dir}\n"
             f"  - Rote-compile rubric (read): {compiler_skill_dir}\n"
             f"  - Work directory (write): {work_dir}\n\n"
-            f"Begin by reading {compiler_skill_dir}/SKILL.md and its "
-            f"reference files under {compiler_skill_dir}/references/, "
-            f"then follow the procedure it describes.\n\n"
+            f"The rubric's SKILL.md is already in your system prompt, so do "
+            f"not Read it again. In your first turn, Read every reference "
+            f"file under {compiler_skill_dir}/references/ and every file of "
+            f"the source skill, all in that one turn, then follow the "
+            f"procedure.\n\n"
             f"Your final deliverable is {work_dir}/pipeline.yaml. Write "
             f"any extracted Python modules to {work_dir}/extracted/, "
             f"their tests to {work_dir}/tests/, and any signature stubs "

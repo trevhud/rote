@@ -912,6 +912,33 @@ Opus exhausted a Claude Max/Pro "extra usage" budget in two
 attempts (~$3.50 each). Don't "fix" the default to Opus unless you
 have specific evidence that a skill needs it.
 
+### Thinking, not input, is what a compile pays for
+
+Six real compiles profiled from their session transcripts (2026-10-18,
+Sonnet 4.6 at Claude Code's default `high` effort): output tokens were
+57-67% of the cost, and adaptive thinking was 62-76% of those output
+tokens. Cache reads of the rubric were cheap by comparison (about 24k
+tokens, read once and cached). Output also sets the wall time: the CLI
+streams about 75 tokens per second, so 94k output tokens is about 21
+minutes. Worst of all, the agent drafted the whole compile in one
+thinking block right after reading the rubric, hit the per-response
+output cap with no tool call made, and the CLI threw the block away.
+
+The fix has two halves, keep both: `ClaudeDriver` passes
+`--effort low` (`DEFAULT_EFFORT`, pinned by
+`tests/test_cost_defaults.py`, and `CLAUDE_CODE_EFFORT_LEVEL` still
+overrides it), and SKILL.md's "Think in files" work order has the agent
+write `pipeline.yaml` first and each module with its test, instead of
+planning everything in its head. Measured together: expense-audit went
+from $2.25 / 986 s to $1.20-1.31 / 423-513 s, ops-report from
+$2.46-3.54 / 17-30 min to $0.87 / 329 s, with bench quality held (every
+pure function implemented, tests green, node and kind accuracy at or
+above the `high` runs). Unmeasured at `low`: skills with judges and
+agent loops (BDR, invoice-push). If one of those regresses, `medium`
+($1.91 / 916 s on expense-audit) is the fallback. To profile a compile, read its
+transcript under `~/.claude/projects/<work-dir-slug>/<session_id>.jsonl`:
+the `cost-state` records carry `thinkingTokens` per invocation.
+
 ### `DEFAULT_MAX_TURNS = 60`
 
 BDR-scale skills need ~25 tool calls minimum, realistically 40-50

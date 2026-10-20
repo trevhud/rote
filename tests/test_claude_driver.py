@@ -280,6 +280,8 @@ async def test_happy_path_args_env_and_metadata(
     assert args[0] == "claude"
     assert "-p" in args
     assert args[args.index("--model") + 1] == DEFAULT_MODEL
+    # The value, not the flag: low sizes thinking far below the CLI's high.
+    assert args[args.index("--effort") + 1] == "low"
     assert "--append-system-prompt" in args
     assert args.count("--add-dir") == 3
     assert DEFAULT_ALLOWED_TOOLS in args
@@ -408,6 +410,10 @@ async def test_prompt_and_system_prompt_content(
     assert str(compiler_dir.resolve()) in user_prompt
     assert str(work_dir.resolve()) in user_prompt
     assert "pipeline.yaml" in user_prompt
+    # SKILL.md already rides in the system prompt (asserted below). Asking
+    # for a Read of it too paid for the same ~4k tokens twice per compile.
+    assert "do not Read it again" in user_prompt
+    assert f"{compiler_dir.resolve()}/SKILL.md" not in user_prompt
 
     system_prompt = args[args.index("--append-system-prompt") + 1]
     assert "ROTE COMPILE SKILL" in system_prompt
