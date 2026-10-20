@@ -118,9 +118,9 @@ def judge_override_readme(pipeline: Pipeline) -> str:
 def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     """How an MCP-bound step builds its tool arguments, on every runtime.
 
-    ``None`` means the threaded payload is the arguments as-is: the node's
-    inputs, never its constants, because a tool rejects arguments it does
-    not declare (FastMCP raises "Unexpected keyword argument"). With
+    ``None`` (``mcp.args`` omitted) means the threaded payload is the
+    arguments as-is: the node's inputs, never its constants, because a tool
+    rejects arguments it does not declare (FastMCP raises "Unexpected keyword argument"). With
     ``mcp.args`` each entry is ``(tool_arg, "payload", key)``,
     ``(tool_arg, "constant", value)`` or ``(tool_arg, "literal", value)``:
     a key that names one of the node's constants forwards that constant,
@@ -131,7 +131,10 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     identical arguments.
     """
     assert node.mcp is not None
-    if not node.mcp.args:
+    # Only an omitted map passes the payload through. ``{}`` is "call the tool
+    # with no arguments": testing falsiness made it a pass-through too, and an
+    # ops-report pipeline sent its whole input as Gmail search arguments.
+    if node.mcp.args is None:
         return None
     constants = node.constants or {}
     sources: list[tuple[str, str, Any]] = []

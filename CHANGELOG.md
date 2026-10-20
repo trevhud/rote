@@ -9,6 +9,22 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **`mcp.args: {}` now calls the tool with no arguments, on every runtime.** It
+  used to behave like an omitted `args` and send the step's whole payload as the
+  tool's arguments. Only an omitted (null) `args` passes the payload through. A
+  hand-written pipeline that relied on `args: {}` as a pass-through must drop the
+  key; none of the examples does.
+- **`--system1`: an MCP step's arguments come from the step, never the whole input.**
+  The skeleton binds the parameters the step states (`Search query: ...`,
+  `File ID: ...`, `Tab: ...`) as constants in `mcp.args`, named by the tool's input
+  schema when grounding has one, and calls a tool with no arguments rather than
+  forwarding the pipeline input when the step states none.
+- **`--system1`: a write to no named system is the pipeline's output.** "Save it to
+  the shared folder" no longer becomes an external_call stub that raises
+  "target system not specified"; a named destination (HubSpot, #channel, a URL,
+  a tool, a UI action) still does.
+
 ### Changed
 - **`rote emit` ships every top-level `.py` in `compiled/extracted/`,** not only
   the modules a node's `impl:` names, for the dbos and python runtimes. A shared
