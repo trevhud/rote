@@ -561,6 +561,12 @@ both the legacy and the System-1 path:
   (including the logged-in default) exits 2 before the agent runs. The
   Compiler refuses it too, for callers that skip the CLI (the cloud
   container, the bench).
+- **The backend is recorded beside the IR, never in it.** A compile writes
+  `backend.json` next to `pipeline.yaml` (`rote.compiler.backend`).
+  `rote emit` and `compile --update` use it when `--backend` is not
+  passed, and warn when the flag contradicts it, because emitting the
+  other backend drops code the compile wrote for this one. python and
+  temporal never call a binding, so they advertise no MCP server for one.
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
