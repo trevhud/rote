@@ -27,6 +27,7 @@ from rote.compiler.system1.generate import (
     Settings,
     apply_answer,
     attribute,
+    def_line,
     interface_problems,
     interface_request,
     judge_problems,
@@ -751,7 +752,23 @@ async def test_typed_judge_input_schemas_survive_settle(tmp_path: Path) -> None:
         spec = written[node.id]["signature_spec"]
         assert node.signature_spec.input_schema == spec["input_schema"]
         assert node.signature_spec.output_schema == _schema_for(node)
-        typed += any(v.get("properties") for v in spec["input_schema"]["properties"].values())
+        typed += any(
+            v.get("properties") or (v.get("items") or {}).get("properties")
+            for v in spec["input_schema"]["properties"].values()
+        )
     assert typed  # at least one judge reads a producer typed by the interface
     record = json.loads((ctx.work_dir / "system1" / "enforcement.json").read_text())
     assert not [c for changes in record for c in changes if "input_schema" in c]
+
+
+def test_a_fanned_producers_whole_output_is_a_list_to_its_consumer(tmp_path: Path) -> None:
+    """A fan_out node runs once per item; whoever reads its whole output gets the
+    list of runs, so that is the type the consumer is written (and decided) against."""
+    ctx, _ = _context(tmp_path)
+    ctx.interface = {n.id: {"output_schema": _schema_for(n)} for n in ctx.pipeline.nodes}
+    fanned = next(n for n in ctx.pipeline.nodes if n.fan_out)
+    consumer, param = ctx.consumers(fanned.id)[0]
+    node = ctx.node(consumer)
+    assert ctx.param_schema(node, param) == {"type": "array", "items": _schema_for(fanned)}
+    assert f"`{param}: list" in def_line(ctx, node).replace("(", "`").replace(", ", " `")
+    assert "this is every run's value" in module_request(ctx, node, "S", "m").prompt

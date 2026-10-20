@@ -330,9 +330,16 @@ class Context:
         return dict((self.interface.get(node_id) or {}).get("output_schema") or {})
 
     def param_schema(self, node: Any, param: str) -> dict[str, Any]:
-        """What ``param`` holds when ``node`` runs: one element on a fanned param."""
+        """What ``param`` holds when ``node`` runs: one element on a fanned param.
+
+        A fan_out producer runs once per item and its result is the list of
+        those runs, so a consumer of its whole output reads an array of what
+        the interface describes (one run's value).
+        """
         ref = parse_input_ref(node.inputs[param])
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
+        if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
+            schema = {"type": "array", "items": schema}
         if ref.field is not None:
             schema = dict((schema.get("properties") or {}).get(ref.field) or {})
         if node.fan_out and param == fan_out_element_param(node, self.pipeline):
@@ -422,16 +429,17 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
     lines += ["", "Parameters (the node's `inputs:` keys):"]
     element = fan_out_element_param(node, ctx.pipeline) if node.fan_out else None
     for param, ref in (node.inputs or {}).items():
-        what = (
-            "the whole pipeline input"
-            if parse_input_ref(ref).node_id is None
-            else f"the return value of `{parse_input_ref(ref).node_id}`"
-        )
+        source = parse_input_ref(ref).node_id
+        if source is None:
+            what = "the whole pipeline input"
+        elif ctx.node(source).fan_out:
+            what = f"a list: `{source}` runs once per item, and this is every run's value"
+        else:
+            what = f"the return value of `{source}`"
         if param == element:
             what = f"ONE item of `{ref}` (this node runs once per item)"
         lines.append(f"- `{param}` <- `{ref}`: {what}. Schema:")
         lines.append(_json(ctx.param_schema(node, param)))
-        source = parse_input_ref(ref).node_id
         if source is not None and ctx.unverified_tool_result(source):
             lines.append(UNVERIFIED_TOOL_RESULT)
         sample = ctx.param_sample(node, param)
