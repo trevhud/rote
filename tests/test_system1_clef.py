@@ -257,10 +257,11 @@ def _sent_headers(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 def test_gateway_metadata_tags_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
     """A host meters Clef per compile by filtering gateway logs on this metadata."""
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
-    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", '{"graduation_id": "g1"}')
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", '  {"graduation_id":   "g1"} ')
     sent = _sent_headers(monkeypatch)
     assert sent["cf-aig-gateway-id"] == "rote"
-    assert json.loads(sent["cf-aig-metadata"]) == {"graduation_id": "g1"}
+    # Re-serialized compactly, so stray whitespace in the env never reaches the header.
+    assert sent["cf-aig-metadata"] == '{"graduation_id":"g1"}'
 
 
 def test_no_gateway_settings_send_no_gateway_headers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -276,6 +277,10 @@ def test_no_gateway_settings_send_no_gateway_headers(monkeypatch: pytest.MonkeyP
         ("", '{"a": "b"}', "CLOUDFLARE_AI_GATEWAY_ID is not"),
         ("rote", "not json", "is not JSON"),
         ("rote", '["a"]', "must be a JSON object"),
+        ("rote", json.dumps({f"k{i}": i for i in range(6)}), "keeps only 5"),
+        ("rote", '{"cf.user_id": "u"}', "strips cf"),
+        ("rote", '{"nested": {"a": 1}}', "string, number or boolean"),
+        ("rote", '{"missing": null}', "string, number or boolean"),
     ],
 )
 def test_bad_gateway_metadata_fails_before_any_call(
@@ -295,3 +300,10 @@ def test_bad_gateway_metadata_fails_before_any_call(
     with pytest.raises(clef.ClefUnavailable, match=match):
         system1.prepare(_skill(tmp_path), work, decider="clef")
     assert calls == []
+
+
+def test_five_scalar_entries_are_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    meta = {"a": "s", "b": 1, "c": 1.5, "d": True, "graduation_id": "g1"}
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", json.dumps(meta))
+    assert json.loads(_sent_headers(monkeypatch)["cf-aig-metadata"]) == meta
