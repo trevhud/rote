@@ -18,9 +18,9 @@
     "src/index.ts": "e362bc56c1ea4d3d48f0efd9befb08b713d969cce7061b43b224f9f91d035dc1",
     "src/inngest/client.ts": "2312f84ecf800d6a37be7f978492199b7b8ef52f2223353a73cc5a63c3917643",
     "src/inngest/pipeline.ts": "b223255895c6929fa6a9305250dea82d49adf21cdaf642660dbb93290d5fd513",
-    "src/signatures/_roteInference.ts": "ec99a6130a6e96fd807139e085b070e792ab52ddc8d8fbf8e8df8fd618cb45bc",
-    "src/signatures/personalize_email.ts": "259ed4f1c775666e7668fe7600edead3f346f0348f1e54eb5a85e0aaea5c8a57",
-    "src/signatures/vet_contact.ts": "23bbeba6416117887c2afbc8e70c584f57150dbad8c612b8f6c35a9fa32429b2",
+    "src/signatures/_roteInference.ts": "ba216f5a2e298ea79154db9d0e1f4d36fb4219b5d83c9214adf6e5bae8286246",
+    "src/signatures/personalize_email.ts": "db597661db892de4667ae0e0c6bbde704def9b981f09b3839806b1a2d445c9cf",
+    "src/signatures/vet_contact.ts": "69119f870f9e77543a83c1393972ac420821c0fd8b85d74c8b113a229665fea2",
     "src/types.ts": "8097c65c5f0ae5e262537cf81580f4363eedb9aac38159a1455e2c862f8e6951",
     "tsconfig.json": "ad8b8048032aed43c004eada5aa82577e7139644a078074db8ca029af1dc8dff"
   }

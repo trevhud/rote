@@ -313,6 +313,7 @@ async function runViaAnthropic(
     env: AgentEnv,
     baseUrl: string | null,
     submitted: Record<string, unknown>[] | null,
+    outputFormat: Record<string, unknown> | null,
 ): Promise<LaneAnswer> {
     const target = sdkTarget(provider, env, baseUrl);
     const client = new Anthropic({
@@ -355,13 +356,23 @@ async function runViaAnthropic(
     let iterations = runner.params.messages.filter((m) => m.role === "assistant").length;
     if (submitted && submitted.length === 0) {
         // The loop ended (or hit its cap) without handing anything back.
-        // One more turn with the submit tool forced, the mechanism a judge
-        // uses, before failing. The runner's conversation already holds the
-        // turn it ended on, and at the cap that turn's tool results too, so
-        // the nudge joins a trailing user message: nothing runs twice.
+        // One more turn, schema-locked the way a judge is whenever the
+        // schema allows it, before failing. Never tool_choice forced to the
+        // submit tool: claude-sonnet-5-5 rejects forced tool choice outright.
+        // With outputFormat, tool_choice "none" keeps the tools defined (the
+        // history holds tool_use blocks) while output_config.format makes
+        // the text answer the output. Without it (an output naming a type
+        // the IR never defines has no JSON type) the turn only asks for the
+        // submit call, and declaredOutput reports it if none comes.
+        // The runner's conversation already holds the turn it ended on, and
+        // at the cap that turn's tool results too, so the nudge joins a
+        // trailing user message: nothing runs twice.
         const nudge = {
             type: "text" as const,
-            text: `Call ${SUBMIT_TOOL} now with the final answer.`,
+            text:
+                outputFormat !== null
+                    ? "Reply now with the step's final answer."
+                    : `Call ${SUBMIT_TOOL} now with the final answer.`,
         };
         const history = [...runner.params.messages];
         const last = history.at(-1);
@@ -385,13 +396,39 @@ async function runViaAnthropic(
             max_tokens: 4096,
             system: SYSTEM_PROMPT,
             tools: runnable.map(({ run: _run, parse: _parse, ...wire }) => wire),
-            tool_choice: { type: "tool", name: SUBMIT_TOOL },
+            ...(outputFormat !== null
+                ? {
+                      tool_choice: { type: "none" as const },
+                      output_config: {
+                          format: { type: "json_schema" as const, schema: outputFormat },
+                      },
+                  }
+                : {}),
             messages,
         });
         iterations += 1;
-        for (const block of forced.content) {
-            if (block.type === "tool_use" && block.name === SUBMIT_TOOL) {
-                submitted.push(block.input as Record<string, unknown>);
+        if (outputFormat === null) {
+            for (const block of forced.content) {
+                if (block.type === "tool_use" && block.name === SUBMIT_TOOL) {
+                    submitted.push(block.input as Record<string, unknown>);
+                }
+            }
+        } else {
+            if (forced.stop_reason !== "end_turn") {
+                throw new Error(
+                    `structured output for ${nodeId} ended with stop_reason ` +
+                        `${forced.stop_reason}, not end_turn, so it is not a complete answer`,
+                );
+            }
+            const text = forced.content
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("");
+            try {
+                submitted.push(JSON.parse(text) as Record<string, unknown>);
+            } catch {
+                throw new Error(
+                    `structured output for ${nodeId} is not JSON: ${text.slice(0, 200)}`,
+                );
             }
         }
     }
@@ -477,6 +514,9 @@ export async function runAgentLoop(opts: {
     env: AgentEnv;
     workersAi?: WorkersAiLane | null;
     outputSchema?: Record<string, unknown> | null;
+    /** `outputSchema` rewritten for Anthropic structured outputs at emit
+     *  time; null when that subset cannot express it. */
+    outputFormat?: Record<string, unknown> | null;
     unwrapKey?: string | null;
     outputStrict?: boolean;
 }): Promise<unknown> {
@@ -523,6 +563,7 @@ export async function runAgentLoop(opts: {
                   opts.env,
                   opts.baseUrl ?? null,
                   submitted,
+                  opts.outputFormat ?? null,
               );
     console.error(
         `rote: agent loop ${opts.nodeId} ran ${ran.iterations ?? "an unreported number of"} ` +

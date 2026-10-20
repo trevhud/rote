@@ -37,6 +37,7 @@ from rote.adapters._common import (
     py_str_literal,
     safe_docstring_line,
 )
+from rote.inference import structured_output_schema
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     LLMSignature,
@@ -803,6 +804,40 @@ def _chunked_call_arg(text: str, indent: str) -> str:
     return "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
 
 
+# ───────── vendor SDK requirements ─────────
+
+#: The Anthropic SDK every emitted Python app needs for its judges and
+#: agent loops. The floor is load-bearing: judges send
+#: ``output_config.format`` (structured outputs), and an older SDK fails
+#: every call with ``unexpected keyword argument 'output_config'``. 1.15.0
+#: has it (verified by installing it) and is the version uv.lock pins.
+ANTHROPIC_PY_REQUIREMENT = "anthropic>=1.15"
+
+#: The OpenAI SDK for ``client: openai`` judges (``response_format``
+#: json_schema).
+OPENAI_PY_REQUIREMENT = "openai>=1.40"
+
+
+def vendor_sdk_requirements(pipeline: Pipeline) -> list[str]:
+    """The vendor SDK requirement lines an emitted Python app needs.
+
+    One definition for every Python runtime's requirements.txt and README.
+    An agent loop runs on the Anthropic SDK's own tool runner when it is
+    not on the subscription CLI, so it needs the SDK even with no judges.
+    """
+    clients = {
+        n.signature_spec.client
+        for n in pipeline.nodes_by_kind(NodeKind.LLM_JUDGE)
+        if n.signature_spec is not None
+    }
+    lines = []
+    if "anthropic" in clients or pipeline.nodes_by_kind(NodeKind.AGENT_LOOP):
+        lines.append(ANTHROPIC_PY_REQUIREMENT)
+    if "openai" in clients:
+        lines.append(OPENAI_PY_REQUIREMENT)
+    return lines
+
+
 # ───────── signatures/<id>.py emission ─────────
 
 
@@ -823,7 +858,7 @@ def emit_signature_module(
        IR's ``signature_spec`` JSON Schemas.
     2. Exports a ``<Pascal>`` judge class whose synchronous ``forward``
        interpolates the prompt, calls the vendor SDK with structured
-       output (Anthropic tool-use / OpenAI json_schema), validates the
+       output (``output_config.format`` / OpenAI json_schema), validates the
        response with Pydantic, and returns the typed output.
 
     The prompt template is interpolated with a minimal ``{{ key }}``
@@ -839,6 +874,11 @@ def emit_signature_module(
         )
     spec = node.signature_spec
     pascal = _to_pascal_case(node.id)
+    if spec.client == "anthropic":
+        # Raises at emit time, naming the node and the schema path, for an
+        # output schema Anthropic structured outputs cannot express. The
+        # same call runs again per request inside the emitted helper.
+        structured_output_schema(spec.output_schema, node_id=node.id)
 
     converter = _SchemaToPydantic(reserved_names=(pascal, f"{pascal}Input", f"{pascal}Output"))
     converter.emit_root(f"{pascal}Input", spec.input_schema)
@@ -880,11 +920,6 @@ def emit_signature_module(
     models_block = "\n\n\n".join(converter.blocks)
 
     prompt_block = f"PROMPT = {_chunked_str_literal(spec.prompt)}"
-    description_block = (
-        f"TOOL_DESCRIPTION = {_chunked_str_literal(desc_first)}\n\n"
-        if spec.client == "anthropic"
-        else ""
-    )
     schema_block = (
         "OUTPUT_JSON_SCHEMA: dict[str, Any] = json.loads(\n"
         f"{_chunked_call_arg(schema_json, indent='    ')}\n"
@@ -952,7 +987,6 @@ def emit_signature_module(
         + "\n\n\n"
         + prompt_block
         + "\n\n"
-        + description_block
         + schema_block
         + "\n\n"
         + overrides_block
@@ -975,7 +1009,7 @@ def _emit_sampling_helper(spec: LLMSignature) -> str:
     parameter entirely; unset keeps the IR's value.
 
     No IR temperature → no knob and no keyword argument, which is the
-    right default: the forced tool call already pins the output shape.
+    right default: schema-locked decoding already pins the output shape.
     """
     if spec.temperature is None:
         return ""
@@ -1013,9 +1047,6 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
     models, the prompt, the schema, and the operator knobs.
     """
     kind = "Anthropic" if spec.client == "anthropic" else "OpenAI"
-    description_arg = (
-        "            tool_description=TOOL_DESCRIPTION,\n" if spec.client == "anthropic" else ""
-    )
     sampling_arg = (
         "            sampling=_sampling_kwargs(),\n" if spec.temperature is not None else ""
     )
@@ -1035,7 +1066,6 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"            base_url=BASE_URL,\n"
         f"            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n"
         f"            output_schema=OUTPUT_JSON_SCHEMA,\n"
-        f"{description_arg}"
         f"{sampling_arg}"
         f"        )\n"
         f"        return {pascal}Output.model_validate(payload)\n"

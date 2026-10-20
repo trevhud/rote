@@ -480,6 +480,167 @@ def _log_usage(
         pass
 
 
+# ───────── structured outputs (Anthropic) ─────────
+
+#: String formats Anthropic structured outputs accepts. Any other format
+#: is a 400 ("format 'phone' is not supported"), so it moves into the
+#: description instead.
+_STRUCTURED_FORMATS = frozenset(
+    {"date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"}
+)
+
+#: Keywords kept as they are, on any schema node. Everything else that
+#: is not handled below (``minimum``, ``maxLength``, ``maxItems``,
+#: ``pattern``, ``default``, ``not``, ``patternProperties`` and so on)
+#: either 400s or is outside what the anthropic SDK's own
+#: ``transform_schema`` keeps, so it is written into the description,
+#: where the model can still read it. The judge's own validator, built
+#: from the original schema, is what enforces it.
+_STRUCTURED_KEPT = frozenset({"type", "enum", "const", "description", "title", "$ref", "required"})
+
+
+def structured_output_schema(schema: Mapping[str, Any], *, node_id: str) -> dict[str, Any]:
+    """``schema`` rewritten into the subset Anthropic structured outputs accepts.
+
+    ``output_config.format`` constrains decoding to the schema, which is
+    why it only accepts a subset of JSON Schema. Measured against the
+    live API on 2026-10-20 (claude-haiku-5-5 and claude-sonnet-5-5 gave
+    identical answers):
+
+    * every object needs ``additionalProperties: false``; omitting it and
+      ``true`` are both a 400. An object that omits it gets it set here,
+      which only narrows what the model may write.
+    * ``oneOf`` is a 400 and becomes ``anyOf``, which accepts a superset.
+    * numeric and string bounds, ``maxItems``, ``minItems`` above 1,
+      ``not`` and ``patternProperties`` are a 400 and move into the
+      description.
+    * ``$defs``, ``$ref``, ``anyOf``, ``allOf``, ``enum`` and ``const``
+      (with or without a ``type``), type arrays and optional properties
+      are all accepted as they are.
+
+    Two shapes cannot be expressed at all, and raise rather than being
+    approximated: an object that admits keys it does not declare (no
+    declared properties, or ``additionalProperties`` set to ``true`` or a
+    schema, as in a fixed key plus a typed map), and a value with no type.
+    Closing either would make the model drop data, or guess a type, with
+    nothing downstream noticing. Both errors contain
+    :data:`STRUCTURED_INEXPRESSIBLE`.
+
+    The caller validates the answer against the original schema, which
+    is what enforces the constraints that moved into descriptions.
+    """
+    return _structured_node(schema, "#", node_id)
+
+
+def _structured_node(schema: Any, path: str, node_id: str) -> dict[str, Any]:
+    if not isinstance(schema, Mapping):
+        raise RuntimeError(f"{node_id}: output schema at {path} is not a JSON Schema object")
+    out: dict[str, Any] = {}
+    moved: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "$defs":
+            out[key] = {
+                name: _structured_node(sub, f"{path}/$defs/{name}", node_id)
+                for name, sub in value.items()
+            }
+        elif key in ("anyOf", "oneOf", "allOf"):
+            target = "allOf" if key == "allOf" else "anyOf"
+            out[target] = [
+                _structured_node(sub, f"{path}/{key}/{i}", node_id) for i, sub in enumerate(value)
+            ]
+        elif key == "properties":
+            out[key] = {
+                name: _structured_node(sub, f"{path}/properties/{name}", node_id)
+                for name, sub in value.items()
+            }
+        elif key == "items" and isinstance(value, Mapping):
+            out[key] = _structured_node(value, f"{path}/items", node_id)
+        elif _structured_keeps(key, value, path):
+            out[key] = value
+        elif key == "additionalProperties":
+            continue  # decided below, from the node's type
+        else:
+            moved[key] = value
+
+    kind = schema.get("type")
+    kinds = kind if isinstance(kind, list) else [kind]
+    if "object" in kinds:
+        extra = schema.get("additionalProperties", False)
+        if extra is not False:
+            raise RuntimeError(
+                f"{node_id}: output schema at {path} is an object that allows keys it "
+                f"does not declare (additionalProperties: {json.dumps(extra)}), "
+                f"{STRUCTURED_INEXPRESSIBLE} (every object must set "
+                "additionalProperties: false). Declare every key as a property, or "
+                "turn the map into a list of objects, in the IR's "
+                "signature_spec.output_schema."
+            )
+        if not schema.get("properties") and "additionalProperties" not in schema:
+            raise RuntimeError(
+                f"{node_id}: output schema at {path} is an object with no declared "
+                f"properties, {STRUCTURED_INEXPRESSIBLE} (every object must set "
+                "additionalProperties: false). Declare the object's properties in "
+                "the IR's signature_spec.output_schema."
+            )
+        out["additionalProperties"] = False
+    if kind is None and not any(k in schema for k in _STRUCTURED_UNTYPED_OK):
+        raise RuntimeError(
+            f"{node_id}: output schema at {path} has no type, "
+            f"{STRUCTURED_INEXPRESSIBLE}. Give it a type in the IR's "
+            "signature_spec.output_schema."
+        )
+    if moved:
+        note = json.dumps(moved, sort_keys=True, default=str)
+        described = out.get("description")
+        out["description"] = f"{described}\n\n{note}" if described else note
+    return out
+
+
+#: In every error :func:`structured_output_schema` raises for a shape the
+#: subset cannot express, and in no other error, so a caller with another
+#: way to ask (an agent loop's submit tool) can tell the two apart. A
+#: substring rather than an exception class: a custom class only unpickles
+#: where this module is importable (see the module docstring).
+STRUCTURED_INEXPRESSIBLE = "which Anthropic structured outputs cannot express"
+
+#: Keywords that give a node a value space without a ``type``.
+_STRUCTURED_UNTYPED_OK = ("enum", "const", "$ref", "anyOf", "oneOf", "allOf")
+
+
+def _structured_keeps(key: str, value: Any, path: str) -> bool:
+    """Whether ``key: value`` passes through to the request schema as is."""
+    if key == "format":
+        return value in _STRUCTURED_FORMATS
+    if key == "minItems":
+        return value in (0, 1)
+    return key in _STRUCTURED_KEPT or (key == "$schema" and path == "#")
+
+
+def structured_answer(response: Any, *, node_id: str) -> Any:
+    """The JSON answer of a structured-output response, or a RuntimeError.
+
+    A schema-locked response puts its answer in text blocks and ends on
+    ``end_turn``. Any other stop reason means the text is not a complete
+    answer: ``max_tokens`` truncated it, ``refusal`` replaced it. Neither
+    may reach a downstream node as data, so both raise with the reason.
+    """
+    stop = getattr(response, "stop_reason", None)
+    if stop != "end_turn":
+        raise RuntimeError(
+            f"structured output for {node_id} ended with stop_reason {stop!r}, not "
+            "end_turn, so it is not a complete answer"
+        )
+    text = "".join(
+        block.text
+        for block in getattr(response, "content", [])
+        if getattr(block, "type", "") == "text"
+    )
+    try:
+        return json.loads(text)
+    except ValueError:
+        raise RuntimeError(f"structured output for {node_id} is not JSON: {text[:200]!r}") from None
+
+
 # ───────── transport: vendor SDK ─────────
 
 
@@ -512,10 +673,16 @@ def _call_anthropic(
     base_url: str | None,
     prompt: str,
     output_schema: dict[str, Any],
-    tool_description: str,
     sampling: dict[str, Any],
     max_tokens: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One schema-locked judge call through ``output_config.format``.
+
+    Not a forced tool call: claude-sonnet-5-5 rejects ``tool_choice``
+    types ``tool`` and ``any`` outright (HTTP 400, verified 2026-10-20),
+    while structured outputs works on every current model. One mechanism
+    for every model, so nothing here branches on a model id.
+    """
     import anthropic
 
     endpoint, token = _sdk_target(provider, "anthropic", base_url)
@@ -524,27 +691,21 @@ def _call_anthropic(
         if token is None
         else anthropic.Anthropic(base_url=endpoint, auth_token=token)
     )
+    request_schema = structured_output_schema(output_schema, node_id=node_id)
     try:
         response = client.messages.create(
             model=model,
             max_tokens=max_tokens,
             **sampling,
-            tools=[
-                {
-                    "name": node_id,
-                    "description": tool_description,
-                    "input_schema": output_schema,
-                }
-            ],
-            tool_choice={"type": "tool", "name": node_id},
+            output_config={"format": {"type": "json_schema", "schema": request_schema}},
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
-    for block in response.content:
-        if block.type == "tool_use":
-            return dict(block.input), _anthropic_usage(getattr(response, "usage", None))
-    raise RuntimeError(f"LLM did not return a tool_use block for {node_id}")
+    answer = structured_answer(response, node_id=node_id)
+    if not isinstance(answer, dict):
+        raise RuntimeError(f"structured output for {node_id} is not a JSON object")
+    return answer, _anthropic_usage(getattr(response, "usage", None))
 
 
 def _call_openai(
@@ -685,7 +846,6 @@ def call_judge(
     prompt: str,
     output_schema: dict[str, Any],
     base_url: str | None = None,
-    tool_description: str = "",
     sampling: dict[str, Any] | None = None,
     max_tokens: int = 4096,
 ) -> dict[str, Any]:
@@ -715,7 +875,6 @@ def call_judge(
             base_url=base_url,
             prompt=prompt,
             output_schema=output_schema,
-            tool_description=tool_description,
             sampling=sampling,
             max_tokens=max_tokens,
         )
@@ -1121,17 +1280,21 @@ def _run_agent_via_sdk(
         final = runner.until_done()
         if output_schema is not None and not submitted:
             # The loop ended (or hit its cap) without handing anything back.
-            # One more turn with the submit tool forced, the mechanism a
-            # judge uses, before failing.
-            forced = _force_submission(client, runner, final, kwargs, bound)
+            # One more turn, schema-locked the way a judge is whenever the
+            # schema allows it, before failing.
+            request_schema = _lockable_schema(output_schema, node_id)
+            forced = _force_submission(client, runner, final, kwargs, bound, request_schema)
             turns += 1
             turn_usage = _anthropic_usage(getattr(forced, "usage", None))
             usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
-            submitted.extend(
-                dict(block.input)
-                for block in getattr(forced, "content", [])
-                if getattr(block, "type", "") == "tool_use" and block.name == _SUBMIT_TOOL
-            )
+            if request_schema is not None:
+                submitted.append(structured_answer(forced, node_id=node_id))
+            else:
+                submitted.extend(
+                    dict(block.input)
+                    for block in getattr(forced, "content", [])
+                    if getattr(block, "type", "") == "tool_use" and block.name == _SUBMIT_TOOL
+                )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
 
@@ -1162,9 +1325,24 @@ def _assistant_param(message: Any) -> dict[str, Any]:
 
 
 def _force_submission(
-    client: Any, runner: Any, final: Any, kwargs: Mapping[str, Any], bound: Sequence[Any]
+    client: Any,
+    runner: Any,
+    final: Any,
+    kwargs: Mapping[str, Any],
+    bound: Sequence[Any],
+    request_schema: Mapping[str, Any] | None,
 ) -> Any:
-    """One request with ``tool_choice`` forced to the submit tool.
+    """One more request for the step's output, schema-locked when possible.
+
+    Never ``tool_choice`` forced to the submit tool: claude-sonnet-5-5
+    rejects forced tool choice outright. With a ``request_schema`` (the
+    output schema rewritten by :func:`structured_output_schema`),
+    ``tool_choice: none`` keeps the tools defined, which the history's
+    ``tool_use`` blocks require, while ``output_config.format`` makes the
+    text answer the output object: the mechanism :func:`_call_anthropic`
+    uses. Without one (an output naming a type the IR never defines has no
+    JSON type, so nothing can lock it) the turn only asks the model to call
+    the submit tool, and :func:`_declared_output` reports it if it does not.
 
     The conversation is the runner's, read through its public
     ``set_messages_params``. A turn that ended the loop normally
@@ -1180,7 +1358,12 @@ def _force_submission(
         return params
 
     runner.set_messages_params(_capture)
-    nudge = {"type": "text", "text": f"Call {_SUBMIT_TOOL} now with the final answer."}
+    ask = (
+        "Reply now with the step's final answer."
+        if request_schema is not None
+        else f"Call {_SUBMIT_TOOL} now with the final answer."
+    )
+    nudge = {"type": "text", "text": ask}
     if getattr(final, "stop_reason", None) == "tool_use" and history[-1].get("role") == "user":
         last = history[-1]
         content = last["content"]
@@ -1190,9 +1373,22 @@ def _force_submission(
         messages = [*history, _assistant_param(final), {"role": "user", "content": [nudge]}]
     request = {key: value for key, value in kwargs.items() if key not in ("max_iterations",)}
     request["tools"] = [tool.to_dict() for tool in bound]
-    request["tool_choice"] = {"type": "tool", "name": _SUBMIT_TOOL}
+    if request_schema is not None:
+        request["tool_choice"] = {"type": "none"}
+        request["output_config"] = {"format": {"type": "json_schema", "schema": request_schema}}
     request["messages"] = messages
     return client.beta.messages.create(**request)
+
+
+def _lockable_schema(output_schema: Mapping[str, Any], node_id: str) -> dict[str, Any] | None:
+    """``output_schema`` for ``output_config.format``, or None when the
+    subset cannot express it."""
+    try:
+        return structured_output_schema(output_schema, node_id=node_id)
+    except RuntimeError as exc:
+        if STRUCTURED_INEXPRESSIBLE not in str(exc):
+            raise
+        return None
 
 
 def _add_tokens(total: int | None, more: Any) -> int | None:

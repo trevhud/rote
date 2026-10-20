@@ -621,8 +621,8 @@ pointed at a current model — found live, first real gateway run.
 
 Two halves of the fix, keep both: the rubric
 (`llm-judge-extraction.md`) says never set `temperature` — determinism
-comes from schema-locked decoding (forced tool call / `json_schema`),
-not the sampler — and when the IR *does* set one, emitted judges
+comes from schema-locked decoding (`output_config.format` /
+`json_schema`), not the sampler. When the IR *does* set one, emitted judges
 render it as a `ROTE_TEMPERATURE_<NODE_ID>` env knob whose empty value
 drops the parameter entirely (`_sampling_kwargs()` in Python,
 `...(TEMPERATURE.trim() ? … : {})` in TS). Don't "simplify" it back to
@@ -661,6 +661,57 @@ merely mentions the marker in a comment listed, and `rote run` refused
 it. Never go back to a `NotImplementedError` substring match either: a
 real module that raises it on an unsupported branch was refused with no
 way past it. `--allow-stubs` is the escape hatch.
+
+### Current Sonnet rejects forced `tool_choice`
+
+`claude-sonnet-5-5` answers every request with `tool_choice` type
+`"tool"` or `"any"` with HTTP 400: `tool_choice: type "tool" and "any"
+are not supported for this model.` (verified live 2026-10-20;
+claude-haiku-5-5 and claude-sonnet-4-6 still accepted it, and the
+Cloudflare AI Gateway `/ai/v1/messages` route passes the same 400
+through). Every emitted judge used to force a tool call, so pointing
+`ROTE_MODEL_<ID>` at the current Sonnet killed every judge call: the
+same dead-on-arrival class as the `temperature` gotcha above.
+
+Schema-locked decoding is now `output_config: {format: {type:
+"json_schema", schema}}` on every Anthropic lane, for every model, with
+no branch on model ids: the Python helper's `_call_anthropic`, the TS
+judge emitter, and both agent loops' one extra turn (with `tool_choice:
+none`, because the history holds `tool_use` blocks). Three things to
+keep:
+
+- **The request schema is rewritten, in one place.**
+  `structured_output_schema` in `rote.inference._runtime_helper` closes
+  every object (`additionalProperties` omitted or `true` is a 400),
+  turns `oneOf` into `anyOf`, and moves bounds, `pattern`, `maxItems`,
+  `minItems` above 1 and unknown `format`s into the description (all
+  400s as written). The judge's own validator, built from the original
+  schema, still enforces them. Python runs it per request; TS runs the
+  same function at emit time. `tests/_messages_api.py` is an
+  independent copy of the measured rules, and the Messages stubs refuse
+  what it refuses, so the suite fails where the API would.
+- **Two shapes cannot be expressed, and are never approximated.** An
+  object that admits undeclared keys (no declared properties, or
+  `additionalProperties` set to `true` or a schema, as in a fixed key
+  plus a typed map) and a value with no type. Only an object that *omits*
+  `additionalProperties` is closed. Closing a map would make the model
+  drop its keys with nothing noticing.
+  An anthropic judge with either fails at `rote emit`, naming the path.
+  An agent loop's output often has one (an IR type name the IR never
+  defines), so its extra turn falls back to asking for `submit_result`.
+  That fallback keys on `STRUCTURED_INEXPRESSIBLE` in the message, so any
+  other normalizer error still propagates.
+- **The SDK floor is load-bearing.** `anthropic>=1.15` (has
+  `output_config`) reaches every Python runtime's install instructions
+  through `_py_common.vendor_sdk_requirements`; an older SDK fails every
+  judge with an unexpected-keyword error.
+- **Only `end_turn` is an answer.** `refusal` and `max_tokens` raise a
+  plain RuntimeError naming the stop reason; a truncated JSON prefix
+  must never reach a downstream node.
+
+The `claude-cli` lane (`claude -p --json-schema`) and the OpenAI lane
+are separate mechanisms and were unaffected (the CLI handles
+claude-sonnet-5-5 itself).
 
 ### Vendor SDK errors do not survive a durable step boundary
 
@@ -808,8 +859,11 @@ derivation, all six runtimes):
   bare. A loop with no `output` still returns `{result: <final text>}`.
 - **Submitting does not end the loop.** It runs until the model ends its
   turn, and the last submission wins. A loop that ends (or hits its cap)
-  without one gets ONE more request with `tool_choice` forced to
-  `submit_result`, the judge mechanism, then fails. At the cap the runner
+  without one gets ONE more request, then fails. That request is
+  schema-locked the judge way (`tool_choice: none` plus
+  `output_config.format`, never a forced `tool_choice`; see the gotcha
+  on the current Sonnet) when the output schema fits structured outputs,
+  and otherwise only asks the model to call `submit_result`. At the cap the runner
   has already run that turn's tools, so the nudge joins the trailing
   user message rather than re-running anything (the Python runner does
   not append a normally-ended final turn; the TS one does, hence the
