@@ -19,6 +19,8 @@ compile.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -84,7 +86,37 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
         if named is None:
             host = host_of(site.url) or site.url
             return done("unresolved", note=f"no machine-readable spec source for {host} yet")
-        api, version = named
+        try:
+            listed = store.google_versions(named.api)
+        except SpecUnavailable as e:
+            return done("spec_unavailable", note=str(e))
+        resolved = next((v for v in named.versions if v in listed), None)
+        if resolved is None:
+            if listed and named.versions and named.dedicated_host:
+                # The API's own host, a version Google does not list: wrong.
+                return done(
+                    "violations",
+                    findings=[
+                        _finding(
+                            node_ids[0],
+                            rel,
+                            site.line,
+                            "spec_unknown_api",
+                            f"line {site.line}: Google's Discovery directory lists "
+                            f"{named.api} as {', '.join(listed)}, not "
+                            f"{' or '.join(named.versions)} ({google.DIRECTORY_URL})",
+                        )
+                    ],
+                )
+            return done(
+                "unresolved",
+                note=(
+                    f"Google's Discovery directory describes no {named.api} "
+                    f"{' or '.join(named.versions) or 'version'} for this URL, so it has no "
+                    f"spec to check against"
+                ),
+            )
+        api, version = named.api, resolved
     try:
         spec = store.google(api, version)
     except SpecUnavailable as e:
@@ -132,49 +164,81 @@ def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[st
     if site.kind == "google_client":
         op_id = site.google_method_id or ""
         op = spec.operation(op_id)
-        if op is None and op_id.endswith("_media"):
-            # The client library's media variant: files().export_media() is
-            # drive.files.export, returning the file's bytes.
-            base = spec.operation(op_id.removesuffix("_media"))
-            if base is not None and base.supports_media:
-                return base, {}
+        if op is None:
+            # The client library's own helpers on an operation: export_media()
+            # is drive.files.export returning the file's bytes, and
+            # list_next(previous_request, previous_response) is the next
+            # page of the list call that request was.
+            for suffix, applies in _CLIENT_HELPERS.items():
+                base = spec.operation(op_id.removesuffix(suffix))
+                if op_id.endswith(suffix) and base is not None and applies(base):
+                    return base, {}
         return op, {}
     assert site.url is not None
-    call = path_segments(site.url)
-    for op in spec.operations:
-        if site.method is not None and op.method != site.method:
+    return best_operation(spec.operations, site.method, site.url)
+
+
+#: Client-library method suffix -> which operations have it.
+_CLIENT_HELPERS: dict[str, Callable[[Operation], bool]] = {
+    "_media": lambda op: op.supports_media,
+    "_next": lambda op: op.response_schema is not None,
+}
+
+#: Keyword arguments Google's client library takes on an operation that
+#: supports media upload, which are not request parameters.
+_UPLOAD_KWARGS = ("media_body", "media_mime_type")
+
+
+def best_operation(
+    operations: list[Operation], method: str | None, url: str
+) -> tuple[Operation | None, dict[str, str]]:
+    """The operation ``method`` ``url`` calls, and its path parameters.
+
+    Of the operations whose URL (or upload URL) matches, the most specific
+    one: People's ``v1/{+resourceName}/connections`` over
+    ``v1/{+resourceName}``, which also matches that path.
+    """
+    call = path_segments(url)
+    best: tuple[int, Operation, dict[str, str]] | None = None
+    for op in operations:
+        if method is not None and op.method != method:
             continue
-        bound = match_path(op.segments(), call)
-        if bound is not None:
-            return op, bound
-    return None, {}
+        for template in op.templates():
+            segments = path_segments(template)
+            bound = match_path(segments, call)
+            if bound is None:
+                continue
+            literal = len(re.sub(r"\{[^}]*\}", "", "/".join(segments)))
+            if best is None or literal > best[0]:
+                best = (literal, op, bound)
+    return (best[1], best[2]) if best is not None else (None, {})
 
 
 def match_path(template: list[str], call: list[str]) -> dict[str, str] | None:
-    """Path parameter -> the call's segment, or ``None`` when the paths differ."""
-    bound: dict[str, str] = {}
-    for i, seg in enumerate(template):
-        if seg.startswith("{+") and seg.endswith("}"):
-            if i >= len(call):
-                return None
-            bound[seg[2:-1]] = "/".join(call[i:])
-            return bound
-        if i >= len(call):
-            return None
-        piece = call[i]
-        if seg.startswith("{") and seg.endswith("}"):
-            bound[seg[1:-1]] = piece
-            continue
-        # A literal segment with a parameter inside (``files/{fileId}:copy``).
-        if "{" in seg:
-            prefix, _, rest = seg.partition("{")
-            suffix = rest.partition("}")[2]
-            if piece.startswith(prefix) and piece.endswith(suffix):
-                continue
-            return None
-        if piece != seg:
-            return None
-    return bound if len(call) == len(template) else None
+    """Path parameter -> the call's value, or ``None`` when the paths differ.
+
+    ``{name}`` is one segment, ``{+name}`` one or more (slashes included),
+    and either may share a segment with literal text
+    (``{spreadsheetId}:batchUpdate``, ``{+resourceName}:updateContact``):
+    every parameter is bound, wherever it sits.
+    """
+    names: list[str] = []
+
+    def group(match: re.Match[str]) -> str:
+        names.append(match.group(2))
+        return "(.+)" if match.group(1) else "([^/]+)"
+
+    pattern = ""
+    rest = "/".join(template)
+    for i, piece in enumerate(re.split(r"(\{\+?[^}]+\})", rest)):
+        if i % 2:
+            pattern += re.sub(r"\{(\+?)([^}]+)\}", group, piece)
+        else:
+            pattern += re.escape(piece)
+    found = re.fullmatch(pattern, "/".join(call))
+    if found is None:
+        return None
+    return dict(zip(names, found.groups(), strict=True))
 
 
 def _violations(
@@ -182,6 +246,22 @@ def _violations(
 ) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     sent: dict[str, object] = dict(site.params)
+    complete = site.params_complete
+    if site.kind == "google_client":
+        if (site.google_method_id or "").endswith("_next") and site.google_method_id != op.id:
+            # list_next(previous_request, previous_response) re-sends the
+            # previous request's parameters with the next page token.
+            sent, complete = {}, False
+        for kwarg in _UPLOAD_KWARGS:
+            if kwarg in sent:
+                del sent[kwarg]
+                if not op.supports_media_upload:
+                    out.append(
+                        (
+                            "spec_unknown_param",
+                            f"passes {kwarg}, but this operation takes no upload",
+                        )
+                    )
     if site.kind == "http" and site.url and "?" in site.url:
         for pair in site.url.split("?", 1)[1].split("&"):
             key, _, raw = pair.partition("=")
@@ -212,7 +292,7 @@ def _violations(
             if site.kind == "http" and param.location == "path"
             else (name in sent)
         )
-        if not given and site.params_complete:
+        if not given and complete:
             out.append(("spec_missing_required", f"required parameter {name!r} is not sent"))
     if site.body_keys:
         request = spec.resolve(op.request_schema)

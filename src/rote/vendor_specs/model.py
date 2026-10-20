@@ -46,9 +46,13 @@ class Operation(BaseModel):
     #: The vendor's own id where it has one (``gmail.users.threads.list``).
     id: str
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
-    #: Absolute URL with ``{name}`` path parameters; ``{+name}`` matches the
-    #: rest of the path (Discovery's reserved expansion).
+    #: Absolute URL with ``{name}`` path parameters (one segment each) and
+    #: ``{+name}`` ones (Discovery's reserved expansion: one or more
+    #: segments, slashes included). The names are the declared parameters'.
     url_template: str
+    #: Where the same operation takes an upload (Discovery ``mediaUpload``:
+    #: ``/upload/drive/v3/files``, ``/resumable/upload/...``), absolute.
+    upload_url_templates: tuple[str, ...] = ()
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     request_schema: dict[str, Any] | None = None
     response_schema: dict[str, Any] | None = None
@@ -58,10 +62,18 @@ class Operation(BaseModel):
     #: (Discovery ``supportsMediaDownload``): with ``alt=media`` over HTTP,
     #: and as ``<method>_media`` in Google's client library.
     supports_media: bool = False
+    #: The operation accepts an uploaded file (Discovery
+    #: ``supportsMediaUpload``): at an upload URL over HTTP, and as
+    #: ``media_body`` / ``media_mime_type`` in Google's client library.
+    supports_media_upload: bool = False
     scopes: tuple[str, ...] = ()
 
     def segments(self) -> list[str]:
         return path_segments(self.url_template)
+
+    def templates(self) -> tuple[str, ...]:
+        """Every URL the operation is called at: its own, then its upload URLs."""
+        return (self.url_template, *self.upload_url_templates)
 
 
 class ApiSpec(BaseModel):

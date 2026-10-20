@@ -2,8 +2,10 @@
 
 Two call shapes, the two the api backend's compiles actually write:
 
-* **Raw HTTP** through ``httpx`` / ``requests``: ``httpx.get(url, params=...)``,
-  ``client.get(...)`` on an ``httpx.Client`` / ``requests.Session``, and
+* **Raw HTTP** through ``httpx`` / ``requests``: ``httpx.get(url, params=...)``
+  (or ``get`` imported from either), ``client.get(...)`` on an
+  ``httpx.Client`` / ``AsyncClient``, a ``requests.Session`` or google-auth's
+  ``AuthorizedSession``, however the class was imported, and
   ``.request("GET", url, ...)``. The URL is rebuilt as a template from string
   literals, f-strings, ``.format(...)``, ``+`` and module- or function-level
   string constants; anything computed becomes ``{?}``.
@@ -23,11 +25,15 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 _HTTP_VERBS = {"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE"}
-_HTTP_MODULES = {"httpx", "requests"}
+#: Module-level request functions, by their full dotted name.
+_HTTP_FUNCTIONS = {f"{m}.{v}" for m in ("httpx", "requests") for v in (*_HTTP_VERBS, "request")}
+#: Classes whose instances send requests with ``.get(...)`` / ``.request(...)``.
 _CLIENT_FACTORIES = {
-    ("httpx", "Client"),
-    ("httpx", "AsyncClient"),
-    ("requests", "Session"),
+    "httpx.Client",
+    "httpx.AsyncClient",
+    "requests.Session",
+    "requests.sessions.Session",
+    "google.auth.transport.requests.AuthorizedSession",
 }
 
 #: An argument value the AST cannot pin down.
@@ -96,6 +102,23 @@ def _module_aliases(tree: ast.Module) -> dict[str, str]:
             for a in node.names:
                 out[a.asname or a.name] = f"{node.module}.{a.name}"
     return out
+
+
+def _dotted(node: ast.expr, modules: dict[str, str]) -> str | None:
+    """The full dotted name ``node`` refers to, through the module's imports.
+
+    ``Client`` after ``from httpx import Client`` is ``httpx.Client``;
+    ``gr.AuthorizedSession`` after ``import google.auth.transport.requests
+    as gr`` is ``google.auth.transport.requests.AuthorizedSession``.
+    """
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(modules.get(node.id, node.id))
+    return ".".join(reversed(parts))
 
 
 def _is_build(func: ast.expr, modules: dict[str, str]) -> bool:
@@ -234,16 +257,8 @@ class _Scope:
     # ── bindings ──
 
     def _is_client_factory(self, value: ast.expr) -> bool:
-        if not isinstance(value, ast.Call) or not isinstance(value.func, ast.Attribute):
-            return False
-        base = value.func.value
         return (
-            isinstance(base, ast.Name)
-            and (
-                self.modules.get(base.id, base.id),
-                value.func.attr,
-            )
-            in _CLIENT_FACTORIES
+            isinstance(value, ast.Call) and _dotted(value.func, self.modules) in _CLIENT_FACTORIES
         )
 
     def _bound(self, test: object) -> set[str]:
@@ -398,20 +413,26 @@ class _Scope:
 
     def _http(self, call: ast.Call) -> CallSite | None:
         func = call.func
-        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
-            return None
-        receiver = func.value.id
-        if not (self.modules.get(receiver) in _HTTP_MODULES or receiver in self.clients):
+        dotted = _dotted(func, self.modules)
+        if dotted in _HTTP_FUNCTIONS:
+            assert dotted is not None
+            verb_name = dotted.rsplit(".", 1)[1]
+        elif isinstance(func, ast.Attribute) and (
+            (isinstance(func.value, ast.Name) and func.value.id in self.clients)
+            or self._is_client_factory(func.value)
+        ):
+            verb_name = func.attr
+        else:
             return None
         args = list(call.args)
         kwargs = {k.arg: k.value for k in call.keywords if k.arg}
-        if func.attr == "request":
+        if verb_name == "request":
             if not args:
                 return None
             verb = _literal(args.pop(0))
             method = verb.upper() if isinstance(verb, str) else None
-        elif func.attr in _HTTP_VERBS:
-            method = _HTTP_VERBS[func.attr]
+        elif verb_name in _HTTP_VERBS:
+            method = _HTTP_VERBS[verb_name]
         else:
             return None
         url_node = args[0] if args else kwargs.get("url")
@@ -558,10 +579,12 @@ class _Scope:
                     isinstance(node.value.func, ast.Attribute)
                     and node.value.func.attr in ("json", "execute")
                 )
-                if site is not None and (is_json or site.kind == "google_client"):
+                if site is not None and is_json:
                     aliases[target.id] = (site, ())
                 elif site is not None:
-                    roots[target.id] = site  # an httpx response; .json() gives the body
+                    # An httpx response, or a Google request not yet run:
+                    # .json() / .execute() on it gives the body.
+                    roots[target.id] = site
                 else:
                     p = path(node.value)
                     if p is not None:

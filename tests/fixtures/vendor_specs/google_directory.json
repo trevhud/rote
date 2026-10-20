@@ -10,6 +10,31 @@
    "name": "drive",
    "version": "v3",
    "discoveryRestUrl": "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"
+  },
+  {
+   "name": "sheets",
+   "version": "v4",
+   "discoveryRestUrl": "https://sheets.googleapis.com/$discovery/rest?version=v4"
+  },
+  {
+   "name": "people",
+   "version": "v1",
+   "discoveryRestUrl": "https://people.googleapis.com/$discovery/rest?version=v1"
+  },
+  {
+   "name": "admin",
+   "version": "directory_v1",
+   "discoveryRestUrl": "https://admin.googleapis.com/$discovery/rest?version=directory_v1"
+  },
+  {
+   "name": "admin",
+   "version": "reports_v1",
+   "discoveryRestUrl": "https://admin.googleapis.com/$discovery/rest?version=reports_v1"
+  },
+  {
+   "name": "oauth2",
+   "version": "v2",
+   "discoveryRestUrl": "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest"
   }
  ]
 }

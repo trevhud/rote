@@ -93,6 +93,13 @@ class SpecStore:
             self._memo[key] = spec
         return spec
 
+    def google_versions(self, api: str) -> tuple[str, ...]:
+        """Every version Google's Discovery directory lists for ``api``.
+
+        Raises :class:`SpecUnavailable` when the directory cannot be fetched.
+        """
+        return google.listed_versions(self._directory(), api)
+
     def _fetch_google(self, api: str, version: str) -> ApiSpec | None:
         directory = self._directory()
         url = google.discovery_url(directory, api, version)

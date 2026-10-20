@@ -17,6 +17,7 @@ https://developers.google.com/discovery/v1/reference/apis
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, ParamType, host_of
@@ -36,29 +37,61 @@ _TYPES: dict[str, ParamType] = {
 _VERSION_SEGMENT = re.compile(r"^v\d+(?:[a-z]+\d*)?$")
 
 
-def api_for_url(url: str) -> tuple[str, str] | None:
-    """``(api, version)`` a Google API URL names, or ``None`` for a non-Google URL.
+@dataclass(frozen=True)
+class UrlApi:
+    """The Google API a URL names, with the version strings it could mean."""
+
+    api: str
+    #: Candidates in preference order: ``admin/directory/v1`` could be
+    #: ``directory_v1`` (what the directory lists) or ``v1``. Only one the
+    #: directory lists is used; the URL alone never decides.
+    versions: tuple[str, ...]
+    #: ``<api>.googleapis.com``, where every path is that API's. On a shared
+    #: host (``www.googleapis.com``) an unlisted version can be an endpoint
+    #: Discovery does not describe, such as OAuth2 v3's userinfo.
+    dedicated_host: bool
+
+
+def api_for_url(url: str) -> UrlApi | None:
+    """The API and candidate versions a Google API URL names; ``None`` off Google.
 
     ``gmail.googleapis.com/gmail/v1/...`` names the API by host;
-    ``www.googleapis.com/drive/v3/...`` (and ``/upload/drive/v3/...``) by its
-    first path segment. The version is the first ``v<N>`` segment. The
-    directory confirms the pair exists before anything is fetched.
+    ``www.googleapis.com/drive/v3/...`` (and its ``/upload/`` and
+    ``/resumable/upload/`` forms) by its first path segment. Each ``v<N>``
+    segment is a candidate version, preceded by the version its previous
+    segment joins into (``directory`` + ``v1`` is ``directory_v1``).
     """
     host = host_of(url)
     if host is None or not host.endswith(".googleapis.com"):
         return None
     segments = [s for s in re.sub(r"^[a-z]+://[^/]+", "", url).split("?")[0].split("/") if s]
     sub = host.removesuffix(".googleapis.com")
-    if sub in ("www", "content"):
-        if segments and segments[0] == "upload":
+    shared = sub in ("www", "content")
+    if shared:
+        while segments and segments[0] in ("upload", "resumable"):
             segments = segments[1:]
         if not segments:
             return None
         api, segments = segments[0], segments[1:]
     else:
         api = sub
-    version = next((s for s in segments if _VERSION_SEGMENT.match(s)), None)
-    return (api, version) if version else None
+    versions: list[str] = []
+    for i, seg in enumerate(segments):
+        if not _VERSION_SEGMENT.match(seg):
+            continue
+        if i > 0 and not _VERSION_SEGMENT.match(segments[i - 1]):
+            versions.append(f"{segments[i - 1]}_{seg}")
+        versions.append(seg)
+    return UrlApi(api, tuple(versions), dedicated_host=not shared)
+
+
+def listed_versions(directory: dict[str, Any], api: str) -> tuple[str, ...]:
+    """Every version the directory lists for ``api``."""
+    return tuple(
+        str(item["version"])
+        for item in directory.get("items") or []
+        if item.get("name") == api and item.get("version")
+    )
 
 
 def discovery_url(directory: dict[str, Any], api: str, version: str) -> str | None:
@@ -72,9 +105,10 @@ def discovery_url(directory: dict[str, Any], api: str, version: str) -> str | No
 
 def from_discovery(doc: dict[str, Any], source_url: str) -> ApiSpec:
     """A Discovery document as an :class:`ApiSpec`."""
-    base = f"{doc['rootUrl']}{doc.get('servicePath') or ''}"
+    root = str(doc["rootUrl"])
+    base = f"{root}{doc.get('servicePath') or ''}"
     operations: list[Operation] = []
-    _walk(doc.get("resources") or {}, doc.get("methods") or {}, base, operations)
+    _walk(doc.get("resources") or {}, doc.get("methods") or {}, root, base, operations)
     return ApiSpec(
         vendor="google",
         api=str(doc["name"]),
@@ -89,26 +123,42 @@ def from_discovery(doc: dict[str, Any], source_url: str) -> ApiSpec:
 
 
 def _walk(
-    resources: dict[str, Any], methods: dict[str, Any], base: str, out: list[Operation]
+    resources: dict[str, Any],
+    methods: dict[str, Any],
+    root: str,
+    base: str,
+    out: list[Operation],
 ) -> None:
     for method in methods.values():
         request = method.get("request")
         response = method.get("response")
+        protocols = (method.get("mediaUpload") or {}).get("protocols") or {}
+        uploads = tuple(
+            root.rstrip("/") + str(p["path"])
+            for p in protocols.values()
+            if isinstance(p, dict) and p.get("path")
+        )
         out.append(
             Operation(
                 id=str(method["id"]),
                 method=str(method["httpMethod"]).upper(),  # type: ignore[arg-type]
-                url_template=base + str(method.get("flatPath") or method["path"]),
+                # ``path``, not ``flatPath``: its parameter names are the
+                # declared ones. People's flatPath ``v1/people/{peopleId}``
+                # names a parameter the method does not declare; its path
+                # ``v1/{+resourceName}`` binds the one it requires.
+                url_template=base + str(method["path"]),
+                upload_url_templates=uploads,
                 params=_params(method.get("parameters") or {}),
                 request_schema=_schema(request) if request else None,
                 response_schema=_schema(response) if response else None,
                 media_download=bool(method.get("supportsMediaDownload")) and response is None,
                 supports_media=bool(method.get("supportsMediaDownload")),
+                supports_media_upload=bool(method.get("supportsMediaUpload")),
                 scopes=tuple(method.get("scopes") or ()),
             )
         )
     for resource in resources.values():
-        _walk(resource.get("resources") or {}, resource.get("methods") or {}, base, out)
+        _walk(resource.get("resources") or {}, resource.get("methods") or {}, root, base, out)
 
 
 def _params(params: dict[str, Any]) -> dict[str, ParamSpec]:
@@ -148,4 +198,11 @@ def _schema(node: Any) -> Any:
     return out
 
 
-__all__ = ["DIRECTORY_URL", "api_for_url", "discovery_url", "from_discovery"]
+__all__ = [
+    "DIRECTORY_URL",
+    "UrlApi",
+    "api_for_url",
+    "discovery_url",
+    "from_discovery",
+    "listed_versions",
+]

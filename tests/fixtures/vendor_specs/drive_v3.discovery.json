@@ -1,9 +1,16 @@
 {
+ "basePath": "/drive/v3/",
  "baseUrl": "https://www.googleapis.com/drive/v3/",
+ "batchPath": "batch/drive/v3",
+ "description": "The Google Drive API allows clients to access resources from Google Drive.",
  "discoveryVersion": "v1",
+ "documentationLink": "https://developers.google.com/workspace/drive/",
  "id": "drive:v3",
  "kind": "discovery#restDescription",
+ "mtlsRootUrl": "https://www.mtls.googleapis.com/",
  "name": "drive",
+ "ownerDomain": "google.com",
+ "ownerName": "Google",
  "parameters": {
   "$.xgafv": {
    "description": "V1 error format.",
@@ -81,9 +88,101 @@
    "type": "string"
   }
  },
+ "protocol": "rest",
  "resources": {
   "files": {
    "methods": {
+    "create": {
+     "description": " Creates a file. For more information, see [Create and manage files](https://developers.google.com/workspace/drive/api/guides/create-file). This method supports an */upload* URI and accepts uploaded media with the following characteristics: - *Maximum file size:* 5,120 GB - *Accepted Media MIME types:* `*/*` (Specify a valid MIME type, rather than the literal `*/*` value. The literal `*/*` is only used to indicate that any valid MIME type can be uploaded. For more information, see [Google Workspace and Google Drive supported MIME types](https://developers.google.com/workspace/drive/api/guides/mime-types).) For more information on uploading files, see [Upload file data](https://developers.google.com/workspace/drive/api/guides/manage-uploads). Apps creating shortcuts with the `create` method must specify the MIME type `application/vnd.google-apps.shortcut`. Apps should specify a file extension in the `name` property when inserting files with the API. For example, an operation to insert a JPEG file should specify something like `\"name\": \"cat.jpg\"` in the metadata. Subsequent `GET` requests include the read-only `fileExtension` property populated with the extension originally specified in the `name` property. When a Google Drive user requests to download a file, or when the file is downloaded through the sync client, Drive builds a full filename (with extension) based on the name. In cases where the extension is missing, Drive attempts to determine the extension based on the file's MIME type.",
+     "flatPath": "files",
+     "httpMethod": "POST",
+     "id": "drive.files.create",
+     "mediaUpload": {
+      "accept": [
+       "*/*"
+      ],
+      "maxSize": "5497558138880",
+      "protocols": {
+       "resumable": {
+        "multipart": true,
+        "path": "/resumable/upload/drive/v3/files"
+       },
+       "simple": {
+        "multipart": true,
+        "path": "/upload/drive/v3/files"
+       }
+      }
+     },
+     "parameterOrder": [],
+     "parameters": {
+      "enforceSingleParent": {
+       "default": "false",
+       "deprecated": true,
+       "description": "Deprecated: Creating files in multiple folders is no longer supported.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "ignoreDefaultVisibility": {
+       "default": "false",
+       "description": "Whether to ignore the domain's default visibility settings for the created file. Domain administrators can choose to make all uploaded files visible to the domain by default; this parameter bypasses that behavior for the request. Permissions are still inherited from parent folders.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "includeLabels": {
+       "description": "A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.",
+       "location": "query",
+       "type": "string"
+      },
+      "includePermissionsForView": {
+       "description": "Specifies which additional view's permissions to include in the response. Only `published` is supported.",
+       "location": "query",
+       "type": "string"
+      },
+      "keepRevisionForever": {
+       "default": "false",
+       "description": "Whether to set the `keepForever` field in the new head revision. This is only applicable to files with binary content in Google Drive. Only 200 revisions for the file can be kept forever. If the limit is reached, try deleting pinned revisions.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "ocrLanguage": {
+       "description": "A language hint for OCR processing during image import (ISO 639-1 code).",
+       "location": "query",
+       "type": "string"
+      },
+      "supportsAllDrives": {
+       "default": "false",
+       "description": "Whether the requesting application supports both My Drives and shared drives.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "supportsTeamDrives": {
+       "default": "false",
+       "deprecated": true,
+       "description": "Deprecated: Use `supportsAllDrives` instead.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "useContentAsIndexableText": {
+       "default": "false",
+       "description": "Whether to use the uploaded content as indexable text.",
+       "location": "query",
+       "type": "boolean"
+      }
+     },
+     "path": "files",
+     "request": {
+      "$ref": "File"
+     },
+     "response": {
+      "$ref": "File"
+     },
+     "scopes": [
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.appdata",
+      "https://www.googleapis.com/auth/drive.file"
+     ],
+     "supportsMediaUpload": true
+    },
     "export": {
      "description": "Exports a Google Workspace document to the requested MIME type and returns exported byte content. For more information, see [Download and export files](https://developers.google.com/workspace/drive/api/guides/manage-downloads). Note that the exported content is limited to 10 MB.",
      "flatPath": "files/{fileId}/export",
@@ -179,9 +278,127 @@
      "supportsMediaDownload": true,
      "supportsSubscription": true,
      "useMediaDownloadService": true
+    },
+    "list": {
+     "description": " Lists the user's files. For more information, see [Search for files and folders](https://developers.google.com/workspace/drive/api/guides/search-files). This method accepts the `q` parameter, which is a search query combining one or more search terms. This method returns *all* files by default, including trashed files. If you don't want trashed files to appear in the list, use the `trashed=false` query parameter to remove trashed files from the results.",
+     "flatPath": "files",
+     "httpMethod": "GET",
+     "id": "drive.files.list",
+     "parameterOrder": [],
+     "parameters": {
+      "corpora": {
+       "description": "Specifies a collection of items (files or documents) to which the query applies. Supported items include: * `user` * `domain` * `drive` * `allDrives` Prefer `user` or `drive` to `allDrives` for efficiency. By default, corpora is set to `user`. However, this can change depending on the filter set through the `q` parameter. For more information, see [File organization](https://developers.google.com/workspace/drive/api/guides/about-files#file-organization).",
+       "location": "query",
+       "type": "string"
+      },
+      "corpus": {
+       "deprecated": true,
+       "description": "Deprecated: The source of files to list. Use `corpora` instead.",
+       "enum": [
+        "domain",
+        "user"
+       ],
+       "enumDescriptions": [
+        "Files shared to the user's domain.",
+        "Files owned by or shared to the user."
+       ],
+       "location": "query",
+       "type": "string"
+      },
+      "driveId": {
+       "description": "ID of the shared drive to search.",
+       "location": "query",
+       "type": "string"
+      },
+      "includeItemsFromAllDrives": {
+       "default": "false",
+       "description": "Whether both My Drive and shared drive items should be included in results.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "includeLabels": {
+       "description": "A comma-separated list of IDs of labels to include in the `labelInfo` part of the response.",
+       "location": "query",
+       "type": "string"
+      },
+      "includePermissionsForView": {
+       "description": "Specifies which additional view's permissions to include in the response. Only `published` is supported.",
+       "location": "query",
+       "type": "string"
+      },
+      "includeTeamDriveItems": {
+       "default": "false",
+       "deprecated": true,
+       "description": "Deprecated: Use `includeItemsFromAllDrives` instead.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "orderBy": {
+       "description": "A comma-separated list of sort keys. Valid keys are: * `createdTime`: When the file was created. Avoid using this key for queries on large item collections as it might result in timeouts or other issues. For time-related sorting on large item collections, use `modifiedTime desc` instead. * `folder`: The folder ID. This field is sorted using alphabetical ordering. * `modifiedByMeTime`: The last time the file was modified by the user. * `modifiedTime`: The last time the file was modified by anyone. * `name`: The name of the file. This field is sorted using alphabetical ordering, so 1, 12, 2, 22. * `name_natural`: The name of the file. This field is sorted using natural sort ordering, so 1, 2, 12, 22. * `quotaBytesUsed`: The number of storage quota bytes used by the file. * `recency`: The most recent timestamp from the file's date-time fields. * `sharedWithMeTime`: When the file was shared with the user, if applicable. * `starred`: Whether the user has starred the file. * `viewedByMeTime`: The last time the file was viewed by the user. Each key sorts ascending by default, but can be reversed with the `desc` modifier. Example usage: `?orderBy=folder,modifiedTime desc,name`.",
+       "location": "query",
+       "type": "string"
+      },
+      "pageSize": {
+       "default": "100",
+       "description": "The maximum number of files to return. The service may return fewer than this value. If unspecified, at most 100 files will be returned for shared drives, and the entire list of files for non-shared drives. The maximum value is 1000; values above 1000 will be coerced to 1000.",
+       "format": "int32",
+       "location": "query",
+       "maximum": "1000",
+       "minimum": "1",
+       "type": "integer"
+      },
+      "pageToken": {
+       "description": "The token for continuing a previous list request on the next page. This should be set to the value of `nextPageToken` from the previous response.",
+       "location": "query",
+       "type": "string"
+      },
+      "q": {
+       "description": "A query for filtering the file results. For supported syntax, see [Search for files and folders](/workspace/drive/api/guides/search-files).",
+       "location": "query",
+       "type": "string"
+      },
+      "spaces": {
+       "default": "drive",
+       "description": "A comma-separated list of spaces to query within the corpora. Supported values are `drive` and `appDataFolder`. For more information, see [File organization](https://developers.google.com/workspace/drive/api/guides/about-files#file-organization).",
+       "location": "query",
+       "type": "string"
+      },
+      "supportsAllDrives": {
+       "default": "false",
+       "description": "Whether the requesting application supports both My Drives and shared drives.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "supportsTeamDrives": {
+       "default": "false",
+       "deprecated": true,
+       "description": "Deprecated: Use `supportsAllDrives` instead.",
+       "location": "query",
+       "type": "boolean"
+      },
+      "teamDriveId": {
+       "deprecated": true,
+       "description": "Deprecated: Use `driveId` instead.",
+       "location": "query",
+       "type": "string"
+      }
+     },
+     "path": "files",
+     "response": {
+      "$ref": "FileList"
+     },
+     "scopes": [
+      "https://www.googleapis.com/auth/drive",
+      "https://www.googleapis.com/auth/drive.appdata",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/drive.meet.readonly",
+      "https://www.googleapis.com/auth/drive.metadata",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.photos.readonly",
+      "https://www.googleapis.com/auth/drive.readonly"
+     ]
     }
-   },
-   "resources": {}
+   }
   }
  },
  "revision": "20261012",
@@ -987,6 +1204,33 @@
     "writersCanShare": {
      "description": "Whether users with only `writer` permission can modify the file's permissions. Not populated for items in shared drives.",
      "type": "boolean"
+    }
+   },
+   "type": "object"
+  },
+  "FileList": {
+   "description": "A list of files.",
+   "id": "FileList",
+   "properties": {
+    "files": {
+     "description": "The list of files. If `nextPageToken` is populated, then this list may be incomplete and an additional page of results should be fetched.",
+     "items": {
+      "$ref": "File"
+     },
+     "type": "array"
+    },
+    "incompleteSearch": {
+     "description": "Whether the search process was incomplete. If true, then some search results might be missing, since all documents were not searched. This can occur when searching multiple drives with the `allDrives` corpora, but all corpora couldn't be searched. When this happens, it's suggested that clients narrow their query by choosing a different corpus such as `user` or `drive`.",
+     "type": "boolean"
+    },
+    "kind": {
+     "default": "drive#fileList",
+     "description": "Identifies what kind of resource this is. Value: the fixed string `\"drive#fileList\"`.",
+     "type": "string"
+    },
+    "nextPageToken": {
+     "description": "The page token for the next page of files. This will be absent if the end of the files list has been reached. If the token is rejected for any reason, it should be discarded, and pagination should be restarted from the first page of results. The page token is typically valid for several hours. However, if new items are added or removed, your expected results might differ.",
+     "type": "string"
     }
    },
    "type": "object"

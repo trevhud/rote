@@ -18,18 +18,30 @@ from rote.compiler.verify import EmitTarget, verify_deliverable
 from rote.ir import load_pipeline
 from rote.vendor_specs import SpecStore, SpecUnavailable, check_deliverable
 from rote.vendor_specs.extract import UNKNOWN, extract
-from rote.vendor_specs.google import DIRECTORY_URL, api_for_url, from_discovery
+from rote.vendor_specs.google import DIRECTORY_URL, UrlApi, api_for_url, from_discovery
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vendor_specs"
 GMAIL_URL = "https://gmail.googleapis.com/$discovery/rest?version=v1"
 DRIVE_URL = "https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"
 
 
+#: discoveryRestUrl -> the trimmed document served for it.
+_DOCUMENTS = {
+    GMAIL_URL: "gmail_v1.discovery.json",
+    DRIVE_URL: "drive_v3.discovery.json",
+    "https://sheets.googleapis.com/$discovery/rest?version=v4": "sheets_v4.discovery.json",
+    "https://people.googleapis.com/$discovery/rest?version=v1": "people_v1.discovery.json",
+    "https://admin.googleapis.com/$discovery/rest?version=directory_v1": (
+        "admin_directory_v1.discovery.json"
+    ),
+    "https://www.googleapis.com/discovery/v1/apis/oauth2/v2/rest": "oauth2_v2.discovery.json",
+}
+
+
 def _served() -> dict[str, Any]:
     return {
         DIRECTORY_URL: json.loads((FIXTURES / "google_directory.json").read_text()),
-        GMAIL_URL: json.loads((FIXTURES / "gmail_v1.discovery.json").read_text()),
-        DRIVE_URL: json.loads((FIXTURES / "drive_v3.discovery.json").read_text()),
+        **{url: json.loads((FIXTURES / name).read_text()) for url, name in _DOCUMENTS.items()},
     }
 
 
@@ -143,15 +155,35 @@ def test_a_discovery_document_becomes_absolute_typed_operations() -> None:
 @pytest.mark.parametrize(
     ("url", "named"),
     [
-        ("https://gmail.googleapis.com/gmail/v1/users/me/threads", ("gmail", "v1")),
-        ("https://www.googleapis.com/drive/v3/files/{id}/export", ("drive", "v3")),
-        ("https://www.googleapis.com/upload/drive/v3/files", ("drive", "v3")),
-        ("https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{r}", ("sheets", "v4")),
+        (
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads",
+            UrlApi("gmail", ("gmail_v1", "v1"), dedicated_host=True),
+        ),
+        (
+            "https://www.googleapis.com/drive/v3/files/{id}/export",
+            UrlApi("drive", ("v3",), dedicated_host=False),
+        ),
+        ("https://www.googleapis.com/upload/drive/v3/files", UrlApi("drive", ("v3",), False)),
+        (
+            "https://www.googleapis.com/resumable/upload/drive/v3/files",
+            UrlApi("drive", ("v3",), False),
+        ),
+        (
+            "https://sheets.googleapis.com/v4/spreadsheets/{id}/values/{r}",
+            UrlApi("sheets", ("v4",), True),
+        ),
+        # The directory lists Admin SDK Directory as `directory_v1`.
+        (
+            "https://admin.googleapis.com/admin/directory/v1/users",
+            UrlApi("admin", ("directory_v1", "v1"), True),
+        ),
+        ("https://www.googleapis.com/oauth2/v3/userinfo", UrlApi("oauth2", ("v3",), False)),
+        ("https://oauth2.googleapis.com/token", UrlApi("oauth2", (), True)),
         ("https://api.hubapi.com/crm/v3/objects", None),
         ("{?}/threads", None),
     ],
 )
-def test_a_google_url_names_its_api_and_version(url: str, named: Any) -> None:
+def test_a_google_url_names_its_api_and_candidate_versions(url: str, named: Any) -> None:
     assert api_for_url(url) == named
 
 
@@ -434,3 +466,300 @@ def test_the_client_librarys_media_variants_are_real_operations(
         ("drive.files.export", "ok"),
         ("drive.files.get", "ok"),
     ]
+
+
+# ───────── Correct Google code passes (review6's false positives) ─────────
+
+#: Each shape a correct compile writes that the check used to refuse.
+CORRECT_GOOGLE = """
+import io
+
+import httpx
+import requests
+from google.auth.transport.requests import AuthorizedSession
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from httpx import Client
+from requests import get as requests_get
+
+SHEETS = "https://sheets.googleapis.com/v4/spreadsheets"
+
+
+def list_pages(folder):
+    drive = build("drive", "v3")
+    request = drive.files().list(q=f"'{folder}' in parents", pageSize=100)
+    names = []
+    while request is not None:
+        page = request.execute()
+        names += [f["name"] for f in page.get("files", [])]
+        request = drive.files().list_next(request, page)
+    return names
+
+
+def upload_with_client(data):
+    drive = build("drive", "v3")
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype="text/csv")
+    created = drive.files().create(
+        body={"name": "report.csv", "mimeType": "text/csv"}, media_body=media, fields="id"
+    ).execute()
+    return created["id"]
+
+
+def upload_over_http(data, token):
+    response = httpx.post(
+        "https://www.googleapis.com/upload/drive/v3/files",
+        params={"uploadType": "media"},
+        headers={"Authorization": f"Bearer {token}"},
+        content=data,
+    )
+    return response.json()["id"]
+
+
+def append_rows(sid, rng, rows):
+    r = httpx.post(
+        f"{SHEETS}/{sid}/values/{rng}:append",
+        params={"valueInputOption": "RAW"},
+        json={"values": rows},
+    )
+    return r.json()["updates"]["updatedRows"]
+
+
+def batch_update(sid, reqs):
+    return httpx.post(f"{SHEETS}/{sid}:batchUpdate", json={"requests": reqs}).json()["replies"]
+
+
+def directory_users():
+    return requests.get(
+        "https://admin.googleapis.com/admin/directory/v1/users",
+        params={"customer": "my_customer", "maxResults": 100},
+    ).json()["users"]
+
+
+def userinfo_v2(token):
+    return httpx.get("https://www.googleapis.com/oauth2/v2/userinfo").json()["email"]
+
+
+def person(token):
+    body = httpx.get(
+        "https://people.googleapis.com/v1/people/me", params={"personFields": "names"}
+    ).json()
+    return body["names"]
+
+
+def connections():
+    return httpx.get(
+        "https://people.googleapis.com/v1/people/me/connections",
+        params={"personFields": "names", "pageSize": 100},
+    ).json()["connections"]
+
+
+def person_with_client():
+    people = build("people", "v1")
+    return people.people().get(resourceName="people/me", personFields="names").execute()["names"]
+
+
+def authorized_session(creds):
+    session = AuthorizedSession(creds)
+    threads = session.get(
+        "https://gmail.googleapis.com/gmail/v1/users/me/threads", params={"q": "label:x"}
+    ).json()
+    return threads["threads"]
+
+
+def imported_client():
+    with Client() as c:
+        return c.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/threads", params={"q": "x"}
+        ).json()["resultSizeEstimate"]
+
+
+def imported_function():
+    return requests_get(
+        "https://www.googleapis.com/drive/v3/files", params={"q": "trashed = false"}
+    ).json()["files"]
+"""
+
+_CORRECT_OPS = [
+    "drive.files.list",
+    "drive.files.list",  # list_next is the next page of the same list call
+    "drive.files.create",
+    "drive.files.create",  # the upload URL is the same operation
+    "sheets.spreadsheets.values.append",
+    "sheets.spreadsheets.batchUpdate",
+    "directory.users.list",
+    "oauth2.userinfo.get",
+    "people.people.get",
+    "people.people.connections.list",
+    "people.people.get",
+    "gmail.users.threads.list",
+    "gmail.users.threads.list",
+    "drive.files.list",
+]
+
+
+def test_correct_google_code_of_every_shape_passes(tmp_path: Path, store: SpecStore) -> None:
+    root = _deliverable(tmp_path, CORRECT_GOOGLE)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, c.status) for c in checks] == [(op, "ok") for op in _CORRECT_OPS], [
+        f.message for c in checks for f in c.findings
+    ]
+
+
+def test_an_endpoint_discovery_does_not_describe_is_not_checked_not_failed(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    """OAuth2 v3's userinfo is a real OpenID endpoint Discovery lists no
+    document for: unresolved, on a shared host, rather than a wrong version."""
+    module = """
+    import httpx
+
+    def userinfo(token):
+        return httpx.get("https://www.googleapis.com/oauth2/v3/userinfo").json()["email"]
+    """
+    root = _deliverable(tmp_path, module)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert (check.status, check.findings) == ("unresolved", [])
+    assert "describes no oauth2 v3" in (check.note or "")
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "kind"),
+    [
+        # Each correct shape, broken once: the checks still bite.
+        ('f["name"]', 'f["title"]', "spec_unknown_response_field"),
+        (
+            "drive.files().list(q=f\"'{folder}' in parents\", pageSize=100)",
+            "drive.files().list(q=f\"'{folder}' in parents\", pageSize=100, media_body=1)",
+            "spec_unknown_param",
+        ),
+        ('created["id"]', 'created["fileId"]', "spec_unknown_response_field"),
+        ("/upload/drive/v3/files", "/upload/drive/v3/filez", "spec_unknown_operation"),
+        ('{"uploadType": "media"}', '{"upload": "media"}', "spec_unknown_param"),
+        ('{rng}:append"', '{rng}:appendRows"', "spec_unknown_operation"),
+        ('["updatedRows"]', '["rowsUpdated"]', "spec_unknown_response_field"),
+        ('{"requests": reqs}', '{"request": reqs}', "spec_unknown_body_field"),
+        ('"maxResults": 100}', '"maxResults": "lots"}', "spec_param_value"),
+        ('.json()["users"]', '.json()["members"]', "spec_unknown_response_field"),
+        ('["email"]', '["mail"]', "spec_unknown_response_field"),
+        ('{"personFields": "names"}', '{"fields_of_person": "names"}', "spec_unknown_param"),
+        ('"pageSize": 100}', '"page_size": 100}', "spec_unknown_param"),
+        (
+            'personFields="names").execute()["names"]',
+            'personFields="names").execute()["nom"]',
+            "spec_unknown_response_field",
+        ),
+        ('params={"q": "label:x"}', 'params={"query": "label:x"}', "spec_unknown_param"),
+        ('params={"q": "x"}', 'params={"search": "x"}', "spec_unknown_param"),
+        (
+            'params={"q": "trashed = false"}',
+            'params={"filter": "trashed = false"}',
+            "spec_unknown_param",
+        ),
+    ],
+)
+def test_every_correct_shape_still_catches_its_own_mistake(
+    tmp_path: Path, store: SpecStore, old: str, new: str, kind: str
+) -> None:
+    assert CORRECT_GOOGLE.count(old) == 1, old
+    root = _deliverable(tmp_path, CORRECT_GOOGLE.replace(old, new))
+    assert _kinds(root, store) == [kind]
+
+
+def test_the_most_specific_operation_wins_and_binds_every_path_parameter() -> None:
+    from rote.vendor_specs.check import best_operation, match_path
+
+    people = from_discovery(json.loads((FIXTURES / "people_v1.discovery.json").read_text()), "u")
+    op, bound = best_operation(
+        people.operations, "GET", "https://people.googleapis.com/v1/people/me/connections"
+    )
+    assert op is not None and op.id == "people.people.connections.list"
+    assert bound == {"resourceName": "people/me"}
+    op, bound = best_operation(
+        people.operations, "PATCH", "https://people.googleapis.com/v1/people/c1:updateContact"
+    )
+    assert op is not None and op.id == "people.people.updateContact"
+    assert bound == {"resourceName": "people/c1"}
+    assert match_path(
+        ["v4", "spreadsheets", "{spreadsheetId}:batchUpdate"],
+        ["v4", "spreadsheets", "S:batchUpdate"],
+    ) == {"spreadsheetId": "S"}
+    assert match_path(["v1", "{+name}"], ["v1"]) is None
+    assert match_path(["files", "{fileId}"], ["files", "a", "b"]) is None
+
+
+_GMAIL_THREADS = "https://gmail.googleapis.com/gmail/v1/users/me/threads"
+_DRIVE_FILE = "https://www.googleapis.com/drive/v3/files/F1"
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        # Query parameters written into the URL are checked like params=.
+        (f'httpx.get("{_GMAIL_THREADS}?q=x&maxResults=lots")', ["spec_param_value"]),
+        (f'httpx.get("{_GMAIL_THREADS}?query=x")', ["spec_unknown_param"]),
+        (f'httpx.get("{_GMAIL_THREADS}?q=x&maxResults=5")', []),
+        # A path parameter is not a query parameter.
+        (f'httpx.get("{_GMAIL_THREADS}", params={{"userId": "me"}})', ["spec_unknown_param"]),
+        # Booleans are booleans.
+        (
+            f'httpx.get("{_GMAIL_THREADS}", params={{"includeSpamTrash": "yes"}})',
+            ["spec_param_value"],
+        ),
+        (f'httpx.get("{_GMAIL_THREADS}", params={{"includeSpamTrash": True}})', []),
+        # alt=media returns the file's bytes: no JSON fields to read.
+        (
+            f'httpx.get("{_DRIVE_FILE}", params={{"alt": "media"}}).json()["name"]',
+            ["spec_unknown_response_field"],
+        ),
+        (f'httpx.get("{_DRIVE_FILE}").json()["name"]', []),
+        # Arguments spread from a dict the AST cannot see may hold the
+        # required one: not reported missing.
+        ('httpx.get("https://www.googleapis.com/drive/v3/files/F1/export", **opts)', []),
+        (
+            'httpx.get("https://www.googleapis.com/drive/v3/files/F1/export")',
+            ["spec_missing_required"],
+        ),
+        ('build("drive", "v3").files().export(fileId="F1", **opts).execute()', []),
+        (
+            'httpx.get("https://www.googleapis.com/drive/v3/files/F1/export", '
+            'params={"fields": "x", **opts})',
+            [],
+        ),
+        ('build("drive", "v3").files().export(fileId="F1").execute()', ["spec_missing_required"]),
+        # list_next's keyword form takes the previous request, not parameters.
+        (
+            'build("drive", "v3").files().list_next(previous_request=r, previous_response=p)',
+            [],
+        ),
+        # A client built inline is a client.
+        (
+            f'httpx.Client().get("{_GMAIL_THREADS}", params={{"query": "x"}})',
+            ["spec_unknown_param"],
+        ),
+    ],
+)
+def test_every_rule_has_a_case(
+    tmp_path: Path, store: SpecStore, body: str, kinds: list[str]
+) -> None:
+    module = f"""
+    import httpx
+    from googleapiclient.discovery import build
+
+    def fetch_emails(opts, r, p):
+        return {body}
+    """
+    root = _deliverable(tmp_path, module)
+    assert _kinds(root, store) == kinds
+
+
+def test_a_read_through_an_or_default_is_followed(tmp_path: Path, store: SpecStore) -> None:
+    module = f"""
+    import httpx
+
+    def fetch_emails():
+        body = httpx.get("{_GMAIL_THREADS}").json()
+        threads = body.get("threads") or []
+        return [t["subject"] for t in threads]
+    """
+    root = _deliverable(tmp_path, module)
+    assert _kinds(root, store) == ["spec_unknown_response_field"]
