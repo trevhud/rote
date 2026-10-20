@@ -9,6 +9,7 @@ local-only System-1 flags.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ import pytest
 from rote import cli
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import CompilerDriver, DriverResult
+from rote.ir import load_pipeline
 
 REPO = Path(__file__).resolve().parents[1]
 EXAMPLES = REPO / "examples"
@@ -168,3 +170,55 @@ def test_cloud_mode_rejects_the_local_system1_flags() -> None:
     ):
         message = cli._reject_local_only_cloud_flags(_parsed(["compile", "s", *flags]))
         assert message is not None and message.startswith(f"rote compile: {named} runs locally")
+
+
+def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> None:
+    """The legacy `signature` path emits only on Python runtimes; System-1's
+    deliverable must emit everywhere, so a judge without a spec is an error."""
+    from rote.compiler import system1
+    from rote.compiler.verify import verify_deliverable
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    judges = [n for n in load_pipeline(work / "pipeline.yaml").nodes if n.kind.value == "llm_judge"]
+    assert judges and all(j.signature_spec is None for j in judges)
+
+    def missing(portable: bool) -> set[str]:
+        v = verify_deliverable(work, run_tests=False, portable_judges=portable)
+        return {f.node_id for f in v.findings if f.kind == "missing_signature_spec"}
+
+    assert missing(True) == {j.id for j in judges}
+    assert missing(False) == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("system1", "flagged"), [(None, True), (False, False)])
+async def test_the_compiler_checks_judge_specs_on_the_system1_path_only(
+    system1: bool | None, flagged: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[bool] = []
+    import rote.compiler as compiler_mod
+
+    real = compiler_mod.verify_deliverable
+
+    def spy(*a: Any, **kw: Any) -> Any:
+        seen.append(kw.get("portable_judges", False))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(compiler_mod, "verify_deliverable", spy)
+
+    class _Writes(_RubricSpy):
+        async def run(
+            self, skill_dir: Path, compiler_skill_dir: Path, work_dir: Path, **kw: Any
+        ) -> DriverResult:  # noqa: E501
+            if not (work_dir / "pipeline.yaml").is_file():
+                shutil.copy(EXAMPLES / "expense-audit" / "expected" / "pipeline.yaml", work_dir)
+            return DriverResult(work_dir / "pipeline.yaml", work_dir, self.name, {})
+
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _Writes())
+    with contextlib.suppress(CompilerError):
+        await Compiler(system1=system1, run_generated_tests=False).compile(
+            _skill(tmp_path), tmp_path / "out"
+        )
+    assert seen and set(seen) == {flagged}

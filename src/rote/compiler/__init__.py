@@ -578,7 +578,11 @@ class Compiler:
                     None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
                 )
                 run_kwargs["repair"] = self._deliverable_repairer(
-                    base_dir, skill_dir, before_verify=settle_round, grounding=grounding
+                    base_dir,
+                    skill_dir,
+                    before_verify=settle_round,
+                    grounding=grounding,
+                    portable_judges=s1_plan is not None,
                 )
 
             try:
@@ -651,6 +655,7 @@ class Compiler:
                 emit_target=self.emit_target,
                 strict_provenance=self.strict_provenance,
                 grounding=grounding,
+                portable_judges=s1_plan is not None,
             )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
@@ -802,6 +807,7 @@ class Compiler:
         skill_dir: Path,
         before_verify: Callable[[Path], object] | None = None,
         grounding: Grounding | None = None,
+        portable_judges: bool = False,
     ) -> Callable[[Path], str | None]:
         """A repair callback for drivers that can resume their conversation.
 
@@ -840,6 +846,7 @@ class Compiler:
                 emit_target=self.emit_target,
                 strict_provenance=self.strict_provenance,
                 grounding=grounding,
+                portable_judges=portable_judges,
             )
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
