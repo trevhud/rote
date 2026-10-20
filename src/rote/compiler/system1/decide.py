@@ -764,43 +764,75 @@ def unsure_units(skill: SkillParse, segments: Mapping[int, list[Segment]]) -> li
     ]
 
 
-def infeasible_kinds(u: Unit, registry: Mapping[str, str] | None = None) -> dict[str, str]:
+def infeasible_kinds(
+    u: Unit,
+    registry: Mapping[str, str] | None = None,
+    tools: Collection[tuple[str, str]] = (),
+) -> dict[str, str]:
     """Kinds this step cannot be, whoever proposes them, with the rule why.
 
     These are the rules that are constraints, not guesses: a model deciding
     an unsure step (the tie-break) may pick any other kind, never these. A
     real expense-audit compile shows why: the tie-break made "save it to the
     finance shared folder" an external_call, the agent could only write a
-    stub for a system the skill never names, and every run died there.
+    stub for a system the skill never declares, and every run died there.
 
-    Deliberately narrow: only a step that writes, reads nothing, and names no
-    target anywhere (no system, proper noun, tool code span, HTTP path or
-    file path). A step that names one may still be a call.
+    Grounded in what is declared, not in phrasing: an external_call is
+    possible only when something can perform it (:func:`declares_a_system`).
+    "Email the summary" and "notify the owner by email" are treated alike:
+    both are calls when the skill or a registered server offers an email
+    tool, and neither is when nothing does.
     """
-    out: dict[str, str] = {}
-    writes = any(SIGNALS["write"].search(x) for x in (u.title, u.text))
-    if (
-        writes
-        and not u.signals.get("fetch")
-        and not _names_a_system(u, registry)
-        and not _CALL_TARGET.search(u.text)
-        and not any(
-            m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(u.text)
+    if declares_a_system(u, registry, tools):
+        return {}
+    return {
+        "external_call": (
+            "no declared system can perform it (no MCP server or tool the skill or "
+            "the registry declares, and no named API), so its result is the "
+            "pipeline's output"
         )
-    ):
-        out["external_call"] = (
-            "the step writes to no named system, so its result is the pipeline's output"
-        )
-    return out
+    }
 
 
-#: A capitalized word inside a sentence (a sentence's first word says nothing).
-_MID_SENTENCE_NAME = re.compile(r"(?<=[a-z0-9,] )(?-i:[A-Z][A-Za-z0-9]+)")
-#: A call target that is not a proper noun: a tool name in a code span
-#: (`update_incident`), an HTTP verb with a path, or an absolute or home path.
-_CALL_TARGET = re.compile(
-    r"`[a-z][a-z0-9]*(?:_[a-z0-9]+)+`|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/|(?<![\w.])[~/][\w.-]*/"
-)
+_CODE_SPAN = re.compile(r"`([a-z][a-z0-9]*_[a-z0-9_]+)`")
+#: The first word of a tool name that makes a code span a tool call.
+_CALL_VERBS = _TOOL_VERBS | _WRITE_VERBS | {"append", "insert"}
+#: A named API: a URL, or an HTTP verb with a path.
+_NAMED_API = re.compile(r"https?://\S+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
+
+
+def declares_a_system(
+    u: Unit,
+    registry: Mapping[str, str] | None = None,
+    tools: Collection[tuple[str, str]] = (),
+) -> bool:
+    """Whether a declared system could perform this step.
+
+    Declared means one of: an MCP server or tool the step names (the parser's
+    ``mcp`` and ``tools``); a tool from the skill's tool tables or a
+    registered server's ``tools/list`` (``registry``, ``tools``) whose name
+    the step uses, or whose server it names; a write tool whose object the
+    step names (:func:`_registry_tool_for`); or a named API (a URL, an HTTP
+    verb with a path).
+    """
+    if u.mcp or u.tools or _NAMED_API.search(u.text):
+        return True
+    # A tool the step names in code, verb first (`update_incident`), is a
+    # tool the skill declares even outside a tool table.
+    for span in _CODE_SPAN.findall(u.text):
+        if span.split("_", 1)[0] in _CALL_VERBS:
+            return True
+    text = f"{u.title}\n{u.text}"
+    words = set(slug(text).split("_"))
+    reg = dict(registry or {})
+    names = set(reg) | {t for _, t in tools}
+    if any(name.lower() in text.lower() for name in names if name):
+        return True
+    servers = set(reg.values()) | {s for s, _ in tools}
+    if any(set(slug(server).split("_")) <= words for server in servers if server):
+        return True
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", u.text)
+    return bool(reg) and any(_registry_tool_for(x, reg) for x in sentences)
 
 
 def role_of_kind(kind: str) -> str:

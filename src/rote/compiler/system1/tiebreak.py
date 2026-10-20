@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -255,7 +255,10 @@ def _parse(payload: dict[str, Any], asked: list[int]) -> dict[int, list[Segment]
 
 
 def _constrain(
-    skill: SkillParse, answer: dict[int, list[Segment]], result: TieBreak
+    skill: SkillParse,
+    answer: dict[int, list[Segment]],
+    result: TieBreak,
+    tools: Collection[tuple[str, str]] = (),
 ) -> dict[int, list[Segment]]:
     """Drop every proposed node of a kind a rule forbids for its step
     (:func:`rote.compiler.system1.decide.infeasible_kinds`). A step left with
@@ -263,7 +266,7 @@ def _constrain(
     units = {u.index: u for u in skill.units}
     kept: dict[int, list[Segment]] = {}
     for step, segments in answer.items():
-        forbidden = infeasible_kinds(units[step], skill.tool_registry)
+        forbidden = infeasible_kinds(units[step], skill.tool_registry, tools)
         allowed = [seg for seg in segments if seg[1] not in forbidden]
         dropped = [f"{seg[1]}: {forbidden[seg[1]]}" for seg in segments if seg[1] in forbidden]
         if dropped:
@@ -281,6 +284,7 @@ def decide(
     lane: Lane,
     rubric_path: Path,
     call: Call | None = None,
+    tools: Collection[tuple[str, str]] = (),
 ) -> TieBreak:
     """Ask the model about ``unsure`` and return its node lists. One call."""
     asked = [u.index for u in unsure]
@@ -308,7 +312,7 @@ def decide(
         result.usage += [{"model": m, **u} for m, u in rows]
         parsed = _parse(payload, asked)
         if parsed is not None:
-            result.segments = _constrain(skill, parsed, result)
+            result.segments = _constrain(skill, parsed, result, tools)
             result.cost_usd = _cost(result.usage)
             return result
     raise TieBreakUnavailable(
