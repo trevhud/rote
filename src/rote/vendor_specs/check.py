@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from rote.contracts import ContractFinding
 from rote.ir import NodeKind, Pipeline
-from rote.vendor_specs import docs, google
+from rote.vendor_specs import docs, google, openapi
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
 from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of, path_segments
 from rote.vendor_specs.store import SpecStore, SpecUnavailable
@@ -119,6 +119,12 @@ def _check(
             host = host_of(site.url)
             if host is None:
                 return done("unresolved", note="the URL's host is built at run time")
+            published = openapi.REGISTRY.get(host)
+            if published is not None:
+                try:
+                    return _against(site, node_ids, rel, store.openapi(published), done)
+                except SpecUnavailable as e:
+                    return done("spec_unavailable", note=str(e))
             from_docs = next(
                 (
                     s

@@ -701,6 +701,11 @@ Violations are errors that go back to the agent. Three rules:
   time, a host with no spec source yet, or a spec service that is down
   shows in the report as "not checked: <why>". An unreachable spec must
   never fail a paid compile.
+- **OpenAPI comes from a curated registry of vendor-published documents**
+  (`rote.vendor_specs.openapi.REGISTRY`, host -> URL), never from a
+  community directory: APIs.guru's Slack entry is an archived 2021 spec.
+  A vendor's own spec outranks a docs spec the compile wrote for the same
+  host. Add a vendor by fetching and parsing its document first.
 - **Where no spec exists, the agent writes one, from fetched pages.**
   `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
   becomes an `ApiSpec` with `source="docs"`, checked the same way and

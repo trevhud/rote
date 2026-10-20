@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from rote.vendor_specs import docs
+from rote.vendor_specs import docs, openapi
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixture_store import FixtureStore
@@ -79,6 +79,9 @@ def specs_for(
         vendor, api, version = key.split("/")
         if key in written:
             out.append(written[key])
+            continue
+        if (published := openapi.by_key(key)) is not None:
+            out.append(store.openapi(published))
             continue
         if vendor != "google":
             raise HttpFixtureError(

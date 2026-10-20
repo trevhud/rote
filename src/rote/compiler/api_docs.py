@@ -82,7 +82,7 @@ def brief() -> str:
         "it left unconfirmed, rather than a call from memory. A page you cite "
         "but never fetched in this compile is sent back to you.\n"
         "5. Where the vendor publishes a machine-readable spec (Google APIs: the "
-        "Discovery document), rote checks every request against it in code: the "
+        "Discovery document; others: their OpenAPI document), rote checks every request against it in code: the "
         "method and path, each parameter's name, type and enum, the required "
         "parameters, and every response field the code reads. Write requests a "
         "static reader can follow: literal URLs or module constants, and params "

@@ -19,3 +19,8 @@ value is the vendor's own:
 
 The directory fixture lists the APIs above plus `admin reports_v1`, so the
 Admin URL resolution has a version to choose against.
+
+`clinicaltrials_v2.openapi.json` is the official ClinicalTrials.gov OpenAPI
+document (https://clinicaltrials.gov/api/oas/v2, info.version 2.0.5),
+fetched 2026-10-20 and trimmed to the `/studies` and `/studies/{nctId}`
+paths and the components they reach. Every value is the vendor's own.

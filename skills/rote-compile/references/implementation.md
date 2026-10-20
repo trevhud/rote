@@ -198,7 +198,7 @@ this compile targets `--backend api`. Now you are expected to write
 
    **The vendor's spec is checked in code.** Where the vendor publishes a
    machine-readable spec (every Google API publishes a Discovery
-   document), rote reads each request your module makes (`httpx` /
+   document; Stripe, GitHub and ClinicalTrials.gov publish OpenAPI), rote reads each request your module makes (`httpx` /
    `requests` calls, and Google's client library `build(...)` chains) and
    checks it against the spec: method and path, every parameter's name,
    type and enum, the required parameters, the request body's fields, and
