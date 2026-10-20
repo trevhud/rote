@@ -314,6 +314,35 @@ def test_a_sample_gate_finds_its_gate_by_signal_then_by_keys_not_by_order(
     assert finding.node_id == "second" and "Declare approved_ids" in finding.message
 
 
+def test_the_signal_name_beats_a_bigger_key_overlap(tmp_path: Path) -> None:
+    """The gate named by the sample's signal is the one checked, even when
+    another gate happens to declare more of the sample's keys."""
+    ir = """\
+name: two
+input:
+  type: In
+nodes:
+  - id: decoy
+    kind: hitl_gate
+    description: another gate with overlapping keys
+    output: {reviewer: str, approved_ids: list}
+    signal: something_else
+  - id: review
+    kind: hitl_gate
+    description: the gate the sample answers
+    output: {reviewer: str}
+    signal: controller_review
+edges:
+  - {from: decoy, to: review}
+entry_nodes: [decoy]
+exit_nodes: [review]
+"""
+    root = _write(tmp_path, {"pipeline.yaml": ir})
+    sample = _sample({}, gates={"controller_review": {"reviewer": "a", "approved_ids": []}})
+    [finding] = gate_findings(_pipeline(root), None, sample)
+    assert finding.node_id == "review" and "Declare approved_ids" in finding.message
+
+
 def test_bold_choice_options_are_not_payload_keys(tmp_path: Path) -> None:
     skill = _write(
         tmp_path / "skill",
@@ -880,10 +909,17 @@ def test_the_bench_sample_shares_the_cases_keys_and_none_of_their_values(example
     from rote.bench.fidelity import load_cases
 
     sample = load_sample(REPO / "examples" / example / "sample.json")
-    cases = load_cases(REPO / "examples" / example).cases
+    casefile = load_cases(REPO / "examples" / example)
+    cases = casefile.cases
     case_values: set[object] = set()
     for case in cases:
         case_values |= _leaves(case.input) | _leaves(case.gates)
+    # The answers too: a sample value equal to a total the skill computed
+    # on a case would hand the compile that case's expected output.
+    reference = json.loads(casefile.reference_path.read_text(encoding="utf-8"))
+    for recorded in reference["cases"].values():
+        for run in recorded["runs"]:
+            case_values |= _leaves(run.get("output"))
     shared = (_leaves(sample.payload) | _leaves(list(sample.gates.values()))) & case_values
     assert shared <= _SHARED_VOCABULARY, f"fidelity case values in the sample: {shared}"
     # Same contract: every key the cases use, input and gates alike.
