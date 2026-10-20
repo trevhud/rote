@@ -709,3 +709,29 @@ def test_the_call_uses_the_lanes_own_client(
     work.mkdir()
     system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("api", lent), rubric=RUBRIC)
     assert stub.calls[0]["sdk_client"] is lent and stub.calls[0]["provider"] == "api"
+
+
+@pytest.mark.asyncio
+async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex driver, no Anthropic key, no claude CLI: the default tie-break
+    cannot run. The compile stops before the decider and the agent spend."""
+    from rote.compiler.system1 import decision_model
+
+    class _Codex:
+        name = "codex"
+
+        async def run(self, **kwargs: object) -> object:
+            raise AssertionError("the agent ran although the tie-break could not")
+
+    def no_decider(*a: Any, **kw: Any) -> Any:
+        raise AssertionError("the decider was called although the tie-break could not run")
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(tb.shutil, "which", lambda name: None)
+    monkeypatch.setattr(decision_model, "decide", no_decider)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _Codex())
+    with pytest.raises(CompilerError, match=r"under the 'codex' driver.*--tiebreak none"):
+        await Compiler(system1_decider="clef").compile(_skill(tmp_path), tmp_path / "out")
