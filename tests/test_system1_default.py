@@ -546,3 +546,109 @@ def test_a_spec_written_into_pipeline_yaml_keeps_the_decided_inputs(tmp_path: Pa
     ).signature_spec
     assert merged is not None and merged.input_schema == decided
     assert merged.prompt == "Decide from {{ request }}."
+
+
+def test_a_judge_input_schema_with_its_own_names_is_replaced(tmp_path: Path) -> None:
+    """The cloud failure: the agent named a judge's inputs `ticket` and
+    `deadline_hours`; the node's inputs were `request` and an upstream node.
+    The IR rejected it after the agent's last stop."""
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judges = [n for n in doc["nodes"] if n["kind"] == "llm_judge"]
+    own_names = {
+        "type": "object",
+        "properties": {"ticket": {"type": "object"}, "deadline_hours": {"type": "number"}},
+        "required": ["ticket", "deadline_hours"],
+    }
+    typed = {j["id"]: dict(j["signature_spec"]["input_schema"]) for j in judges}
+    first, second = judges[0]["id"], judges[1]["id"]
+    # The second judge types its own inputs more precisely: that is kept.
+    typed[second]["properties"] = {
+        k: {"type": "string"} if k == "request" else v
+        for k, v in typed[second]["properties"].items()
+    }
+    out_schema = {"type": "object", "properties": {"v": {"type": "string"}}}
+    text = {
+        first: {
+            "signature_spec": {
+                "input_schema": own_names,
+                "prompt": "p",
+                "output_schema": out_schema,
+            }
+        },
+        second: {
+            "signature_spec": {
+                "input_schema": typed[second],
+                "prompt": "p",
+                "output_schema": out_schema,
+            }
+        },
+    }
+    (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
+    changes = enforce(work, final=True)
+    pipeline = load_pipeline(work / "pipeline.yaml")  # validates: judge inputs vs schema
+    by_id = {n.id: n for n in pipeline.nodes}
+    kept = by_id[first].signature_spec
+    assert kept is not None and set(kept.input_schema["properties"]) == set(by_id[first].inputs)
+    assert any(f"`{first}` signature_spec.input_schema" in c for c in changes)
+    assert by_id[second].signature_spec.input_schema == typed[second]  # type: ignore[union-attr]
+    assert not any(f"`{second}` signature_spec.input_schema" in c for c in changes)
+
+
+def test_a_system1_validation_repair_points_at_text_yaml(tmp_path: Path) -> None:
+    from rote.compiler import SYSTEM1_REPAIR_NOTE, system1
+
+    work = tmp_path / "work"
+    work.mkdir()
+
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    (work / "pipeline.yaml").write_text("not: [a pipeline\n")
+    compiler = Compiler(run_generated_tests=False, system1_tiebreak="none")
+    repair = compiler._deliverable_repairer(
+        None,
+        EXAMPLES / "deal-monitor" / "skill",
+        before_verify=lambda d: None,
+        portable_judges=True,
+    )
+    instruction = repair(work / "pipeline.yaml")
+    assert instruction is not None and "fails IR validation" in instruction
+    assert instruction.endswith(SYSTEM1_REPAIR_NOTE)
+    plain = Compiler(run_generated_tests=False)._deliverable_repairer(
+        None, EXAMPLES / "deal-monitor" / "skill"
+    )(work / "pipeline.yaml")
+    assert plain is not None and SYSTEM1_REPAIR_NOTE not in plain
+
+
+@pytest.mark.parametrize("bad", ["extra_property", "requires_a_stranger"])
+def test_an_input_schema_must_name_exactly_the_inputs(bad: str, tmp_path: Path) -> None:
+    import yaml
+
+    from rote.compiler import system1
+    from rote.compiler.system1.enforce import enforce
+
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    judge = next(n for n in doc["nodes"] if n["kind"] == "llm_judge")
+    schema = dict(judge["signature_spec"]["input_schema"])
+    decided = dict(schema)
+    if bad == "extra_property":
+        schema["properties"] = {**schema["properties"], "ticket": {"type": "object"}}
+    else:
+        schema["required"] = [*schema["required"], "ticket"]
+    (work / "system1" / "text.yaml").write_text(
+        yaml.safe_dump({judge["id"]: {"signature_spec": {"input_schema": schema}}})
+    )
+    changes = enforce(work, final=True)
+    merged = yaml.safe_load((work / "pipeline.yaml").read_text())
+    node = next(n for n in merged["nodes"] if n["id"] == judge["id"])
+    assert node["signature_spec"]["input_schema"] == decided
+    assert any(f"`{judge['id']}` signature_spec.input_schema" in c for c in changes)
