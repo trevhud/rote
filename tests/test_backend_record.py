@@ -43,6 +43,7 @@ async def test_a_compile_records_its_backend(
     rubric.mkdir()
     (rubric / "SKILL.md").write_text("# rubric", encoding="utf-8")
     compiler = Compiler(
+        system1=False,  # a fake rubric
         compiler_skill_dir=rubric,
         emit_target=target,
         run_generated_tests=False,
