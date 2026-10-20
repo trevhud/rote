@@ -702,3 +702,31 @@ def test_a_gates_declared_payload_does_not_steer_its_match() -> None:
     )
     pairs = {m.expected_id: m.compiled_id for m in match_nodes(expected, compiled)}
     assert pairs["review"] == "aa_gate"
+
+
+@pytest.mark.parametrize(
+    ("metadata", "turns"),
+    [
+        # claude -p reports num_turns.
+        ({"num_turns": 37, "iterations": 99}, 37),
+        # The in-process drivers (api, openai-api) report the same count as
+        # iterations; the bench showed "-" for every openai-api compile.
+        ({"iterations": 23, "repair_rounds": 2}, 23),
+    ],
+)
+def test_turns_come_from_either_driver_shape(
+    tmp_path: Path, metadata: dict[str, int], turns: int
+) -> None:
+    from rote.bench.collect import collect_job
+
+    compiled = tmp_path / "compiled"
+    compiled.mkdir()
+    (compiled / "pipeline.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    (compiled / "compile-metrics.json").write_text(
+        json.dumps({"schema_version": 1, "driver": "x", "metadata": metadata}), encoding="utf-8"
+    )
+    job = collect_job(
+        tmp_path, tmp_path, BDR_PIPELINE_YAML, exit_code=1, wall_seconds=1.0, tsc=False
+    )
+    assert job["run"]["turns"] == turns
+    assert job["run"]["repair_rounds"] == metadata.get("repair_rounds")
