@@ -731,3 +731,27 @@ async def test_the_compile_verdict_fails_on_a_piece_that_never_passed(
     assert result.verification is not None and not result.verification.ok
     kinds = {(f.node_id, f.kind) for f in result.verification.errors}
     assert (node.id, "generation_check_failed") in kinds
+
+
+@pytest.mark.asyncio
+async def test_typed_judge_input_schemas_survive_settle(tmp_path: Path) -> None:
+    """enforce keeps a written input_schema only when its names are the node's
+    inputs keys: the producer-typed schemas the generator writes must pass."""
+    ctx, plan = _context(tmp_path, "deal-monitor")
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    await _write(ctx, plan, fake)
+    system1.settle(ctx.work_dir, plan, final=True)
+    pipeline = load_pipeline(ctx.work_dir / "pipeline.yaml")
+    judges = [n for n in pipeline.nodes if n.kind is NodeKind.LLM_JUDGE]
+    assert judges
+    written = yaml.safe_load((ctx.work_dir / "system1" / "text.yaml").read_text())
+    typed = 0
+    for node in judges:
+        assert node.signature_spec is not None
+        spec = written[node.id]["signature_spec"]
+        assert node.signature_spec.input_schema == spec["input_schema"]
+        assert node.signature_spec.output_schema == _schema_for(node)
+        typed += any(v.get("properties") for v in spec["input_schema"]["properties"].values())
+    assert typed  # at least one judge reads a producer typed by the interface
+    record = json.loads((ctx.work_dir / "system1" / "enforcement.json").read_text())
+    assert not [c for changes in record for c in changes if "input_schema" in c]
