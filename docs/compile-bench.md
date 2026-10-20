@@ -188,6 +188,40 @@ component with nothing to compare is left out):
 the table when `--fidelity` is on, with its judge cost under
 `fidelity_cost_usd`, apart from the compile cost.
 
+### Checking that the metric measures behavior
+
+The gold pipeline (expense-audit's hand-written `expected/`) and two
+broken copies, scored with `--fidelity-of`:
+
+| Pipeline | fidelity | base | second_batch | unknown_currency |
+| --- | --- | --- | --- | --- |
+| gold | 0.93 | 1.00 | 0.91 | 0.89 |
+| mandatory duplicate check dropped | 0.86 | 0.94 | 0.87 | 0.78 |
+| `duplicate_ids` and `late_ids` inputs swapped | 0.66 | 0.58 | 0.51 | 0.89 |
+| the pre-#144 baseline compile | 0.17 | 0.00 | 0.00 | 0.50 |
+
+Each break costs what it should: the dropped check loses the duplicate
+id and the review-queue ids, and the swap crashes the report (so it
+loses `outcome` too) except on the case that stops before the checks
+matter. The baseline compile renamed the pipeline input (`lines`,
+`fx_rates` instead of `period`, `submissions`), so it cannot run on the
+skill's own input at all. The structural score had the input recall at
+0.5 and nothing else alarming.
+
+The gold misses four fields on second_batch because the skill's own
+agent runs, three of three, file EXP-2410 (software over its cap) as a
+block, where the hand-written pipeline treats a cap breach as review. The
+reference is the skill as it runs, so that counts against the gold too.
+The base case shows the agent's other face: its three runs disagree on
+`reimbursable_usd` ($2,990.98, $2,414.34, $2,544.73), so that field is
+unstable there and not scored.
+
+Costs: recording the references took $6.01 once (expense-audit $4.51
+for 9 runs, ops-report $1.50 for 6). Per-compile fidelity on these two
+examples costs nothing, since neither compiled pipeline has a judge. A
+pipeline with judges pays for its judge calls, reported as
+`fidelity_cost_usd`.
+
 Coverage: expense-audit (3 cases, no MCP) and ops-report (2 cases, Drive
 and Gmail fixtures). invoice-push drives a browser, which a fixture
 server cannot stand in for. deal-monitor reads a second skill from the
@@ -209,7 +243,11 @@ usage limit after $2.19, and it was not re-run, to save money. The run
 spent $15.01 in all: $10.57 on the four scored compiles, plus $2.26
 (a deal-monitor attempt) and $2.19 (bdr-outreach), both killed by the
 usage limit. Those two are listed under `replaced_jobs`. It holds metrics
-only, no compiled outputs.
+only, no compiled outputs. It was rescored with `--fidelity` (no compile,
+no tokens): expense-audit 0.17 and ops-report 0.59. The ops-report compile
+reads every source right, then crashes because its gate wants
+`shipper_brand` in each dwell row where the duty manager's answer, worded
+as the skill words it, says `shipper`.
 
 Diff against it with `--compare`, or print it with
 `rote bench --report examples/bench/baseline.json`. When a change lands

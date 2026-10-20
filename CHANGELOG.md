@@ -10,6 +10,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **`rote bench --fidelity`: does the compiled pipeline behave like the
+  skill?** Each compiled pipeline runs on fixed cases (input, gate answers,
+  fixture MCP responses served by a local fastmcp server) and is scored
+  against the skill itself run as an agent on the same cases, several
+  times, counting only what every agent run agrees on: outputs matched by
+  value, outcome, reads, ordered side effects, and gate payload fit.
+  References are recorded once with `--record-reference`, and
+  `--fidelity-of DIR` scores any compiled dir. Cases and references ship
+  for expense-audit and ops-report. See `docs/compile-bench.md`.
 - **`rote bench`, a scored compile benchmark (dev tool, spends tokens).**
   It compiles the example skills, scores each `pipeline.yaml` against the
   hand-written `expected/pipeline.yaml` (node and kind match, edges, wave
