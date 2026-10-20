@@ -709,18 +709,46 @@ def _agent_envelope(**overrides: Any) -> str:
 
 
 def _capture_cli(
-    monkeypatch: pytest.MonkeyPatch, envelope: str, stderr: str = ""
+    monkeypatch: pytest.MonkeyPatch,
+    envelope: str,
+    stderr: str = "",
+    seen: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     monkeypatch.setattr(helper.shutil, "which", lambda _name: "/usr/bin/claude")
-    seen: dict[str, Any] = {}
+    seen = {} if seen is None else seen
 
     def _run(command: list[str], **kwargs: Any) -> Any:
+        if "--version" in command:
+            # The helper's zero-cost effort check; answered the way Claude
+            # Code 2.1.304 does (see _stub_cli for the real-process version).
+            level = command[command.index("--effort") + 1]
+            seen.setdefault("probes", []).append(level)
+            warning = "" if level in _CLI_LEVELS else _cli_effort_warning(level)
+            return types.SimpleNamespace(stdout="2.1.304 (Claude Code)\n", stderr=warning)
         seen["command"] = command
         seen["input"] = kwargs["input"]
         return types.SimpleNamespace(stdout=envelope, stderr=stderr, returncode=0)
 
     monkeypatch.setattr(helper.subprocess, "run", _run)
     return seen
+
+
+_CLI_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _cli_effort_warning(level: str) -> str:
+    return (
+        f"Warning: Unknown --effort value '{level}' — ignoring it and using the "
+        "default effort. Valid values: low, medium, high, xhigh, max.\n"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_effort_checks() -> Iterator[None]:
+    """The helper caches effort checks per process; each test starts clean."""
+    helper._CHECKED_EFFORTS.clear()
+    yield
+    helper._CHECKED_EFFORTS.clear()
 
 
 def test_agent_loop_cli_never_passes_a_bare_tools_flag(
@@ -1115,7 +1143,11 @@ def test_agent_loop_sdk_reports_turns_run_and_usage_of_every_turn(
 
 
 def _run_cli_path(
-    path: str, monkeypatch: pytest.MonkeyPatch, envelope: str, stderr: str = ""
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+    envelope: str,
+    stderr: str = "",
+    seen: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Drive one CLI path through the public entry point and capture argv."""
     if path == "agent_loop_with_servers":
@@ -1124,7 +1156,7 @@ def _run_cli_path(
         monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
     else:
         monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
-    seen = _capture_cli(monkeypatch, envelope, stderr)
+    seen = _capture_cli(monkeypatch, envelope, stderr, seen)
     if path == "judge":
         helper.call_judge(
             node_id="grade_essay",
@@ -1227,20 +1259,30 @@ def test_every_cli_path_passes_the_effort_knob(
 
 
 @pytest.mark.parametrize("path", _CLI_PATHS)
-def test_every_cli_path_refuses_an_effort_the_cli_ignored(
+def test_every_cli_path_refuses_an_unknown_level_before_paying_for_a_call(
     path: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``claude -p`` warns and runs at its default on an unknown level,
-    exit 0 (Claude Code 2.1.304). The SDK lanes 400 on the same value, so
-    the CLI lane must not quietly succeed."""
+    exit 0 (Claude Code 2.1.304), while the SDK lanes 400 on the same
+    value. The level is checked with a free ``--version`` call first."""
     _set_effort(monkeypatch, {"ROTE_JUDGE_EFFORT": "bogus"})
-    warning = (
-        "Warning: Unknown --effort value 'bogus' — ignoring it and using the "
-        "default effort. Valid values: low, medium, high, xhigh, max."
-    )
     envelope = _cli_envelope() if path == "judge" else _agent_envelope()
+    seen: dict[str, Any] = {}
     with pytest.raises(RuntimeError, match=r"Unknown --effort value 'bogus'"):
-        _run_cli_path(path, monkeypatch, envelope, stderr=warning)
+        _run_cli_path(path, monkeypatch, envelope, seen=seen)
+    assert seen["probes"] == [helper._EFFORT_PROBE, "bogus"]
+    assert "command" not in seen  # no paid call was made
+
+
+@pytest.mark.parametrize("path", _CLI_PATHS)
+def test_every_cli_path_refuses_a_run_that_says_it_ignored_its_effort(
+    path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's own stderr is the last word, whatever the pre-check said."""
+    _set_effort(monkeypatch, {"ROTE_JUDGE_EFFORT": "low"})
+    envelope = _cli_envelope() if path == "judge" else _agent_envelope()
+    with pytest.raises(RuntimeError, match=r"invalid effort 'low'"):
+        _run_cli_path(path, monkeypatch, envelope, stderr="error: invalid effort 'low'\n")
 
 
 @pytest.mark.parametrize("path", _CLI_PATHS)

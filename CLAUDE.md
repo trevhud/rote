@@ -745,9 +745,16 @@ loops on every lane, and an empty value omits it (the temperature knob's
 shape). On the `claude-cli` lane it is `claude -p --effort`, added by one
 function (`_cli_effort_flags`) to both the judge and the agent-loop
 command lines. The CLI does not fail on an unknown level: it warns on
-stderr and runs at its default, exit 0, so `_refuse_ignored_effort`
-reads that warning and raises; without it the knob is a silent no-op on
-a subscription while the SDK lanes 400. The default stays unset on
+stderr and runs at its default, exit 0. So before any paid call the
+helper asks the CLI itself with `claude --effort <level> --version`
+(free, ~50ms, validated before `--version` exits), once per process:
+first with a level nothing accepts, which must draw a warning rote
+recognizes (any line naming effort and saying unknown / invalid /
+unsupported), then with the real level, which must not. Never hardcode
+the level list in the helper; it goes stale. If a CLI release rewords
+the warning past recognition, the self-check fails loudly instead of
+letting every bad level through. Tested against a stub CLI
+(`tests/test_cli_effort_check.py`). The default stays unset on
 data: on 2026-10-20, 8 example judges x 6 inputs, `low` cut output tokens
 15% (sonnet-4-6) and 33% (sonnet-5-5) but changed decisions the default
 made the same way twice, including dropping an ARR stated in the input.
