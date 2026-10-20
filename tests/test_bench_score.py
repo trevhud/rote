@@ -361,3 +361,22 @@ def test_isolated_env_moves_every_state_path_the_suite_isolates(
         assert Path(env[key]).is_relative_to(tmp_path / "state"), key
     assert "ROTE_RUNTIME" not in env
     assert "ROTE_MODEL" not in env
+
+
+def test_results_are_portable(tmp_path: Path) -> None:
+    """A committed results.json must carry no local path: not the run dir,
+    not a checkout inside it, not the home directory."""
+    from rote.bench.runner import _replacements, portable
+
+    run = tmp_path / "run"
+    examples = run / "checkout" / "examples"
+    data = {
+        "argv": [f"{run}/expense-audit/r1/skill-src", "--out", str(run)],
+        "nested": [{"error": f"emit failed in {examples}/x and {Path.home()}/y"}],
+        "n": 3,
+    }
+    assert portable(data, _replacements(run, examples)) == {
+        "argv": ["<run>/expense-audit/r1/skill-src", "--out", "<run>"],
+        "nested": [{"error": "emit failed in <examples>/x and ~/y"}],
+        "n": 3,
+    }
