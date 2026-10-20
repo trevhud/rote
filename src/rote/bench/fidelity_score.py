@@ -28,6 +28,7 @@ import json
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from rote.bench.score import _tokens
@@ -47,22 +48,24 @@ def normalize(value: Any) -> Any:
     and an int and a float of the same amount are one value. Strings are
     case-folded with whitespace collapsed, and a string that is only a
     number (``"$1,234.50"``, ``"75%"``) becomes that number: an agent
-    writes amounts as text as often as not.
+    writes amounts as text as often as not. A ``Decimal`` (money code
+    returns them, and DBOS step outputs keep them) is a number like any
+    other, and any other non-JSON scalar (a date) is compared as its text.
     """
     if value is None or isinstance(value, bool):
         return value
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, Decimal)):
         return round(float(value), 2)
     if isinstance(value, str):
         m = _NUMBER_RE.match(value)
         if m:
             return round(float(m.group(1).replace(",", "")), 2)
         return _WS_RE.sub(" ", value.strip()).casefold()
-    return value
+    return normalize(str(value))
 
 
 def _is_scalar(value: Any) -> bool:
-    return value is None or isinstance(value, (bool, int, float, str))
+    return not isinstance(value, (dict, list, tuple, set))
 
 
 def _as_set(values: Iterable[Any]) -> dict[str, list[Any]]:
@@ -94,6 +97,38 @@ def flatten(obj: Any, prefix: str = "") -> dict[str, Value]:
                     out[f"{prefix}[].{key}"] = _as_set(column)
     else:
         out[prefix] = normalize(obj)
+    return out
+
+
+def layout_path(path: str) -> str:
+    """``path`` with the nesting between its contract field and its leaf removed.
+
+    ``report.kpi.active_sites`` and ``report.header.active_sites`` are the
+    same number laid out two ways; ``report.active_sites`` is what both
+    say. A record-list marker survives (``queue[].expense_id``), because a
+    column of a list is not the same thing as a single value.
+    """
+    parts = path.split(".")
+    if len(parts) <= 2:
+        return path
+    marker = "[]" if any(p.endswith("[]") for p in parts[:-1]) else ""
+    return f"{parts[0].removesuffix('[]')}{marker}.{parts[-1]}"
+
+
+def flatten_layout(obj: Any) -> dict[str, Value]:
+    """:func:`flatten`, keyed by :func:`layout_path`.
+
+    Two leaves that collapse onto one path merge into a set of their
+    values, so a run that repeats a total in two sections still agrees
+    with a run that reports it once.
+    """
+    merged: dict[str, list[Value]] = {}
+    for path, value in flatten(obj).items():
+        merged.setdefault(layout_path(path), []).append(value)
+    out: dict[str, Value] = {}
+    for path, values in merged.items():
+        unique = {_key(v): v for v in values}
+        out[path] = values[0] if len(unique) == 1 else {"set": [unique[k] for k in sorted(unique)]}
     return out
 
 
@@ -214,57 +249,107 @@ def _lcs(a: list[str], b: list[str]) -> int:
 # ───────── the reference ─────────
 
 
+#: Fewest successful agent runs a case needs before anything counts as
+#: stable. With one run, every field "agrees with itself", so the
+#: reference would look complete while measuring nothing about variance.
+MIN_REFERENCE_RUNS = 2
+
+#: A case whose stable contract coverage is below this is flagged: most of
+#: what the skill computes there is not being checked.
+LOW_COVERAGE = 0.5
+
+
+def _head(path: str) -> str:
+    return re.split(r"[.\[]", path, maxsplit=1)[0]
+
+
 def stable_reference(
-    runs: list[dict[str, Any]], contract: Iterable[str] | None = None
+    runs: list[dict[str, Any]],
+    contract: Iterable[str] | None = None,
+    min_runs: int = MIN_REFERENCE_RUNS,
 ) -> dict[str, Any]:
     """What every successful reference run agrees on.
 
     ``runs`` are ``{"output": {...} | None, "calls": [...], "error": ...}``.
-    Fields: a leaf counts when every successful run has it with one value.
-    Reads: calls (by :func:`call_key`) made in every run. Side effects:
-    the ordered sequence, when every run made the same one; otherwise
-    only the calls every run made, unordered. ``seen_calls`` is every call
-    any run made: a pipeline call outside it is one no agent run ever made.
+    Fields: a leaf counts when every successful run has it with one value,
+    compared under :func:`layout_path`, so the agent nesting the same
+    number differently in two runs is not a disagreement. Reads: calls (by
+    :func:`call_key`) made in every run. Side effects: the ordered
+    sequence, when every run made the same one; otherwise only the calls
+    every run made, unordered. ``seen_calls`` is every call any run made:
+    a pipeline call outside it is one no agent run ever made.
 
     ``contract`` limits fields to the output contract's top-level names: an
     agent that adds its own extra sections to result.json in one run
-    should not make the reference look unstable.
+    should not make the reference look unstable. Fewer than ``min_runs``
+    successful runs make nothing stable (``insufficient_runs``).
+
+    ``coverage`` says how much of the contract is checked: contract fields
+    with at least one stable leaf, out of all of them, and for the rest
+    whether the runs disagreed on the values, only on where they put them,
+    or left the field out.
     """
     ok = [r for r in runs if r.get("output") is not None and not r.get("error")]
-    keep = None if contract is None else set(contract)
+    keep = None if contract is None else list(dict.fromkeys(contract))
     flats = [
-        {
-            p: v
-            for p, v in flatten(r["output"]).items()
-            if keep is None or re.split(r"[.\[]", p, maxsplit=1)[0] in keep
-        }
+        {p: v for p, v in flatten_layout(r["output"]).items() if keep is None or _head(p) in keep}
         for r in ok
     ]
+    insufficient = len(ok) < min_runs
     stable: dict[str, Value] = {}
     unstable: list[str] = []
     for path in sorted({p for f in flats for p in f}):
         values = {_key(f.get(path, "<missing>")) for f in flats}
-        if len(values) == 1:  # a run missing the field contributes "<missing>"
+        if len(values) == 1 and not insufficient:  # a missing field adds "<missing>"
             stable[path] = flats[0][path]
         else:
             unstable.append(path)
+
+    fields = keep if keep is not None else sorted({_head(p) for f in flats for p in f})
+    covered = sorted({_head(p) for p in stable})
+    layout: list[str] = []
+    value: list[str] = []
+    missing: list[str] = []
+    for name in fields:
+        if name in covered or not flats:
+            continue
+        per_run = [{p: v for p, v in f.items() if _head(p) == name} for f in flats]
+        if any(not r for r in per_run):
+            missing.append(name)
+        elif len({tuple(sorted(_key(v) for v in r.values())) for r in per_run}) == 1:
+            layout.append(name)
+        else:
+            value.append(name)
+    rate = round(len(covered) / len(fields), 4) if fields else None
+    coverage = {
+        "fields": len(fields),
+        "covered": len(covered),
+        "rate": rate,
+        "low": rate is not None and rate < LOW_COVERAGE,
+        "uncovered_value_disagreements": value,
+        "uncovered_layout_disagreements": layout,
+        "uncovered_missing_in_some_runs": missing,
+    }
 
     def keys(run: dict[str, Any], side_effect: bool) -> list[str]:
         return [
             call_key(c) for c in run.get("calls", []) if bool(c.get("side_effect")) == side_effect
         ]
 
-    read_sets = [set(keys(r, False)) for r in ok]
-    effect_seqs = [keys(r, True) for r in ok]
+    counted = [] if insufficient else ok
+    read_sets = [set(keys(r, False)) for r in counted]
+    effect_seqs = [keys(r, True) for r in counted]
     ordered = len({tuple(s) for s in effect_seqs}) == 1
     effect_sets = [set(s) for s in effect_seqs]
     return {
         "runs": len(runs),
         "successful_runs": len(ok),
+        "insufficient_runs": insufficient,
+        "coverage": coverage,
         "fields": stable,
         "unstable_fields": unstable,
         "reads": sorted(set.intersection(*read_sets)) if read_sets else [],
-        "side_effects": effect_seqs[0] if ok and ordered else None,
+        "side_effects": effect_seqs[0] if counted and ordered else None,
         "side_effects_unordered": sorted(set.intersection(*effect_sets)) if effect_sets else [],
         "seen_calls": sorted({call_key(c) for r in ok for c in r.get("calls", [])}),
     }

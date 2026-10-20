@@ -199,7 +199,10 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
         "these fields (more are fine):\n"
         f"{fields}\n"
         "- `outcome`: `completed` if you ran the skill to its end, or `stopped` if "
-        "the skill told you to stop (say why in `stop_reason`)."
+        "the skill told you to stop (say why in `stop_reason`).\n"
+        "Write every field above, even when the skill stops first: a field the "
+        "run never got to compute is `null`, never a zero or an empty list you "
+        "did not derive."
     ]
     if case.gates:
         answers = case.gate_instructions or "\n".join(
@@ -411,6 +414,7 @@ def run_pipeline_case(
     return {
         "completed": run.error is None,
         "error": _last_line(run.error),
+        "failure": None if run.error is None else failure_site(app, pipeline, case.input),
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
@@ -419,6 +423,105 @@ def run_pipeline_case(
         "judge_usage": list(run.judge_usage),
         "wall_seconds": round(run.wall_seconds, 1),
     }
+
+
+#: Replays one node's implementation in a fresh interpreter (so the
+#: emitted app's ``extracted`` package never collides with another app's)
+#: and prints where it raised. Reads ``[impl, kwargs]`` as JSON on stdin.
+_REPLAY = """
+import importlib, json, sys, traceback
+impl, kwargs = json.load(sys.stdin)
+module, symbol = impl.split(":")
+fn = getattr(importlib.import_module(module.removesuffix(".py").replace("/", ".")), symbol)
+try:
+    fn(**kwargs)
+except Exception as e:
+    frames = [f for f in traceback.extract_tb(e.__traceback__) if "/extracted/" in f.filename]
+    site = frames[-1] if frames else None
+    print(json.dumps({
+        "exception": f"{type(e).__name__}: {e}"[:300],
+        "at": None if site is None else (
+            "extracted/" + site.filename.split("/extracted/")[1] + f":{site.lineno}"
+        ),
+        "code": None if site is None else site.line,
+    }))
+else:
+    print(json.dumps({"exception": None}))
+"""
+
+
+def failure_site(
+    app: Path, pipeline: Pipeline, case_input: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Which node a failed run died in, and the line of its code that raised.
+
+    The run's own error is a DBOS re-raise with the traceback gone (an
+    exception does not keep its frames across a durable step). The failing
+    node is the step DBOS recorded as an error; its inputs are rebuilt from
+    the outputs DBOS recorded for its upstream nodes, the gate payloads it
+    received, and the case input, and its implementation is called once
+    more to see where it raises. ``None`` when nothing can be replayed
+    (the run never started, or the failing node has no ``impl``).
+    """
+    from dbos import DBOSClient
+
+    from rote._dbos import dbos_system_database_url
+    from rote.ir import fan_out_element_param, parse_input_ref
+
+    try:
+        client = DBOSClient(system_database_url=dbos_system_database_url(app))
+    except Exception:  # noqa: BLE001 (no database: the run never started)
+        return None
+    by_id = {n.id: n for n in pipeline.nodes}
+    outputs: dict[str, Any] = {}
+    failed: str | None = None
+    gate_ids = iter(g.id for g in _gate_order(pipeline))
+    try:
+        for wf in client.list_workflows():
+            for step in client.list_workflow_steps(wf.workflow_id):
+                name = str(step["function_name"])
+                if name == "DBOS.recv":
+                    gate = next(gate_ids, None)
+                    if gate is not None:
+                        outputs[gate] = step["output"]
+                elif name in by_id:
+                    if step["error"] is not None:
+                        failed = failed or name
+                    elif by_id[name].fan_out:
+                        outputs.setdefault(name, []).append(step["output"])
+                    else:
+                        outputs[name] = step["output"]
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        client.destroy()
+    if failed is None or not by_id[failed].impl:
+        return {"node": failed} if failed else None
+    node = by_id[failed]
+    kwargs: dict[str, Any] = dict(node.constants or {})
+    for param, ref in (node.inputs or {}).items():
+        parsed = parse_input_ref(ref)
+        source = case_input if parsed.node_id is None else outputs.get(parsed.node_id)
+        if parsed.field is not None and isinstance(source, dict):
+            source = source.get(parsed.field)
+        kwargs[param] = source
+    if node.fan_out:
+        param = fan_out_element_param(node, pipeline)
+        items = kwargs.get(param) or []
+        kwargs[param] = items[0] if items else None
+    proc = subprocess.run(
+        [sys.executable, "-c", _REPLAY],
+        input=json.dumps([node.impl, kwargs], default=str),
+        cwd=app,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    try:
+        site: dict[str, Any] = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        site = {"exception": _last_line(proc.stderr)}
+    return {"node": failed, **site}
 
 
 def _last_line(error: str | None) -> str | None:
@@ -486,9 +589,17 @@ def pipeline_fidelity(
             usage += trace.get("judge_usage", [])
             scored = score_case(ref, trace)
             scored["run_error"] = trace.get("error")
+            scored["failure"] = trace.get("failure")
             scored["unknown_servers"] = trace.get("unknown_servers", [])
             scored["steps"] = len(trace.get("steps", []))
             scored["gate_fit"] = trace.get("gate_fit", [])
+            # How much of the skill's behavior this case can check at all: a
+            # high score over a thin reference is a weak claim.
+            scored["reference"] = {
+                "successful_runs": ref["successful_runs"],
+                "insufficient_runs": ref["insufficient_runs"],
+                **ref["coverage"],
+            }
             cases[case.id] = scored
     finally:
         if owned:
@@ -504,4 +615,15 @@ def pipeline_fidelity(
         "unpriced_models": sorted(unpriced),
         "judge_calls": len(usage),
         "reference_recorded_at": reference.get("recorded_at"),
+        "reference_coverage": _mean_rate(cases),
+        "reference_low_cases": sorted(
+            cid
+            for cid, c in cases.items()
+            if c["reference"]["low"] or c["reference"]["insufficient_runs"]
+        ),
     }
+
+
+def _mean_rate(cases: dict[str, Any]) -> float | None:
+    rates = [c["reference"]["rate"] for c in cases.values() if c["reference"]["rate"] is not None]
+    return round(sum(rates) / len(rates), 4) if rates else None

@@ -33,6 +33,13 @@ def test_normalize_folds_amount_text_case_and_space() -> None:
     assert normalize("75%") == 75.0
     assert normalize("  Final \n Report ") == "final report"
     assert normalize(True) is True
+    # Step outputs carry what the pipeline's code returned, not only JSON.
+    from datetime import date
+    from decimal import Decimal
+
+    assert normalize(Decimal("3304.150")) == 3304.15
+    assert normalize(date(2026, 9, 30)) == "2026-09-30"
+    assert field_reproduced("total", 3304.15, index_trace([{"t": Decimal("3304.15")}]))
 
 
 def test_flatten_turns_record_lists_into_column_sets() -> None:
@@ -76,6 +83,40 @@ def test_only_fields_every_successful_run_agrees_on_are_stable() -> None:
     assert ref["successful_runs"] == 2
     assert ref["fields"] == {"total": 10.0, "ids": {"set": ["a", "b"]}, "outcome": "completed"}
     assert ref["unstable_fields"] == ["summary"]
+
+
+def test_one_successful_run_makes_nothing_stable() -> None:
+    """One run agrees with itself on everything; that measures no variance."""
+    read = _call("read", file_id="A")
+    ref = stable_reference([_run({"total": 1}, [read]), _run(None), _run(None)])
+    assert ref["insufficient_runs"] is True
+    assert ref["fields"] == {}
+    assert ref["unstable_fields"] == ["total"]
+    assert ref["reads"] == []
+    assert ref["coverage"]["covered"] == 0
+
+
+def test_the_same_number_nested_differently_is_stable() -> None:
+    runs = [
+        _run({"report": {"kpi": {"active_sites": 3}}, "ids": ["A"]}),
+        _run({"report": {"header": {"active_sites": 3}}, "ids": ["A"]}),
+    ]
+    ref = stable_reference(runs, contract=["report", "ids"])
+    assert ref["fields"] == {"report.active_sites": 3.0, "ids": {"set": ["a"]}}
+    assert ref["coverage"]["rate"] == 1.0
+
+
+def test_coverage_separates_values_layout_and_absence() -> None:
+    runs = [
+        _run({"a": 1, "b": {"x": 5}, "c": 7, "d": 2, "e": 9}),
+        _run({"a": 1, "b": {"y": 5}, "c": 8, "e": 9}),
+    ]
+    cov = stable_reference(runs, contract=["a", "b", "c", "d", "e"])["coverage"]
+    assert (cov["fields"], cov["covered"], cov["rate"]) == (5, 2, 0.4)
+    assert cov["low"] is True
+    assert cov["uncovered_layout_disagreements"] == ["b"]  # same 5, other key
+    assert cov["uncovered_value_disagreements"] == ["c"]  # 7 vs 8
+    assert cov["uncovered_missing_in_some_runs"] == ["d"]
 
 
 def test_fields_outside_the_contract_do_not_count() -> None:
