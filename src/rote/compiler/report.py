@@ -20,6 +20,8 @@ one per stub.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
@@ -35,6 +37,27 @@ _KIND_ORDER = (
     NodeKind.AGENT_LOOP,
     NodeKind.HITL_GATE,
 )
+
+
+@dataclass(frozen=True)
+class ReportExtras:
+    """What a compile mode adds to the one shared report.
+
+    The default compile passes none. ``--system1`` passes its preamble
+    (rote decided the structure), its review items (low-confidence
+    decisions, the agent's proposals, decisions rote restored) and its
+    next steps. Every mode renders through :func:`render_compile_report`,
+    so the summary, node table, crystallization log and the assumption
+    and stub entries are computed one way.
+    """
+
+    #: A paragraph under the title, after rote's own provenance line.
+    preamble: str | None = None
+    #: ``(title, detail)`` pairs, each its own Open questions entry after
+    #: the assumptions and stubs.
+    questions: Sequence[tuple[str, str]] = field(default_factory=tuple)
+    #: Bullets for a "Suggested next steps" section, omitted when empty.
+    next_steps: Sequence[str] = field(default_factory=tuple)
 
 
 def _cell(text: str) -> str:
@@ -136,8 +159,12 @@ def _crystallization_log(root: Path) -> list[str]:
     return lines or ["- No extracted modules."]
 
 
-def _open_questions(found: list[Assumption], impls: list[NodeImplementation]) -> list[str]:
-    """One ``###`` entry per distinct assumption, then one per stub."""
+def _open_questions(
+    found: list[Assumption],
+    impls: list[NodeImplementation],
+    extra: Sequence[tuple[str, str]],
+) -> list[str]:
+    """One ``###`` entry per distinct assumption, one per stub, one per extra."""
     distinct: dict[str, list[Assumption]] = {}
     for a in found:
         distinct.setdefault(_normalized(a.text), []).append(a)
@@ -159,19 +186,26 @@ def _open_questions(found: list[Assumption], impls: list[NodeImplementation]) ->
             continue
         reason = impl.reason or "no reason given"
         lines += [f"### Stub: {impl.node_id} (`{impl.impl}`, {impl.status})", "", reason, ""]
+    for title, detail in extra:
+        lines += [f"### {' '.join(title.split())}", "", detail, ""]
     if not lines:
         return ["None: the code records no assumption and leaves no stub.", ""]
     return lines
 
 
-def render_compile_report(pipeline: Pipeline, root: Path) -> str:
+def render_compile_report(
+    pipeline: Pipeline, root: Path, extras: ReportExtras | None = None
+) -> str:
     """compile-report.md for the deliverable in ``root``.
 
-    A pure function of ``pipeline.yaml`` and the files under ``root``:
-    re-rendering an unchanged deliverable yields the same text.
+    A pure function of ``pipeline.yaml``, the files under ``root`` and
+    ``extras``: re-rendering an unchanged deliverable yields the same text.
     """
+    extras = extras or ReportExtras()
     impls = implementation_status(pipeline, root)
     found = assumptions(pipeline, root)
+    preamble = ["", extras.preamble] if extras.preamble else []
+    steps = ["", "## Suggested next steps", "", *(f"- {s}" for s in extras.next_steps)]
     parts = [
         f"# Compile report: {pipeline.name}",
         "",
@@ -179,6 +213,7 @@ def render_compile_report(pipeline: Pipeline, root: Path) -> str:
         "node's description is the compiler's reason for its kind; each "
         '`# skill: "..."` citation is the rule a line of code implements; each '
         "`# rote: assumption:` marker is a decision the skill does not state.",
+        *preamble,
         "",
         "## Summary",
         "",
@@ -194,6 +229,7 @@ def render_compile_report(pipeline: Pipeline, root: Path) -> str:
         "",
         "## Open questions",
         "",
-        *_open_questions(found, impls),
+        *_open_questions(found, impls, extras.questions),
+        *(steps if extras.next_steps else []),
     ]
     return "\n".join(parts).rstrip("\n") + "\n"

@@ -139,3 +139,40 @@ def test_nothing_to_question_says_so_and_counts_zero(tmp_path: Path) -> None:
 def test_rendering_is_a_pure_function_of_the_deliverable(tmp_path: Path) -> None:
     root = _deliverable(tmp_path)
     assert _render(root) == _render(root)
+
+
+def test_a_mode_adds_its_preamble_review_items_and_next_steps(tmp_path: Path) -> None:
+    """--system1 renders through the same function: its review items are
+    Open questions after the assumptions and stubs, never instead of them."""
+    from rote.compiler.report import ReportExtras
+
+    root = _deliverable(tmp_path)
+    extras = ReportExtras(
+        preamble="Compiled with `--system1`.",
+        questions=[("System-1 decision below 0.8 confidence", "route: kind pure_function")],
+        next_steps=["Run the pipeline once."],
+    )
+    report = render_compile_report(load_pipeline(root / "pipeline.yaml"), root, extras)
+    assert "\n\nCompiled with `--system1`.\n\n## Summary" in report
+    assert open_questions(report) == [
+        "### OQ-1: route",
+        "### Stub: notify (`extracted/notify.py:notify`, stub)",
+        "### System-1 decision below 0.8 confidence",
+    ]
+    assert report.rstrip().endswith("## Suggested next steps\n\n- Run the pipeline once.")
+    assert "## Suggested next steps" not in _render(root)
+
+
+def test_every_marker_in_any_extracted_module_reaches_the_open_questions(
+    tmp_path: Path,
+) -> None:
+    """Removing the unlisted_assumption check must not let a judgment call
+    hide: a marker anywhere under extracted/, including a module no node
+    names and one added after the first pass, is an Open questions entry."""
+    root = _deliverable(tmp_path)
+    (root / "extracted/helpers.py").write_text(
+        "# rote: assumption: currency codes are upper case\nX = 1\n", encoding="utf-8"
+    )
+    report = _render(root)
+    assert open_questions(report)[:2] == ["### OQ-1: module helper", "### OQ-2: route"]
+    assert "currency codes are upper case" in report
