@@ -554,13 +554,8 @@ def _order(a: int, b: int) -> int:
 
 
 def _payload_keys(node: Node) -> set[str]:
-    """A gate's resume payload field names: ``output`` keys or schema properties."""
-    keys: set[str] = set()
-    if isinstance(node.output, dict):
-        keys |= set(node.output)
-    if node.output_schema:
-        keys |= set((node.output_schema.get("properties") or {}).keys())
-    return keys
+    """A gate's resume payload field names (:attr:`rote.ir.Node.output_keys`)."""
+    return set(node.output_keys)
 
 
 def input_fields(pipeline: Pipeline) -> set[str]:

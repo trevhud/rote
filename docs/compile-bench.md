@@ -70,6 +70,13 @@ interpreter as the bench. Two things are forced, not configurable:
 - **No answer key.** The skill is copied to `<run>/<skill>/r<k>/skill-src/`
   first, so the compiler agent cannot step from the skill dir into
   `expected/`.
+- **The example's sample input.** When `examples/<name>/input.json`
+  exists, the compile gets `--sample-input` pointing at it, the input a
+  user would hand the skill. rote extracts the input contract from it
+  and runs the pipeline's deterministic steps on it before the compile
+  is done (`rote.compiler.grounding`, `rote.compiler.prefix`). The gate
+  answers in `eval-input.json` and `fidelity/cases.yaml` are not passed,
+  so gate payload keys still come from the skill's own words.
 
 ## Benching other models through Cloudflare AI Gateway
 

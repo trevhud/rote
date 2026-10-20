@@ -79,7 +79,24 @@ def isolated_env(state_dir: Path) -> dict[str, str]:
     return env
 
 
-def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> list[str]:
+#: The sample input an example ships beside its skill (examples/<name>/).
+SAMPLE_INPUT_FILENAME = "input.json"
+
+
+def sample_input(examples: Path, skill: str) -> Path | None:
+    """The example's sample input, which every compile is grounded in.
+
+    It sits beside the skill, not in it, so the bench passes it with
+    ``--sample-input``: it is the input a user would hand the skill, not
+    an answer. ``expected/`` and ``fidelity/`` stay out of the compile.
+    """
+    path = examples / skill / SAMPLE_INPUT_FILENAME
+    return path if path.is_file() else None
+
+
+def compile_argv(
+    skill_copy: Path, out_dir: Path, args: argparse.Namespace, sample: Path | None = None
+) -> list[str]:
     argv = [
         sys.executable,
         "-m",
@@ -97,6 +114,8 @@ def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> l
     ]
     if args.model:
         argv += ["--model", args.model]
+    if sample is not None:
+        argv += ["--sample-input", str(sample)]
     if args.agent:
         argv += ["--agent", args.agent]
     argv += args.compile_flag
@@ -164,7 +183,7 @@ async def _run_job(
         job.out_dir.mkdir(parents=True)
         skill_copy = job.out_dir / "skill-src" / job.skill
         shutil.copytree(skill_dir, skill_copy)
-        argv = compile_argv(skill_copy, job.out_dir, args)
+        argv = compile_argv(skill_copy, job.out_dir, args, sample_input(args.examples, job.skill))
         print(f"rote bench: {job.label}: compiling -> {job.out_dir}", file=sys.stderr)
         started = time.monotonic()
         with (

@@ -61,6 +61,32 @@ starts:
   valid), but always emit it for new compilations — it is the typed
   contract everything downstream keys off.
 
+### The input contract comes from data, not from prose
+
+The skill as an agent adapts to whatever input arrives; the compiled
+pipeline cannot. A field name you invent from prose ("one row per
+expense line" read as `expense_lines`) makes the pipeline refuse the
+skill's real input, however right the rest is. Three rules:
+
+1. **When rote gives you a sample input** (an `INPUT CONTRACT` section
+   in your instructions, and `grounding/sample-input.json` in the work
+   dir), the contract is decided: `input.required` names only fields
+   the sample has, spelled as the sample spells them, and every
+   function that reads a row uses the sample's row keys (`row["id"]`,
+   never a renamed `row["expense_id"]`). rote runs your pure functions
+   on that sample after you stop. A `KeyError` or a missing input comes
+   back as a failure.
+2. **Anything the skill reads from its own `references/` is a constant
+   or a file read, never a pipeline input.** A skill that says "look up
+   the rate in references/fx-rates.md" has no `fx_rates` input: the
+   table is the node's `constants:`. rote rejects a required input
+   named after a bundled file. The same goes for names, people and
+   settings the skill states: they are constants, not inputs the caller
+   must supply.
+3. **Without a sample, require only what the skill says it is given**,
+   named with the skill's own words. rote lists the contract you chose,
+   and the sentence it came from, as an open question for review.
+
 ## Node object
 
 Every node has a `kind` field, and the required fields depend on the
@@ -448,6 +474,16 @@ an input (validation rule 10).
     message_template: |
       BDR campaign awaiting review: {drug_brand} for {condition_acronym}
 ```
+
+**The payload keys are the skill's nouns.** `output` names what the
+person provides, one key per item, and the keys come from the skill:
+when it lists the items by name ("1. **Dock Appointment Completion**
+... 2. **Sorter Metrics** ... 3. **Current Dwell**"), the keys are those
+names in snake_case (`dock_appointment_completion`, `sorter_metrics`,
+`current_dwell`), not a paraphrase (`dock_appointments`). Declare the
+keys as a mapping, never a single type name, so a caller can see what
+to send. When rote gives you a sample gate payload, use its keys
+exactly. rote checks both and sends a mismatch back to you.
 
 **Constraint:** `mandatory: true` is not allowed on `agent_loop` nodes
 (meaningless) but is allowed on every other kind. For HITL gates,

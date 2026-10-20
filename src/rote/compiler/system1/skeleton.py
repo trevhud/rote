@@ -53,6 +53,9 @@ def _description(n: NodePlan) -> str:
 def pipeline_doc(plan: Plan) -> dict[str, Any]:
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
+    # A sample's gate answers, in the order the gates ask: its keys are the
+    # payload, whatever the step's wording suggested.
+    sampled = list(plan.sample.gates.values()) if plan.sample is not None else []
     for n in plan.nodes:
         node: dict[str, Any] = {
             "id": n.id,
@@ -85,7 +88,8 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             if n.tool_servers:
                 node["tool_servers"] = dict(n.tool_servers)
         if n.kind == "hitl_gate":
-            node["output"] = {k: "Any" for k in n.payload}
+            keys = list(sampled.pop(0)) if sampled else n.payload
+            node["output"] = {k: "Any" for k in keys}
             node["signal"] = n.signal
             if n.timeout:
                 node["timeout"] = n.timeout
@@ -156,6 +160,14 @@ def input_fields(plan: Plan) -> dict[str, str]:
 
 
 def input_schema(plan: Plan) -> dict[str, Any]:
+    """The pipeline input schema: the sample's own, when there is one.
+
+    Without a sample, the fields the skill's wording names, none required.
+    """
+    if plan.sample is not None:
+        from rote.compiler.grounding import input_contract
+
+        return input_contract(plan.sample)
     fields = input_fields(plan)
     schema: dict[str, Any] = {"type": "object", "additionalProperties": True}
     if fields:

@@ -761,6 +761,20 @@ class Node(BaseModel):
 
         return self
 
+    @property
+    def output_keys(self) -> frozenset[str]:
+        """The field names of this node's result: ``output`` keys or schema properties.
+
+        For a ``hitl_gate`` these are the keys of the payload a person
+        sends. An ``output`` given as a single type name declares none.
+        """
+        keys: set[str] = set()
+        if isinstance(self.output, dict):
+            keys |= set(self.output)
+        if self.output_schema:
+            keys |= set((self.output_schema.get("properties") or {}).keys())
+        return frozenset(keys)
+
 
 class Edge(BaseModel):
     """A directed edge in the pipeline DAG."""
