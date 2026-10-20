@@ -495,6 +495,7 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
         ("Read the status of the service in the request.", False),
         ("Read the request of the Controller.", False),
         ("Read the total of Step 3.", False),
+        ("Read the summary of each Phase result.", False),
         # A determiner before the name: still a named source.
         ("Read the subject of each Gmail thread.", True),
         ("Read the names of all Slack channels.", True),
