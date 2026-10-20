@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -424,6 +425,51 @@ def _dbos_objects(app: Path) -> tuple[list[dict[str, Any]], list[Any]]:
         client.destroy()
 
 
+#: What a bench pipeline inherits from the user's environment, by exact name:
+#: the process essentials, and the credentials its judges call a model with.
+#: Nothing else, so a vendor credential (GOOGLE_APPLICATION_CREDENTIALS, a
+#: HUBSPOT_TOKEN, one read under a name built at run time) never reaches the
+#: run: the fixture credential api_side sets is the only one there.
+BENCH_ENV_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "TZ",
+        "TERM",
+        "SYSTEMROOT",
+        "VIRTUAL_ENV",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    }
+)
+#: And by prefix: locale, the DBOS runtime's own settings, rote's (its
+#: per-node inference knobs, isolation paths, MCP endpoints).
+BENCH_ENV_PREFIXES = ("LC_", "DBOS_", "ROTE_")
+
+
+def bench_environment() -> dict[str, str]:
+    """The allowlisted part of ``os.environ`` a bench pipeline runs with."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k in BENCH_ENV_NAMES or k.startswith(BENCH_ENV_PREFIXES)
+    }
+
+
 def run_pipeline_case(
     compiled_dir: Path,
     casefile: CaseFile,
@@ -482,6 +528,7 @@ def run_pipeline_case(
             signals=signals or None,
             timeout_seconds=PIPELINE_TIMEOUT_SECONDS,
             extra_env={**env, **http_env},
+            base_env=bench_environment(),
             python_executable=python,
         )
         calls = read_calls(calls_log) + (api_calls(http_log) if http_log else [])

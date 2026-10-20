@@ -29,6 +29,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from rote.vendor_specs import schema
+from rote.vendor_specs.check import _value_problem
 from rote.vendor_specs.model import ApiSpec
 
 FORMAT_VERSION = 1
@@ -80,11 +81,23 @@ def validate(fixtures: FixtureSet, spec: ApiSpec) -> None:
         if op is None:
             errors.append(f"{op_id}: not an operation of {spec.key} rev {spec.revision}")
             continue
+        declared = {**spec.global_params, **op.params}
         for i, response in enumerate(responses):
             unknown = set(response.when) | set(response.when_contains)
-            unknown -= set(op.params) | set(spec.global_params)
+            unknown -= set(declared)
             if unknown:
                 errors.append(f"{op_id}[{i}]: matches on undeclared parameters {sorted(unknown)}")
+            # A value no request could send never matches, and the case
+            # silently gets the default answer (`format: metdata`).
+            for name, value in response.when.items():
+                if name in declared and (problem := _value_problem(declared[name], value)):
+                    errors.append(f"{op_id}[{i}]: when {name!r}: {problem}")
+            for name in response.when_contains:
+                if name in declared and declared[name].type != "string":
+                    errors.append(
+                        f"{op_id}[{i}]: when_contains {name!r}: a substring match needs a "
+                        f"string parameter, and it is {declared[name].type}"
+                    )
             if response.status >= 400:
                 continue
             if op.media_download or (op.supports_media and response.when.get("alt") == "media"):

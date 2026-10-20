@@ -394,11 +394,19 @@ per vendor API version (`google/gmail/v1`), in the shareable format of
    `sitecustomize` on its `PYTHONPATH` (`rote.vendor_specs.intercept`:
    httpx, requests, httplib2, urllib and `google.auth.default`). Any other
    host of a vendor in play is blocked, so a fidelity run never reaches a
-   real API;
-4. installs the app's vendor libraries (`google-api-python-client`, ...)
+   real API. Name resolution is guarded too: a client the intercept does
+   not patch (`http.client`, `httpcore` or `urllib3` used directly,
+   aiohttp) is refused when it resolves a vendor host;
+4. runs the pipeline with an allowlisted environment
+   (`rote.bench.fidelity.bench_environment`): the process essentials, the
+   judges' inference credentials, and `DBOS_*` / `ROTE_*` / `LC_*`. A
+   vendor credential the user has exported never reaches the run, even
+   one read under a name built at run time. The fixture credential the
+   bench sets for each name the modules read is the only one there;
+5. installs the app's vendor libraries (`google-api-python-client`, ...)
    into a cached target directory, since they are not rote's own
    dependencies;
-5. scores the fake's request log like the MCP call log. A fixture's
+6. scores the fake's request log like the MCP call log. A fixture's
    `reads: <server>.<tool>[i]` makes an API read and the skill's tool read
    the same read.
 
@@ -420,6 +428,12 @@ Read the number with these limits in mind:
   individual dwell, sorter and container rows behind a summary are not
   compared, so a pipeline can get a row-level detail wrong and keep a
   correct total.
+- **An api pipeline's writes are not scored.** The fake never reads a
+  request body, and a write is keyed by its operation and its query and
+  path parameters, so it can never equal the skill's MCP write arguments.
+  An api pipeline that writes scores 0 on side effects whether the write
+  is right or wrong. ops-report makes no writes, so its api scores are
+  unaffected; a skill that writes needs body-level write fixtures first.
 - **expense-audit exercises no reads or side effects.** It uses no MCP,
   and the report file is not compared. Its score is outputs, outcome and
   gate fit only.

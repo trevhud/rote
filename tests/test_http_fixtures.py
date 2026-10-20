@@ -7,6 +7,8 @@ vendor_specs; nothing here reaches the network.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -434,13 +436,14 @@ def test_vendor_requirements_name_known_distributions_and_refuse_guesses(
 @pytest.mark.slow
 @pytest.mark.parametrize("variant", ["fits", "bad_request", "bad_fixture"])
 def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
-    tmp_path: Path, store: SpecStore, variant: str
+    tmp_path: Path, store: SpecStore, variant: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The api pipeline's Gmail read keys the same as the skill's MCP read,
     so reads score 1.0; a request the spec refuses fails the node. A fixture
     the spec refuses is the bench's own fault: it stops the bench instead of
     scoring the pipeline 0.0 (it was a ValueError, scored as a dead run)."""
     bad = variant == "bad_request"
+    monkeypatch.setenv("DOCK_SECRET", "the-users-real-value")
     pytest.importorskip("dbos")
     pytest.importorskip("httpx")
     import yaml
@@ -494,6 +497,10 @@ def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
 
 
             def search(q):
+                # A credential read under a name built at run time: the
+                # bench's scrubbed environment must not hand it the user's.
+                if os.environ.get("DOCK_" + "SECRET"):
+                    raise RuntimeError("the user's DOCK_SECRET reached the bench run")
                 token = os.environ["GMAIL_TOKEN"]
                 body = httpx.get(
                     "https://gmail.googleapis.com/gmail/v1/users/me/threads",
@@ -565,3 +572,202 @@ def test_the_fake_routes_like_the_check_matches(tmp_path: Path, store: SpecStore
         ("people.people.get", "people/me"),
     ]
     assert "www.googleapis.com" in api.hosts and "people.googleapis.com" in api.hosts
+
+
+def test_a_bench_run_inherits_only_the_allowlisted_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.bench.fidelity import bench_environment
+
+    for name, value in {
+        "GOOGLE_APPLICATION_CREDENTIALS": "/real/sa.json",
+        "HUBSPOT_TOKEN": "pat-real",
+        "AWS_SECRET_ACCESS_KEY": "real",
+        "ANTHROPIC_API_KEY": "judge-key",
+        "ROTE_MODEL_GRADE": "claude-x",
+        "DBOS_SYSTEM_DATABASE_URL": "sqlite://",
+        "LC_ALL": "C",
+    }.items():
+        monkeypatch.setenv(name, value)
+    env = bench_environment()
+    assert {"GOOGLE_APPLICATION_CREDENTIALS", "HUBSPOT_TOKEN", "AWS_SECRET_ACCESS_KEY"}.isdisjoint(
+        env
+    )
+    # A judge still reaches its model; the runtime and rote keep their knobs.
+    assert env["ANTHROPIC_API_KEY"] == "judge-key"
+    assert env["ROTE_MODEL_GRADE"] == "claude-x"
+    assert env["DBOS_SYSTEM_DATABASE_URL"] == "sqlite://" and env["LC_ALL"] == "C"
+    assert env["PATH"] == os.environ["PATH"]
+
+
+def test_base_env_replaces_the_inherited_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.adapters import get_adapter
+    from rote.eval.empirical import run_pipeline_trial
+    from rote.ir import Pipeline
+
+    src = tmp_path / "src"
+    (src / "extracted").mkdir(parents=True)
+    (src / "extracted" / "peek.py").write_text(
+        "import os\n\ndef peek():\n    return {'seen': os.environ.get('HUBSPOT_TOKEN')}\n"
+    )
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "peek",
+            "version": "0.1.0",
+            "input": {"type": "In"},
+            "nodes": [
+                {
+                    "id": "peek",
+                    "kind": "pure_function",
+                    "description": "d",
+                    "impl": "extracted/peek.py:peek",
+                    "output": {"seen": "str"},
+                }
+            ],
+            "edges": [],
+            "entry_nodes": ["peek"],
+            "exit_nodes": ["peek"],
+        }
+    )
+    app = tmp_path / "app"
+    get_adapter("python", extracted_source_dir=src).emit(pipeline, app)
+    monkeypatch.setenv("HUBSPOT_TOKEN", "pat-real")
+    inherited = run_pipeline_trial(app, {}, timeout_seconds=60)
+    scrubbed = run_pipeline_trial(
+        app, {}, timeout_seconds=60, base_env={"PATH": os.environ["PATH"]}
+    )
+    assert inherited.error is None and scrubbed.error is None, (inherited.error, scrubbed.error)
+    assert "pat-real" in json.dumps(inherited.output)
+    assert "pat-real" not in json.dumps(scrubbed.output)
+
+
+@pytest.mark.parametrize(
+    ("bad", "says"),
+    [
+        # A `when` value no request could send: the case would silently get
+        # the default answer.
+        (
+            {"gmail.users.threads.get": [{"when": {"id": "t", "format": "metdata"}, "body": {}}]},
+            "when 'format': 'metdata' is not one of",
+        ),
+        (
+            {"gmail.users.threads.list": [{"when": {"maxResults": "lots"}, "body": {}}]},
+            "when 'maxResults': 'lots' is not an integer",
+        ),
+        (
+            {"gmail.users.threads.list": [{"when_contains": {"maxResults": "5"}, "body": {}}]},
+            "when_contains 'maxResults': a substring match needs a string parameter",
+        ),
+        (
+            {"gmail.users.threads.list": [{"when_contains": {"query": "x"}, "body": {}}]},
+            "undeclared parameters ['query']",
+        ),
+    ],
+)
+def test_a_fixture_that_could_never_match_is_refused(
+    tmp_path: Path, store: SpecStore, bad: dict[str, Any], says: str
+) -> None:
+    with pytest.raises(FixtureError, match=re.escape(says)):
+        _api(store, tmp_path / "log.jsonl", gmail={"operations": bad})
+
+
+def test_the_schema_check_holds_required_fields_and_enums(store: SpecStore) -> None:
+    from rote.vendor_specs.schema import problems
+
+    gmail = store.google("gmail", "v1")
+    assert gmail is not None
+    schema = {
+        "type": "object",
+        "required": ["id"],
+        "properties": {"id": {"type": "string"}, "kind": {"type": "string", "enum": ["a", "b"]}},
+    }
+    assert problems(gmail, schema, {"id": "x", "kind": "a"}) == []
+    assert problems(gmail, schema, {"kind": "a"}) == ["$: missing required field 'id'"]
+    assert problems(gmail, schema, {"id": "x", "kind": "c"}) == ["$.kind: 'c' is not one of a, b"]
+
+
+def test_a_single_parameter_sent_twice_is_refused_by_the_fake(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    api = _api(store, tmp_path / "log.jsonl")
+    status, _, body = api.answer(
+        "GET", "/gmail.googleapis.com/gmail/v1/users/me/threads?q=a&q=b", AUTH
+    )
+    assert status == 400 and b"repeated value for a single parameter" in body
+    # labelIds is repeated: twice is fine.
+    status, _, _ = api.answer(
+        "GET", "/gmail.googleapis.com/gmail/v1/users/me/threads?labelIds=A&labelIds=B", AUTH
+    )
+    assert status == 200
+
+
+def test_a_read_keys_as_the_mcp_response_its_fixture_names(tmp_path: Path) -> None:
+    """Index 1 of the MCP fixture, not the first response every case used."""
+    log = tmp_path / "log.jsonl"
+    log.write_text(
+        json.dumps(
+            {
+                "method": "GET",
+                "operation": "drive.files.export",
+                "params": {"fileId": "F2"},
+                "reads": "drive.read_file[1]",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    [call] = api_calls(log)
+    assert (call["server"], call["tool"], call["response"]) == ("drive", "read_file", 1)
+    assert call["via"] == "drive.files.export" and call["side_effect"] is False
+
+
+def test_an_api_case_without_http_fixtures_stops_the_bench(tmp_path: Path) -> None:
+    """Nothing to answer its vendor calls: the bench's mistake, not a 0.0."""
+    pytest.importorskip("dbos")
+    import yaml
+
+    from rote.bench.fidelity import pipeline_fidelity
+    from rote.compiler.backend import write_backend
+
+    example = tmp_path / "example"
+    (example / "fidelity").mkdir(parents=True)
+    (example / "fidelity" / "cases.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "output_fields": {"n": "n"},
+                "servers": {},
+                "cases": [{"id": "c", "input": {}, "fixtures": {}}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run = {"output": {"n": 1, "outcome": "completed"}, "calls": []}
+    (example / "fidelity" / "reference.json").write_text(
+        json.dumps({"cases": {"c": {"runs": [run, run]}}}), encoding="utf-8"
+    )
+    compiled = tmp_path / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "x.py").write_text("def x():\n    return {'n': 1}\n")
+    (compiled / "pipeline.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "x",
+                "input": {"type": "In"},
+                "nodes": [
+                    {
+                        "id": "x",
+                        "kind": "external_call",
+                        "description": "d",
+                        "impl": "extracted/x.py:x",
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_backend(compiled, "api")
+    with pytest.raises(HttpFixtureError, match="has no http: fixtures"):
+        pipeline_fidelity(compiled, example, tmp_path / "work")
