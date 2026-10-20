@@ -14,6 +14,7 @@ work from — see :func:`rote.adapters._ts_common.agent_tool_servers`.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -174,10 +175,15 @@ def test_a_bound_sibling_supplies_the_search_list(runtime: str, tmp_path: Path) 
 def test_anthropic_sdk_is_pinned_new_enough_for_the_tool_runner(
     runtime: str, tmp_path: Path
 ) -> None:
-    """``beta.messages.toolRunner`` postdates the judge-era pins (0.91 / 0.110)."""
+    """``beta.messages.toolRunner`` postdates the judge-era pins (0.91 / 0.110).
+
+    Pins the property, not the constant: a routine bump passes, and a
+    regression below 0.115 fails."""
     _emit(runtime, tmp_path)
     deps = json.loads((tmp_path / "package.json").read_text())["dependencies"]
-    assert deps["@anthropic-ai/sdk"] == "^0.115.0"
+    match = re.fullmatch(r"\^0\.(\d+)\.\d+", deps["@anthropic-ai/sdk"])
+    assert match is not None, deps["@anthropic-ai/sdk"]
+    assert int(match.group(1)) >= 115
 
 
 # ───────── Where the runtimes legitimately differ ─────────
