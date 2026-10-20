@@ -52,14 +52,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
+import re
 import tempfile
+import time
 from pathlib import Path
 from shutil import which
 from typing import Any
 
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
-from rote.compiler.events import EventCallback, ProgressFileWatcher
+from rote.compiler.events import (
+    CompilationEvent,
+    EventCallback,
+    ProgressFileWatcher,
+    emit_safely,
+)
 
 # ───────── Defaults ─────────
 
@@ -82,6 +90,88 @@ account and ``~/.codex/config.toml``. Leaving this ``None`` means we omit
 wants a specific model passes ``rote compile --model <id>``, which flows
 through to ``--model``."""
 
+#: ``web_tools=True`` (``--backend api``): Codex's native Responses
+#: ``web_search`` tool in live mode. ``codex exec`` has no ``--search``
+#: flag (that one is the interactive command's), so it is set through the
+#: config override, whose value is parsed as TOML. Live, not the default
+#: ``cached`` index: the point is the vendor's current docs.
+#: https://learn.chatgpt.com/docs/config-file/config-reference
+WEB_SEARCH_CONFIG = 'web_search="live"'
+
+#: A ``web_search`` result Codex opened as a page (``turn1view0``), as
+#: against a search hit (``turn0search0``). Codex reports a page open as an
+#: action of type ``other``; the opened page is the result carrying this
+#: kind of ref id. Observed on codex-cli 0.163.0.
+_OPENED_REF_RE = re.compile(r"^turn\d+view\d+$")
+
+
+def web_events(stdout: str) -> list[CompilationEvent]:
+    """The searches and page opens in a ``codex exec --json`` event stream.
+
+    One ``tool`` event per search (``query``) and per opened page (``url``),
+    named ``web_search`` / ``web_fetch`` like the Messages API's server
+    tools, so :class:`rote.compiler.api_docs.WebResearch` records them the
+    same way. Lines that are not JSON, and items of any other type, are
+    skipped: the stream is Codex's, and only these items are read from it.
+    """
+    events: list[CompilationEvent] = []
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "item.completed":
+            continue
+        item = obj.get("item")
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "web_search":
+            continue
+        raw_action = item.get("action")
+        action: dict[str, Any] = raw_action if isinstance(raw_action, dict) else {}
+        query = action.get("query") or item.get("query")
+        if action.get("type") == "search" and isinstance(query, str) and query:
+            events.append(_web_event("web_search", query=query))
+            continue
+        urls = [action["url"]] if isinstance(action.get("url"), str) else []
+        for result in item.get("results") or []:
+            if (
+                isinstance(result, dict)
+                and isinstance(result.get("url"), str)
+                and _OPENED_REF_RE.match(str(result.get("ref_id") or ""))
+            ):
+                urls.append(result["url"])
+        events += [_web_event("web_fetch", url=url) for url in dict.fromkeys(urls)]
+    return events
+
+
+#: Most of a failed run's stdout an error carries. With ``--json`` stdout is
+#: the whole event stream, search results included: megabytes, of which the
+#: last lines say why the run ended.
+DETAILS_MAX_CHARS = 4000
+
+
+def _clip(text: str) -> str:
+    """The tail of ``text``, at most :data:`DETAILS_MAX_CHARS` characters."""
+    if len(text) <= DETAILS_MAX_CHARS:
+        return text
+    return (
+        f"[... {len(text) - DETAILS_MAX_CHARS} earlier characters cut]\n"
+        + text[-DETAILS_MAX_CHARS:]
+    )
+
+
+def _web_event(tool: str, url: str | None = None, query: str | None = None) -> CompilationEvent:
+    target = url or query
+    return CompilationEvent(
+        type="tool",
+        ts=time.time(),
+        tool_name=tool,
+        url=url,
+        query=query,
+        message=f"{tool} {target}",
+    )
+
 
 class CodexDriver(CompilerDriver):
     name: str = "codex"
@@ -91,6 +181,7 @@ class CodexDriver(CompilerDriver):
         model: str | None = DEFAULT_MODEL,
         sandbox: str = DEFAULT_SANDBOX,
         codex_executable: str = "codex",
+        web_tools: bool = False,
         **_ignored: Any,
     ) -> None:
         """
@@ -103,6 +194,10 @@ class CodexDriver(CompilerDriver):
             Sandbox policy passed to ``--sandbox``.
         codex_executable
             Name/path of the Codex CLI binary.
+        web_tools
+            ``--backend api``: enable Codex's live web search
+            (:data:`WEB_SEARCH_CONFIG`) and read its searches and page
+            opens off ``--json`` (:func:`web_events`).
 
         Extra keyword arguments (e.g. ``max_turns``, which Codex exec has
         no equivalent for) are absorbed and ignored, per the
@@ -111,6 +206,7 @@ class CodexDriver(CompilerDriver):
         self.model = model
         self.sandbox = sandbox
         self.codex_executable = codex_executable
+        self.web_tools = web_tools
 
     def is_available(self) -> tuple[bool, str]:
         """Check whether the ``codex`` CLI is installed on PATH.
@@ -190,6 +286,8 @@ class CodexDriver(CompilerDriver):
             ]
             if self.model:
                 args += ["--model", self.model]
+            if self.web_tools:
+                args += ["-c", WEB_SEARCH_CONFIG, "--json"]
             args.append(prompt)
 
             proc = await asyncio.create_subprocess_exec(
@@ -203,6 +301,10 @@ class CodexDriver(CompilerDriver):
 
             stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
             stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            if self.web_tools:
+                # Reported once the run ends: stdout is read whole, not streamed.
+                for event in web_events(stdout):
+                    emit_safely(on_event, event)
 
             pipeline_yaml = work_dir / "pipeline.yaml"
 
@@ -214,11 +316,11 @@ class CodexDriver(CompilerDriver):
                 if proc.returncode != 0:
                     raise DriverError(
                         f"codex CLI exited with code {proc.returncode}",
-                        details=stderr or stdout or "(no output)",
+                        details=stderr or _clip(stdout) or "(no output)",
                     )
                 raise DriverError(
                     f"codex CLI finished successfully but did not produce {pipeline_yaml}.",
-                    details=stdout,
+                    details=_clip(stdout),
                 )
 
             metadata = self._build_metadata(last_message_path)

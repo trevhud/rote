@@ -43,6 +43,9 @@ _DOCS_RE = re.compile(r"#[ \t]*docs:[ \t]*(?P<url>https?://[^\s'\"<>]+|skill\b)"
 #: The ``# docs:`` value for "the skill documents this API".
 SKILL_DOCS = "skill"
 
+#: A ``# skill: "..."`` quote of the source skill.
+_SKILL_QUOTE_RE = re.compile(r'#[ \t]*skill:[ \t]*"')
+
 #: Trailing punctuation a URL written in prose often picks up.
 _URL_TAIL = ".,;:)]}"
 
@@ -122,6 +125,8 @@ class DocCitation:
     url: str
     path: str
     line: int
+    #: The line ranges that speak for the node's function.
+    spans: tuple[tuple[int, int], ...] = ()
 
 
 def module_docs(source: str) -> list[tuple[int, str]]:
@@ -159,7 +164,7 @@ def cited_docs(pipeline: Pipeline, root: Path) -> list[DocCitation]:
             if key in seen or not any(lo <= line <= hi for lo, hi in spans):
                 continue
             seen.add(key)
-            out.append(DocCitation(node.id, url, rel, line))
+            out.append(DocCitation(node.id, url, rel, line, tuple(spans)))
     return out
 
 
@@ -206,6 +211,9 @@ def docs_findings(
     * A cited page the agent never fetched in this compile, when the driver
       reports its fetches (``research.reported``): the call may come from
       memory, with a real URL attached. ``# docs: skill`` is exempt.
+    * A ``# docs: skill`` with no ``# skill: "..."`` quote speaking for the
+      same function: "the skill documents this API" with nothing quoted
+      is a call from memory under another name.
     """
     cites = cited_docs(pipeline, root)
     cited = {c.node_id for c in cites}
@@ -231,6 +239,23 @@ def docs_findings(
                 path=rel,
             )
         )
+    for c in cites:
+        if c.url != SKILL_DOCS or _quotes_skill(root, c):
+            continue
+        findings.append(
+            ContractFinding(
+                node_id=c.node_id,
+                kind="unquoted_skill_docs",
+                severity="error",
+                message=(
+                    f"{c.path}:{c.line} says the skill documents this API (`# docs: "
+                    f"skill`), but the function quotes none of it. Quote the skill text "
+                    f'that states the endpoint and shapes in `# skill: "..."` citations, '
+                    f"or cite the vendor's docs page (implementation.md, Regime 2)"
+                ),
+                path=c.path,
+            )
+        )
     if research is not None and research.reported:
         for c in cites:
             if c.url == SKILL_DOCS or research.was_fetched(c.url):
@@ -249,6 +274,16 @@ def docs_findings(
                 )
             )
     return findings
+
+
+def _quotes_skill(root: Path, citation: DocCitation) -> bool:
+    """Whether a ``# skill: "..."`` quote sits in the lines that speak for
+    the citation's function (the same spans as its ``# docs:`` comments)."""
+    source = (root / citation.path).read_text(encoding="utf-8")
+    return any(
+        _SKILL_QUOTE_RE.search(text) and any(lo <= n <= hi for lo, hi in citation.spans)
+        for n, text in enumerate(source.splitlines(), start=1)
+    )
 
 
 #: Tool names the drivers report a page fetch / a web search under.

@@ -552,6 +552,14 @@ both the legacy and the System-1 path:
 - **The backend reaches the Compiler as `emit_target.external_backend`.**
   The Compiler, not the CLI, grants the driver `web_tools` and adds the
   brief to the prompt, so any caller that compiles for `api` gets both.
+  Claude: WebSearch/WebFetch. api: the Messages API's server-side
+  `web_search_20250305` / `web_fetch_20250910`, and NOT the newer
+  versions: those provision code execution, and a real compile spent
+  about $14 of extra input tokens running code in it. Resend a
+  `pause_turn` as-is; it is not a stop. Codex: `-c web_search="live"`
+  plus `--json` (`codex exec` has no `--search`). openai-api: no web
+  tool exists on chat/completions, so it reports itself unavailable
+  rather than compiling from memory.
 - **Citations are checked, and fetches are the evidence.** Each vendor
   function carries `# docs: <url>` (or `# docs: skill` for an internal API
   the skill itself documents). Verification sends back an implemented
@@ -571,6 +579,24 @@ both the legacy and the System-1 path:
   passed, and warn when the flag contradicts it, because emitting the
   other backend drops code the compile wrote for this one. python and
   temporal never call a binding, so they advertise no MCP server for one.
+
+### Newer Anthropic web tool versions start a code execution container
+
+`web_search_20260209`+ and `web_fetch_20260209`+ turn on "dynamic
+filtering": the API provisions code execution for the request on its own,
+with no tool in your `tools` array asking for it. Inside the api driver's
+compile loop the model used that container as a second workspace, 70+
+`code_execution` / `bash_code_execution` calls inside two requests, billed
+as 3.69M and 2.91M input tokens ($8.04 + $6.18, measured on the Cloudflare
+AI Gateway logs). The same skill compiles for about $1 on the claude driver.
+
+So the api driver pins `web_search_20250305` / `web_fetch_20250910` with
+`max_uses` caps and `max_content_tokens`, refuses to send any other server
+tool (`_check_server_tools`), stops the run when a response carries a
+server tool it did not ask for, and stops when one request bills more than
+`DEFAULT_MAX_INPUT_TOKENS_PER_REQUEST` input tokens. Do not "upgrade" the
+versions without a measured run. The ceiling is checked on the response,
+so it stops the next request, not the one that crossed it.
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 

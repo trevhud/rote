@@ -801,16 +801,6 @@ def test_web_tools_flag_appends_research_tools() -> None:
     assert "WebFetch" in driver.allowed_tools
 
 
-def test_other_drivers_swallow_web_tools_kwarg() -> None:
-    """The registry contract: cross-driver kwargs never hard-fail a
-    driver that doesn't implement them."""
-    from rote.compiler.drivers.anthropic_api import AnthropicApiDriver
-    from rote.compiler.drivers.codex import CodexDriver
-
-    CodexDriver(web_tools=True)
-    AnthropicApiDriver(web_tools=True)
-
-
 # ───────── Prompt-cache accounting ─────────
 
 

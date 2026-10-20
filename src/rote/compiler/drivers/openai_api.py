@@ -268,6 +268,7 @@ class OpenAIApiDriver(CompilerDriver):
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         effort: str | None = None,
+        web_tools: bool = False,
         **_ignored: Any,
     ) -> None:
         """
@@ -307,6 +308,11 @@ class OpenAIApiDriver(CompilerDriver):
             open-weight reasoning models is often the top level (GLM-5.3
             defaults to ``max``, DeepSeek V4 to ``high``) and so the
             costliest. Same knob, same meaning as the claude driver's.
+        web_tools
+            ``--backend api`` asks for web search and fetch. Chat
+            Completions has no server-side web tool that every model behind
+            this endpoint serves, so the driver reports itself unavailable
+            instead of compiling vendor calls from memory.
         """
         if effort is not None:
             from rote.compiler.drivers.claude import EFFORT_LEVELS
@@ -322,6 +328,7 @@ class OpenAIApiDriver(CompilerDriver):
         self.base_url = base_url
         self.default_headers = default_headers
         self.mcp_servers = mcp_servers
+        self.web_tools = web_tools
 
     def _client_kwargs(self) -> dict[str, Any]:
         """Assemble ``AsyncOpenAI(...)`` kwargs.
@@ -346,6 +353,13 @@ class OpenAIApiDriver(CompilerDriver):
         return kwargs
 
     def is_available(self) -> tuple[bool, str]:
+        if self.web_tools:
+            return (
+                False,
+                "--backend api needs a driver with web search and fetch, and the "
+                "openai-api driver's chat/completions endpoint has none. Use "
+                "--agent claude, codex or api.",
+            )
         if not _OPENAI_AVAILABLE:
             return (
                 False,
