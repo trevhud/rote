@@ -483,7 +483,11 @@ def _fidelity_command(args: argparse.Namespace) -> int:
         print("rote bench: --examples is required", file=sys.stderr)
         return 2
     examples = args.examples.resolve()
-    skills = [s.strip() for s in args.skills.split(",") if s.strip()]
+    skills = (
+        discover_skills(examples)
+        if args.skills is None
+        else [s.strip() for s in args.skills.split(",") if s.strip()]
+    )
     if args.fidelity_of is not None:
         if len(skills) != 1:
             print("rote bench: --fidelity-of needs exactly one --skills example", file=sys.stderr)
