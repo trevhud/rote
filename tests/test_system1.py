@@ -436,3 +436,35 @@ def test_descriptive_sub_headings_and_checklists_are_not_steps(tmp_path: Path) -
     assert not [s for s in sections if s.startswith("Tab ")]
     # "1. **Browser-automation plugin** 2. **User is logged in**" is one check.
     assert sections.count("Prerequisites Check") == 1
+
+
+@pytest.mark.parametrize(
+    ("wording", "fans_out"),
+    [
+        ("Score each lead against the rubric.", True),
+        ("Score the leads against the rubric, one per lead.", True),
+        ("Score the leads against the rubric, at most 10 per call.", False),
+        ("Score the leads against the rubric.", False),
+    ],
+)
+def test_a_judge_fans_out_on_per_item_wording_only(
+    tmp_path: Path, wording: str, fans_out: bool
+) -> None:
+    skill = _tiny_skill(
+        tmp_path,
+        "## Step 1: Pull the leads\n\nSearch HubSpot for the leads using the HubSpot MCP tool.\n\n"
+        f"## Step 2: Rate the leads\n\n{wording}\n",
+    )
+    out = tmp_path / "work"
+    out.mkdir()
+    system1.prepare(skill, out)
+    doc = yaml.safe_load((out / "pipeline.yaml").read_text())
+    (judge,) = [n for n in doc["nodes"] if n["kind"] == "llm_judge"]
+    assert judge.get("fan_out", False) is fans_out
+
+
+def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
+    _, doc = _skeleton(tmp_path, "invoice-push")
+    step2 = [n for n in doc["nodes"] if n["source"]["section"].startswith("Step 2")]
+    # "Clear All Existing Filter Pills": click the x on each pill. Nothing is computed.
+    assert [n["kind"] for n in step2] == ["external_call"]

@@ -57,9 +57,9 @@ the per-item loop moved which nodes pair up.
 |---|---|---|
 | which steps exist | leaf procedural sections. Meta sections (trigger phrases, routing, tool tables, limits) are skipped. A heading that names no action under a step ("Tab 1: Invoice Detail") is part of that step. An enumerated list splits a step only when most items carry a step signal, so a checklist ("Browser-automation plugin", "User is logged in") stays one step | n/a |
 | per-item loops | a container heading whose sub-steps run "for each" row, item or record ("Process Each Invoice Row") becomes an `agent_loop` whose `loop_body` is those sub-steps. Run once, they would process one row | 0.7 |
-| nodes per step, and kinds | node-kinds.md in order: a human gate wins. An exploratory loop wins over its tools. A tool call is a bare `external_call`, and the work on its result is its own judge or pure_function. "Group ... by X, for each X" is two nodes. A write is its own `external_call`. No signal is one `pure_function` | 0.9 one kind alone, 0.8 dominant, 0.6 contested, 0.3 no signal |
+| nodes per step, and kinds | node-kinds.md in order: a human gate wins. An exploratory loop wins over its tools. A tool call is a bare `external_call`, and the work on its result is its own judge or pure_function. "Group ... by X, for each X" is two nodes. A write is its own `external_call`. A UI step (click, navigate, select) gets a pure_function only when it also describes a computation (convert, total, count, format, parse ...). No signal is one `pure_function` | 0.9 one kind alone, 0.8 dominant, 0.6 contested, 0.3 no signal |
 | data flow | explicit step references ("flags from steps 2 and 3"). "Steps N to M do not depend on each other" makes them siblings. Enumerated sub-steps are siblings. Otherwise the step before. Every node also reads `request: pipeline.input` | 0.9 explicit, 0.8 stated parallel, 0.7 siblings, 0.5 default |
-| fan_out | "for each X" / "classify each" on a judge or per-item node, or a heading that starts with a judging verb and ends on a plural ("Score New Opportunities"), over the node before it, which then outputs `{items: list}` | 0.7 / 0.6 |
+| fan_out | per-item wording ("for each X", "each X", "per X", "one at a time") on a judge or a "for each" work node, over the node before it, which then outputs `{items: list}`. "Per" followed by a unit of measure ("10 per call", "$75.00 per night") does not count. A pure_function never fans out on wording alone: looping in code gives the same result, while one judge call per item is a different call from one over the list | 0.7 |
 | mandatory | an explicit marker (MANDATORY, "required before"), or else every step with no conditional wording ("optionally", "only if", "if needed", "skip", "may"). Gates are mandatory implicitly and not flagged | 0.95 / 0.6 |
 | gates | signal `<gate>_approved`, or `_provided` when the person supplies data. Payload keys are the items the step asks for in bold, else the decisions it offers ("approve or reject" gives `approved`, `rejected`), else `approved` + `notes`. Timeout is the LONGEST wait stated ("usually within a day ... up to three days" parks 3d) | 0.8 / 0.5 |
 | pipeline input fields | placeholders in the skill's prose ("for [drug]", "for <month>"), and the items an opening step asks the person to confirm. Placeholders inside code are skipped (`[start date]` in a formula is computed, not supplied). None is required | n/a |
@@ -131,7 +131,10 @@ Two rules are weaker:
 - **Segmentation by signal words** has a fixed vocabulary. A skill with
   unusual verbs falls to the no-signal default (`pure_function`, confidence
   0.3, listed for review).
-- **Plural judging headings** is a heuristic, kept at 0.6 and listed.
+- **Per-item wording** replaced an earlier "judging verb over a plural
+  heading" rule, which was a vocabulary guess. It loses deal-monitor's
+  "Score New Opportunities" (the skill never says "each"), which is now
+  run as one judge over the list and listed for review.
 
 One new skill in the held-out set will say more than any further tuning on
 these five.

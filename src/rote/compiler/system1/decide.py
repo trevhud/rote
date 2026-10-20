@@ -48,7 +48,39 @@ _PARALLEL = re.compile(
 )
 _STEP_REF = re.compile(r"\bsteps?\s+(\d+)((?:\s*(?:,|and|or)\s*\d+)*)", re.I)
 _FOR_EACH = re.compile(
-    r"\bfor each ([a-z]+)\b|\b(?:classify|score|vet|personali[sz]e|draft) each\b", re.I
+    r"\bfor (?:each|every) ([a-z]+)\b|\beach (?!other\b|time\b|step\b)([a-z]+)\b"
+    r"|\bper ([a-z]+)\b|\bone (?:at a time|by one)\b",
+    re.I,
+)
+#: Units of measure "per" also takes ("$75.00 per line" is a cap, not a loop).
+_NOT_ITEMS = frozenset(
+    [
+        "call",
+        "batch",
+        "request",
+        "page",
+        "minute",
+        "second",
+        "hour",
+        "day",
+        "week",
+        "month",
+        "year",
+        "night",
+        "ticket",
+        "cent",
+    ]
+)
+#: Pure-function signals that describe computing something, as opposed to
+#: words like "check", "filter", "match" that UI and tool steps use too.
+_TRANSFORM = re.compile(
+    r"\b(convert|group|sort|total|round|calculat\w*|compute|dedup\w*|duplicates?|format"
+    r"|render|parse|break (?:it )?down|count|summari[sz]e|aggregate)\b"
+    r"|\bgenerate (?:a |an |the )?[\w\s-]{0,30}\b(?:html|report|table|summary|file|sheet)\b",
+    re.I,
+)
+_UI_ACTION = re.compile(
+    r"\b(click|navigate|select the|open the|scroll|type into|enter the|dropdown)\b", re.I
 )
 _GROUP_BY = re.compile(r"\bgroup\b[^.\n]{0,60}\bby ([a-z]+)", re.I)
 #: Wording that makes a step conditional, so it may legitimately not run.
@@ -158,7 +190,13 @@ def _segment(u: Unit) -> list[tuple[str, str, float, str]]:
         out.append(
             ("judge", "llm_judge", _kind_confidence(s, "llm_judge"), "rubric/judgment signal")
         )
-    if s.get("pure_function") and not (grouped and judge):
+    ui = bool(_UI_ACTION.search(f"{u.title}\n{u.text}"))
+    transforms = bool(_TRANSFORM.search(f"{u.title}\n{u.text}"))
+    # A UI step (click, navigate, select) gets a pure_function only when it
+    # also describes a transformation of data. "Clear all existing filter
+    # pills" says "filter", but nothing is computed. A tool step that checks
+    # what came back ("check each contact's memberships") keeps its check.
+    if s.get("pure_function") and not (grouped and judge) and (transforms or not ui):
         role = "each" if grouped else "process"
         out.append(
             (role, "pure_function", _kind_confidence(s, "pure_function"), "fixed-logic signal")
@@ -210,23 +248,14 @@ _ID_STOPWORDS = frozenset(
 )
 
 
-_JUDGE_VERB = re.compile(
-    r"^(score|classify|vet|rank|rate|grade|personali[sz]e|draft|assess|review)$"
-)
-
-
-def _plural_object(title: str) -> str | None:
-    """The plural noun a judging heading acts on ("Score New Opportunities"), if any.
-
-    A rubric applied to a plural is applied to each item: one judge call
-    per item is how the skill's agent works through the list."""
-    words = [w for w in slug(re.sub(r"\([^)]*\)", "", title)).split("_") if w]
-    words = [w for w in words if not w.isdigit() and w not in ("step", "phase")]
-    if not words or not _JUDGE_VERB.match(words[0]):
-        return None  # "Pull Slack messages" fetches a plural; it does not judge one by one
-    last = words[-1]
-    if len(last) > 3 and last.endswith("s") and not last.endswith(("ss", "us", "is")):
-        return last
+def _per_item(text: str) -> str | None:
+    """The per-item wording a step uses ("for each employee", "each thread",
+    "per contact"), if any. "Per" followed by a unit of measure does not count."""
+    for m in _FOR_EACH.finditer(" ".join(text.split())):
+        noun = next((g for g in m.groups() if g), "")
+        if noun.lower().rstrip("s") in _NOT_ITEMS:
+            continue
+        return m.group(0)
     return None
 
 
@@ -455,15 +484,16 @@ def plan(skill: SkillParse) -> Plan:
                 dconf if pos == 0 else 0.9,
                 drule if pos == 0 else "inside one step, each node reads the one before",
             )
-            each = None if loop is not None else _FOR_EACH.search(f"{u.title}\n{u.text}")
-            plural = loop is None and node.role == "judge" and _plural_object(u.title)
-            if node.role in ("each", "judge") and (each or plural) and sources:
+            each = None if loop is not None else _per_item(f"{u.title}\n{u.text}")
+            # Only judges and "for each X" work fan out. A pure_function over a
+            # list loops in code with the same result; a judge called once per
+            # item is a different call than one judge over the whole list.
+            if node.role in ("each", "judge") and each and sources:
                 src = sources[-1]
                 node.fan_out = True
                 node.element_source = src
                 node.inputs[src] = f"{src}.output.items"
-                why = "'for each' / 'each'" if each else f"a judgment over {plural!r}, one per item"
-                node.decide("fan_out", True, 0.7 if each else 0.6, f"{why} over {src}")
+                node.decide("fan_out", True, 0.7, f"per-item wording {each!r} over {src}")
             if node.kind not in ("agent_loop", "hitl_gate"):  # a gate is mandatory implicitly
                 optional = _OPTIONAL.search(f"{u.title}\n{u.text}")
                 if u.mandatory:
