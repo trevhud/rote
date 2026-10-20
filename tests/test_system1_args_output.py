@@ -251,3 +251,34 @@ def test_only_a_read_tool_sharing_the_noun_does_not_name_a_destination() -> None
 
     registry = {"hubspot_get_template": "hubspot", "hubspot_search_templates": "hubspot"}
     assert _registry_tool_for("Create the email templates.", registry) is None
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["search-query", "search query", 'query"); import os; ("', "search_query\n"],
+)
+def test_a_hostile_schema_name_is_withheld_never_bound(tmp_path: Path, hostile: str) -> None:
+    """A server's schema is untrusted. A property name that fits the label but is
+    not identifier-shaped ("search-query" slugs to the label) must not become an
+    mcp.args key: it used to, and the skeleton then failed IR validation, so a
+    hostile server could break the compile. It goes to review instead, and a
+    safe sibling still binds."""
+    schema = _Schema(
+        {"type": "object", "properties": {hostile: {"type": "string"}, "max_results": {}}}
+    )
+    plan, doc = _prepare(
+        tmp_path, EXAMPLES / "ops-report" / "skill", tools={("gmail", "search_threads"): schema}
+    )
+    args = _gmail(doc)["mcp"]["args"]
+    assert hostile not in args
+    assert args == {}
+    assert any("1 parameter name(s) withheld" in r for r in plan.review)
+
+    (tmp_path / "safe").mkdir()
+    mixed = _Schema({"type": "object", "properties": {hostile: {}, "query": {"type": "string"}}})
+    plan, doc = _prepare(
+        tmp_path / "safe",
+        EXAMPLES / "ops-report" / "skill",
+        tools={("gmail", "search_threads"): mixed},
+    )
+    assert _gmail(doc)["mcp"]["args"] == {"query": "search_query"}
