@@ -1,0 +1,533 @@
+name: incident-triage
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  First-responder triage for a PagerDuty page. Acknowledges the incident and
+  pulls it in parallel, resolves the owning service from the service catalog,
+  pulls the 2h deploy history and 30m of error logs, assigns the severity from
+  the matrix, forms a bounded first hypothesis, investigates under a 20 minute
+  hard stop, posts the fixed-format triage summary to the owning team's
+  channel, parks for the incident commander's confirmed severity, and records
+  it on the PagerDuty incident.
+
+config:
+  on_failure: notify_owner
+
+input:
+  type: TriageRequest
+  required:
+    - incident_id
+  input_schema:
+    type: object
+    title: TriageRequest
+    properties:
+      incident_id:
+        type: string
+        description: "PagerDuty incident id from the page, e.g. Q1ABCD2EFGH3IJ"
+    required: [incident_id]
+    additionalProperties: false
+
+nodes:
+
+  # ── Wave 1: acknowledge and fetch, together ──
+
+  - id: acknowledge_incident
+    kind: external_call
+    source:
+      section: "Step 1: Acknowledge the page (MANDATORY)"
+    description: >-
+      Acknowledge the PagerDuty incident before anything else, so it does not
+      escalate to the secondary at 5 minutes.
+    impl: extracted/pagerduty.py:acknowledge_incident
+    mcp:
+      server: pagerduty
+      tool: acknowledge_incident
+      args:
+        incident_id: incident_id
+    inputs:
+      incident_id: pipeline.input.incident_id
+    input:
+      incident_id: str
+    output: Incident
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  - id: fetch_incident
+    kind: external_call
+    source:
+      section: "Step 1: Acknowledge the page (MANDATORY)"
+    description: >-
+      Fetch the full incident: service name, alert title, monitor priority
+      (P1 to P5), trigger time and URL.
+    impl: extracted/pagerduty.py:fetch_incident
+    mcp:
+      server: pagerduty
+      tool: get_incident
+      args:
+        incident_id: incident_id
+    inputs:
+      incident_id: pipeline.input.incident_id
+    input:
+      incident_id: str
+    output: Incident
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 2: who owns it, and the query windows (parallel) ──
+
+  - id: resolve_service
+    kind: pure_function
+    source:
+      section: "Step 2: Figure out what service this is and who owns it"
+    description: >-
+      Look the incident's PagerDuty service up in the service catalog
+      (references/service-catalog.md): repo, owning team, incident channel,
+      tier, customer-facing, Datadog log query, runbook. A service missing
+      from the catalog is an error, never a guessed owner.
+    impl: extracted/catalog.py:resolve_service
+    inputs:
+      incident: fetch_incident.output
+    input:
+      incident: Incident
+    output:
+      service: str
+      repo: str
+      owning_team: str
+      incident_channel: str
+      tier: int
+      customer_facing: bool
+      log_query: str
+      runbook_url: str
+    constants:
+      service_catalog:
+        checkout-api:
+          repo: acme/checkout
+          owning_team: Payments
+          incident_channel: "#inc-payments"
+          tier: 1
+          customer_facing: true
+          log_query: "service:checkout-api status:error"
+          runbook_url: https://runbooks.example.com/checkout-api
+        payments-worker:
+          repo: acme/payments-worker
+          owning_team: Payments
+          incident_channel: "#inc-payments"
+          tier: 1
+          customer_facing: false
+          log_query: "service:payments-worker status:error"
+          runbook_url: https://runbooks.example.com/payments-worker
+        search-api:
+          repo: acme/search
+          owning_team: Discovery
+          incident_channel: "#inc-discovery"
+          tier: 2
+          customer_facing: true
+          log_query: "service:search-api status:error"
+          runbook_url: https://runbooks.example.com/search-api
+        catalog-ingest:
+          repo: acme/catalog-ingest
+          owning_team: Discovery
+          incident_channel: "#inc-discovery"
+          tier: 3
+          customer_facing: false
+          log_query: "service:catalog-ingest status:error"
+          runbook_url: https://runbooks.example.com/catalog-ingest
+        notifications:
+          repo: acme/notifications
+          owning_team: Messaging
+          incident_channel: "#inc-messaging"
+          tier: 2
+          customer_facing: true
+          log_query: "service:notifications status:error -env:staging"
+          runbook_url: https://runbooks.example.com/notifications
+        internal-admin:
+          repo: acme/admin
+          owning_team: Platform
+          incident_channel: "#inc-platform"
+          tier: 3
+          customer_facing: false
+          log_query: "service:internal-admin status:error"
+          runbook_url: https://runbooks.example.com/internal-admin
+    mandatory: true
+
+  - id: build_context_queries
+    kind: pure_function
+    source:
+      section: "Step 3: Pull recent deploys and error logs"
+    description: >-
+      Derive the deploy lookback start (2h before the trigger) and the error
+      log window (30m before the trigger) from the incident's trigger time.
+    impl: extracted/queries.py:build_context_queries
+    inputs:
+      incident: fetch_incident.output
+    input:
+      incident: Incident
+    output:
+      deploys_since: str
+      logs_from: str
+      logs_to: str
+    constants:
+      deploy_lookback_hours: 2
+      log_window_minutes: 30
+    mandatory: true
+
+  # ── Wave 3: severity, deploys and logs (parallel) ──
+
+  - id: assign_severity
+    kind: pure_function
+    source:
+      section: "Step 4: Assign the severity (MANDATORY)"
+    description: >-
+      Apply the severity matrix (references/severity-matrix.md) to the
+      monitor priority, service tier and customer-facing flag. When several
+      rows match, the highest severity wins.
+    impl: extracted/severity.py:assign_severity
+    inputs:
+      incident: fetch_incident.output
+      tier: resolve_service.output.tier
+      customer_facing: resolve_service.output.customer_facing
+    input:
+      incident: Incident
+      tier: int
+      customer_facing: bool
+    output:
+      severity: str
+      matched_rows: list[int]
+    constants:
+      severity_matrix:
+        - {severity: SEV1, priorities: [P1], tiers: [1], customer_facing: any}
+        - {severity: SEV1, priorities: [P2], tiers: [1], customer_facing: "yes"}
+        - {severity: SEV2, priorities: [P1], tiers: [2, 3], customer_facing: any}
+        - {severity: SEV2, priorities: [P2], tiers: [1, 2], customer_facing: any}
+        - {severity: SEV2, priorities: [P3], tiers: [1], customer_facing: "yes"}
+        - {severity: SEV3, priorities: [P2], tiers: [3], customer_facing: any}
+        - {severity: SEV3, priorities: [P3], tiers: [1, 2, 3], customer_facing: any}
+        - {severity: SEV4, priorities: [P4, P5], tiers: [1, 2, 3], customer_facing: any}
+    mandatory: true
+
+  - id: fetch_recent_deploys
+    kind: external_call
+    source:
+      section: "Step 3: Pull recent deploys and error logs"
+    description: List production deployments of the service's repo since the lookback start.
+    impl: extracted/github.py:fetch_recent_deploys
+    mcp:
+      server: github
+      tool: list_deployments
+      args:
+        repo: repo
+        environment: {literal: production}
+        since: deploys_since
+    inputs:
+      repo: resolve_service.output.repo
+      deploys_since: build_context_queries.output.deploys_since
+    input:
+      repo: str
+      deploys_since: str
+    output: DeploymentList
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  - id: fetch_error_logs
+    kind: external_call
+    source:
+      section: "Step 3: Pull recent deploys and error logs"
+    description: >-
+      Search Datadog logs with the catalog's log query over the 30 minutes
+      before the trigger, capped at 200 lines.
+    impl: extracted/datadog.py:fetch_error_logs
+    mcp:
+      server: datadog
+      tool: search_logs
+      args:
+        query: log_query
+        from: logs_from
+        to: logs_to
+        limit: log_limit
+    inputs:
+      log_query: resolve_service.output.log_query
+      logs_from: build_context_queries.output.logs_from
+      logs_to: build_context_queries.output.logs_to
+    input:
+      log_query: str
+      logs_from: str
+      logs_to: str
+    output: LogSearchResult
+    constants:
+      log_limit: 200
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 60s
+    mandatory: true
+
+  # ── Wave 4: first hypothesis ──
+
+  - id: hypothesize_cause
+    kind: llm_judge
+    source:
+      section: "Step 5: Form a first hypothesis"
+    description: >-
+      Read the error log lines and the deploy list together and pick exactly
+      one likely cause (recent_deploy, upstream_dependency, infrastructure,
+      traffic_spike, unknown), with the suspect deploy SHA, quoted evidence
+      and a confidence.
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          logs:
+            description: "The raw search_logs result for the 30 minute window"
+          deploys:
+            description: "The raw list_deployments result for the 2 hour lookback"
+        required: [logs, deploys]
+        additionalProperties: false
+      output_schema:
+        type: object
+        properties:
+          cause:
+            enum: [recent_deploy, upstream_dependency, infrastructure, traffic_spike, unknown]
+          suspect_sha:
+            anyOf:
+              - type: string
+              - type: "null"
+          evidence:
+            type: string
+          confidence:
+            enum: [low, medium, high]
+        required: [cause, suspect_sha, evidence, confidence]
+        additionalProperties: false
+      prompt: |
+        You are the first responder on a production incident. Read the error
+        log lines and the recent deploys together and make a first call on the
+        likely cause. Pick exactly one:
+
+        - recent_deploy: the errors started after a deploy and look related to
+          what changed (new exception types, a stack trace in code that just
+          shipped). Set suspect_sha to that deploy's SHA.
+        - upstream_dependency: timeouts or connection failures to something we
+          don't own (a vendor API, a managed database).
+        - infrastructure: node, network, DNS, disk, or OOM kills.
+        - traffic_spike: the service is healthy but overwhelmed (rate limits,
+          queue depth, 429s/503s with no new error types).
+        - unknown: you can't tell yet. That is a fine answer. Don't force a story.
+
+        suspect_sha is null unless the cause is recent_deploy.
+        evidence is one or two sentences, quoting log lines where you can.
+        confidence is low, medium or high.
+
+        Error logs (30 minutes before the trigger):
+        {{ logs }}
+
+        Deploys (2 hours before the trigger):
+        {{ deploys }}
+      client: anthropic
+    inputs:
+      logs: fetch_error_logs.output
+      deploys: fetch_recent_deploys.output
+    input:
+      logs: LogSearchResult
+      deploys: DeploymentList
+    output:
+      cause: str
+      suspect_sha: str | None
+      evidence: str
+      confidence: str
+    timeout: 60s
+
+  # ── Wave 5: investigate (the one genuinely open-ended step) ──
+
+  - id: investigate
+    kind: agent_loop
+    source:
+      section: "Step 6: Investigate"
+    description: >-
+      Starting from the hypothesis, look at whatever helps (neighboring
+      services' logs, the service's monitors and metrics against the same
+      time yesterday, a suspect deploy's diff, the runbook's checks) until
+      the situation can be explained in a paragraph. 20 minute hard stop.
+      Records what was checked and ruled out.
+    inputs:
+      incident: fetch_incident.output
+      service: resolve_service.output
+      hypothesis: hypothesize_cause.output
+      deploys: fetch_recent_deploys.output
+    input:
+      incident: Incident
+      service: CatalogEntry
+      hypothesis: Hypothesis
+      deploys: DeploymentList
+    output:
+      findings: str
+      checked: list[str]
+    tools:
+      - search_logs
+      - query_metrics
+      - list_monitors
+      - get_commit
+    tool_servers:
+      search_logs: datadog
+      query_metrics: datadog
+      list_monitors: datadog
+      get_commit: github
+    termination:
+      condition: the incident can be explained in a paragraph, or 20 minutes have passed
+      max_iterations: 30
+    timeout: 20m
+
+  # ── Wave 6-7: render and post the summary ──
+
+  - id: render_triage_summary
+    kind: pure_function
+    source:
+      section: "Step 7: Post the triage summary (MANDATORY)"
+    description: Fill the fixed phone-scannable triage summary template.
+    impl: extracted/summary.py:render_triage_summary
+    inputs:
+      incident: fetch_incident.output
+      service: resolve_service.output
+      severity: assign_severity.output.severity
+      hypothesis: hypothesize_cause.output
+      investigation: investigate.output
+      deploys: fetch_recent_deploys.output
+    input:
+      incident: Incident
+      service: CatalogEntry
+      severity: str
+      hypothesis: Hypothesis
+      investigation: Investigation
+      deploys: DeploymentList
+    output:
+      text: str
+    mandatory: true
+
+  - id: post_triage_summary
+    kind: external_call
+    source:
+      section: "Step 7: Post the triage summary (MANDATORY)"
+    description: >-
+      Post the summary to the owning team's incident channel, even when the
+      investigation came up empty.
+    impl: extracted/slack.py:post_triage_summary
+    mcp:
+      server: slack
+      tool: chat_post_message
+      args:
+        channel: incident_channel
+        text: text
+    inputs:
+      incident_channel: resolve_service.output.incident_channel
+      text: render_triage_summary.output.text
+    input:
+      incident_channel: str
+      text: str
+    output: SlackMessage
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 8: the incident commander takes over ──
+
+  - id: ic_handoff
+    kind: hitl_gate
+    source:
+      section: "Step 8: Hand off to the incident commander"
+    description: >-
+      Park until the incident commander replies with the confirmed severity.
+      Rollback is the IC's decision and action, never this workflow's.
+    signal: ic_confirmed_severity
+    output:
+      incident_commander: str
+      confirmed_severity: str
+
+  # ── Wave 9-10: record it on the incident ──
+
+  - id: severity_to_priority
+    kind: pure_function
+    source:
+      section: "Step 9: Record the confirmed severity (MANDATORY)"
+    description: Map the confirmed severity to its PagerDuty priority (SEVn to Pn).
+    impl: extracted/severity.py:severity_to_priority
+    inputs:
+      confirmed_severity: ic_handoff.output.confirmed_severity
+    input:
+      confirmed_severity: str
+    output:
+      priority: str
+    constants:
+      severity_priorities:
+        SEV1: P1
+        SEV2: P2
+        SEV3: P3
+        SEV4: P4
+    mandatory: true
+
+  - id: update_incident_priority
+    kind: external_call
+    source:
+      section: "Step 9: Record the confirmed severity (MANDATORY)"
+    description: >-
+      Set the PagerDuty incident's priority to the confirmed severity, even
+      when the IC kept the original call.
+    impl: extracted/pagerduty.py:update_incident_priority
+    mcp:
+      server: pagerduty
+      tool: update_incident
+      args:
+        incident_id: incident_id
+        priority: priority
+    inputs:
+      incident_id: pipeline.input.incident_id
+      priority: severity_to_priority.output.priority
+    input:
+      incident_id: str
+      priority: str
+    output: Incident
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+edges:
+  - {from: fetch_incident, to: resolve_service}
+  - {from: resolve_service, to: assign_severity}
+  - {from: fetch_incident, to: build_context_queries}
+  - {from: resolve_service, to: fetch_recent_deploys}
+  - {from: build_context_queries, to: fetch_recent_deploys}
+  - {from: resolve_service, to: fetch_error_logs}
+  - {from: build_context_queries, to: fetch_error_logs}
+  - {from: fetch_recent_deploys, to: hypothesize_cause}
+  - {from: fetch_error_logs, to: hypothesize_cause}
+  - {from: hypothesize_cause, to: investigate}
+  - {from: investigate, to: render_triage_summary}
+  - {from: assign_severity, to: render_triage_summary}
+  - {from: render_triage_summary, to: post_triage_summary}
+  - {from: post_triage_summary, to: ic_handoff}
+  - {from: ic_handoff, to: severity_to_priority, on_signal: ic_confirmed_severity}
+  - {from: severity_to_priority, to: update_incident_priority}
+
+entry_nodes:
+  - acknowledge_incident
+  - fetch_incident
+
+exit_nodes:
+  - acknowledge_incident
+  - update_incident_priority
