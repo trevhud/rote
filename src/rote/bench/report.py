@@ -17,6 +17,7 @@ Number = int | float
 #: (key, column header, format). Order is the table's column order.
 COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("fidelity", "fidel", "{:.2f}"),
+    ("fidelity_coverage", "fcov", "{:.2f}"),
     ("nodes", "nodes", "{}"),
     ("node_recall", "nodeR", "{:.2f}"),
     ("node_precision", "nodeP", "{:.2f}"),
@@ -116,6 +117,7 @@ def headline(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "fidelity": _get(job, "fidelity", "score"),
         "fidelity_cost_usd": _get(job, "fidelity", "cost_usd"),
+        "fidelity_coverage": _get(job, "fidelity", "reference_coverage"),
         "nodes": _ratio(
             _get(job, "structure", "compiled_nodes"), _get(job, "structure", "expected_nodes")
         ),

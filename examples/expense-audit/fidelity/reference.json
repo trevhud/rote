@@ -5,278 +5,7 @@
       "runs": [
         {
           "calls": [],
-          "cost_usd": 0.7113213,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [
-              "Dev Patel",
-              "Emi Tanaka"
-            ],
-            "batch_total_usd": 3304.15,
-            "blocked_ids": [
-              "EXP-2404",
-              "EXP-2412"
-            ],
-            "controller": "Priya Shah",
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "fx_rates_used": {
-              "CAD": 0.724,
-              "EUR": 1.105,
-              "GBP": 1.3125,
-              "JPY": 0.00678,
-              "USD": 1.0
-            },
-            "late_ids": [
-              "EXP-2413"
-            ],
-            "line_details": [
-              {
-                "employee": "Ana Ruiz",
-                "id": "EXP-2401",
-                "status": "reimbursable",
-                "usd": 676.7
-              },
-              {
-                "employee": "Ana Ruiz",
-                "id": "EXP-2402",
-                "status": "reimbursable",
-                "usd": 596.7
-              },
-              {
-                "employee": "Ana Ruiz",
-                "id": "EXP-2403",
-                "status": "reimbursable",
-                "usd": 130.39
-              },
-              {
-                "employee": "Ana Ruiz",
-                "id": "EXP-2404",
-                "status": "returned",
-                "usd": 25.97
-              },
-              {
-                "employee": "Ben Okafor",
-                "id": "EXP-2410",
-                "status": "returned",
-                "usd": 249.0
-              },
-              {
-                "employee": "Ben Okafor",
-                "id": "EXP-2411",
-                "status": "reimbursable",
-                "usd": 38.2
-              },
-              {
-                "employee": "Ben Okafor",
-                "id": "EXP-2412",
-                "status": "returned",
-                "usd": 38.2
-              },
-              {
-                "employee": "Ben Okafor",
-                "id": "EXP-2413",
-                "status": "reimbursable",
-                "usd": 18.75
-              },
-              {
-                "employee": "Chloe Martin",
-                "id": "EXP-2420",
-                "status": "reimbursable",
-                "usd": 446.25
-              },
-              {
-                "employee": "Chloe Martin",
-                "id": "EXP-2421",
-                "status": "reimbursable",
-                "usd": 248.06
-              },
-              {
-                "employee": "Chloe Martin",
-                "id": "EXP-2422",
-                "status": "reimbursable",
-                "usd": 16.28
-              },
-              {
-                "employee": "Dev Patel",
-                "id": "EXP-2430",
-                "status": "reimbursable",
-                "usd": 351.86
-              },
-              {
-                "employee": "Dev Patel",
-                "id": "EXP-2431",
-                "status": "reimbursable",
-                "usd": 296.84
-              },
-              {
-                "employee": "Dev Patel",
-                "id": "EXP-2432",
-                "status": "reimbursable",
-                "usd": 46.34
-              },
-              {
-                "employee": "Emi Tanaka",
-                "id": "EXP-2440",
-                "status": "reimbursable",
-                "usd": 104.41
-              },
-              {
-                "employee": "Emi Tanaka",
-                "id": "EXP-2441",
-                "status": "reimbursable",
-                "usd": 20.2
-              }
-            ],
-            "outcome": "completed",
-            "pending_usd": 0.0,
-            "period": "2026-09",
-            "reimbursable_usd": 2990.98,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "final",
-            "returned_usd": 313.17,
-            "review_queue": [
-              {
-                "decision": "approved",
-                "detail": "$130.39 exceeds $75.00 per-line cap",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2403",
-                "rule": "meals cap exceeded",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "$25.97 line requires a receipt; none attached",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "rejected",
-                "detail": "$249.00 exceeds $100.00 per-line cap. Route to IT procurement.",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2410",
-                "rule": "software cap exceeded",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "Duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate submission",
-                "severity": "block"
-              },
-              {
-                "decision": "approved",
-                "detail": "Dated 2026-06-30, 92 days before end of period",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late submission",
-                "severity": "review"
-              },
-              {
-                "decision": "approved",
-                "detail": "No preapproval_id on entertainment line",
-                "employee": "Chloe Martin",
-                "expense_id": "EXP-2420",
-                "rule": "entertainment without pre-approval",
-                "severity": "review"
-              }
-            ]
-          },
-          "turns": 7,
-          "wall_seconds": 208.5
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.4828146,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [
-              "Dev Patel",
-              "Emi Tanaka"
-            ],
-            "batch_total_usd": 3304.15,
-            "blocked_ids": [
-              "EXP-2403",
-              "EXP-2404",
-              "EXP-2410",
-              "EXP-2412",
-              "EXP-2420"
-            ],
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "late_ids": [
-              "EXP-2413"
-            ],
-            "outcome": "completed",
-            "pending_usd": 0.0,
-            "period": "2026-09",
-            "reimbursable_usd": 2414.34,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "final",
-            "returned_usd": 889.81,
-            "review_queue": [
-              {
-                "decision": "returned",
-                "detail": "Meals $130.39 exceeds $75.00 per-line cap",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2403",
-                "rule": "meals cap",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Receipt required for $25.97 line (threshold: $25.00)",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Software $249.00 exceeds $100.00 per-line cap",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2410",
-                "rule": "software cap",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate",
-                "severity": "block"
-              },
-              {
-                "decision": "approved",
-                "detail": "Dated 2026-06-30, 92 days before period close (limit: 60 days)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late submission",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "No preapproval_id on entertainment expense",
-                "employee": "Chloe Martin",
-                "expense_id": "EXP-2420",
-                "rule": "entertainment pre-approval",
-                "severity": "block"
-              }
-            ]
-          },
-          "turns": 6,
-          "wall_seconds": 148.2
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.5177714999999999,
+          "cost_usd": 0.5045283,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -305,59 +34,220 @@
             "review_queue": [
               {
                 "decision": "approved",
-                "detail": "$130.39 USD exceeds $75.00 per-line cap",
+                "detail": "$130.39 exceeds $75.00 per-line cap",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
-                "rule": "Meals cap exceeded",
+                "rule": "meals cap exceeded",
                 "severity": "review"
               },
               {
                 "decision": "returned",
-                "detail": "$25.97 USD >= $25.00 threshold. No receipt attached.",
+                "detail": "$25.97 USD requires a receipt (threshold $25.00)",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2404",
-                "rule": "Missing receipt",
+                "rule": "missing receipt",
                 "severity": "block"
               },
               {
                 "decision": "rejected",
-                "detail": "$249.00 USD exceeds $100.00 per-line cap. Must route through IT procurement.",
+                "detail": "$249.00 exceeds $100.00 per-line cap",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
-                "rule": "Software cap exceeded",
+                "rule": "software cap exceeded",
                 "severity": "review"
               },
               {
                 "decision": "returned",
-                "detail": "Same employee, merchant (Lyft), amount ($38.20 USD), date (2026-09-12) as EXP-2411.",
+                "detail": "duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2412",
-                "rule": "Duplicate submission",
+                "rule": "duplicate",
                 "severity": "block"
               },
               {
                 "decision": "approved",
-                "detail": "Dated 2026-06-30. That is 92 days before period end (limit 60 days).",
+                "detail": "dated 2026-06-30, 92 days before period close",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2413",
-                "rule": "Late submission",
+                "rule": "late submission",
                 "severity": "review"
               },
               {
                 "decision": "returned",
-                "detail": "No preapproval_id present. Entertainment always requires one.",
+                "detail": "no preapproval_id on file for Dishoom $446.25",
                 "employee": "Chloe Martin",
                 "expense_id": "EXP-2420",
-                "rule": "Entertainment without pre-approval",
+                "rule": "entertainment without pre-approval",
+                "severity": "block"
+              }
+            ]
+          },
+          "turns": 6,
+          "wall_seconds": 173.0
+        },
+        {
+          "calls": [],
+          "cost_usd": 0.5989476000000001,
+          "error": null,
+          "output": {
+            "auto_approved_employees": [
+              "Dev Patel",
+              "Emi Tanaka"
+            ],
+            "batch_total_usd": 3304.15,
+            "blocked_ids": [
+              "EXP-2404",
+              "EXP-2412"
+            ],
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413"
+            ],
+            "outcome": "completed",
+            "pending_usd": 0.0,
+            "period": "2026-09",
+            "reimbursable_usd": 2990.98,
+            "report_filename": "2026-09-expense-audit.md",
+            "report_status": "final",
+            "returned_usd": 313.17,
+            "review_queue": [
+              {
+                "decision": "approved",
+                "detail": "$130.39 exceeds $75.00 per-line cap",
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2403",
+                "rule": "meals cap exceeded",
+                "severity": "review"
+              },
+              {
+                "decision": "returned",
+                "detail": "$25.97 >= $25.00 threshold, no receipt attached",
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
+                "rule": "receipt missing",
+                "severity": "block"
+              },
+              {
+                "decision": "rejected",
+                "detail": "$249.00 exceeds $100.00 per-line cap",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2410",
+                "rule": "software cap exceeded",
+                "severity": "review"
+              },
+              {
+                "decision": "returned",
+                "detail": "duplicate of EXP-2411 (same employee, Lyft, $38.20 USD, 2026-09-12)",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2412",
+                "rule": "duplicate submission",
+                "severity": "block"
+              },
+              {
+                "decision": "approved",
+                "detail": "dated 2026-06-30, 92 days before period end, exceeds 60-day window",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2413",
+                "rule": "late submission",
+                "severity": "review"
+              },
+              {
+                "decision": "approved",
+                "detail": "no preapproval_id on entertainment line",
+                "employee": "Chloe Martin",
+                "expense_id": "EXP-2420",
+                "rule": "entertainment without pre-approval",
+                "severity": "review"
+              }
+            ]
+          },
+          "turns": 8,
+          "wall_seconds": 192.2
+        },
+        {
+          "calls": [],
+          "cost_usd": 0.5207112,
+          "error": null,
+          "output": {
+            "auto_approved_employees": [
+              "Dev Patel",
+              "Emi Tanaka"
+            ],
+            "batch_total_usd": 3304.15,
+            "blocked_ids": [
+              "EXP-2404",
+              "EXP-2412",
+              "EXP-2420"
+            ],
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413"
+            ],
+            "outcome": "completed",
+            "pending_usd": 0.0,
+            "period": "2026-09",
+            "reimbursable_usd": 2544.73,
+            "report_filename": "2026-09-expense-audit.md",
+            "report_status": "final",
+            "returned_usd": 759.42,
+            "review_queue": [
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2403",
+                "severity": "review"
+              },
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2410",
+                "severity": "review"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2412",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2413",
+                "severity": "review"
+              },
+              {
+                "employee": "Chloe Martin",
+                "expense_id": "EXP-2420",
                 "severity": "block"
               }
             ]
           },
           "turns": 7,
-          "wall_seconds": 162.2
+          "wall_seconds": 158.6
         }
       ],
       "stable": {
+        "coverage": {
+          "covered": 10,
+          "fields": 13,
+          "leaf_rate": 0.6667,
+          "leaves": 18,
+          "low": false,
+          "rate": 0.7692,
+          "stable_leaves": 12,
+          "uncovered_layout_disagreements": [],
+          "uncovered_missing_in_some_runs": [],
+          "uncovered_value_disagreements": [
+            "blocked_ids",
+            "reimbursable_usd",
+            "returned_usd"
+          ]
+        },
         "fields": {
           "auto_approved_employees": {
             "set": [
@@ -405,6 +295,7 @@
             ]
           }
         },
+        "insufficient_runs": false,
         "reads": [],
         "runs": 3,
         "seen_calls": [],
@@ -413,16 +304,6 @@
         "successful_runs": 3,
         "unstable_fields": [
           "blocked_ids",
-          "controller",
-          "fx_rates_used.CAD",
-          "fx_rates_used.EUR",
-          "fx_rates_used.GBP",
-          "fx_rates_used.JPY",
-          "fx_rates_used.USD",
-          "line_details[].employee",
-          "line_details[].id",
-          "line_details[].status",
-          "line_details[].usd",
           "reimbursable_usd",
           "returned_usd",
           "review_queue[].decision",
@@ -436,7 +317,7 @@
       "runs": [
         {
           "calls": [],
-          "cost_usd": 0.521679,
+          "cost_usd": 0.5383332,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -444,9 +325,7 @@
             ],
             "batch_total_usd": 3334.66,
             "blocked_ids": [
-              "EXP-2403",
               "EXP-2404",
-              "EXP-2410",
               "EXP-2412",
               "EXP-2432",
               "EXP-2442"
@@ -461,240 +340,113 @@
             "outcome": "completed",
             "pending_usd": 0.0,
             "period": "2026-09",
-            "reimbursable_usd": 2795.5,
+            "reimbursable_usd": 3044.5,
             "report_filename": "2026-09-expense-audit.md",
             "report_status": "final",
-            "returned_usd": 539.16,
+            "returned_usd": 290.16,
             "review_queue": [
               {
-                "decision": "returned",
-                "detail": "$130.39 exceeds $75 per-line cap",
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2403",
+                "severity": "review"
+              },
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2410",
+                "severity": "review"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2412",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2413",
+                "severity": "review"
+              },
+              {
+                "employee": "Dev Patel",
+                "expense_id": "EXP-2432",
+                "severity": "block"
+              },
+              {
+                "employee": "Emi Tanaka",
+                "expense_id": "EXP-2440",
+                "severity": "review"
+              },
+              {
+                "employee": "Emi Tanaka",
+                "expense_id": "EXP-2442",
+                "severity": "block"
+              }
+            ]
+          },
+          "turns": 6,
+          "wall_seconds": 173.2
+        },
+        {
+          "calls": [],
+          "cost_usd": 0.6851841,
+          "error": null,
+          "output": {
+            "auto_approved_employees": [
+              "Chloe Martin"
+            ],
+            "batch_total_usd": 3334.66,
+            "blocked_ids": [
+              "EXP-2404",
+              "EXP-2412",
+              "EXP-2432",
+              "EXP-2442"
+            ],
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413",
+              "EXP-2440"
+            ],
+            "outcome": "completed",
+            "pending_usd": 0.0,
+            "period": "2026-09",
+            "reimbursable_usd": 3044.5,
+            "report_filename": "2026-09-expense-audit.md",
+            "report_status": "final",
+            "returned_usd": 290.16,
+            "review_queue": [
+              {
+                "decision": "rejected",
+                "detail": "$130.39 exceeds $75.00 per-line cap",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
                 "rule": "meals cap exceeded",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "$25.97 >= $25 threshold, receipt absent",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "$249.00 exceeds $100 per-line cap",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2410",
-                "rule": "software cap exceeded",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Duplicate of EXP-2411 (same employee, Lyft, $38.20 USD, 2026-09-12)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate",
-                "severity": "block"
-              },
-              {
-                "decision": "rejected",
-                "detail": "Dated 2026-06-30, 92 days before period end",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late submission",
                 "severity": "review"
               },
               {
                 "decision": "returned",
-                "detail": "$46.34 >= $25 threshold, receipt absent",
-                "employee": "Dev Patel",
-                "expense_id": "EXP-2432",
+                "detail": "$25.97 >= $25.00 threshold. No receipt attached",
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
                 "rule": "missing receipt",
                 "severity": "block"
               },
               {
                 "decision": "approved",
-                "detail": "Dated 2026-10-02, after period closed",
-                "employee": "Emi Tanaka",
-                "expense_id": "EXP-2440",
-                "rule": "late submission",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "\"gifts\" is not a recognized expense category",
-                "employee": "Emi Tanaka",
-                "expense_id": "EXP-2442",
-                "rule": "category not in policy",
-                "severity": "block"
-              }
-            ]
-          },
-          "turns": 7,
-          "wall_seconds": 161.5
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.5680388999999999,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [
-              "Chloe Martin"
-            ],
-            "batch_total_usd": 3334.66,
-            "blocked_ids": [
-              "EXP-2403",
-              "EXP-2404",
-              "EXP-2410",
-              "EXP-2412",
-              "EXP-2432",
-              "EXP-2442"
-            ],
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "late_ids": [
-              "EXP-2413",
-              "EXP-2440"
-            ],
-            "outcome": "completed",
-            "pending_usd": 0.0,
-            "period": "2026-09",
-            "reimbursable_usd": 2795.5,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "final",
-            "returned_usd": 539.16,
-            "review_queue": [
-              {
-                "decision": "returned",
-                "detail": "Converted amount $130.39 exceeds $75.00 per-line cap",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2403",
-                "rule": "meals cap exceeded",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "$25.97 meets the $25.00 receipt threshold. No receipt attached",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Converted amount $249.00 exceeds $100.00 per-line cap",
+                "detail": "$249.00 exceeds $100.00 per-line cap",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
                 "rule": "software cap exceeded",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Same employee/merchant/amount/currency/date as EXP-2411",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate submission",
-                "severity": "block"
-              },
-              {
-                "decision": "rejected",
-                "detail": "Dated 2026-06-30, 92 days before period end 2026-09-30",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late submission",
                 "severity": "review"
               },
               {
                 "decision": "returned",
-                "detail": "$46.34 meets the $25.00 receipt threshold. No receipt attached",
-                "employee": "Dev Patel",
-                "expense_id": "EXP-2432",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "approved",
-                "detail": "Dated 2026-10-02, after period closed 2026-09-30",
-                "employee": "Emi Tanaka",
-                "expense_id": "EXP-2440",
-                "rule": "late submission",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "Category \"gifts\" is not in the policy table. Employee must recategorize",
-                "employee": "Emi Tanaka",
-                "expense_id": "EXP-2442",
-                "rule": "unrecognized category",
-                "severity": "block"
-              }
-            ]
-          },
-          "turns": 7,
-          "wall_seconds": 170.1
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.5506347,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [
-              "Chloe Martin"
-            ],
-            "batch_total_usd": 3334.66,
-            "blocked_ids": [
-              "EXP-2403",
-              "EXP-2404",
-              "EXP-2410",
-              "EXP-2412",
-              "EXP-2432",
-              "EXP-2442"
-            ],
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "late_ids": [
-              "EXP-2413",
-              "EXP-2440"
-            ],
-            "outcome": "completed",
-            "pending_usd": 0.0,
-            "period": "2026-09",
-            "reimbursable_usd": 2795.5,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "final",
-            "returned_usd": 539.16,
-            "review_queue": [
-              {
-                "decision": "returned",
-                "detail": "Meals line $130.39 exceeds $75.00 per-line cap",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2403",
-                "rule": "meals cap",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Ground transport $25.97 >= $25.00 requires a receipt",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Software line $249.00 exceeds $100.00 per-line cap",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2410",
-                "rule": "software cap",
-                "severity": "block"
-              },
-              {
-                "decision": "returned",
-                "detail": "Duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12)",
+                "detail": "Duplicate of EXP-2411 (same employee, merchant Lyft, $38.20 USD, 2026-09-12)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2412",
                 "rule": "duplicate",
@@ -710,7 +462,7 @@
               },
               {
                 "decision": "returned",
-                "detail": "Meals line $46.34 >= $25.00 requires a receipt",
+                "detail": "$46.34 >= $25.00 threshold. No receipt attached",
                 "employee": "Dev Patel",
                 "expense_id": "EXP-2432",
                 "rule": "missing receipt",
@@ -718,7 +470,7 @@
               },
               {
                 "decision": "approved",
-                "detail": "Dated 2026-10-02, after period 2026-09 closed",
+                "detail": "Dated 2026-10-02, after period close 2026-09-30",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2440",
                 "rule": "late submission",
@@ -726,19 +478,106 @@
               },
               {
                 "decision": "returned",
-                "detail": "Category \"gifts\" is not in the expense policy",
+                "detail": "\"gifts\" is not a recognized expense category. Employee must recategorize",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2442",
-                "rule": "unlisted category",
+                "rule": "category not in policy",
                 "severity": "block"
               }
             ]
           },
-          "turns": 6,
-          "wall_seconds": 178.3
+          "turns": 9,
+          "wall_seconds": 218.7
+        },
+        {
+          "calls": [],
+          "cost_usd": 0.6390096,
+          "error": null,
+          "output": {
+            "auto_approved_employees": [
+              "Chloe Martin"
+            ],
+            "batch_total_usd": 3334.66,
+            "blocked_ids": [
+              "EXP-2404",
+              "EXP-2412",
+              "EXP-2432",
+              "EXP-2442"
+            ],
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413",
+              "EXP-2440"
+            ],
+            "outcome": "completed",
+            "pending_usd": 0.0,
+            "period": "2026-09",
+            "reimbursable_usd": 3044.5,
+            "report_filename": "2026-09-expense-audit.md",
+            "report_status": "final",
+            "returned_usd": 290.16,
+            "review_queue": [
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2403",
+                "severity": "review"
+              },
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2410",
+                "severity": "review"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2412",
+                "severity": "block"
+              },
+              {
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2413",
+                "severity": "review"
+              },
+              {
+                "employee": "Dev Patel",
+                "expense_id": "EXP-2432",
+                "severity": "block"
+              },
+              {
+                "employee": "Emi Tanaka",
+                "expense_id": "EXP-2440",
+                "severity": "review"
+              },
+              {
+                "employee": "Emi Tanaka",
+                "expense_id": "EXP-2442",
+                "severity": "block"
+              }
+            ]
+          },
+          "turns": 7,
+          "wall_seconds": 281.2
         }
       ],
       "stable": {
+        "coverage": {
+          "covered": 13,
+          "fields": 13,
+          "leaf_rate": 0.8333,
+          "leaves": 18,
+          "low": false,
+          "rate": 1.0,
+          "stable_leaves": 15,
+          "uncovered_layout_disagreements": [],
+          "uncovered_missing_in_some_runs": [],
+          "uncovered_value_disagreements": []
+        },
         "fields": {
           "auto_approved_employees": {
             "set": [
@@ -748,9 +587,7 @@
           "batch_total_usd": 3334.66,
           "blocked_ids": {
             "set": [
-              "exp-2403",
               "exp-2404",
-              "exp-2410",
               "exp-2412",
               "exp-2432",
               "exp-2442"
@@ -770,17 +607,10 @@
           "outcome": "completed",
           "pending_usd": 0.0,
           "period": "2026-09",
-          "reimbursable_usd": 2795.5,
+          "reimbursable_usd": 3044.5,
           "report_filename": "2026-09-expense-audit.md",
           "report_status": "final",
-          "returned_usd": 539.16,
-          "review_queue[].decision": {
-            "set": [
-              "approved",
-              "rejected",
-              "returned"
-            ]
-          },
+          "returned_usd": 290.16,
           "review_queue[].employee": {
             "set": [
               "ana ruiz",
@@ -808,6 +638,7 @@
             ]
           }
         },
+        "insufficient_runs": false,
         "reads": [],
         "runs": 3,
         "seen_calls": [],
@@ -815,6 +646,7 @@
         "side_effects_unordered": [],
         "successful_runs": 3,
         "unstable_fields": [
+          "review_queue[].decision",
           "review_queue[].detail",
           "review_queue[].rule"
         ]
@@ -825,51 +657,7 @@
       "runs": [
         {
           "calls": [],
-          "cost_usd": 0.3831899999999999,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [],
-            "batch_total_usd": 0,
-            "blocked_ids": [
-              "EXP-2412"
-            ],
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "late_ids": [
-              "EXP-2413"
-            ],
-            "outcome": "stopped",
-            "pending_usd": 0,
-            "period": "2026-09",
-            "reimbursable_usd": 0,
-            "report_filename": null,
-            "report_status": "draft",
-            "returned_usd": 0,
-            "review_queue": [
-              {
-                "detail": "Duplicate of EXP-2411 (same employee, merchant, amount, currency, date)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate",
-                "severity": "block"
-              },
-              {
-                "detail": "Dated 2026-06-30, which is 92 days before the period end (2026-09-30); exceeds the 60-day window",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late_submission",
-                "severity": "review"
-              }
-            ],
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.4 CHF) uses CHF, which has no 2026-09 month-end rate in fx-rates.md. Finance must provide the CHF rate before the audit can continue. Do not use an online rate; payroll must match the general ledger."
-          },
-          "turns": 5,
-          "wall_seconds": 140.4
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.38448119999999997,
+          "cost_usd": 0.339612,
           "error": null,
           "output": {
             "auto_approved_employees": null,
@@ -889,21 +677,19 @@
             "report_status": null,
             "returned_usd": null,
             "review_queue": null,
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not in the 2026-09 FX rate table. Finance must provide the CHF month-end rate before the audit can proceed. Do not substitute a live or estimated rate \u2014 payroll must match the general ledger."
+            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses CHF, which does not appear in the 2026-09 FX rate table. The skill requires the finance team to supply the rate before the audit can continue. No controller-review answer was available for this question \u2014 the only queued answer was a controller-review decision, which cannot substitute for a missing FX rate."
           },
           "turns": 5,
-          "wall_seconds": 134.9
+          "wall_seconds": 112.3
         },
         {
           "calls": [],
-          "cost_usd": 0.3875604,
+          "cost_usd": 0.353511,
           "error": null,
           "output": {
-            "auto_approved_employees": [],
-            "batch_total_usd": 0,
-            "blocked_ids": [
-              "EXP-2412"
-            ],
+            "auto_approved_employees": null,
+            "batch_total_usd": null,
+            "blocked_ids": null,
             "duplicate_ids": [
               "EXP-2412"
             ],
@@ -911,32 +697,63 @@
               "EXP-2413"
             ],
             "outcome": "stopped",
-            "pending_usd": 0,
+            "pending_usd": null,
             "period": "2026-09",
-            "reimbursable_usd": 0,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "draft",
-            "returned_usd": 0,
-            "review_queue": [
-              {
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "severity": "block"
-              },
-              {
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "severity": "review"
-              }
-            ],
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not listed in the 2026-09 FX rates table. The skill requires asking finance for the month-end rate before proceeding. The audit cannot continue until finance supplies the CHF rate so payroll can match the general ledger."
+            "reimbursable_usd": null,
+            "report_filename": null,
+            "report_status": null,
+            "returned_usd": null,
+            "review_queue": null,
+            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not listed in the 2026-09 FX rate table. Per policy, the audit cannot proceed until finance provides the rate; it must not be looked up online because payroll must match the general ledger."
           },
           "turns": 5,
-          "wall_seconds": 136.1
+          "wall_seconds": 146.5
+        },
+        {
+          "calls": [],
+          "cost_usd": 0.2999712,
+          "error": null,
+          "output": {
+            "auto_approved_employees": null,
+            "batch_total_usd": null,
+            "blocked_ids": null,
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413"
+            ],
+            "outcome": "stopped",
+            "pending_usd": null,
+            "period": "2026-09",
+            "reimbursable_usd": null,
+            "report_filename": null,
+            "report_status": null,
+            "returned_usd": null,
+            "review_queue": null,
+            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not in the 2026-09 FX rate table. The skill requires asking finance for the finance-published month-end rate before proceeding. The audit cannot continue until that rate is provided."
+          },
+          "turns": 5,
+          "wall_seconds": 82.6
         }
       ],
       "stable": {
+        "coverage": {
+          "covered": 13,
+          "fields": 13,
+          "leaf_rate": 1.0,
+          "leaves": 13,
+          "low": false,
+          "rate": 1.0,
+          "stable_leaves": 13,
+          "uncovered_layout_disagreements": [],
+          "uncovered_missing_in_some_runs": [],
+          "uncovered_value_disagreements": []
+        },
         "fields": {
+          "auto_approved_employees": null,
+          "batch_total_usd": null,
+          "blocked_ids": null,
           "duplicate_ids": {
             "set": [
               "exp-2412"
@@ -948,38 +765,29 @@
             ]
           },
           "outcome": "stopped",
-          "period": "2026-09"
+          "pending_usd": null,
+          "period": "2026-09",
+          "reimbursable_usd": null,
+          "report_filename": null,
+          "report_status": null,
+          "returned_usd": null,
+          "review_queue": null
         },
+        "insufficient_runs": false,
         "reads": [],
         "runs": 3,
         "seen_calls": [],
         "side_effects": [],
         "side_effects_unordered": [],
         "successful_runs": 3,
-        "unstable_fields": [
-          "auto_approved_employees",
-          "batch_total_usd",
-          "blocked_ids",
-          "pending_usd",
-          "reimbursable_usd",
-          "report_filename",
-          "report_status",
-          "returned_usd",
-          "review_queue",
-          "review_queue[].detail",
-          "review_queue[].employee",
-          "review_queue[].expense_id",
-          "review_queue[].rule",
-          "review_queue[].severity",
-          "stop_reason"
-        ]
+        "unstable_fields": []
       }
     }
   },
-  "cost_usd": 4.5075,
+  "cost_usd": 4.4798,
   "example": "expense-audit",
   "model": "claude-sonnet-4-6",
-  "recorded_at": "2026-10-20T04:51:52.798631+00:00",
+  "recorded_at": "2026-10-20T05:53:17.349660+00:00",
   "schema_version": 1,
   "trials": 3
 }

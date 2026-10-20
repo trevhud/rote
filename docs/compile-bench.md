@@ -309,6 +309,71 @@ component with nothing to compare is left out):
 the table when `--fidelity` is on, with its judge cost under
 `fidelity_cost_usd`, apart from the compile cost.
 
+**Reference coverage** (`fcov`, and a line per case in the bench output)
+says how much a score can claim: the contract fields that have a stable
+value, out of all of them. A case under 50% is flagged `LOW`, with the
+reason for each uncovered field: the agent runs disagree on its value,
+they agree on the values but put them in different places, or some runs
+leave it out. Values compare under layout-normalized paths
+(`report.kpi.active_sites` and `report.header.active_sites` are both
+`report.active_sites`), so nesting one number differently is not a
+disagreement. A leaf collapses only when nothing else in the run lands on
+the same path with a different value: `decisions.approved.ids` and
+`decisions.rejected.ids` keep their full paths, so two runs that swapped
+them stay a disagreement. "Covered" means a field has at least one stable
+leaf, so each case also reports its stable leaves out of all leaves. A
+case needs at least two successful agent runs: with one, every field
+agrees with itself and nothing is stable.
+
+**Fidelity runs code on the host, unsandboxed.** The pipeline side runs
+the emitted app with the compile's `extracted/` modules, and when a run
+fails, `failure_site` imports the failing node's implementation and calls
+it once more to find the line that raised. Both execute agent-written
+code with the bench process's permissions, outside the OS sandbox
+`rote compile` uses for generated tests. That is acceptable for the
+repo's own examples, which are the only skills fidelity runs on. Running
+it on an untrusted skill's compile needs that sandbox around both the
+pipeline run and the replay first.
+
+### What fidelity does and does not measure
+
+Read the number with these limits in mind:
+
+- **It measures agreement with the agent, not with the gold.** The
+  reference is the skill run as an agent. Where the agent reads the skill
+  differently from the hand-written pipeline, the gold loses points too
+  (see below). Where the agent is inconsistent, that field is not scored.
+- **Values match anywhere.** A reference value counts as reproduced when
+  it appears in any step output. A field that passes data through
+  unchanged (an id, a period) is credited as soon as the step that
+  fetched it runs, whether or not anything downstream used it. The
+  converse also holds: a value the pipeline only holds as a filtered
+  subset of a larger list is not found (see `blocked_ids` below).
+- **The contract is summaries.** Counts, flagged ids, totals. The
+  individual dwell, sorter and container rows behind a summary are not
+  compared, so a pipeline can get a row-level detail wrong and keep a
+  correct total.
+- **expense-audit exercises no reads or side effects.** It uses no MCP,
+  and the report file is not compared. Its score is outputs, outcome and
+  gate fit only.
+- **The fixture shapes are assumptions.** The ops-report fixtures answer
+  Gmail `search_threads` with a bare JSON list of threads and Drive
+  `read_file_content` with plain CSV text. The skill names the tools but
+  not their result shapes, and so do the fixtures' authors: neither shape
+  was recorded from the real servers. Eight compiles in the October sweep
+  read `.threads` and `.content` from those results and fail here. That
+  failure is real only if the real servers answer the way the fixtures
+  do. Record real responses (a `rote baseline` run against the live
+  servers gives them) before treating it as a compile defect.
+- **An input the skill does not name is a contract the compiler invents.**
+  expense-audit's skill describes its input ("one row per expense line,
+  plus the reporting period") without naming a field. The cases pass the
+  bundled `input.json` (`period`, `submissions`, rows keyed `id`), and
+  every compile in the sweep named those differently, so none ran. That
+  is a real failure (the pipeline cannot take the export it is given),
+  but it says nothing about the rest of the pipeline until compile is
+  grounded in a sample input.
+
 ### Checking that the metric measures behavior
 
 The gold pipeline (expense-audit's hand-written `expected/`) and two
@@ -316,9 +381,9 @@ broken copies, scored with `--fidelity-of`:
 
 | Pipeline | fidelity | base | second_batch | unknown_currency |
 | --- | --- | --- | --- | --- |
-| gold | 0.93 | 1.00 | 0.91 | 0.89 |
-| mandatory duplicate check dropped | 0.86 | 0.94 | 0.87 | 0.78 |
-| `duplicate_ids` and `late_ids` inputs swapped | 0.66 | 0.58 | 0.51 | 0.89 |
+| gold | 0.96 | 1.00 | 0.98 | 0.89 |
+| mandatory duplicate check dropped | 0.87 | 0.94 | 0.88 | 0.78 |
+| `duplicate_ids` and `late_ids` inputs swapped | 0.66 | 0.58 | 0.52 | 0.89 |
 | the pre-#144 baseline compile | 0.17 | 0.00 | 0.00 | 0.50 |
 
 Each break costs what it should: the dropped check loses the duplicate
@@ -329,16 +394,21 @@ matter. The baseline compile renamed the pipeline input (`lines`,
 skill's own input at all. The structural score had the input recall at
 0.5 and nothing else alarming.
 
-The gold misses four fields on second_batch because the skill's own
-agent runs, three of three, file EXP-2410 (software over its cap) as a
-block, where the hand-written pipeline treats a cap breach as review. The
-reference is the skill as it runs, so that counts against the gold too.
-The base case shows the agent's other face: its three runs disagree on
-`reimbursable_usd` ($2,990.98, $2,414.34, $2,544.73), so that field is
-unstable there and not scored.
+The gold misses `blocked_ids` on second_batch although it computes the
+same four ids the agent reports: it never holds them as a list of their
+own, only as the review-queue rows whose severity is `block`. Value
+matching finds a list or a column, not a filtered subset of one, so a
+field the agent derives by filtering can be missed even when the pipeline
+got it right. The base case shows the agent's own variance: its three
+runs disagree on `reimbursable_usd` ($2,544.73, $2,990.98, $2,544.73),
+so that field is unstable there and not scored.
 
-Costs: recording the references took $6.01 once (expense-audit $4.51
-for 9 runs, ops-report $1.50 for 6). Per-compile fidelity on these two
+Costs: the references cost $1.50 (ops-report, 6 runs) and $4.48
+(expense-audit, 9 runs, recorded a second time after the reference prompt
+began asking for `null` on fields a stopped run never computed: the first
+recording, $4.51, had the stop case at 4 of 13 stable fields because
+agents wrote 0, `[]` or nothing for the same uncomputed field. It is at
+13 of 13 now). Per-compile fidelity on these two
 examples costs nothing, since neither compiled pipeline has a judge. A
 pipeline with judges pays for its judge calls, reported as
 `fidelity_cost_usd`.

@@ -21,6 +21,7 @@ from rote.bench.fidelity_score import (
     field_reproduced,
     flatten,
     index_trace,
+    layout_path,
     normalize,
     score_case,
     stable_reference,
@@ -33,6 +34,13 @@ def test_normalize_folds_amount_text_case_and_space() -> None:
     assert normalize("75%") == 75.0
     assert normalize("  Final \n Report ") == "final report"
     assert normalize(True) is True
+    # Step outputs carry what the pipeline's code returned, not only JSON.
+    from datetime import date
+    from decimal import Decimal
+
+    assert normalize(Decimal("3304.150")) == 3304.15
+    assert normalize(date(2026, 9, 30)) == "2026-09-30"
+    assert field_reproduced("total", 3304.15, index_trace([{"t": Decimal("3304.15")}]))
 
 
 def test_flatten_turns_record_lists_into_column_sets() -> None:
@@ -76,6 +84,93 @@ def test_only_fields_every_successful_run_agrees_on_are_stable() -> None:
     assert ref["successful_runs"] == 2
     assert ref["fields"] == {"total": 10.0, "ids": {"set": ["a", "b"]}, "outcome": "completed"}
     assert ref["unstable_fields"] == ["summary"]
+
+
+def test_one_successful_run_makes_nothing_stable() -> None:
+    """One run agrees with itself on everything; that measures no variance."""
+    read = _call("read", file_id="A")
+    ref = stable_reference([_run({"total": 1}, [read]), _run(None), _run(None)])
+    assert ref["insufficient_runs"] is True
+    assert ref["fields"] == {}
+    assert ref["unstable_fields"] == ["total"]
+    assert ref["reads"] == []
+    assert ref["coverage"]["covered"] == 0
+
+
+def test_the_same_number_nested_differently_is_stable() -> None:
+    runs = [
+        _run({"report": {"kpi": {"active_sites": 3}}, "ids": ["A"]}),
+        _run({"report": {"header": {"active_sites": 3}}, "ids": ["A"]}),
+    ]
+    ref = stable_reference(runs, contract=["report", "ids"])
+    assert ref["fields"] == {"report.active_sites": 3.0, "ids": {"set": ["a"]}}
+    assert ref["coverage"]["rate"] == 1.0
+
+
+def test_runs_that_swap_two_same_named_leaves_are_not_stable() -> None:
+    """approved and rejected both end in `ids`; collapsing them to
+    `decisions.ids` would make a run that swapped them agree with one that
+    did not. The same for counts."""
+    runs = [
+        _run(
+            {
+                "decisions": {
+                    "approved": {"ids": ["E1", "E2"], "n": 2},
+                    "rejected": {"ids": ["E3"], "n": 1},
+                }
+            }
+        ),
+        _run(
+            {
+                "decisions": {
+                    "approved": {"ids": ["E3"], "n": 1},
+                    "rejected": {"ids": ["E1", "E2"], "n": 2},
+                }
+            }
+        ),
+    ]
+    ref = stable_reference(runs, contract=["decisions"])
+    assert ref["fields"] == {}
+    assert ref["coverage"]["covered"] == 0
+    assert ref["coverage"]["rate"] == 0.0
+    assert ref["coverage"]["stable_leaves"] == 0
+    # The same runs without the swap are stable, under the full paths.
+    same = stable_reference([runs[0], runs[0]], contract=["decisions"])
+    assert same["fields"]["decisions.approved.ids"] == {"set": ["e1", "e2"]}
+    assert same["fields"]["decisions.rejected.ids"] == {"set": ["e3"]}
+
+
+def test_a_record_list_marker_survives_the_layout_collapse() -> None:
+    """A column of a list of records is not a single value of the same name."""
+    assert layout_path("report.queue[].expense_id") == "report[].expense_id"
+    assert layout_path("report.section.summary.expense_id") == "report.expense_id"
+    assert layout_path("queue[].expense_id") == "queue[].expense_id"
+    runs = [
+        _run({"r": {"queue": [{"id": "A"}, {"id": "B"}]}, "s": {"x": {"id": "A"}}}),
+        _run({"r": {"rows": [{"id": "B"}, {"id": "A"}]}, "s": {"y": {"id": "A"}}}),
+    ]
+    ref = stable_reference(runs, contract=["r", "s"])
+    assert ref["fields"] == {"r[].id": {"set": ["a", "b"]}, "s.id": "a"}
+
+
+def test_coverage_reports_the_leaf_ratio_beside_fields_covered() -> None:
+    runs = [_run({"f": {"a": 1, "b": 2, "c": 3}}), _run({"f": {"a": 1, "b": 9, "c": 8}})]
+    cov = stable_reference(runs, contract=["f"])["coverage"]
+    assert (cov["covered"], cov["fields"]) == (1, 1)  # "covered" by one leaf...
+    assert (cov["stable_leaves"], cov["leaves"], cov["leaf_rate"]) == (1, 3, 0.3333)
+
+
+def test_coverage_separates_values_layout_and_absence() -> None:
+    runs = [
+        _run({"a": 1, "b": {"x": 5}, "c": 7, "d": 2, "e": 9}),
+        _run({"a": 1, "b": {"y": 5}, "c": 8, "e": 9}),
+    ]
+    cov = stable_reference(runs, contract=["a", "b", "c", "d", "e"])["coverage"]
+    assert (cov["fields"], cov["covered"], cov["rate"]) == (5, 2, 0.4)
+    assert cov["low"] is True
+    assert cov["uncovered_layout_disagreements"] == ["b"]  # same 5, other key
+    assert cov["uncovered_value_disagreements"] == ["c"]  # 7 vs 8
+    assert cov["uncovered_missing_in_some_runs"] == ["d"]
 
 
 def test_fields_outside_the_contract_do_not_count() -> None:
@@ -222,6 +317,20 @@ def test_reads_charge_extra_calls_and_side_effects_score_partial_order() -> None
     assert s["side_effects"] == 0.5
 
 
+def test_a_field_every_run_left_uncomputed_is_not_an_output() -> None:
+    """The stop case: agents agree a field is null because the skill stopped
+    before computing it. A pipeline that also stopped has nothing to show."""
+    ref = stable_reference(
+        [
+            _run({"late": ["E1"], "total": None, "outcome": "stopped"}),
+            _run({"late": ["E1"], "total": None, "outcome": "stopped"}),
+        ]
+    )
+    s = score_case(ref, {"completed": False, "objects": [{"late_ids": ["E1"]}], "calls": []})
+    assert s["fields_checked"] == 1
+    assert (s["outputs"], s["outcome"]) == (1.0, 1.0)
+
+
 def test_components_with_nothing_to_compare_are_left_out() -> None:
     ref = stable_reference([_run({"total": 99.5}), _run({"total": 99.5})])
     s = score_case(ref, {"completed": True, "objects": [{"t": 99.5}], "calls": []})
@@ -303,6 +412,78 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         ("read_file_content", {"file_id": "C"}, False, None),
     ]
     assert json.loads(json.dumps(calls))  # the log is plain JSON
+
+
+def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wheel without the mcp extra once scored ops-report 0.0 with only
+    "fixture MCP server exited with code 1" to show for it."""
+    import importlib.util
+
+    from rote.bench import fidelity
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util, "find_spec", lambda name, *a: None if name == "fastmcp" else real(name, *a)
+    )
+    casefile = fidelity.CaseFile(
+        example_dir=tmp_path, output_fields={}, servers={"drive": {"tools": {}}}
+    )
+    case = fidelity.Case(
+        id="c", description="", input={}, gates=[], gate_instructions=None, fixtures={}
+    )
+    with (
+        pytest.raises(fidelity.FixtureError, match="need fastmcp"),
+        fidelity.fixture_servers(casefile, case, tmp_path / "w"),
+    ):
+        pass
+
+
+@pytest.mark.slow
+def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> None:
+    """DBOS re-raises a step's error without its traceback; the replay
+    rebuilds the failing node's inputs from what DBOS recorded and finds
+    the line. Breaks the gold expense-audit at a known line to check it."""
+    pytest.importorskip("dbos")
+    import shutil
+
+    from rote.adapters import get_adapter
+    from rote.bench.fidelity import failure_site
+    from rote.eval.empirical import run_pipeline_trial
+    from rote.ir import load_pipeline
+
+    from .conftest import EXAMPLES_DIR
+
+    compiled = tmp_path / "compiled"
+    shutil.copytree(
+        EXAMPLES_DIR / "expense-audit" / "expected",
+        compiled,
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    checks = compiled / "extracted" / "checks.py"
+    text = checks.read_text(encoding="utf-8")
+    anchor = "    _, period_end = period_bounds(period)\n"
+    assert text.count(anchor) == 1
+    broken = text.replace(anchor, '    submissions[0]["no_such_field"]\n' + anchor)
+    checks.write_text(broken, encoding="utf-8")
+    line = broken[: broken.index("no_such_field")].count("\n") + 1
+
+    pipeline = load_pipeline(compiled / "pipeline.yaml")
+    app = tmp_path / "app"
+    get_adapter("dbos", extracted_source_dir=compiled).emit(pipeline, app)
+    payload = json.loads((EXAMPLES_DIR / "expense-audit" / "input.json").read_text())
+    review = {"reviewer": "x", "approved_ids": [], "rejected_ids": []}
+    run = run_pipeline_trial(
+        app, payload, signals={"controller_review": review}, timeout_seconds=300
+    )
+    assert run.error is not None
+
+    site = failure_site(app, pipeline, payload)
+    assert site is not None
+    assert site["node"] == "find_late_submissions"
+    assert site["exception"] == "KeyError: 'no_such_field'"
+    assert site["at"] == f"extracted/checks.py:{line}"
 
 
 def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:

@@ -196,6 +196,8 @@ async def _run_job(
         f"fidelity {row['fidelity']}",
         file=sys.stderr,
     )
+    for line in coverage_lines(result.get("fidelity") or {}):
+        print(f"  {line}", file=sys.stderr)
     return {
         "skill": job.skill,
         "repeat": job.repeat,
@@ -483,6 +485,39 @@ def _rescore(args: argparse.Namespace) -> int:
     return _finish(results, args, run_dir)
 
 
+def _coverage_line(case_id: str, ref: dict[str, Any]) -> str:
+    """One case's reference coverage, flagged when it checks too little."""
+    cov = ref.get("coverage", ref)
+    flag = ""
+    if ref.get("insufficient_runs"):
+        flag = f"  LOW: only {ref.get('successful_runs')} successful run(s), nothing is stable"
+    elif cov.get("low"):
+        parts = [
+            f"{label} {', '.join(names)}"
+            for label, names in (
+                ("values differ:", cov.get("uncovered_value_disagreements") or []),
+                ("layout differs:", cov.get("uncovered_layout_disagreements") or []),
+                ("absent in some runs:", cov.get("uncovered_missing_in_some_runs") or []),
+            )
+            if names
+        ]
+        flag = "  LOW: " + "; ".join(parts)
+    counts = (
+        f"{cov.get('covered')}/{cov.get('fields')} contract fields with a stable leaf, "
+        f"{cov.get('stable_leaves')}/{cov.get('leaves')} leaves stable"
+    )
+    return f"reference {case_id}: {counts}{flag}"
+
+
+def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
+    """Per-case coverage lines for a ``pipeline_fidelity`` report."""
+    return [
+        _coverage_line(cid, c["reference"])
+        for cid, c in (fidelity.get("cases") or {}).items()
+        if "reference" in c
+    ]
+
+
 def _fidelity_command(args: argparse.Namespace) -> int:
     """``--record-reference`` and ``--fidelity-of``: no compile involved."""
     from rote.bench.fidelity import has_cases, load_cases, pipeline_fidelity, record_reference
@@ -502,6 +537,8 @@ def _fidelity_command(args: argparse.Namespace) -> int:
             return 2
         report = pipeline_fidelity(args.fidelity_of.resolve(), examples / skills[0])
         print(json.dumps(report, indent=2, sort_keys=True, default=str))
+        for line in coverage_lines(report):
+            print(f"rote bench: {line}", file=sys.stderr)
         return 0
     from rote.compiler.drivers.claude import DEFAULT_MODEL
 
@@ -530,14 +567,9 @@ def _fidelity_command(args: argparse.Namespace) -> int:
             + "\n",
             encoding="utf-8",
         )
-        stable = {
-            cid: (
-                f"{len(c['stable']['fields'])} stable, "
-                f"{len(c['stable']['unstable_fields'])} unstable"
-            )
-            for cid, c in reference["cases"].items()
-        }
-        print(f"rote bench: {skill}: reference ${reference['cost_usd']:.2f}, {stable}")
+        print(f"rote bench: {skill}: reference ${reference['cost_usd']:.2f}")
+        for cid, c in reference["cases"].items():
+            print(f"  {_coverage_line(cid, c['stable'])}")
         print(f"  wrote {casefile.reference_path}")
     print(f"rote bench: reference traces cost ${spent:.2f} in all")
     return 0
