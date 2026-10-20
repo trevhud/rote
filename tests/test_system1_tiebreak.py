@@ -695,3 +695,17 @@ def test_a_named_read_never_adds_a_second_call(tmp_path: Path) -> None:
     )
     kinds = [kind for _, kind, _, _ in unit_segments(parse_skill(skill))[0]]
     assert kinds.count("external_call") == 1
+
+
+def test_the_call_uses_the_lanes_own_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The api lane lends the compile driver's client (gateway base URL,
+    headers, billing). The tie-break must call through it, not build its own."""
+    lent = object()
+    stub = _Stub(_answer("llm_judge"))
+    _install(monkeypatch, stub)
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("api", lent), rubric=RUBRIC)
+    assert stub.calls[0]["sdk_client"] is lent and stub.calls[0]["provider"] == "api"
