@@ -241,7 +241,7 @@ def _checked_metadata(parsed: object) -> dict[str, str | int | float | bool]:
             raise DeciderUnavailable(
                 f"CLOUDFLARE_AI_GATEWAY_METADATA key {key!r}: the gateway strips cf.* keys"
             )
-        if value is None or not isinstance(value, str | int | float | bool):
+        if not isinstance(value, str | int | float | bool):
             raise DeciderUnavailable(
                 f"CLOUDFLARE_AI_GATEWAY_METADATA key {key!r}: values must be a string, "
                 "number or boolean"
