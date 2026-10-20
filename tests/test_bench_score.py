@@ -430,3 +430,9 @@ def test_a_failed_compile_still_reports_what_it_spent(tmp_path: Path) -> None:
     assert run["usage_source"] == "failure_log"
     assert job["error"] == "no pipeline.yaml produced: weekly limit"
     assert headline(job)["cost_usd"] == pytest.approx(2.2556865)
+    # And it counts against --budget the way _run_job feeds it.
+    from rote.bench.runner import _Budget
+
+    budget = _Budget(2.0)
+    budget.add(run["cost_usd"])
+    assert budget.exhausted()
