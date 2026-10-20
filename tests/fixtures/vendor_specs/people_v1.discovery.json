@@ -91,6 +91,48 @@
  },
  "protocol": "rest",
  "resources": {
+  "contactGroups": {
+   "methods": {
+    "get": {
+     "description": "Get a specific contact group owned by the authenticated user by specifying a contact group resource name.",
+     "flatPath": "v1/contactGroups/{contactGroupsId}",
+     "httpMethod": "GET",
+     "id": "people.contactGroups.get",
+     "parameterOrder": [
+      "resourceName"
+     ],
+     "parameters": {
+      "groupFields": {
+       "description": "Optional. A field mask to restrict which fields on the group are returned. Defaults to `metadata`, `groupType`, `memberCount`, and `name` if not set or set to empty. Valid fields are: * clientData * groupType * memberCount * metadata * name",
+       "format": "google-fieldmask",
+       "location": "query",
+       "type": "string"
+      },
+      "maxMembers": {
+       "description": "Optional. Specifies the maximum number of members to return. Defaults to 0 if not set, which will return zero members.",
+       "format": "int32",
+       "location": "query",
+       "type": "integer"
+      },
+      "resourceName": {
+       "description": "Required. The resource name of the contact group to get.",
+       "location": "path",
+       "pattern": "^contactGroups/[^/]+$",
+       "required": true,
+       "type": "string"
+      }
+     },
+     "path": "v1/{+resourceName}",
+     "response": {
+      "$ref": "ContactGroup"
+     },
+     "scopes": [
+      "https://www.googleapis.com/auth/contacts",
+      "https://www.googleapis.com/auth/contacts.readonly"
+     ]
+    }
+   }
+  },
   "people": {
    "methods": {
     "get": {
@@ -520,6 +562,71 @@
    },
    "type": "object"
   },
+  "ContactGroup": {
+   "description": "A contact group.",
+   "id": "ContactGroup",
+   "properties": {
+    "clientData": {
+     "description": "The group's client data.",
+     "items": {
+      "$ref": "GroupClientData"
+     },
+     "type": "array"
+    },
+    "etag": {
+     "description": "The [HTTP entity tag](https://en.wikipedia.org/wiki/HTTP_ETag) of the resource. Used for web cache validation.",
+     "type": "string"
+    },
+    "formattedName": {
+     "description": "Output only. The name translated and formatted in the viewer's account locale or the `Accept-Language` HTTP header locale for system groups names. Group names set by the owner are the same as name.",
+     "readOnly": true,
+     "type": "string"
+    },
+    "groupType": {
+     "description": "Output only. The contact group type.",
+     "enum": [
+      "GROUP_TYPE_UNSPECIFIED",
+      "USER_CONTACT_GROUP",
+      "SYSTEM_CONTACT_GROUP"
+     ],
+     "enumDescriptions": [
+      "Unspecified.",
+      "User defined contact group.",
+      "System defined contact group."
+     ],
+     "readOnly": true,
+     "type": "string"
+    },
+    "memberCount": {
+     "description": "Output only. The total number of contacts in the group irrespective of max members in specified in the request.",
+     "format": "int32",
+     "readOnly": true,
+     "type": "integer"
+    },
+    "memberResourceNames": {
+     "description": "Output only. The list of contact person resource names that are members of the contact group. The field is only populated for GET requests and will only return as many members as `maxMembers` in the get request.",
+     "items": {
+      "type": "string"
+     },
+     "readOnly": true,
+     "type": "array"
+    },
+    "metadata": {
+     "$ref": "ContactGroupMetadata",
+     "description": "Output only. Metadata about the contact group.",
+     "readOnly": true
+    },
+    "name": {
+     "description": "The contact group name set by the group owner or a system provided name for system groups. For [`contactGroups.create`](/people/api/rest/v1/contactGroups/create) or [`contactGroups.update`](/people/api/rest/v1/contactGroups/update) the name must be unique to the users contact groups. Attempting to create a group with a duplicate name will return a HTTP 409 error.",
+     "type": "string"
+    },
+    "resourceName": {
+     "description": "The resource name for the contact group, assigned by the server. An ASCII string, in the form of `contactGroups/{contact_group_id}`.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
   "ContactGroupMembership": {
    "description": "A Google contact group membership.",
    "id": "ContactGroupMembership",
@@ -532,6 +639,24 @@
     },
     "contactGroupResourceName": {
      "description": "The resource name for the contact group, assigned by the server. An ASCII string, in the form of `contactGroups/{contact_group_id}`. Only contact_group_resource_name can be used for modifying memberships. Any contact group membership can be removed, but only user group or \"myContacts\" or \"starred\" system groups memberships can be added. A contact must always have at least one contact group membership.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "ContactGroupMetadata": {
+   "description": "The metadata about a contact group.",
+   "id": "ContactGroupMetadata",
+   "properties": {
+    "deleted": {
+     "description": "Output only. True if the contact group resource has been deleted. Populated only for [`ListContactGroups`](/people/api/rest/v1/contactgroups/list) requests that include a sync token.",
+     "readOnly": true,
+     "type": "boolean"
+    },
+    "updateTime": {
+     "description": "Output only. The time the group was last updated.",
+     "format": "google-datetime",
+     "readOnly": true,
      "type": "string"
     }
    },
@@ -724,6 +849,21 @@
     },
     "value": {
      "description": "The gender for the person. The gender can be custom or one of these predefined values: * `male` * `female` * `unspecified`",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "GroupClientData": {
+   "description": "Arbitrary client data that is populated by clients. Duplicate keys and values are allowed.",
+   "id": "GroupClientData",
+   "properties": {
+    "key": {
+     "description": "The client specified key of the client data.",
+     "type": "string"
+    },
+    "value": {
+     "description": "The client specified value of the client data.",
      "type": "string"
     }
    },

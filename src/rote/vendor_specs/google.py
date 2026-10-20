@@ -173,6 +173,11 @@ def _walk(
                 # names a parameter the method does not declare; its path
                 # ``v1/{+resourceName}`` binds the one it requires.
                 url_template=base + str(method["path"]),
+                flat_url_template=(
+                    base + str(method["flatPath"])
+                    if method.get("flatPath") and method["flatPath"] != method["path"]
+                    else None
+                ),
                 upload_url_templates=uploads,
                 params=_params(method.get("parameters") or {}),
                 request_schema=_schema(request) if request else None,

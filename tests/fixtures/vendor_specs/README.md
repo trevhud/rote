@@ -11,8 +11,10 @@ value is the vendor's own:
 - sheets: spreadsheets.get, spreadsheets.batchUpdate, spreadsheets.values.append,
   spreadsheets.values.get (stored compact: batchUpdate reaches the whole
   Request schema)
-- people: people.get, people.updateContact, people.connections.list
-- admin directory_v1: users.list, users.get
+- people: people.get, people.updateContact, people.connections.list,
+  contactGroups.get (shares people.get's path; flatPath tells them apart)
+- admin directory_v1: users.list, users.get, customers.chrome.printers.get,
+  customers.chrome.printServers.get (one `{+name}` path, two flatPaths)
 - oauth2 v2: userinfo.get
 
 The directory fixture lists the APIs above plus `admin reports_v1`, so the

@@ -162,6 +162,17 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
             spec=spec.key,
             note="a path segment is built at run time, so the operation cannot be told here",
         )
+    if op is None and site.kind == "http" and site.url:
+        tied = tied_operations(spec.operations, site.method, site.url)
+        if len(tied) > 1:
+            return done(
+                "unresolved",
+                spec=spec.key,
+                note=(
+                    "the URL matches several operations equally "
+                    f"({', '.join(sorted(o.id for o, _ in tied))}), so it cannot be told here"
+                ),
+            )
     if op is None:
         where = site.google_method_id or f"{site.method} {site.url}"
         return done(
@@ -253,15 +264,31 @@ def best_operation(
 ) -> tuple[Operation | None, dict[str, str]]:
     """The operation ``method`` ``url`` calls, and its path parameters.
 
-    Of the operations whose URL (or upload URL) matches, the most specific
-    one: People's ``v1/{+resourceName}/connections`` over
-    ``v1/{+resourceName}``, which also matches that path.
+    ``(None, {})`` when none matches, and also when several match equally
+    well (:func:`tied_operations` names them): a guess would check the
+    request against the wrong operation.
+    """
+    tied = tied_operations(operations, method, url)
+    return tied[0] if len(tied) == 1 else (None, {})
+
+
+def tied_operations(
+    operations: list[Operation], method: str | None, url: str
+) -> list[tuple[Operation, dict[str, str]]]:
+    """The best-matching operations for ``method`` ``url``, with their path parameters.
+
+    Of those whose URL (or upload URL) matches, the most specific: People's
+    ``v1/{+resourceName}/connections`` over ``v1/{+resourceName}``, which also
+    matches that path. Equally specific ones are told apart by Discovery's
+    ``flatPath`` (``v1/people/{peopleId}`` is people.get, not
+    contactGroups.get); more than one left means the URL cannot say.
     """
     call = path_segments(url)
-    best: tuple[int, Operation, dict[str, str]] | None = None
+    scored: list[tuple[int, Operation, dict[str, str]]] = []
     for op in operations:
         if method is not None and op.method != method:
             continue
+        best: tuple[int, dict[str, str]] | None = None
         for template in op.templates():
             segments = path_segments(template)
             bound = match_path(segments, call)
@@ -269,8 +296,23 @@ def best_operation(
                 continue
             literal = len(re.sub(r"\{[^}]*\}", "", "/".join(segments)))
             if best is None or literal > best[0]:
-                best = (literal, op, bound)
-    return (best[1], best[2]) if best is not None else (None, {})
+                best = (literal, bound)
+        if best is not None:
+            scored.append((best[0], op, best[1]))
+    if not scored:
+        return []
+    top = max(score for score, _, _ in scored)
+    tied = [(op, bound) for score, op, bound in scored if score == top]
+    if len(tied) > 1:
+        flat = [
+            (op, bound)
+            for op, bound in tied
+            if op.flat_url_template
+            and match_path(path_segments(op.flat_url_template), call) is not None
+        ]
+        if flat:
+            tied = flat
+    return tied
 
 
 def match_path(template: list[str], call: list[str]) -> dict[str, str] | None:

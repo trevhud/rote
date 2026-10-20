@@ -50,6 +50,11 @@ class Operation(BaseModel):
     #: ``{+name}`` ones (Discovery's reserved expansion: one or more
     #: segments, slashes included). The names are the declared parameters'.
     url_template: str
+    #: Discovery's ``flatPath`` form of the URL, absolute, when it differs:
+    #: literal segments where ``url_template`` has ``{+name}``. It tells apart
+    #: operations whose ``url_template`` is the same (People's people.get and
+    #: contactGroups.get are both ``v1/{+resourceName}``).
+    flat_url_template: str | None = None
     #: Where the same operation takes an upload (Discovery ``mediaUpload``:
     #: ``/upload/drive/v3/files``, ``/resumable/upload/...``), absolute.
     upload_url_templates: tuple[str, ...] = ()

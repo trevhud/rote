@@ -93,6 +93,74 @@
  },
  "protocol": "rest",
  "resources": {
+  "customers": {
+   "resources": {
+    "chrome": {
+     "resources": {
+      "printServers": {
+       "methods": {
+        "get": {
+         "description": "Returns a print server's configuration.",
+         "flatPath": "admin/directory/v1/customers/{customersId}/chrome/printServers/{printServersId}",
+         "httpMethod": "GET",
+         "id": "admin.customers.chrome.printServers.get",
+         "parameterOrder": [
+          "name"
+         ],
+         "parameters": {
+          "name": {
+           "description": "Required. The [unique ID](https://developers.google.com/workspace/admin/directory/reference/rest/v1/customers) of the customer's Google Workspace account. Format: `customers/{id}`",
+           "location": "path",
+           "pattern": "^customers/[^/]+/chrome/printServers/[^/]+$",
+           "required": true,
+           "type": "string"
+          }
+         },
+         "path": "admin/directory/v1/{+name}",
+         "response": {
+          "$ref": "PrintServer"
+         },
+         "scopes": [
+          "https://www.googleapis.com/auth/admin.chrome.printers",
+          "https://www.googleapis.com/auth/admin.chrome.printers.readonly"
+         ]
+        }
+       }
+      },
+      "printers": {
+       "methods": {
+        "get": {
+         "description": "Returns a `Printer` resource (printer's config).",
+         "flatPath": "admin/directory/v1/customers/{customersId}/chrome/printers/{printersId}",
+         "httpMethod": "GET",
+         "id": "admin.customers.chrome.printers.get",
+         "parameterOrder": [
+          "name"
+         ],
+         "parameters": {
+          "name": {
+           "description": "Required. The name of the printer to retrieve. Format: customers/{customer_id}/chrome/printers/{printer_id}",
+           "location": "path",
+           "pattern": "^customers/[^/]+/chrome/printers/[^/]+$",
+           "required": true,
+           "type": "string"
+          }
+         },
+         "path": "admin/directory/v1/{+name}",
+         "response": {
+          "$ref": "Printer"
+         },
+         "scopes": [
+          "https://www.googleapis.com/auth/admin.chrome.printers",
+          "https://www.googleapis.com/auth/admin.chrome.printers.readonly"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
   "users": {
    "methods": {
     "get": {
@@ -295,6 +363,38 @@
  "revision": "20261014",
  "rootUrl": "https://admin.googleapis.com/",
  "schemas": {
+  "AuxiliaryMessage": {
+   "description": "Auxiliary message about issues with printers or settings. Example: {message_type:AUXILIARY_MESSAGE_WARNING, field_mask:make_and_model, message:\"Given printer is invalid or no longer supported.\"}",
+   "id": "AuxiliaryMessage",
+   "properties": {
+    "auxiliaryMessage": {
+     "description": "Human readable message in English. Example: \"Given printer is invalid or no longer supported.\"",
+     "type": "string"
+    },
+    "fieldMask": {
+     "description": "Field that this message concerns.",
+     "format": "google-fieldmask",
+     "type": "string"
+    },
+    "severity": {
+     "description": "Message severity",
+     "enum": [
+      "SEVERITY_UNSPECIFIED",
+      "SEVERITY_INFO",
+      "SEVERITY_WARNING",
+      "SEVERITY_ERROR"
+     ],
+     "enumDescriptions": [
+      "Message type unspecified.",
+      "Message of severity: info.",
+      "Message of severity: warning.",
+      "Message of severity: error."
+     ],
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
   "GuestAccountInfo": {
    "description": "Account info specific to Guest users.",
    "id": "GuestAccountInfo",
@@ -302,6 +402,96 @@
     "primaryGuestEmail": {
      "description": "Immutable. The guest's external email.",
      "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "PrintServer": {
+   "description": "Configuration for a print server.",
+   "id": "PrintServer",
+   "properties": {
+    "createTime": {
+     "description": "Output only. Time when the print server was created.",
+     "format": "google-datetime",
+     "readOnly": true,
+     "type": "string"
+    },
+    "description": {
+     "description": "Editable. Description of the print server (as shown in the Admin console).",
+     "type": "string"
+    },
+    "displayName": {
+     "description": "Editable. Display name of the print server (as shown in the Admin console).",
+     "type": "string"
+    },
+    "id": {
+     "description": "Immutable. ID of the print server. Leave empty when creating.",
+     "type": "string"
+    },
+    "name": {
+     "description": "Identifier. Resource name of the print server. Leave empty when creating. Format: `customers/{customer.id}/printServers/{print_server.id}`",
+     "type": "string"
+    },
+    "orgUnitId": {
+     "description": "ID of the organization unit (OU) that owns this print server. This value can only be set when the print server is initially created. If it's not populated, the print server is placed under the root OU. The `org_unit_id` can be retrieved using the [Directory API](https://developers.google.com/workspace/admin/directory/reference/rest/v1/orgunits).",
+     "type": "string"
+    },
+    "uri": {
+     "description": "Editable. Print server URI.",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "Printer": {
+   "description": "Printer configuration.",
+   "id": "Printer",
+   "properties": {
+    "auxiliaryMessages": {
+     "description": "Output only. Auxiliary messages about issues with the printer configuration if any.",
+     "items": {
+      "$ref": "AuxiliaryMessage"
+     },
+     "readOnly": true,
+     "type": "array"
+    },
+    "createTime": {
+     "description": "Output only. Time when printer was created.",
+     "format": "google-datetime",
+     "readOnly": true,
+     "type": "string"
+    },
+    "description": {
+     "description": "Editable. Description of printer.",
+     "type": "string"
+    },
+    "displayName": {
+     "description": "Editable. Name of printer.",
+     "type": "string"
+    },
+    "id": {
+     "description": "Id of the printer. (During printer creation leave empty)",
+     "type": "string"
+    },
+    "makeAndModel": {
+     "description": "Editable. Make and model of printer. e.g. Lexmark MS610de Value must be in format as seen in ListPrinterModels response.",
+     "type": "string"
+    },
+    "name": {
+     "description": "Identifier. The resource name of the Printer object, in the format customers/{customer-id}/printers/{printer-id} (During printer creation leave empty)",
+     "type": "string"
+    },
+    "orgUnitId": {
+     "description": "Organization Unit that owns this printer (Only can be set during Printer creation)",
+     "type": "string"
+    },
+    "uri": {
+     "description": "Editable. Printer URI.",
+     "type": "string"
+    },
+    "useDriverlessConfig": {
+     "description": "Editable. flag to use driverless configuration or not. If it's set to be true, make_and_model can be ignored",
+     "type": "boolean"
     }
    },
    "type": "object"

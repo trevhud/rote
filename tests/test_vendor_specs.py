@@ -1082,3 +1082,63 @@ def test_a_request_rebound_before_it_runs_is_not_read_as_that_request(
         return req.execute()["threadz"]
     """
     assert _kinds(_deliverable(tmp_path, module), store) == []
+
+
+@pytest.mark.parametrize(
+    ("url", "status", "operation"),
+    [
+        # Same `path` (v1/{+resourceName}); flatPath tells them apart.
+        (
+            "https://people.googleapis.com/v1/people/me?personFields=names",
+            "ok",
+            "people.people.get",
+        ),
+        (
+            "https://people.googleapis.com/v1/contactGroups/g1?groupFields=name",
+            "ok",
+            "people.contactGroups.get",
+        ),
+        (
+            "https://admin.googleapis.com/admin/directory/v1/customers/C/chrome/printers/P",
+            "ok",
+            "admin.customers.chrome.printers.get",
+        ),
+        (
+            "https://admin.googleapis.com/admin/directory/v1/customers/C/chrome/printServers/S",
+            "ok",
+            "admin.customers.chrome.printServers.get",
+        ),
+        # Both {+name} operations match and no flatPath does: not checked.
+        (
+            "https://admin.googleapis.com/admin/directory/v1/customers/C/chrome/faxes/F",
+            "unresolved",
+            None,
+        ),
+    ],
+)
+def test_operations_with_one_path_are_told_apart_by_flat_path(
+    tmp_path: Path, store: SpecStore, url: str, status: str, operation: str | None
+) -> None:
+    """review6 I5: a strict `>` gave the tie to whichever came first, so GET
+    /v1/people/me was checked as contactGroups.get."""
+    module = f"""
+    import httpx
+
+    def fetch():
+        return httpx.get("{url}").json()
+    """
+    root = _deliverable(tmp_path, module)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert (check.status, check.operation) == (status, operation), check
+    if status == "unresolved":
+        assert "matches several operations equally" in (check.note or "")
+
+
+def test_a_boolean_is_not_an_integer(tmp_path: Path, store: SpecStore) -> None:
+    module = f"""
+    import httpx
+
+    def fetch():
+        return httpx.get("{_GMAIL_THREADS}", params={{"maxResults": True}})
+    """
+    assert _kinds(_deliverable(tmp_path, module), store) == ["spec_param_value"]
