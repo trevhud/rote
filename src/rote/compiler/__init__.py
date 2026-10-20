@@ -60,8 +60,8 @@ from rote.compiler.grounding import (
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
-from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
+from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
