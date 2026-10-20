@@ -101,6 +101,35 @@ def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> l
     return argv
 
 
+def discover_skills(examples: Path) -> list[str]:
+    """Every ``<name>/`` under ``examples`` with a skill and an expected IR.
+
+    The five original examples keep their ``DEFAULT_SKILLS`` order; any
+    other skill (the holdout set) follows, smallest skill first, so a
+    ``--budget`` cut drops the expensive compiles rather than the cheap
+    ones. Size is the bytes of SKILL.md plus its references.
+
+    ``examples/holdout/`` is not itself a skill, so discovery on
+    ``examples/`` never reaches the held-out set: benching it takes an
+    explicit ``--examples examples/holdout``.
+    """
+    found = [
+        d.name
+        for d in examples.iterdir()
+        if (d / "skill" / "SKILL.md").is_file() and (d / "expected" / "pipeline.yaml").is_file()
+    ]
+    if not found:
+        raise SystemExit(
+            f"rote bench: no <name>/skill + <name>/expected/pipeline.yaml in {examples}"
+        )
+    rank = {s: i for i, s in enumerate(DEFAULT_SKILLS)}
+
+    def size(name: str) -> int:
+        return sum(p.stat().st_size for p in (examples / name / "skill").rglob("*.md"))
+
+    return sorted(found, key=lambda n: (rank.get(n, len(rank)), size(n), n))
+
+
 def _skill_paths(examples: Path, skill: str) -> tuple[Path, Path]:
     skill_dir = examples / skill / "skill"
     expected = examples / skill / "expected" / "pipeline.yaml"
@@ -254,12 +283,22 @@ def _parser() -> argparse.ArgumentParser:
             "write a diffable results.json. See docs/compile-bench.md."
         ),
     )
-    p.add_argument("--examples", type=Path, help="The repo's examples/ directory")
+    p.add_argument(
+        "--examples",
+        type=Path,
+        help=(
+            "The repo's examples/ directory, or examples/holdout for the held-out "
+            "skills nobody tunes against"
+        ),
+    )
     p.add_argument("--out", type=Path, help="Run directory (compiles, state, results.json)")
     p.add_argument(
         "--skills",
-        default=",".join(DEFAULT_SKILLS),
-        help=f"Comma-separated subset (default: all: {','.join(DEFAULT_SKILLS)})",
+        default=None,
+        help=(
+            "Comma-separated subset (default: every skill under --examples; for "
+            f"examples/ that is {','.join(DEFAULT_SKILLS)})"
+        ),
     )
     p.add_argument("--repeat", type=int, default=1, help="Compiles per skill, for variance")
     p.add_argument("--concurrency", type=int, default=1, help="Compiles in flight at once")
@@ -407,7 +446,10 @@ def main(argv: list[str]) -> int:
     args.examples = args.examples.resolve()
     out: Path = args.out.resolve()
     args.out = out
-    skills = [s.strip() for s in args.skills.split(",") if s.strip()]
+    if args.skills is None:
+        skills = discover_skills(args.examples)
+    else:
+        skills = [s.strip() for s in args.skills.split(",") if s.strip()]
     for skill in skills:
         _skill_paths(args.examples, skill)
     if args.repeat < 1 or args.concurrency < 1:

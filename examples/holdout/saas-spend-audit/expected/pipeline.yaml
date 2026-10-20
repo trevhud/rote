@@ -1,0 +1,404 @@
+name: saas-spend-audit
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  Monthly SaaS spend audit. Pulls the month's software card spend from Ramp
+  and the vendor register from Google Sheets in parallel, fans out one Okta
+  seat-usage pull per registered app, groups charges by merchant descriptor
+  and identifies each descriptor's vendor, runs the six audit rules on every
+  vendor, renders the audit report, parks for the finance lead's keep /
+  cancel / renegotiate decisions, and appends the cancel and renegotiate
+  actions to the Procurement Requests sheet.
+
+config:
+  schedule: null
+  on_failure: notify_owner
+
+input:
+  type: AuditMonth
+  required:
+    - start_date
+    - end_date
+  input_schema:
+    type: object
+    title: AuditMonth
+    properties:
+      start_date:
+        type: string
+        format: date
+        description: "First day of the audited month, YYYY-MM-DD"
+      end_date:
+        type: string
+        format: date
+        description: "Last day of the audited month, YYYY-MM-DD"
+    required: [start_date, end_date]
+    additionalProperties: false
+
+nodes:
+
+  # ── Wave 1: card spend and the register (parallel) ──
+
+  - id: fetch_card_transactions
+    kind: external_call
+    source:
+      section: "Data"
+    description: List the month's Ramp card transactions in the software category.
+    impl: extracted/ramp.py:fetch_card_transactions
+    mcp:
+      server: ramp
+      tool: list_transactions
+      args:
+        from_date: start_date
+        to_date: end_date
+        category: {literal: software}
+    inputs:
+      start_date: pipeline.input.start_date
+      end_date: pipeline.input.end_date
+    input:
+      start_date: str
+      end_date: str
+    output: TransactionList
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 60s
+    mandatory: true
+
+  - id: fetch_vendor_register
+    kind: external_call
+    source:
+      section: "Data"
+    description: Read the vendor register sheet (Register!A:J).
+    impl: extracted/sheets.py:fetch_vendor_register
+    mcp:
+      server: google_sheets
+      tool: read_sheet_values
+      args:
+        spreadsheet_id: {literal: 1VendorRegisterExampleSheetId000000000000}
+        range: {literal: "Register!A:J"}
+    output: SheetValues
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 2: parse the register, group the charges (parallel) ──
+
+  - id: parse_vendor_register
+    kind: pure_function
+    source:
+      section: "Data"
+    description: >-
+      Turn the raw sheet rows into register vendors (skipping the header and
+      blank-vendor rows) and collect the non-blank Okta app ids.
+    impl: extracted/register.py:parse_vendor_register
+    inputs:
+      sheet: fetch_vendor_register.output
+    input:
+      sheet: SheetValues
+    output:
+      vendors: list[RegisterVendor]
+      okta_app_ids: list[str]
+    mandatory: true
+
+  - id: group_by_merchant
+    kind: pure_function
+    source:
+      section: "Match charges to vendors"
+    description: >-
+      Group the month's transactions by merchant descriptor, with each
+      group's total in USD.
+    impl: extracted/spend.py:group_by_merchant
+    inputs:
+      transactions: fetch_card_transactions.output
+    input:
+      transactions: TransactionList
+    output:
+      merchant_groups: list[MerchantGroup]
+    mandatory: true
+
+  # ── Wave 3: seat usage per app and vendor per descriptor (both fan_out) ──
+
+  - id: fetch_app_usage
+    kind: external_call
+    source:
+      section: "Data"
+    description: Pull 30 days of Okta usage for one app id. Runs once per register app id.
+    impl: extracted/okta.py:fetch_app_usage
+    fan_out: true
+    mcp:
+      server: okta
+      tool: get_app_usage
+      args:
+        app_id: app_id
+        days: usage_window_days
+    inputs:
+      app_id: parse_vendor_register.output.okta_app_ids
+    input:
+      app_id: str
+    output: AppUsage
+    constants:
+      usage_window_days: 30
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  - id: identify_vendor
+    kind: llm_judge
+    source:
+      section: "Match charges to vendors"
+    description: >-
+      Decide which vendor one merchant descriptor belongs to. An exact
+      (case-insensitive) match on a register card descriptor short-circuits
+      before the model; otherwise strip processor prefixes and map products
+      to parent vendors, or name an unregistered vendor and its category.
+    fan_out: true
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          merchant_group:
+            "$ref": "#/$defs/MerchantGroup"
+          vendors:
+            type: array
+            items:
+              "$ref": "#/$defs/RegisterVendor"
+        required: [merchant_group, vendors]
+        additionalProperties: false
+        "$defs":
+          MerchantGroup:
+            type: object
+            properties:
+              descriptor:
+                type: string
+              total_usd:
+                type: number
+              transaction_count:
+                type: integer
+            required: [descriptor, total_usd, transaction_count]
+          RegisterVendor:
+            type: object
+            properties:
+              vendor:
+                type: string
+              card_descriptor:
+                type: string
+              category:
+                type: string
+            required: [vendor, card_descriptor, category]
+      output_schema:
+        type: object
+        properties:
+          descriptor:
+            type: string
+          vendor:
+            type: string
+          category:
+            type: string
+          registered:
+            type: boolean
+          rationale:
+            type: string
+        required: [descriptor, vendor, category, registered, rationale]
+        additionalProperties: false
+      prompt: |
+        A company card charge has the merchant descriptor below. Decide which
+        vendor it belongs to.
+
+        - Payment processor prefixes (SQ *, PADDLE.NET*, FS *, PAYPAL *) hide
+          the real vendor after the prefix.
+        - Product names can map to a parent vendor (Jira is Atlassian).
+        - If you are confident it is one of the register vendors, return that
+          vendor's exact name and category, with registered=true.
+        - If it is clearly not any register vendor, name the vendor, pick a
+          category from the categories the register uses, and set
+          registered=false.
+
+        Echo the descriptor back unchanged. Give a one-sentence rationale.
+
+        Merchant descriptor group:
+        {{ merchant_group }}
+
+        Vendor register:
+        {{ vendors }}
+      client: anthropic
+    inputs:
+      merchant_group: group_by_merchant.output.merchant_groups
+      vendors: parse_vendor_register.output.vendors
+    input:
+      merchant_group: MerchantGroup
+      vendors: list[RegisterVendor]
+    output:
+      descriptor: str
+      vendor: str
+      category: str
+      registered: bool
+      rationale: str
+    timeout: 60s
+    mandatory: true
+
+  # ── Wave 4: the rules ──
+
+  - id: apply_spend_rules
+    kind: pure_function
+    source:
+      section: "Rules"
+    description: >-
+      Run all six rules on every vendor (R1 unregistered, R2 over contract by
+      more than 10%, R3 Okta active users below 80% of paid seats, R4 two or
+      more vendors with spend in one category, R5 auto-renewal within 45
+      days of month end, R6 register vendor with no charges and no Okta
+      activity) and estimate savings for R2 and R3.
+    impl: extracted/rules.py:apply_spend_rules
+    inputs:
+      identified: identify_vendor.output
+      merchant_groups: group_by_merchant.output.merchant_groups
+      vendors: parse_vendor_register.output.vendors
+      okta_app_ids: parse_vendor_register.output.okta_app_ids
+      app_usage: fetch_app_usage.output
+      end_date: pipeline.input.end_date
+    input:
+      identified: list[IdentifiedVendor]
+      merchant_groups: list[MerchantGroup]
+      vendors: list[RegisterVendor]
+      okta_app_ids: list[str]
+      app_usage: list[AppUsage]
+      end_date: str
+    output:
+      findings: list[Finding]
+      vendor_spend: list[VendorSpend]
+      renewals: list[Renewal]
+      total_spend_usd: float
+      vendor_count: int
+      unregistered_count: int
+      estimated_savings_usd: float
+    constants:
+      over_contract_pct: 10
+      idle_seat_threshold_pct: 80
+      renewal_window_days: 45
+    mandatory: true
+
+  # ── Wave 5: the report ──
+
+  - id: render_audit_report
+    kind: pure_function
+    source:
+      section: "Report"
+    description: >-
+      Render the audit in the fixed markdown layout: totals, findings sorted
+      by severity then vendor, renewals in the next 45 days.
+    impl: extracted/report.py:render_audit_report
+    inputs:
+      start_date: pipeline.input.start_date
+      audit: apply_spend_rules.output
+    input:
+      start_date: str
+      audit: AuditResult
+    output:
+      report_markdown: str
+    constants:
+      severity_order: [high, medium, low, info]
+    mandatory: true
+
+  # ── Wave 6: the finance lead decides ──
+
+  - id: finance_lead_review
+    kind: hitl_gate
+    source:
+      section: "Finance lead review"
+    description: >-
+      Park until the finance lead answers keep, cancel or renegotiate (with
+      an optional note) for every vendor with a finding.
+    signal: finance_lead_review
+    inputs:
+      start_date: pipeline.input.start_date
+      report_markdown: render_audit_report.output.report_markdown
+    input:
+      start_date: str
+      report_markdown: str
+    notify:
+      channel: slack
+      target: "#finance-ops"
+      message_template: |
+        SaaS spend audit for the month starting {start_date}:
+
+        {report_markdown}
+
+        Reply with keep, cancel or renegotiate (and an optional note) for every
+        vendor with a finding.
+    output:
+      reviewer: str
+      decisions: list[VendorDecision]
+
+  # ── Wave 7-8: log cancel and renegotiate actions ──
+
+  - id: build_procurement_rows
+    kind: pure_function
+    source:
+      section: "Log the actions"
+    description: >-
+      One row per cancel or renegotiate decision (keep is not logged): date,
+      vendor, decision, budget owner, estimated savings, note.
+    impl: extracted/procurement.py:build_procurement_rows
+    inputs:
+      decisions: finance_lead_review.output.decisions
+      audit: apply_spend_rules.output
+    input:
+      decisions: list[VendorDecision]
+      audit: AuditResult
+    output:
+      rows: list[list[str]]
+    constants:
+      logged_decisions: [cancel, renegotiate]
+    mandatory: true
+
+  - id: append_procurement_requests
+    kind: external_call
+    source:
+      section: "Log the actions"
+    description: Append the rows to the Procurement Requests sheet (Requests!A:F).
+    impl: extracted/sheets.py:append_procurement_requests
+    mcp:
+      server: google_sheets
+      tool: append_sheet_values
+      args:
+        spreadsheet_id: {literal: 1ProcurementRequestsExampleSheetId00000000}
+        range: {literal: "Requests!A:F"}
+        values: rows
+    inputs:
+      rows: build_procurement_rows.output.rows
+    input:
+      rows: list[list[str]]
+    output: AppendResult
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+edges:
+  - {from: fetch_vendor_register, to: parse_vendor_register}
+  - {from: fetch_card_transactions, to: group_by_merchant}
+  - {from: parse_vendor_register, to: fetch_app_usage, fan_out: true}
+  - {from: group_by_merchant, to: identify_vendor, fan_out: true}
+  - {from: parse_vendor_register, to: identify_vendor}
+  - {from: identify_vendor, to: apply_spend_rules}
+  - {from: fetch_app_usage, to: apply_spend_rules}
+  - {from: apply_spend_rules, to: render_audit_report}
+  - {from: render_audit_report, to: finance_lead_review}
+  - {from: finance_lead_review, to: build_procurement_rows, on_signal: finance_lead_review}
+  - {from: build_procurement_rows, to: append_procurement_requests}
+
+entry_nodes:
+  - fetch_card_transactions
+  - fetch_vendor_register
+
+exit_nodes:
+  - append_procurement_requests

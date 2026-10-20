@@ -32,13 +32,19 @@ mkdir -p /tmp/bench/cwd && cd /tmp/bench/cwd
 /tmp/bench/venv/bin/rote bench --examples ~/rote/examples --budget 20 --out /tmp/bench/run-all
 ```
 
+The held-out set lives in `examples/holdout/` and is benched separately,
+with `--examples ~/rote/examples/holdout`. Nobody tunes the compiler
+against it (see [its README](../examples/holdout/README.md)), so a
+change that lifts the five examples and drops the holdout scores is
+overfitting. Discovery on `examples/` never reaches it.
+
 `rote bench` is hidden from `rote --help` because it is a developer tool.
 It needs the repo's `examples/`, which the wheel does not ship. The
 options:
 
 | Flag | Meaning |
 | --- | --- |
-| `--skills a,b` | Subset (default: expense-audit, ops-report, invoice-push, deal-monitor, bdr-outreach) |
+| `--skills a,b` | Subset (default: every `<name>/` under `--examples` with a `skill/SKILL.md` and an `expected/pipeline.yaml`. For `examples/` that is expense-audit, ops-report, invoice-push, deal-monitor, bdr-outreach, in that order. Other skills follow, smallest first) |
 | `--repeat K` | Compiles per skill, for run-to-run variance |
 | `--concurrency N` | Compiles in flight at once (default 1) |
 | `--budget USD` | Stop launching compiles once total `total_cost_usd` reaches this. Running ones finish, so the overshoot is at most `N - 1` compiles |

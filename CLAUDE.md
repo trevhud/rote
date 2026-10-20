@@ -1634,6 +1634,14 @@ copy the shape of an existing canonical example.
 | Test the CLI via subprocess | `tests/test_cli.py::test_subprocess_emit_bdr` |
 | Add a rubric file | Any file in `skills/rote-compile/references/` — keep them 200-300 lines, concrete, with BDR examples for every point |
 
+**Never tune against `examples/holdout/`.** Those skills and their gold
+pipelines are the held-out half of `rote bench` (see
+[`examples/holdout/README.md`](examples/holdout/README.md)). Rubric or
+prompt work is judged on the five top-level examples, then checked
+once against the holdout with `--examples examples/holdout`. Don't
+cite holdout skills as rubric examples either: that leaks the answer
+key into the compiler.
+
 ---
 
 ## Invariants that must hold

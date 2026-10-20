@@ -1,0 +1,385 @@
+name: customer-onboarding
+version: "0.1.0"
+source_skill: ../skill
+description: |
+  Onboard a closed-won customer: pull the HubSpot deal, run the mandatory
+  sanctions screen, check the commercial terms and the special terms note,
+  park for the CS lead's sign-off, then provision the workspace, open the
+  Linear onboarding project, invite every admin contact and announce the
+  launch in #cs-onboarding.
+
+config:
+  on_failure: notify_owner
+
+input:
+  type: OnboardingRequest
+  required:
+    - deal_id
+  input_schema:
+    type: object
+    title: OnboardingRequest
+    properties:
+      deal_id:
+        type: string
+        description: "The closed-won HubSpot deal id"
+    required: [deal_id]
+    additionalProperties: false
+
+nodes:
+
+  # ── Wave 1: the deal ──
+
+  - id: fetch_deal
+    kind: external_call
+    source:
+      section: "1. Pull the deal"
+    description: >-
+      Fetch the deal from HubSpot: company name, plan, seats, discount %,
+      payment terms, special terms note and admin contacts.
+    impl: extracted/hubspot.py:fetch_deal
+    mcp:
+      server: hubspot
+      tool: hubspot_get_deal
+      args:
+        deal_id: deal_id
+    inputs:
+      deal_id: pipeline.input.deal_id
+    input:
+      deal_id: str
+    output:
+      company_name: str
+      plan: str
+      seats: int
+      discount_pct: float
+      payment_terms_days: int
+      special_terms: str | None
+      admin_contacts: list[AdminContact]
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 2: three independent checks on the deal (parallel) ──
+
+  - id: screen_company
+    kind: external_call
+    source:
+      section: "2. Sanctions screen (MANDATORY)"
+    description: >-
+      Run the company name through the compliance sanctions screen. Every
+      customer, before anything is provisioned. The raw result goes to the
+      CS lead; a hit does not stop the run by itself.
+    impl: extracted/compliance.py:screen_company
+    mcp:
+      server: compliance
+      tool: screen_entity
+      args:
+        name: company_name
+    inputs:
+      company_name: fetch_deal.output.company_name
+    input:
+      company_name: str
+    output: ScreenResult
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  - id: check_commercial_terms
+    kind: pure_function
+    source:
+      section: "3. Commercial terms"
+    description: >-
+      Compare discount, payment terms and seat count against the standard
+      terms and list every deviation: discount over 20%, payment terms
+      longer than net 30, seats above the plan cap (Starter 25, Growth 200,
+      Enterprise uncapped).
+    impl: extracted/terms.py:check_commercial_terms
+    inputs:
+      plan: fetch_deal.output.plan
+      seats: fetch_deal.output.seats
+      discount_pct: fetch_deal.output.discount_pct
+      payment_terms_days: fetch_deal.output.payment_terms_days
+    input:
+      plan: str
+      seats: int
+      discount_pct: float
+      payment_terms_days: int
+    output:
+      standard: bool
+      deviations: list[str]
+    constants:
+      max_discount_pct: 20
+      max_payment_terms_days: 30
+      plan_seat_caps:
+        starter: 25
+        growth: 200
+      uncapped_plans: [enterprise]
+    mandatory: true
+
+  - id: review_special_terms
+    kind: llm_judge
+    source:
+      section: "4. Special terms note"
+    description: >-
+      Read the deal's free-text special terms note and flag every clause
+      that changes the MSA (custom SLA, liability cap, data residency,
+      termination for convenience, MFN pricing). Empty or scheduling-only
+      notes are standard.
+    signature_spec:
+      input_schema:
+        type: object
+        properties:
+          special_terms:
+            anyOf:
+              - type: string
+              - type: "null"
+        required: [special_terms]
+        additionalProperties: false
+      output_schema:
+        type: object
+        properties:
+          standard:
+            type: boolean
+          flagged_clauses:
+            type: array
+            items:
+              type: object
+              properties:
+                category:
+                  enum:
+                    - custom_sla
+                    - liability_cap
+                    - data_residency
+                    - termination_for_convenience
+                    - mfn_pricing
+                    - other_msa_change
+                quote:
+                  type: string
+              required: [category, quote]
+              additionalProperties: false
+        required: [standard, flagged_clauses]
+        additionalProperties: false
+      prompt: |
+        You are reviewing the special terms note on a closed-won deal before
+        the customer is onboarded.
+
+        Flag every clause that changes our standard MSA:
+        - custom SLA
+        - liability cap changes
+        - data residency
+        - termination for convenience
+        - MFN pricing
+        Use other_msa_change for any other change to the MSA.
+
+        An empty note, or one with only scheduling notes (kickoff dates,
+        contact preferences), is standard: return standard=true and no
+        flagged clauses.
+
+        Quote each flagged clause exactly as written.
+
+        Special terms note:
+        {{ special_terms }}
+      client: anthropic
+    inputs:
+      special_terms: fetch_deal.output.special_terms
+    input:
+      special_terms: str | None
+    output:
+      standard: bool
+      flagged_clauses: list[FlaggedClause]
+    timeout: 60s
+    mandatory: true
+
+  # ── Wave 3: CS lead sign-off ──
+
+  - id: cs_lead_approval
+    kind: hitl_gate
+    source:
+      section: "5. CS lead sign-off"
+    description: >-
+      Send the CS lead the deal summary, the screen result and the
+      non-standard items (commercial deviations and flagged MSA clauses),
+      and park until they approve. The approval may change the plan, the
+      seat count or the region (region defaults to us-east-1 "unless the CS
+      lead says otherwise").
+    signal: cs_lead_approval
+    # No notify: the skill says "send the CS lead" but names no channel or
+    # address, so the gate carries what to send (inputs) and leaves the
+    # delivery channel to the deployment.
+    inputs:
+      deal: fetch_deal.output
+      screen: screen_company.output
+      commercial_terms: check_commercial_terms.output
+      special_terms: review_special_terms.output
+    input:
+      deal: Deal
+      screen: ScreenResult
+      commercial_terms: CommercialTermsCheck
+      special_terms: SpecialTermsReview
+    output:
+      approver: str
+      plan: str
+      seats: int
+      region: str | None
+
+  # ── Wave 4: provision and open the project (parallel) ──
+
+  - id: provision_workspace
+    kind: external_call
+    source:
+      section: "6. Provision"
+    description: >-
+      POST /v1/workspaces on the internal admin API with the company name
+      and the approved plan, seats and region (us-east-1 unless the CS lead
+      set one). Retries on 5xx.
+    impl: extracted/admin_api.py:provision_workspace
+    inputs:
+      company_name: fetch_deal.output.company_name
+      plan: cs_lead_approval.output.plan
+      seats: cs_lead_approval.output.seats
+      region: cs_lead_approval.output.region
+    input:
+      company_name: str
+      plan: str
+      seats: int
+      region: str | None
+    output:
+      workspace_id: str
+      workspace_url: str
+    constants:
+      admin_api_base_url: https://admin.internal.example.com
+      default_region: us-east-1
+    retry:
+      max: 5
+      backoff: exponential
+      retry_on: [server_error, network]
+    timeout: 60s
+    mandatory: true
+
+  - id: create_onboarding_project
+    kind: external_call
+    source:
+      section: "6. Provision"
+    description: >-
+      Create the Linear onboarding project from the "Customer Onboarding v3"
+      template, named after the company.
+    impl: extracted/linear.py:create_onboarding_project
+    mcp:
+      server: linear
+      tool: create_project
+      args:
+        name: company_name
+        template: {literal: "Customer Onboarding v3"}
+    inputs:
+      company_name: fetch_deal.output.company_name
+    input:
+      company_name: str
+    output: LinearProject
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 5: one invite per admin contact (fan_out) ──
+
+  - id: invite_admins
+    kind: external_call
+    source:
+      section: "7. Invite admins"
+    description: >-
+      POST /v1/workspaces/{workspace_id}/invites for one admin contact, with
+      their email and role admin. Runs once per contact.
+    impl: extracted/admin_api.py:invite_admin
+    fan_out: true
+    inputs:
+      contact: fetch_deal.output.admin_contacts
+      workspace_id: provision_workspace.output.workspace_id
+    input:
+      contact: AdminContact
+      workspace_id: str
+    output:
+      invite_id: str
+      email: str
+    constants:
+      admin_api_base_url: https://admin.internal.example.com
+      role: admin
+    retry:
+      max: 5
+      backoff: exponential
+      retry_on: [server_error, network]
+    timeout: 30s
+    mandatory: true
+
+  # ── Wave 6: announce ──
+
+  - id: render_welcome_post
+    kind: pure_function
+    source:
+      section: "8. Announce"
+    description: Fill the fixed #cs-onboarding announcement template.
+    impl: extracted/announce.py:render_welcome_post
+    inputs:
+      company_name: fetch_deal.output.company_name
+      approval: cs_lead_approval.output
+      workspace_url: provision_workspace.output.workspace_url
+      project: create_onboarding_project.output
+    input:
+      company_name: str
+      approval: CsLeadApproval
+      workspace_url: str
+      project: LinearProject
+    output:
+      text: str
+    mandatory: true
+
+  - id: post_welcome
+    kind: external_call
+    source:
+      section: "8. Announce"
+    description: Post the announcement to #cs-onboarding (C0ONBOARD01).
+    impl: extracted/slack.py:post_welcome
+    mcp:
+      server: slack
+      tool: slack_post_message
+      args:
+        channel: {literal: C0ONBOARD01}
+        text: text
+    inputs:
+      text: render_welcome_post.output.text
+    input:
+      text: str
+    output: SlackMessage
+    retry:
+      max: 3
+      backoff: exponential
+      retry_on: [rate_limit, network]
+    timeout: 30s
+    mandatory: true
+
+edges:
+  - {from: fetch_deal, to: screen_company}
+  - {from: fetch_deal, to: check_commercial_terms}
+  - {from: fetch_deal, to: review_special_terms}
+  - {from: screen_company, to: cs_lead_approval}
+  - {from: check_commercial_terms, to: cs_lead_approval}
+  - {from: review_special_terms, to: cs_lead_approval}
+  - {from: cs_lead_approval, to: provision_workspace, on_signal: cs_lead_approval}
+  - {from: cs_lead_approval, to: create_onboarding_project, on_signal: cs_lead_approval}
+  - {from: fetch_deal, to: invite_admins, fan_out: true}
+  - {from: provision_workspace, to: invite_admins}
+  - {from: invite_admins, to: render_welcome_post}
+  - {from: create_onboarding_project, to: render_welcome_post}
+  - {from: render_welcome_post, to: post_welcome}
+
+entry_nodes:
+  - fetch_deal
+
+exit_nodes:
+  - post_welcome
