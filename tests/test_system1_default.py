@@ -721,6 +721,9 @@ def test_a_fanned_upstream_typed_as_an_object_is_replaced(tmp_path: Path) -> Non
         ({"type": "array"}, {"type": "object"}, False),
         ({"type": "array"}, {"type": ["array", "null"]}, True),
         ({"type": "array"}, {"type": ["object", "null"]}, False),
+        ({"type": "array"}, {"anyOf": [{"type": "object"}]}, False),
+        ({"type": "array"}, {"oneOf": [{"type": "array"}, {"type": "null"}]}, True),
+        ({"type": "array"}, {"anyOf": [{"type": "object"}, {}]}, True),
         (
             {"type": "array", "items": {"type": "object"}},
             {"type": "array", "items": {"type": "string"}},
