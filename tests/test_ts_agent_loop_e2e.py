@@ -43,6 +43,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.ir import Pipeline
+from tests import _node_trees as node_trees
 from tests._messages_api import reject_like_the_api
 
 pytestmark = pytest.mark.slow
@@ -265,15 +266,7 @@ def test_emitted_agent_loop_binds_mcp_tools_and_runs(
     get_adapter("dbos-ts").emit(_pipeline(), app_dir)
     (app_dir / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
 
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     build = subprocess.run(["npx", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
 
@@ -340,14 +333,7 @@ def test_emitted_agent_loop_fails_loudly_when_a_tool_has_no_server(
     app_dir = tmp_path / "app"
     get_adapter("dbos-ts").emit(_pipeline(), app_dir)
     (app_dir / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
-    subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
+    node_trees.install(app_dir)
     build = subprocess.run(["npx", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
 
@@ -413,15 +399,7 @@ def test_resolved_tool_binds_from_its_own_server_not_whichever_answers_first(
     get_adapter("dbos-ts").emit(_pinned_pipeline("research_tools"), app_dir)
     (app_dir / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
 
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     build = subprocess.run(["npx", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
 

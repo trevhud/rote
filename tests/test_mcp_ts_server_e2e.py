@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import pickle
 import shutil
 import socket
@@ -47,6 +46,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS  # noqa: E402
 from rote.adapters import get_adapter  # noqa: E402
 from rote.ir import Pipeline  # noqa: E402
 from rote.mcp import _runtime_helper as helper  # noqa: E402
+from tests import _node_trees as node_trees  # noqa: E402
 
 # Exact pins: this suite asserts which protocol era each line negotiates,
 # so a silent major bump should show up as a diff here, not as a flake.
@@ -146,20 +146,7 @@ def node_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
         json.dumps({"name": "ts-mcp-servers", "private": True, "type": "module"}),
         encoding="utf-8",
     )
-    install = subprocess.run(
-        [
-            "npm",
-            "install",
-            "--no-audit",
-            "--no-fund",
-            *(f"{name}@{version}" for name, version in _PACKAGES.items()),
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(root, *(f"{name}@{version}" for name, version in _PACKAGES.items()))
     org = json.dumps(_ORG)
     (root / "v1.mjs").write_text(_V1_SERVER % {"org": org}, encoding="utf-8")
     (root / "v2.mjs").write_text(_V2_SERVER % {"org": org}, encoding="utf-8")
@@ -392,15 +379,7 @@ def test_python_and_typescript_helpers_agree_on_fastmcp_results(
     app = tmp_path / "app"
     get_adapter("dbos-ts").emit(pipeline, app)
     (app / "src" / "driver.ts").write_text(_SHAPES_DRIVER_TS, encoding="utf-8")
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app)
     build = subprocess.run(["npx", "tsc"], cwd=app, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
     run = subprocess.run(

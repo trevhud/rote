@@ -16,7 +16,6 @@ No inference: tsc only.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -25,6 +24,7 @@ import pytest
 
 from rote.adapters import get_adapter
 from rote.ir import load_pipeline
+from tests import _node_trees as node_trees
 
 pytestmark = pytest.mark.slow
 
@@ -44,15 +44,7 @@ def test_holdout_gold_type_checks(pipeline_yaml: Path, runtime: str, tmp_path: P
         pytest.skip("Node / npm not available")
     out = tmp_path / runtime
     get_adapter(runtime).emit(load_pipeline(pipeline_yaml), out)
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund", "--prefer-offline"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(out)
     tsc = subprocess.run(
         ["npx", "--no-install", "tsc", "--noEmit"],
         cwd=out,

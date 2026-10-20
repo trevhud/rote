@@ -2065,6 +2065,15 @@ Consequences worth keeping in mind:
   real Postgres — no inference, so they are automated (see the
   `TypeScript e2e` / `DBOS-TS e2e` CI jobs). `@pytest.mark.slow` says
   what *toolchain* a suite needs, never whether it should run.
+- **Every npm install in a test goes through `tests/_node_trees.py`.**
+  It installs once per distinct dependency set (the dependency fields
+  of `package.json`, install scripts, extra npm args, node and npm
+  versions) and symlinks each app's `node_modules` to that tree. Per-app
+  installs used to take 8.7G per CI run, which overflowed ubuntu-26.04's
+  quota-limited `/tmp`. A slow test's `rote run` installs go the same
+  way (conftest swaps the runners' `ensure_npm_install`). A raw
+  `npm install` in a test fails `tests/test_node_trees.py`, because it
+  would write into a tree other tests share.
 - **Emitted judges and agent loops get stubbed, not called.** The live
   suites point `ROTE_BASE_URL_<NODE_ID>` at a local Messages stub and
   set a fake key. That is what makes it possible to prove the agent-loop
