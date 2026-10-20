@@ -281,7 +281,11 @@ An example opts in with `examples/<name>/fidelity/cases.yaml`:
   reason, and the case lists it under `refused_calls`. A compile that
   guessed `search_query` for a tool whose argument is `query` gets an
   error, as it would from the real server, not the fixture's catch-all
-  answer.
+  answer. A schema without `additionalProperties` is treated as `false`,
+  matching FastMCP and other pydantic-validated servers. A server built on
+  the TypeScript SDK may ignore extra arguments instead, so against one of
+  those a refused unknown argument can overstate the failure; a missing
+  required argument fails either way.
 - **Two or three cases**: an input (or a patched copy of the example's
   input), the fixed payload a person gives at each gate, and the fixture
   responses. Each case has several records and crosses different

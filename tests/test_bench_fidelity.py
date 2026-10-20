@@ -490,6 +490,112 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
 
 
 @pytest.mark.slow
+def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
+    tmp_path: Path,
+) -> None:
+    """The post-merge bug, end to end: a compile sends `search_query` to a
+    tool that takes `query`. The fixture refuses it, the case lists the
+    refused call with the reason, and the failure is the mcp binding's,
+    not a replay of the node's impl (here a stub that never runs)."""
+    pytest.importorskip("dbos")
+    pytest.importorskip("fastmcp")
+    import yaml
+
+    from rote.bench.fidelity import pipeline_fidelity
+
+    example = tmp_path / "example"
+    (example / "fidelity").mkdir(parents=True)
+    tool = {
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+    }
+    (example / "fidelity" / "cases.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "output_fields": {"thread_ids": "ids of the dock threads"},
+                "servers": {"gmail": {"tools": {"search_threads": tool}}},
+                "cases": [
+                    {
+                        "id": "c",
+                        "input": {"q": "label:dock-activity"},
+                        "fixtures": {
+                            "gmail": {
+                                "search_threads": [
+                                    {"when_contains": {"query": "dock"}, "result": [{"id": "t1"}]},
+                                    {"result": []},
+                                ]
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    good = {
+        "server": "gmail",
+        "tool": "search_threads",
+        "arguments": {"query": "label:dock-activity"},
+        "side_effect": False,
+        "matched": True,
+        "response": 0,
+    }
+    run = {"output": {"thread_ids": ["T1", "T2"], "outcome": "completed"}, "calls": [good]}
+    (example / "fidelity" / "reference.json").write_text(
+        json.dumps({"cases": {"c": {"runs": [run, run]}}}), encoding="utf-8"
+    )
+
+    compiled = tmp_path / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "gmail.py").write_text(
+        "def search(q):\n    raise NotImplementedError('a stub the mcp backend never runs')\n",
+        encoding="utf-8",
+    )
+    (compiled / "pipeline.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "dock",
+                "input": {"type": "In", "required": ["q"]},
+                "nodes": [
+                    {
+                        "id": "fetch_dock_emails",
+                        "kind": "external_call",
+                        "description": "search the dock threads",
+                        "impl": "extracted/gmail.py:search",
+                        "inputs": {"q": "pipeline.input.q"},
+                        "mcp": {
+                            "server": "gmail",
+                            "tool": "search_threads",
+                            "args": {"search_query": "q"},
+                        },
+                        "retry": {"max": 0},
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = pipeline_fidelity(compiled, example, tmp_path / "work")
+    case = report["cases"]["c"]
+    assert case["refused_calls"] == [
+        {
+            "call": "gmail.search_threads",
+            "arguments": {"search_query": "label:dock-activity"},
+            "why": "missing required argument(s): query",
+        }
+    ]
+    assert case["failure"]["node"] == "fetch_dock_emails"
+    assert case["failure"]["at"] == "mcp gmail.search_threads"
+    assert "NotImplementedError" not in (case["failure"]["exception"] or "")
+    assert case["outcome"] == 0.0
+
+
+@pytest.mark.slow
 def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> None:
     """DBOS re-raises a step's error without its traceback; the replay
     rebuilds the failing node's inputs from what DBOS recorded and finds
