@@ -184,13 +184,13 @@ def run_wizard(
     echo("")
     tb = _ask(
         "Let Claude Haiku decide the steps System-1 is unsure of? One small call a "
-        "compile, billed like the compile itself [Y/n]: ",
+        "compile, billed like the compile itself [y/N]: ",
         input_fn,
-        default="y",
+        default="n",
         valid={"y", "n"},
     )
-    if tb == "n":
-        values["tiebreak"] = "none"
+    if tb == "y":
+        values["tiebreak"] = "haiku"
 
     # ── Write ──
     target = (cwd or Path.cwd()) / "rote.yaml" if project else user_config_path()

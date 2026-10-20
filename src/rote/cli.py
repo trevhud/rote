@@ -52,6 +52,7 @@ from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.compiler.provenance import PROVENANCE_NODE
 from rote.compiler.system1 import DECIDERS, TIEBREAKS
+from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
@@ -3549,7 +3550,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["effort"].source,
         ),
         "decider": (resolved["decider"].value or "rules", resolved["decider"].source),
-        "tiebreak": (resolved["tiebreak"].value or "haiku", resolved["tiebreak"].source),
+        "tiebreak": (
+            resolved["tiebreak"].value or DEFAULT_TIEBREAK,
+            resolved["tiebreak"].source,
+        ),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3568,7 +3572,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "effort": resolved["effort"].value,
             # Concrete like runtime: unset means rules, which is what runs.
             "decider": resolved["decider"].value or "rules",
-            "tiebreak": resolved["tiebreak"].value or "haiku",
+            "tiebreak": resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -3993,13 +3997,14 @@ def _runs_system1(args: argparse.Namespace) -> bool:
 
 def _local_tiebreak(args: argparse.Namespace, resolved: Resolved) -> str:
     """The tie-break a local compile (or analyze) uses: the layered ``tiebreak``
-    setting, else ``haiku``. A ``--tiebreak`` flag on a compile that does not run
-    System-1 is a usage error, like ``--decider``. A configured value is a
-    standing preference and needs no note: on that path nothing would ask."""
+    setting, else :data:`DEFAULT_TIEBREAK` (``none``). A ``--tiebreak`` flag on
+    a compile that does not run System-1 is a usage error, like ``--decider``.
+    A configured value is a standing preference and needs no note: on that
+    path nothing would ask."""
     if resolved.source == "flag" and not _runs_system1(args):
         why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
         raise ValueError(f"--tiebreak applies to System-1 compiles, and {why} does not run one")
-    return resolved.value or "haiku"
+    return resolved.value or DEFAULT_TIEBREAK
 
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
@@ -4040,7 +4045,8 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Who decides the steps System-1 is still unsure of (default: the `tiebreak` "
-            "setting, else haiku). 'haiku' asks Claude Haiku in one schema-locked call, "
+            f"setting, else {DEFAULT_TIEBREAK}). 'haiku' asks Claude Haiku in one "
+            "schema-locked call, "
             "billed like the compile: claude -p on your subscription under the claude "
             "driver, the api driver's own client under --agent api, otherwise an "
             "Anthropic key or the claude CLI. 'none' makes no call: those steps take "

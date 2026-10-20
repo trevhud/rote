@@ -147,7 +147,7 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         env="ROTE_TIEBREAK",
         description=(
             "who decides the steps System-1 is still unsure of: haiku (one small call, "
-            "billed like the compile) or none; unset = haiku"
+            "billed like the compile) or none; unset = none"
         ),
         lazy_choices="tiebreak",
     ),

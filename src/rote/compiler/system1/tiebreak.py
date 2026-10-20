@@ -1,4 +1,4 @@
-"""A small LLM decides the steps System-1 is unsure of (``--tiebreak haiku``, the default).
+"""A small LLM decides the steps System-1 is unsure of (``--tiebreak haiku``, opt-in).
 
 After the rules (and a decision model, with ``--decider clef|jev``) have
 decided every step, some steps are still unsure: the rules had no clear
@@ -6,8 +6,9 @@ signal, or the model disagreed below its threshold. Those steps' kind
 decisions sit below ``REVIEW_BELOW``. Their text goes to Haiku in one
 schema-locked call, with the node-kind rubric, and Haiku's node list
 replaces the conservative default for each. Every other step keeps its
-decision. ``--tiebreak none`` skips the call, and the unsure steps keep the
-conservative default and are listed for review.
+decision. ``--tiebreak none`` (the default, :data:`DEFAULT_TIEBREAK`) skips
+the call, and the unsure steps keep the conservative default and are listed
+for review.
 
 The call bills the way the compile does. Under the ``claude`` driver it is
 ``claude -p`` on the user's subscription. Under the ``api`` driver it uses
@@ -39,6 +40,12 @@ from rote.compiler.system1.parse import SkillParse, Unit
 
 #: The choices of ``--tiebreak`` and the ``tiebreak`` setting.
 TIEBREAKS = ("haiku", "none")
+#: Off by default. Measured on the cached API driver, 3 compiles per cell,
+#: fidelity: expense-audit 0.909 with it against 0.915 without, ops-report
+#: 0.855 against 0.858. That is within run-to-run spread, but not at least
+#: the rules' level, which was the bar for default-on. Its kind-accuracy gain
+#: is on held-out skeletons, where fidelity is not measured.
+DEFAULT_TIEBREAK = "none"
 #: The model behind ``haiku``: the current Haiku (models.dev, 2026-10-07).
 MODEL = "claude-haiku-5-5"
 KINDS = ("pure_function", "external_call", "llm_judge", "agent_loop", "hitl_gate")

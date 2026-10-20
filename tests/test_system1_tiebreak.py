@@ -477,7 +477,7 @@ async def test_the_compile_fails_loudly_without_a_lane(
 ) -> None:
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
     with pytest.raises(CompilerError, match="--tiebreak none"):
-        await Compiler().compile(_skill(tmp_path), tmp_path / "out")
+        await Compiler(system1_tiebreak="haiku").compile(_skill(tmp_path), tmp_path / "out")
 
 
 @pytest.mark.asyncio
@@ -498,7 +498,7 @@ async def test_the_compile_logs_the_tiebreak_and_its_cost(
     _install(monkeypatch, _Stub(_answer("llm_judge")))
     logs: list[str] = []
     with pytest.raises(_Stop):
-        await Compiler(on_event=lambda e: logs.append(e.message)).compile(
+        await Compiler(on_event=lambda e: logs.append(e.message), system1_tiebreak="haiku").compile(
             _skill(tmp_path), tmp_path / "out"
         )
     assert (
@@ -546,13 +546,14 @@ def test_the_tiebreak_is_a_layered_setting(
     if command == "compile":
         argv += ["--local", "--runtime", "dbos", "--no-eval", "--out", str(tmp_path / "o")]
 
-    assert _main(argv) is None and seen[-1]["system1_tiebreak"] == "haiku"
-    user.write_text("tiebreak: none\n")
+    # Off by default: the cached-API fidelity bench did not clear the bar.
     assert _main(argv) is None and seen[-1]["system1_tiebreak"] == "none"
-    monkeypatch.setenv("ROTE_TIEBREAK", "haiku")
+    user.write_text("tiebreak: haiku\n")
     assert _main(argv) is None and seen[-1]["system1_tiebreak"] == "haiku"
-    assert _main([*argv, "--tiebreak", "none"]) is None
-    assert seen[-1]["system1_tiebreak"] == "none"
+    monkeypatch.setenv("ROTE_TIEBREAK", "none")
+    assert _main(argv) is None and seen[-1]["system1_tiebreak"] == "none"
+    assert _main([*argv, "--tiebreak", "haiku"]) is None
+    assert seen[-1]["system1_tiebreak"] == "haiku"
 
 
 def test_a_tiebreak_flag_without_system1_is_a_usage_error(
@@ -588,11 +589,11 @@ def test_rote_config_reports_the_tiebreak(
 ) -> None:
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["tiebreak"]
-    assert setting == {"value": "haiku", "source": "built-in default"}
-    monkeypatch.setenv("ROTE_TIEBREAK", "none")
+    assert setting == {"value": "none", "source": "built-in default"}
+    monkeypatch.setenv("ROTE_TIEBREAK", "haiku")
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["tiebreak"]
-    assert setting == {"value": "none", "source": "env ROTE_TIEBREAK"}
+    assert setting == {"value": "haiku", "source": "env ROTE_TIEBREAK"}
 
 
 def test_the_bench_counts_the_decision_calls(tmp_path: Path) -> None:
