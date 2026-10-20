@@ -764,6 +764,24 @@ def unsure_units(skill: SkillParse, segments: Mapping[int, list[Segment]]) -> li
     ]
 
 
+def infeasible_kinds(u: Unit, registry: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Kinds this step cannot be, whoever proposes them, with the rule why.
+
+    These are the rules that are constraints, not guesses: a model deciding
+    an unsure step (the tie-break) may pick any other kind, never these. A
+    real expense-audit compile shows why: the tie-break made "save it to the
+    finance shared folder" an external_call, the agent could only write a
+    stub for a system the skill never names, and every run died there.
+    """
+    out: dict[str, str] = {}
+    if not u.signals.get("fetch") and not _names_a_system(u, registry):
+        out["external_call"] = (
+            "the step reads nothing and writes to no named system, so its result is "
+            "the pipeline's output"
+        )
+    return out
+
+
 def role_of_kind(kind: str) -> str:
     """The node role a kind decided outside the rules gets."""
     return _ROLE_OF_KIND[kind]

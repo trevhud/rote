@@ -129,14 +129,14 @@ def test_a_decision_models_guess_rides_along(tmp_path: Path) -> None:
 def test_the_answer_replaces_only_the_unsure_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _install(monkeypatch, _Stub(_answer("external_call", "pure_function")))
+    _install(monkeypatch, _Stub(_answer("llm_judge", "pure_function")))
     work = tmp_path / "work"
     work.mkdir()
     plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
     kinds = [(n.unit.index, n.kind) for n in plan.nodes]
     assert kinds == [
         (0, "pure_function"),
-        (UNSURE, "external_call"),
+        (UNSURE, "llm_judge"),
         (UNSURE, "pure_function"),
         (2, "llm_judge"),
     ]
@@ -152,6 +152,32 @@ def test_the_answer_replaces_only_the_unsure_step(
     assert doc["model"] == "claude-haiku-5-5" and doc["steps_asked"] == [str(UNSURE)]
     assert doc["cost_usd"] == 0.0017 and doc["lane"] == "claude -p (subscription)"
     assert "claude-haiku-5-5 for the 1 step(s)" in system1.report_extras(work, plan).preamble
+
+
+def test_a_rule_constraint_overrules_the_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "Tidy the notes for the file" reads nothing and names no system: it can
+    never be an external_call, whatever the model says (a real expense-audit
+    compile died on exactly that stub)."""
+    _install(monkeypatch, _Stub(_answer("external_call", "llm_judge")))
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    assert [n.kind for n in plan.nodes if n.unit.index == UNSURE] == ["llm_judge"]
+    doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
+    assert doc["overruled"] == {
+        str(UNSURE): [
+            "external_call: the step reads nothing and writes to no named system, so its "
+            "result is the pipeline's output"
+        ]
+    }
+
+    # Nothing allowed left: the rules' decision stands.
+    _install(monkeypatch, _Stub(_answer("external_call")))
+    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    assert [n.kind for n in plan.nodes if n.unit.index == UNSURE] == ["pure_function"]
+    assert any("no signal" in line for line in plan.review)
 
 
 def test_without_a_lane_nothing_is_asked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
