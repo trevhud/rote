@@ -387,7 +387,10 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
                     {"when": {"file_id": "B"}, "result": {"rows": [1, 2]}},
                 ],
                 "search": [
-                    {"when_contains": {"query": "DOCK"}, "result": [{"id": "t1"}, {"id": "t2"}]}
+                    {"when_contains": {"query": "DOCK"}, "result": [{"id": "t1"}, {"id": "t2"}]},
+                    # A catch-all, so only argument validation can refuse
+                    # the misnamed call below.
+                    {"result": []},
                 ],
             }
         },
@@ -401,6 +404,12 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         )
         with pytest.raises(Exception, match="no fixture response"):
             asyncio.run(call_mcp_tool("drive", None, "read_file_content", {"file_id": "C"}))
+        # The argument the server does not have, as a compiled pipeline sent
+        # it: a real server refuses it, so the fixture must not answer it.
+        with pytest.raises(Exception, match="invalid arguments for search"):
+            asyncio.run(
+                call_mcp_tool("drive", None, "search", {"search_query": "label:dock-activity"})
+            )
         calls = read_calls(log)
     assert a == "site,pct\nEAST1,80"
     assert b == {"rows": [1, 2]}
@@ -410,8 +419,48 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         ("read_file_content", {"file_id": "B"}, True, 1),
         ("search", {"query": "label:dock-activity"}, True, 0),
         ("read_file_content", {"file_id": "C"}, False, None),
+        ("search", {"search_query": "label:dock-activity"}, False, None),
     ]
+    assert "search_query" in calls[-1]["invalid_arguments"]
+    assert calls[0]["invalid_arguments"] is None
     assert json.loads(json.dumps(calls))  # the log is plain JSON
+
+
+def test_fixture_argument_checks_match_a_real_servers() -> None:
+    from rote.bench.fixture_mcp import _schema_error
+
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+        "required": ["query"],
+    }
+    assert _schema_error(schema, {"query": "x", "max_results": 5}) is None
+    assert "missing required argument(s): query" in str(_schema_error(schema, {}))
+    assert "unknown argument(s): search_query" in str(
+        _schema_error(schema, {"query": "x", "search_query": "x"})
+    )
+    assert "must be integer" in str(_schema_error(schema, {"query": "x", "max_results": "5"}))
+    assert "must be integer" in str(_schema_error(schema, {"query": "x", "max_results": True}))
+    assert _schema_error({**schema, "additionalProperties": True}, {"query": "x", "z": 1}) is None
+
+
+def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
+    """The references were recorded before the fixtures checked arguments;
+    a reference call the check would now refuse would make the reference
+    itself unreachable."""
+    from rote.bench.fidelity import load_cases
+    from rote.bench.fixture_mcp import _schema_error
+
+    from .conftest import EXAMPLES_DIR
+
+    for example in ("expense-audit", "ops-report"):
+        casefile = load_cases(EXAMPLES_DIR / example)
+        reference = json.loads(casefile.reference_path.read_text(encoding="utf-8"))
+        for case in reference["cases"].values():
+            for run in case["runs"]:
+                for call in run["calls"]:
+                    tool = casefile.servers[call["server"]]["tools"][call["tool"]]
+                    assert _schema_error(tool["parameters"], call["arguments"]) is None, call
 
 
 def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
@@ -438,6 +487,112 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
         fidelity.fixture_servers(casefile, case, tmp_path / "w"),
     ):
         pass
+
+
+@pytest.mark.slow
+def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
+    tmp_path: Path,
+) -> None:
+    """The post-merge bug, end to end: a compile sends `search_query` to a
+    tool that takes `query`. The fixture refuses it, the case lists the
+    refused call with the reason, and the failure is the mcp binding's,
+    not a replay of the node's impl (here a stub that never runs)."""
+    pytest.importorskip("dbos")
+    pytest.importorskip("fastmcp")
+    import yaml
+
+    from rote.bench.fidelity import pipeline_fidelity
+
+    example = tmp_path / "example"
+    (example / "fidelity").mkdir(parents=True)
+    tool = {
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+    }
+    (example / "fidelity" / "cases.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "output_fields": {"thread_ids": "ids of the dock threads"},
+                "servers": {"gmail": {"tools": {"search_threads": tool}}},
+                "cases": [
+                    {
+                        "id": "c",
+                        "input": {"q": "label:dock-activity"},
+                        "fixtures": {
+                            "gmail": {
+                                "search_threads": [
+                                    {"when_contains": {"query": "dock"}, "result": [{"id": "t1"}]},
+                                    {"result": []},
+                                ]
+                            }
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    good = {
+        "server": "gmail",
+        "tool": "search_threads",
+        "arguments": {"query": "label:dock-activity"},
+        "side_effect": False,
+        "matched": True,
+        "response": 0,
+    }
+    run = {"output": {"thread_ids": ["T1", "T2"], "outcome": "completed"}, "calls": [good]}
+    (example / "fidelity" / "reference.json").write_text(
+        json.dumps({"cases": {"c": {"runs": [run, run]}}}), encoding="utf-8"
+    )
+
+    compiled = tmp_path / "compiled"
+    (compiled / "extracted").mkdir(parents=True)
+    (compiled / "extracted" / "gmail.py").write_text(
+        "def search(q):\n    raise NotImplementedError('a stub the mcp backend never runs')\n",
+        encoding="utf-8",
+    )
+    (compiled / "pipeline.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "name": "dock",
+                "input": {"type": "In", "required": ["q"]},
+                "nodes": [
+                    {
+                        "id": "fetch_dock_emails",
+                        "kind": "external_call",
+                        "description": "search the dock threads",
+                        "impl": "extracted/gmail.py:search",
+                        "inputs": {"q": "pipeline.input.q"},
+                        "mcp": {
+                            "server": "gmail",
+                            "tool": "search_threads",
+                            "args": {"search_query": "q"},
+                        },
+                        "retry": {"max": 0},
+                    }
+                ],
+                "edges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = pipeline_fidelity(compiled, example, tmp_path / "work")
+    case = report["cases"]["c"]
+    assert case["refused_calls"] == [
+        {
+            "call": "gmail.search_threads",
+            "arguments": {"search_query": "label:dock-activity"},
+            "why": "missing required argument(s): query",
+        }
+    ]
+    assert case["failure"]["node"] == "fetch_dock_emails"
+    assert case["failure"]["at"] == "mcp gmail.search_threads"
+    assert "NotImplementedError" not in (case["failure"]["exception"] or "")
+    assert case["outcome"] == 0.0
 
 
 @pytest.mark.slow
