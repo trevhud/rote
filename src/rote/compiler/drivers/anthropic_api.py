@@ -458,7 +458,10 @@ class AnthropicApiDriver(CompilerDriver):
         repair: Callable[[Path], str | None] | None,
     ) -> DriverResult:
         """The tool-use loop body, bracketed by ``run``'s MCP lifecycle."""
-        read_roots = [skill_dir, compiler_skill_dir]
+        # The work directory too: System-1 writes the skeleton pipeline.yaml
+        # and system1/brief.md there before the agent starts, and an agent
+        # that cannot read them writes its own plan beside System-1's.
+        read_roots = [skill_dir, compiler_skill_dir, work_dir]
         write_root = work_dir
 
         system_prompt = build_system_prompt(skill_dir, compiler_skill_dir, work_dir, skill_md_text)

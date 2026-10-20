@@ -968,3 +968,27 @@ async def test_cached_tokens_outside_prompt_tokens_never_make_input_negative(
     )
     assert result.metadata["input_tokens"] == 50
     assert result.metadata["cache_read_tokens"] == 900
+
+
+@pytest.mark.asyncio
+async def test_the_work_dir_is_readable_by_relative_path(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """System-1's skeleton is in the work dir; the agent must be able to read it."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    (work_dir / "pipeline.yaml").write_text(VALID_PIPELINE_YAML, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    responses = [
+        _response(_message(tool_calls=[_tool_call("r", "read_file", '{"path": "pipeline.yaml"}')])),
+        _response(_message(content="Done.")),
+    ]
+    client = fake_openai(responses)
+    await OpenAIApiDriver(model="openai/gpt-5.5").run(
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
+    )
+    tool_msg = next(m for m in client.chat.completions.calls[1]["messages"] if m["role"] == "tool")
+    assert tool_msg["content"] == VALID_PIPELINE_YAML

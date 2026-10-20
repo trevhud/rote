@@ -48,18 +48,17 @@ _TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "read_file",
         (
-            "Read a file from the source skill or the rote-compile skill. "
-            "Returns the file contents as text. Use this to read SKILL.md, "
-            "references/*.md, and any other source skill files. The path "
-            "must be absolute and inside one of the allowed read roots "
-            "(communicated in the system prompt)."
+            "Read a file from the source skill, the rote-compile skill, or "
+            "the work directory. Returns the file contents as text. A "
+            "relative path is resolved against the work directory."
         ),
         {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to a file inside an allowed read root.",
+                    "description": "A file in an allowed read root, absolute or "
+                    "relative to the work directory.",
                 }
             },
             "required": ["path"],
@@ -70,14 +69,16 @@ _TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "List entries in a directory (one per line, with a trailing "
             "slash on directories). Use this to discover the structure of "
-            "the source skill (e.g., what's in references/)."
+            "the source skill (e.g., what's in references/). A relative "
+            "path is resolved against the work directory."
         ),
         {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path to a directory inside an allowed read root.",
+                    "description": "A directory in an allowed read root, absolute "
+                    "or relative to the work directory.",
                 }
             },
             "required": ["path"],
@@ -88,15 +89,15 @@ _TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Write a file into the work directory. Use this to produce "
             "the final pipeline.yaml deliverable, plus any extracted "
-            "Python modules or signature stubs. The path must be absolute "
-            "and inside the work directory."
+            "Python modules, their tests, or signatures. The path must be "
+            "inside the work directory, absolute or relative to it."
         ),
         {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Absolute path inside the work directory.",
+                    "description": "A path inside the work directory, absolute or relative to it.",
                 },
                 "content": {
                     "type": "string",
@@ -139,6 +140,22 @@ def path_within(candidate: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def resolve_tool_path(path_str: str, work_dir: Path) -> Path:
+    """A tool call's path, a relative one taken against the work directory.
+
+    The claude lane's agent runs with the work directory as its cwd and
+    writes ``extracted/x.py``; an in-process agent does the same. Resolving
+    against the rote process's own cwd instead would check the path
+    against an unrelated directory.
+    """
+    p = Path(path_str)
+    return p if p.is_absolute() else work_dir / p
+
+
+def _path_arg(args: dict[str, Any], work_dir: Path) -> str:
+    return str(resolve_tool_path(args["path"], work_dir))
 
 
 def check_read_path(path_str: str, read_roots: list[Path]) -> Path:
@@ -193,16 +210,19 @@ def dispatch_tool(
 ) -> str:
     """Route a decoded tool call to its handler and return the result text.
 
+    ``write_root`` is the work directory: relative paths resolve against it
+    (:func:`resolve_tool_path`) before any root check.
+
     Raises on any failure (unknown tool, missing argument, jailed path,
     oversized read) — the caller catches and reports it back to the model
     as an ``is_error`` tool result rather than crashing the loop.
     """
     if name == "read_file":
-        return handle_read_file(args["path"], read_roots)
+        return handle_read_file(_path_arg(args, write_root), read_roots)
     if name == "list_directory":
-        return handle_list_directory(args["path"], read_roots)
+        return handle_list_directory(_path_arg(args, write_root), read_roots)
     if name == "write_file":
-        return handle_write_file(args["path"], args["content"], write_root)
+        return handle_write_file(_path_arg(args, write_root), args["content"], write_root)
     raise ValueError(f"Unknown tool: {name}")
 
 
@@ -224,8 +244,8 @@ def emit_progress_phases(
     any other file, or one that escaped the work dir, is a no-op.
     """
     try:
-        target = Path(path_str).resolve()
-        target.relative_to(work_dir)
+        target = resolve_tool_path(path_str, work_dir).resolve()
+        target.relative_to(work_dir.resolve())
     except ValueError:
         return already_emitted
     if target.name != PROGRESS_FILENAME:
@@ -285,11 +305,11 @@ Available paths for this run:
 
 - Source skill (read-only):  {skill_dir}
 - Rote-compile rubric (read-only):  {compiler_skill_dir}
-- Work directory (write):  {work_dir}
+- Work directory (read and write):  {work_dir}
 
-You have three tools:
+You have three tools. A relative path is resolved against the work directory.
 
-- `read_file(path)` — read any file in the source skill or rubric directory
+- `read_file(path)` — read any file in the source skill, rubric or work directory
 - `list_directory(path)` — list entries in an allowed directory
 - `write_file(path, content)` — write a file into the work directory only
 

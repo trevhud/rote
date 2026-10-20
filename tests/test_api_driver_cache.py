@@ -213,3 +213,57 @@ async def test_the_api_lane_gets_the_claude_lanes_task_and_the_real_reference_li
     assert str(compiler_dir.resolve() / "references" / "implementation.md") in system
     assert "node-kinds.md" not in system
     assert "Do not call any further tools" not in system
+
+
+# ───────── The work directory is readable, and relative paths mean it ─────────
+
+
+@pytest.mark.asyncio
+async def test_the_agent_reads_the_system1_skeleton_from_the_work_dir_by_relative_path(
+    tmp_path: Path,
+    fake_anthropic: Any,  # noqa: F811
+    fake_skills: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """System-1 writes pipeline.yaml and system1/brief.md before the agent
+    starts. The api lane could not read either (the work dir was not a read
+    root), so a live compile wrote its own plan beside System-1's and every
+    function disagreed with its node's inputs."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    (work_dir / "system1").mkdir(parents=True)
+    (work_dir / "pipeline.yaml").write_text(VALID_PIPELINE_YAML, encoding="utf-8")
+    (work_dir / "system1" / "brief.md").write_text("the brief", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)  # the rote process's cwd is not the work dir
+    client = fake_anthropic(
+        [
+            _msg(
+                [
+                    _tool_use("a", "read_file", {"path": "pipeline.yaml"}),
+                    _tool_use("b", "read_file", {"path": "system1/brief.md"}),
+                    _tool_use("c", "list_directory", {"path": "system1"}),
+                    _tool_use("d", "write_file", {"path": "extracted/x.py", "content": "y = 1\n"}),
+                    _tool_use("e", "write_file", {"path": "../escape.py", "content": "z"}),
+                    _tool_use("f", "read_file", {"path": str(tmp_path / "secret.txt")}),
+                ],
+                "tool_use",
+            ),
+            _msg([_text("done")], "end_turn"),
+        ]
+    )
+    (tmp_path / "secret.txt").write_text("s", encoding="utf-8")
+    await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir)
+    results = {b["tool_use_id"]: b for b in client.messages.calls[1]["messages"][-1]["content"]}
+
+    def text(i: str) -> str:
+        content = results[i]["content"]
+        return content if isinstance(content, str) else "".join(c["text"] for c in content)
+
+    assert text("a") == VALID_PIPELINE_YAML and not results["a"].get("is_error")
+    assert text("b") == "the brief"
+    assert text("c") == "brief.md"
+    assert (work_dir / "extracted" / "x.py").read_text() == "y = 1\n"
+    assert not (elsewhere / "extracted").exists()
+    assert results["e"].get("is_error") and not (work_dir.parent / "escape.py").exists()
+    assert results["f"].get("is_error") and text("f") != "s"
