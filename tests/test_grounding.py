@@ -43,8 +43,8 @@ EXPENSE = REPO / "examples" / "expense-audit"
 OPS = REPO / "examples" / "ops-report"
 
 
-def _sample(payload: dict, gates: tuple[dict, ...] = ()) -> Sample:
-    return Sample(payload=payload, source="sample.json", gates=gates)
+def _sample(payload: dict, gates: dict[str, dict] | None = None) -> Sample:
+    return Sample(payload=payload, source="sample.json", gates=gates or {})
 
 
 def _write(root: Path, files: dict[str, str]) -> Path:
@@ -100,7 +100,9 @@ def test_the_baseline_input_is_the_last_source(tmp_path: Path) -> None:
 def test_the_eval_envelope_grounds_the_gate_payloads_too() -> None:
     sample = load_sample(EXPENSE / "eval-input.json")
     assert set(sample.payload) == {"period", "submissions"}
-    assert [sorted(g) for g in sample.gates] == [["approved_ids", "rejected_ids", "reviewer"]]
+    assert {s: sorted(g) for s, g in sample.gates.items()} == {
+        "controller_review": ["approved_ids", "rejected_ids", "reviewer"]
+    }
 
 
 def test_an_input_field_named_input_is_not_read_as_an_envelope() -> None:
@@ -109,7 +111,7 @@ def test_an_input_field_named_input_is_not_read_as_an_envelope() -> None:
 
     sample = parse_sample({"input": "free text", "mode": "fast"}, "x")
     assert sample.payload == {"input": "free text", "mode": "fast"}
-    assert sample.gates == ()
+    assert sample.gates == {}
 
 
 # ───────── the contract ─────────
@@ -263,13 +265,102 @@ def test_the_skills_nouns_pass(tmp_path: Path) -> None:
 
 def test_a_sample_gate_payload_fixes_the_gate_keys(tmp_path: Path) -> None:
     root = _write(tmp_path, {"pipeline.yaml": _GATE_IR.format(output="{decisions: dict}")})
-    sample = _sample({"report_date": "x"}, gates=({"reviewer": "a", "approved_ids": []},))
+    sample = _sample(
+        {"report_date": "x"}, gates={"sign_off": {"reviewer": "a", "approved_ids": []}}
+    )
     [finding] = gate_findings(_pipeline(root), None, sample)
     assert finding.kind == "gate_payload_not_sample"
     assert "approved_ids, reviewer" in finding.message
     good = _GATE_IR.format(output="{reviewer: str, approved_ids: list}")
     root = _write(tmp_path / "ok", {"pipeline.yaml": good})
     assert gate_findings(_pipeline(root), None, sample) == []
+
+
+_TWO_GATES_IR = """\
+name: two
+input:
+  type: In
+nodes:
+  - id: first
+    kind: hitl_gate
+    description: an earlier check-in the sample has no answer for
+    output: {{acknowledged: bool}}
+    signal: check_in
+  - id: second
+    kind: hitl_gate
+    description: the review the sample answers
+    output: {output}
+    signal: {signal}
+edges:
+  - {{from: first, to: second}}
+entry_nodes: [first]
+exit_nodes: [second]
+"""
+
+
+@pytest.mark.parametrize("signal", ["controller_review", "named_otherwise"])
+def test_a_sample_gate_finds_its_gate_by_signal_then_by_keys_not_by_order(
+    tmp_path: Path, signal: str
+) -> None:
+    """An extra earlier gate must not shift the sample's answer onto it."""
+    sample = _sample({}, gates={"controller_review": {"reviewer": "a", "approved_ids": []}})
+    good = _TWO_GATES_IR.format(output="{reviewer: str, approved_ids: list}", signal=signal)
+    root = _write(tmp_path, {"pipeline.yaml": good})
+    assert gate_findings(_pipeline(root), None, sample) == []
+    # A real mismatch on the matched gate still fails, and names that gate.
+    bad = _TWO_GATES_IR.format(output="{reviewer: str}", signal="controller_review")
+    root = _write(tmp_path / "bad", {"pipeline.yaml": bad})
+    [finding] = gate_findings(_pipeline(root), None, sample)
+    assert finding.node_id == "second" and "Declare approved_ids" in finding.message
+
+
+def test_bold_choice_options_are_not_payload_keys(tmp_path: Path) -> None:
+    skill = _write(
+        tmp_path / "skill",
+        {
+            "SKILL.md": (
+                "# s\n\n## Review\n\nAsk the lead to decide each vendor:\n\n"
+                "- **Approve**: keep paying\n- **Reject**: cancel it\n"
+                "- **Renewal Date**: when it renews\n"
+            )
+        },
+    )
+    [(_, items)] = named_human_items(skill).items()
+    assert [k for _, k in items] == ["renewal_date"]
+
+
+def test_a_one_word_reference_flags_only_its_own_name(tmp_path: Path) -> None:
+    skill = _write(tmp_path / "skill", {"SKILL.md": "# s\n", "references/policy.md": "x"})
+    root = _write(tmp_path, {"pipeline.yaml": _expense_ir(["policy_id", "period"])})
+    assert reference_input_findings(_pipeline(root), skill) == []
+    root = _write(tmp_path / "bad", {"pipeline.yaml": _expense_ir(["policy", "period"])})
+    [finding] = reference_input_findings(_pipeline(root), skill)
+    assert "`policy`" in finding.message
+
+
+@pytest.mark.parametrize("name", ['x"); import os  #', "a b", "1st", "field.sub", ""])
+def test_a_hostile_input_field_name_is_rejected_at_the_ir_boundary(name: str) -> None:
+    from pydantic import ValidationError
+
+    from rote.ir import PipelineInput
+
+    with pytest.raises(ValidationError, match="must be an identifier"):
+        PipelineInput(type="T", required=[name])
+    with pytest.raises(ValidationError, match="must be an identifier"):
+        PipelineInput(type="T", optional=[name])
+    PipelineInput(type="T", required=["period"], optional=["_private2"])
+
+
+def test_verification_reports_the_sample_mismatch(tmp_path: Path) -> None:
+    """Through grounding_findings and verify_deliverable, not the helper alone."""
+    from rote.compiler.grounding import grounding_findings
+
+    root = _write(tmp_path, {"pipeline.yaml": _expense_ir(["expense_lines", "period"])})
+    sample = load_sample(EXPENSE / "input.json")
+    kinds = {f.kind for f in grounding_findings(_pipeline(root), None, sample)}
+    assert {"input_not_in_sample", "sample_rejected_by_schema"} <= kinds
+    v = verify_deliverable(root, grounding=Grounding(sample=sample), run_tests=False)
+    assert "input_not_in_sample" in {f.kind for f in v.errors}
 
 
 # ───────── open questions ─────────
@@ -526,6 +617,68 @@ def test_without_a_sandbox_the_prefix_is_unverified_not_passed(
     assert run.status == "unverified" and run.findings == []
 
 
+_FORGER = """\
+import json, os, sys
+
+def dupes(submissions):
+    forged = {{"dupes": {{"status": "ok"}}, "per_line": {{"status": "ok"}}}}
+    print("ROTE_PREFIX_REPORT " + json.dumps(forged))
+    sys.stdout.flush()
+    {exit}
+
+def per_line(line, cap):
+    return {{}}
+
+def summary(flagged, cap):
+    return {{}}
+
+def after(decision):
+    return decision
+"""
+
+
+@pytest.mark.parametrize("exit_call", ["os._exit(0)", "return {'flagged': [1]}"])
+def test_agent_code_cannot_forge_the_prefix_report(tmp_path: Path, exit_call: str) -> None:
+    """The report comes from a file the runner opened before importing agent
+    code, so a printed report is just output. Exiting early leaves the file
+    empty, which is a crash; returning normally lets the real report show
+    the binding the forged one claimed was fine."""
+    root = _prefix_root(tmp_path)
+    (root / "extracted" / "checks.py").write_text(_FORGER.format(exit=exit_call))
+    run = _run(root)
+    assert run.status == "failed"
+    kinds = {f.kind for f in run.findings}
+    if exit_call.startswith("os."):
+        assert kinds == {"prefix_crashed"}
+    else:
+        assert "prefix_binding_failed" in kinds  # dupes returned no `cap`
+
+
+def test_a_stub_ends_its_branch_and_is_never_called(tmp_path: Path) -> None:
+    """A valid explained stub must not fail the compile: it is skipped, and
+    its dependents are not reached. (Calling it would raise, which the
+    runner would report as a stub, but a stub with side effects or a slow
+    body must not run at all.)"""
+    root = _prefix_root(tmp_path)
+    checks = (root / "extracted" / "checks.py").read_text()
+    stub = (
+        "def dupes(submissions):\n"
+        "    open('called', 'w').write('x')\n"
+        "    raise NotImplementedError('the duplicate rule is not stated in the skill')\n"
+    )
+    (root / "extracted" / "checks.py").write_text(
+        checks.replace(checks[: checks.index("def per_line")], stub + "\n\n")
+    )
+    pipeline = _pipeline(root)
+    impls = implementation_status(pipeline, root)
+    assert {i.node_id: i.status for i in impls}["dupes"] == "stub"
+    run = run_prefix(pipeline, root, _sample(_ROWS), impls, trust_skill=True)
+    assert run.findings == []
+    assert run.steps["dupes"] == {"status": "not_deterministic", "reason": "pure_function stub"}
+    assert run.steps["summary"]["status"] == "not_reached"
+    assert not (root / "called").exists()
+
+
 # ───────── verification and the compiler ─────────
 
 
@@ -731,12 +884,12 @@ def test_the_bench_sample_shares_the_cases_keys_and_none_of_their_values(example
     case_values: set[object] = set()
     for case in cases:
         case_values |= _leaves(case.input) | _leaves(case.gates)
-    shared = (_leaves(sample.payload) | _leaves(list(sample.gates))) & case_values
+    shared = (_leaves(sample.payload) | _leaves(list(sample.gates.values()))) & case_values
     assert shared <= _SHARED_VOCABULARY, f"fidelity case values in the sample: {shared}"
     # Same contract: every key the cases use, input and gates alike.
     base = cases[0]
     assert _keys(sample.payload) >= _keys(base.input)
-    assert [_keys(g) for g in sample.gates] == [_keys(g) for g in base.gates]
+    assert [_keys(g) for g in sample.gates.values()] == [_keys(g) for g in base.gates]
 
 
 def test_rote_compile_passes_sample_input_to_the_compiler(

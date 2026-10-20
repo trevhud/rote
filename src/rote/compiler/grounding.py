@@ -79,10 +79,10 @@ class Sample:
     payload: dict[str, Any]
     #: Where it came from, for messages: a path, or "baseline input".
     source: str
-    #: Gate payloads in the order the gates ask, from an envelope's
+    #: ``{signal name: payload}`` in the order the gates ask, from an envelope's
     #: ``signals`` (``{signal name: payload}``). Names are the sample's,
     #: not necessarily the compile's, so only the order and keys count.
-    gates: tuple[dict[str, Any], ...] = ()
+    gates: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def parse_sample(raw: Any, source: str) -> Sample:
@@ -102,7 +102,7 @@ def parse_sample(raw: Any, source: str) -> Sample:
         signals = raw.get("signals") or {}
         if not isinstance(payload, dict) or not isinstance(signals, dict):
             raise ValueError(f"{source}: envelope `input` and `signals` must be JSON objects")
-        gates = tuple(v for v in signals.values() if isinstance(v, dict))
+        gates = {str(k): v for k, v in signals.items() if isinstance(v, dict)}
         return Sample(payload=payload, source=source, gates=gates)
     return Sample(payload=raw, source=source)
 
@@ -224,12 +224,12 @@ def contract_brief(sample: Sample | None, skill_dir: Path, ctx_dir: Path | None)
             "KeyError or a missing input goes back to you as a failure. Do not "
             f"read {ctx_dir} from tests: copy the values a test needs into the test."
         )
-        for i, gate in enumerate(sample.gates, start=1):
+        for signal, gate in sample.gates.items():
             keys = ", ".join(f"`{k}`" for k in gate)
             parts.append(
-                f"GATE PAYLOAD {i} (from the same sample, in the order the gates "
-                f"ask): the person's answer has the keys {keys}. The hitl_gate's "
-                "`output` uses exactly these keys."
+                f"GATE PAYLOAD `{signal}` (from the same sample): the person's answer "
+                f"has the keys {keys}. The hitl_gate that collects it uses exactly "
+                "these keys in its `output`."
             )
     refs = reference_files(skill_dir)
     if refs:
@@ -279,6 +279,36 @@ _HUMAN_ASK_RE = re.compile(
     r"decision|decide|enter|supply)\b",
     re.IGNORECASE,
 )
+#: A bold list item that is one of the person's options, not a thing they
+#: provide: ``- **Approve**: ...`` is a value of the payload, not a key.
+CHOICE_WORDS = frozenset(
+    {
+        "accept",
+        "accepted",
+        "approve",
+        "approved",
+        "cancel",
+        "cancelled",
+        "confirm",
+        "confirmed",
+        "decline",
+        "declined",
+        "defer",
+        "deny",
+        "denied",
+        "escalate",
+        "hold",
+        "keep",
+        "no",
+        "pass",
+        "reject",
+        "rejected",
+        "renegotiate",
+        "retry",
+        "skip",
+        "yes",
+    }
+)
 #: ``1. **Name**`` or ``- **Name**``: a list item that names what it is.
 _NAMED_ITEM_RE = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+\*\*(?P<term>[^*\n]+?)\*\*")
 
@@ -302,7 +332,7 @@ def named_human_items(skill_dir: Path) -> dict[str, list[tuple[str, str]]]:
             for line in text.splitlines()
             if (m := _NAMED_ITEM_RE.match(line))
         ]
-        items = [(t, k) for t, k in items if k]
+        items = [(t, k) for t, k in items if k and k not in CHOICE_WORDS]
         if items:
             found[heading] = items
     return found
@@ -424,8 +454,10 @@ def reference_input_findings(pipeline: Pipeline, skill_dir: Path) -> list[Contra
 
     The field's words contain every word of a ``references/`` file's
     name (``fx_rates_markdown`` and ``fx-rates.md``): the skill reads that
-    file itself, so the pipeline must too. Only fields the pipeline
-    requires count; an optional override is the user's choice.
+    file itself, so the pipeline must too. A one-word name must match the
+    whole field (``policy`` for ``policy.md``), since ``policy_id`` is a
+    real input. Only fields the pipeline requires count; an optional
+    override is the user's choice.
     """
     findings: list[ContractFinding] = []
     stems = {
@@ -436,7 +468,7 @@ def reference_input_findings(pipeline: Pipeline, skill_dir: Path) -> list[Contra
     for name in pipeline.required_input_fields:
         words = set(_words(name))
         for ref, stem in stems.items():
-            if stem <= words:
+            if (len(stem) >= 2 and stem <= words) or stem == words:
                 findings.append(
                     ContractFinding(
                         node_id=INPUT_NODE,
@@ -464,6 +496,24 @@ def _gates_in_order(pipeline: Pipeline) -> list[Any]:
     return [n for wave in pipeline.execution_waves() for n in wave if n.kind is NodeKind.HITL_GATE]
 
 
+def _sample_gate(gates: list[Any], signal: str, keys: set[str], index: int) -> Any:
+    """The compiled gate a sample's gate payload belongs to.
+
+    By signal name first; else the gate whose payload keys overlap the
+    sample's most; else the gate at the same position, which is the case
+    where the compile renamed every key (and the check should fail).
+    A gate another sample payload names by signal is not taken by overlap.
+    """
+    for gate in gates:
+        if gate.signal == signal:
+            return gate
+    overlaps = [(len(keys & gate.output_keys), -i, gate) for i, gate in enumerate(gates)]
+    best = max(overlaps, default=None, key=lambda t: (t[0], t[1]))
+    if best is not None and best[0] > 0:
+        return best[2]
+    return gates[index] if index < len(gates) else None
+
+
 def gate_findings(
     pipeline: Pipeline, skill_dir: Path | None, sample: Sample | None
 ) -> list[ContractFinding]:
@@ -471,19 +521,20 @@ def gate_findings(
     findings: list[ContractFinding] = []
     gates = _gates_in_order(pipeline)
     if sample is not None:
-        for i, want in enumerate(sample.gates):
-            if i >= len(gates):
-                break
-            have = gates[i].output_keys
+        for i, (signal, want) in enumerate(sample.gates.items()):
+            gate = _sample_gate(gates, signal, set(want), i)
+            if gate is None:
+                continue
+            have = gate.output_keys
             absent = sorted(set(want) - have)
             if absent:
                 findings.append(
                     ContractFinding(
-                        node_id=gates[i].id,
+                        node_id=gate.id,
                         kind="gate_payload_not_sample",
                         severity="error",
                         message=(
-                            f"gate {gates[i].id} declares payload keys "
+                            f"gate {gate.id} declares payload keys "
                             f"{', '.join(sorted(have)) or 'none'}, but the sample's answer at "
                             f"this gate ({sample.source}) has {', '.join(want)}. Declare "
                             f"{', '.join(absent)} in the gate's `output` with these names"

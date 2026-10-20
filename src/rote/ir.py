@@ -834,6 +834,21 @@ class PipelineInput(BaseModel):
         ),
     )
 
+    @field_validator("required", "optional")
+    @classmethod
+    def _validate_field_names(cls, v: list[str]) -> list[str]:
+        """Input field names reach emitted code (the entry check, payload
+        reads) and, since a sample input steers them, come from data rote
+        did not write. Same identifier shape as ``inputs:`` field
+        references (invariant #7), so a name can always be bound."""
+        for name in v:
+            if not _IDENTIFIER_RE.fullmatch(name):
+                raise ValueError(
+                    f"pipeline input field name {name!r} must be an identifier "
+                    f"(letters, digits, underscores; not starting with a digit)"
+                )
+        return v
+
     @model_validator(mode="after")
     def _validate_required_and_optional_are_disjoint(self) -> Self:
         """A field cannot be both: emitted workflows would have to pick one."""

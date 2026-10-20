@@ -47,6 +47,10 @@ PREFIX_TIMEOUT_SECONDS = 120.0
 
 RUNNER_PATH = Path(__file__).with_name("_prefix_runner.py")
 
+#: The scratch file the runner writes its report to (never stdout, which
+#: the agent's code shares and could forge).
+REPORT_FILENAME = "prefix-report.json"
+
 PrefixStatus = Literal["ran", "unverified", "failed"]
 
 
@@ -205,7 +209,6 @@ def run_prefix(
     trust_skill: bool = False,
 ) -> PrefixRun:
     """Build the plan, run it confined, and turn the report into findings."""
-    from rote.compiler._prefix_runner import RESULT_PREFIX
     from rote.compiler.verify import run_confined
 
     plan = build_plan(pipeline, root, sample, implementations, observations)
@@ -215,9 +218,15 @@ def run_prefix(
         runner.write_text(RUNNER_PATH.read_text(encoding="utf-8"), encoding="utf-8")
         plan_path = scratch / "prefix-plan.json"
         plan_path.write_text(json.dumps(plan, default=str), encoding="utf-8")
-        return [str(runner), str(plan_path)]
+        return [str(runner), str(plan_path), str(scratch / REPORT_FILENAME)]
 
-    run = run_confined(root, _args, trust_skill=trust_skill, timeout=PREFIX_TIMEOUT_SECONDS)
+    run = run_confined(
+        root,
+        _args,
+        trust_skill=trust_skill,
+        timeout=PREFIX_TIMEOUT_SECONDS,
+        read_back=(REPORT_FILENAME,),
+    )
     if run.unconfined_reason is not None:
         return PrefixRun(
             status="unverified",
@@ -237,8 +246,8 @@ def run_prefix(
             ),
         )
         return PrefixRun(status="failed", summary="timed out", findings=[finding])
-    lines = [ln for ln in run.stdout.splitlines() if ln.startswith(RESULT_PREFIX)]
-    if not lines:
+    written = run.files.get(REPORT_FILENAME)
+    if not written:
         detail = (run.stderr or run.stdout).strip()[-1500:]
         finding = ContractFinding(
             node_id="(prefix)",
@@ -250,7 +259,7 @@ def run_prefix(
             ),
         )
         return PrefixRun(status="failed", summary="crashed", findings=[finding])
-    report: dict[str, dict[str, Any]] = json.loads(lines[-1][len(RESULT_PREFIX) :])
+    report: dict[str, dict[str, Any]] = json.loads(written)
     findings = findings_from_report(report, sample)
     return PrefixRun(
         status="failed" if findings else "ran",

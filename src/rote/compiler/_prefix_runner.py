@@ -8,9 +8,14 @@ says, per node, which function to call and where each argument comes
 from. That keeps the semantics in one place (rote's plan builder, which
 mirrors the emitted step bodies) and this file a dumb interpreter.
 
-Usage: ``python -S _prefix_runner.py <plan.json>``. The report is the
-last stdout line that starts with :data:`RESULT_PREFIX` (the agent's code
-may print too).
+Usage: ``python -S _prefix_runner.py <plan.json> <report.json>``. The
+report file is opened, and its path dropped from ``sys.argv``, before any
+agent module is imported, and the report is written through that handle.
+Never stdout: the agent's code runs in this process and could print a
+forged report and ``os._exit(0)``. A run that exits before writing leaves
+the file empty, which rote reports as a crash. (The agent's code shares
+this process, so a deliberate attack on this file is the same trust
+boundary as pytest's exit code; the sandbox, not this, is the boundary.)
 """
 
 from __future__ import annotations
@@ -24,8 +29,6 @@ from pathlib import Path
 from typing import Any
 
 _MISSING = object()
-
-RESULT_PREFIX = "ROTE_PREFIX_REPORT "
 
 
 def _serialize(obj: Any) -> Any:
@@ -164,11 +167,15 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     plan = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
+    # Opened before any agent module is imported (truncating it), and the
+    # path is dropped from argv so agent code is not handed it.
+    out = open(argv[2], "w", encoding="utf-8")  # noqa: SIM115 (held across agent code)
+    del sys.argv[2:]
     root = Path(plan["root"]).resolve()
     sys.path.insert(0, str(root))
     report = run(plan, root)
-    sys.stdout.write("\n" + RESULT_PREFIX + json.dumps(report, default=str) + "\n")
-    sys.stdout.flush()
+    out.write(json.dumps(report, default=str))
+    out.close()
     return 0
 
 

@@ -250,6 +250,9 @@ class ConfinedRun:
     timed_out: bool = False
     #: Set when nothing ran: no OS sandbox, and ``--trust-skill`` was not given.
     unconfined_reason: str | None = None
+    #: The scratch files named in ``read_back``, read before the scratch dir
+    #: is deleted (``None`` for one the run did not write).
+    files: dict[str, str | None] = field(default_factory=dict)
 
 
 def run_confined(
@@ -258,6 +261,7 @@ def run_confined(
     *,
     trust_skill: bool,
     timeout: float,
+    read_back: tuple[str, ...] = (),
 ) -> ConfinedRun:
     """Run the interpreter on agent-written code in ``root``, confined.
 
@@ -267,6 +271,7 @@ def run_confined(
     and returns the interpreter arguments. The environment is
     :func:`generated_test_env`; the OS sandbox is
     :mod:`rote.compiler.sandbox`, skipped only with ``trust_skill``.
+    ``read_back`` names scratch files to return in :attr:`ConfinedRun.files`.
     """
     from rote.compiler import sandbox
 
@@ -295,8 +300,17 @@ def run_confined(
             proc = subprocess.run(
                 argv, cwd=root, env=env, capture_output=True, text=True, timeout=timeout
             )
+            files = {
+                name: (scratch / name).read_text(encoding="utf-8")
+                if (scratch / name).is_file()
+                else None
+                for name in read_back
+            }
             return ConfinedRun(
-                returncode=proc.returncode, stdout=proc.stdout or "", stderr=proc.stderr or ""
+                returncode=proc.returncode,
+                stdout=proc.stdout or "",
+                stderr=proc.stderr or "",
+                files=files,
             )
     except subprocess.TimeoutExpired:
         return ConfinedRun(timed_out=True)
