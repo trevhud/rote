@@ -24,6 +24,8 @@ from rote.serve.registry import (
     TemporalTrigger,
     entry_from_pipeline,
     input_schema_for,
+    redact_url_password,
+    redacted_trigger_dump,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -216,7 +218,89 @@ def test_entry_from_pipeline_name_override() -> None:
     assert entry.name == "my_tool"
 
 
+def test_entry_from_pipeline_refuses_builtin_prefix() -> None:
+    """`rote serve` reserves rote_* for its built-in tools. A pipeline
+    registered under that prefix could shadow one, so register refuses."""
+    pipeline = load_pipeline(BDR_PIPELINE_YAML)
+    with pytest.raises(ValueError, match="reserves for its built-in tools"):
+        entry_from_pipeline(
+            pipeline,
+            BDR_PIPELINE_YAML,
+            TemporalTrigger(task_queue="q", workflow_name="Wf_abc123"),
+            name="rote_list_pipelines",
+        )
+    # A name that merely contains the prefix elsewhere is fine.
+    entry = entry_from_pipeline(
+        pipeline,
+        BDR_PIPELINE_YAML,
+        TemporalTrigger(task_queue="q", workflow_name="Wf_abc123"),
+        name="my_rote_pipeline",
+    )
+    assert entry.name == "my_rote_pipeline"
+
+
+# ───────── Redaction ─────────
+
+
+def test_redact_url_password() -> None:
+    assert (
+        redact_url_password("postgresql://rote:hunter2@db.internal:5432/rote")
+        == "postgresql://rote:***@db.internal:5432/rote"
+    )
+    # No userinfo, or a user with no password: unchanged.
+    assert redact_url_password("sqlite:////tmp/app/bdr.dbos.sqlite") == (
+        "sqlite:////tmp/app/bdr.dbos.sqlite"
+    )
+    assert redact_url_password("https://wf.example.workers.dev") == "https://wf.example.workers.dev"
+    assert redact_url_password("localhost:7233") == "localhost:7233"
+
+
+def test_redacted_trigger_dump_keeps_every_field_but_the_password() -> None:
+    dbos = DbosTrigger(
+        system_database_url="postgresql://rote:hunter2@db.internal:5432/rote",
+        workflow_name="Wf_abc123",
+        queue_name="q",
+        gate_signals=["approve"],
+    )
+    assert redacted_trigger_dump(dbos) == {
+        "runtime": "dbos",
+        "system_database_url": "postgresql://rote:***@db.internal:5432/rote",
+        "workflow_name": "Wf_abc123",
+        "queue_name": "q",
+        "gate_signals": ["approve"],
+    }
+    cloudflare = CloudflareTrigger(url="https://wf.example.workers.dev", status_url=None)
+    assert redacted_trigger_dump(cloudflare) == {
+        "runtime": "cloudflare",
+        "url": "https://wf.example.workers.dev",
+        "status_url": None,
+    }
+
+
 # ───────── `rote register` CLI ─────────
+
+
+def test_register_refuses_builtin_prefix(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry_path = tmp_path / "registry.json"
+    rc = cli_main(
+        [
+            "register",
+            str(BDR_PIPELINE_YAML),
+            "--registry",
+            str(registry_path),
+            "--runtime",
+            "temporal",
+            "--name",
+            "rote_describe_pipeline",
+        ]
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "reserves for its built-in tools" in err
+    assert "--name" in err
+    assert not registry_path.exists()
 
 
 def test_register_bdr_temporal_defaults(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

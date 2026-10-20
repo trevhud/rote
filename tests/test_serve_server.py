@@ -39,7 +39,12 @@ from rote.serve.registry import (
     RegistryEntry,
     TemporalTrigger,
 )
-from rote.serve.server import build_server
+from rote.serve.server import (
+    BUILTIN_TOOL_NAMES,
+    DESCRIBE_PIPELINE_TOOL,
+    LIST_PIPELINES_TOOL,
+    build_server,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -110,6 +115,7 @@ async def test_list_tools_one_trigger_plus_one_status_per_entry(registry_path: P
         tools = {t.name: t for t in await client.list_tools()}
 
     assert set(tools) == {
+        *BUILTIN_TOOL_NAMES,
         "bdr-campaign",
         "bdr-campaign_status",
         "cf-pipeline",
@@ -134,10 +140,282 @@ async def test_list_tools_one_trigger_plus_one_status_per_entry(registry_path: P
 
 
 @pytest.mark.asyncio
-async def test_empty_registry_serves_no_tools(tmp_path: Path) -> None:
+async def test_empty_registry_serves_only_the_builtins(tmp_path: Path) -> None:
+    """No registry file: no pipeline tools, but the two built-ins are
+    there, so a client (or a directory crawler) still finds tools."""
     server = build_server(tmp_path / "missing.json")
     async with Client(server) as client:
-        assert await client.list_tools() == []
+        assert {t.name for t in await client.list_tools()} == BUILTIN_TOOL_NAMES
+
+
+# ───────── Built-in tools ─────────
+
+
+@pytest.mark.asyncio
+async def test_builtin_tool_definitions(tmp_path: Path) -> None:
+    """The built-ins carry what a client needs to pick and call them
+    without trial and error: a description, a described parameter, a
+    structured output schema, and read-only annotations."""
+    server = build_server(tmp_path / "missing.json")
+    async with Client(server) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+
+    listing = tools[LIST_PIPELINES_TOOL]
+    assert listing.description and "registry" in listing.description
+    runtime_param = listing.input_schema["properties"]["runtime"]
+    assert runtime_param["description"]
+    assert runtime_param["anyOf"][0]["enum"] == ["temporal", "cloudflare", "dbos"]
+    assert listing.input_schema.get("required", []) == []
+    assert listing.output_schema is not None
+    assert set(listing.output_schema["required"]) == {
+        "registry_path",
+        "registry_exists",
+        "pipelines",
+    }
+
+    describe = tools[DESCRIBE_PIPELINE_TOOL]
+    assert describe.description and "JSON Schema" in describe.description
+    assert describe.input_schema["required"] == ["name"]
+    assert describe.input_schema["properties"]["name"]["description"]
+    assert describe.output_schema is not None
+    assert {"input_schema", "trigger", "tools"} <= set(describe.output_schema["required"])
+
+    for tool in (listing, describe):
+        assert tool.annotations is not None
+        assert tool.annotations.read_only_hint is True
+        assert tool.annotations.idempotent_hint is True
+        assert tool.annotations.open_world_hint is False
+        # No newlines or em dashes: directories render the first sentence.
+        assert "\n" not in (tool.description or "")
+
+
+@pytest.mark.asyncio
+async def test_list_pipelines_with_empty_registry(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.json"
+    server = build_server(missing)
+    async with Client(server) as client:
+        result = await client.call_tool(LIST_PIPELINES_TOOL, {})
+
+    assert result.structured_content == {
+        "registry_path": str(missing),
+        "registry_exists": False,
+        "pipelines": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_pipelines_reports_every_entry(registry_path: Path) -> None:
+    server = build_server(registry_path)
+    async with Client(server) as client:
+        result = await client.call_tool(LIST_PIPELINES_TOOL, {})
+        only_dbos = await client.call_tool(LIST_PIPELINES_TOOL, {"runtime": "dbos"})
+
+    data = result.structured_content
+    assert data is not None
+    assert data["registry_path"] == str(registry_path)
+    assert data["registry_exists"] is True
+    by_name = {p["name"]: p for p in data["pipelines"]}
+    assert list(by_name) == ["bdr-campaign", "cf-pipeline", "dbos-pipeline"]
+
+    bdr = by_name["bdr-campaign"]
+    assert bdr["description"] == "BDR outreach campaign pipeline"
+    assert bdr["runtime"] == "temporal"
+    assert bdr["tools"] == {
+        "trigger": "bdr-campaign",
+        "status": "bdr-campaign_status",
+        "signal": None,
+    }
+    assert "localhost:7233" in bdr["trigger_summary"]
+    assert "BdrCampaign_abc123" in bdr["trigger_summary"]
+    assert bdr["pipeline_yaml"] == str(BDR_PIPELINE_YAML)
+    assert bdr["registered_at"]
+
+    # Only the DBOS entry has a signal tool, and its gate names are listed.
+    dbos = by_name["dbos-pipeline"]
+    assert dbos["tools"]["signal"] == "dbos-pipeline_signal"
+    assert "contact_review_approved" in dbos["trigger_summary"]
+
+    assert "no status endpoint" in by_name["cf-pipeline"]["trigger_summary"]
+
+    # The runtime filter narrows the list, and the envelope stays the same.
+    assert only_dbos.structured_content is not None
+    assert [p["name"] for p in only_dbos.structured_content["pipelines"]] == ["dbos-pipeline"]
+
+
+@pytest.mark.asyncio
+async def test_list_pipelines_rejects_unknown_runtime(registry_path: Path) -> None:
+    server = build_server(registry_path)
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="runtime"):
+            await client.call_tool(LIST_PIPELINES_TOOL, {"runtime": "inngest"})
+
+
+@pytest.mark.asyncio
+async def test_describe_pipeline_returns_schema_and_redacted_trigger(tmp_path: Path) -> None:
+    registry_path = tmp_path / "registry.json"
+    registry = Registry()
+    registry.upsert(_bdr_entry())
+    secret_dbos = _dbos_entry()
+    secret_dbos.trigger = DbosTrigger(
+        system_database_url="postgresql://rote:hunter2@db.internal:5432/rote",
+        workflow_name="BdrCampaign_abc123",
+        queue_name="bdr-campaign-queue",
+        gate_signals=["contact_review_approved"],
+    )
+    registry.upsert(secret_dbos)
+    registry.save(registry_path)
+
+    server = build_server(registry_path)
+    async with Client(server) as client:
+        bdr = await client.call_tool(DESCRIBE_PIPELINE_TOOL, {"name": "bdr-campaign"})
+        dbos = await client.call_tool(DESCRIBE_PIPELINE_TOOL, {"name": "dbos-pipeline"})
+
+    assert bdr.structured_content is not None
+    assert (
+        bdr.structured_content["registered_at"]
+        == Registry.load(registry_path).entries[0].registered_at
+    )
+    assert {k: v for k, v in bdr.structured_content.items() if k != "registered_at"} == {
+        "name": "bdr-campaign",
+        "description": "BDR outreach campaign pipeline",
+        "runtime": "temporal",
+        "tools": {
+            "trigger": "bdr-campaign",
+            "status": "bdr-campaign_status",
+            "signal": None,
+        },
+        # The served contract, verbatim.
+        "input_schema": BDR_INPUT_SCHEMA,
+        "trigger": {
+            "runtime": "temporal",
+            "address": "localhost:7233",
+            "namespace": "default",
+            "task_queue": "bdr-campaign",
+            "workflow_name": "BdrCampaign_abc123",
+        },
+        "pipeline_yaml": str(BDR_PIPELINE_YAML),
+    }
+
+    # The full DBOS trigger comes back, minus the database password.
+    assert dbos.structured_content is not None
+    trigger = dbos.structured_content["trigger"]
+    assert trigger["system_database_url"] == "postgresql://rote:***@db.internal:5432/rote"
+    assert trigger["gate_signals"] == ["contact_review_approved"]
+    assert "hunter2" not in json.dumps(dbos.structured_content)
+
+
+@pytest.mark.asyncio
+async def test_describe_unknown_pipeline_is_clear_error(registry_path: Path) -> None:
+    server = build_server(registry_path)
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="No registered pipeline named 'nope'") as exc_info:
+            await client.call_tool(DESCRIBE_PIPELINE_TOOL, {"name": "nope"})
+    # The error names what is registered so the caller can self-correct.
+    assert "bdr-campaign" in str(exc_info.value)
+    assert LIST_PIPELINES_TOOL in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_builtins_survive_registry_reload(registry_path: Path) -> None:
+    """A registry change reloads the pipeline tools. The built-ins are
+    registered once and stay, and they read the new registry."""
+    server = build_server(registry_path, poll_interval=0.05)
+    async with Client(server) as client:
+        assert {t.name for t in await client.list_tools()} >= BUILTIN_TOOL_NAMES
+
+        registry = Registry.load(registry_path)
+        registry.upsert(
+            RegistryEntry(
+                name="late-pipeline",
+                description="Registered mid-session",
+                pipeline_yaml=str(BDR_PIPELINE_YAML),
+                input_schema={"type": "object"},
+                trigger=TemporalTrigger(task_queue="q", workflow_name="Late_abc123"),
+            )
+        )
+        registry.save(registry_path)
+        # Long enough for the watcher to reload (the per-request re-read
+        # would also catch it. This proves the watcher path keeps them).
+        await asyncio.sleep(0.3)
+
+        names = {t.name for t in await client.list_tools()}
+        assert names >= BUILTIN_TOOL_NAMES
+        assert {"late-pipeline", "late-pipeline_status"} <= names
+        listed = await client.call_tool(LIST_PIPELINES_TOOL, {})
+        assert listed.structured_content is not None
+        assert "late-pipeline" in [p["name"] for p in listed.structured_content["pipelines"]]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_named_like_a_builtin_is_skipped_not_served(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`rote register` refuses the rote_ prefix, so this is the hand-edited
+    registry case. The built-in keeps its name and keeps working. The
+    colliding entry is left out of tools/list and of the built-ins'
+    output, with one warning naming the fix."""
+    registry_path = tmp_path / "registry.json"
+    registry = Registry()
+    registry.upsert(_bdr_entry())
+    registry.upsert(
+        RegistryEntry(
+            name=LIST_PIPELINES_TOOL,
+            description="Impostor",
+            pipeline_yaml=str(BDR_PIPELINE_YAML),
+            input_schema={"type": "object"},
+            trigger=TemporalTrigger(task_queue="q", workflow_name="Impostor_abc123"),
+        )
+    )
+    registry.save(registry_path)
+
+    server = build_server(registry_path)
+    with caplog.at_level("WARNING", logger="rote.serve.server"):
+        async with Client(server) as client:
+            tools = {t.name: t for t in await client.list_tools()}
+            # Listing twice must not warn twice.
+            await client.list_tools()
+            listed = await client.call_tool(LIST_PIPELINES_TOOL, {})
+            with pytest.raises(ToolError, match="No registered pipeline named"):
+                await client.call_tool(DESCRIBE_PIPELINE_TOOL, {"name": LIST_PIPELINES_TOOL})
+
+    assert set(tools) == {*BUILTIN_TOOL_NAMES, "bdr-campaign", "bdr-campaign_status"}
+    assert "Impostor" not in (tools[LIST_PIPELINES_TOOL].description or "")
+    assert f"{LIST_PIPELINES_TOOL}_status" not in tools
+    assert listed.structured_content is not None
+    assert [p["name"] for p in listed.structured_content["pipelines"]] == ["bdr-campaign"]
+
+    warnings = [
+        r.getMessage() for r in caplog.records if "collides with a built-in" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert f"'{LIST_PIPELINES_TOOL}'" in warnings[0]
+    assert "rote register --name" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_corrupt_registry_keeps_previous_tool_list_on_request(
+    registry_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A tools/list (or built-in call) that lands while the registry file
+    is corrupt serves the previous entries plus the built-ins, instead of
+    the provider raising and FastMCP answering with no tools at all."""
+    server = build_server(registry_path, poll_interval=3600.0)
+    async with Client(server) as client:
+        before = {t.name for t in await client.list_tools()}
+        registry_path.write_text("{ not json", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="rote.serve.server"):
+            during = {t.name for t in await client.list_tools()}
+            listed = await client.call_tool(LIST_PIPELINES_TOOL, {})
+
+    assert during == before
+    assert during >= BUILTIN_TOOL_NAMES
+    assert listed.structured_content is not None
+    assert [p["name"] for p in listed.structured_content["pipelines"]] == [
+        "bdr-campaign",
+        "cf-pipeline",
+        "dbos-pipeline",
+    ]
+    assert any("registry reload failed" in r.getMessage() for r in caplog.records)
 
 
 # ───────── Tool calls (mocked backends) ─────────
@@ -793,7 +1071,11 @@ async def test_serve_over_real_stdio_transport(tmp_path: Path) -> None:
     try:
         async with Client(transport) as client:
             tools = {t.name for t in await client.list_tools()}
-            assert tools == {"cf-pipeline", "cf-pipeline_status"}
+            assert tools == {*BUILTIN_TOOL_NAMES, "cf-pipeline", "cf-pipeline_status"}
+
+            listed = await client.call_tool(LIST_PIPELINES_TOOL, {})
+            assert listed.structured_content is not None
+            assert [p["name"] for p in listed.structured_content["pipelines"]] == ["cf-pipeline"]
 
             result = await client.call_tool("cf-pipeline", {"x": "hello"})
             assert result.data["workflow_id"] == "stub-instance-42"

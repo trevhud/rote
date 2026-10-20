@@ -84,6 +84,14 @@ gate signal name + resume payload — so Claude can deliver approvals
 itself). A DBOS run whose status stays `enqueued` means the emitted app
 process isn't running against the registered system database.
 
+Two built-in tools are always there, even before anything is
+registered: `rote_list_pipelines` (every registered pipeline, its
+runtime, and its tool names, with an optional `runtime` filter) and
+`rote_describe_pipeline` (one pipeline's input schema and trigger
+config, passwords redacted). Call `rote_list_pipelines` first when the
+user asks what is available. The `rote_` prefix is reserved for them,
+so `rote register --name` refuses names that start with it.
+
 ## 4. Explain the reconnect caveat
 
 A running `rote serve` picks up registry changes live — no restart of
