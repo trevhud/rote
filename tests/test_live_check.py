@@ -608,7 +608,8 @@ def test_against_a_vendors_own_spec_every_unknown_live_field_is_drift(tmp_path: 
         "threads[].labels: returned live, not in the spec",
         "resultSizeEstimate: expected integer, got str",
     ]
-    assert "nextPageToken" in check.spec_only
+    # Optional fields of a vendor's own spec are routinely absent: not reported.
+    assert check.spec_only == []
     assert SECRET not in json.dumps(check.__dict__)
 
 
