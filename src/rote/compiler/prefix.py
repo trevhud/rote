@@ -168,6 +168,20 @@ def findings_from_report(
                     path=at.get("path"),
                 )
             )
+        elif step.get("status") == "not_json":
+            findings.append(
+                ContractFinding(
+                    node_id=node_id,
+                    kind="prefix_not_json",
+                    severity="error",
+                    message=(
+                        f"{node_id} returned a value that is not plain JSON: "
+                        f"{step.get('message')}. A step result crosses a durable boundary "
+                        f"as JSON on every runtime, so return lists, dicts, strings, numbers, "
+                        f"booleans and None only (a set becomes a sorted list). {tail}"
+                    ),
+                )
+            )
         elif step.get("status") == "binding_error":
             findings.append(
                 ContractFinding(

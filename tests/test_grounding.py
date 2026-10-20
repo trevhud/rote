@@ -584,6 +584,24 @@ def test_a_binding_the_upstream_result_cannot_satisfy_names_both_sides(tmp_path:
     assert "`cap` is bound to dupes.output.cap, but dupes returned keys flagged" in finding.message
 
 
+def test_a_result_that_is_not_plain_json_fails_by_path(tmp_path: Path) -> None:
+    """A real compile's duplicate check returned a Python set: it pickles in
+    DBOS and silently becomes its repr anywhere JSON carries it."""
+    root = _prefix_root(tmp_path)
+    checks = root / "extracted" / "checks.py"
+    checks.write_text(
+        checks.read_text().replace(
+            'return {"flagged": flagged, "cap": 25}', 'return {"flagged": set(flagged), "cap": 25}'
+        )
+    )
+    run = _run(root)
+    [finding] = run.findings
+    assert finding.kind == "prefix_not_json" and finding.node_id == "dupes"
+    assert "result.flagged is a set" in finding.message
+    # Nothing downstream runs on a result no runtime could carry.
+    assert run.steps["summary"]["status"] == "not_reached"
+
+
 def test_a_fanned_input_that_is_not_a_list_fails(tmp_path: Path) -> None:
     run = _run(_prefix_root(tmp_path), {**_ROWS, "submissions": {"E1": {}}})
     kinds = {f.node_id: f.kind for f in run.findings}
