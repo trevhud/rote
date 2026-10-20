@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -111,9 +112,8 @@ class Lane:
 
     provider: str
     sdk_client: Any = None
-    #: The model id on this lane: ``MODEL``, with the compile model's provider
-    #: prefix when it has one (``anthropic/claude-haiku-5-5`` on Cloudflare's
-    #: Unified Billing ``/ai`` endpoint, which 404s a bare id).
+    #: The model id on this lane: ``MODEL``, or its gateway form when the
+    #: compile model is provider-prefixed (:func:`gateway_model_id`).
     model: str = MODEL
 
     @property
@@ -146,6 +146,14 @@ class TieBreak:
         }
 
 
+def gateway_model_id(prefix: str, model: str) -> str:
+    """``model`` as Cloudflare's ``/ai`` endpoint names it: the provider prefix,
+    and the version with a dot. Verified live on a rote gateway:
+    ``anthropic/claude-haiku-5.5`` answers, ``anthropic/claude-haiku-5-5`` is
+    "Model not found", and a bare id is unknown there."""
+    return f"{prefix}/" + re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
+
+
 def lane_for(driver: Any) -> Lane:
     """The billing lane the compile's own driver implies."""
     from rote.inference._runtime_helper import provider_availability
@@ -166,7 +174,7 @@ def lane_for(driver: Any) -> Lane:
             return Lane(
                 "api",
                 anthropic.Anthropic(**driver._client_kwargs()),
-                f"{prefix}/{MODEL}" if prefix else MODEL,
+                gateway_model_id(prefix, MODEL) if prefix else MODEL,
             )
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return Lane("api")

@@ -157,6 +157,14 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     questions += [
         ("The agent edited a decision; rote restored it", c) for c in all_changes(work_dir)
     ]
+    questions += [
+        (
+            f"{tiebreak.MODEL} proposed a kind a rule forbids",
+            f"step `{p.skill.units[int(i)].title}`: {why}",
+        )
+        for i, reasons in _overruled(work_dir).items()
+        for why in reasons
+    ]
     # Details carry agent-written text (a proposal's node, a restored value):
     # one line each, so a newline and "## ..." cannot reshape the report.
     questions = [(" ".join(t.split()), " ".join(d.split())) for t, d in questions]
@@ -212,6 +220,15 @@ def _calls_made(
     if asked:
         costs[tiebreak.MODEL] = tb.get("cost_usd")
     return model, asked, costs
+
+
+def _overruled(work_dir: Path) -> dict[str, list[str]]:
+    """The tie-break's proposals a rule forbade, by unit index, from decisions.json."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if not path.is_file():
+        return {}
+    tb = json.loads(path.read_text(encoding="utf-8")).get("tiebreak") or {}
+    return dict(tb.get("overruled") or {})
 
 
 def _cost_sentence(costs: dict[str, float | None]) -> str:
