@@ -118,6 +118,8 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
         "duration_ms",
         "duration_api_ms",
         "repair_rounds",
+        "web_search_requests",
+        "web_fetch_requests",
     ):
         if key not in result.metadata:
             continue
@@ -143,6 +145,9 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
         and cost >= 0
     ):
         metadata["cost_usd"] = cost
+    search = result.metadata.get("web_search_usd")
+    if isinstance(search, (int, float)) and not isinstance(search, bool) and search >= 0:
+        metadata["web_search_usd"] = search
     payload: dict[str, Any] = {
         "schema_version": 1,
         "driver": result.driver_name,

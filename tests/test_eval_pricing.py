@@ -149,6 +149,17 @@ def test_malformed_openrouter_payload_is_nonfatal() -> None:
     assert "cross-checked" not in flagship.source
 
 
+#: An OpenRouter listing carrying a web search price, as the live one does.
+_OPENROUTER_SEARCH = {
+    "data": [
+        {
+            "id": "anthropic/claude-sonnet-5",
+            "pricing": {"prompt": "0.000002", "completion": "0.00001", "web_search": "0.01"},
+        }
+    ]
+}
+
+
 def test_fetch_catalog_uses_fresh_cache_and_skips_network(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -158,7 +169,7 @@ def test_fetch_catalog_uses_fresh_cache_and_skips_network(
     monkeypatch.setattr("rote.eval.pricing._get_json", _boom)
 
     cache = tmp_path / "pricing.json"
-    catalog = build_catalog(LINEUP, None, provider="anthropic", fetched_at="t")
+    catalog = build_catalog(LINEUP, _OPENROUTER_SEARCH, provider="anthropic", fetched_at="t")
     from rote.eval.pricing import _store_cache
 
     _store_cache(cache, catalog, "anthropic")
@@ -298,3 +309,64 @@ def test_cache_rates_survive_the_on_disk_round_trip(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.rates_for("claude-fable-5") == (10.0, 50.0, 1.0, 12.5)
     assert loaded.rates_for("claude-sonnet-4-6") == (3.0, 15.0, None, None)
+
+
+def test_build_catalog_carries_openrouters_web_search_price() -> None:
+    """The only live source for a server-side search's price; without
+    OpenRouter there is none, and the accessor says so."""
+    openrouter = {
+        "data": [
+            {
+                "id": "anthropic/claude-sonnet-5",
+                "pricing": {"prompt": "0.000002", "completion": "0.00001", "web_search": "0.01"},
+            }
+        ]
+    }
+    with_or = build_catalog(LINEUP, openrouter, provider="anthropic", fetched_at="t")
+    assert with_or.web_search_usd_per_request("claude-sonnet-5") == 0.01
+    without = build_catalog(LINEUP, None, provider="anthropic", fetched_at="t")
+    with pytest.raises(PricingError, match="no live web search price"):
+        without.web_search_usd_per_request("claude-sonnet-5")
+
+
+def test_a_cache_written_while_openrouter_was_down_retries_only_the_search_rates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty rate map must not stick for the TTL; the token prices still do."""
+    from rote.eval.pricing import OPENROUTER_URL, _store_cache
+
+    cache = tmp_path / "pricing.json"
+    _store_cache(
+        cache, build_catalog(LINEUP, None, provider="anthropic", fetched_at="t"), "anthropic"
+    )
+    asked: list[str] = []
+
+    def _fetch(url: str, timeout: float) -> Any:
+        asked.append(url)
+        return _OPENROUTER_SEARCH
+
+    monkeypatch.setattr("rote.eval.pricing._get_json", _fetch)
+    loaded = fetch_catalog(provider="anthropic", cache_path=cache)
+    assert asked == [OPENROUTER_URL]  # not models.dev: the token prices stand
+    assert loaded.web_search_usd_per_request("claude-sonnet-5") == 0.01
+    # Stored: the next read needs no network at all.
+    monkeypatch.setattr("rote.eval.pricing._get_json", lambda url, timeout: pytest.fail(url))
+    assert fetch_catalog(provider="anthropic", cache_path=cache).web_search_rates
+
+
+def test_a_cache_without_search_rates_still_serves_when_openrouter_is_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.pricing import _store_cache
+
+    cache = tmp_path / "pricing.json"
+    _store_cache(
+        cache, build_catalog(LINEUP, None, provider="anthropic", fetched_at="t"), "anthropic"
+    )
+
+    def _down(url: str, timeout: float) -> Any:
+        raise PricingError("down")
+
+    monkeypatch.setattr("rote.eval.pricing._get_json", _down)
+    loaded = fetch_catalog(provider="anthropic", cache_path=cache)
+    assert loaded.rates_for("claude-sonnet-5") is not None and not loaded.web_search_rates

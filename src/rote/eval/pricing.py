@@ -27,6 +27,7 @@ name patterns, which churn every release.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import time
 import urllib.request
@@ -112,6 +113,25 @@ class PricingCatalog:
     entries, has no published cache rate; that is distinct from zero and
     callers must not bill it as free.
     """
+    web_search_rates: dict[str, float] = field(default_factory=dict)
+    """Normalized id -> USD per server-side web search, from OpenRouter's
+    ``pricing.web_search`` (native search is passed through at the
+    provider's price). models.dev does not publish it."""
+
+    def web_search_usd_per_request(self, model_id: str) -> float:
+        """What one web search costs on ``model_id``.
+
+        Raises :class:`PricingError` when no live source priced it (OpenRouter
+        unreachable, or the model unlisted there): a search billed at a
+        remembered rate would be a guess presented as a price.
+        """
+        rate = self.web_search_rates.get(_normalize_model_id(model_id))
+        if rate is None:
+            raise PricingError(
+                f"no live web search price for {model_id!r}: {OPENROUTER_URL} "
+                f"lists none (pricing.web_search)"
+            )
+        return rate
 
     def by_provider(self, provider: str) -> list[ModelPrice]:
         return [p for p in self.prices if p.provider == provider]
@@ -291,6 +311,27 @@ def _parse_openrouter(payload: Any) -> dict[str, tuple[float, float]]:
     return out
 
 
+def _parse_openrouter_web_search(payload: Any) -> dict[str, float]:
+    """Normalized id -> USD per web search request (``pricing.web_search``)."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise PricingError("OpenRouter payload has no data list")
+    out: dict[str, float] = {}
+    for entry in payload["data"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        pricing = entry.get("pricing")
+        if not isinstance(pricing, dict):
+            continue
+        try:
+            rate = float(pricing.get("web_search", ""))
+        except (TypeError, ValueError):
+            continue
+        # A ":batch" or other variant id shares the base id once
+        # normalized; the first listing (the base model) wins.
+        out.setdefault(_normalize_model_id(entry["id"].split(":")[0]), rate)
+    return out
+
+
 # ───────── Tier detection ─────────
 
 
@@ -393,12 +434,15 @@ def build_catalog(
     tiers = _assign_tiers(raw_models)
 
     cross: dict[str, tuple[float, float]] = {}
+    web_search: dict[str, float] = {}
     if openrouter_payload is not None:
         # The cross-check is best-effort by design: a malformed
         # OpenRouter payload downgrades the source annotation (same as
-        # an unreachable one), it never sinks the catalog.
+        # an unreachable one), it never sinks the catalog. Web search
+        # rates are then absent, which their accessor reports loudly.
         with contextlib.suppress(PricingError):
             cross = _parse_openrouter(openrouter_payload)
+            web_search = _parse_openrouter_web_search(openrouter_payload)
 
     prices: list[ModelPrice] = []
     for m in raw_models:
@@ -444,6 +488,7 @@ def build_catalog(
         prices=tuple(prices),
         reference_prices=reference,
         reference_cache_rates=reference_cache,
+        web_search_rates=web_search,
     )
 
 
@@ -466,6 +511,11 @@ def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog |
             return None
         if raw.get("provider") != provider:
             return None
+        # A cache written before web search rates were carried is refetched,
+        # not read as "no rate": that would leave every run that searched
+        # unpriced until the TTL ran out (found live, an 18-hour-old cache).
+        if "web_search_rates" not in raw:
+            return None
         prices = tuple(
             ModelPrice(**{**entry, "tier": ModelTier(entry["tier"])}) for entry in raw["prices"]
         )
@@ -484,12 +534,18 @@ def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog |
             str(k): (_opt(v[0]), _opt(v[1]))
             for k, v in raw.get("reference_cache_rates", {}).items()
         }
+        web_search = {
+            str(k): float(v)
+            for k, v in raw.get("web_search_rates", {}).items()
+            if isinstance(v, int | float)
+        }
         if not prices:
             return None
         return PricingCatalog(
             prices=prices,
             reference_prices=reference,
             reference_cache_rates=reference_cache,
+            web_search_rates=web_search,
         )
     except Exception:
         return None  # any unreadable/stale/foreign cache means refetch
@@ -502,6 +558,7 @@ def _store_cache(path: Path, catalog: PricingCatalog, provider: str) -> None:
         "prices": [asdict(p) | {"tier": p.tier.value} for p in catalog.prices],
         "reference_prices": {k: list(v) for k, v in catalog.reference_prices.items()},
         "reference_cache_rates": {k: list(v) for k, v in catalog.reference_cache_rates.items()},
+        "web_search_rates": dict(catalog.web_search_rates),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -523,6 +580,18 @@ def fetch_catalog(
     """
     path = cache_path or _default_cache_path()
     cached = _load_cache(path, cache_ttl_seconds, provider)
+    if cached is not None and not cached.web_search_rates:
+        # Written while OpenRouter, the only source of web search rates, was
+        # down: its token prices stand, but the rates are retried on each
+        # read instead of staying empty for the whole TTL.
+        try:
+            rates = _parse_openrouter_web_search(_get_json(OPENROUTER_URL, timeout))
+        except PricingError:
+            rates = {}
+        if rates:
+            cached = dataclasses.replace(cached, web_search_rates=rates)
+            with contextlib.suppress(OSError):
+                _store_cache(path, cached, provider)
     if cached is not None:
         return cached
 
