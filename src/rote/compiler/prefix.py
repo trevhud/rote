@@ -168,21 +168,32 @@ def probe_shapes(output_schema: dict[str, Any] | None) -> list[str]:
 
 
 def _gate_answers(pipeline: Pipeline, sample: Sample) -> dict[str, dict[str, Any]]:
-    """``{gate id: the sample's answer}``, matched by grounding's one matcher."""
+    """``{gate id: the sample's answer}`` for the gates the sample surely answers.
+
+    Pairing comes from grounding's one matcher, but running past a gate
+    takes more than a pairing: the answer must carry the gate's signal, or
+    only keys the gate declares. The matcher's last resort pairs a leftover
+    answer with the next unmatched gate even when nothing matches (that is
+    right for the gate check, which then reports the mismatch). Run on such
+    an answer, the nodes after the gate would fail on keys it never had and
+    blame correct code.
+    """
     if not sample.gates:
         return {}
     from rote.compiler.grounding import GateView, match_sample_gates
 
-    views = [
-        GateView(n.id, n.signal, n.output_keys)
+    views = {
+        n.id: GateView(n.id, n.signal, n.output_keys)
         for wave in pipeline.execution_waves()
         for n in wave
         if n.kind is NodeKind.HITL_GATE
-    ]
-    return {
-        gate_id: sample.gates[signal]
-        for signal, gate_id in match_sample_gates(views, sample).items()
     }
+    answers: dict[str, dict[str, Any]] = {}
+    for signal, gate_id in match_sample_gates(list(views.values()), sample).items():
+        gate, answer = views[gate_id], sample.gates[signal]
+        if gate.signal == signal or (answer and set(answer) <= gate.keys):
+            answers[gate_id] = answer
+    return answers
 
 
 def _where(at: dict[str, Any] | None) -> str:

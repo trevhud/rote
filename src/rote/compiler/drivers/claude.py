@@ -795,7 +795,15 @@ class ClaudeDriver(CompilerDriver):
                 cwd=tmp,
                 limit=_STREAM_LINE_LIMIT,
             )
-            stdout, stderr = await proc.communicate(request.prompt.encode("utf-8"))
+            try:
+                stdout, stderr = await proc.communicate(request.prompt.encode("utf-8"))
+            except asyncio.CancelledError:
+                # A sibling failed the compile: the child must not keep
+                # running (and billing) after its caller has gone.
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                raise
         try:
             envelope = json.loads(stdout)
         except ValueError:
@@ -819,7 +827,9 @@ class ClaudeDriver(CompilerDriver):
         cost = metadata.get("cost_usd")
         return Generation(
             payload=payload,
-            model=models[0] if len(models) == 1 else request.model,
+            # What actually ran, from modelUsage: an alias or a fallback model
+            # can differ from what was asked for. Several means a fallback ran.
+            model=",".join(models) if models else request.model,
             input_tokens=int(metadata.get("input_tokens") or 0),
             output_tokens=int(metadata.get("output_tokens") or 0),
             cache_write_tokens=int(metadata.get("cache_write_tokens") or 0),

@@ -164,8 +164,10 @@ class GenerationRequest:
 
     ``system`` is the prefix every call of a compile shares, byte for byte,
     so the prompt cache serves it after the first call. ``prompt`` is what
-    this call alone asks for. The answer is forced into ``schema`` (a
-    forced tool call on both lanes), never parsed out of prose.
+    this call alone asks for. The answer is constrained to ``schema`` at
+    decoding time (``claude -p --json-schema`` on the subscription lane,
+    ``output_config.format`` structured outputs on the API lane), never
+    parsed out of prose.
     """
 
     system: str

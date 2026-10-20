@@ -361,3 +361,95 @@ def test_the_prefix_runs_past_a_gate_the_sample_answers(tmp_path: Path) -> None:
     assert run.steps["review"]["status"] == "ok"
     (finding,) = run.findings
     assert finding.node_id == "after_gate" and "IndexError" in finding.message
+
+
+def _gate_run(tmp_path: Path, gates: dict[str, dict[str, Any]]) -> Any:
+    from rote.compiler.prefix import run_prefix
+    from rote.contracts import implementation_status
+    from tests.test_grounding import _ROWS, _pipeline, _prefix_root, _sample
+
+    root = _prefix_root(tmp_path)
+    ir = (root / "pipeline.yaml").read_text().replace(
+        "    signal: controller_review\n",
+        "    signal: controller_review\n    output: {approved_ids: list, notes: str}\n",
+    )
+    (root / "pipeline.yaml").write_text(ir)
+    pipeline = _pipeline(root)
+    return run_prefix(
+        pipeline,
+        root,
+        _sample(_ROWS, gates=gates),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+    )
+
+
+def test_an_answer_that_is_not_the_gates_does_not_run_past_it(tmp_path: Path) -> None:
+    """The matcher's last resort pairs any leftover answer with the next gate;
+    running past the gate on it would blame correct code for missing keys."""
+    run = _gate_run(tmp_path, {"some_other_signal": {"zzz": 1}})
+    assert run.steps["review"]["status"] == "not_deterministic"
+    assert run.steps["after_gate"]["status"] == "not_reached"
+    assert run.findings == []
+
+
+def test_an_answer_with_only_the_gates_keys_runs_past_it(tmp_path: Path) -> None:
+    # No signal match, but every key is one the gate declares.
+    run = _gate_run(tmp_path, {"renamed_signal": {"approved_ids": ["E2"]}})
+    assert run.steps["review"]["status"] == "ok"
+    assert run.steps["after_gate"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_claude_call_kills_its_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    killed: list[bool] = []
+
+    class _Hanging:
+        returncode = None
+
+        async def communicate(self, data: bytes) -> tuple[bytes, bytes]:
+            await asyncio.sleep(60)
+            raise AssertionError("not reached")
+
+        def kill(self) -> None:
+            killed.append(True)
+            self.returncode = -9
+
+        async def wait(self) -> int:
+            return -9
+
+    async def _exec(*args: str, **kwargs: Any) -> _Hanging:
+        return _Hanging()
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", _exec)
+    task = asyncio.create_task(ClaudeDriver().generate(REQUEST))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert killed == [True]
+
+
+@pytest.mark.asyncio
+async def test_claude_generate_names_every_model_that_ran(fake_claude: Any) -> None:
+    usage = {"inputTokens": 1, "outputTokens": 1, "cacheReadInputTokens": 0}
+    fake_claude(_envelope(modelUsage={"claude-sonnet-5-5": usage, "claude-haiku-5-5": usage}))
+    g = await ClaudeDriver().generate(REQUEST)
+    assert g.model == "claude-sonnet-5-5,claude-haiku-5-5"
+
+
+@pytest.mark.asyncio
+async def test_api_generate_asks_for_the_full_output_budget_and_refuses_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rote.compiler.drivers.anthropic_api import DEFAULT_MAX_TOKENS_PER_TURN
+
+    client = _Client(_message([SimpleNamespace(type="text", text='[{"x": "z"}]')]))
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda **k: None)
+    with pytest.raises(DriverError, match="no answer"):
+        await AnthropicApiDriver().generate(REQUEST)
+    assert client.calls[0]["max_tokens"] == DEFAULT_MAX_TOKENS_PER_TURN
