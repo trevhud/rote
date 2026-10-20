@@ -114,7 +114,7 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
     ConfigKey(
         name="effort",
         env="ROTE_EFFORT",
-        description="compiler thinking effort, claude driver (unset = low)",
+        description="compiler thinking effort, claude + openai-api drivers (unset = low on claude)",
         lazy_choices="effort",
     ),
     ConfigKey(

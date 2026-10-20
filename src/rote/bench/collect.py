@@ -294,7 +294,9 @@ def collect_job(
         "exit_code": exit_code,
         "wall_seconds": round(wall_seconds, 1) if wall_seconds is not None else None,
         "deliverable": compiled.name if compiled is not None else None,
-        "turns": metrics.get("num_turns"),
+        # claude reports num_turns; the in-process drivers report the same
+        # count (assistant turns) as iterations.
+        "turns": metrics.get("num_turns", metrics.get("iterations")),
         "repair_rounds": metrics.get("repair_rounds"),
         "cost_usd": metrics.get("cost_usd"),
         "input_tokens": metrics.get("input_tokens"),

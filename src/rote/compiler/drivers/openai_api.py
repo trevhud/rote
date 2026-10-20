@@ -106,6 +106,47 @@ def _has_gateway_auth(default_headers: dict[str, str] | None) -> bool:
     return any(h in lowered for h in _GATEWAY_AUTH_HEADERS)
 
 
+def _output_tokens(usage: Any, prompt_tokens: int) -> int:
+    """Billed output tokens for one turn, reasoning included.
+
+    OpenAI counts reasoning tokens inside ``completion_tokens``. Not every
+    vendor behind the same wire shape does: through Cloudflare AI Gateway,
+    Google Gemini and xAI Grok report reasoning only in
+    ``completion_tokens_details.reasoning_tokens`` and in ``total_tokens``
+    (measured 2026-10-19: ``completion_tokens: 1``, ``reasoning_tokens:
+    101``, ``total_tokens: 108`` for a one-word reply). Reading
+    ``completion_tokens`` alone would undercount a reasoning model's output
+    by most of its bill. ``total - prompt`` is right under both
+    conventions, so it wins whenever it is larger.
+    """
+    completion = getattr(usage, "completion_tokens", 0) or 0
+    total = getattr(usage, "total_tokens", None)
+    if isinstance(total, int) and total - prompt_tokens > completion:
+        return total - prompt_tokens
+    return completion
+
+
+def _replayed_tool_call(tc: Any) -> dict[str, Any]:
+    """One assistant tool call, as it must be sent back on the next turn.
+
+    ``extra_content`` is echoed when the model attached one. Gemini 3 puts
+    its ``thought_signature`` there and rejects the next request without it
+    (measured through Cloudflare AI Gateway: every turn after the first
+    returned 400 "Model execution failed (User Input Error)"). It is
+    opaque provider state, so it goes back byte for byte; other fields a
+    model attaches (kimi/glm reasoning) are still dropped.
+    """
+    call: dict[str, Any] = {
+        "id": tc.id,
+        "type": "function",
+        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+    }
+    extra = getattr(tc, "extra_content", None)
+    if extra is not None:
+        call["extra_content"] = extra
+    return call
+
+
 def _assistant_snippet(content: str | None) -> str:
     """First ~120 chars of the assistant's text, or ``"thinking…"``.
 
@@ -155,6 +196,11 @@ async def _accumulate_stream(chunks: Any) -> Any:
             entry = tool_deltas.setdefault(tc.index, {"id": None, "name": "", "arguments": ""})
             if getattr(tc, "id", None):
                 entry["id"] = tc.id
+            # Last non-None wins: the signature arrives once, on one delta of
+            # the call, and later deltas for the same index carry None.
+            extra = getattr(tc, "extra_content", None)
+            if extra is not None:
+                entry["extra_content"] = extra
             fn = getattr(tc, "function", None)
             if fn is not None:
                 if getattr(fn, "name", None):
@@ -170,6 +216,7 @@ async def _accumulate_stream(chunks: Any) -> Any:
             id=entry["id"],
             type="function",
             function=SimpleNamespace(name=entry["name"], arguments=entry["arguments"]),
+            extra_content=entry.get("extra_content"),
         )
         for _, entry in sorted(tool_deltas.items())
     ]
@@ -219,6 +266,7 @@ class OpenAIApiDriver(CompilerDriver):
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
+        effort: str | None = None,
         **_ignored: Any,
     ) -> None:
         """
@@ -251,7 +299,22 @@ class OpenAIApiDriver(CompilerDriver):
             (see :mod:`rote.extras`). Only tools whose server
             declares ``readOnlyHint`` are exposed; a server that cannot
             be reached is skipped with a warning event, never an error.
+        effort
+            ``rote compile --effort`` (``low`` / ``medium`` / ``high``),
+            sent as ``reasoning_effort``. ``None`` omits the parameter and
+            the endpoint uses the model's own default, which for current
+            open-weight reasoning models is often the top level (GLM-5.3
+            defaults to ``max``, DeepSeek V4 to ``high``) and so the
+            costliest. Same knob, same meaning as the claude driver's.
         """
+        if effort is not None:
+            from rote.compiler.drivers.claude import EFFORT_LEVELS
+
+            if effort not in EFFORT_LEVELS:
+                raise ValueError(
+                    f"effort must be one of {', '.join(EFFORT_LEVELS)}, got {effort!r}"
+                )
+        self.effort = effort
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
@@ -417,8 +480,12 @@ class OpenAIApiDriver(CompilerDriver):
 
         total_input_tokens = 0
         total_output_tokens = 0
+        total_cache_read_tokens = 0
         last_text = ""
         completed_iterations = 0
+        #: Repair turns the orchestrator's verifier bounced back (the claude
+        #: driver reports the same key from its --resume invocations).
+        repair_rounds = 0
         #: Phase events already emitted from the agent's progress.ndjson
         #: writes — the loop only fires events for lines beyond this.
         emitted_phases = 0
@@ -430,27 +497,37 @@ class OpenAIApiDriver(CompilerDriver):
             # connections (see _streamed_completion). The heartbeat now
             # only fires when the stream itself stalls >120s — the new
             # hang signal, not a healthy slow turn.
+            request: dict[str, Any] = {
+                "model": self.model,
+                "max_completion_tokens": self.max_tokens_per_turn,
+                "messages": messages,
+                # The shared builder returns plain dicts
+                # (wire-shape-neutral, shared with the Anthropic
+                # driver); the SDK validates them at runtime.
+                "tools": tool_schemas,
+            }
+            if self.effort is not None:
+                request["reasoning_effort"] = self.effort
             response = await await_with_heartbeat(
-                _streamed_completion(
-                    client,
-                    {
-                        "model": self.model,
-                        "max_completion_tokens": self.max_tokens_per_turn,
-                        "messages": messages,
-                        # The shared builder returns plain dicts
-                        # (wire-shape-neutral, shared with the Anthropic
-                        # driver); the SDK validates them at runtime.
-                        "tools": tool_schemas,
-                    },
-                ),
+                _streamed_completion(client, request),
                 on_event,
                 f"the model (turn {iteration})",
             )
 
             usage = getattr(response, "usage", None)
             if usage is not None:
-                total_input_tokens += getattr(usage, "prompt_tokens", 0) or 0
-                total_output_tokens += getattr(usage, "completion_tokens", 0) or 0
+                prompt = getattr(usage, "prompt_tokens", 0) or 0
+                # OpenAI-shaped usage counts cached prompt tokens INSIDE
+                # prompt_tokens. rote's convention keeps cache reads in
+                # their own bucket (they bill at a fraction of the input
+                # rate), so split them out here.
+                details = getattr(usage, "prompt_tokens_details", None)
+                cached = (getattr(details, "cached_tokens", 0) or 0) if details else 0
+                total_cache_read_tokens += cached
+                # Clamped at zero: a vendor that reports cached tokens
+                # OUTSIDE prompt_tokens would otherwise drive input negative.
+                total_input_tokens += max(0, prompt - cached)
+                total_output_tokens += _output_tokens(usage, prompt)
 
             if not response.choices:
                 raise DriverError(
@@ -469,7 +546,11 @@ class OpenAIApiDriver(CompilerDriver):
                     type="turn",
                     ts=time.time(),
                     turn=iteration,
-                    tokens={"input": total_input_tokens, "output": total_output_tokens},
+                    tokens={
+                        "input": total_input_tokens,
+                        "output": total_output_tokens,
+                        "cache_read": total_cache_read_tokens,
+                    },
                     message=f"turn {iteration}: {_assistant_snippet(content)}",
                 ),
             )
@@ -485,17 +566,7 @@ class OpenAIApiDriver(CompilerDriver):
                 "content": content if tool_calls else (content or ""),
             }
             if tool_calls:
-                assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in tool_calls
-                ]
+                assistant_msg["tool_calls"] = [_replayed_tool_call(tc) for tc in tool_calls]
             messages.append(cast("ChatCompletionMessageParam", assistant_msg))
 
             if finish_reason == "length" and not tool_calls:
@@ -539,6 +610,7 @@ class OpenAIApiDriver(CompilerDriver):
                     # bounded.
                     repair_instruction = repair(natural_stop_pipeline)
                     if repair_instruction is not None:
+                        repair_rounds += 1
                         messages.append({"role": "user", "content": repair_instruction})
                         continue
                 break
@@ -626,6 +698,8 @@ class OpenAIApiDriver(CompilerDriver):
                 "model": self.model,
                 "input_tokens": total_input_tokens,
                 "output_tokens": total_output_tokens,
+                "cache_read_tokens": total_cache_read_tokens,
                 "iterations": completed_iterations,
+                "repair_rounds": repair_rounds,
             },
         )

@@ -1005,6 +1005,8 @@ async def test_repair_callback_resumes_the_same_conversation(
 
     assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
     assert result.metadata["iterations"] == 4
+    # One bounce is one repair round: the bench's `rep` column reads it.
+    assert result.metadata["repair_rounds"] == 1
     # Bounced once (saw the broken file), accepted once (saw the fix).
     assert len(seen) == 2
     assert seen[0] == "name: broken\n"

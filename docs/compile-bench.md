@@ -71,6 +71,85 @@ interpreter as the bench. Two things are forced, not configurable:
   first, so the compiler agent cannot step from the skill dir into
   `expected/`.
 
+## Benching other models through Cloudflare AI Gateway
+
+The `openai-api` driver reaches any model on the Cloudflare catalog through
+the account's OpenAI-compatible route, billed by Unified Billing (third-party
+models) or Workers AI (`@cf/` models). No code or provider key is needed,
+only two variables. The token must belong to the account you mean to bill:
+check `GET /accounts/<ACCT>` names it before spending.
+
+```sh
+export OPENAI_BASE_URL="https://api.cloudflare.com/client/v4/accounts/<ACCT>/ai/v1"
+export OPENAI_API_KEY="<cloudflare api token>"
+ROTE_EFFORT=low /tmp/bench/venv/bin/rote bench --examples ~/rote/examples \
+  --skills expense-audit --agent openai-api --model @cf/deepseek-ai/deepseek-v4.1-flash-1017 \
+  --out /tmp/bench/run-dsv --compare ~/rote/examples/bench/baseline.json
+```
+
+`--effort` (or `ROTE_EFFORT`) reaches the wire as `reasoning_effort`. Leave
+it unset and the endpoint uses the model's own default, which for current
+open-weight reasoning models is usually the top level. The bench has no
+price table for these models, so `cost$` is empty: price the run from its
+token counts, or from the gateway's logs, which record each call's cost.
+
+Measured 2026-10-19, one expense-audit compile each, effort low, against
+main + #144 on Sonnet 4.6 ($1.00, 362 s, kind 0.75, edgeF1 0.80, verified):
+
+| Model | $ | wall | verified | kind | edgeF1 | note |
+| --- | --- | --- | --- | --- | --- | --- |
+| `@cf/deepseek-ai/deepseek-v4.1-flash-1017` | 0.24 | 862 s | yes | 0.88 | 0.40 | ops-report: $0.19, 538 s, kind 0.73 |
+| `@cf/moonshotai/kimi-k2.7-code` | 0.64 | 920 s | yes | 0.88 | 0.15 | ops-report: not verified |
+| `@cf/zai-org/glm-5.3-flash` | 0.06 | 460 s | no | 0.62 | 0.75 | 7 red tests after 2 repairs |
+| `openai/gpt-oss-120b` (Groq) | <0.05 | 16-27 s | no | - | - | invalid IR, or a malformed tool call |
+| `google/gemini-3.8-flash` | 0.08 | - | no | - | - | stopped at turn 6 with no pipeline |
+| `openai/gpt-6-luna` | - | - | no | - | - | the route rejects tools with reasoning |
+
+Behavioral fidelity (`rote bench --fidelity-of`, running the compiled
+pipeline on the skill's own input) does not separate them on expense-audit:
+every compile, Sonnet's included, scores 0.11 to 0.17 there because no
+compile names the input fields the way the bundled input does. The
+model-specific defects under that are real, though: DeepSeek demands an
+`fx_rates_markdown` input the skill never takes, and Kimi ships a
+`load_fx_rates` stub. On ops-report DeepSeek scored 0.50 and Kimi 0.38,
+against 0.38 to 0.75 for Sonnet 4.6 compiles, with a fixture caveat on the
+Gmail and Drive result shapes.
+
+With `--compile-flag=--system1` (rules decide, the model writes modules and
+text) on expense-audit: gpt-oss-120b on Groq ran in 31 s at low effort and 67 s
+at medium, but stubbed 7 of 7 and 1 of 7 modules and did not verify (fidelity
+0.17 and 0.11). DeepSeek wrote 0 of 7 in 454 s for $0.12. At high effort
+gpt-oss called a tool that does not exist and Groq rejected the turn.
+
+So no cheap model is a default or an opt-in for the compile agent yet: the two
+that verified ran at 2.4 times Sonnet's wall time with worse edge F1, and
+the fast one does not write working code. Cerebras is not on Unified Billing.
+Groq is, with gpt-oss only.
+
+### Decision models for System-1's choices
+
+Cloudflare's Clef (`@cf/cloudflare/clef`, `clef-flash`) and Typesafe's Jev
+(`typesafe/jev-1.14.0`) are not text generators. They take a state and typed
+questions (`noul` yes/no, `choice`, `score`) and return a calibrated
+probability per answer, for $0.04 to $0.24 per million input tokens with
+output free, in 0.3 to 0.7 s a call. They fit the rule that code, not a
+language model, makes compile decisions. Measured on System-1's extractor
+units, one call per step, phrasings and thresholds fixed on the 5 dev
+examples and then applied unchanged to `examples/holdout/` (23 steps):
+
+| Decision | Rules dev / holdout | Best model dev / holdout |
+| --- | --- | --- |
+| Node kind (per-step kind-set Jaccard) | 0.77 / 0.65 | Clef-flash 0.81 / 0.83, Jev 0.69 / 0.83 |
+| Human gate (recall) | 1.00 / 0.33 | Clef 1.00 / 1.00, no false gate |
+| Mandatory (accuracy) | 0.64 / 0.87 | Clef-flash 0.90 / 0.48 |
+| fan_out (recall) | 0.40 / 0.33 | Clef-flash 0.60 / 0.33 |
+
+The models generalize on kind and gates and the rules do not. Neither wins
+mandatory or fan_out, and the current mandatory rule beats every model on
+held-out steps. Clef's kind choice was right on 14 of 14 held-out steps
+where its confidence was 0.85 or more. The holdout has 3 gates, so the gate
+result is small-sample.
+
 ## What it reports
 
 Every job is checked the same way, whatever exit path its compile took:

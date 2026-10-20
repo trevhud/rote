@@ -397,6 +397,9 @@ class AnthropicApiDriver(CompilerDriver):
         total_output_tokens = 0
         last_text = ""
         completed_iterations = 0
+        #: Repair turns the orchestrator's verifier bounced back (the claude
+        #: driver reports the same key from its --resume invocations).
+        repair_rounds = 0
         #: Phase events already emitted from the agent's progress.ndjson
         #: writes — the loop only fires events for lines beyond this.
         emitted_phases = 0
@@ -523,6 +526,7 @@ class AnthropicApiDriver(CompilerDriver):
                     # bounded.
                     repair_instruction = repair(natural_stop_pipeline)
                     if repair_instruction is not None:
+                        repair_rounds += 1
                         messages.append({"role": "user", "content": repair_instruction})
                         continue
                 break
@@ -607,5 +611,6 @@ class AnthropicApiDriver(CompilerDriver):
                 "input_tokens": total_input_tokens,
                 "output_tokens": total_output_tokens,
                 "iterations": completed_iterations,
+                "repair_rounds": repair_rounds,
             },
         )

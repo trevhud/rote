@@ -834,8 +834,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     driver_kwargs: dict[str, Any] = {}
     if args.backend == "api":
         driver_kwargs["web_tools"] = True
-    # Only the claude driver sizes thinking by effort; the others absorb
-    # the kwarg (driver-registry convention), like web_tools above.
+    # The claude and openai-api drivers size thinking by effort; the others
+    # absorb the kwarg (driver-registry convention), like web_tools above.
     if args.effort is not None:
         driver_kwargs["effort"] = args.effort
     # In-process drivers (api / openai-api) can call MCP tools live during
@@ -3832,8 +3832,10 @@ def _build_parser() -> argparse.ArgumentParser:
     from rote.runners import RUNNABLE_RUNTIMES
 
     EFFORT_HELP = (
-        "How much the compiler agent thinks, for the claude driver (other "
-        f"drivers ignore it). Default: the `effort` config, else {DEFAULT_EFFORT}. "
+        "How much the compiler agent thinks, for the claude driver and the "
+        "openai-api driver (sent as reasoning_effort; other drivers ignore it). "
+        f"Default: the `effort` config, else {DEFAULT_EFFORT} on claude and the "
+        "model's own default on openai-api. "
         "Higher costs more and runs longer: thinking is most of a compile's "
         "output tokens. Overrides CLAUDE_CODE_EFFORT_LEVEL, which rote "
         "clears for the compiler."

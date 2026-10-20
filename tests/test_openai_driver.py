@@ -76,6 +76,7 @@ async def _chunk_stream(response: Any):  # noqa: ANN201 — async generator of c
                             index=index,
                             id=tc.id,
                             function=SimpleNamespace(name=tc.function.name, arguments=args[:mid]),
+                            extra_content=getattr(tc, "extra_content", None),
                         )
                     ]
                 )
@@ -178,11 +179,15 @@ def _response(
     *,
     prompt_tokens: int = 100,
     completion_tokens: int = 50,
+    cached_tokens: int | None = None,
     finish_reason: str | None = None,
 ) -> SimpleNamespace:
+    usage = SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    if cached_tokens is not None:
+        usage.prompt_tokens_details = SimpleNamespace(cached_tokens=cached_tokens)
     return SimpleNamespace(
         choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
-        usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
+        usage=usage,
     )
 
 
@@ -286,7 +291,9 @@ async def test_happy_path_read_then_write_then_stop(
         "model": "openai/gpt-5.5",
         "input_tokens": 600,
         "output_tokens": 560,
+        "cache_read_tokens": 0,
         "iterations": 3,
+        "repair_rounds": 0,
     }
 
     # First message is the system prompt; model + max_completion_tokens sent.
@@ -364,8 +371,8 @@ async def test_emits_turn_tool_and_phase_events(
     phases = [e for e in events if e.type == "phase"]
 
     assert [e.turn for e in turns] == [1, 2, 3, 4]
-    assert turns[0].tokens == {"input": 200, "output": 40}
-    assert turns[-1].tokens == {"input": 450, "output": 280}
+    assert turns[0].tokens == {"input": 200, "output": 40, "cache_read": 0}
+    assert turns[-1].tokens == {"input": 450, "output": 280, "cache_read": 0}
     assert turns[0].message.startswith("turn 1: Reading.")
 
     assert [e.tool_name for e in tools] == ["read_file", "write_file", "write_file"]
@@ -768,6 +775,196 @@ async def test_repair_callback_resumes_the_same_conversation(
 
     assert result.pipeline_yaml_path.read_text() == VALID_PIPELINE_YAML
     assert len(seen) == 2
+    assert result.metadata["repair_rounds"] == 1
     turn3_messages = client.chat.completions.calls[2]["messages"]
     assert turn3_messages[-1]["role"] == "user"
     assert "fix pipeline.yaml" in turn3_messages[-1]["content"]
+
+
+# ───────── Effort and cache accounting ─────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["low", "high"])
+async def test_effort_is_sent_as_reasoning_effort_on_every_turn(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+    effort: str,
+) -> None:
+    """``rote compile --effort`` reaches the wire with its value, every turn.
+
+    Open-weight reasoning models default to their TOP effort (GLM-5.3:
+    ``max``), so a dropped value silently runs the costliest level.
+    """
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    client = fake_openai(
+        [
+            _response(_message(tool_calls=[_write_pipeline_call("c1", work_dir)])),
+            _response(_message(content="Done.")),
+        ]
+    )
+    driver = OpenAIApiDriver(model="@cf/zai-org/glm-5.3-flash", effort=effort)
+    await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
+    calls = client.chat.completions.calls
+    assert len(calls) == 2
+    assert [c["reasoning_effort"] for c in calls] == [effort, effort]
+
+
+@pytest.mark.asyncio
+async def test_no_effort_omits_reasoning_effort(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """Unset effort sends nothing: some endpoints reject the parameter, so
+    an unrequested default must not be invented here."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    client = fake_openai(
+        [
+            _response(_message(tool_calls=[_write_pipeline_call("c1", work_dir)])),
+            _response(_message(content="Done.")),
+        ]
+    )
+    driver = OpenAIApiDriver(model="openai/gpt-5.5")
+    await driver.run(skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir)
+    assert all("reasoning_effort" not in c for c in client.chat.completions.calls)
+
+
+def test_unknown_effort_is_rejected() -> None:
+    with pytest.raises(ValueError, match="effort must be one of"):
+        OpenAIApiDriver(model="openai/gpt-5.5", effort="max")
+
+
+def test_effort_flows_through_the_registry_factory() -> None:
+    """The CLI passes ``effort`` as a driver kwarg; the factory must keep it."""
+    from rote.compiler.drivers import get_driver
+
+    driver = get_driver("openai-api", model="openai/gpt-5.5", effort="medium")
+    assert getattr(driver, "effort", None) == "medium"
+
+
+@pytest.mark.asyncio
+async def test_cached_prompt_tokens_are_split_into_cache_read(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """OpenAI-shaped usage counts cached tokens inside prompt_tokens; rote
+    books them as cache_read, so input + cache_read == prompt_tokens and
+    the cheaper cache rate can be applied to the right count."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    events: list[Any] = []
+    fake_openai(
+        [
+            _response(
+                _message(tool_calls=[_write_pipeline_call("c1", work_dir)]),
+                prompt_tokens=1000,
+                completion_tokens=10,
+                cached_tokens=0,
+            ),
+            _response(
+                _message(content="Done."),
+                prompt_tokens=1200,
+                completion_tokens=5,
+                cached_tokens=900,
+            ),
+        ]
+    )
+    driver = OpenAIApiDriver(model="@cf/moonshotai/kimi-k2.7-code")
+    result = await driver.run(
+        skill_dir=skill_dir,
+        compiler_skill_dir=compiler_dir,
+        work_dir=work_dir,
+        on_event=events.append,
+    )
+    assert result.metadata["input_tokens"] == 1300
+    assert result.metadata["cache_read_tokens"] == 900
+    assert result.metadata["output_tokens"] == 15
+    turns = [e for e in events if e.type == "turn"]
+    assert turns[-1].tokens == {"input": 1300, "output": 15, "cache_read": 900}
+
+
+@pytest.mark.asyncio
+async def test_reasoning_tokens_outside_completion_tokens_are_counted(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """Gemini and Grok through the gateway report reasoning only in
+    total_tokens (a measured one-word reply: completion 1, total 108). The
+    output count must follow total - prompt there, and stay completion_tokens
+    where the two agree (OpenAI's convention)."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    gemini_shaped = _response(
+        _message(tool_calls=[_write_pipeline_call("c1", work_dir)]),
+        prompt_tokens=6,
+        completion_tokens=1,
+    )
+    gemini_shaped.usage.total_tokens = 108
+    openai_shaped = _response(_message(content="Done."), prompt_tokens=12, completion_tokens=16)
+    openai_shaped.usage.total_tokens = 28
+    fake_openai([gemini_shaped, openai_shaped])
+    driver = OpenAIApiDriver(model="google/gemini-3.8-flash")
+    result = await driver.run(
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
+    )
+    assert result.metadata["output_tokens"] == 102 + 16
+    assert result.metadata["input_tokens"] == 18
+
+
+@pytest.mark.asyncio
+async def test_provider_extra_content_on_tool_calls_is_replayed(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """Gemini 3 attaches extra_content.google.thought_signature to each tool
+    call and rejects the next turn without it. It must ride back verbatim on
+    the call that carried it, and be absent from a call that had none."""
+    import json
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    signed = _tool_call("c1", "list_directory", json.dumps({"path": str(skill_dir.resolve())}))
+    signed.extra_content = {"google": {"thought_signature": "SIG=="}}
+    client = fake_openai(
+        [
+            _response(_message(tool_calls=[signed])),
+            _response(_message(tool_calls=[_write_pipeline_call("c2", work_dir)])),
+            _response(_message(content="Done.")),
+        ]
+    )
+    await OpenAIApiDriver(model="google/gemini-3.8-flash").run(
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
+    )
+    replay = client.chat.completions.calls[2]["messages"]
+    calls = [m["tool_calls"][0] for m in replay if m["role"] == "assistant" and m.get("tool_calls")]
+    assert calls[0]["extra_content"] == {"google": {"thought_signature": "SIG=="}}
+    assert "extra_content" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_cached_tokens_outside_prompt_tokens_never_make_input_negative(
+    fake_skills: tuple[Path, Path, Path],
+    fake_openai,  # noqa: ANN001
+) -> None:
+    """A vendor that counts cached tokens outside prompt_tokens (cached >
+    prompt) must not drive the input count below zero."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    fake_openai(
+        [
+            _response(
+                _message(tool_calls=[_write_pipeline_call("c1", work_dir)]),
+                prompt_tokens=100,
+                completion_tokens=10,
+                cached_tokens=900,
+            ),
+            _response(_message(content="Done."), prompt_tokens=50, completion_tokens=5),
+        ]
+    )
+    result = await OpenAIApiDriver(model="some/vendor").run(
+        skill_dir=skill_dir, compiler_skill_dir=compiler_dir, work_dir=work_dir
+    )
+    assert result.metadata["input_tokens"] == 50
+    assert result.metadata["cache_read_tokens"] == 900
