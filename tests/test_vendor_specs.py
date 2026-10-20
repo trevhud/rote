@@ -763,3 +763,322 @@ def test_a_read_through_an_or_default_is_followed(tmp_path: Path, store: SpecSto
     """
     root = _deliverable(tmp_path, module)
     assert _kinds(root, store) == ["spec_unknown_response_field"]
+
+
+# ───────── review6, second round ─────────
+
+
+def test_the_client_librarys_own_names_are_accepted(tmp_path: Path, store: SpecStore) -> None:
+    """googleapiclient renames parameters (key2param), adds its own, and
+    suffixes reserved method names; correct client code uses those names."""
+    module = """
+    from googleapiclient.discovery import build
+
+    def person():
+        people = build("people", "v1")
+        return people.people().get(
+            resourceName="people/me",
+            personFields="names",
+            requestMask_includeField="person.names",
+            x__xgafv="2",
+            trace="token:x",
+        ).execute()["names"]
+    """
+    root = _deliverable(tmp_path, module)
+    assert _kinds(root, store) == []
+    # The Discovery spelling is not what the library takes.
+    broken = module.replace("requestMask_includeField=", "requestMaskIncludeField=")
+    assert _kinds(_deliverable(tmp_path / "b", broken), store) == ["spec_unknown_param"]
+
+
+def test_client_names_follow_googleapiclient() -> None:
+    from rote.vendor_specs.google import client_method, client_param
+
+    assert client_param("requestMask.includeField") == "requestMask_includeField"
+    assert client_param("$.xgafv") == "x__xgafv"
+    assert client_param("max-results") == "max_results"
+    assert client_param("userId") == "userId"
+    assert client_method("import") == "import_"
+    assert client_method("body") == "body_"
+    assert client_method("list") == "list"
+
+
+def test_a_reserved_method_name_resolves_to_its_operation(tmp_path: Path) -> None:
+    from rote.vendor_specs.check import _client_named
+    from rote.vendor_specs.model import ApiSpec, Operation
+
+    spec = ApiSpec(
+        vendor="google",
+        api="gmail",
+        version="v1",
+        revision="r",
+        source="google-discovery",
+        source_url="u",
+        operations=[
+            Operation(
+                id="gmail.users.messages.import",
+                method="POST",
+                url_template="https://gmail.googleapis.com/gmail/v1/users/{userId}/messages/import",
+            )
+        ],
+    )
+    op = _client_named(spec, "gmail.users.messages.import_")
+    assert op is not None and op.id == "gmail.users.messages.import"
+    assert _client_named(spec, "gmail.users.messages.importt") is None
+
+
+def test_an_executed_chain_is_a_response_not_a_resource(tmp_path: Path, store: SpecStore) -> None:
+    """`results = svc.files().list().execute()` made `results.get(...)` a bogus
+    drive.files.list.execute.get operation."""
+    module = """
+    from googleapiclient.discovery import build
+
+    def files():
+        svc = build("drive", "v3")
+        results = svc.files().list().execute()
+        return [f["name"] for f in results.get("files", [])]
+    """
+    root = _deliverable(tmp_path, module)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, c.status) for c in checks] == [("drive.files.list", "ok")]
+    broken = module.replace('results.get("files", [])', 'results.get("filez", [])')
+    assert _kinds(_deliverable(tmp_path / "b", broken), store) == ["spec_unknown_response_field"]
+
+
+def test_each_read_is_checked_against_the_binding_at_its_line(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    module = """
+    from googleapiclient.discovery import build
+    import httpx
+
+    def threads():
+        svc = build("gmail", "v1")
+        resp = svc.users().threads().list(userId="me").execute()
+        ids = [t["id"] for t in resp["threads"]]
+        resp = svc.users().threads().get(userId="me", id=ids[0]).execute()
+        first = resp["messages"]
+        resp = {"anything": 1}
+        return first, resp["anything"]
+    """
+    root = _deliverable(tmp_path, module)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, c.status) for c in checks] == [
+        ("gmail.users.threads.list", "ok"),
+        ("gmail.users.threads.get", "ok"),
+    ], [f.message for c in checks for f in c.findings]
+    # The list response read the get's field: caught on the right call.
+    broken = module.replace('for t in resp["threads"]', 'for t in resp["messages"]')
+    root = _deliverable(tmp_path / "b", broken)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, [f.kind for f in c.findings]) for c in checks] == [
+        ("gmail.users.threads.list", ["spec_unknown_response_field"]),
+        ("gmail.users.threads.get", []),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("url", "status", "note"),
+    [
+        # A segment built at run time could be "threads" or "messages".
+        (f"{_GMAIL_THREADS[: -len('/threads')]}/{{kind}}", "unresolved", "built at run time"),
+        # Relative to a client's base_url.
+        ("/gmail/v1/users/me/threads", "unresolved", "no host here"),
+        # A placeholder does not excuse a literal no operation has.
+        (f"{_GMAIL_THREADS}z/{{tid}}", "violations", None),
+    ],
+)
+def test_a_url_rote_cannot_pin_down_is_not_checked(
+    tmp_path: Path, store: SpecStore, url: str, status: str, note: str | None
+) -> None:
+    module = f"""
+    import httpx
+
+    def fetch(kind, tid):
+        return httpx.get(f"{url}").json()
+    """
+    root = _deliverable(tmp_path, module)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert check.status == status, check
+    if note is not None:
+        assert note in (check.note or "") and check.findings == []
+
+
+def test_a_module_with_no_recognised_request_gets_a_not_checked_row(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    module = """
+    import aiohttp
+
+    async def fetch_emails(q):
+        async with aiohttp.ClientSession() as s:
+            return await (await s.get("https://gmail.googleapis.com/gmail/v1/users/me/threads")).json()
+    """
+    root = _deliverable(tmp_path, module)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert (check.status, check.path) == ("unresolved", "extracted/vendor.py")
+    assert "recognises no vendor request" in (check.note or "")
+
+
+def test_the_report_never_shows_an_unchecked_request_as_ok() -> None:
+    from rote.contracts import ContractFinding
+    from rote.vendor_specs.check import RequestCheck, report_section
+
+    bad = ContractFinding(
+        node_id="n", kind="spec_unknown_param", severity="error", message="m1", path="p"
+    )
+    lines = report_section(
+        [
+            RequestCheck(("n",), "a.py", 1, "ok", operation="op.a", spec="s"),
+            RequestCheck(("n",), "a.py", 2, "unresolved", note="the URL is built at run time"),
+            RequestCheck(("n",), "a.py", 3, "spec_unavailable", note="discovery is down"),
+            RequestCheck(("n",), "a.py", 4, "violations", operation="op.b", findings=[bad]),
+        ]
+    )
+    rows = [line for line in lines if line.startswith("| `a.py")]
+    assert rows == [
+        "| `a.py:1` | op.a | s | ok |",
+        "| `a.py:2` |  |  | not checked: the URL is built at run time |",
+        "| `a.py:3` |  |  | not checked: discovery is down |",
+        "| `a.py:4` | op.b |  | **1 violation(s)** |",
+    ]
+    assert "- m1" in lines
+    assert report_section([]) == ["No vendor request was found in the external_call modules."]
+
+
+@pytest.mark.parametrize(
+    ("body", "kinds"),
+    [
+        # A URL built with +: the operation is still resolved.
+        (
+            'httpx.get("https://gmail.googleapis.com/gmail/v1/users/" + "me/threads")'
+            '.json()["nope"]',
+            ["spec_unknown_response_field"],
+        ),
+        # An integer parameter sent as a digit string is an integer.
+        (f'httpx.get("{_GMAIL_THREADS}", params={{"maxResults": "5"}})', []),
+        (f'httpx.get("{_GMAIL_THREADS}", params={{"maxResults": "5x"}})', ["spec_param_value"]),
+    ],
+)
+def test_more_rules_each_with_a_case(
+    tmp_path: Path, store: SpecStore, body: str, kinds: list[str]
+) -> None:
+    module = f"""
+    import httpx
+
+    def fetch():
+        return {body}
+    """
+    assert _kinds(_deliverable(tmp_path, module), store) == kinds
+
+
+def test_a_for_loop_over_a_response_checks_each_items_fields(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    module = f"""
+    import httpx
+
+    def fetch():
+        out = []
+        for t in httpx.get("{_GMAIL_THREADS}").json()["threads"]:
+            out.append(t["subject"])
+        return out
+    """
+    assert _kinds(_deliverable(tmp_path, module), store) == ["spec_unknown_response_field"]
+
+
+def test_specs_are_cached_for_a_day_by_default(tmp_path: Path) -> None:
+    from rote.vendor_specs.store import DEFAULT_TTL_SECONDS
+
+    assert DEFAULT_TTL_SECONDS == 24 * 3600
+    assert SpecStore(root=tmp_path).ttl_seconds == DEFAULT_TTL_SECONDS
+
+
+def _synthetic_spec() -> Any:
+    from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec
+
+    return ApiSpec(
+        vendor="google",
+        api="mail",
+        version="v1",
+        revision="r",
+        source="google-discovery",
+        source_url="u",
+        operations=[
+            Operation(
+                id="mail.users.messages.import",
+                method="POST",
+                url_template="https://mail.googleapis.com/v1/users/{userId}/messages/import",
+                params={
+                    "userId": ParamSpec(name="userId", location="path", required=True),
+                    "page.size": ParamSpec(
+                        name="page.size", location="query", type="integer", required=True
+                    ),
+                },
+            )
+        ],
+    )
+
+
+def test_a_required_parameter_is_found_under_its_client_name() -> None:
+    """`page.size` is sent as `page_size`; the import_ method is `import`."""
+    from rote.vendor_specs.check import _operation, _violations
+    from rote.vendor_specs.extract import CallSite
+
+    spec = _synthetic_spec()
+    site = CallSite(
+        line=1,
+        function=None,
+        kind="google_client",
+        google_api=("mail", "v1"),
+        google_chain=("users", "messages", "import_"),
+        params={"userId": "me", "page_size": 5},
+    )
+    op, bound = _operation(site, spec)
+    assert op is not None and op.id == "mail.users.messages.import"
+    assert _violations(site, op, spec, bound) == []
+    missing = CallSite(**{**site.__dict__, "params": {"userId": "me"}})
+    assert [k for k, _ in _violations(missing, op, spec, bound)] == ["spec_missing_required"]
+
+
+@pytest.mark.parametrize(
+    ("tail", "kinds"),
+    [
+        # Read straight off the first binding, before the name is rebound.
+        ('n = resp["threads"]\n    resp = {"x": 1}\n    return n, resp["x"]', []),
+        (
+            'n = resp["threadz"]\n    resp = {"x": 1}\n    return n, resp["x"]',
+            ["spec_unknown_response_field"],
+        ),
+        # Rebound to something else: reads off it are not the request's.
+        ('resp = {"x": 1}\n    return resp["threadz"]', []),
+    ],
+)
+def test_a_direct_read_resolves_against_the_binding_at_its_line(
+    tmp_path: Path, store: SpecStore, tail: str, kinds: list[str]
+) -> None:
+    module = (
+        "from googleapiclient.discovery import build\n\n"
+        "def threads():\n"
+        '    resp = build("gmail", "v1").users().threads().list(userId="me").execute()\n'
+        f"    {tail}\n"
+    )
+    root = tmp_path / "d"
+    (root / "extracted").mkdir(parents=True)
+    (root / "pipeline.yaml").write_text(PIPELINE, encoding="utf-8")
+    (root / "extracted" / "vendor.py").write_text(module, encoding="utf-8")
+    assert _kinds(root, store) == kinds
+
+
+def test_a_request_rebound_before_it_runs_is_not_read_as_that_request(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    module = """
+    from googleapiclient.discovery import build
+
+    def threads(other):
+        req = build("gmail", "v1").users().threads().list(userId="me")
+        req = other
+        return req.execute()["threadz"]
+    """
+    assert _kinds(_deliverable(tmp_path, module), store) == []

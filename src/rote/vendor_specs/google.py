@@ -16,6 +16,7 @@ https://developers.google.com/discovery/v1/reference/apis
 
 from __future__ import annotations
 
+import keyword
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -83,6 +84,31 @@ def api_for_url(url: str) -> UrlApi | None:
             versions.append(f"{segments[i - 1]}_{seg}")
         versions.append(seg)
     return UrlApi(api, tuple(versions), dedicated_host=not shared)
+
+
+# ── Google's client library (google-api-python-client) names things its own way ──
+# The rules below are its own (googleapiclient.discovery.key2param,
+# fix_method_name, STACK_QUERY_PARAMETERS); a check that used the Discovery
+# names refused correct client code.
+
+#: Query parameters the client library adds to every method.
+CLIENT_STACK_PARAMS = frozenset({"trace", "pp", "userip", "strict"})
+
+
+def client_param(name: str) -> str:
+    """The keyword argument the client library takes for Discovery parameter ``name``.
+
+    ``requestMask.includeField`` -> ``requestMask_includeField``,
+    ``$.xgafv`` -> ``x__xgafv`` (googleapiclient's ``key2param``).
+    """
+    prefix = "" if name[:1].isalpha() else "x"
+    return prefix + "".join(c if c.isalnum() else "_" for c in name)
+
+
+def client_method(name: str) -> str:
+    """The client library's name for a Discovery resource or method (``import`` -> ``import_``)."""
+    name = name.replace("$", "_").replace("-", "_")
+    return f"{name}_" if keyword.iskeyword(name) or name == "body" else name
 
 
 def listed_versions(directory: dict[str, Any], api: str) -> tuple[str, ...]:
@@ -199,7 +225,10 @@ def _schema(node: Any) -> Any:
 
 
 __all__ = [
+    "CLIENT_STACK_PARAMS",
     "DIRECTORY_URL",
+    "client_method",
+    "client_param",
     "UrlApi",
     "api_for_url",
     "discovery_url",

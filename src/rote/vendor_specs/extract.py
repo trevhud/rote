@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 _HTTP_VERBS = {"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH", "delete": "DELETE"}
 #: Module-level request functions, by their full dotted name.
@@ -38,6 +38,8 @@ _CLIENT_FACTORIES = {
 
 #: An argument value the AST cannot pin down.
 UNKNOWN = object()
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -303,7 +305,9 @@ class _Scope:
                     chain.append(inner.func.attr)
                     inner = inner.func.value
                 root = self._root(inner, out)
-                if chain and root is not None:
+                # ``svc.files().list().execute()`` ran a request: what it
+                # binds is a response, not a resource to call methods on.
+                if chain and root is not None and "execute" not in chain:
                     base, prefix = root
                     bound = (base, (*prefix, *reversed(chain)))
             if bound is not None:
@@ -494,9 +498,17 @@ class _Scope:
     # ── response reads ──
 
     def _response_reads(self, by_node: dict[int, CallSite]) -> None:
-        """Bind names to responses, then record every field path read off them."""
-        roots: dict[str, CallSite] = {}  # a name holding a response object / its JSON
-        aliases: dict[str, tuple[CallSite, tuple[str, ...]]] = {}
+        """Bind names to responses, then record every field path read off them.
+
+        Each read resolves against the binding in force at its own line:
+        ``resp = list(...)`` then ``resp = get(...)`` checks each read
+        against its own call, and a name rebound to anything else stops
+        resolving at all.
+        """
+        # A name holding a response object (httpx) or a Google request not
+        # yet run; .json() / .execute() on it gives the body.
+        roots: _Bindings[CallSite] = _Bindings()
+        aliases: _Bindings[tuple[CallSite, tuple[str, ...]]] = _Bindings()
 
         def source(expr: ast.expr) -> CallSite | None:
             # call, call.json(), call.execute(), name.json() for a response name
@@ -510,8 +522,8 @@ class _Scope:
                 inner = expr.func.value
                 if isinstance(inner, ast.Call) and id(inner) in by_node:
                     return by_node[id(inner)]
-                if isinstance(inner, ast.Name) and inner.id in roots:
-                    return roots[inner.id]
+                if isinstance(inner, ast.Name):
+                    return roots.get(inner.id, inner.lineno)
             return None
 
         def path(expr: ast.expr) -> tuple[CallSite, tuple[str, ...]] | None:
@@ -523,9 +535,7 @@ class _Scope:
                 site = source(expr)
                 return (site, ()) if site is not None else None
             if isinstance(expr, ast.Name):
-                if expr.id in aliases:
-                    return aliases[expr.id]
-                return None
+                return aliases.get(expr.id, expr.lineno)
             if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
                 return path(expr.values[0])
             if isinstance(expr, ast.Subscript):
@@ -554,45 +564,52 @@ class _Scope:
 
         comprehensions = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
         binders = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor, *comprehensions)
-
-        def bindings(n: ast.AST) -> bool:
-            return isinstance(n, binders)
-
         ordered = sorted(
-            (n for n in self.nodes if bindings(n)), key=lambda n: getattr(n, "lineno", 0)
+            (n for n in self.nodes if isinstance(n, binders)), key=lambda n: getattr(n, "lineno", 0)
         )
         for node in ordered:
-            if isinstance(node, ast.AnnAssign) and node.value is not None:
-                node = ast.Assign(targets=[node.target], value=node.value, lineno=node.lineno)
+            if isinstance(node, ast.AnnAssign):
+                if node.value is None:
+                    continue
+                node = ast.Assign(
+                    targets=[node.target],
+                    value=node.value,
+                    lineno=node.lineno,
+                    end_lineno=node.end_lineno,
+                )
             if isinstance(node, comprehensions):
+                # The target is read on the comprehension's own line.
                 for gen in node.generators:
                     p = path(gen.iter)
-                    if p is not None and isinstance(gen.target, ast.Name):
-                        aliases[gen.target.id] = (p[0], (*p[1], "[]"))
+                    if isinstance(gen.target, ast.Name):
+                        item = (p[0], (*p[1], "[]")) if p is not None else None
+                        aliases.bind(gen.target.id, node.lineno, item)
                 continue
             if isinstance(node, ast.Assign) and len(node.targets) == 1:
                 target = node.targets[0]
                 if not isinstance(target, ast.Name):
                     continue
+                # Visible after the statement: a read in its own value is
+                # of the previous binding (``x = x.get("a")``).
+                visible = (node.end_lineno or node.lineno) + 1
                 site = source(node.value)
                 is_json = isinstance(node.value, ast.Call) and (
                     isinstance(node.value.func, ast.Attribute)
                     and node.value.func.attr in ("json", "execute")
                 )
-                if site is not None and is_json:
-                    aliases[target.id] = (site, ())
-                elif site is not None:
-                    # An httpx response, or a Google request not yet run:
-                    # .json() / .execute() on it gives the body.
-                    roots[target.id] = site
+                if site is not None and not is_json:
+                    roots.bind(target.id, visible, site)
+                    aliases.bind(target.id, visible, None)
                 else:
-                    p = path(node.value)
-                    if p is not None:
-                        aliases[target.id] = p
+                    roots.bind(target.id, visible, None)
+                    aliases.bind(
+                        target.id, visible, (site, ()) if site is not None else path(node.value)
+                    )
             elif isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(node.target, ast.Name):
                 p = path(node.iter)
-                if p is not None:
-                    aliases[node.target.id] = (p[0], (*p[1], "[]"))
+                aliases.bind(
+                    node.target.id, node.lineno, (p[0], (*p[1], "[]")) if p is not None else None
+                )
         for read in self.nodes:
             if isinstance(read, (ast.Subscript, ast.Call)):
                 p = path(read)
@@ -601,6 +618,23 @@ class _Scope:
                     entry = (p[1], read.lineno)
                     if entry not in reads:
                         reads.append(entry)
+
+
+class _Bindings(Generic[_T]):
+    """Name -> what it is bound to, from the line each binding takes effect."""
+
+    def __init__(self) -> None:
+        self._by_name: dict[str, list[tuple[int, _T | None]]] = {}
+
+    def bind(self, name: str, visible_from: int, value: _T | None) -> None:
+        self._by_name.setdefault(name, []).append((visible_from, value))
+
+    def get(self, name: str, line: int) -> _T | None:
+        current: _T | None = None
+        for visible_from, value in self._by_name.get(name, []):
+            if visible_from <= line:
+                current = value
+        return current
 
 
 def _dict_items(node: ast.Dict) -> tuple[dict[str, object], bool]:

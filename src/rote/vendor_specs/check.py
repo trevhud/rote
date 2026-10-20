@@ -63,6 +63,18 @@ def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[
             sites = extract(source)
         except (OSError, UnicodeDecodeError, SyntaxError):
             continue  # check_contracts reports an unreadable module
+        if not sites:
+            # Nothing recognised is not the same as nothing wrong: a client
+            # or SDK the extractor does not read leaves no row otherwise.
+            checks.append(
+                RequestCheck(
+                    tuple(node_ids),
+                    rel,
+                    0,
+                    "unresolved",
+                    note="rote recognises no vendor request in this module, so none was checked",
+                )
+            )
         for site in sites:
             checks.append(_check(site, tuple(node_ids), rel, store))
     return checks
@@ -82,6 +94,11 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
     else:
         if site.url is None:
             return done("unresolved", note="the URL is built at run time")
+        if host_of(site.url) is None:
+            return done(
+                "unresolved",
+                note="the URL has no host here (a client base_url, or built at run time)",
+            )
         named = google.api_for_url(site.url)
         if named is None:
             host = host_of(site.url) or site.url
@@ -137,6 +154,14 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
         )
     label = f"{spec.key} rev {spec.revision}"
     op, matched_path = _operation(site, spec)
+    if op is None and site.kind == "http" and site.url and _could_match(spec, site):
+        # A segment built at run time (f".../users/me/{kind}") could be any
+        # literal: which operation this is cannot be known here.
+        return done(
+            "unresolved",
+            spec=spec.key,
+            note="a path segment is built at run time, so the operation cannot be told here",
+        )
     if op is None:
         where = site.google_method_id or f"{site.method} {site.url}"
         return done(
@@ -163,19 +188,29 @@ def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[st
     """The operation ``site`` calls, and the path parameters its URL supplies."""
     if site.kind == "google_client":
         op_id = site.google_method_id or ""
-        op = spec.operation(op_id)
+        op = spec.operation(op_id) or _client_named(spec, op_id)
         if op is None:
             # The client library's own helpers on an operation: export_media()
             # is drive.files.export returning the file's bytes, and
             # list_next(previous_request, previous_response) is the next
             # page of the list call that request was.
             for suffix, applies in _CLIENT_HELPERS.items():
-                base = spec.operation(op_id.removesuffix(suffix))
+                stem = op_id.removesuffix(suffix)
+                base = spec.operation(stem) or _client_named(spec, stem)
                 if op_id.endswith(suffix) and base is not None and applies(base):
                     return base, {}
         return op, {}
     assert site.url is not None
     return best_operation(spec.operations, site.method, site.url)
+
+
+def _client_named(spec: ApiSpec, op_id: str) -> Operation | None:
+    """The operation whose client-library name is ``op_id`` (``x.import_`` is ``x.import``)."""
+    for op in spec.operations:
+        api, *rest = op.id.split(".")
+        if ".".join([api, *(google.client_method(p) for p in rest)]) == op_id:
+            return op
+    return None
 
 
 #: Client-library method suffix -> which operations have it.
@@ -187,6 +222,30 @@ _CLIENT_HELPERS: dict[str, Callable[[Operation], bool]] = {
 #: Keyword arguments Google's client library takes on an operation that
 #: supports media upload, which are not request parameters.
 _UPLOAD_KWARGS = ("media_body", "media_mime_type")
+
+
+_PLACEHOLDER = re.compile(r"\{[^}]*\}")
+
+
+def _could_match(spec: ApiSpec, site: CallSite) -> bool:
+    """Whether a URL with run-time segments matches some operation once they are filled in."""
+    assert site.url is not None
+    call = path_segments(site.url)
+    if not any(_PLACEHOLDER.fullmatch(c) for c in call):
+        return False
+    for op in spec.operations:
+        if site.method is not None and op.method != site.method:
+            continue
+        for template in op.templates():
+            segments = path_segments(template)
+            if any(seg.startswith("{+") for seg in segments) or len(segments) != len(call):
+                continue
+            if all(
+                _PLACEHOLDER.fullmatch(c) or match_path([t], [c]) is not None
+                for t, c in zip(segments, call, strict=True)
+            ):
+                return True
+    return False
 
 
 def best_operation(
@@ -268,6 +327,16 @@ def _violations(
             if key:
                 sent.setdefault(key, raw if "{" not in raw else UNKNOWN)
     allowed = {**spec.global_params, **op.params}
+    client = site.kind == "google_client"
+    if client:
+        # The client library's keyword names for the same parameters, and
+        # the query parameters it adds to every method.
+        allowed = {google.client_param(n): p for n, p in allowed.items()}
+        allowed |= {
+            n: ParamSpec(name=n, location="query")
+            for n in google.CLIENT_STACK_PARAMS
+            if n not in allowed
+        }
     for name, value in sent.items():
         param = allowed.get(name)
         if param is None or (site.kind == "http" and param.location == "path"):
@@ -290,7 +359,7 @@ def _violations(
         given = (
             name in path_params
             if site.kind == "http" and param.location == "path"
-            else (name in sent)
+            else ((google.client_param(name) if client else name) in sent)
         )
         if not given and complete:
             out.append(("spec_missing_required", f"required parameter {name!r} is not sent"))
@@ -312,16 +381,24 @@ def _violations(
         or (op.supports_media and str(sent.get("alt")) == "media")
     )
     if op.response_schema is not None and not media:
-        for path, line in site.response_reads:
+        reported: list[tuple[str, ...]] = []
+        for path, line in sorted(site.response_reads, key=lambda r: len(r[0])):
             missing = _unknown_field(spec, op.response_schema, path)
-            if missing is not None:
-                out.append(
-                    (
-                        "spec_unknown_response_field",
-                        f"line {line} reads {_dotted(path)}, but the response schema has no "
-                        f"{missing!r} there",
-                    )
+            if missing is None:
+                continue
+            # One mistake, once: `t["id"]` under an unknown `resp["messages"]`
+            # is the same missing field.
+            stem = path[: path.index(missing) + 1]
+            if any(stem[: len(r)] == r for r in reported):
+                continue
+            reported.append(stem)
+            out.append(
+                (
+                    "spec_unknown_response_field",
+                    f"line {line} reads {_dotted(path)}, but the response schema has no "
+                    f"{missing!r} there",
                 )
+            )
     elif media and site.response_reads:
         out.append(
             (
