@@ -777,19 +777,24 @@ def infeasible_kinds(
     finance shared folder" an external_call, the agent could only write a
     stub for a system the skill never declares, and every run died there.
 
-    Grounded in what is declared, not in phrasing: an external_call is
-    possible only when something can perform it (:func:`declares_a_system`).
-    "Email the summary" and "notify the owner by email" are treated alike:
-    both are calls when the skill or a registered server offers an email
-    tool, and neither is when nothing does.
+    Only a write is constrained: a step that writes, reads nothing, and that
+    no declared system could perform (:func:`declares_a_system`). A read
+    ("load the last 7 days of tickets") is never forbidden here, because its
+    data has to come from somewhere and the agent's code can still be
+    pointed at it. Within writes it is grounded in what is declared, not in
+    phrasing: "email the summary" and "notify the owner by email" are
+    treated alike, as calls when an email tool is declared and as output
+    when nothing is.
     """
-    if declares_a_system(u, registry, tools):
+    writes = any(SIGNALS["write"].search(x) or _DELIVERS.search(x) for x in (u.title, u.text))
+    reads = bool(u.signals.get("fetch")) or any(_READS.search(x) for x in (u.title, u.text))
+    if not writes or reads or declares_a_system(u, registry, tools):
         return {}
     return {
         "external_call": (
-            "no declared or named system can perform it (no MCP server or tool, no "
-            "named product, API or interface), so it keeps the rules' decision: its "
-            "result is returned in the pipeline's output for the caller to deliver, "
+            "it writes to no declared or named system (no MCP server or tool, no named "
+            "product, API, interface or path), so it keeps the rules' decision: what it "
+            "would write is returned in the pipeline's output for the caller to deliver, "
             "and the step is listed in Open questions"
         )
     }
@@ -800,6 +805,21 @@ _CODE_SPAN = re.compile(r"`([a-z][a-z0-9]*_[a-z0-9_]+)`")
 _CALL_VERBS = _TOOL_VERBS | _WRITE_VERBS | {"append", "insert"}
 #: A named API: a URL, or an HTTP verb with a path.
 _NAMED_API = re.compile(r"https?://\S+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
+#: Verbs that deliver a result somewhere, beyond the parser's write signal
+#: ("email the summary", "notify the owner", "write it up", "run upload_x").
+#: Words that are also common nouns in reads (file, log, record) are left out.
+_DELIVERS = re.compile(
+    r"\b(?:e-?mail|notify|send|post|upload|publish|share|store|save|write|export|"
+    r"append|insert)(?:s|ed|ing)?\b|\b\w*upload_\w+",
+    re.I,
+)
+#: Verbs that bring data in. A step that also reads is not constrained.
+_READS = re.compile(
+    r"\b(?:fetch|read|load|pull|retrieve|download|query|look(?:s|ed|ing)? up)(?:s|ed|ing)?\b",
+    re.I,
+)
+#: A local path (``~/reports/``, ``/var/data/``): the file system is the system.
+_LOCAL_PATH = re.compile(r"(?<![\w.])[~/][\w.-]*/")
 
 
 def declares_a_system(
@@ -814,13 +834,16 @@ def declares_a_system(
     registered server's ``tools/list`` (``registry``, ``tools``) whose name
     the step uses, or whose server it names; a write tool whose object the
     step names (:func:`_registry_tool_for`); a named API (a URL, an HTTP
-    verb with a path); or a named product or service (Google Sheets, Slack,
-    PagerDuty, a #channel or @handle); or a user interface it operates. A
-    named product has an API the compile can bind or research, so the step
-    can do what the skill does.
-    Only a write to no identifiable system at all is infeasible.
+    verb with a path); a local path (the file system); a named product or
+    service (Google Sheets, Slack, PagerDuty, a #channel or @handle); or a
+    user interface it operates. A named product has an API the compile can
+    bind or research, so the step can do what the skill does. Tool names
+    match on word boundaries: a server's ``search`` tool does not make "do
+    the research" a call.
     """
     if u.mcp or u.tools or _NAMED_API.search(u.text) or _names_a_product(u.text):
+        return True
+    if _LOCAL_PATH.search(u.text):
         return True
     # A step that operates a user interface (click, navigate, select) acts on
     # the application the skill drives, which is its system.
@@ -835,7 +858,7 @@ def declares_a_system(
     words = set(slug(text).split("_"))
     reg = dict(registry or {})
     names = set(reg) | {t for _, t in tools}
-    if any(name.lower() in text.lower() for name in names if name):
+    if any(re.search(rf"\b{re.escape(name)}\b", text, re.I) for name in names if name):
         return True
     servers = set(reg.values()) | {s for s, _ in tools}
     if any(set(slug(server).split("_")) <= words for server in servers if server):

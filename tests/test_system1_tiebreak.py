@@ -179,20 +179,20 @@ def test_a_rule_constraint_overrules_the_model(
     doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
     assert doc["overruled"] == {
         "1": [
-            "external_call: no declared or named system can perform it (no MCP server or "
-            "tool, no named product, API or interface), so it keeps the rules' decision: "
-            "its result is returned in the pipeline's output for the caller to deliver, "
-            "and the step is listed in Open questions"
+            "external_call: it writes to no declared or named system (no MCP server or "
+            "tool, no named product, API, interface or path), so it keeps the rules' "
+            "decision: what it would write is returned in the pipeline's output for the "
+            "caller to deliver, and the step is listed in Open questions"
         ]
     }
 
     questions = system1.report_extras(work, plan).questions
     assert (
         "claude-haiku-5-5 proposed a kind a rule forbids",
-        "step `Step 2: File the summary`: external_call: no declared or named system can "
-        "perform it (no MCP server or tool, no named product, API or interface), so it "
-        "keeps the rules' decision: its result is returned in the pipeline's output for the "
-        "caller to deliver, and the step is listed in Open questions",
+        "step `Step 2: File the summary`: external_call: it writes to no declared or named "
+        "system (no MCP server or tool, no named product, API, interface or path), so it "
+        "keeps the rules' decision: what it would write is returned in the pipeline's "
+        "output for the caller to deliver, and the step is listed in Open questions",
     ) in questions
 
     # Nothing allowed left: the rules' decision stands, node for node.
@@ -248,8 +248,19 @@ _EMAIL = {"send_email": "gmail"}
         ("Invite each admin: `POST /v1/workspaces/{id}/invites`.", {}, [], False),
         ("Fetch https://api.example.com/v1/rates first.", {}, [], False),
         ("Search the receipts with the Gmail MCP server.", {}, [], False),
-        ("Read the scoring rules at ~/.claude/skills/x/SKILL.md.", {}, [], True),
-        ("Total the lines in USD.", {}, [], True),
+        # Reads are never constrained, and a local path is a system.
+        ("Read the scoring rules at ~/.claude/skills/x/SKILL.md.", {}, [], False),
+        ("Read the runbook at ~/runbooks/db.md.", {}, [], False),
+        ("Load the last 7 days of tickets.", {}, [], False),
+        ("Read the config file and the error log.", {}, [], False),
+        # A step that also reads is not constrained: the read is a call.
+        ("Fetch the latest rates and save them to the shared folder.", {}, [], False),
+        ("Save it to ~/reports/ as a file.", {}, [], False),
+        # No write at all: nothing to constrain.
+        ("Total the lines in USD.", {}, [], False),
+        # Tool names match whole words only.
+        ("Do the research and write it up.", {"search": "web", "fetch": "web"}, [], True),
+        ("Write it up and save it with search.", {"search": "web"}, [], False),
         # A declared tool the step uses by name.
         ("Run upload_report on the file.", {"upload_report": "drive"}, [], False),
         ("Run upload_report on the file.", {}, [], True),
