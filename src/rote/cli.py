@@ -3107,7 +3107,6 @@ def _judge_cost_text(rows: Sequence[Mapping[str, Any]]) -> str:
 def _cmd_live_check(args: argparse.Namespace) -> int:
     """``rote run <compile dir> --live-check --input ...`` (rote.vendor_specs.live)."""
     from rote.compiler.backend import read_backend
-    from rote.vendor_specs.deps import VendorDepsError
     from rote.vendor_specs.live import LiveCheckRefused, live_check
 
     root = Path(args.path)
@@ -3129,7 +3128,7 @@ def _cmd_live_check(args: argparse.Namespace) -> int:
     payload = json.loads(raw)
     try:
         report = live_check(compiled.resolve(), payload)
-    except (LiveCheckRefused, VendorDepsError) as e:
+    except LiveCheckRefused as e:
         print(f"rote run: live check refused: {e}", file=sys.stderr)
         return 2
     if args.json:
@@ -3150,8 +3149,10 @@ def _cmd_live_check(args: argparse.Namespace) -> int:
                 print(f"  live response has {path}; no stored fixture does")
         for node, why in report.skipped.items():
             print(f"{node}: not called ({why})")
-        for node, error in report.errors.items():
-            print(f"{node}: raised {error}")
+        for where, why in report.unchecked.items():
+            print(f"{where}: not live-checked ({why})")
+        for where, error in report.errors.items():
+            print(f"{where}: failed ({error})")
     return 1 if report.drifted or report.errors else 0
 
 
@@ -4529,9 +4530,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--live-check",
         action="store_true",
         help=(
-            "For a `--backend api` compile: call each entry vendor read once, for "
-            "real and read-only, with your credentials, and compare the responses' "
-            "shape with the spec and the stored fixtures (values are never kept)"
+            "For a `--backend api` compile: send each entry vendor read once, for "
+            "real, built from the code without running it (GET/HEAD only), with "
+            "your credentials, and compare the responses' shape with the spec and "
+            "the stored fixtures (values are never kept)"
         ),
     )
     run_p.add_argument(

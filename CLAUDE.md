@@ -636,14 +636,23 @@ Things that will bite if you touch it:
   stamped with the spec revision on save, re-validated on load. Only
   authored data goes there: a live check compares shapes and never keeps
   what it read.
-- **`rote run --live-check` is read-only twice over.** It refuses a
-  deliverable with any request that is not a spec-resolved GET/HEAD
-  before anything runs, and the intercept's live mode
-  (`ROTE_HTTP_LIVE_RECORD`) raises on any other method to a vendor host
-  at run time. It reports field paths and types, never values, and
-  deletes the recorded responses. For a docs spec, extra live fields are
-  not drift (the spec lists what the code needs); for a vendor's own spec
-  they are.
+- **`rote run --live-check` never runs the deliverable's code.** A live
+  run of generated code holds the user's real credentials, and no patch
+  over its HTTP clients can promise it only reads: review6's reproducers
+  wrote through an unextracted urllib call, a helper module, a host alias
+  and http.client while the intercept guarded the checked call. So
+  `rote.vendor_specs.live` builds each entry read itself from the static
+  extraction (the spec-resolved operation, the URL template, the
+  parameters and headers as `Expr` templates filled from the node's inputs
+  and the user's environment, Google calls as the client library would send
+  them with the application-default token) and sends only GET/HEAD through
+  one urllib client with redirects off. A read it cannot build exactly is
+  "not live-checked", never sent. A docs operation named like a write is
+  refused whatever its method. The report holds the operation's path
+  template and schema paths (a map's keys and any non-field-like live key
+  are `{key}`), and an error is its exception type and HTTP status, never
+  its text (a URL in it carries query credentials). For a docs spec, extra
+  live fields are not drift; for a vendor's own spec they are.
 - **Vendor libraries are installed per requirement set** into
   `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
