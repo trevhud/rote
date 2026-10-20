@@ -341,3 +341,82 @@ async def test_run_checks_the_tool_list_before_the_first_request(
     with pytest.raises(DriverError, match="refusing to send server tool"):
         await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir)
     assert client.messages.calls == []
+
+
+# ───────── Pricing and error size ─────────
+
+
+def test_a_web_search_is_priced_at_the_documented_rate() -> None:
+    """ "$10 per 1,000 searches" (web search tool page, checked 2026-10-20)."""
+    from rote.compiler.drivers.anthropic_api import WEB_SEARCH_USD_PER_REQUEST
+
+    assert pytest.approx(0.01) == WEB_SEARCH_USD_PER_REQUEST
+
+
+@pytest.mark.parametrize(("searches", "reported"), [(30, None), (0, None), (30, 2.0)])
+def test_the_summary_prices_searches_on_top_of_tokens(
+    tmp_path: Path, searches: int, reported: float | None
+) -> None:
+    from rote.cli import _JsonlProgressSink, _Rates
+
+    path = tmp_path / "p.ndjson"
+    sink = _JsonlProgressSink.__new__(_JsonlProgressSink)
+    sink._path = path  # type: ignore[attr-defined]
+    sink._model_id = "m"  # type: ignore[attr-defined]
+    sink._prices = _Rates(input_per_mtok=3.0, output_per_mtok=15.0)  # type: ignore[attr-defined]
+    sink._file = path.open("w", encoding="utf-8")  # type: ignore[attr-defined]
+    digest = {"type": "summary", "total_tokens": {"input": 1000, "output": 500}}
+    sink.write_summary(digest, reported_cost=reported, web_searches=searches)
+    sink.close()
+    written = json.loads(path.read_text(encoding="utf-8").strip())
+    if reported is not None:
+        # The runtime's own estimate already covers what it billed.
+        assert written["cost_usd"] == reported and "web_search_usd" not in written
+    else:
+        assert written["cost_usd"] == pytest.approx(0.0105 + searches * 0.01)
+        assert written.get("web_search_usd") == (pytest.approx(0.3) if searches else None)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_codex_run_carries_the_tail_of_its_event_stream(
+    fake_skills: tuple[Path, Path, Path],  # noqa: F811
+    fake_codex_subprocess: Any,  # noqa: F811
+) -> None:
+    from rote.compiler.drivers import DriverError
+    from rote.compiler.drivers.codex import DETAILS_MAX_CHARS
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    stream = "x" * 50_000 + "THE LAST LINE SAYS WHY"
+    fake_codex_subprocess(stdout_text=stream, returncode=1)
+    with pytest.raises(DriverError) as caught:
+        await CodexDriver(web_tools=True).run(skill_dir, compiler_dir, work_dir)
+    details = caught.value.details or ""
+    assert details.endswith("THE LAST LINE SAYS WHY")
+    assert len(details) < DETAILS_MAX_CHARS + 100
+    assert "earlier characters cut" in details
+
+
+def test_compile_hands_the_drivers_search_count_to_the_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    from rote.cli import main
+    from tests.test_cli import _install_mock_compiler, _patch_pricing, _read_ndjson
+
+    _patch_pricing(monkeypatch, (3.0, 15.0))
+    _install_mock_compiler(
+        monkeypatch,
+        driver_metadata={"input_tokens": 1000, "output_tokens": 500, "web_search_requests": 7},
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n", encoding="utf-8")
+    out = tmp_path / "out"
+    assert (
+        main(
+            ["compile", str(skill), "--local", "--runtime", "dbos", "--no-eval", "--out", str(out)]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    [summary] = [o for o in _read_ndjson(out / "progress.jsonl") if o.get("type") == "summary"]
+    assert summary["web_search_usd"] == pytest.approx(0.07)

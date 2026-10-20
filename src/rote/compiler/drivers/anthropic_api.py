@@ -142,6 +142,12 @@ WEB_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
 )
 
+#: What one web search bills on top of tokens: "$10 per 1,000 searches",
+#: checked 2026-10-20 on the web search tool page above (failed searches are
+#: not billed; web fetch has no charge beyond tokens). The model price
+#: catalog does not carry it, so it lives beside the tool it prices.
+WEB_SEARCH_USD_PER_REQUEST = 10 / 1000
+
 #: Server tool names a response may carry. Anything else (``code_execution``
 #: above all) means the API provisioned a tool this driver did not ask
 #: for, and the run stops before it spends more.

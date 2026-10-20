@@ -145,6 +145,22 @@ def web_events(stdout: str) -> list[CompilationEvent]:
     return events
 
 
+#: Most of a failed run's stdout an error carries. With ``--json`` stdout is
+#: the whole event stream, search results included: megabytes, of which the
+#: last lines say why the run ended.
+DETAILS_MAX_CHARS = 4000
+
+
+def _clip(text: str) -> str:
+    """The tail of ``text``, at most :data:`DETAILS_MAX_CHARS` characters."""
+    if len(text) <= DETAILS_MAX_CHARS:
+        return text
+    return (
+        f"[... {len(text) - DETAILS_MAX_CHARS} earlier characters cut]\n"
+        + text[-DETAILS_MAX_CHARS:]
+    )
+
+
 def _web_event(tool: str, url: str | None = None, query: str | None = None) -> CompilationEvent:
     target = url or query
     return CompilationEvent(
@@ -300,11 +316,11 @@ class CodexDriver(CompilerDriver):
                 if proc.returncode != 0:
                     raise DriverError(
                         f"codex CLI exited with code {proc.returncode}",
-                        details=stderr or stdout or "(no output)",
+                        details=stderr or _clip(stdout) or "(no output)",
                     )
                 raise DriverError(
                     f"codex CLI finished successfully but did not produce {pipeline_yaml}.",
-                    details=stdout,
+                    details=_clip(stdout),
                 )
 
             metadata = self._build_metadata(last_message_path)
