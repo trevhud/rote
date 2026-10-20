@@ -16,6 +16,8 @@ Credentials are the user's own Cloudflare account, from the environment
 (``CLOUDFLARE_ACCOUNT_ID``, ``CLOUDFLARE_API_TOKEN``). Missing credentials
 fail the compile. There is no silent fallback to rules: asking for clef and
 getting rules would report numbers for a decider that never ran.
+``CLOUDFLARE_AI_GATEWAY_ID`` routes the calls through that AI Gateway, and
+``CLOUDFLARE_AI_GATEWAY_METADATA`` (a JSON object) tags each logged call.
 
 Stdlib only (urllib), so it adds no dependency.
 """
@@ -122,11 +124,40 @@ def credentials() -> tuple[str, str]:
     return account, token
 
 
-def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+def _gateway_headers() -> dict[str, str]:
+    """Route through a named AI Gateway, tagging each logged call.
+
+    ``CLOUDFLARE_AI_GATEWAY_METADATA`` is a JSON object the gateway stores on
+    every log, which is how a host attributes Clef's cost to one compile.
+    Metadata with no gateway would be dropped by Workers AI, so it is an error.
+    """
+    headers: dict[str, str] = {}
     gateway = os.environ.get("CLOUDFLARE_AI_GATEWAY_ID", "").strip()
+    metadata = os.environ.get("CLOUDFLARE_AI_GATEWAY_METADATA", "").strip()
     if gateway:
         headers["cf-aig-gateway-id"] = gateway
+    if metadata:
+        if not gateway:
+            raise ClefUnavailable(
+                "CLOUDFLARE_AI_GATEWAY_METADATA is set but CLOUDFLARE_AI_GATEWAY_ID is not: "
+                "only a gateway records metadata"
+            )
+        try:
+            parsed = json.loads(metadata)
+        except json.JSONDecodeError as e:
+            raise ClefUnavailable(f"CLOUDFLARE_AI_GATEWAY_METADATA is not JSON: {e}") from None
+        if not isinstance(parsed, dict):
+            raise ClefUnavailable("CLOUDFLARE_AI_GATEWAY_METADATA must be a JSON object")
+        headers["cf-aig-metadata"] = json.dumps(parsed)
+    return headers
+
+
+def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        **_gateway_headers(),
+    }
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
     )
@@ -168,6 +199,7 @@ def ask(account: str, token: str, state: dict[str, Any], variant: str) -> dict[s
 def decide(skill: SkillParse) -> dict[int, Verdict]:
     """Clef's ensembled kind and gate probability for every step unit."""
     account, token = credentials()
+    _gateway_headers()  # a bad gateway setting fails here, not six retries later
     out: dict[int, Verdict] = {}
     for u in skill.units:
         state = state_for(skill, u)
