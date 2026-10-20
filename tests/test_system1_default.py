@@ -20,6 +20,7 @@ from rote import cli
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.ir import load_pipeline
+from tests._helpers import fill_system1_judges as _fill_judges
 
 REPO = Path(__file__).resolve().parents[1]
 EXAMPLES = REPO / "examples"
@@ -193,31 +194,6 @@ def test_system1_requires_a_signature_spec_on_every_judge(tmp_path: Path) -> Non
 
     assert flagged(True) == {j.id for j in judges}
     assert flagged(False) == set()
-
-
-def _fill_judges(work: Path) -> None:
-    """What the text agent writes for each judge: a prompt and output fields."""
-    import yaml
-
-    from rote.compiler.system1.enforce import enforce
-
-    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
-    text = {
-        n["id"]: {
-            "signature_spec": {
-                "prompt": "Decide from {{ request }}.",
-                "output_schema": {
-                    "type": "object",
-                    "properties": {"verdict": {"type": "string"}},
-                    "required": ["verdict"],
-                },
-            }
-        }
-        for n in doc["nodes"]
-        if n["kind"] == "llm_judge"
-    }
-    (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
-    enforce(work, final=True)
 
 
 def test_the_skeleton_decides_each_judges_input_schema(tmp_path: Path) -> None:

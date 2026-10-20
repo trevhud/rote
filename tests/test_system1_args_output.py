@@ -22,6 +22,7 @@ from rote.adapters import get_adapter
 from rote.compiler import system1
 from rote.compiler.system1.parse import stated_parameters
 from rote.ir import load_pipeline
+from tests._helpers import fill_system1_judges
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -61,6 +62,7 @@ def test_every_mcp_step_names_its_arguments(tmp_path: Path) -> None:
         for n in doc["nodes"]:
             if n.get("mcp"):
                 assert isinstance(n["mcp"].get("args"), dict), (skill, n["id"])
+        fill_system1_judges(sub / "work")
         out = sub / "emit"
         get_adapter("dbos", extracted_source_dir=sub / "work").emit(
             load_pipeline(sub / "work" / "pipeline.yaml"), out
