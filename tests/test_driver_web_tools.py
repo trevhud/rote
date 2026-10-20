@@ -10,6 +10,7 @@ and the openai-api driver, which has no web tool and says so.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -484,3 +485,41 @@ async def test_a_failed_codex_run_carries_the_tail_of_its_event_stream(
     assert details.endswith("THE LAST LINE SAYS WHY")
     assert len(details) < DETAILS_MAX_CHARS + 100
     assert "earlier characters cut" in details
+
+
+def test_a_cache_from_before_web_search_rates_is_refetched(tmp_path: Path) -> None:
+    from rote.eval.pricing import _load_cache
+
+    path = tmp_path / "pricing.json"
+    # Inside its TTL, otherwise valid, but written before the key existed.
+    path.write_text(
+        json.dumps(
+            {
+                "cached_at_epoch": time.time(),
+                "provider": "anthropic",
+                "prices": [
+                    {
+                        "model_id": "claude-sonnet-4-6",
+                        "provider": "anthropic",
+                        "display_name": "Sonnet 4.6",
+                        "tier": "mid",
+                        "input_per_mtok": 3.0,
+                        "output_per_mtok": 15.0,
+                        "cache_read_per_mtok": 0.3,
+                        "cache_write_per_mtok": 3.75,
+                        "source": "t",
+                        "fetched_at": "t",
+                    }
+                ],
+                "reference_prices": {"claude-sonnet-4-6": [3.0, 15.0]},
+                "reference_cache_rates": {"claude-sonnet-4-6": [0.3, 3.75]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _load_cache(path, 3600, "anthropic") is None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["web_search_rates"] = {"claude-sonnet-4-6": 0.01}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    loaded = _load_cache(path, 3600, "anthropic")
+    assert loaded is not None and loaded.web_search_rates == {"claude-sonnet-4-6": 0.01}

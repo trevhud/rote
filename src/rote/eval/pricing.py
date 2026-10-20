@@ -510,6 +510,11 @@ def _load_cache(path: Path, ttl_seconds: int, provider: str) -> PricingCatalog |
             return None
         if raw.get("provider") != provider:
             return None
+        # A cache written before web search rates were carried is refetched,
+        # not read as "no rate": that would leave every run that searched
+        # unpriced until the TTL ran out (found live, an 18-hour-old cache).
+        if "web_search_rates" not in raw:
+            return None
         prices = tuple(
             ModelPrice(**{**entry, "tier": ModelTier(entry["tier"])}) for entry in raw["prices"]
         )
