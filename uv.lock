@@ -33,21 +33,21 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.116.0"
+version = "1.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "distro" },
     { name = "docstring-parser" },
-    { name = "httpx" },
+    { name = "httpx2" },
     { name = "jiter" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/66/a2/d31f14e28d49bae983a3634e38dfb4b31c50110b5e403596c5c6a20b23f8/anthropic-0.116.0.tar.gz", hash = "sha256:5fc248fbb9fe03ef686f8a774f81586bca31a043260aab88b387ea3660f4a396", size = 949149, upload-time = "2026-07-02T19:08:10.534Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/37/5a2a4316df8babd28f096477a707cd75f240b4264c97fb128c32375105d6/anthropic-1.15.0.tar.gz", hash = "sha256:90caa9df83e2fc8bddb4ddeb83b7191bce255f635c03eae055deec521741df08", size = 1726101, upload-time = "2026-10-15T19:45:34.635Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/dd/2a1e81cf1b163acc340afc4ec74ed1d86f5eed1a809fabdeed3e0997b346/anthropic-0.116.0-py3-none-any.whl", hash = "sha256:6c0a7698e8d652455da3499978279bb2588c7264d0a35be3666009a4258c8256", size = 956896, upload-time = "2026-07-02T19:08:08.756Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/65/54437e7edea49a3be9ef56f6b5965999bfdc52b9dadc9b448124ca51a594/anthropic-1.15.0-py3-none-any.whl", hash = "sha256:10189a7993c5c71a0a2d4bb80020ca6a2fd27679f51e627405da37251d15ff49", size = 2047755, upload-time = "2026-10-15T19:45:32.951Z" },
 ]
 
 [[package]]
@@ -1699,6 +1699,7 @@ name = "rote-cli"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
+    { name = "pytest" },
     { name = "pyyaml" },
 ]
 
@@ -1716,7 +1717,6 @@ dev = [
     { name = "httpx" },
     { name = "mypy" },
     { name = "openai" },
-    { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
     { name = "temporalio" },
@@ -1740,8 +1740,8 @@ temporal = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", marker = "extra == 'api'", specifier = ">=0.89" },
-    { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.89" },
+    { name = "anthropic", marker = "extra == 'api'", specifier = ">=1.15" },
+    { name = "anthropic", marker = "extra == 'dev'", specifier = ">=1.15" },
     { name = "dbos", marker = "extra == 'dbos'", specifier = ">=3.3,<4" },
     { name = "dbos", marker = "extra == 'dev'", specifier = ">=3.3,<4" },
     { name = "fastmcp", marker = "extra == 'dev'", specifier = ">=4.1.1,<5" },
@@ -1754,7 +1754,7 @@ requires-dist = [
     { name = "openai", marker = "extra == 'dev'", specifier = ">=2.45" },
     { name = "openai", marker = "extra == 'openai-api'", specifier = ">=2.45" },
     { name = "pydantic", specifier = ">=2.7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest", specifier = ">=9.0,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },

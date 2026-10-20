@@ -24,12 +24,12 @@ from rote.mcp import (
     clear_token_file,
     load_registry,
     read_token_file,
-    resolve_server_url,
     save_registry,
     token_file,
     write_token_file,
 )
 from rote.mcp.tokens import ServerTokenKV
+from tests._helpers import occupied_ports
 
 # ───────── Registry ─────────
 
@@ -47,21 +47,6 @@ def test_registry_round_trip_and_permissions() -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o600  # may hold client secrets
     loaded = load_registry()
     assert loaded == registry
-
-
-def test_resolve_server_url_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    save_registry(
-        McpRegistry(servers={"slack": McpServerConfig(url="https://registry.example/slack")})
-    )
-    monkeypatch.setenv("ROTE_MCP_SLACK_URL", "https://env.example/slack")
-    # Explicit binding URL wins over everything.
-    assert resolve_server_url("slack", "https://ir.example/slack") == "https://ir.example/slack"
-    # Registry beats env.
-    assert resolve_server_url("slack") == "https://registry.example/slack"
-    # Env is the fallback; unknown everywhere → None.
-    assert resolve_server_url("gmail") is None
-    monkeypatch.setenv("ROTE_MCP_GMAIL_URL", "https://env.example/gmail")
-    assert resolve_server_url("gmail") == "https://env.example/gmail"
 
 
 # ───────── Token store ─────────
@@ -300,7 +285,7 @@ def test_cli_mcp_add_list_headers_remove(capsys: pytest.CaptureFixture[str]) -> 
     listed = json.loads(capsys.readouterr().out)
     assert {s["name"]: s["auth"] for s in listed["servers"]} == {
         "keyd": "static headers",
-        "slack": "not authenticated",
+        "slack": "auth unknown",
     }
 
     assert cli_main(["mcp", "headers", "keyd"]) == 0
@@ -308,6 +293,217 @@ def test_cli_mcp_add_list_headers_remove(capsys: pytest.CaptureFixture[str]) -> 
 
     assert cli_main(["mcp", "remove", "keyd"]) == 0
     assert cli_main(["mcp", "remove", "keyd"]) == 2  # already gone
+
+
+def test_registry_keeps_fields_and_values_it_does_not_know() -> None:
+    """The registry is shared by every rote version on the machine. A newer
+    version's field, or a transport value this one does not know, must
+    neither fail this load nor vanish when this version writes it back."""
+    from rote.mcp.registry import registry_path
+
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = {
+        "version": 7,
+        "future_top_level": {"x": 1},
+        "servers": {
+            "open": {
+                "url": "https://o.example/mcp",
+                "transport": "websocket-2030",
+                "future_field": ["a", 2],
+            }
+        },
+    }
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    registry = load_registry()
+    assert registry.servers["open"].transport == "websocket-2030"
+    save_registry(registry)
+    assert json.loads(path.read_text(encoding="utf-8")) == original
+
+
+def test_learning_auth_never_touches_the_registry() -> None:
+    """Released rote versions (0.14.0 and older) reject unknown registry
+    fields, so a login must leave the registry byte-for-byte unchanged."""
+    from rote.mcp.learned import learned_auth, learned_path, record_auth
+    from rote.mcp.registry import registry_path
+
+    save_registry(McpRegistry(servers={"open": McpServerConfig(url="https://o.example/mcp")}))
+    before = registry_path().read_bytes()
+    record_auth("open", "https://o.example/mcp", "none", source="login")
+    assert registry_path().read_bytes() == before
+    assert stat.S_IMODE(learned_path().stat().st_mode) == 0o600
+    learned = learned_auth("open", "https://O.example/mcp/")  # same endpoint, other spelling
+    assert learned is not None and learned.auth == "none"
+
+
+def test_learned_auth_is_per_endpoint_and_carries_its_date() -> None:
+    import datetime
+
+    from rote.mcp.learned import learned_auth, record_auth
+
+    record_auth("open", "https://o.example/mcp", "none", source="login")
+    learned = learned_auth("open", "https://o.example/mcp")
+    assert learned is not None
+    assert learned.learned_at == datetime.datetime.now(datetime.UTC).date().isoformat()
+    assert learned.source == "login"
+    # Repointing the name invalidates the finding: it was about another server.
+    assert learned_auth("open", "https://elsewhere.example/mcp") is None
+
+
+def test_the_sidecar_keeps_unknown_fields_values_and_a_higher_version() -> None:
+    """A newer rote may add fields, auth values, or a version. This one keeps
+    them on write and reads an unknown auth value as nothing learned."""
+    from rote.mcp.learned import learned_auth, learned_path, record_auth
+
+    learned_path().parent.mkdir(parents=True, exist_ok=True)
+    learned_path().write_text(
+        json.dumps(
+            {
+                "version": 9,
+                "future": True,
+                "servers": {
+                    "a": {"url": "https://a.example/mcp", "auth": "mtls-2030", "extra": 1},
+                    "b": {"url": "https://b.example/mcp", "auth": "none"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert learned_auth("a", "https://a.example/mcp") is None
+    record_auth("b", "https://b.example/mcp", "oauth", source="park")
+    saved = json.loads(learned_path().read_text(encoding="utf-8"))
+    assert saved["version"] == 9
+    assert saved["future"] is True
+    assert saved["servers"]["a"] == {
+        "url": "https://a.example/mcp",
+        "auth": "mtls-2030",
+        "extra": 1,
+    }
+    assert saved["servers"]["b"]["auth"] == "oauth"
+
+
+def test_a_park_retires_a_learned_none() -> None:
+    from rote.mcp.learned import learned_auth, note_auth_park, record_auth
+
+    save_registry(McpRegistry(servers={"open": McpServerConfig(url="https://o.example/mcp")}))
+    record_auth("open", "https://o.example/mcp", "none", source="login")
+    note_auth_park("open")
+    learned = learned_auth("open", "https://o.example/mcp")
+    assert learned is not None
+    assert (learned.auth, learned.source) == ("oauth", "park")
+
+
+def test_a_token_file_outranks_a_learned_none() -> None:
+    """A server that moved from open to OAuth: once a token for this endpoint
+    exists, its state is the token's, never "no auth required"."""
+    from rote.mcp.tokens import auth_status
+
+    url = "https://o.example/mcp"
+    config = McpServerConfig(url=url)
+    assert auth_status(config, None, "none") == "no auth required"
+    expired = {"server_url": url, "tokens": {"access_token": "t"}, "expires_at": 1.0}
+    assert auth_status(config, expired, "none") == "expired"
+
+
+def test_a_token_for_another_endpoint_counts_as_no_token() -> None:
+    """After a repoint, the old login is no login here: a learned `none` for
+    the new endpoint wins, and without one the name still needs a login."""
+    from rote.mcp.tokens import auth_status
+
+    config = McpServerConfig(url="https://new.example/mcp")
+    old = {"server_url": "https://old.example/mcp", "tokens": {"access_token": "t"}}
+    assert auth_status(config, old, "none") == "no auth required"
+    assert auth_status(config, old) == "not authenticated"
+
+
+def test_live_tools_only_skip_headers_for_none_without_a_token() -> None:
+    from rote.mcp.learned import record_auth
+    from rote.mcp.live_tools import registry_server_specs
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "open": McpServerConfig(url="https://o.example/mcp"),
+                "moved": McpServerConfig(url="https://m.example/mcp"),
+            }
+        )
+    )
+    record_auth("open", "https://o.example/mcp", "none", source="login")
+    record_auth("moved", "https://m.example/mcp", "none", source="login")
+    write_token_file(
+        "moved",
+        {"server_url": "https://m.example/mcp", "tokens": {"access_token": "tok-1"}},
+    )
+    specs = {s["name"]: s for s in asyncio.run(registry_server_specs())}
+    assert specs["open"] == {"name": "open", "url": "https://o.example/mcp"}
+    assert specs["moved"]["headers"] == {"Authorization": "Bearer tok-1"}
+
+
+def test_token_writes_keep_a_newer_contract_version() -> None:
+    from rote.mcp.tokens import TOKEN_CONTRACT_VERSION, token_file
+
+    write_token_file("v", {"version": TOKEN_CONTRACT_VERSION + 5, "tokens": None})
+    assert json.loads(token_file("v").read_text())["version"] == TOKEN_CONTRACT_VERSION + 5
+    write_token_file("w", {"tokens": None})
+    assert json.loads(token_file("w").read_text())["version"] == TOKEN_CONTRACT_VERSION
+
+
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        (
+            {"protected_resource_metadata": None, "oauth_metadata": None, "auth_server_url": None},
+            False,
+        ),
+        ({"protected_resource_metadata": object(), "oauth_metadata": None}, True),
+        (
+            {"protected_resource_metadata": None, "oauth_metadata": None, "auth_server_url": "x"},
+            True,
+        ),
+        (None, True),  # provider shape unknown: never infer "no auth"
+    ],
+)
+def test_no_auth_is_inferred_only_when_the_provider_saw_no_challenge(
+    context: dict[str, Any] | None, expected: bool
+) -> None:
+    from types import SimpleNamespace
+
+    from rote.mcp.auth import _saw_auth_challenge
+
+    oauth = SimpleNamespace(context=SimpleNamespace(**context) if context is not None else None)
+    assert _saw_auth_challenge(oauth) is expected
+
+
+def test_auth_label_dates_a_learned_no_auth() -> None:
+    from rote.cli import _auth_label
+
+    assert (
+        _auth_label({"auth": "no auth required", "auth_learned_at": "2026-10-18"})
+        == "no auth required (learned 2026-10-18)"
+    )
+    assert _auth_label({"auth": "authenticated", "auth_learned_at": "2026-10-18"}) == (
+        "authenticated"
+    )
+
+
+def test_cli_mcp_add_records_the_auth_requirement(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli_main(["mcp", "add", "open", "https://o.example/mcp", "--auth", "none"]) == 0
+    assert cli_main(["mcp", "add", "locked", "https://l.example/mcp", "--auth", "oauth"]) == 0
+    assert cli_main(["mcp", "add", "unsure", "https://u.example/mcp"]) == 0
+    capsys.readouterr()
+    assert cli_main(["mcp", "list", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert {s["name"]: s["auth_source"] for s in listed["servers"]} == {
+        "open": "user",
+        "locked": "user",
+        "unsure": None,
+    }
+    assert {s["name"]: s["auth"] for s in listed["servers"]} == {
+        "open": "no auth required",
+        "locked": "not authenticated",
+        "unsure": "auth unknown",
+    }
 
 
 def test_cli_mcp_add_rejects_bad_input(capsys: pytest.CaptureFixture[str]) -> None:
@@ -793,17 +989,34 @@ def test_client_metadata_url_override_and_opt_out(monkeypatch: pytest.MonkeyPatc
     assert client_metadata_url() is None
 
 
-def test_login_errors_when_every_published_callback_port_is_taken(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_selecting_a_callback_port_binds_it_and_skips_taken_ones() -> None:
+    """The bind is the check, and the port stays held: nothing can take it
+    between selection and the callback server starting."""
     from rote.mcp import auth
 
-    monkeypatch.setattr(auth, "_port_is_free", lambda port: False)
-    with pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"):
+    with occupied_ports(*auth.CALLBACK_PORTS[:2]):
+        port, sockets = auth.select_callback_port()
+        try:
+            assert port == auth.CALLBACK_PORTS[2]
+            assert {sock.getsockname()[1] for sock in sockets} == {port}
+            assert auth.bind_callback_sockets(port) is None  # held by us
+        finally:
+            for sock in sockets:
+                sock.close()
+        again = auth.bind_callback_sockets(port)  # released
+        assert again is not None
+        for sock in again:
+            sock.close()
+
+
+def test_login_errors_naming_the_ports_when_every_published_one_is_taken() -> None:
+    from rote.mcp import auth
+
+    with (
+        occupied_ports(*auth.CALLBACK_PORTS),
+        pytest.raises(auth.McpAuthError, match="33418, 33419, 33420, 33421"),
+    ):
         auth.select_callback_port()
-    taken = {auth.CALLBACK_PORTS[0], auth.CALLBACK_PORTS[1]}
-    monkeypatch.setattr(auth, "_port_is_free", lambda port: port not in taken)
-    assert auth.select_callback_port() == auth.CALLBACK_PORTS[2]
 
 
 def test_input_required_error_pickles_and_is_not_an_auth_error() -> None:

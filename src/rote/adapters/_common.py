@@ -19,7 +19,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
+from pydantic_core import PydanticSerializationError
+
+from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 
 # ───────── Default LLM models ─────────
 #
@@ -119,20 +121,71 @@ def mcp_tool_arguments(node: Node) -> list[tuple[str, str, Any]] | None:
     ``None`` means the threaded payload is the arguments as-is: the node's
     inputs, never its constants, because a tool rejects arguments it does
     not declare (FastMCP raises "Unexpected keyword argument"). With
-    ``mcp.args`` each entry is ``(tool_arg, "payload", key)`` or
-    ``(tool_arg, "constant", value)``: a key that names one of the node's
-    constants forwards that constant, which is the only way a constant
-    reaches a tool. Language-neutral on purpose, so every runtime sends a
-    tool the identical arguments.
+    ``mcp.args`` each entry is ``(tool_arg, "payload", key)``,
+    ``(tool_arg, "constant", value)`` or ``(tool_arg, "literal", value)``:
+    a key that names one of the node's constants forwards that constant,
+    which is the only way a constant reaches a tool, and ``{literal: v}``
+    sends ``v``. Constants and literals are both fixed values, so emitters
+    render them the same way: an escaped literal, never spliced code.
+    Language-neutral on purpose, so every runtime sends a tool the
+    identical arguments.
     """
     assert node.mcp is not None
     if not node.mcp.args:
         return None
     constants = node.constants or {}
-    return [
-        (tool_arg, "constant", constants[key]) if key in constants else (tool_arg, "payload", key)
-        for tool_arg, key in node.mcp.args.items()
-    ]
+    sources: list[tuple[str, str, Any]] = []
+    for tool_arg, source in node.mcp.args.items():
+        if isinstance(source, MCPLiteral):
+            sources.append((tool_arg, "literal", source.literal))
+        elif source in constants:
+            sources.append((tool_arg, "constant", constants[source]))
+        else:
+            sources.append((tool_arg, "payload", source))
+    return sources
+
+
+#: Characters that render invisibly or reorder what a reader sees: controls
+#: (Cc), format characters such as the bidi overrides and zero-width spaces
+#: (Cf), line and paragraph separators (Zl, Zp), and lone surrogates (Cs).
+#: Raw in emitted source they are the Trojan Source shape (CVE-2021-42574):
+#: the IR is untrusted, and the code would read differently than it runs.
+_INVISIBLE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
+
+
+def escape_invisible(text: str) -> str:
+    """``text`` with every invisible character spelled ``\\uXXXX``.
+
+    Visible characters stay raw, emoji included, and so do the newline
+    and tab (prose such as a README keeps its lines; a literal has already
+    escaped both). The spelling is a valid escape in a Python string or a
+    JS/TS string, and readable text in a comment or a README, so the same
+    rule serves literals, docstrings, comments and docs.
+    """
+    import unicodedata
+
+    out: list[str] = []
+    for ch in text:
+        if ch not in "\n\t" and unicodedata.category(ch) in _INVISIBLE_CATEGORIES:
+            code = ord(ch)
+            out.append(f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def py_str_literal(text: str) -> str:
+    """``text`` as a Python string literal that round-trips it exactly.
+
+    ``json.dumps`` escapes the quote, the backslash and controls below
+    U+0020. With ``ensure_ascii`` (the default) it also spells a character
+    outside the BMP as a surrogate pair, which Python reads as two lone
+    surrogates, so raw non-ASCII is kept instead, and
+    :func:`escape_invisible` escapes what must never be raw in source. A
+    lone surrogate (PyYAML produces one from ``"\\ud800"``) becomes an
+    escape too, which also keeps the file encodable as UTF-8.
+    """
+    return escape_invisible(json.dumps(text, ensure_ascii=False))
 
 
 def safe_docstring_line(text: str, fallback: str = "") -> str:
@@ -148,7 +201,7 @@ def safe_docstring_line(text: str, fallback: str = "") -> str:
     """
     stripped = text.strip() if text else ""
     first = stripped.splitlines()[0] if stripped else fallback
-    return first.replace("\\", "\\\\").replace('"', '\\"')
+    return escape_invisible(first.replace("\\", "\\\\").replace('"', '\\"'))
 
 
 def safe_block_comment_line(text: str, fallback: str = "") -> str:
@@ -162,7 +215,8 @@ def safe_block_comment_line(text: str, fallback: str = "") -> str:
     """
     stripped = text.strip() if text else ""
     first = stripped.splitlines()[0] if stripped else fallback
-    return first.replace("*/", "* /")
+    # Invisible characters as escape text: a comment reads exactly as it is.
+    return escape_invisible(first.replace("*/", "* /"))
 
 
 # ───────── Output-path containment ─────────
@@ -378,10 +432,8 @@ def _python_module_is_stub(text: str) -> bool:
       templates). A comment or docstring mentioning the marker does not
       count, so a filled-in module that keeps a note about it is not
       refused;
-    * a function whose whole body (after its docstring) is one ``raise
-      NotImplementedError``, the shape a compile agent writes. A real
-      implementation that raises it on one unsupported branch does not
-      match, nor does an ``@abstractmethod``, which is meant to raise.
+    * a function :func:`stub_raise` calls a stub, the one definition the
+      compile's per-node accounting uses too.
     """
     try:
         tree = ast.parse(text)
@@ -390,18 +442,47 @@ def _python_module_is_stub(text: str) -> bool:
     for node in ast.walk(tree):
         if _raises_with_sentinel(node):
             return True
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) or _is_abstract(node):
-            continue
-        body = node.body
-        if (
-            body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(body[0].value, ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            body = body[1:]
-        if len(body) == 1 and _raises_not_implemented(body[0]):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and stub_raise(node):
             return True
+    return False
+
+
+def stub_raise(func: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Raise | None:
+    """The ``raise NotImplementedError`` that makes ``func`` a stub, if it is one.
+
+    The ONE definition of a compile-agent stub, shared by ``rote run``'s
+    preflight (through :func:`_python_module_is_stub`) and the compile's
+    per-node accounting (``rote.contracts.implementation_status``). Two
+    predicates once disagreed about the same function, so there is one.
+
+    A stub is a function that can only end in ``raise NotImplementedError``:
+    its last top-level statement is that raise, unconditionally, and it
+    never returns a value. A preamble before the raise is fine (BDR's
+    ``zoominfo.enrich_batch`` validates the batch size first, and a stub
+    like ``total = len(rows); raise NotImplementedError(...)`` computes
+    something it never returns). A raise on one branch of an ``if`` is a
+    deliberate unsupported case, and a function that returns on its other
+    paths is working code. An ``@abstractmethod`` is not a stub.
+    """
+    if _is_abstract(func) or not func.body:
+        return None
+    last = func.body[-1]
+    if not _raises_not_implemented(last) or _returns_value(func):
+        return None
+    assert isinstance(last, ast.Raise)
+    return last
+
+
+def _returns_value(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Whether ``func`` itself (not a nested def or lambda) returns a value."""
+    pending: list[ast.AST] = list(func.body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Return) and node.value is not None:
+            return True
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
     return False
 
 
@@ -519,11 +600,15 @@ def _pipeline_hash(pipeline: Pipeline) -> str:
     # lived): the latter is a filesystem path the compiler re-points per
     # output location, so hashing it would mint a new workflow type on
     # every re-compilation to a different directory.
-    payload = pipeline.model_dump_json(
-        by_alias=True,
-        exclude_none=True,
-        exclude={"source_skill": True, "nodes": {"__all__": {"source"}}},
-    )
+    exclude: Any = {"source_skill": True, "nodes": {"__all__": {"source"}}}
+    try:
+        payload = pipeline.model_dump_json(by_alias=True, exclude_none=True, exclude=exclude)
+    except PydanticSerializationError:
+        # A lone surrogate (PyYAML makes one from "\\ud800") is not UTF-8,
+        # so the JSON encoder refuses it. Escape it instead. No such
+        # pipeline ever emitted before, so this changes no existing hash.
+        data = pipeline.model_dump(mode="json", by_alias=True, exclude_none=True, exclude=exclude)
+        payload = json.dumps(data, separators=(",", ":"))
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
@@ -627,75 +712,17 @@ def _seconds_literal(seconds: float) -> str:
 
 
 def _execution_waves(pipeline: Pipeline) -> list[list[Node]]:
-    """Topologically sort the pipeline into parallel-execution waves.
+    """The pipeline's parallel-execution waves (:meth:`Pipeline.execution_waves`).
 
-    A "wave" is a set of nodes whose dependencies have all been satisfied
-    by the time the wave starts; nodes within a wave can run in parallel.
-
-    Nodes that appear inside another node's ``loop_body`` are excluded
-    from the top-level waves — they're orchestrated from inside the
-    parent loop activity, not by the workflow.
+    Every adapter emits from these. The IR owns the definition because its
+    input-reachability validator is defined by it: a pipeline that loads
+    is one whose every node-output input is bound before its node runs,
+    so adapters need no emit-time check of their own.
     """
-    nested_ids: set[str] = set()
-    for n in pipeline.nodes:
-        if n.loop_body:
-            nested_ids.update(n.loop_body)
-
-    eligible = [n for n in pipeline.nodes if n.id not in nested_ids]
-    eligible_ids = {n.id for n in eligible}
-
-    in_degree: dict[str, int] = {n.id: 0 for n in eligible}
-    for edge in pipeline.edges:
-        if edge.from_ in eligible_ids and edge.to in eligible_ids:
-            in_degree[edge.to] += 1
-
-    waves: list[list[Node]] = []
-    remaining: set[str] = set(in_degree.keys())
-
-    while remaining:
-        # Sort by id for stable, deterministic emission order.
-        wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
-        if not wave_ids:
-            raise ValueError(
-                f"Cycle detected in pipeline {pipeline.name!r}; "
-                f"remaining nodes: {sorted(remaining)}"
-            )
-        waves.append([pipeline.node_by_id(nid) for nid in wave_ids])
-        for nid in wave_ids:
-            remaining.remove(nid)
-            for edge in pipeline.edges:
-                if edge.from_ == nid and edge.to in eligible_ids:
-                    in_degree[edge.to] -= 1
-
-    return waves
+    return pipeline.execution_waves()
 
 
 # ───────── Data-flow threading ─────────
-
-
-def check_input_refs_available(node: Node, available: set[str]) -> None:
-    """Emit-time guard: every node-output reference must already be bound.
-
-    Adapters emit nodes wave-by-wave, binding each node's result to a
-    local as they go. A node whose ``inputs`` reference a node in a
-    *later* wave (or a loop-body sub-node, which never binds a top-level
-    result) would produce code that references an undefined variable —
-    fail loudly at emit time instead.
-
-    IR validation already guarantees the referenced node *exists*; this
-    check is about emission ordering, which is an adapter concern.
-    """
-    if not node.inputs:
-        return
-    for param, ref in node.inputs.items():
-        parsed = parse_input_ref(ref)
-        if parsed.node_id is not None and parsed.node_id not in available:
-            raise ValueError(
-                f"Node {node.id!r} input {param!r} references {ref!r}, but node "
-                f"{parsed.node_id!r} has no result available at this point in the "
-                f"workflow (it runs in a later wave, or is a loop-body sub-node "
-                f"with no top-level result)."
-            )
 
 
 def fan_out_nodes(wave: Sequence[Node]) -> tuple[list[Node], list[Node]]:
@@ -750,3 +777,253 @@ def refuse_mcp_only_nodes(pipeline: Pipeline, adapter: str) -> None:
 #: same loop compiled to TypeScript must agree on how many turns "no
 #: declared bound" means.
 DEFAULT_AGENT_MAX_ITERATIONS = 10
+
+
+# ───────── an agent loop's declared output ─────────
+
+#: The tool an agent loop calls once, at the end, to hand back its
+#: declared output. Its arguments are the declared output, so the keys
+#: downstream nodes read exist on every runtime and every lane.
+AGENT_SUBMIT_TOOL = "submit_result"
+
+#: The one key a single-type output (``output: IntelBrief``) is submitted
+#: under. The step returns the value itself, never the wrapper.
+AGENT_RESULT_KEY = "result"
+
+#: Where the TS runtimes declare the IR's undefined named types, relative
+#: to the app root. User-editable: the user narrows each alias once, and
+#: EmitWriter keeps that edit on re-emit.
+TS_TYPES_MODULE = "src/types.ts"
+
+_JSON_OBJECT_TS = "{ [key: string]: JsonValue }"
+
+_IR_SCALARS: dict[str, tuple[dict[str, Any], str]] = {
+    "str": ({"type": "string"}, "string"),
+    "string": ({"type": "string"}, "string"),
+    "int": ({"type": "integer"}, "number"),
+    "integer": ({"type": "integer"}, "number"),
+    "float": ({"type": "number"}, "number"),
+    "number": ({"type": "number"}, "number"),
+    "bool": ({"type": "boolean"}, "boolean"),
+    "boolean": ({"type": "boolean"}, "boolean"),
+    "dict": ({"type": "object"}, _JSON_OBJECT_TS),
+    "object": ({"type": "object"}, _JSON_OBJECT_TS),
+    "list": ({"type": "array"}, "JsonValue[]"),
+    "array": ({"type": "array"}, "JsonValue[]"),
+}
+
+_NULL_NAMES = ("null", "None")
+
+#: A named type becomes a TS alias only when its name is a plain
+#: identifier; anything else stays ``JsonValue``.
+_TS_TYPE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _split_top_level(text: str, sep: str) -> list[str]:
+    """Split on ``sep`` outside brackets: ``list[a | b] | null`` is 2 parts."""
+    parts: list[str] = []
+    depth, start = 0, 0
+    for i, ch in enumerate(text):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == sep and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts]
+
+
+def ir_type(type_name: str, named: set[str] | None = None) -> tuple[dict[str, Any], str]:
+    """``(JSON Schema, TS type)`` for one IR type name.
+
+    IR types are free-form names (``list[InvoiceResult]``, ``str | null``).
+    Scalars, lists, optionals and plain dicts map exactly. A named type the
+    IR does not define (``InvoiceResult``) accepts any JSON value: the
+    schema cannot invent its fields. Its TS type is the name itself, an
+    alias the TS runtimes declare in :data:`TS_TYPES_MODULE` as
+    ``JsonValue`` for the user to narrow; ``named`` collects those names.
+    """
+    name = type_name.strip().strip("\"'")
+    alternatives = _split_top_level(name, "|")
+    if len(alternatives) > 1:
+        nullable = any(a in _NULL_NAMES for a in alternatives)
+        typed = [ir_type(a, named) for a in alternatives if a not in _NULL_NAMES]
+        schemas = [s for s, _ in typed] + ([{"type": "null"}] if nullable else [])
+        ts = " | ".join([t for _, t in typed] + (["null"] if nullable else []))
+        return {"anyOf": schemas}, ts
+    match = re.fullmatch(r"Optional\[(.*)\]", name)
+    if match:
+        return ir_type(f"{match.group(1)} | null", named)
+    match = re.fullmatch(r"(?:list|List|Sequence|set|tuple)\[(.*)\]", name)
+    if match:
+        item_schema, item_ts = ir_type(match.group(1), named)
+        wrapped = f"({item_ts})" if "|" in item_ts else item_ts
+        return {"type": "array", "items": item_schema}, f"{wrapped}[]"
+    if re.fullmatch(r"(?:dict|Dict|Mapping)\[.*\]", name):
+        return {"type": "object"}, _JSON_OBJECT_TS
+    if name in _IR_SCALARS:
+        schema, ts = _IR_SCALARS[name]
+        return dict(schema), ts
+    schema = {"description": f"Value of type {name}."}
+    if _TS_TYPE_NAME_RE.fullmatch(name) and name != "JsonValue":
+        if named is not None:
+            named.add(name)
+        return schema, name
+    return schema, "JsonValue"
+
+
+#: Anthropic caps a strict request at this many ``anyOf`` and type-array
+#: parameters; every nullable field (``str | null``) is one. Past it the
+#: request is a 400, so such a loop stays non-strict.
+STRICT_UNION_LIMIT = 16
+
+
+def _union_count(schema: Any) -> int:
+    """``anyOf`` and type-array parameters in ``schema``, nested included."""
+    if isinstance(schema, list):
+        return sum(_union_count(item) for item in schema)
+    if not isinstance(schema, dict):
+        return 0
+    own = int("anyOf" in schema) + int(isinstance(schema.get("type"), list))
+    return own + sum(_union_count(value) for value in schema.values())
+
+
+def strict_compatible(schema: Any) -> bool:
+    """True when ``schema`` fits Anthropic's strict tool-input subset.
+
+    Strict tool use constrains sampling to the schema, so every leaf needs
+    a type and every object ``additionalProperties: false``. A named type
+    the IR does not define is a description-only schema, which that
+    subset does not cover, and a schema past :data:`STRICT_UNION_LIMIT`
+    unions would 400. Either way the submit tool stays non-strict and
+    rote's own validation (every lane) is what holds the line.
+    """
+    return _union_count(schema) <= STRICT_UNION_LIMIT and _strict_shape(schema)
+
+
+def _strict_shape(schema: Any) -> bool:
+    if not isinstance(schema, dict):
+        return False
+    if "anyOf" in schema:
+        return all(_strict_shape(s) for s in schema["anyOf"])
+    kind = schema.get("type")
+    if kind is None:
+        return False
+    if kind == "object":
+        properties = schema.get("properties")
+        return (
+            schema.get("additionalProperties") is False
+            and isinstance(properties, dict)
+            and all(_strict_shape(s) for s in properties.values())
+        )
+    if kind == "array":
+        return "items" in schema and _strict_shape(schema["items"])
+    return True
+
+
+class AgentLoopOutput:
+    """What an agent loop must hand back, derived once from its IR node.
+
+    ``schema`` is the object schema of the ``submit_result`` arguments, or
+    None when the node declares no output (the step then returns
+    ``{"result": <final text>}``). ``unwrap_key`` is set for a single-type
+    output, whose value is the step's whole result. ``ts_type`` is the TS
+    return type of the emitted loop function. ``named_types`` maps each
+    declared key (``"result"`` for a single type) to the IR names in it
+    that the IR does not define, whose shape nothing checks. ``strict`` says
+    whether the submit tool can be a strict tool.
+    """
+
+    def __init__(
+        self,
+        schema: dict[str, Any] | None,
+        unwrap_key: str | None,
+        ts_type: str,
+        named_types: dict[str, list[str]],
+    ):
+        self.schema = schema
+        self.unwrap_key = unwrap_key
+        self.ts_type = ts_type
+        self.named_types = named_types
+        self.strict = schema is not None and strict_compatible(schema)
+
+
+def agent_loop_output(node: Node) -> AgentLoopOutput:
+    """The declared-output contract of an ``agent_loop`` node.
+
+    Downstream nodes read the loop's declared ``output`` keys
+    (``process_invoices_loop.output.invoice_results``), so the loop must
+    produce exactly those keys, on every runtime. A node's
+    ``output_schema`` wins over its type names: it is evidence from real
+    payloads, a name is a guess.
+    """
+    assert node.kind is NodeKind.AGENT_LOOP
+    output = node.output
+    evidence = node.output_schema or {}
+    if isinstance(output, dict) and output:
+        observed = evidence.get("properties") if isinstance(evidence, dict) else None
+        typed: dict[str, tuple[dict[str, Any], str]] = {}
+        named: dict[str, list[str]] = {}
+        for key, name in output.items():
+            found: set[str] = set()
+            typed[key] = ir_type(name, found)
+            if found and key not in (observed or {}):
+                named[key] = sorted(found)
+        properties = {key: (observed or {}).get(key, schema) for key, (schema, _) in typed.items()}
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "required": list(output),
+            "additionalProperties": False,
+        }
+        ts = "{ " + "; ".join(f"{json.dumps(k)}: {t}" for k, (_, t) in typed.items()) + " }"
+        return AgentLoopOutput(schema, None, ts, named)
+    if isinstance(output, str) and output.strip():
+        found = set()
+        value_schema, ts = ir_type(output, found)
+        schema = {
+            "type": "object",
+            "properties": {AGENT_RESULT_KEY: evidence or value_schema},
+            "required": [AGENT_RESULT_KEY],
+            "additionalProperties": False,
+        }
+        named = {AGENT_RESULT_KEY: sorted(found)} if found and not evidence else {}
+        return AgentLoopOutput(schema, AGENT_RESULT_KEY, ts, named)
+    return AgentLoopOutput(None, None, "{ result: string }", {})
+
+
+def agent_loop_named_types(pipeline: Pipeline) -> list[str]:
+    """Every undefined named type the pipeline's agent loops declare, sorted."""
+    names: set[str] = set()
+    for node in pipeline.nodes:
+        if node.kind is NodeKind.AGENT_LOOP:
+            for found in agent_loop_output(node).named_types.values():
+                names.update(found)
+    return sorted(names)
+
+
+def unchecked_output_notes(pipeline: Pipeline, *, types_module: str | None) -> list[str]:
+    """One line per agent-loop output key whose type the IR never defines.
+
+    Its value reaches the next node unchecked, so emit says where to fix
+    that: ``output_schema`` in the IR, and on TS the alias in
+    ``types_module`` the user can narrow.
+    """
+    notes: list[str] = []
+    for node in pipeline.nodes:
+        if node.kind is not NodeKind.AGENT_LOOP:
+            continue
+        for key, names in agent_loop_output(node).named_types.items():
+            for name in names:
+                where = (
+                    f"narrow it in {types_module}"
+                    if types_module
+                    else "declare its fields in the node's output_schema"
+                )
+                notes.append(
+                    f"{node.id}.{key}: type {name} is not defined in the IR; "
+                    f"shape unchecked, {where}"
+                )
+    return notes

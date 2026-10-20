@@ -136,6 +136,13 @@ def test_scorecard_markdown_and_dict(estimates) -> None:  # type: ignore[no-unty
     # Roteness is a first-class, purely-structural scorecard field.
     assert "| Roteness (deterministic steps) |" in md
 
+    # The step counts on each side are different units; the row says so.
+    (row,) = [ln for ln in md.splitlines() if ln.startswith("| Steps decided by a sampled LLM")]
+    before, after, change = (cell.strip() for cell in row.split("|")[2:5])
+    assert before.endswith(" agent steps")
+    assert " pipeline nodes (" in after
+    assert change.startswith("different units")
+
     payload = card.to_dict()
     json.dumps(payload)  # must be JSON-serializable
     assert payload["pipeline"] == pipeline.name

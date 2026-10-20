@@ -12,6 +12,7 @@ speculation.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -19,7 +20,17 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 # ───────── Data-flow input references ─────────
 #
@@ -314,6 +325,34 @@ class SourceRef(BaseModel):
         return v
 
 
+class MCPLiteral(BaseModel):
+    """A fixed value for one MCP tool argument: ``{literal: "BDR do not contact"}``.
+
+    The mapping form keeps it distinct from a reference: a bare string in
+    ``mcp.args`` always names a payload key or a constant, so a literal
+    can never be misread as one, or the reverse. Only scalars: a string, a
+    finite number, or a boolean. Strict types, so ``"3"`` stays a string
+    and ``true`` stays a boolean instead of being coerced. A list or an
+    object belongs in the node's ``constants``, which ``mcp.args`` can
+    already name, and ``null`` is better said by leaving the argument out.
+
+    The value reaches emitted code, so emitters render it only as an
+    escaped quoted literal (``json.dumps`` / a Python string literal),
+    never spliced (invariant #7).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    literal: StrictBool | StrictInt | StrictFloat | StrictStr
+
+    @field_validator("literal")
+    @classmethod
+    def _validate_literal(cls, v: bool | int | float | str) -> bool | int | float | str:
+        if isinstance(v, float) and not math.isfinite(v):
+            raise ValueError(f"mcp.args literal {v!r} must be a finite number")
+        return v
+
+
 class MCPBinding(BaseModel):
     """Binding from an ``external_call`` node to an MCP tool.
 
@@ -325,29 +364,38 @@ class MCPBinding(BaseModel):
 
     The shape mirrors the official MCP registry's ``remotes[]`` entries
     (``url`` + ``transport``) so a resolved registry entry maps straight
-    onto it. ``server`` is a *logical* name; adapters resolve it to an
-    endpoint via the ``ROTE_MCP_<SERVER>_URL`` env var unless ``url`` is
-    set explicitly.
+    onto it. ``server`` is a *logical* name. At run time the endpoint is
+    the ``ROTE_MCP_<SERVER>_URL`` env var if set, else the rote registry
+    entry for ``server``, else ``url`` (the endpoint recorded at
+    compilation time).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     server: str = Field(
-        description="Logical MCP server name; resolves to ROTE_MCP_<SERVER>_URL unless url is set",
+        description=(
+            "Logical MCP server name; at run time ROTE_MCP_<SERVER>_URL, then the "
+            "rote registry, then url"
+        ),
     )
     tool: str = Field(
         description="MCP tool name to invoke, e.g. 'hubspot_get_contact_emails'",
     )
-    args: dict[str, str] | None = Field(
+    args: dict[str, str | MCPLiteral] | None = Field(
         default=None,
         description=(
-            "Optional rename map: MCP tool-argument name → key in the node's "
-            "runtime payload. Omit to pass the payload through unchanged."
+            "Optional map: MCP tool-argument name → where its value comes from. "
+            "A string names a key in the node's runtime payload, or one of its "
+            "constants; {literal: <string, number or boolean>} is a fixed value. "
+            "Omit to pass the payload through unchanged."
         ),
     )
     url: str | None = Field(
         default=None,
-        description="Explicit Streamable-HTTP endpoint; overrides the ROTE_MCP_<server>_URL lookup",
+        description=(
+            "Streamable-HTTP endpoint recorded at compilation time; used when neither "
+            "ROTE_MCP_<SERVER>_URL nor the rote registry names one"
+        ),
     )
     transport: Literal["streamable-http", "sse"] = Field(default="streamable-http")
 
@@ -376,15 +424,21 @@ class MCPBinding(BaseModel):
 
     @field_validator("args")
     @classmethod
-    def _validate_args(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        """Both halves reach emitted dict literals / payload lookups."""
+    def _validate_args(
+        cls, v: dict[str, str | MCPLiteral] | None
+    ) -> dict[str, str | MCPLiteral] | None:
+        """Keys and references reach emitted dict literals and payload lookups,
+        so they are identifiers. A literal is validated by :class:`MCPLiteral`."""
         if v is None:
             return None
-        for arg_name, payload_key in v.items():
+        for arg_name, source in v.items():
             if not _IDENTIFIER_RE.fullmatch(arg_name):
                 raise ValueError(f"mcp.args key {arg_name!r} must be a valid identifier")
-            if not _IDENTIFIER_RE.fullmatch(payload_key):
-                raise ValueError(f"mcp.args value {payload_key!r} must be a valid identifier")
+            if isinstance(source, str) and not _IDENTIFIER_RE.fullmatch(source):
+                raise ValueError(
+                    f"mcp.args value {source!r} must be a valid identifier (a payload key "
+                    f"or constant name); write {{literal: {source!r}}} for a fixed value"
+                )
         return v
 
 
@@ -766,6 +820,16 @@ class PipelineInput(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _validate_required_and_optional_are_disjoint(self) -> Self:
+        """A field cannot be both: emitted workflows would have to pick one."""
+        both = sorted(set(self.required) & set(self.optional))
+        if both:
+            raise ValueError(
+                f"pipeline input field(s) {', '.join(both)} are both required and optional"
+            )
+        return self
+
 
 class Pipeline(BaseModel):
     """A compiled skill, ready to be emitted into a runtime adapter."""
@@ -911,6 +975,106 @@ class Pipeline(BaseModel):
             raise ValueError("\n".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_input_reachability(self) -> Self:
+        """Every node-output input must be bound before its node runs.
+
+        Adapters emit the DAG wave by wave and bind each node's result as
+        they go, so an input naming a node in the same or a later wave, or
+        a ``loop_body`` sub-node (which the loop calls per iteration and
+        which never binds a top-level result), would emit code reading an
+        undefined variable. This used to be checked only at emit time, in
+        every adapter, after the compile had already declared success: a
+        real bdr-outreach compile paid $4.46 for an IR whose loop took its
+        own body sub-node's output as an input, then failed to emit. Here
+        it is a validation error the compile's repair loop sends back.
+
+        Loop-body sub-nodes' own ``inputs:`` are not checked: their parent
+        loop calls them with model-chosen arguments, so those bindings
+        describe and do not bind (same scope rule as the judge check).
+        """
+        waves = self.execution_waves()
+        wave_of = {n.id: i for i, wave in enumerate(waves) for n in wave}
+        owners: dict[str, list[str]] = {}
+        for n in self.nodes:
+            for sub in n.loop_body or ():
+                owners.setdefault(sub, []).append(n.id)
+        errors: list[str] = []
+        for node in self.nodes:
+            if node.id in owners or not node.inputs:
+                continue
+            for param, ref in node.inputs.items():
+                source = parse_input_ref(ref).node_id
+                if source is None:
+                    continue
+                head = (
+                    f"Node {node.id!r} input {param!r} references {ref!r}, but node "
+                    f"{source!r} has no result available at this point in the workflow"
+                )
+                if source in owners:
+                    if node.id in owners[source]:
+                        errors.append(
+                            f"{head}: it is in {node.id!r}'s own loop_body. The loop "
+                            f"calls its body sub-nodes on each iteration, so no "
+                            f"sub-node result exists before the loop starts. Remove "
+                            f"this input; what the body produces comes back as the "
+                            f"loop's own output."
+                        )
+                    else:
+                        errors.append(
+                            f"{head}: it is a loop_body sub-node of "
+                            f"{', '.join(repr(o) for o in owners[source])}, which never "
+                            f"binds a top-level result. Reference the loop's output "
+                            f"instead."
+                        )
+                elif wave_of[source] >= wave_of[node.id]:
+                    errors.append(
+                        f"{head}: it does not run before {node.id!r}. Add an edge from "
+                        f"{source!r} to {node.id!r} (directly or through other nodes) "
+                        f"so it finishes first."
+                    )
+        if errors:
+            raise ValueError("\n".join(errors))
+        return self
+
+    def execution_waves(self) -> list[list[Node]]:
+        """Topologically sort the top-level nodes into parallel waves.
+
+        A wave is a set of nodes whose dependencies have all finished by
+        the time it starts; nodes within a wave may run concurrently.
+        Nodes in another node's ``loop_body`` are excluded: they run
+        inside their parent loop, not as workflow steps. Ties sort by id,
+        so emission order is deterministic. Raises ``ValueError`` on a
+        cycle.
+
+        Lives on the IR, not in an adapter, because the reachability rule
+        above is defined by it and every adapter emits from it: one
+        definition, so "valid IR" and "emittable IR" cannot disagree.
+        """
+        nested = {sub for n in self.nodes for sub in (n.loop_body or ())}
+        eligible = [n for n in self.nodes if n.id not in nested]
+        eligible_ids = {n.id for n in eligible}
+        in_degree = {n.id: 0 for n in eligible}
+        for edge in self.edges:
+            if edge.from_ in eligible_ids and edge.to in eligible_ids:
+                in_degree[edge.to] += 1
+        waves: list[list[Node]] = []
+        remaining = set(in_degree)
+        while remaining:
+            wave_ids = sorted(nid for nid in remaining if in_degree[nid] == 0)
+            if not wave_ids:
+                raise ValueError(
+                    f"Cycle detected in pipeline {self.name!r}; "
+                    f"remaining nodes: {sorted(remaining)}"
+                )
+            waves.append([self.node_by_id(nid) for nid in wave_ids])
+            for nid in wave_ids:
+                remaining.remove(nid)
+                for edge in self.edges:
+                    if edge.from_ == nid and edge.to in eligible_ids:
+                        in_degree[edge.to] -= 1
+        return waves
+
     def node_by_id(self, node_id: str) -> Node:
         for n in self.nodes:
             if n.id == node_id:
@@ -933,6 +1097,64 @@ class Pipeline(BaseModel):
         for warnings or ignore it.
         """
         return any(n.kind is NodeKind.HITL_GATE for n in self.nodes)
+
+    @property
+    def optional_input_fields(self) -> frozenset[str]:
+        """Pipeline input fields a run may omit.
+
+        A field is optional when ``input.optional`` lists it, or when
+        ``input.input_schema`` declares it as a property without listing it
+        in the schema's ``required``. Declaring it required anywhere wins:
+        the validator on :class:`PipelineInput` rejects a field that is
+        listed both ways, so "wins" only settles the schema-only case.
+        """
+        schema = self.input.input_schema or {}
+        schema_required = set(schema.get("required") or [])
+        schema_optional = set(schema.get("properties") or {}) - schema_required
+        declared_required = set(self.input.required) | schema_required
+        return frozenset((set(self.input.optional) | schema_optional) - declared_required)
+
+    @property
+    def required_input_fields(self) -> tuple[str, ...]:
+        """Pipeline input fields every run must supply, sorted.
+
+        The declared ones (``input.required`` and the schema's
+        ``required``) plus any field a node reads that nothing declares
+        optional. Derived, never stored: emitted workflows check these on
+        entry so a missing field fails naming itself, and they read every
+        pipeline input field without raising, and an omitted optional one
+        is simply left out of a step's payload.
+        """
+        schema = self.input.input_schema or {}
+        fields = set(self.input.required) | set(schema.get("required") or [])
+        optional = self.optional_input_fields
+        for node in self.nodes:
+            for ref in (node.inputs or {}).values():
+                parsed = parse_input_ref(ref)
+                if (
+                    parsed.node_id is None
+                    and parsed.field is not None
+                    and parsed.field not in optional
+                ):
+                    fields.add(parsed.field)
+        return tuple(sorted(fields))
+
+    @property
+    def needs_input_check(self) -> bool:
+        """Whether emitted workflows check the pipeline input on entry.
+
+        True when a field is required, or when any node reads a pipeline
+        input field: a run started with no payload at all (or a non-object
+        one) must fail naming the problem, not with a TypeError inside
+        generated code.
+        """
+        if self.required_input_fields:
+            return True
+        return any(
+            parse_input_ref(ref).node_id is None and parse_input_ref(ref).field is not None
+            for node in self.nodes
+            for ref in (node.inputs or {}).values()
+        )
 
     @property
     def required_mcp_servers(self) -> dict[str, list[str]]:
@@ -980,9 +1202,18 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
        may also reference nodes *without* an edge (shared context, e.g.
        BDR's ``intel``), which is what makes "the only node-bound
        param" too naive;
-    3. else the only node-bound param.
+    3. else the only node-bound param;
+    4. else, when NO param is node-bound, the only param bound to a
+       pipeline-input field that can hold a list
+       (``invoice: pipeline.input.invoices``). A field the input schema
+       declares with a non-array type is excluded, an undeclared or
+       untyped one is not. Fanning over a list the caller passes in is a
+       legitimate shape, and before this tier it crashed ``rote compile``
+       after the agent had already been paid. It only applies when no
+       node-bound param exists, so a pipeline-input list bound as shared
+       context next to a fanned node output keeps resolving as before.
 
-    Ambiguity after all three is an emit-time error, never a guess:
+    Ambiguity after all four is an emit-time error, never a guess:
     dispatching over the wrong list would silently judge the wrong
     things.
 
@@ -1016,6 +1247,22 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
         matching = sorted(p for p, src in node_bound.items() if src in sources)
         if len(matching) == 1:
             return matching[0]
+    if not node_bound:
+        input_lists = sorted(
+            param
+            for param, ref in node.inputs.items()
+            if _pipeline_input_field_may_be_list(parse_input_ref(ref), pipeline)
+        )
+        if len(input_lists) == 1:
+            return input_lists[0]
+        raise ValueError(
+            f"fan_out node {node.id!r}: cannot identify the element param: no input "
+            f"is bound to an upstream node, and the pipeline-input fields that could "
+            f"hold the list ({input_lists or 'none'}) don't single one out. Bind "
+            f"exactly one param to the list (`<param>: pipeline.input.<list_field>`), "
+            f"declare that field `type: array` in input.input_schema, and give any "
+            f"other pipeline-input field a non-array type"
+        )
     if len(node_bound) != 1:
         raise ValueError(
             f"fan_out node {node.id!r}: cannot identify the element param — "
@@ -1024,6 +1271,26 @@ def fan_out_element_param(node: Node, pipeline: Pipeline) -> str:
             f"with `fan_out: true`"
         )
     return next(iter(node_bound))
+
+
+def _pipeline_input_field_may_be_list(ref: InputRef, pipeline: Pipeline) -> bool:
+    """Whether ``ref`` names a pipeline-input field a fan could iterate.
+
+    Only ``pipeline.input.<field>`` qualifies (the whole input is an
+    object). The input schema can rule a field out by giving it a
+    non-array ``type``; it cannot rule one in that it does not describe,
+    because ``input_schema`` is optional and most IRs leave it partial.
+    """
+    if ref.node_id is not None or ref.field is None:
+        return False
+    schema = pipeline.input.input_schema or {}
+    props = schema.get("properties")
+    field_schema = props.get(ref.field) if isinstance(props, dict) else None
+    if not isinstance(field_schema, dict) or "type" not in field_schema:
+        return True
+    declared = field_schema["type"]
+    types = declared if isinstance(declared, list) else [declared]
+    return "array" in types
 
 
 def _schema_root(schema: dict[str, Any]) -> dict[str, Any]:

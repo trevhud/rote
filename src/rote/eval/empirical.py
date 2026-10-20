@@ -24,6 +24,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
@@ -64,6 +66,27 @@ class EmpiricalError(RuntimeError):
 #: How much of a failed process's output an error message carries.
 FAILURE_EXCERPT_CHARS = 1500
 
+#: A JS error header line, ``Error: ...`` or ``NonRetryableError: ...``,
+#: which a Node stack prints before its ``    at ...`` frames.
+_NODE_ERROR_HEADER = re.compile(r"^(?:[A-Z]\w*)?Error: .+$", re.MULTILINE)
+
+
+#: The prefix an emitted app puts on a usage error (bad input) before
+#: exiting 2. See ``rote.adapters._py_common.cli_input_check``.
+USAGE_ERROR_PREFIX = "error: "
+
+
+def usage_error(output: str) -> str | None:
+    """An emitted app's own usage error (a bad input), without its prefix.
+
+    The app prints it as its last line and exits 2. It already says what
+    to fix, so it replaces the whole failure message: the runtime's log
+    lines above it are noise, and temporal (in-process) reports the same
+    error as one line too.
+    """
+    last = output.strip().rsplit("\n", 1)[-1]
+    return last[len(USAGE_ERROR_PREFIX) :] if last.startswith(USAGE_ERROR_PREFIX) else None
+
 
 def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_CHARS) -> str:
     """The useful part of a failed process's output, for an error message.
@@ -82,7 +105,15 @@ def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_
         newline = cut.find("\n")
         if 0 <= newline < len(cut) - 1:
             cut = cut[newline + 1 :]
-        text = f"[... {len(text) - len(cut)} earlier characters omitted ...]\n{cut}"
+        omitted = f"[... {len(text) - len(cut)} earlier characters omitted ...]"
+        # A Node error prints its message FIRST and the stack after it, so
+        # a long stack pushes the message out of the tail. Keep the last
+        # `Name: message` header line when the tail lost it.
+        headers = _NODE_ERROR_HEADER.findall(text)
+        if headers and headers[-1] not in cut:
+            text = f"{headers[-1]}\n{omitted}\n{cut}"
+        else:
+            text = f"{omitted}\n{cut}"
     missing = extra_for_missing_module(stderr or stdout)
     if missing is not None:
         module, extra = missing
@@ -415,6 +446,9 @@ def _wait_for_workflow_id(stderr_path: Path, proc: subprocess.Popen[Any], deadli
             if line.startswith(marker):
                 return line[len(marker) :].strip()
         if proc.poll() is not None:
+            usage = usage_error(text)
+            if usage is not None:
+                raise EmpiricalError(usage)
             raise EmpiricalError(
                 f"DBOS app exited (code {proc.returncode}) before starting "
                 f"a workflow:\n{failure_excerpt(text)}"
@@ -542,7 +576,8 @@ def run_pipeline_trial(
         return MeasuredRun(
             wall_seconds=wall,
             output=None,
-            error=f"pipeline exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
+            error=usage_error(stderr)
+            or f"pipeline exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
             judge_usage=tuple(usage_rows),
         )
     try:
@@ -640,25 +675,48 @@ def measured_pipeline_cost_usd(
     unpriced: set[str] = set()
     per_run: list[float] = []
     for run in runs:
-        total = 0.0
-        for row in run.judge_usage:
-            model = str(row.get("model", ""))
-            rates = catalog.rates_for(model)
-            if rates is None:
-                unpriced.add(model)
-                continue
-            in_rate, out_rate, read_rate, write_rate = rates
-            cache_write = row.get("cache_write_tokens") or 0
-            cache_read = row.get("cache_read_tokens") or 0
-            if (cache_write and write_rate is None) or (cache_read and read_rate is None):
-                unpriced.add(model)
-                continue
-            total += (row.get("input_tokens") or 0) * in_rate / 1_000_000
-            total += (row.get("output_tokens") or 0) * out_rate / 1_000_000
-            total += cache_write * (write_rate or 0.0) / 1_000_000
-            total += cache_read * (read_rate or 0.0) / 1_000_000
+        total, missing = judge_usage_cost_usd(run.judge_usage, catalog)
+        unpriced |= missing
         per_run.append(total)
     return (mean(per_run) if per_run else 0.0, sorted(unpriced))
+
+
+def judge_usage_cost_usd(
+    rows: Iterable[Mapping[str, Any]], catalog: PricingCatalog | None
+) -> tuple[float, set[str]]:
+    """Dollars for one run's judge usage rows, plus the models left unpriced.
+
+    A row carrying ``cost_usd`` (the ``claude -p`` lane logs the CLI's own
+    estimate per concrete model) is taken as is: the CLI knows what the
+    catalog cannot, such as a 1h cache write billing at twice the 5m rate.
+    Every other row is priced from ``catalog``. A model the catalog does
+    not list (an alias like ``sonnet``), or a cache bucket with no
+    published rate, leaves the row unpriced rather than guessed, and so
+    does a missing catalog.
+    """
+    total = 0.0
+    unpriced: set[str] = set()
+    for row in rows:
+        model = str(row.get("model", ""))
+        reported = row.get("cost_usd")
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+            total += float(reported)
+            continue
+        rates = catalog.rates_for(model) if catalog is not None else None
+        if rates is None:
+            unpriced.add(model)
+            continue
+        in_rate, out_rate, read_rate, write_rate = rates
+        cache_write = row.get("cache_write_tokens") or 0
+        cache_read = row.get("cache_read_tokens") or 0
+        if (cache_write and write_rate is None) or (cache_read and read_rate is None):
+            unpriced.add(model)
+            continue
+        total += (row.get("input_tokens") or 0) * in_rate / 1_000_000
+        total += (row.get("output_tokens") or 0) * out_rate / 1_000_000
+        total += cache_write * (write_rate or 0.0) / 1_000_000
+        total += cache_read * (read_rate or 0.0) / 1_000_000
+    return total, unpriced
 
 
 def suggested_priors(

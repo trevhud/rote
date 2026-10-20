@@ -42,7 +42,7 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    check_input_refs_available,
+    escape_invisible,
     fan_out_nodes,
     override_env_vars,
     pipeline_identity,
@@ -58,20 +58,25 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_BINDING_HELPER_TS,
     ROTE_MCP_WORKERS_HELPER_TS,
     WORKERS_AI_AGENT_MODEL,
     agent_tool_servers,
+    constants_doc_ts,
     emit_agent_loop_module,
     emit_ts_signature_module,
+    emit_types_module,
     emit_workers_mcp_call_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     llm_clients,
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 from rote.mcp.parked import AUTH_PARK_MARKER
@@ -170,7 +175,7 @@ def _step_config_literal(node: Node, cfg: CloudflareAdapterConfig) -> str:
 def _emit_step_call(node: Node, cfg: CloudflareAdapterConfig, *, pass_env: bool) -> str:
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
-    payload = payload_ts_literal(node, indent=" " * 12)
+    payload = payload_ts_literal(node, indent=" " * 12, with_constants=True)
     args = f"{payload}, this.env" if pass_env else payload
     return (
         f"        const {node.id}_result = await step.do(\n"
@@ -221,7 +226,7 @@ def _emit_step_call_mcp_parkable(
     fn_name = _to_camel_case(node.id)
     config = _step_config_literal(node, cfg)
     if payload is None:
-        payload = payload_ts_literal(node, indent=" " * 24)
+        payload = payload_ts_literal(node, indent=" " * 24, with_constants=False)
     nid = node.id
     if node.mcp is not None:
         # One binding, one server: the release event is known at emit time.
@@ -244,6 +249,11 @@ def _emit_step_call_mcp_parkable(
             "        // so `rote mcp release <server>` releases the right instances.\n"
         )
     label = "agent loop" if node.mcp is None else "MCP-backed"
+    # An agent loop's result is its declared output, typed by its keys, so
+    # a downstream read keeps that type. An MCP tool result is open.
+    result_type = (
+        f"Awaited<ReturnType<typeof {fn_name}>>" if node.mcp is None else "Record<string, unknown>"
+    )
     # A fan_out element's step names carry its index; every step name
     # must be unique within an instance or the elements collapse onto
     # one cached step.
@@ -251,7 +261,7 @@ def _emit_step_call_mcp_parkable(
     return (
         f"        // ─── {nid} ({label}): park on dead credentials ───\n"
         f"{release_hint}"
-        f"        let {nid}_result!: Record<string, unknown>;\n"
+        f"        let {nid}_result!: {result_type};\n"
         f"        for (let {nid}_attempt = 0; ; {nid}_attempt++) {{\n"
         f"            try {{\n"
         f"                {nid}_result = (await step.do(\n"
@@ -275,7 +285,7 @@ def _emit_step_call_mcp_parkable(
         f"                                : err;\n"
         f"                        }}\n"
         f"                    }},\n"
-        f"                )) as Record<string, unknown>;\n"
+        f"                )) as {result_type};\n"
         f"                break;\n"
         f"            }} catch (err) {{\n"
         f"                if (!stepNeedsAuth(err)) throw err;\n"
@@ -376,7 +386,7 @@ def _emit_parallel_step_calls(nodes: list[Node], cfg: CloudflareAdapterConfig) -
         pass_env = n.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
         # Closing brace lines up with its `async () =>`, as in the
         # single-node form (which passes its own call indent).
-        payload = payload_ts_literal(n, indent=" " * 16)
+        payload = payload_ts_literal(n, indent=" " * 16, with_constants=True)
         args = f"{payload}, this.env" if pass_env else payload
         lines.append("            step.do(")
         lines.append(f"                {json.dumps(n.id)},")
@@ -400,7 +410,7 @@ def _emit_fan_out_parallel(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
     element's result for all of them — the failure would look like a
     correct run with suspiciously uniform output.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12, with_constants=True)
     pass_env = node.kind in (NodeKind.LLM_JUDGE, NodeKind.AGENT_LOOP)
     args = f"{payload}, this.env" if pass_env else payload
     return "\n".join(
@@ -429,7 +439,7 @@ def _emit_fan_out_parkable(node: Node, cfg: CloudflareAdapterConfig, *, pipeline
     promise combinator is undocumented and whose timeout *throws*, which
     would reject every other element.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 8)
+    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 8, with_constants=False)
     inner = _emit_step_call_mcp_parkable(
         node, cfg, pipeline=pipeline, payload=payload, name_suffix="[${_index}]"
     )
@@ -620,13 +630,10 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         if n.inputs
         for ref in n.inputs.values()
     )
-    if needs_pipeline_input:
+    if needs_pipeline_input or pipeline.needs_input_check:
         body_lines.append("        const pipelineInput = event.payload;")
+        body_lines.extend(required_inputs_ts_guard(pipeline, "Error", indent=" " * 8))
         body_lines.append("")
-
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
 
     def _is_parkable(node: Node) -> bool:
         # MCP-backed calls read credentials from env (Worker secrets + the
@@ -661,9 +668,6 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
         fanned_parkable, parkable = fan_out_nodes(parkable)
         fanned_plain, plain = fan_out_nodes(plain)
 
-        for node in plain + parkable + fanned_plain + fanned_parkable:
-            check_input_refs_available(node, available)
-
         if len(plain) > 1:
             body_lines.append(_emit_parallel_step_calls(plain, cfg).rstrip("\n"))
         elif plain:
@@ -690,7 +694,6 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
             body_lines.append(_emit_hitl_gate(node, cfg).rstrip("\n"))
 
         body_lines.append("")
-        available.update(n.id for n in wave)
 
     body_lines.extend(exit_return_ts_lines(pipeline))
 
@@ -707,6 +710,11 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     helper_block = f"{_STEP_NEEDS_AUTH_HELPER}\n" if parks_on_auth else ""
     if any(n.fan_out for n in pipeline.nodes):
         helper_block += f"{FAN_OUT_LIST_HELPER_TS}\n"
+    if pipeline.needs_input_check:
+        helper_block += f"{MISSING_INPUTS_HELPER_TS}\n"
+    impl_input = impl_input_type_block(class_block)
+    if impl_input:
+        helper_block += f"{impl_input}\n"
 
     return header + imports + "\n" + env_block + helper_block + class_block
 
@@ -845,14 +853,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -1072,7 +1073,7 @@ def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     deploy_url = f"{_DEPLOY_BUTTON_BASE}{_REPO_URL_PLACEHOLDER}"
     button = f"[![Deploy to Cloudflare]({_DEPLOY_BUTTON_IMAGE})]({deploy_url})"
 
-    description = pipeline.description.strip()
+    description = escape_invisible(pipeline.description.strip())
     description_block = f"\n{description}\n" if description else ""
 
     secrets = _secret_names(pipeline)
@@ -1350,6 +1351,7 @@ class CloudflareAdapter:
             default_model=cfg.anthropic_default_model,
             generated_by="rote.adapters.cloudflare",
             workers=True,
+            mcp_backed_ids=frozenset(mcp_ids),
             sub_node_env_arg=env_arg,
             workers_ai_model=WORKERS_AI_AGENT_MODEL,
         )
@@ -1444,6 +1446,10 @@ class CloudflareAdapter:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
+        # The IR's undefined named types, as aliases the user narrows once.
+        types_module = emit_types_module(pipeline)
+        if types_module is not None:
+            written["types"] = writer.write("src", "types.ts", content=types_module)
 
         written["wrangler"] = writer.write("wrangler.jsonc", content=emit_wrangler(pipeline, cfg))
         written["package.json"] = writer.write(

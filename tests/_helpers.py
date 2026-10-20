@@ -8,7 +8,11 @@ inside a template string failed only that adapter's test).
 
 from __future__ import annotations
 
+import ast
 import re
+import socket
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from rote.adapters._common import strip_ts_comments
@@ -183,3 +187,58 @@ def count_ts_step_attempts(module: Path, node_id: str) -> None:
 def attempts_in(text: str, node_id: str) -> int:
     """How many times :func:`count_ts_step_attempts`'s marker was printed."""
     return text.count(f"{ATTEMPT_MARKER} {node_id}")
+
+
+def payload_dict_keys(payload: ast.Dict) -> set[str]:
+    """The keys an emitted payload dict literal can carry.
+
+    A pipeline input field is spread in as
+    ``**_input_field(pipeline_input, "<key>", "<field>")``, so its key is
+    the call's second argument rather than a literal dict key.
+    """
+    keys: set[str] = set()
+    for key, value in zip(payload.keys, payload.values, strict=True):
+        if isinstance(key, ast.Constant):
+            keys.add(key.value)
+        elif (
+            key is None
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_input_field"
+            and isinstance(value.args[1], ast.Constant)
+        ):
+            keys.add(value.args[1].value)
+    return keys
+
+
+@contextmanager
+def occupied_ports(*ports: int) -> Iterator[None]:
+    """Make ``ports`` unavailable to the login's callback-port selection.
+
+    The goal is the state "these ports are busy", not "this test owns
+    them". A port a previous test left in TIME_WAIT must not fail the setup
+    (SO_REUSEADDR, as uvicorn and the code under test both set), and a port
+    some other listener already holds is busy too, so it is kept as is
+    rather than raising EADDRINUSE. The precondition is then checked the
+    way the code under test sees it: it cannot bind any of them.
+    """
+    from rote.mcp.auth import bind_callback_sockets
+
+    held: list[socket.socket] = []
+    try:
+        for port in ports:
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", port))
+                sock.listen()
+            except OSError:
+                sock.close()  # already held by a live listener: busy either way
+                continue
+            held.append(sock)
+        for port in ports:
+            assert bind_callback_sockets(port) is None, f"port {port} is still free"
+        yield
+    finally:
+        for sock in held:
+            sock.close()

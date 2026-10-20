@@ -554,6 +554,26 @@ nodes:
     fan_out: true
     timeout: 60s
 
+  # ── Load the scoring rubric (entry; input or the deal-scoring skill) ──────
+  - id: load_scoring_rubric
+    kind: external_call
+    description: >-
+      Return the scoring rubric the judge applies: the scoring_rubric input
+      when the caller passes one, otherwise the deal-scoring SKILL.md read
+      from its default skill path. Fails naming the path when neither
+      exists, rather than scoring against an empty rubric.
+    impl: extracted/rubric.py:load_scoring_rubric
+    source:
+      section: "Step 4: Score New Opportunities"
+    inputs:
+      scoring_rubric: pipeline.input.scoring_rubric
+    input:
+      scoring_rubric: str
+    output: scoring_rubric str
+    constants:
+      default_rubric_path: "~/.claude/skills/deal-scoring/SKILL.md"
+    timeout: 10s
+
   # ── Score new opportunities (fan-out per opp) ─────────────────────────────
   - id: score_new_opportunities
     kind: llm_judge
@@ -768,7 +788,7 @@ nodes:
       section: "Step 4: Score New Opportunities"
     inputs:
       opportunity: match_threads_to_opps.output.unmatched_opps
-      scoring_rubric: pipeline.input.scoring_rubric
+      scoring_rubric: load_scoring_rubric.output
     input:
       opportunity: FilteredOpportunity
       scoring_rubric: str
@@ -844,6 +864,7 @@ edges:
   - {from: fetch_email_thread_content, to: match_threads_to_opps}
   - {from: match_threads_to_opps,      to: classify_thread_step,      fan_out: true}
   - {from: match_threads_to_opps,      to: score_new_opportunities,   fan_out: true}
+  - {from: load_scoring_rubric,        to: score_new_opportunities}
   - {from: classify_thread_step,       to: render_dashboard}
   - {from: score_new_opportunities,    to: render_dashboard}
   - {from: render_dashboard,           to: save_dashboard}
@@ -851,6 +872,7 @@ edges:
 entry_nodes:
   - fetch_intake_messages
   - search_gmail_standard
+  - load_scoring_rubric
 
 exit_nodes:
   - save_dashboard

@@ -86,22 +86,65 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
     return value;
 }
 
+/** Why `pipelineInput` cannot start a run, or null when it can.
+ *
+ * An omitted optional field reads as undefined, which is what the input
+ * schema allows. A missing required field would read as undefined too and
+ * surface much later as some unrelated error, so the run checks those
+ * first and fails naming them. A run started with no payload at all is
+ * reported the same way. The Python runtimes emit the same check
+ * (`_missing_inputs_error`), so a bad input reports identically on every
+ * target. */
+function missingInputsError(pipelineInput: unknown, required: string[]): string | null {
+    if (pipelineInput === null || Array.isArray(pipelineInput)) {
+        const got = pipelineInput === null ? "null" : "array";
+        return `pipeline input must be a JSON object, got ${got}`;
+    }
+    if (typeof pipelineInput !== "object") {
+        return `pipeline input must be a JSON object, got ${typeof pipelineInput}`;
+    }
+    const missing = required.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(pipelineInput, name),
+    );
+    return missing.length > 0
+        ? `pipeline input is missing required field(s): ${missing.join(", ")}`
+        : null;
+}
+
+/** The input type an impl declares, so a call can be checked against it.
+ *
+ * The implement skill says to replace a stub's `unknown` input with a real
+ * interface. Upstream values are `unknown` here (the pipeline input, a
+ * fanned element), so each one is asserted to the field type the impl
+ * declares: a key the impl does not declare, or a declared key the IR does
+ * not send, still fails tsc. A stub's `unknown` input reads as an open
+ * record, so the scaffold compiles too. */
+type ImplInput<F> = F extends (input: infer I, ...rest: never[]) => unknown
+    ? unknown extends I
+        ? Record<string, unknown>
+        : I
+    : never;
+
 export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
     async run(event: WorkflowEvent<Params>, step: WorkflowStep) {
         const pipelineInput = event.payload;
+        const inputError = missingInputsError(pipelineInput, ["campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area"]);
+        if (inputError !== null) {
+            throw new Error(inputError);
+        }
 
         // ─── Wave 1 ───
         const taxonomy_lookup_result = await step.do(
             "taxonomy_lookup",
             { timeout: "10 minutes" },
             async () => taxonomyLookup({
-                brief: pipelineInput,
+                brief: pipelineInput as ImplInput<typeof taxonomyLookup>["brief"],
             }),
         );
         // ─── target_research (agent loop): park on dead credentials ───
         // Agent loop: the parked server names itself in the auth error,
         // so `rote mcp release <server>` releases the right instances.
-        let target_research_result!: Record<string, unknown>;
+        let target_research_result!: Awaited<ReturnType<typeof targetResearch>>;
         for (let target_research_attempt = 0; ; target_research_attempt++) {
             try {
                 target_research_result = (await step.do(
@@ -127,7 +170,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                                 : err;
                         }
                     },
-                )) as Record<string, unknown>;
+                )) as Awaited<ReturnType<typeof targetResearch>>;
                 break;
             } catch (err) {
                 if (!stepNeedsAuth(err)) throw err;
@@ -161,7 +204,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
         // ─── lead_generation_loop (agent loop): park on dead credentials ───
         // Agent loop: the parked server names itself in the auth error,
         // so `rote mcp release <server>` releases the right instances.
-        let lead_generation_loop_result!: Record<string, unknown>;
+        let lead_generation_loop_result!: Awaited<ReturnType<typeof leadGenerationLoop>>;
         for (let lead_generation_loop_attempt = 0; ; lead_generation_loop_attempt++) {
             try {
                 lead_generation_loop_result = (await step.do(
@@ -190,7 +233,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
                                 : err;
                         }
                     },
-                )) as Record<string, unknown>;
+                )) as Awaited<ReturnType<typeof leadGenerationLoop>>;
                 break;
             } catch (err) {
                 if (!stepNeedsAuth(err)) throw err;
@@ -236,7 +279,8 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "hubspot_upsert",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "60 seconds" },
             async () => hubspotUpsert({
-                contacts: contact_review_gate_result["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"] as ImplInput<typeof hubspotUpsert>["contacts"],
+                batch_size: 100,
             }),
         );
 
@@ -245,8 +289,9 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "hubspot_create_list",
             { retries: { limit: 5, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
             async () => hubspotCreateList({
-                campaign_name: pipelineInput["drug_brand"],
-                contacts: hubspot_upsert_result["upserted"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof hubspotCreateList>["campaign_name"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof hubspotCreateList>["contacts"],
+                add_batch_size: 250,
             }),
         );
 
@@ -255,7 +300,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_dnc",
             { timeout: "10 minutes" },
             async () => exclusionCheckDnc({
-                contacts: hubspot_upsert_result["upserted"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof exclusionCheckDnc>["contacts"],
             }),
         );
 
@@ -264,7 +309,9 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_recent",
             { timeout: "10 minutes" },
             async () => exclusionCheckRecent({
-                contacts: exclusion_check_dnc_result["passed"],
+                contacts: exclusion_check_dnc_result["passed"] as ImplInput<typeof exclusionCheckRecent>["contacts"],
+                days_back: 30,
+                direction: "OUTBOUND",
             }),
         );
 
@@ -273,7 +320,7 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "exclusion_check_sequence",
             { timeout: "10 minutes" },
             async () => exclusionCheckSequence({
-                contacts: exclusion_check_recent_result["passed"],
+                contacts: exclusion_check_recent_result["passed"] as ImplInput<typeof exclusionCheckSequence>["contacts"],
             }),
         );
 
@@ -300,8 +347,8 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "create_sales_template",
             { retries: { limit: 3, delay: "5 seconds", backoff: "exponential" }, timeout: "10 minutes" },
             async () => createSalesTemplate({
-                campaign_name: pipelineInput["drug_brand"],
-                personalizations: personalize_email_result,
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof createSalesTemplate>["campaign_name"],
+                personalizations: personalize_email_result as ImplInput<typeof createSalesTemplate>["personalizations"],
             }),
         );
 
@@ -310,10 +357,10 @@ export class BdrCampaignWorkflow extends WorkflowEntrypoint<Env, Params> {
             "pre_enrollment_report",
             { timeout: "10 minutes" },
             async () => preEnrollmentReport({
-                campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: exclusion_check_sequence_result["passed"],
-                exclusions: exclusion_check_sequence_result["excluded"],
-                template_ids: create_sales_template_result["template_ids"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof preEnrollmentReport>["campaign_name"],
+                passed_contacts: exclusion_check_sequence_result["passed"] as ImplInput<typeof preEnrollmentReport>["passed_contacts"],
+                exclusions: exclusion_check_sequence_result["excluded"] as ImplInput<typeof preEnrollmentReport>["exclusions"],
+                template_ids: create_sales_template_result["template_ids"] as ImplInput<typeof preEnrollmentReport>["template_ids"],
             }),
         );
 

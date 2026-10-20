@@ -367,10 +367,11 @@ def test_cloudflare_binding_mode_signs_every_proxy_call(tmp_path: Path) -> None:
     assert "reason.startsWith(`${server} `)" in helper
     assert "reason.slice(server.length + 1)" in helper
     # is_error maps to the same thrown-error path as the direct helper's
-    # result.isError; string content is JSON-parsed like text blocks.
+    # result.isError; string content goes through the direct helpers'
+    # text rule (one shared source, Python's _result_payload rules).
     assert "if (result.is_error)" in helper
     assert "returned an error" in helper
-    assert "JSON.parse(content)" in helper
+    assert "textContentPayload([{ text: content }])" in helper
     # listTools' snake_case wire shape is normalized into McpToolSpec.
     assert "tool.input_schema" in helper
     assert 'tool.description ?? ""' in helper

@@ -31,12 +31,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # Install exactly what uv.lock pins, the environment developers
+      # run. A pip install resolved the newest versions on every run,
+      # so the lockfile was never tested (newest-deps.yml covers that
+      # drift on purpose). setup-uv activates .venv for later steps.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
+          activate-environment: true
+          enable-cache: true
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - uses: ./.github/actions/bubblewrap
 
       - name: Pytest (fast suite)
         run: pytest tests/
@@ -47,12 +57,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # The locked environment, as in the test job.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
 
       - name: Ruff lint + format check
         run: |
@@ -75,12 +90,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # The locked environment, as in the test job.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      # The OAuth callback ports (rote.mcp.auth.CALLBACK_PORTS) lie inside
+      # Linux's default ephemeral range, so any socket with an OS-chosen
+      # port can take one for a whole run (seen once: every test needing
+      # 33418 failed, then passed on re-run). Reserve them, as a machine
+      # that relies on fixed loopback ports should.
+      - name: Reserve the OAuth callback ports
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports=33418-33421
 
       # Every slow suite that needs no external toolchain. Previously
       # only test_mcp_e2e ran here, which left the DBOS Python runtime,
@@ -92,6 +120,8 @@ jobs:
             tests/test_mcp_e2e.py \
             tests/test_mcp_park_e2e.py \
             tests/test_mcp_config_error_e2e.py \
+            tests/test_examples_command.py \
+            tests/test_bad_input_one_line.py \
             tests/test_mcp_oauth_e2e.py \
             tests/test_mcp_oauth_registration_e2e.py \
             tests/test_dbos_e2e.py \
@@ -99,6 +129,9 @@ jobs:
             tests/test_eval_empirical_dbos.py \
             tests/test_expense_audit_example.py \
             tests/test_constants_parity.py \
+            tests/test_mcp_args_literal_parity.py \
+            tests/test_agent_loop_output_parity.py \
+            tests/test_pipeline_input_parity.py \
             tests/test_serve_server.py
 
   ts-e2e:
@@ -112,16 +145,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # The locked environment, as in the test job.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
 
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
 
       # Each suite npm-installs into its own emitted directory, so there
       # is no lockfile for setup-node to key a cache on; cache the npm
@@ -139,9 +177,13 @@ jobs:
             tests/test_cloudflare_e2e.py \
             tests/test_inngest_e2e.py \
             tests/test_ts_agent_loop_e2e.py \
+            tests/test_constants_parity_ts_e2e.py \
+            tests/test_mcp_args_literal_parity_ts_e2e.py \
+            tests/test_agent_loop_output_parity_ts_e2e.py \
             tests/test_judge_schema_parity_e2e.py \
             tests/test_ts_typed_impls_e2e.py \
             tests/test_mcp_ts_e2e.py \
+            tests/test_mcp_text_payload_parity_e2e.py \
             tests/test_mcp_ts_server_e2e.py \
             tests/test_mcp_era_matrix_e2e.py \
             tests/test_mcp_park_cf_e2e.py \
@@ -157,16 +199,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # The locked environment, as in the test job.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
 
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
 
       - name: Cache npm downloads
         uses: actions/cache@v6
@@ -179,4 +226,8 @@ jobs:
         run: |
           pytest -m slow -v \
             tests/test_dbos_ts_e2e.py \
-            tests/test_mcp_park_ts_e2e.py
+            tests/test_mcp_park_ts_e2e.py \
+            tests/test_pipeline_input_ts_e2e.py \
+            tests/test_constants_parity_dbos_ts_e2e.py \
+            tests/test_agent_loop_output_parity_dbos_ts_e2e.py \
+            tests/test_mcp_args_literal_parity_dbos_ts_e2e.py

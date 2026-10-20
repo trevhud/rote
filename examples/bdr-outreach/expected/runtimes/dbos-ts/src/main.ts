@@ -69,7 +69,7 @@ export const targetResearchStep = DBOS.registerStep(
  * `extracted/taxonomy_lookup` for the implementation.
  */
 export const taxonomyLookupStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => taxonomyLookup(payload),
+    async (payload: ImplInput<typeof taxonomyLookup>) => taxonomyLookup(payload),
     { name: "taxonomy_lookup" },
 );
 
@@ -94,7 +94,7 @@ export const leadGenerationLoopStep = DBOS.registerStep(
 // retry_on categories from the IR: rate_limit, network. DBOS retries any
 // exception; narrow with the StepConfig `shouldRetry` predicate if needed.
 export const enrichContactBatchStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => enrichContactBatch(payload),
+    async (payload: ImplInput<typeof enrichContactBatch>) => enrichContactBatch(payload),
     { name: "enrich_contact_batch", retriesAllowed: true, maxAttempts: 6, backoffRate: 2, timeoutMS: 30000 },
 );
 
@@ -120,7 +120,7 @@ export const vetContactStep = DBOS.registerStep(
  * `extracted/hubspot_upsert` for the implementation.
  */
 export const hubspotUpsertStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => hubspotUpsert(payload),
+    async (payload: ImplInput<typeof hubspotUpsert>) => hubspotUpsert(payload),
     { name: "hubspot_upsert", retriesAllowed: true, maxAttempts: 6, backoffRate: 2, timeoutMS: 60000 },
 );
 
@@ -131,7 +131,7 @@ export const hubspotUpsertStep = DBOS.registerStep(
  * `extracted/hubspot_create_list` for the implementation.
  */
 export const hubspotCreateListStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => hubspotCreateList(payload),
+    async (payload: ImplInput<typeof hubspotCreateList>) => hubspotCreateList(payload),
     { name: "hubspot_create_list", retriesAllowed: true, maxAttempts: 6, backoffRate: 2 },
 );
 
@@ -145,7 +145,7 @@ export const hubspotCreateListStep = DBOS.registerStep(
  * The workflow always calls it; do not make it conditional.
  */
 export const exclusionCheckDncStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => exclusionCheckDnc(payload),
+    async (payload: ImplInput<typeof exclusionCheckDnc>) => exclusionCheckDnc(payload),
     { name: "exclusion_check_dnc" },
 );
 
@@ -159,7 +159,7 @@ export const exclusionCheckDncStep = DBOS.registerStep(
  * The workflow always calls it; do not make it conditional.
  */
 export const exclusionCheckRecentStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => exclusionCheckRecent(payload),
+    async (payload: ImplInput<typeof exclusionCheckRecent>) => exclusionCheckRecent(payload),
     { name: "exclusion_check_recent" },
 );
 
@@ -173,7 +173,7 @@ export const exclusionCheckRecentStep = DBOS.registerStep(
  * The workflow always calls it; do not make it conditional.
  */
 export const exclusionCheckSequenceStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => exclusionCheckSequence(payload),
+    async (payload: ImplInput<typeof exclusionCheckSequence>) => exclusionCheckSequence(payload),
     { name: "exclusion_check_sequence" },
 );
 
@@ -199,7 +199,7 @@ export const personalizeEmailStep = DBOS.registerStep(
  * `extracted/create_sales_template` for the implementation.
  */
 export const createSalesTemplateStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => createSalesTemplate(payload),
+    async (payload: ImplInput<typeof createSalesTemplate>) => createSalesTemplate(payload),
     { name: "create_sales_template", retriesAllowed: true, maxAttempts: 4, backoffRate: 2 },
 );
 
@@ -210,7 +210,7 @@ export const createSalesTemplateStep = DBOS.registerStep(
  * `extracted/pre_enrollment_report` for the implementation.
  */
 export const preEnrollmentReportStep = DBOS.registerStep(
-    async (payload: Record<string, unknown>) => preEnrollmentReport(payload),
+    async (payload: ImplInput<typeof preEnrollmentReport>) => preEnrollmentReport(payload),
     { name: "pre_enrollment_report" },
 );
 
@@ -244,11 +244,54 @@ function fanOutList(value: unknown, nodeId: string, ref: string): unknown[] {
     return value;
 }
 
+/** Why `pipelineInput` cannot start a run, or null when it can.
+ *
+ * An omitted optional field reads as undefined, which is what the input
+ * schema allows. A missing required field would read as undefined too and
+ * surface much later as some unrelated error, so the run checks those
+ * first and fails naming them. A run started with no payload at all is
+ * reported the same way. The Python runtimes emit the same check
+ * (`_missing_inputs_error`), so a bad input reports identically on every
+ * target. */
+function missingInputsError(pipelineInput: unknown, required: string[]): string | null {
+    if (pipelineInput === null || Array.isArray(pipelineInput)) {
+        const got = pipelineInput === null ? "null" : "array";
+        return `pipeline input must be a JSON object, got ${got}`;
+    }
+    if (typeof pipelineInput !== "object") {
+        return `pipeline input must be a JSON object, got ${typeof pipelineInput}`;
+    }
+    const missing = required.filter(
+        (name) => !Object.prototype.hasOwnProperty.call(pipelineInput, name),
+    );
+    return missing.length > 0
+        ? `pipeline input is missing required field(s): ${missing.join(", ")}`
+        : null;
+}
+
+/** The input type an impl declares, so a call can be checked against it.
+ *
+ * The implement skill says to replace a stub's `unknown` input with a real
+ * interface. Upstream values are `unknown` here (the pipeline input, a
+ * fanned element), so each one is asserted to the field type the impl
+ * declares: a key the impl does not declare, or a declared key the IR does
+ * not send, still fails tsc. A stub's `unknown` input reads as an open
+ * record, so the scaffold compiles too. */
+type ImplInput<F> = F extends (input: infer I, ...rest: never[]) => unknown
+    ? unknown extends I
+        ? Record<string, unknown>
+        : I
+    : never;
+
 /**
  * End-to-end BDR outreach campaign workflow for pharma/biotech research
  */
 export const runPipeline = DBOS.registerWorkflow(
     async (pipelineInput: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        const inputError = missingInputsError(pipelineInput, ["campaign_type", "condition_acronym", "condition_full", "drug_brand", "drug_generic", "manufacturer", "target_quota", "therapeutic_area"]);
+        if (inputError !== null) {
+            throw new Error(inputError);
+        }
         // ─── Wave 1 ───
         // Parallel fan-out: run every step in the wave concurrently
         // and settle them all — Promise.allSettled per the DBOS docs
@@ -259,7 +302,7 @@ export const runPipeline = DBOS.registerWorkflow(
                 brief: pipelineInput,
             }),
             taxonomyLookupStep({
-                brief: pipelineInput,
+                brief: pipelineInput as ImplInput<typeof taxonomyLookup>["brief"],
             }),
         ]);
         const target_research_result = unwrap(target_research_settled);
@@ -295,36 +338,40 @@ export const runPipeline = DBOS.registerWorkflow(
         // ─── Wave 4 ───
         const hubspot_upsert_result = await hubspotUpsertStep(
             {
-                contacts: contact_review_gate_result["approved_contacts"],
+                contacts: contact_review_gate_result["approved_contacts"] as ImplInput<typeof hubspotUpsert>["contacts"],
+                batch_size: 100,
             },
         );
 
         // ─── Wave 5 ───
         const hubspot_create_list_result = await hubspotCreateListStep(
             {
-                campaign_name: pipelineInput["drug_brand"],
-                contacts: hubspot_upsert_result["upserted"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof hubspotCreateList>["campaign_name"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof hubspotCreateList>["contacts"],
+                add_batch_size: 250,
             },
         );
 
         // ─── Wave 6 ───
         const exclusion_check_dnc_result = await exclusionCheckDncStep(
             {
-                contacts: hubspot_upsert_result["upserted"],
+                contacts: hubspot_upsert_result["upserted"] as ImplInput<typeof exclusionCheckDnc>["contacts"],
             },
         );
 
         // ─── Wave 7 ───
         const exclusion_check_recent_result = await exclusionCheckRecentStep(
             {
-                contacts: exclusion_check_dnc_result["passed"],
+                contacts: exclusion_check_dnc_result["passed"] as ImplInput<typeof exclusionCheckRecent>["contacts"],
+                days_back: 30,
+                direction: "OUTBOUND",
             },
         );
 
         // ─── Wave 8 ───
         const exclusion_check_sequence_result = await exclusionCheckSequenceStep(
             {
-                contacts: exclusion_check_recent_result["passed"],
+                contacts: exclusion_check_recent_result["passed"] as ImplInput<typeof exclusionCheckSequence>["contacts"],
             },
         );
 
@@ -343,18 +390,18 @@ export const runPipeline = DBOS.registerWorkflow(
         // ─── Wave 10 ───
         const create_sales_template_result = await createSalesTemplateStep(
             {
-                campaign_name: pipelineInput["drug_brand"],
-                personalizations: personalize_email_result,
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof createSalesTemplate>["campaign_name"],
+                personalizations: personalize_email_result as ImplInput<typeof createSalesTemplate>["personalizations"],
             },
         );
 
         // ─── Wave 11 ───
         const pre_enrollment_report_result = await preEnrollmentReportStep(
             {
-                campaign_name: pipelineInput["drug_brand"],
-                passed_contacts: exclusion_check_sequence_result["passed"],
-                exclusions: exclusion_check_sequence_result["excluded"],
-                template_ids: create_sales_template_result["template_ids"],
+                campaign_name: pipelineInput["drug_brand"] as ImplInput<typeof preEnrollmentReport>["campaign_name"],
+                passed_contacts: exclusion_check_sequence_result["passed"] as ImplInput<typeof preEnrollmentReport>["passed_contacts"],
+                exclusions: exclusion_check_sequence_result["excluded"] as ImplInput<typeof preEnrollmentReport>["exclusions"],
+                template_ids: create_sales_template_result["template_ids"] as ImplInput<typeof preEnrollmentReport>["template_ids"],
             },
         );
 
@@ -393,8 +440,12 @@ export async function main(): Promise<void> {
         // Postgres-only — unlike DBOS Python there is no SQLite mode.
         systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
     });
-    await DBOS.launch();
+    // launch() inside the try: a launch that fails part way (a
+    // Postgres still restarting after its init phase) leaves pools
+    // and timers alive, so without the shutdown below the process
+    // never exits and the error is never seen.
     try {
+        await DBOS.launch();
         const pipelineInput = JSON.parse(
             process.argv[2] ?? "{}",
         ) as Record<string, unknown>;

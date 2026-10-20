@@ -548,3 +548,59 @@ def test_python_adapters_really_call_impls_with_double_star_payload() -> None:
                 f"{runtime} no longer calls impls with **payload — "
                 "rote.contracts._check_call_signature models the old convention"
             )
+
+
+# ───────── One stub predicate for compile and run ─────────
+
+_STUB_SHAPES = [
+    ('def f(rows):\n    raise NotImplementedError("needs the region map")\n', True),
+    ('def f(rows):\n    """Doc."""\n    raise NotImplementedError("needs the region map")\n', True),
+    ("def f(rows):\n    raise NotImplementedError\n", True),
+    # Code before an unconditional final raise, and no value returned: still
+    # a stub to both readers (BDR's zoominfo.enrich_batch validates first).
+    (
+        'def f(rows):\n    total = len(rows)\n    raise NotImplementedError("needs region map")\n',
+        True,
+    ),
+    (
+        "def f(rows):\n    if len(rows) > 10:\n        raise ValueError('too many')\n"
+        "    raise NotImplementedError('implement against the API')\n",
+        True,
+    ),
+    # The raise is one branch: implemented.
+    (
+        "def f(rows):\n    if not rows:\n        raise NotImplementedError('empty')\n"
+        "    return len(rows)\n",
+        False,
+    ),
+    # Returns on its real path, falls through to the raise: implemented.
+    (
+        "def f(kind):\n    if kind == 'a':\n        return 1\n"
+        "    raise NotImplementedError(kind)\n",
+        False,
+    ),
+    ("def f(rows):\n    return len(rows)\n", False),
+]
+
+
+@pytest.mark.parametrize(("source", "is_stub"), _STUB_SHAPES)
+def test_compile_and_run_agree_on_what_a_stub_is(
+    tmp_path: Path, source: str, is_stub: bool
+) -> None:
+    """`rote compile`'s per-node status and `rote run`'s preflight once used
+    different predicates, so one function was a stub to one and implemented
+    to the other."""
+    from rote.adapters._common import _python_module_is_stub
+    from rote.contracts import implementation_status
+
+    _write(tmp_path, "extracted/mod.py", source)
+    node = Node(
+        id="f",
+        kind=NodeKind.PURE_FUNCTION,
+        description="A step.",
+        impl="extracted/mod.py:f",
+        inputs={"rows": "pipeline.input"},
+    )
+    [status] = implementation_status(_pipeline(node), tmp_path)
+    assert (status.status == "stub") is is_stub
+    assert _python_module_is_stub(source) is is_stub

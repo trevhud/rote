@@ -91,8 +91,9 @@ def test_deal_monitor_is_the_data_heavy_fan_out_archetype() -> None:
         "classify_thread_step",
         "score_new_opportunities",
     ]
-    # Parallel entry: Slack pull and fixed Gmail searches start together.
-    assert len(pipeline.entry_nodes) == 2
+    # Parallel entry: Slack pull, fixed Gmail searches and the rubric load
+    # start together.
+    assert len(pipeline.entry_nodes) == 3
     # The external_call nodes carry MCP bindings — the estimator's
     # payload model keys off these (payload_tokens_per_tool).
     bound = [n for n in pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL and n.mcp]

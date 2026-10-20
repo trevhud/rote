@@ -11,9 +11,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
-#: references/expense-policy.md, "Duplicates and late submissions".
-LATE_WINDOW_DAYS = 60
-
 
 def expense_sort_key(expense_id: str) -> tuple[int, str]:
     """Order ids like EXP-2412 numerically, so "first submitted" is stable."""
@@ -56,13 +53,13 @@ def find_late_submissions(
     submissions: list[dict[str, Any]],
     period: str,
     *,
-    late_window_days: int = LATE_WINDOW_DAYS,
+    late_window_days: int,
 ) -> dict[str, Any]:
     """Ids dated more than ``late_window_days`` before period close, or after it.
 
-    The step passes the node's ``late_window_days`` constant on every call,
-    so editing it in pipeline.yaml changes the rule. ``LATE_WINDOW_DAYS``
-    is only the default for a direct call.
+    The step passes the node's ``late_window_days`` constant on every call
+    (references/expense-policy.md, "Duplicates and late submissions"), so
+    editing it in pipeline.yaml changes the rule.
     """
     _, period_end = period_bounds(period)
     earliest = period_end - timedelta(days=late_window_days)

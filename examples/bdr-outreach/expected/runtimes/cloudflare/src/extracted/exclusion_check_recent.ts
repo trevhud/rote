@@ -11,7 +11,9 @@
  * MANDATORY: this node was marked mandatory in the source skill.
  * The workflow always calls it; do not make it conditional.
  *
- * Constants from the source skill (lifted into the IR):
+ * Constants from the source skill (lifted into the IR). The workflow
+ * passes them in `input` next to the node's inputs on every call, so
+ * use these keys rather than hard-coding the values:
  *   days_back = 30
  *   direction = "OUTBOUND"
  */

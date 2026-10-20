@@ -11,6 +11,7 @@
  */
 
 import { runAgentLoop, type BoundTool, type WorkersAiLane } from "../signatures/_roteInference";
+import type { VettedContact, VettingSummary } from "../types";
 import { bindAgentTools, type RoteMcpEnv } from "./_roteMcp";
 import { enrichContactBatch } from "./enrich_contact_batch";
 import { vetContact } from "../signatures/vet_contact";
@@ -32,7 +33,7 @@ const TOOL_SERVERS: Record<string, string> = {"zoominfo_search_companies": "zoom
 export async function leadGenerationLoop(
     input: unknown,
     env: unknown, // the workflow's Env; cast below
-): Promise<{ result: string; provider: string; iterations: number | null }> {
+): Promise<{ "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary }> {
     const vars = env as Record<string, string | undefined>;
     const tools: BoundTool[] = await bindAgentTools(
         env as RoteMcpEnv,
@@ -55,7 +56,7 @@ export async function leadGenerationLoop(
             name: "enrich_contact_batch",
             description: "Batch enrich contacts via ZoomInfo. Always requests employmentHistory\nbecause vetting depends on it. Hard limit of 10 contacts per call\nfrom the ZoomInfo API.",
             parameters: {"type": "object", "additionalProperties": true},
-            run: async (args) => enrichContactBatch(args),
+            run: async (args) => enrichContactBatch({ ...(args as Record<string, unknown>), batch_size: 10, output_fields: ["firstName", "lastName", "jobTitle", "email", "phone", "mobilePhone", "contactAccuracyScore", "companyName", "externalUrls", "employmentHistory", "directPhoneDoNotCall", "mobilePhoneDoNotCall", "validDate"] }),
         },
         {
             name: "vet_contact",
@@ -64,7 +65,7 @@ export async function leadGenerationLoop(
             run: async (args) => vetContact(args, env as Parameters<typeof vetContact>[1]),
         },
     );
-    return runAgentLoop({
+    return (await runAgentLoop({
         nodeId: "lead_generation_loop",
         description: "Iterative search-enrich-vet loop. Starts with three parallel ZoomInfo\nsearches (ideal persona, manufacturer's internal team, TA broad net).\nEnriches in batches of 10, vets each contact, backfills with new\ntargeted searches when discards create gaps. Loop terminates when the\nvetted-contact quota is met.\n",
         task: input,
@@ -75,5 +76,6 @@ export async function leadGenerationLoop(
         baseUrl: vars.ROTE_BASE_URL_LEAD_GENERATION_LOOP ?? null,
         env: vars,
         workersAi,
-    });
+        outputSchema: {"type": "object", "properties": {"vetted_contacts": {"type": "array", "items": {"description": "Value of type VettedContact."}}, "discarded_summary": {"description": "Value of type VettingSummary."}}, "required": ["vetted_contacts", "discarded_summary"], "additionalProperties": false},
+    })) as { "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary };
 }

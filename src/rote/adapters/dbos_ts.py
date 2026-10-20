@@ -62,8 +62,8 @@ corroborates):
   result (including HITL gate resume payloads) as ``<id>_result``, and
   builds each step's payload from the node's ``inputs:`` bindings via
   the shared reference grammar (:func:`rote.ir.parse_input_ref`).
-  Forward references are rejected at emit time by
-  :func:`rote.adapters._common.check_input_refs_available`.
+  Forward references never reach the adapter: IR validation rejects
+  them (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Typed LLM signatures as Zod + vendor SDK modules.** Emitted via
   :mod:`rote.adapters._ts_common` — the same shared machinery as the
@@ -96,7 +96,6 @@ from rote.adapters._common import (
     _seconds_literal,
     _to_camel_case,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     judge_override_readme,
     safe_block_comment_line,
@@ -106,22 +105,27 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
+    constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
-from rote.ir import Node, NodeKind, Pipeline
+from rote.ir import CONSTANT_ARGUMENT_KINDS, Node, NodeKind, Pipeline
 
 _GENERATED_BY = "rote.adapters.dbos_ts"
 
@@ -288,14 +292,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -357,6 +354,11 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
         call = f"{fn_name}(payload, {judge_env_arg(node)})"
     else:
         call = f"{fn_name}(payload)"
+    # A step that calls an impl takes the impl's own input type, so an impl
+    # written against a closed interface (what the implement skill asks
+    # for) compiles. A judge, a loop or an MCP call keeps the open record.
+    calls_impl = node.kind in CONSTANT_ARGUMENT_KINDS and not _is_mcp_backed(node, cfg)
+    payload_type = f"ImplInput<typeof {fn_name}>" if calls_impl else "Record<string, unknown>"
 
     lines = doc
     retry_comment = _retry_on_comment(node)
@@ -365,7 +367,7 @@ def _emit_step_registration(node: Node, cfg: DbosTsAdapterConfig) -> str:
     lines.extend(
         [
             f"export const {fn_name}Step = DBOS.registerStep(",
-            f"    async (payload: Record<string, unknown>) => {call},",
+            f"    async (payload: {payload_type}) => {call},",
             f"    {config},",
             ");",
         ]
@@ -412,7 +414,9 @@ def _emit_fan_out(node: Node, pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> l
     order, so ``<id>_result[i]`` is element ``i``.
     """
     fn_name = _to_camel_case(node.id)
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(
+        node, pipeline, indent=" " * 12, with_constants=not _is_mcp_backed(node, cfg)
+    )
     call = f"{fn_name}Step({payload})"
     if _is_mcp_backed(node, cfg):
         assert node.mcp is not None
@@ -437,18 +441,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
     lines: list[str] = []
     uses_unwrap = False
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    # HITL gates count: their DBOS.recv payload binds `<id>_result`, so
-    # gate resume payloads participate as that gate's result downstream.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
@@ -466,7 +461,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 # MCP-backed: run through the auth-park wrapper so a dead
                 # credential suspends the workflow instead of failing it.
                 assert node.mcp is not None
-                payload = payload_ts_literal(node, indent=" " * 12)
+                payload = payload_ts_literal(node, indent=" " * 12, with_constants=False)
                 lines.append(f"        const {node.id}_result = await runWithAuthPark(")
                 if payload == "{}":
                     lines.append(f"            () => {fn_name}Step({{}}),")
@@ -476,12 +471,13 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 lines.append(f"            {json.dumps(node.id)},")
                 lines.append("        );")
             else:
-                payload = payload_ts_literal(node, indent=" " * 8)
+                payload = payload_ts_literal(node, indent=" " * 8, with_constants=True)
                 if payload == "{}":
                     lines.append(f"        const {node.id}_result = await {fn_name}Step({{}});")
                 else:
                     lines.append(f"        const {node.id}_result = await {fn_name}Step(")
-                    lines.append(f"            {payload_ts_literal(node, indent=' ' * 12)},")
+                    nested = payload_ts_literal(node, indent=" " * 12, with_constants=True)
+                    lines.append(f"            {nested},")
                     lines.append("        );")
         elif len(non_hitl) > 1:
             uses_unwrap = True
@@ -493,7 +489,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 if _is_mcp_backed(node, cfg):
                     # Bind the payload so the auth-park re-run below can
                     # repeat the same call after the release signal.
-                    payload = payload_ts_literal(node, indent=" " * 8)
+                    payload = payload_ts_literal(node, indent=" " * 8, with_constants=False)
                     lines.append(f"        const {node.id}_payload = {payload};")
             settled_names = ", ".join(f"{n.id}_settled" for n in non_hitl)
             lines.append(f"        const [{settled_names}] = await Promise.allSettled([")
@@ -502,7 +498,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
                 if _is_mcp_backed(node, cfg):
                     lines.append(f"            {fn_name}Step({node.id}_payload),")
                     continue
-                payload = payload_ts_literal(node, indent=" " * 12)
+                payload = payload_ts_literal(node, indent=" " * 12, with_constants=True)
                 if payload == "{}":
                     lines.append(f"            {fn_name}Step({{}}),")
                 else:
@@ -535,8 +531,6 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosTsAdapterConfig) -> tuple[s
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.extend(exit_return_ts_lines(pipeline))
@@ -729,6 +723,14 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     unwrap_block = f"\n{_UNWRAP_HELPER.rstrip(chr(10))}\n" if uses_unwrap else ""
     if any(n.fan_out for n in pipeline.nodes):
         unwrap_block += f"\n{FAN_OUT_LIST_HELPER_TS.rstrip(chr(10))}\n"
+    if pipeline.needs_input_check:
+        unwrap_block += f"\n{MISSING_INPUTS_HELPER_TS.rstrip(chr(10))}\n"
+    impl_input = impl_input_type_block("\n".join([*step_blocks, body]))
+    if impl_input:
+        unwrap_block += f"\n{impl_input.rstrip(chr(10))}\n"
+    guard = "".join(
+        "\n" + line for line in required_inputs_ts_guard(pipeline, "Error", indent=" " * 8)
+    )
 
     workflow_block = (
         "// ───────── Workflow ─────────\n"
@@ -740,6 +742,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
         "export const runPipeline = DBOS.registerWorkflow(\n"
         "    async (pipelineInput: Record<string, unknown>): "
         "Promise<Record<string, unknown>> => {"
+        f"{guard}"
         f"{body}\n"
         "    },\n"
         f"    {{ name: {json.dumps(workflow_name)} }},\n"
@@ -759,8 +762,12 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
                 // Postgres-only — unlike DBOS Python there is no SQLite mode.
                 systemDatabaseUrl: process.env.DBOS_SYSTEM_DATABASE_URL,
             }});
-            await DBOS.launch();
+            // launch() inside the try: a launch that fails part way (a
+            // Postgres still restarting after its init phase) leaves pools
+            // and timers alive, so without the shutdown below the process
+            // never exits and the error is never seen.
             try {{
+                await DBOS.launch();
                 const pipelineInput = JSON.parse(
                     process.argv[2] ?? "{{}}",
                 ) as Record<string, unknown>;
@@ -1004,6 +1011,9 @@ class DbosTsAdapter:
             pipeline,
             default_model=self.config.anthropic_default_model,
             generated_by=_GENERATED_BY,
+            mcp_backed_ids=frozenset(
+                n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)
+            ),
         )
 
     def emit_main(self, pipeline: Pipeline) -> str:
@@ -1062,6 +1072,10 @@ class DbosTsAdapter:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
+        # The IR's undefined named types, as aliases the user narrows once.
+        types_module = emit_types_module(pipeline)
+        if types_module is not None:
+            written["types"] = writer.write("src", "types.ts", content=types_module)
 
         written["package.json"] = writer.write(
             "package.json",

@@ -1086,12 +1086,18 @@ def test_doctor_reports_mcp_servers_and_apps(
             servers={
                 "keyd": McpServerConfig(url="https://k.example/mcp", headers={"X-K": "v"}),
                 "fresh": McpServerConfig(url="https://f.example/mcp"),
-                "noauth": McpServerConfig(url="https://n.example/mcp"),
+                "unknown": McpServerConfig(url="https://u.example/mcp"),
+                "needs_login": McpServerConfig(url="https://l.example/mcp"),
+                "open": McpServerConfig(url="https://o.example/mcp"),
                 "refreshable": McpServerConfig(url="https://r.example/mcp"),
                 "dead": McpServerConfig(url="https://d.example/mcp"),
             }
         )
     )
+    from rote.mcp.learned import record_auth
+
+    record_auth("needs_login", "https://l.example/mcp", "oauth", source="login")
+    record_auth("open", "https://o.example/mcp", "none", source="login")
     write_token_file("fresh", _token("https://f.example/mcp", expires_at=None, refresh=False))
     write_token_file(
         "refreshable", _token("https://r.example/mcp", expires_at=time.time() - 10, refresh=True)
@@ -1118,7 +1124,9 @@ def test_doctor_reports_mcp_servers_and_apps(
     assert by_name == {
         "keyd": "static headers",
         "fresh": "authenticated",
-        "noauth": "not authenticated",
+        "unknown": "auth unknown",
+        "needs_login": "not authenticated",
+        "open": "no auth required",
         "refreshable": "expired (refreshable)",
         "dead": "expired",
     }
@@ -1140,8 +1148,12 @@ def test_doctor_human_mode_renders_checklist_with_driver_reason(
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "✓ claude" in out
-    assert "✗ codex" in out
+    assert "✓ claude driver" in out
+    assert "✗ codex driver" in out
+    # "api" is both a driver and an extra; each line says which it is.
+    assert "Optional extras (runtime dependencies):" in out
+    assert out.count("[api] extra") == 1
+    assert "\n  ✓ api\n" not in out and "\n  ✗ api\n" not in out
     assert "codex not installed: brew install codex" in out  # reason shown inline
     assert "ready to compile" in out
     assert "only verified at run time" in out  # the CLI-subscription caveat
@@ -1291,8 +1303,8 @@ def _isolate_mcp_stores(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
 def test_mcp_requirements_classify_registered_and_unregistered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """slack registered but tokenless → not authenticated; gmail unknown →
-    not registered. Node ids and tool names ride along for the report."""
+    """slack registered but tokenless, auth not recorded → auth unknown;
+    gmail unknown → not registered. Node ids and tool names ride along for the report."""
     import json
 
     from rote.cli import _mcp_requirements
@@ -1307,7 +1319,7 @@ def test_mcp_requirements_classify_registered_and_unregistered(
     report = _mcp_requirements(load_pipeline(DEAL_MONITOR_PIPELINE_YAML))
     by_server = {entry["server"]: entry for entry in report}
     assert set(by_server) == {"gmail", "slack"}
-    assert by_server["slack"]["auth"] == "not authenticated"
+    assert by_server["slack"]["auth"] == "auth unknown"
     assert by_server["gmail"]["auth"] == "not registered"
     assert by_server["slack"]["nodes"] == ["fetch_intake_messages"]
     assert by_server["slack"]["tools"] == ["slack_read_channel"]
@@ -1352,6 +1364,73 @@ def test_emit_surfaces_mcp_requirements_with_login_nudge(
     assert "slack [not registered]" in out
     assert "rote mcp add gmail" in out
     assert "rote mcp login gmail" in out
+
+
+def test_mcp_recommendations_follow_what_the_registry_knows() -> None:
+    """Only a server known to need OAuth "will park". A no-auth server gets
+    nothing, and an unknown one is worded as unknown."""
+    from rote.cli import _mcp_recommendation_lines
+
+    def lines(auth: str) -> list[str]:
+        return _mcp_recommendation_lines([{"server": "vendor", "auth": auth}])
+
+    assert lines("no auth required") == []
+    assert lines("static headers") == []
+    assert lines("authenticated") == []
+    assert lines("expired (refreshable)") == []
+
+    (needs_login,) = lines("not authenticated")
+    assert "the run will park at its first vendor call" in needs_login
+    assert "recommended: rote mcp login vendor" in needs_login
+
+    (unknown,) = lines("auth unknown")
+    assert unknown.startswith("  vendor: auth unknown")
+    assert "If it does, the run will park" in unknown
+    assert "the run will park at its first vendor call;" not in unknown
+
+    (unregistered,) = lines("not registered")
+    assert "whether it needs auth is unknown" in unregistered
+    assert "rote mcp add vendor <url>" in unregistered
+
+
+def test_emit_is_quiet_about_a_server_recorded_as_needing_no_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    registry = _isolate_mcp_stores(monkeypatch, tmp_path)
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "servers": {
+                    "slack": {"url": "https://slack.example/mcp"},
+                    "gmail": {"url": "https://gmail.example/mcp"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    from rote.mcp.learned import record_auth
+
+    record_auth("slack", "https://slack.example/mcp", "none", source="login")
+    record_auth("gmail", "https://gmail.example/mcp", "oauth", source="login")
+    rc = cli_main(
+        [
+            "emit",
+            str(DEAL_MONITOR_PIPELINE_YAML),
+            "--runtime",
+            "dbos",
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "slack [no auth required]" in out
+    assert "  slack:" not in out  # no recommendation line at all
+    assert "gmail [not authenticated]" in out
+    assert "gmail: not authenticated — the run will park at its first gmail call" in out
 
 
 def test_emit_json_includes_mcp_servers(

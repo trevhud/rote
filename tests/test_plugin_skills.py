@@ -109,7 +109,7 @@ def test_implement_stub_examples_match_the_detector() -> None:
 
 # Files rote writes that the skill deliberately lets the user amend:
 # dependency manifests (the skill says to add new dependencies there).
-_USER_AMENDABLE = {"package.json", "requirements.txt"}
+_USER_AMENDABLE = {"package.json", "requirements.txt", "types.ts"}
 
 
 #: Placeholder the skill uses for files named after an agent_loop node.

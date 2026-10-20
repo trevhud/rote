@@ -219,10 +219,31 @@ retry trigger conditions.
 An `agent_loop` node can declare a `loop_body: [node_id, ...]`
 listing sub-nodes invoked per iteration. Those sub-nodes also
 exist as top-level entries in the `nodes:` list (so they can be
-tested in isolation) but the adapter's `_execution_waves` function
-filters them out of the top-level DAG — otherwise the workflow
-would dispatch them twice. See `rote.adapters.temporal._execution_waves`
-for the reference implementation.
+tested in isolation) but `Pipeline.execution_waves()` (in `rote.ir`;
+the adapters' `_execution_waves` just calls it) filters them out of
+the top-level DAG, otherwise the workflow would dispatch them twice.
+
+### Valid IR is emittable IR: reachability lives in `rote.ir`
+
+A node's `inputs:` may only name a node in an earlier wave, never a
+same-wave sibling and never a `loop_body` sub-node (it has no top-level
+result). That rule used to be checked only inside each adapter at emit
+time, after `rote compile` had verified the deliverable as clean: a real
+bdr-outreach compile paid $4.46 for an IR whose `email_template_loop`
+bound its own body sub-node `personalize_email` as an input, then exited
+1 at emit. It is now `Pipeline._validate_input_reachability`, so the
+compile's repair loop sends it back like any validation error, and the
+six adapters' copies are gone. Cycles are a validation error for the
+same reason. Loop-body sub-nodes' own `inputs:` are exempt (they
+describe, they do not bind).
+
+For the rules no validator states (python refusing a `hitl_gate`, an
+MCP-incapable adapter refusing an mcp-only node, an emitter crash),
+verification dry-emits the deliverable for the compile's runtime
+(`verify.EmitTarget` / `emit_findings`, wired from `--runtime`), and an
+`emit_refused` finding goes back to the agent. Don't add an emit-time
+check to an adapter when it can be IR validation; when it can't, the
+dry emit already covers it.
 
 ### Driver factories accept `**kwargs`
 
@@ -328,7 +349,14 @@ the parsed text blocks. Two things to keep: the marker is
 `x-fastmcp-wrap-result` output-schema flag on 2.x/3.0 servers, so the
 schema is still needed; and the TS helpers apply the same rule through
 `_FASTMCP_UNWRAP_TS` (one source spliced into the Node and Workers
-helpers). The helper's explicit `list_tools()` is not an extra round
+helpers). The text fallback is shared the same way: `_MCP_TEXT_PAYLOAD_TS`
+(spliced into the Node, Workers and binding helpers) applies
+`_result_payload`'s exact text rules, which are every text block parsed,
+non-JSON kept verbatim, several blocks as a list, and none as null. The
+TS helpers used to read only the first block, throw on non-JSON text and
+return `{}` for no text, so the same MCP step returned different values
+per runtime (`tests/test_mcp_text_payload_parity_e2e.py` runs both
+helpers against one real server). The helper's explicit `list_tools()` is not an extra round
 trip, because the MCP SDK's `call_tool` lists tools itself on a fresh
 session to validate the result (measured, and pinned by
 `test_one_tools_list_per_step`). Regressions: `tests/test_mcp_client.py::
@@ -375,7 +403,10 @@ Seven things, each with a test that fails when it is undone
   `tests/test_mcp_client.py::test_cimd_document_matches_what_the_login_offers`
   pins `docs/oauth/rote-cli.json` to the code, and the copy served by
   rote-cloud's marketing site must match it too. Add ports to the
-  document before the CLI uses them, never after.
+  document before the CLI uses them, never after. Selecting a port must
+  bind it (`bind_callback_sockets`), and the callback server must run on
+  those sockets: a check now and a bind later lost the port to a
+  concurrent login in CI after the redirect URI already named it.
 - **rote refuses registrations the SDK would send on its own.** Without
   a `registration_endpoint` the SDK POSTs a guessed
   `<resource-origin>/register` (GitHub: not its authorization server).
@@ -406,6 +437,43 @@ Seven things, each with a test that fails when it is undone
   capabilities) fails the step on every runtime, and every retry opt-out
   exempts it. Making it a `RoteMcpAuthNeeded` would park the run for 30
   days waiting for a login that answers nothing.
+
+### `mcp.args` literals are values, never code
+
+A real BDR compile wrote fixed tool arguments ('management-levels', 'BDR
+do not contact') into `mcp.args`, which held only references, and the IR
+rejected them. `{literal: <str|int|float|bool>}` (`rote.ir.MCPLiteral`)
+is the fixed-value form. It is a mapping so it can never be confused with
+a reference: a bare string is always a payload key or a constant name.
+Strict types, so `"3"` stays a string. No `null` (omit the argument) and
+no lists or objects (a constant, named by reference, already carries
+those).
+
+`mcp_tool_arguments` returns `(arg, "literal", value)` and every emitter
+renders it exactly as it renders a constant: `json.dumps` in TS,
+`_py_literal` in Python (invariant #7). Two traps the malicious-string
+parity test (`tests/test_mcp_args_literal_parity*.py`, the four MCP
+runtimes) found:
+
+- `json.dumps` escapes a character outside the BMP as a surrogate pair,
+  which JS reads correctly and Python reads as two lone surrogates. Python
+  string literals go through `py_str_literal`: raw non-ASCII, but every
+  character in Unicode category Cc, Cf, Zl, Zp or Cs escaped
+  (`escape_invisible`). Raw, a bidi override, zero-width space or BOM is
+  the Trojan Source shape (CVE-2021-42574), and a lone surrogate (PyYAML
+  makes one from `"\ud800"`) cannot be written as UTF-8 at all. The same
+  rule covers docstrings (`safe_docstring_line`), TS comments
+  (`safe_block_comment_line`) and the Cloudflare README; TS literals are
+  ASCII `json.dumps`, already safe. `_pipeline_hash` falls back to an
+  escaped encoding only when the JSON encoder refuses a lone surrogate, so
+  no existing workflow hash changes. Regression:
+  `tests/test_emitted_source_is_visible.py`.
+- `JSON.stringify` leaves those three raw, so the DBOS-TS runner's
+  trailing-JSON parser splits on `\n` only, or a valid result is cut
+  apart.
+
+python and temporal have no MCP backend and refuse an MCP-bound node
+without an `impl`, so `mcp.args` never reaches them.
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
@@ -503,11 +571,12 @@ this is easy to port wrong. Found by running it (rc=124, zero output);
 tsc and the SDK's types are both happy with the deadlocking version.
 
 Related, same file: report the turns that actually ran, not the cap.
-`AgentResult.iterations` counts assistant messages
-(`runner.params.messages.filter(m => m.role === "assistant").length`) and
-is `number | null` — the Workers AI lane returns null because
-`runWithTools` genuinely does not report it. Echoing back
-`maxIterations` made every loop look saturated. The Python
+The count is assistant messages
+(`runner.params.messages.filter(m => m.role === "assistant").length`),
+`number | null`, and goes to stderr (TS) or the usage log's `iterations`
+field (Python), since a loop's result is now its declared output. The
+Workers AI lane reports null because `runWithTools` genuinely does not
+report it. Echoing back `maxIterations` made every loop look saturated. The Python
 `_run_agent_via_sdk` has no public `params` accessor, so it drives the
 runner's iterator itself and counts each yielded message, summing usage
 over every turn. Then `until_done()` on the drained runner returns the
@@ -594,6 +663,70 @@ waits on. Traps, all found by running it:
   not spend a gate payload on it.
 - Non-TTY never prompts and never opens a browser. The browser login is
   offered only when stdin and stderr are both terminals.
+
+### An agent loop returns its declared output, through a submit tool
+
+Downstream nodes index an agent loop's declared `output` keys
+(`process_invoices_loop.output.invoice_results`), but the loop helper
+returned `{result, provider, iterations}` on every runtime, so none of the
+keys existed. Python raised KeyError in the next step, Cloudflare carried
+`undefined` on silently (a measured run reported `"undefined / NaN"`), and
+DBOS-TS and Inngest failed tsc with TS7053. No test had a downstream node
+reading a loop key.
+
+The contract now, from `rote.adapters._common.agent_loop_output` (one
+derivation, all six runtimes):
+
+- **A declared output is submitted, not parsed from prose.** The loop gets
+  a `submit_result` tool whose input schema is the declared output (keys
+  required, `additionalProperties: false`). The CLI lane uses
+  `--json-schema` instead, the same forced structured output a judge
+  uses. A single-type output is submitted as `{result: ...}` and returned
+  bare. A loop with no `output` still returns `{result: <final text>}`.
+- **Submitting does not end the loop.** It runs until the model ends its
+  turn, and the last submission wins. A loop that ends (or hits its cap)
+  without one gets ONE more request with `tool_choice` forced to
+  `submit_result`, the judge mechanism, then fails. At the cap the runner
+  has already run that turn's tools, so the nudge joins the trailing
+  user message rather than re-running anything (the Python runner does
+  not append a normally-ended final turn; the TS one does, hence the
+  check on both sides). The helper builds the assistant message param by
+  hand: `Message.to_param()` exists only in newer SDKs, and an emitted app
+  runs on whatever version it installed.
+- **Every lane validates the same way.** The submit tool is `strict: true`
+  (Anthropic's grammar-constrained tool input, no beta header) when the
+  schema fits that subset: every leaf typed, every object closed, and at
+  most 16 `anyOf` / type-array parameters (each nullable field is one;
+  past that the request is a 400). A named type is description-only, so
+  its loop stays non-strict. Either way,
+  `_schema_errors` / `schemaErrors` check types, required keys and extra
+  keys on every lane, and every failure reads `agent loop <id>
+  (<provider>) did not hand back its declared output: <reason>`. Workers
+  AI cannot force a final call, and says so.
+- **Types:** scalars, lists and `X | null` map exactly, and
+  `output_schema` (evidence) beats the type names. A named type the IR
+  does not define (`InvoiceResult`) accepts any JSON value and, on TS, is
+  an alias in the user-editable `src/types.ts` (`export type InvoiceResult
+  = JsonValue`). The loop's return type, and so every downstream read,
+  uses the alias, so a typed reader compiles once the user narrows it.
+  EmitWriter keeps the edit. Cloudflare types the parked loop's result as
+  `Awaited<ReturnType<typeof loop>>`, not `Record<string, unknown>`, or the
+  alias would be erased at the read. `rote emit` prints one `note:` line
+  per unchecked type.
+- **Metadata leaves the result.** Provider and turns go to the usage log
+  (Python) or stderr (TS). Putting them next to the declared keys would
+  break a single-type output and pollute any whole-output consumer.
+- **TS `JsonValue` is spelled out five levels deep, not recursive.**
+  Cloudflare's `step.do` checks results against `Rpc.Serializable`, which
+  fails TS2589 ("excessively deep") on a recursive type.
+- **Python agent loops honor `ROTE_BASE_URL_<ID>`** like the TS ones and
+  the judges. The Python loop used to ignore it, so a test pointing it at
+  a stub reached the real API.
+
+Regression: `tests/test_agent_loop_output_parity*.py` runs all six
+runtimes live against a stub Messages endpoint, with a downstream node
+reading two declared keys, and typechecks invoice-push on the three TS
+runtimes. All of it fails on the old helper.
 
 ### A Cloudflare agent_loop is parkable, so it leaves its parallel wave
 
@@ -757,6 +890,13 @@ the code (`tests/test_claude_driver.py`, `tests/test_cli.py`,
   touched the cache and the rates are genuinely unknown, `_cost_usd`
   returns `None`. Billing cache reads at the plain input rate would
   overstate them roughly tenfold.
+- **A judge's usage row names the model the CLI ran, not the alias.**
+  `claude -p --model sonnet` runs `claude-sonnet-5-5`, and only the
+  envelope's `modelUsage` says so. The emitted helper logs one row per
+  `modelUsage` entry with the CLI's `costUSD` as `cost_usd`, which
+  pricing takes as is: the CLI bills a 1h cache write at twice the 5m
+  rate a catalog publishes. A row logged under `sonnet` matched no
+  catalog entry, so the whole subscription lane went unpriced.
 
 The general lesson, and it generalizes past this file: a usage number is
 only as complete as the fields you chose to read, and a field you never
@@ -878,6 +1018,43 @@ gained a sibling in its wave — and parallel fetch waves are exactly where
 the flaky network calls live. If you add a parallel branch to any
 adapter, diff it against the single-node branch field by field.
 
+### A Postgres container is "ready" over the socket before it is ready
+
+The `postgres` image's init phase runs a socket-only server, then
+restarts it. `pg_isready` over the socket says ready during that phase,
+so an app connecting right after it gets "Connection terminated
+unexpectedly". Check over TCP (`pg_isready -h 127.0.0.1`), which answers
+only once the final server is up. This only showed in CI, where nothing
+sat between readiness and the first connection.
+
+It turned into a hang because the emitted DBOS-TS `main()` called
+`DBOS.launch()` before its `try`. A launch that fails part way leaves
+pools and timers alive, so without the `finally` shutdown the process
+never exits and the runner reports a bare timeout. Launch stays inside
+the `try` (regression:
+`tests/test_dbos_ts_e2e.py::test_a_failed_launch_exits_instead_of_hanging`).
+
+### An impl's closed input type is checked, not cast away
+
+The implement skill tells users to replace a TS stub's `unknown` input
+with a real interface, and that broke the build on all three TS runtimes:
+DBOS-TS step wrappers took `Record<string, unknown>` (TS2345), and
+Cloudflare and Inngest passed `unknown` values (the pipeline input, a
+fanned element) straight into the typed parameter (TS2322). The
+typed-impls e2e only ever used `input: unknown`, so nothing caught it.
+
+Every call that reaches an impl now asserts each value to the impl's own
+declared type for that key (`expr as ImplInput<typeof fn>["key"]`, the
+`IMPL_INPUT_TYPE_TS` alias, emitted only when used), and the DBOS-TS
+wrapper takes `ImplInput<typeof fn>`. A stub's `unknown` input reads as
+an open record, so the scaffold compiles too. The assertion is per value,
+never on the object, so drift still fails both ways: a key the impl
+declares that the IR never sends (TS2741/TS2345), and a key the IR sends
+that the impl does not declare (TS2339 on the lookup). Judges, agent
+loops and MCP calls keep the open record. Regression:
+`tests/test_ts_typed_impls_e2e.py`, closed-input positive case plus both
+negative halves.
+
 ### Inngest v4: no per-step retries, no 3-arg `createFunction`, and a lying dev-server endpoint
 
 Three traps hit while building the Inngest adapter, all verified
@@ -943,6 +1120,16 @@ Three rules now, each learned the hard way:
   model cannot override a pinned value, and they never appear in the tool
   schema it sees. Judges are excluded: their input model rejects unknown
   keys.
+- **TS passes them the same way, at every call site.** Cloudflare,
+  Inngest and DBOS-TS call the impl directly, so there is no step body
+  to merge in. Instead `payload_ts_literal` / `fan_out_ts_binding` add
+  `impl_constant_entries_ts` after the inputs, and the agent-loop module
+  wraps a loop_body tool call as `{ ...args, <constants> }`. Both take a
+  required `with_constants` / `mcp_backed_ids`, so a new call site has to
+  decide, and an MCP-backed call passes False. A TS impl reads its
+  constants from `input`; hard-coding them makes the IR's value dead
+  config, as on Python. `tests/test_constants_parity_ts_e2e.py` runs the
+  Python parity fixture live on all three TS runtimes.
 - **A constant reaches an MCP tool only when `mcp.args` names it.**
   Without `args`, the step sends its payload as the tool arguments, and a
   tool rejects arguments it does not declare (FastMCP: "Unexpected
@@ -1044,6 +1231,40 @@ values; touch either converter and run it.
 `pipeline.yaml` under `examples/`, so a snapshot that would fail its
 first judge call cannot be committed.
 
+### Optional pipeline inputs are left out; required ones fail on entry
+
+`Pipeline.optional_input_fields` (listed in `input.optional`, or a schema
+property the schema's `required` omits) and `required_input_fields`
+(everything else a node reads, plus the declared required) are derived,
+never stored. Emitted code relies on the pair:
+
+- **An omitted optional field is absent from the payload, not None.**
+  Python used to emit `pipeline_input["f"]`, so ops-report's optional
+  `report_date` raised `KeyError` whenever a caller left it out. Reading
+  it with `.get` was the obvious fix and the wrong one: an explicit None
+  overrides the impl's own default (`def f(d="today")`) and fails a
+  judge input field that has a schema `default`. Python payloads now
+  spread each input field in with the emitted `_input_field`, which adds
+  the key only when the run supplied it. TS gets the same effect for free,
+  since an undefined field is dropped from the JSON payload.
+- **Every runtime checks the input on entry** with the emitted
+  `_missing_inputs_error` / `missingInputsError`. The check names missing
+  required fields, and it reports a non-object input (a run started with
+  no payload at all) instead of a TypeError inside generated code. It is
+  emitted whenever a node reads the pipeline input (`needs_input_check`).
+  The failure must not retry. Temporal raises
+  `ApplicationError(..., non_retryable=True)`, because a plain exception
+  in workflow code fails the workflow task and Temporal retries that
+  forever. Inngest throws `NonRetriableError`, because its retries are
+  function-level.
+
+`tests/test_pipeline_input_parity.py` runs the Python runtimes for real
+both ways. `tests/test_pipeline_input_ts_e2e.py` runs the missing-input
+case live on Inngest, Cloudflare and DBOS-TS, and proves Inngest fails on
+the first attempt. The Inngest runner now reports the failed run's error
+name and message from the dev server, where it used to show only a log
+tail that held the end of a stack trace.
+
 ### An undefined fanned list must name the node, on every runtime
 
 Emitted code routes the fanned list through a guard — `fanOutList` in
@@ -1141,6 +1362,207 @@ subprocess error is surfaced in `metadata["subprocess_warning"]`
 rather than treated as fatal. Don't undo this — losing $2 runs to a
 network blip is unacceptable. See
 `tests/test_claude_driver.py::test_nonzero_exit_with_pipeline_yaml_recovers_run`.
+
+### The compile verifies its deliverable, and the agent repairs it
+
+`rote.compiler.verify.verify_deliverable` runs on every natural stop of
+the agent and once more at the end: IR validation, `check_contracts`
+(symbol, payload signature, Python 3.11 parse), the compile-only rules
+(every `pure_function` implemented and named by a test, or a stub whose
+`NotImplementedError` message says why), and `python -m pytest tests`
+from the work dir. Failures go back into the SAME conversation as one
+user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
+
+- **The compile-only rules stay out of `check_contracts`.** That one
+  also runs at `rote emit` on hand-written and older IRs, where an
+  unwritten module is the documented stub path. Moving the rules into
+  it would flag every expected/ example on every emit.
+- **`ast.parse(feature_version=(3, 11))` does not catch PEP 701
+  f-strings** (a backslash, comment, or reused quote inside `{}`): that
+  changed the tokenizer, not the grammar. `newer_syntax_problems` walks
+  the 3.12+ token stream instead. Its corpus test is differential across
+  the CI matrix: on 3.11 it checks the labels against the real parser.
+- **Generated tests run with `PYTHONDONTWRITEBYTECODE=1`.** A repair
+  can rewrite a module within the same second at the same size, and a
+  stale `.pyc` then makes the fixed code test red.
+- **An update verifies an overlay** of the previous output's code under
+  the work dir, because an update's work dir holds only what changed.
+- **A deliverable that still fails is returned, not raised.** It is the
+  output of a paid run. The CLI exits 1 and skips the cloud deploy.
+- **Verification never raises.** It runs inside the driver's repair loop
+  (where only `DriverError` is caught) and before the work dir leaves its
+  temp home, so an exception there deletes the paid work. Any crash
+  becomes a `verification_error` finding; a non-UTF-8 module is a
+  `not_utf8` finding.
+- **A rejected IR goes to `<out>.rejected`, never into `<out>`.** A
+  re-run into an existing `--out` must not replace the last good
+  pipeline.yaml and the stubs the user filled in since.
+- **Generated tests are untrusted code and run in an OS sandbox, or not
+  at all** (`rote.compiler.sandbox`). The agent wrote them from a
+  SKILL.md that may be third-party (invariant #7), and rote runs them
+  automatically, up to three times. An env allowlist alone was shown to
+  stop nothing: `pwd.getpwuid` names the real home, the network is open,
+  and the ssh-agent socket and Keychain CLI are reachable. So:
+  - macOS: `sandbox-exec` with a generated deny-by-default profile.
+    Reads: the work dir; the interpreter's stdlib, its site-packages
+    dirs, and as single files the binary and libpython
+    (`sandbox.current_layout`, derived from `sysconfig`, never "the dir
+    above the binary", which for `~/bin/python` is the home and for
+    `/usr/bin/python3` all of `/usr`); `/` as a literal; `/System`,
+    `/usr/lib`, `/usr/share`, dyld; a few devices. Writes: the work dir and
+    a private scratch dir. Exec: literals only, the binary and a framework
+    build's `Python.app` launcher. No network. A layout whose roots
+    include `/`, a home, an ancestor of one, or anything holding
+    `~/.ssh`, `~/.config/rote` or `~/.local/share/rote` is refused
+    (`sandbox.refusal`), which means no sandbox, so unverified. `file-read-metadata` is allowed
+    everywhere because path resolution needs it, so a test can learn that
+    a path exists, not what it holds.
+  - Linux: `bwrap --unshare-all` (network included), read-only binds of
+    the system lib dirs and interpreter paths, binds of the work dir and
+    scratch dir, tmpfs `/tmp`, `--clearenv`, no home. CI installs it via
+    `.github/actions/bubblewrap` and lifts Ubuntu's AppArmor userns
+    restriction; `tests/test_sandbox.py` fails instead of skipping when
+    `CI` is set. No `unshare -n` fallback: without a mount namespace
+    rebuilt the way bwrap does it, the home stays readable.
+    A bind under the home is fine and normal: setup-uv's interpreter lives
+    in `~/.local/share/uv/python`, a CI venv in the checkout. The property
+    is that no bind exposes home *contents*: bwrap creates each bind's
+    parent dirs, so inside, `~` lists an empty `.local` or `work`, and
+    nothing else. The snoop test checks exactly that skeleton plus planted
+    secrets in the home and the venv root; don't "tighten" it back to
+    "nothing under /home is bound", which failed on every in-tree venv.
+  - **The child is launched by the resolved binary, never `sys.executable`**
+    (`sandbox.launch_executable`). Through a venv, Python finds its stdlib
+    via `pyvenv.cfg`'s `home`, and uv writes a minor-version *symlink*
+    there (`cpython-3.11-linux-...` -> `cpython-3.11.17-...`) that nothing
+    binds: every sandboxed run on a uv-managed Python died with "No module
+    named 'encodings'". `-S` plus the explicit PYTHONPATH means the child
+    needs nothing from the venv.
+  - The summary is the last line of pytest's *stdout*. A uv Python's
+    ncurses prints "using dumb terminal settings." to stderr on exit (no
+    terminfo inside), which used to become the summary.
+  - The child runs `python -S` (no `.pth` processing) with PYTHONPATH set
+    to the work dir and pytest's site-packages, and pytest's config,
+    rootdir and conftest boundary pinned to the work dir: walking up
+    reads the user's project, which the sandbox denies.
+  - The env is still an allowlist (`verify.generated_test_env`: PATH,
+    locale, an empty HOME), not a scrub list.
+  - No working sandbox: the tests are skipped, status `unverified`, said
+    in the compile output and in a `## rote verification` section rote
+    appends to compile-report.md. `--trust-skill` runs them with the env
+    allowlist only; `--no-verify-tests` never runs them.
+  - **pytest is a runtime dependency of rote-cli, not a dev one.** It was
+    dev-only, so every plain install skipped verification with a quiet
+    `unavailable` and a real expense-audit compile exited 0 while a
+    generated test failed. A missing runner is now `unverified`, loud in
+    the output and the report like a missing sandbox. Regression:
+    `tests/test_packaging.py::test_the_package_requires_pytest_without_any_extra`.
+  - **Repair prompts restate the write-once rules** (`verify.WRITE_ONCE_RULES`):
+    a real repair round made three separate one-line Edits to
+    compile-report.md, each re-reading the whole context.
+  - Not isolated: file metadata on macOS (above), CPU and memory (only the
+    120 s timeout), writes inside the work dir (a test can modify the
+    deliverable it tests).
+  Regressions: `tests/test_sandbox.py` (each denial verified by removing
+  it from the profile), and
+  `tests/test_verify.py::test_generated_tests_cannot_see_credentials_or_the_users_home`.
+- **One stub predicate.** `rote.adapters._common.stub_raise` decides what
+  a stub is for both `rote run`'s preflight and the compile's per-node
+  status (whole body after the docstring is one `raise
+  NotImplementedError`). Two predicates disagreed once.
+- **Outcomes cite the skill or are declared** (`rote.compiler.provenance`).
+  Found by a real compile that chose block over review for a rule whose
+  severity the skill never states, then wrote tests that encoded the
+  choice. Every rule in it exists because a review got a guess past a
+  looser version, so keep them: a citation fragment is 4+ words of prose
+  (headings excluded), fragments match in order within one paragraph,
+  the quote closes at the `"` ending a comment line (so it may contain
+  quotes), every outcome literal in a pure_function module needs a
+  marker on its statement or in the comment directly above it or above
+  the `if` that decides it (an early-return `if` ladder counts as one;
+  independent checks do not, because proximity let a real compile's
+  cap severity pass under an unrelated citation), labels reached by
+  reference (module constants, policy tables, Enum members) are checked at
+  their definition, and Open questions must have one entry per distinct
+  assumption. Presence guards against an accidental unmarked label, not a
+  deliberate evasion: a slot whose name is not in `OUTCOME_WORDS`, or a
+  label built at run time, is not seen.
+  `tests/test_provenance.py` holds the gaming cases, each verified by a
+  mutation.
+- **What a provenance finding costs is decided by what it means**
+  (the user's rule, after a real BDR compile exited 1 on 15 recorded
+  assumptions). A citation not in the skill (`citation_not_in_skill`,
+  `malformed_citation`, `FACTUAL_KINDS`) is an error: exit 1 after the
+  repair rounds. Assumptions never fail; they are listed by node and
+  `file:line` in the compile output, in compile-report.md's
+  `## rote verification`, and as `provenance` in `--json` and the
+  progress.jsonl summary (`Verification.provenance_report`). A missing
+  declaration (`uncited_outcome`, `unlisted_assumption`, `REVIEW_KINDS`)
+  is a `review_gap`: the repair loop is sent it like an error, and if it
+  survives it is a warning. Not exit 1, because a reviewer closes it from
+  the listed assumptions, and failing would throw away a paid run over
+  bookkeeping. `--strict-provenance` (compile and analyze, for CI) makes
+  every provenance finding an error; analyze otherwise exits 0 as a dry
+  run. Quote marks are normalized (`'`, `"` and curly quotes are one):
+  the BDR compile's one "fabricated" citation was verbatim except that
+  it wrote the skill's `"BDR do not contact"` in single quotes inside its
+  own double-quoted citation.
+
+### The claude driver repairs by resuming, and a resumed result is cumulative
+
+`ClaudeDriver` sends a repair as `claude -p <instruction> --resume
+<session_id>` with the same flags. Measured on claude 2.1.302: a resumed
+run's `total_cost_usd` and `modelUsage` cover the WHOLE session (the
+first run's plus its own), while `num_turns` and `duration_ms` are per
+invocation. That is observed, not documented with a version floor, and
+least likely to hold after an abnormal exit, so `_session_metadata`
+checks it: non-decreasing costs mean cumulative (use the last result),
+anything else is summed per round (`usage_basis` says which), and a
+round with no result marks `usage_complete` False. The usage gotcha
+above applies: a total that silently drops a round reads as a small
+number.
+`--resume` looks the session up by cwd, so every invocation of one
+compile runs with `cwd=work_dir`.
+
+### The compiler's `claude -p` child is isolated from the user's setup
+
+`rote.inference.CLI_CONTEXT_ISOLATION_FLAGS` (`--setting-sources ""`,
+`--strict-mcp-config`, `--settings '{"autoMemoryEnabled": false}'`), then
+`--tools <allowlist>`, and `cwd=work_dir`. The context flags are the SAME
+tuple the emitted judge and agent-loop lanes use (they add `--tools ""`
+instead); the driver imports it from the helper, like
+`build_subscription_env`, so there is one copy. Each one was found by a real compile: a user's Vale
+prose hook (em dashes in `compile-report.md`) cost 12 of 48 turns in
+one-line edits. The same user settings granted Bash despite the
+allowlist. And run from this repo, the agent globbed into
+`examples/<skill>/runs/` and read an earlier compile of the same skill as
+a template, so the output depended on where the command was typed.
+`--tools` takes a VALUE here, as in the judge helper. When measuring the
+compiler, run it against a copy of the skill outside the repo anyway:
+an older installed rote has none of this.
+
+### A failed `claude -p` compile is still a paid one, and the output cap resumes
+
+A real invoice-push compile died after 28 minutes and 8 turns with
+`Claude's response exceeded the 32000 output token maximum`, and its cost
+appeared nowhere: the driver raised without reading the result envelope,
+which every such failure still carries. Three things now hold:
+
+- **`DriverError.metadata`** carries the failed session's usage (same
+  keys as `DriverResult.metadata`, via `_session_metadata`). The
+  orchestrator prints it in the error and emits a `usage before the
+  failure:` log line, so progress.jsonl has it too.
+- **`CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000`** in the compiler child's env
+  (`ClaudeDriver._build_child_env`), `setdefault` so a caller's value
+  wins. Unset, Claude Code uses 32000 for a model it cannot resolve;
+  64000 is the default compile model's own maximum, and the CLI lowers a
+  value above a model's cap to the cap. Raising it also shrinks the
+  context left before auto-compaction, so don't push it to 128000
+  without measuring.
+- **The cap is resumable, once per compile.** The session is intact, so
+  the driver resumes it with `OUTPUT_CAP_RESUME` (write large files in
+  pieces) and then takes the normal file-first path. Once, not per
+  round: a model that hits the cap twice is not going to stop.
 
 ---
 
@@ -1475,15 +1897,20 @@ Don't waste time debugging stubs. These are intentional.
 
 - The BDR example's `extracted/*.py` modules raise
   `NotImplementedError` — users fill them in with real API client
-  code; the compiler produces scaffolding, not production code
+  code. The compiler leaves vendor calls (`external_call` impls) as
+  contract-documented stubs unless an `mcp:` binding or probe ground
+  truth makes them real. `pure_function` nodes are NOT in this column:
+  the compiler implements and tests them (see the verification gotcha).
+
 **Working end-to-end:**
 
 - `fan_out` on ALL SIX runtimes: a node marked `fan_out: true` is
   invoked once per element of its bound list, and the result binds as a
   list in input order. Which input is the list is resolved by
   `rote.ir.fan_out_element_param` (fan_out edge marker >
-  incoming-edge source > only node-bound param; ambiguity is an
-  emit-time error, never a guess). It lives in the IR module on
+  incoming-edge source > only node-bound param > with no node-bound
+  param at all, the only pipeline-input field that can hold a list;
+  ambiguity is an emit-time error, never a guess). It lives in the IR module on
   purpose: two adapters disagreeing about which input is the list would
   make one pipeline mean two different things, and the judge-binding
   validator must agree with them too. Per

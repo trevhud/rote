@@ -34,7 +34,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     refuse_mcp_only_nodes,
     safe_docstring_line,
@@ -48,7 +47,9 @@ from rote.adapters._py_common import (
     fan_out_binding,
     fan_out_list_helper,
     impl_kwargs_expr,
+    missing_inputs_helper,
     require_constant_parameters,
+    required_inputs_guard,
     write_extracted_package,
     write_signature_package,
 )
@@ -443,7 +444,7 @@ def _emit_fan_out_call(node: Node, pipeline: Pipeline, cfg: TemporalAdapterConfi
     guarantee the other adapters give.
     """
     element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 20)
-    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    shared = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
     payload = f'{{"{element_param}": _item{shared}}}'
     expr = _execute_activity_expr(node, cfg, payload, indent=" " * 20)
     return "\n".join(
@@ -486,17 +487,19 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
     ]
     desc = safe_docstring_line(pipeline.description, fallback=pipeline.name)
     body_lines.append(f'        """{desc}"""')
-
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
+    # Non-retryable on purpose: a plain exception in workflow code fails the
+    # workflow task, which Temporal retries forever on the same bad input.
+    guard = required_inputs_guard(
+        pipeline,
+        "raise ApplicationError(_input_error, non_retryable=True)",
+        indent=" " * 8,
+    )
+    if guard:
+        body_lines.append(guard.rstrip("\n"))
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         body_lines.append("")
         body_lines.append(f"        # ─── Wave {wave_idx} ───")
@@ -524,8 +527,6 @@ def _emit_workflow_run(pipeline: Pipeline, cfg: TemporalAdapterConfig) -> str:
 
         for h in hitl:
             body_lines.append(_emit_hitl_block(h).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     body_lines.append("")
     body_lines.append("        return {")
@@ -596,6 +597,13 @@ def emit_workflow(pipeline: Pipeline, cfg: TemporalAdapterConfig | None = None) 
 
     if any(n.fan_out for n in pipeline.nodes):
         parts.append("\n" + fan_out_list_helper() + "\n")
+    if pipeline.needs_input_check:
+        parts.append("\n" + missing_inputs_helper(pipeline) + "\n")
+        parts[0] = parts[0].replace(
+            "from temporalio.common import RetryPolicy\n",
+            "from temporalio.common import RetryPolicy\n"
+            "from temporalio.exceptions import ApplicationError\n",
+        )
 
     parts.append(
         textwrap.dedent(

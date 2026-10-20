@@ -16,7 +16,6 @@ reference):
 
 from __future__ import annotations
 
-import copy
 import json
 import re
 from pathlib import Path
@@ -33,7 +32,7 @@ from rote.adapters.dbos_ts import (
     emit_main,
     emit_signature_module,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
+from rote.ir import Node, NodeKind, Pipeline
 from tests._helpers import assert_no_mcp_in_ts, mini_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -240,16 +239,17 @@ def test_downstream_nodes_receive_upstream_results(main_src: str) -> None:
     """The committed BDR bindings appear as real payload expressions."""
     # Indexed directly, never cast: tsc then checks the IR field name
     # against the implementation's declared type (see ref_to_ts_expr).
-    assert "_result as " not in main_src
+    # The one assertion allowed is a value's, to the impl's declared type.
+    assert re.search(r"_result as (?!ImplInput<)", main_src) is None
     # HITL gate resume payload (DBOS.recv result) → downstream step payload.
-    assert 'contacts: contact_review_gate_result["approved_contacts"],' in main_src
+    assert _binds("contacts", 'contact_review_gate_result["approved_contacts"]', main_src)
     # Node output field chains through the exclusion checks.
-    assert 'contacts: hubspot_upsert_result["upserted"],' in main_src
-    assert 'contacts: exclusion_check_dnc_result["passed"],' in main_src
+    assert _binds("contacts", 'hubspot_upsert_result["upserted"]', main_src)
+    assert _binds("contacts", 'exclusion_check_dnc_result["passed"]', main_src)
     # Pipeline input field selection.
-    assert 'target_quota: pipelineInput["target_quota"],' in main_src
+    assert _binds("target_quota", 'pipelineInput["target_quota"]', main_src)
     # Fan-in: the report node pulls from several sources.
-    assert 'template_ids: create_sales_template_result["template_ids"],' in main_src
+    assert _binds("template_ids", 'create_sales_template_result["template_ids"]', main_src)
 
 
 def test_node_without_inputs_gets_empty_payload() -> None:
@@ -257,40 +257,6 @@ def test_node_without_inputs_gets_empty_payload() -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
     src = emit_main(mini_pipeline(node), DbosTsAdapterConfig())
     assert "const only_result = await onlyStep({});" in src
-
-
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as an undefined-variable error inside a running workflow."""
-    pipeline = Pipeline(
-        name="forward-ref",
-        input=PipelineInput(type="X"),
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(pipeline, DbosTsAdapterConfig())
-
-
-def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    pipeline = copy.deepcopy(bdr_pipeline)
-    node = pipeline.node_by_id("hubspot_upsert")
-    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(pipeline, DbosTsAdapterConfig())
 
 
 # ───────── The MCP invariant ─────────
@@ -509,3 +475,11 @@ def test_readme_flush_left_with_gates(emit_result: dict[str, Path], bdr_pipeline
     assert re.search(r"silence\s+is not approval", src)
     # The TS SDK's Postgres-only story is documented.
     assert "npx dbos postgres start" in src
+
+
+def _binds(param: str, expr: str, src: str) -> bool:
+    """``param: expr`` in a payload, with or without the impl-type assertion
+    an impl call adds (``expr as ImplInput<typeof fn>["param"]``)."""
+    key = re.escape('"' + param + '"')
+    pattern = rf"{re.escape(param)}: {re.escape(expr)}( as ImplInput<typeof \w+>\[{key}\])?,"
+    return re.search(pattern, src) is not None

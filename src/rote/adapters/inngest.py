@@ -75,8 +75,8 @@ are the source of truth; inngest.com/docs corroborates):
   result (including gate resume payloads) as ``<id>_result``, and each
   step's payload comes from the node's ``inputs:`` bindings via the
   shared reference grammar (:func:`rote.ir.parse_input_ref`). Forward
-  references are rejected at emit time by
-  :func:`rote.adapters._common.check_input_refs_available`.
+  references never reach the adapter: IR validation rejects them
+  (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Typed LLM signatures as Zod + vendor SDK modules.** Emitted via
   :mod:`rote.adapters._ts_common` — identical machinery to the
@@ -106,7 +106,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_camel_case,
-    check_input_refs_available,
     fan_out_nodes,
     safe_block_comment_line,
 )
@@ -115,20 +114,25 @@ from rote.adapters._ts_common import (
     FAN_OUT_LIST_HELPER_TS,
     MCP_CLIENT_NPM_PACKAGE,
     MCP_CLIENT_NPM_VERSION,
+    MISSING_INPUTS_HELPER_TS,
     REQUIRE_ENV_HELPER,
     ROTE_INFERENCE_HELPER_TS,
     ROTE_MCP_HELPER_TS,
+    constants_doc_ts,
     emit_mcp_call_module,
     emit_node_agent_loop_module,
     emit_node_tsconfig,
     emit_ts_signature_module,
+    emit_types_module,
     exit_return_ts_lines,
     fan_out_ts_binding,
+    impl_input_type_block,
     judge_env_arg,
     llm_clients,
     mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
+    required_inputs_ts_guard,
 )
 from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 from rote.mcp.parked import AUTH_PARK_MARKER
@@ -362,14 +366,7 @@ def emit_extracted_module(node: Node) -> str:
                 " * The workflow always calls it; do not make it conditional.",
             ]
         )
-    if node.constants:
-        doc.extend([" *", " * Constants from the source skill (lifted into the IR):"])
-        # k is an identifier (IR-validated); json.dumps does NOT escape */, so
-        # run the value through safe_block_comment_line to neutralize it.
-        doc.extend(
-            f" *   {k} = {safe_block_comment_line(json.dumps(v))}"
-            for k, v in node.constants.items()
-        )
+    doc.extend(constants_doc_ts(node))
 
     doc.append(" */")
 
@@ -440,7 +437,7 @@ def _step_call_expr(
     """
     fn_name = _to_camel_case(node.id)
     if payload is None:
-        payload = payload_ts_literal(node, indent=payload_indent)
+        payload = payload_ts_literal(node, indent=payload_indent, with_constants=True)
     if node.kind is NodeKind.LLM_JUDGE:
         call = f"{fn_name}({payload}, {judge_env_arg(node)})"
     elif _loop_reaches_mcp(node):
@@ -491,7 +488,7 @@ def _parkable_call_expr(
     assert node.mcp is not None
     fn_name = _to_camel_case(node.id)
     if payload is None:
-        payload = payload_ts_literal(node, indent=payload_indent)
+        payload = payload_ts_literal(node, indent=payload_indent, with_constants=False)
     release_event = auth_event_name(pipeline, node.mcp.server)
     return (
         f"runParkable(step, {step_id_expr or json.dumps(node.id)}, "
@@ -510,7 +507,9 @@ def _fan_out_lines(node: Node, pipeline: Pipeline, cfg: InngestAdapterConfig) ->
     ``.map`` preserves order, so ``<id>_result[i]`` corresponds to
     element ``i`` of the bound list.
     """
-    payload, list_expr = fan_out_ts_binding(node, pipeline, indent=" " * 12)
+    payload, list_expr = fan_out_ts_binding(
+        node, pipeline, indent=" " * 12, with_constants=not _is_mcp_backed(node, cfg)
+    )
     step_id_expr = f"`{node.id}[${{_index}}]`"
     if _is_mcp_backed(node, cfg):
         expr = _parkable_call_expr(
@@ -671,20 +670,15 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
         if n.inputs
         for ref in n.inputs.values()
     )
-    if needs_pipeline_input:
+    if needs_pipeline_input or pipeline.needs_input_check:
         lines.append("        const pipelineInput = event.data as Record<string, unknown>;")
-
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    # HITL gates count: their resume payload binds `<id>_result`.
-    available: set[str] = set()
+        # NonRetriableError: Inngest retries are function-level, so a plain
+        # throw here would re-run the same bad input `retries` times.
+        lines.extend(required_inputs_ts_guard(pipeline, "NonRetriableError", indent=" " * 8))
 
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"        // ─── Wave {wave_idx} ───")
@@ -733,8 +727,6 @@ def _emit_workflow_body(pipeline: Pipeline, fn_retries: int, cfg: InngestAdapter
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.extend(exit_return_ts_lines(pipeline))
@@ -799,7 +791,7 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
     loops_reach_mcp = any(_loop_reaches_mcp(n) for n in pipeline.nodes)
     inngest_imports = (
         'import { NonRetriableError } from "inngest";\n'
-        if (has_gates or mcp_backed or loops_reach_mcp)
+        if (has_gates or mcp_backed or loops_reach_mcp or pipeline.needs_input_check)
         else ""
     ) + 'import { inngest } from "./client";\n'
     if mcp_backed:
@@ -848,6 +840,11 @@ def emit_pipeline_ts(pipeline: Pipeline, cfg: InngestAdapterConfig | None = None
         sections.append(_FAIL_FAST_ON_MCP_CONFIG_HELPER.rstrip("\n"))
     if any(n.fan_out for n in pipeline.nodes):
         sections.append(FAN_OUT_LIST_HELPER_TS.rstrip("\n"))
+    if pipeline.needs_input_check:
+        sections.append(MISSING_INPUTS_HELPER_TS.rstrip("\n"))
+    impl_input = impl_input_type_block(function_block)
+    if impl_input:
+        sections.append(impl_input.rstrip("\n"))
     sections.append(function_block)
     return "\n\n".join(sections)
 
@@ -1158,6 +1155,9 @@ class InngestAdapter:
             pipeline,
             default_model=self.config.anthropic_default_model,
             generated_by=_GENERATED_BY,
+            mcp_backed_ids=frozenset(
+                n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)
+            ),
         )
 
     def emit_pipeline_ts(self, pipeline: Pipeline) -> str:
@@ -1223,6 +1223,10 @@ class InngestAdapter:
             written["signatures/_roteInference"] = writer.write(
                 "src", "signatures", "_roteInference.ts", content=ROTE_INFERENCE_HELPER_TS
             )
+        # The IR's undefined named types, as aliases the user narrows once.
+        types_module = emit_types_module(pipeline)
+        if types_module is not None:
+            written["types"] = writer.write("src", "types.ts", content=types_module)
 
         written["package.json"] = writer.write(
             "package.json",

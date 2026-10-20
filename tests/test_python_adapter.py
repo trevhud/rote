@@ -15,7 +15,6 @@ Three levels of validation:
 from __future__ import annotations
 
 import ast
-import copy
 from pathlib import Path
 
 import pytest
@@ -27,8 +26,8 @@ from rote.adapters.python import (
     emit_main,
     emit_requirements,
 )
-from rote.ir import Edge, Node, NodeKind, Pipeline
-from tests._helpers import mini_pipeline
+from rote.ir import Node, NodeKind, Pipeline
+from tests._helpers import mini_pipeline, payload_dict_keys
 from tests._python_fixture import build_gateless_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -295,7 +294,7 @@ def test_loop_body_nodes_excluded_from_pipeline_body(main_src: str) -> None:
 
 
 def test_pipeline_input_reaches_entry_nodes(main_src: str) -> None:
-    assert '"topic": pipeline_input["topic"],' in main_src
+    assert '**_input_field(pipeline_input, "topic", "topic"),' in main_src
     assert '"brief": pipeline_input,' in main_src
 
 
@@ -303,7 +302,7 @@ def test_upstream_results_thread_downstream(main_src: str) -> None:
     # Whole-output reference, field selection, and fan-in.
     assert '"profile": fetch_profile_result,' in main_src
     assert '"topic": normalize_brief_result["topic"],' in main_src
-    assert '"depth": pipeline_input["depth"],' in main_src
+    assert '**_input_field(pipeline_input, "depth", "depth"),' in main_src
     assert '"findings": research_loop_result["findings"],' in main_src
     assert '"grade": grade_result["grade"],' in main_src
     assert '"profile": fetch_profile_result["profile"],' in main_src
@@ -344,9 +343,7 @@ def test_payloads_parse_as_dict_literals(main_src: str, pipeline: Pipeline) -> N
         assert isinstance(payload_arg, ast.Dict), (
             f"payload for {node_name!r} must be a dict literal"
         )
-        payload_keys_by_node[node_name] = {
-            k.value for k in payload_arg.keys if isinstance(k, ast.Constant)
-        }
+        payload_keys_by_node[node_name] = {k for k in payload_dict_keys(payload_arg)}
 
     nested_ids = {sub for n in pipeline.nodes if n.loop_body for sub in n.loop_body}
     for node in pipeline.nodes:
@@ -364,39 +361,6 @@ def test_node_without_inputs_gets_empty_payload() -> None:
     assert "only_result = only({})" in src
 
 
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as a NameError inside the running script."""
-    forward = Pipeline(
-        name="forward-ref",
-        input={"type": "X", "required": [], "optional": []},
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(forward)
-
-
-def test_emit_rejects_reference_to_loop_body_node(pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    broken = copy.deepcopy(pipeline)
-    broken.node_by_id("grade").inputs = {"findings": "score_item.output"}
-    with pytest.raises(ValueError, match="no result available"):
-        emit_main(broken)
-
-
 # ───────── requirements.txt ─────────
 
 
@@ -407,7 +371,7 @@ def test_requirements_lists_only_needed_sdks(emit_result: dict[str, Path]) -> No
         for line in emit_result["requirements"].read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
-    assert lines == ["pydantic>=2.7", "anthropic>=0.89"]
+    assert lines == ["pydantic>=2.7", "anthropic>=1.15"]
 
 
 def test_requirements_includes_openai_when_needed() -> None:

@@ -36,7 +36,18 @@ One durable credential layer, four consumers:
   optional pre-registered `client_id`/`client_secret` (see
   [Client registration](#client-registration)), optional scopes,
   optional static headers (API-key schemes). Written `0600`;
-  overridable via `ROTE_MCP_CONFIG`.
+  overridable via `ROTE_MCP_CONFIG`. Unknown fields are kept, because
+  every rote version on the machine shares the file.
+- **Learned auth** (`mcp-auth-learned.json` beside the registry,
+  `rote.mcp.learned`): whether each server needs a login at all
+  (`oauth` or `none`), keyed by name and normalized URL so a repoint
+  invalidates it. `rote mcp login` records it (a server whose
+  `tools/list` succeeds with no challenge is `none`), `rote mcp add
+  --auth` sets it, and a token for the endpoint or an observed auth park
+  overrides a learned `none`. Nothing learned reads as "auth unknown",
+  and `rote emit` only says a run "will park" for a server known to
+  need OAuth. It is a separate file because rote 0.14.0 and older reject
+  unknown registry fields.
 - **Token store**: one JSON file per server name, `0600`, holding the
   SDK-shaped `tokens`, the `client_info` the login used (so registration
   never repeats), an absolute `expires_at`, and the `token_endpoint` and
@@ -147,6 +158,10 @@ unit test pins the document to that constant). This works without the
 server being lenient. `--callback-port` with any other port skips CIMD
 for that login, since it would be rejected by exactly the servers that
 support it. If all four ports are busy the login fails and says so.
+Selecting a port binds it: the login holds the listening sockets from
+selection until the callback server runs on them, so nothing can take
+the port after the redirect URI names it, and every path (success,
+failure, a still-valid token that needs no callback) releases them.
 
 ### `iss` and issuer binding
 
@@ -191,17 +206,19 @@ caller parks on a credential that was fine. The CLI and the emitted
 Python helper send the refresh to the token file's `token_endpoint`
 instead (`retarget_token_request`). The TS helpers always did.
 
-## URL resolution — the one rule
+## URL resolution
 
-Everywhere (CLI, eval, emitted code):
+What every emitted step and agent loop does (`resolve_url` in
+`rote/mcp/_runtime_helper.py`, and `resolveUrl` in the Node TS helper):
 
-1. explicit `url` on the IR binding (pipeline-pinned),
+1. `ROTE_MCP_<SERVER>_URL` environment variable,
 2. registry entry for the logical server name,
-3. `ROTE_MCP_<SERVER>_URL` environment variable.
+3. the `url` recorded on the IR binding at compilation time.
 
-Exception: *at workflow runtime* the env var outranks the IR-recorded
-URL (deployment context beats compilation-time capture) — see
-`rote/mcp/_runtime_helper.py:resolve_url`.
+Deployment context beats compilation-time capture. Cloudflare Workers
+have no registry: the `ROTE_MCP_<SERVER>_URL` var or secret, then the IR
+`url`. Nothing resolving is a `RoteMcpConfigError`, which fails the step
+without retries.
 
 ## The token-file contract (version 2)
 
@@ -516,6 +533,22 @@ client (`test_cloudflare_mcp_output_typechecks`); the park-on-auth e2e
 (`tests/test_mcp_park_cf_e2e.py`) additionally drives the SDK's
 streamable-HTTP client through a live workerd run against a real
 server.
+
+**Reading a tool's result, the same on every runtime.** Structured
+content wins (fastmcp's `{"result": ...}` wrapper removed when marked).
+Otherwise each text block is JSON-parsed and kept verbatim when it is not
+JSON. One block gives its value, several give a list, and none gives
+`null`. Image,
+audio and embedded-resource blocks are skipped. `NaN`, `Infinity` and
+`-Infinity` are not JSON, so both sides keep that text as a string.
+Python refuses them through `parse_constant`, and TS `JSON.parse`
+rejects them anyway. `tests/test_mcp_text_payload_parity_e2e.py` holds
+the Python, Node and Workers helpers to one answer against a real
+server. One difference is left on purpose: **integers beyond 2^53 lose
+precision on TS.** `JSON.parse` reads every number as an IEEE double, so
+`12345678901234567890` comes back as `12345678901234567000`, where Python
+keeps it exact. A tool that returns large IDs as JSON numbers should
+return them as strings if a TS runtime will read them.
 
 ## Security posture
 

@@ -144,6 +144,32 @@ Rules:
 - Steps that are *not* MCP tool calls (plain HTTP the skill documents,
   browser automation, file I/O) take no binding — never invent one.
 
+**Tool arguments (`mcp.args`).** Without `args` the node's payload is
+the tool's arguments as-is. With it, each tool argument names where its
+value comes from:
+
+```yaml
+  mcp:
+    server: zoominfo
+    tool: zoominfo_search_contacts
+    args:
+      company_ids: company_ids              # a payload key (one of `inputs:`)
+      batch_size: batch_size                # one of the node's `constants:`
+      level: {literal: management-levels}   # a fixed value
+      limit: {literal: 25}
+      include_inactive: {literal: false}
+```
+
+- A bare string is always a reference (an identifier): a payload key, or
+  a constant's name. It is never literal text.
+- `{literal: ...}` is a fixed string, number or boolean, typed as
+  written (`{literal: "25"}` is a string). Use it for a value the skill
+  passes the tool verbatim every run, like a list name ('BDR do not
+  contact') or a filter keyword. A list or object is a `constants:`
+  entry named by reference. `null` is never needed: leave the argument
+  out.
+- Once `args` is present, only the arguments it names reach the tool.
+
 ### Data-flow bindings (`inputs:`)
 
 `input:` documents *types*; `inputs:` binds *where the values come
@@ -378,11 +404,28 @@ map is valid, and an unmapped tool is resolved at run time (more
 fragile, and impossible on Cloudflare, which has no local registry).
 Every key must also appear in `tools`.
 
+**Note on `output`:** declare the keys the next steps read, with real
+types. The emitted loop ends by calling a `submit_result` tool whose
+schema is this output, and the step returns exactly those keys, so
+`lead_generation_loop.output.vetted_contacts` is what the loop
+submitted. Scalar, list, and `X | null` types become exact schema
+types. A named type (`VettedContact`) accepts any JSON value unless
+`output_schema` spells it out, so add `output_schema` when the field
+shape matters downstream (on the TS runtimes the user can also narrow
+its alias in `src/types.ts`). A single type (`output: IntelBrief`) is
+returned as the bare value. A loop with no `output` returns
+`{result: <final text>}`. Calling `submit_result` does not end the loop:
+the loop runs until the model ends its turn, and the last submission
+wins. A loop that ends without one gets one more turn with the submit
+tool forced, then fails naming the node.
+
 **Note on `loop_body`:** sub-nodes listed here must also exist as
 top-level nodes in the `nodes:` list. They're referenced from the
 loop_body but also emitted as standalone activities (so they can be
 tested in isolation and reused elsewhere). The adapter excludes them
-from top-level execution waves to prevent double-dispatch.
+from top-level execution waves to prevent double-dispatch, which is
+also why no top-level node, the loop itself included, may bind one as
+an input (validation rule 10).
 
 ### `hitl_gate`
 
@@ -469,6 +512,16 @@ these constraints in mind:
    ['account_name'], which inputs: does not bind`. A pipeline input
    the judge needs (a rubric, a campaign brief) is bound like any other
    param: `scoring_rubric: pipeline.input.scoring_rubric`.
+10. **A node's `inputs:` may only name nodes that finish before it.**
+    The source must sit upstream through `edges:` (same wave is not
+    upstream), and must not be a `loop_body` sub-node: the loop calls
+    it per iteration, so it never has a top-level result. In
+    particular, a loop never takes its own body sub-node as an input.
+    Wrong: `email_template_loop` with `loop_body: [personalize_email]`
+    and `inputs: {personalized_emails: personalize_email.output}`.
+    Right: drop that input; the body's work comes back as the loop's
+    `output`, and downstream nodes bind `email_template_loop.output`.
+    A cycle in `edges:` is rejected too.
 
 ## Duration strings
 

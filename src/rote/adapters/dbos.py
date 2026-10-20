@@ -43,8 +43,9 @@ Key design choices vs. the other adapters:
   node's result (including HITL gate resume payloads) as
   ``<id>_result``, and builds each step's payload from the node's
   ``inputs:`` bindings via the shared reference grammar
-  (:func:`rote.ir.parse_input_ref`). Forward references are rejected at
-  emit time by :func:`rote.adapters._common.check_input_refs_available`.
+  (:func:`rote.ir.parse_input_ref`). Forward references never reach
+  the adapter: IR validation rejects them
+  (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Typed LLM signatures as generated Pydantic modules.** When the IR
   carries ``signature_spec`` (preferred), the adapter converts the JSON
@@ -79,7 +80,6 @@ from rote.adapters._common import (
     _pipeline_hash,
     _seconds_literal,
     _to_pascal_case,
-    check_input_refs_available,
     judge_override_readme,
     safe_docstring_line,
 )
@@ -91,13 +91,16 @@ from rote.adapters._py_common import (
     agent_loop_call,
     async_runner_helper,
     call_impl_helper,
+    cli_input_check,
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
     impl_kwargs_expr,
     mcp_arguments_line,
+    missing_inputs_helper,
     needs_call_impl,
     require_constant_parameters,
+    required_inputs_guard,
     resolve_extracted_source,
     serialize_helper,
     write_signature_package,
@@ -455,18 +458,9 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    # HITL gates count: their DBOS.recv payload binds `<id>_result`, so
-    # gate resume payloads participate as that gate's result downstream.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
         non_hitl = [n for n in wave if n.kind is not NodeKind.HITL_GATE]
         hitl = [n for n in wave if n.kind is NodeKind.HITL_GATE]
-
-        for n in non_hitl:
-            check_input_refs_available(n, available)
 
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
@@ -538,9 +532,7 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
 
         for node in fan_out_nodes:
             element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
-            payload_items = "".join(
-                f', "{param}": {expr}' for param, expr in sorted(scalars.items())
-            )
+            payload_items = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
             lines.append(f"    # fan_out: {node.id} runs once per element of the bound")
             lines.append("    # list, each as its own enqueued durable step.")
             lines.append(f"    {node.id}_payloads = [")
@@ -570,8 +562,6 @@ def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
 
         for gate in hitl:
             lines.append(_emit_hitl_wait(gate, pipeline).rstrip("\n"))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.append("    return {")
@@ -693,6 +683,8 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
 
     if any(n.fan_out for n in pipeline.nodes):
         header += "\n\n" + fan_out_list_helper()
+    if pipeline.needs_input_check:
+        header += "\n\n" + missing_inputs_helper(pipeline)
 
     has_impls = needs_call_impl(pipeline)
     if has_impls or mcp_backed or has_legacy_judges(pipeline):
@@ -841,6 +833,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         f"\n\n@DBOS.workflow(name={json.dumps(workflow_name)})\n"
         f"def run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
+        f"{required_inputs_guard(pipeline, 'raise ValueError(_input_error)')}"
         f"{_emit_workflow_body(pipeline, cfg)}\n"
     )
 
@@ -864,13 +857,15 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
             #
             # HITL gates are resumed from another process either way — see
             # README.md.
+            if "--serve" not in sys.argv[1:]:
+                pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
+            __INPUT_CHECK__
             launch()
             try:
                 if "--serve" in sys.argv[1:]:
                     print("serving: waiting for enqueued runs (Ctrl-C to stop)", file=sys.stderr)
                     threading.Event().wait()
                 else:
-                    pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
                     handle = DBOS.start_workflow(run_pipeline, pipeline_input)
                     print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
                     print(json.dumps(handle.get_result(), indent=2, default=str))
@@ -879,6 +874,9 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         """
     )
 
+    # Checked before launch(): a bad input should not start DBOS (or print
+    # its startup log) only to fail inside the workflow.
+    main_block = main_block.replace("    __INPUT_CHECK__\n", cli_input_check(pipeline, " " * 8))
     return header + "".join(step_parts) + workflow_block + main_block
 
 

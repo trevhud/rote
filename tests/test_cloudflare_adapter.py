@@ -19,6 +19,7 @@ Three levels of validation, mirroring ``test_temporal_adapter.py``:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -606,7 +607,10 @@ def test_entry_nodes_receive_pipeline_input(emit_result: dict[str, Path]) -> Non
     # inside a promise combinator is undocumented, and its timeout throws,
     # which would reject the whole wave). That leaves taxonomy_lookup alone
     # in the wave, so it emits in the sequential form.
-    sequential = "{\n                brief: pipelineInput,\n            }"
+    sequential = (
+        "{\n                brief: pipelineInput as ImplInput<typeof taxonomyLookup>"
+        '["brief"],\n            }'
+    )
     parkable = "{\n                            brief: pipelineInput,\n                        }"
     assert f"targetResearch({parkable}, this.env)" in src
     assert f"taxonomyLookup({sequential})" in src
@@ -618,15 +622,16 @@ def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path])
     # HITL gate output field → downstream step payload.
     # Indexed directly, never cast: tsc then checks the IR field name
     # against the implementation's declared type (see ref_to_ts_expr).
-    assert "_result as " not in src
-    assert 'contacts: contact_review_gate_result["approved_contacts"],' in src
+    # The one assertion allowed is a value's, to the impl's declared type.
+    assert re.search(r"_result as (?!ImplInput<)", src) is None
+    assert _binds("contacts", 'contact_review_gate_result["approved_contacts"]', src)
     # Node output fields chain through the exclusion checks.
-    assert 'contacts: hubspot_upsert_result["upserted"],' in src
-    assert 'contacts: exclusion_check_dnc_result["passed"],' in src
+    assert _binds("contacts", 'hubspot_upsert_result["upserted"]', src)
+    assert _binds("contacts", 'exclusion_check_dnc_result["passed"]', src)
     # Pipeline input field selection (Params is already a Record — no cast).
-    assert 'target_quota: pipelineInput["target_quota"],' in src
+    assert _binds("target_quota", 'pipelineInput["target_quota"]', src)
     # Fan-in on the report node.
-    assert 'template_ids: create_sales_template_result["template_ids"],' in src
+    assert _binds("template_ids", 'create_sales_template_result["template_ids"]', src)
     # No node is left passing the placeholder empty payload in BDR.
     assert "async () => hubspotUpsert({})" not in src
 
@@ -651,32 +656,6 @@ def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
     assert "pipelineInput" not in src
 
 
-def test_emit_rejects_forward_reference() -> None:
-    """Inputs referencing a later wave must fail at emit time, not as an
-    undefined-variable error inside the deployed worker."""
-    from rote.ir import Edge, Node, NodeKind, Pipeline, PipelineInput
-
-    pipeline = Pipeline(
-        name="forward-ref",
-        input=PipelineInput(type="X"),
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        CloudflareAdapter().emit_workflow(pipeline)
-
-
 def test_extracted_stub_return_type_is_never(
     emit_result: dict[str, Path],
 ) -> None:
@@ -686,11 +665,15 @@ def test_extracted_stub_return_type_is_never(
     `unknown` isn't structurally serializable.)"""
     src = emit_result["extracted/hubspot_upsert"].read_text()
     assert "Promise<never> {" in src
-    # An agent_loop module is NOT a stub — it returns the loop's real
-    # result.
+    # An agent_loop module is NOT a stub — it returns the loop's declared
+    # output, typed by its keys.
     loop_src = emit_result["extracted/lead_generation_loop"].read_text()
     assert "Promise<never> {" not in loop_src
-    assert "iterations: number | null }> {" in loop_src
+    assert (
+        'Promise<{ "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary }> {'
+        in loop_src
+    )
+    assert 'import type { VettedContact, VettingSummary } from "../types";' in loop_src
 
 
 # ───────── Custom config ─────────
@@ -1082,3 +1065,11 @@ def test_hitl_gate_uses_its_declared_timeout_not_the_default() -> None:
     assert '"1 hour"' in quick, "a gate's declared timeout must reach waitForEvent"
     assert '"7 days"' in slow, "a gate without a timeout falls back to the default"
     assert '"7 days"' not in quick
+
+
+def _binds(param: str, expr: str, src: str) -> bool:
+    """``param: expr`` in a payload, with or without the impl-type assertion
+    an impl call adds (``expr as ImplInput<typeof fn>["param"]``)."""
+    key = re.escape('"' + param + '"')
+    pattern = rf"{re.escape(param)}: {re.escape(expr)}( as ImplInput<typeof \w+>\[{key}\])?,"
+    return re.search(pattern, src) is not None

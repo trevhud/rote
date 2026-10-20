@@ -33,13 +33,20 @@ also what keeps this quiet enough to be worth reading.
 from __future__ import annotations
 
 import ast
+import io
 import re
+import sys
+import tokenize
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from rote.ir import CONSTANT_ARGUMENT_KINDS, Node, NodeKind, Pipeline
+
+#: The oldest Python rote supports (``requires-python``). Emitted modules
+#: run wherever rote does, so an agent-written module must parse there.
+OLDEST_SUPPORTED_PYTHON = (3, 11)
 
 #: ``{{ dotted.path }}`` — must stay in step with the ``_interpolate``
 #: helper emitted by ``_py_common`` / ``_ts_common``.
@@ -64,6 +71,96 @@ class ContractFinding:
             "message": self.message,
             "path": self.path,
         }
+
+
+@dataclass
+class _FString:
+    """An f-string being tokenized: its closing quote and brace depth."""
+
+    quote: str
+    depth: int = 0
+
+
+def newer_syntax_problems(source: str) -> list[tuple[int, str]]:
+    """``(line, message)`` for syntax that parses here but not on Python 3.11.
+
+    A real compile wrote ``f"{'\\n'.join(lines)}"``: valid on 3.12+, a
+    SyntaxError on 3.11, so a compile run on a newer interpreter shipped
+    a module that could not even be imported where rote is supported.
+    ``ast.parse(feature_version=...)`` does not catch it, because PEP 701
+    changed the *tokenizer* (f-strings became token streams) and
+    ``feature_version`` only gates grammar rules. So two checks:
+
+    * the grammar, through ``feature_version`` (``type`` aliases, PEP 695
+      generics);
+    * the PEP 701 relaxations, by walking the 3.12+ token stream: inside
+      a replacement field, 3.11 allows no backslash, no comment, no
+      newline under a single-quoted f-string, and no reuse of an
+      enclosing f-string's quote.
+
+    On 3.11 itself the interpreter's own parse is authoritative and the
+    caller has already done it, so this returns nothing there.
+    """
+    if sys.version_info[:2] <= OLDEST_SUPPORTED_PYTHON:
+        return []
+    problems: list[tuple[int, str]] = []
+    try:
+        ast.parse(source, feature_version=OLDEST_SUPPORTED_PYTHON)
+    except SyntaxError as exc:
+        problems.append((exc.lineno or 0, exc.msg))
+
+    stack: list[_FString] = []
+    seen: set[tuple[int, str]] = set()
+
+    def report(line: int, message: str) -> None:
+        if (line, message) not in seen:
+            seen.add((line, message))
+            problems.append((line, message))
+
+    # Token types that only exist on 3.12+ (3.14+ for t-strings); mypy checks
+    # against 3.11, where the module has no such attributes.
+    fstring_start: int = getattr(tokenize, "FSTRING_START")  # noqa: B009
+    fstring_end: int = getattr(tokenize, "FSTRING_END")  # noqa: B009
+    tstring_start = getattr(tokenize, "TSTRING_START", None)
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        line = tok.start[0]
+        if tstring_start is not None and tok.type == tstring_start:
+            report(line, "template strings (t-strings) need Python 3.14")
+            continue
+        if tok.type == fstring_start:
+            # On 3.11 the outer f-string is ONE string token, so the
+            # nested one may not contain the outer's closing quote.
+            if any(outer.quote in tok.string for outer in stack):
+                report(line, "reusing the enclosing quote inside an f-string needs Python 3.12")
+            stack.append(_FString(quote=tok.string.lstrip("rRfFbBuU")))
+            continue
+        if tok.type == fstring_end:
+            stack.pop()
+            continue
+        if not stack:
+            continue
+        top = stack[-1]
+        if tok.type == tokenize.OP and tok.string in "{}" and len(tok.string) == 1:
+            top.depth += 1 if tok.string == "{" else -1
+            continue
+        # Every f-string whose replacement field this token sits in. The
+        # innermost one only counts when the token is inside ITS field;
+        # its own literal text (FSTRING_MIDDLE at depth 0) is fine.
+        enclosing = stack[:-1] + ([top] if top.depth > 0 else [])
+        if not enclosing:
+            continue
+        if "\\" in tok.string:
+            report(line, "a backslash inside an f-string's {expression} needs Python 3.12")
+        if tok.type == tokenize.COMMENT:
+            report(line, "a comment inside an f-string's {expression} needs Python 3.12")
+        if tok.type == tokenize.NL and any(len(f.quote) == 1 for f in enclosing):
+            report(
+                line,
+                "a line break inside a single-quoted f-string's {expression} needs Python 3.12",
+            )
+        if any(f.quote in tok.string for f in enclosing):
+            report(line, "reusing the enclosing quote inside an f-string needs Python 3.12")
+    return problems
 
 
 def _split_ref(ref: str) -> tuple[str, str]:
@@ -199,6 +296,52 @@ def _module_for(node: Node) -> tuple[str, str] | None:
     return None
 
 
+def _parse_module(
+    node_id: str, rel: str, path: Path
+) -> tuple[ast.Module | None, list[ContractFinding]]:
+    """Parse one agent-written module, or say why it cannot be imported."""
+    try:
+        source = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # Python reads source as UTF-8 by default, so the import fails too.
+        return None, [
+            ContractFinding(
+                node_id=node_id,
+                kind="not_utf8",
+                severity="error",
+                message=f"{rel} is not valid UTF-8 ({exc.reason} at byte {exc.start}), "
+                f"so Python cannot import it",
+                path=rel,
+            )
+        ]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return None, [
+            ContractFinding(
+                node_id=node_id,
+                kind="syntax_error",
+                severity="error",
+                message=f"{rel} does not parse: {exc.msg} (line {exc.lineno})",
+                path=rel,
+            )
+        ]
+    oldest = ".".join(map(str, OLDEST_SUPPORTED_PYTHON))
+    return tree, [
+        ContractFinding(
+            node_id=node_id,
+            kind="needs_newer_python",
+            severity="error",
+            message=(
+                f"{rel} line {line}: {message}, but rote supports Python {oldest}, "
+                f"where the module would not import"
+            ),
+            path=rel,
+        )
+        for line, message in newer_syntax_problems(source)
+    ]
+
+
 def check_contracts(pipeline: Pipeline, artifact_dir: Path | str) -> list[ContractFinding]:
     """Check every IR promise against the artifacts actually on disk.
 
@@ -231,19 +374,8 @@ def check_contracts(pipeline: Pipeline, artifact_dir: Path | str) -> list[Contra
             path = root / rel
             if path.is_file():
                 if path not in parsed:
-                    try:
-                        parsed[path] = ast.parse(path.read_text(encoding="utf-8"))
-                    except SyntaxError as exc:
-                        parsed[path] = None
-                        findings.append(
-                            ContractFinding(
-                                node_id=node.id,
-                                kind="syntax_error",
-                                severity="error",
-                                message=f"{rel} does not parse: {exc.msg} (line {exc.lineno})",
-                                path=rel,
-                            )
-                        )
+                    parsed[path], module_findings = _parse_module(node.id, rel, path)
+                    findings.extend(module_findings)
                 tree = parsed.get(path)
                 if tree is not None:
                     findings.extend(
@@ -405,3 +537,111 @@ def constants_not_accepted(
                 f"node {node.id!r}: {where} {symbol}() takes no {', '.join(sorted(rejected))}"
             )
     return problems
+
+
+# ───────── Implemented vs stub, per node ─────────
+
+ImplStatus = Literal["implemented", "stub", "absent"]
+
+
+@dataclass(frozen=True)
+class NodeImplementation:
+    """Whether the function an impl-bearing node points at does real work.
+
+    ``absent`` means the agent wrote no such module or function, so
+    emission synthesises a stub. ``reason`` is a stub's
+    ``NotImplementedError`` message: the rubric has the agent say there
+    why it could not implement the node (an external system, a business
+    fact the skill does not state).
+    """
+
+    node_id: str
+    kind: str
+    impl: str
+    status: ImplStatus
+    reason: str | None = None
+    #: The default backend calls the MCP tool instead of this function, so
+    #: a stub here does not stop a run.
+    mcp_bound: bool = False
+
+    def as_dict(self) -> dict[str, str | bool | None]:
+        return {
+            "node": self.node_id,
+            "kind": self.kind,
+            "impl": self.impl,
+            "status": self.status,
+            "reason": self.reason,
+            "mcp_bound": self.mcp_bound,
+        }
+
+
+def stub_reason(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str | None]:
+    """``(is_stub, reason)`` for one function definition.
+
+    Whether it is a stub is :func:`rote.adapters._common.stub_raise`, the
+    same predicate ``rote run``'s preflight uses: the whole body after the
+    docstring is one ``raise NotImplementedError``. The reason is that
+    exception's message, rendered from source when it is not a plain
+    string (an f-string naming a constant, say).
+    """
+    from rote.adapters._common import stub_raise
+
+    stmt = stub_raise(fn)
+    if stmt is None:
+        return False, None
+    if not isinstance(stmt.exc, ast.Call) or not stmt.exc.args:
+        return True, None
+    arg = stmt.exc.args[0]
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        text = arg.value
+    else:
+        text = ast.unparse(arg)
+    return True, " ".join(text.split()) or None
+
+
+def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[NodeImplementation]:
+    """One entry per ``pure_function`` / ``external_call`` node with an ``impl``.
+
+    Read by AST, like everything in this module: the modules are never
+    imported. This is the per-node answer to "will the compiled pipeline
+    run without hand-written code", which a per-file "contains
+    NotImplementedError somewhere" check cannot give once a module mixes
+    real functions with stubs.
+    """
+    root = Path(artifact_dir)
+    trees: dict[Path, ast.Module | None] = {}
+    statuses: list[NodeImplementation] = []
+    for node in pipeline.nodes:
+        if node.kind not in (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL) or not node.impl:
+            continue
+        rel, symbol = _split_ref(node.impl)
+        path = root / rel
+        if path not in trees:
+            try:
+                trees[path] = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                # check_contracts reports why the module is unreadable.
+                trees[path] = None
+        tree = trees[path]
+        stmt = _toplevel_defs(tree).get(symbol) if tree is not None else None
+        status: ImplStatus
+        reason: str | None = None
+        if stmt is None:
+            status = "absent"
+        elif isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+            is_stub, reason = stub_reason(stmt)
+            status = "stub" if is_stub else "implemented"
+        else:
+            # A partial or callable object: something real is bound there.
+            status = "implemented"
+        statuses.append(
+            NodeImplementation(
+                node_id=node.id,
+                kind=node.kind.value,
+                impl=node.impl,
+                status=status,
+                reason=reason,
+                mcp_bound=node.mcp is not None,
+            )
+        )
+    return statuses

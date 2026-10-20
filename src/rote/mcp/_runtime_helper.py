@@ -631,6 +631,10 @@ def _refused_capabilities(exc: BaseException) -> dict[str, str] | None:
     return None
 
 
+def _reject_non_finite(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
 def _result_payload(result: Any, output_schema: Mapping[str, Any] | None = None) -> Any:
     """Extract the useful payload from a fastmcp ``CallToolResult``.
 
@@ -665,8 +669,12 @@ def _result_payload(result: Any, output_schema: Mapping[str, Any] | None = None)
 
     def _parse(text: str) -> Any:
         try:
-            return json.loads(text)
-        except json.JSONDecodeError:
+            # NaN / Infinity / -Infinity are not JSON, and the TS helpers'
+            # JSON.parse rejects them; refusing them here too keeps both
+            # runtimes returning the raw text (and keeps the value
+            # JSON-serializable across a step boundary).
+            return json.loads(text, parse_constant=_reject_non_finite)
+        except ValueError:  # JSONDecodeError is a ValueError
             return text
 
     if not texts:

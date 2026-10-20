@@ -151,7 +151,7 @@ def postgres_url() -> Iterator[str]:
         deadline = time.time() + 60
         while time.time() < deadline:
             ready = subprocess.run(
-                ["docker", "exec", name, "pg_isready", "-U", "postgres"],
+                ["docker", "exec", name, "pg_isready", "-h", "127.0.0.1", "-U", "postgres"],
                 capture_output=True,
                 timeout=10,
             )

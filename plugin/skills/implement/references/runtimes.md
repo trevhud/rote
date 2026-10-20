@@ -20,9 +20,13 @@ drift from it.
   in `main.py` (dbos, python) or `activities.py` (temporal) for the exact
   keys per node. Give the function explicit keyword parameters rather
   than `**payload`, so a contract change fails loudly, and let the
-  constants it receives drive the logic. When nodes sharing a function
-  send different constant sets (one sends `tab_name`, the others do
-  not), the extra parameter needs a default.
+  constants it receives drive the logic. A constant every caller sends
+  is a required parameter with no default (`*, channel_id: str`, never
+  `channel_id: str = "C0..."` or `fixed_queries or []`), so a missing
+  constant raises instead of silently falling back to a copied value.
+  Only when nodes sharing a function send different constant sets (one
+  sends `tab_name`, the others do not) does the extra parameter get a
+  default.
 - **Sync or async:** either works on all three. `_call_impl` awaits an
   `async def` function (or a plain one that returns a coroutine) on dbos
   and python, and on temporal it runs a plain function in a worker
@@ -50,8 +54,15 @@ drift from it.
   (`parse_dock_pending` exports `parseDockPending`) that the workflow
   imports by that name.
 - **Call shape:** one object argument whose keys are the node's
-  `inputs:` parameter names. The stub types it `_input: unknown`.
-  Replace that with a real interface for the input.
+  `inputs:` parameter names plus its IR `constants`, merged last. Every
+  caller sends them: the DAG, each fan_out element, and an agent loop
+  calling the node as a tool. The stub types it `_input: unknown`.
+  Replace that with a real interface for the input that declares both
+  the inputs and the constant keys, or `tsc` rejects the call's extra
+  properties. The workflow asserts each value to the type your interface
+  declares for that key, so a closed interface compiles on all three
+  runtimes, and `tsc` still fails on a key you declare that the IR does
+  not send, or a key the IR sends that you do not declare.
 - **Return type:** the stub declares `Promise<never>` because it always
   throws. Replace it with a concrete type. On Cloudflare the return
   value must satisfy `Rpc.Serializable`, so return plain objects,
@@ -59,10 +70,27 @@ drift from it.
   instances. The workflow reads fields as
   `(<id>_result as Record<string, unknown>)["field"]`, so any concrete
   object type compiles.
-- **Constants are not passed.** The workflow sends only the node's
-  `inputs:`. The stub's doc comment lists the node's constants under
-  "Constants from the source skill". Write them into the file as named
-  constants. One file serves one node, so there is no ambiguity.
+- **Constants are passed; read them from the input.** The stub's doc
+  comment lists the node's constants under "Constants from the source
+  skill". Use `input.<key>`, not a hard-coded copy: a copy makes the
+  pipeline.yaml value dead config, so editing it changes nothing. Do
+  not fall back either (`input.channel_id ?? "C0..."`): declare the key
+  required in the input type. An MCP-bound node is the exception. Its tool gets a constant only when
+  `mcp.args` names it.
+- **Agent-loop output types live in `src/types.ts`.** A loop's declared
+  output can name a type the IR never defines, and each one is an alias
+  there, `export type InvoiceResult = JsonValue;` at first. A node that
+  reads that output types its input with the alias, so narrow the alias
+  (an interface, or `import type` of your own) and the loop and every
+  reader follow. It is yours: re-emit keeps your edit and puts a fresh
+  copy beside it as `types.ts.new`. `JsonValue` is spelled out five
+  levels deep, not recursively (Cloudflare's step results cannot be
+  recursive types), so a literal you write that nests deeper fails tsc
+  until the alias is narrowed.
+- **Type-check after implementing.** wrangler, esbuild and tsx bundle
+  without type-checking, and `rote run` won't show it either, so run
+  `npx tsc --noEmit` in the emitted dir. It catches a closed input type
+  that is missing one of the node's constants (TS2353, excess property).
 - **Agent-loop modules are not stubs.** `src/extracted/<loop node id>.ts`
   is generated working code. Leave it alone.
 - **Python code does not carry over.** The compiler's

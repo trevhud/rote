@@ -39,8 +39,9 @@ Key design choices vs. the durable adapters:
   takes the pipeline input dict, binds every node's result as
   ``<id>_result``, and builds each payload from the node's ``inputs:``
   bindings via the shared reference grammar
-  (:func:`rote.ir.parse_input_ref`). Forward references are rejected at
-  emit time by :func:`rote.adapters._common.check_input_refs_available`.
+  (:func:`rote.ir.parse_input_ref`). Forward references never reach
+  the adapter: IR validation rejects them
+  (:meth:`rote.ir.Pipeline._validate_input_reachability`).
 
 * **Signatures and stubs are shared machinery.** ``signatures/*.py``
   and ``extracted/*.py`` come from :mod:`rote.adapters._py_common`, the
@@ -64,7 +65,6 @@ from rote.adapters._common import (
     _execution_waves,
     _pipeline_hash,
     _to_pascal_case,
-    check_input_refs_available,
     fan_out_nodes,
     judge_override_readme,
     refuse_mcp_only_nodes,
@@ -77,12 +77,15 @@ from rote.adapters._py_common import (
     agent_loop_call,
     async_runner_helper,
     call_impl_helper,
+    cli_input_check,
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
     impl_kwargs_expr,
+    missing_inputs_helper,
     needs_call_impl,
     require_constant_parameters,
+    required_inputs_guard,
     serialize_helper,
     write_extracted_package,
     write_signature_package,
@@ -315,7 +318,7 @@ def _emit_fan_out_call(node: Node, pipeline: Pipeline) -> str:
     back against the list it came from.
     """
     element_param, list_expr, scalars = fan_out_binding(node, pipeline, indent=" " * 8)
-    shared = "".join(f', "{param}": {expr}' for param, expr in sorted(scalars.items()))
+    shared = "".join(f", {entry}" for _, entry in sorted(scalars.items()))
     return "\n".join(
         [
             f"    # fan_out: {node.id} runs once per element of the bound list.",
@@ -333,14 +336,7 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
     waves = _execution_waves(pipeline)
     lines: list[str] = []
 
-    # Node ids whose results are bound by the time each wave starts —
-    # used to reject inputs that reference a later wave at emit time.
-    available: set[str] = set()
-
     for wave_idx, wave in enumerate(waves, start=1):
-        for n in wave:
-            check_input_refs_available(n, available)
-
         lines.append("")
         lines.append(f"    # ─── Wave {wave_idx} ───")
 
@@ -375,8 +371,6 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
 
         for node in fanned:
             lines.append(_emit_fan_out_call(node, pipeline))
-
-        available.update(n.id for n in wave)
 
     lines.append("")
     lines.append("    return {")
@@ -478,6 +472,9 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     if has_impls:
         serialize_block += "\n\n" + call_impl_helper()
 
+    if pipeline.needs_input_check:
+        serialize_block += "\n\n" + missing_inputs_helper(pipeline)
+
     node_parts: list[str] = []
     for node in pipeline.nodes:
         node_parts.append("\n\n")
@@ -493,20 +490,19 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
     pipeline_block = (
         f"\n\ndef run_pipeline(pipeline_input: dict) -> dict:\n"
         f'    """{desc_first}"""\n'
+        f"{required_inputs_guard(pipeline, 'raise ValueError(_input_error)')}"
         f"{_emit_pipeline_body(pipeline)}\n"
     )
 
-    main_block = textwrap.dedent(
-        """\
-
-
-        if __name__ == "__main__":
-            # No engine, no daemon: parse the JSON input from argv[1], run the
-            # pipeline in-process, print the result.
-            pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
-            result = run_pipeline(pipeline_input)
-            print(json.dumps(result, indent=2, default=str))
-        """
+    main_block = (
+        "\n\n"
+        'if __name__ == "__main__":\n'
+        "    # No engine, no daemon: parse the JSON input from argv[1], run the\n"
+        "    # pipeline in-process, print the result.\n"
+        "    pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}\n"
+        f"{cli_input_check(pipeline, '    ')}"
+        "    result = run_pipeline(pipeline_input)\n"
+        "    print(json.dumps(result, indent=2, default=str))\n"
     )
 
     return (
@@ -550,7 +546,7 @@ def emit_requirements(pipeline: Pipeline) -> str:
     # An agent loop runs on the SDK's own tool runner when it is not on
     # the subscription CLI, so the SDK is required even with no judges.
     if "anthropic" in clients or agent_loops:
-        lines.append("anthropic>=0.89")
+        lines.append("anthropic>=1.15")
     if "openai" in clients:
         lines.append("openai>=1.40")
     return "\n".join(lines) + "\n"

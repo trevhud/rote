@@ -12,12 +12,16 @@ per server, so the registry stays shareable and the secrets stay
 separate. ``client_secret`` is the one exception (it is registry
 config, not a token), which is why the file is written ``0600``.
 
-Resolution order for a server URL, everywhere in rote (the CLI, the
-eval harness, and the code emitted into runtimes):
+Resolution order for a server URL in the code emitted into runtimes
+(``resolve_url`` in :mod:`rote.mcp._runtime_helper` and the Node TS
+helper), which is what every step and agent loop uses:
 
-1. an explicit ``url`` on the IR binding (pipeline-pinned),
+1. the ``ROTE_MCP_<SERVER>_URL`` environment variable,
 2. the registry entry for the binding's logical server name,
-3. the ``ROTE_MCP_<SERVER>_URL`` environment variable.
+3. the ``url`` recorded on the IR binding at compilation time.
+
+Deployment context outranks compilation-time capture. Workers have no
+registry: the variable (a wrangler var or secret), then the IR ``url``.
 """
 
 from __future__ import annotations
@@ -27,7 +31,6 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,13 +47,26 @@ def registry_path() -> Path:
     return base / "rote" / "mcp.json"
 
 
+#: The registry is shared by every rote version on the machine (a cached
+#: ``uvx --from rote-cli`` beside a newer install, the plugin's ``uv
+#: run``). From this version on, unknown fields are kept, not rejected:
+#: a newer version's field must neither fail this one nor be dropped when
+#: this one writes the file back. Released versions up to 0.14.0 still
+#: reject unknown fields, which is why learned auth lives in a sidecar
+#: (rote.mcp.learned) rather than here.
+_FORWARD_COMPATIBLE = ConfigDict(extra="allow")
+
+
 class McpServerConfig(BaseModel):
     """One registered MCP server."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = _FORWARD_COMPATIBLE
 
     url: str
-    transport: Literal["streamable-http", "sse"] = "streamable-http"
+    #: "streamable-http" or "sse" from this version's `rote mcp add`; kept
+    #: as a plain string so a transport a newer rote adds loads here and
+    #: is treated as unsupported rather than rejected.
+    transport: str = "streamable-http"
     client_id: str | None = Field(
         default=None,
         description=(
@@ -85,7 +101,7 @@ class McpServerConfig(BaseModel):
 
 
 class McpRegistry(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = _FORWARD_COMPATIBLE
 
     version: int = 1
     servers: dict[str, McpServerConfig] = Field(default_factory=dict)
@@ -115,18 +131,3 @@ def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
             os.unlink(tmp_name)
         raise
     return p
-
-
-def resolve_server_url(
-    server: str,
-    explicit_url: str | None = None,
-    registry: McpRegistry | None = None,
-) -> str | None:
-    """The one URL-resolution rule (binding → registry → env). None = unresolvable."""
-    if explicit_url:
-        return explicit_url
-    reg = registry if registry is not None else load_registry()
-    entry = reg.servers.get(server)
-    if entry is not None:
-        return entry.url
-    return os.environ.get(f"ROTE_MCP_{server.upper()}_URL")

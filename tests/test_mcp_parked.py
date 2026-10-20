@@ -127,6 +127,62 @@ def test_non_tty_announces_server_node_and_release_command_once() -> None:
     assert channel.released == []
 
 
+def test_an_observed_park_retires_a_recorded_no_auth() -> None:
+    """A run parked on auth is proof the server needs it now, so a stale
+    `auth: none` (the server moved to OAuth) stops hiding that."""
+    from rote.mcp.learned import learned_auth, record_auth
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(McpRegistry(servers={"vendor": McpServerConfig(url="https://v.example")}))
+    record_auth("vendor", "https://v.example", "none", source="login")
+    _watcher(_FakeChannel(parks=[_park()]), []).tick()
+    learned = learned_auth("vendor", "https://v.example")
+    assert learned is not None and learned.auth == "oauth"
+
+
+def test_a_corrupt_sidecar_never_fails_a_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release is the part that matters; recording what it proves is
+    bookkeeping, so a sidecar that will not load is a warning, not an error."""
+    from rote.app_registry import RegisteredApp
+    from rote.mcp import release
+    from rote.mcp.learned import learned_path
+
+    app = RegisteredApp(path=tmp_path, runtime="cloudflare", pipeline="p")
+    monkeypatch.setattr(release, "registered_apps", lambda: [app])
+
+    def fake_cloudflare(server: str, apps: Any, released: list[Any], skipped: Any) -> None:
+        released.append(release.ReleasedWorkflow(app=tmp_path, workflow_id="wf-1"))
+
+    monkeypatch.setattr(release, "_release_cloudflare_apps", fake_cloudflare)
+    learned_path().parent.mkdir(parents=True, exist_ok=True)
+    learned_path().write_text("{not json", encoding="utf-8")
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(McpRegistry(servers={"vendor": McpServerConfig(url="https://v.example")}))
+    with pytest.warns(RuntimeWarning, match="could not record that MCP server 'vendor'"):
+        report = release.release_parked_workflows("vendor")
+    assert [r.workflow_id for r in report.released] == ["wf-1"]
+
+
+def test_a_corrupt_sidecar_never_hides_the_park() -> None:
+    """Recording what the park proves is bookkeeping. A sidecar that will
+    not load must not stop the user seeing the park, or the release."""
+    from rote.mcp.learned import learned_path
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(McpRegistry(servers={"vendor": McpServerConfig(url="https://v.example")}))
+    learned_path().write_text("{not json", encoding="utf-8")
+    lines: list[str] = []
+    watcher = _watcher(_FakeChannel(parks=[_park()]), lines)
+    assert watcher.tick() == 0.0
+    text = "\n".join(lines)
+    assert "server 'vendor'" in text  # announced
+    assert "could not record that MCP server 'vendor' needs auth" in text
+    assert watcher.has_active_park
+
+
 def test_non_tty_releases_its_own_run_when_credentials_change() -> None:
     channel = _FakeChannel(parks=[_park()])
     lines: list[str] = []
@@ -351,7 +407,10 @@ def test_announced_login_always_prints_the_url_and_says_when_no_browser_opened(
     oauth = build_oauth("vendor", McpServerConfig(url="http://127.0.0.1:9/mcp"), announce_url=True)
     oauth.httpx_client_factory = _FakeHttpx
     url = "http://127.0.0.1:9/authorize?state=abc"
-    asyncio.run(oauth.redirect_handler(url))
+    try:
+        asyncio.run(oauth.redirect_handler(url))
+    finally:
+        oauth.close_callback_sockets()  # build_oauth holds the callback port
 
     err = capsys.readouterr().err
     assert f"  {url}\n" in err

@@ -157,7 +157,14 @@ def test_a_loop_body_tool_call_receives_its_nodes_constants(
 # ───────── MCP tool arguments, identical on every runtime ─────────
 
 
-def _mcp_pipeline(args: dict[str, str] | None) -> Pipeline:
+#: A literal built to break whatever it is spliced into: both quote kinds,
+#: a backtick and ``${}`` (TS template), a newline, a backslash, the line
+#: breaks str.splitlines honors, a character outside the BMP, a statement
+#: end and a closing tag. It must reach the tool byte-identical.
+EVIL = "a\"b'c`d${process.exit(7)}e\n\\f\u2028g\x85h\U0001f600;</script>{{x}}"
+
+
+def _mcp_pipeline(args: dict[str, Any] | None) -> Pipeline:
     mcp: dict[str, Any] = {"server": "gmail", "tool": "search_threads"}
     if args is not None:
         mcp["args"] = args
@@ -202,7 +209,7 @@ def _ts_arguments(pipeline: Pipeline, tmp_path: Path, runtime: str) -> Any:
     out = tmp_path / runtime
     get_adapter(runtime).emit(pipeline, out)
     module = next(out.rglob("search_mail.ts")).read_text(encoding="utf-8")
-    match = re.search(r"const args = (.*?);", module)
+    match = re.search(r"^\s*const args = (.*);(?:\s*//.*)?$", module, re.MULTILINE)
     assert match is not None, module
     script = (
         f"const payload = {json.dumps(_PAYLOAD)}; console.log(JSON.stringify({match.group(1)}));"
@@ -219,6 +226,25 @@ def _ts_arguments(pipeline: Pipeline, tmp_path: Path, runtime: str) -> Any:
         (None, {"query": "invoices"}),
         # A mapping that names a constant forwards that constant.
         ({"q": "query", "days": "email_window_days"}, {"q": "invoices", "days": 7}),
+        # Literals: fixed values, typed, and escaped rather than spliced.
+        (
+            {
+                "q": "query",
+                "level": {"literal": "management-levels"},
+                "n": {"literal": 3},
+                "f": {"literal": 2.5},
+                "b": {"literal": True},
+                "evil": {"literal": EVIL},
+            },
+            {
+                "q": "invoices",
+                "level": "management-levels",
+                "n": 3,
+                "f": 2.5,
+                "b": True,
+                "evil": EVIL,
+            },
+        ),
     ],
 )
 def test_every_runtime_sends_a_tool_the_same_arguments(
@@ -228,6 +254,43 @@ def test_every_runtime_sends_a_tool_the_same_arguments(
     assert _python_arguments(pipeline, tmp_path) == expected
     for runtime in ("dbos-ts", "cloudflare", "inngest"):
         assert _ts_arguments(pipeline, tmp_path, runtime) == expected, runtime
+
+
+_TS_ENTRY_FILES = {
+    "cloudflare": "src/workflow.ts",
+    "dbos-ts": "src/main.ts",
+    "inngest": "src/inngest/pipeline.ts",
+}
+
+
+@pytest.mark.parametrize("runtime", sorted(_TS_ENTRY_FILES))
+def test_ts_workflows_keep_constants_out_of_an_mcp_steps_payload(
+    runtime: str, tmp_path: Path
+) -> None:
+    """The TS impl calls carry constants now, but an MCP-backed step's
+    payload is its tool arguments, so its constants must stay out."""
+    out = tmp_path / runtime
+    get_adapter(runtime).emit(_mcp_pipeline(None), out)
+    entry = (out / _TS_ENTRY_FILES[runtime]).read_text(encoding="utf-8")
+    assert 'query: pipelineInput["query"]' in entry
+    assert "email_window_days" not in entry
+    assert "fixed_queries" not in entry
+
+
+@pytest.mark.parametrize("runtime", sorted(_TS_ENTRY_FILES))
+def test_ts_loop_body_tool_calls_get_constants_the_model_never_sees(
+    runtime: str, tmp_path: Path
+) -> None:
+    out = tmp_path / runtime
+    get_adapter(runtime).emit(_LOOP_PIPELINE, out)
+    loop = next(out.rglob("research.ts")).read_text(encoding="utf-8")
+    call = (
+        "lookupAccount({ ...(args as Record<string, unknown>), batch_size: 25, "
+        'fields: ["tier", "owner"] })'
+    )
+    assert call in loop, loop
+    tool_block = loop[loop.index('name: "lookup_account"') : loop.index("run: async (args)")]
+    assert "batch_size" not in tool_block
 
 
 def test_a_judge_may_reuse_an_input_name_as_a_constant() -> None:
@@ -332,6 +395,8 @@ def test_compile_refuses_cleanly_when_an_impl_rejects_its_constant(
     assert "Traceback" not in err
     agent_module = out / "compiled" / "extracted" / "drive.py"
     assert f"node 'fetch_sheet': {agent_module} fetch() takes no file_id" in err
+    # This refusal happens before any file is written, and only it says so.
+    assert f"Nothing in {out / 'runtime' / runtime} was written" in err
     assert f"rote emit {out / 'compiled' / 'pipeline.yaml'} --runtime {runtime}" in err
     assert (out / "compiled" / "pipeline.yaml").is_file()
     runtime_dir = out / "runtime" / runtime

@@ -50,6 +50,8 @@ from rote.mcp.auth import (  # noqa: E402
     login,
     registration_of,
 )
+from rote.mcp.learned import learned_auth  # noqa: E402
+from tests._helpers import occupied_ports  # noqa: E402
 from tests._oauth_fixture import (  # noqa: E402
     CIMD_DOCUMENT,
     OAuthFixture,
@@ -83,6 +85,18 @@ def fx(fixture_server: OAuthFixture, monkeypatch: pytest.MonkeyPatch) -> Iterato
         prm_path=True,
         prm_origin_resource=None,
         prm_issuer=None,
+    )
+    # The pre-registered client and the port-release tests need the first
+    # callback port. Something outside these tests holding it (found in
+    # CI: every test that needs 33418 failed for a whole run, then passed
+    # on re-run) must fail as itself, not as "the server rejected the
+    # static client credentials" nine tests later.
+    assert _port_is_released(CALLBACK_PORTS[0]), (
+        f"port {CALLBACK_PORTS[0]} was already in use when this test started. The "
+        "callback ports sit inside Linux's default ephemeral range "
+        "(net.ipv4.ip_local_port_range, 32768-60999), so an unrelated socket "
+        "with an OS-chosen port can hold one; CI reserves them with "
+        "net.ipv4.ip_local_reserved_ports"
     )
     monkeypatch.setenv(CLIENT_METADATA_URL_ENV_VAR, fixture_server.cimd_url)
     monkeypatch.setenv("SSL_CERT_FILE", str(fixture_server.ca_pem))
@@ -180,8 +194,12 @@ def test_a_pre_registered_client_works_where_nothing_else_does(fx: OAuthFixture)
     fx.configure(cimd=False, dcr=False)
     _preregister(fx)
     doc = asyncio.run(login("vendor", _config(fx, client_id=PRE_ID)))
+    assert doc is not None
     assert doc["client_info"]["client_id"] == PRE_ID
     assert _call_through_emitted_helper(fx) == {"authenticated": True}
+    # The pre-registered path records what it learned like any other login.
+    learned = learned_auth("vendor", fx.mcp_url)
+    assert learned is not None and learned.auth == "oauth"
 
 
 def test_no_registration_path_names_the_fix_and_guesses_no_url(fx: OAuthFixture) -> None:
@@ -219,9 +237,7 @@ def test_a_callback_port_outside_the_published_set_does_not_offer_cimd(
 def test_login_moves_to_the_next_published_port_when_the_first_is_taken(
     fx: OAuthFixture,
 ) -> None:
-    with socket.socket() as held:
-        held.bind(("127.0.0.1", CALLBACK_PORTS[0]))
-        held.listen()
+    with occupied_ports(CALLBACK_PORTS[0]):
         doc = asyncio.run(login("vendor", _config(fx)))
     assert doc["client_info"]["client_id"] == fx.cimd_url
     assert {e["redirect_uri"] for e in fx.events("authorize")} == {
@@ -531,3 +547,92 @@ def test_a_v1_client_on_a_server_without_dcr_names_the_cause(fx: OAuthFixture) -
     assert old_client in message
     assert "older rote" in message
     assert "rote mcp add vendor <url> --client-id" in message
+
+
+# ───────── the callback port is held from selection to callback ─────────
+
+
+def _port_is_released(port: int) -> bool:
+    from rote.mcp.auth import bind_callback_sockets
+
+    sockets = bind_callback_sockets(port)
+    if sockets is None:
+        return False
+    for sock in sockets:
+        sock.close()
+    return True
+
+
+def test_nothing_can_take_the_callback_port_between_selection_and_callback(
+    fx: OAuthFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found in CI: the port was checked, then bound by fastmcp's callback
+    server after the browser had been sent to it. Anything binding it in
+    between (another login, another program) killed the login with
+    EADDRINUSE. Here a competitor tries exactly then, and must lose."""
+    from tests._oauth_fixture import follow_in_background
+
+    competitor: list[socket.socket] = []
+    grabbed: list[bool] = []
+
+    def open_after_competing(url: str, *args: object, **kwargs: object) -> bool:
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", CALLBACK_PORTS[0]))
+            sock.listen()
+            competitor.append(sock)
+            grabbed.append(True)
+        except OSError:
+            sock.close()
+            grabbed.append(False)
+        follow_in_background(url)
+        return True
+
+    monkeypatch.setattr("webbrowser.open", open_after_competing)
+    try:
+        doc = asyncio.run(login("vendor", _config(fx)))
+    finally:
+        for sock in competitor:
+            sock.close()
+    assert grabbed == [False]
+    assert doc["client_info"]["client_id"] == fx.cimd_url
+    assert {e["redirect_uri"] for e in fx.events("authorize")} == {
+        f"http://{CALLBACK_HOST}:{CALLBACK_PORTS[0]}/callback"
+    }
+
+
+def test_sequential_logins_release_the_callback_port_every_time(fx: OAuthFixture) -> None:
+    config = _config(fx)
+    for _ in range(2):
+        doc = asyncio.run(login("vendor", config))
+        assert doc["tokens"]["access_token"]
+        assert _port_is_released(CALLBACK_PORTS[0])
+        token_file("vendor").unlink()
+    redirects = [e["redirect_uri"] for e in fx.events("authorize")]
+    assert set(redirects) == {f"http://{CALLBACK_HOST}:{CALLBACK_PORTS[0]}/callback"}
+
+
+def test_a_failed_login_releases_the_callback_port(fx: OAuthFixture) -> None:
+    fx.configure(iss="mismatch")
+    with pytest.raises(McpAuthError):
+        asyncio.run(login("vendor", _config(fx)))
+    assert _port_is_released(CALLBACK_PORTS[0])
+
+
+def test_a_login_that_needs_no_callback_releases_the_port(fx: OAuthFixture) -> None:
+    config = _config(fx)
+    asyncio.run(login("vendor", config))
+    asyncio.run(login("vendor", config))  # the stored token is still good
+    assert _port_is_released(CALLBACK_PORTS[0])
+
+
+def test_every_published_port_taken_fails_before_contacting_the_server(
+    fx: OAuthFixture,
+) -> None:
+    with (
+        occupied_ports(*CALLBACK_PORTS),
+        pytest.raises(McpAuthError, match="33418, 33419, 33420, 33421"),
+    ):
+        asyncio.run(login("vendor", _config(fx)))
+    assert fx.events() == []

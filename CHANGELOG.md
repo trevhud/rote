@@ -9,7 +9,46 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-19
+
+### Upgrading from 0.14
+This release has breaking changes. Each one has a full entry below.
+- **DBOS 3 and DBOS Transact TS v5 are required** (`dbos>=3.3,<4`,
+  `@dbos-inc/dbos-sdk ^5`). DBOS 3 cannot read workflows written by 2.x:
+  let in-flight 2.x workflows finish, then re-emit your DBOS apps.
+- **Implementations receive their node's constants.** On every runtime,
+  a node's `constants:` arrive as arguments (Python keyword arguments,
+  TS input fields). `rote emit` now refuses a Python implementation that
+  can't accept them and names the file to fix. Make constants that every
+  caller passes required parameters with no default.
+- **Agent loops return their declared output keys.** A loop now submits
+  its result through a `submit_result` tool that matches the node's
+  declared `output:`, and downstream nodes receive those keys. Provider
+  and iteration counts moved to the usage log.
+- **`anthropic>=1.15`** and **`fastmcp>=4.1.1,<5`** are the new floors,
+  and `pytest` is now a runtime dependency, so compile-time verification
+  works on a plain `pip`/`uv` install.
+
 ### Added
+- `mcp.args` takes fixed values: `{literal: "BDR do not contact"}`, or a
+  number or boolean, next to the existing references (a bare string,
+  which always names a payload key or a constant). A real BDR compile
+  wrote literal text there and the IR rejected it. The error now names the
+  `{literal: ...}` form. Types are strict and validated in the IR, and
+  every MCP runtime (dbos, dbos-ts, cloudflare, inngest) renders a literal
+  as an escaped value, never spliced code. The compile rubric tells the
+  agent to use literals for fixed tool arguments.
+- **`rote example [<name>]`: the free first run without a clone.** pip and
+  uv installs never got `examples/`, so the expense-audit run in the
+  README started with `git clone`. The wheel now carries the examples
+  that run with no credentials (only `expense-audit` for now), packaged
+  from `examples/` by pyproject's force-include rather than copied into
+  `src/`. `rote example` lists them. `rote example expense-audit` copies
+  the skill, both IRs, the working `extracted/` modules and the sample
+  inputs into `./expense-audit` (refusing an existing directory unless
+  `--force`), then prints the emit, run and eval commands for that copy.
+  `uvx --from rote-cli rote example expense-audit` works with nothing
+  installed.
 - **The scorecard prices Cloudflare Workflows infrastructure.** Steps
   and storage started billing on 2026-08-10. For a `cloudflare` or
   `rote-cloud` pipeline, `rote eval` and `rote compile`'s scorecard now
@@ -78,8 +117,317 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   runtime to confirm that each file outside `unimplemented_stubs`
   (generated agent-loop modules included) is on the skill's do-not-edit
   list.
+- **The compiler writes real code for `pure_function` nodes, with tests.**
+  A parser, validator, or renderer the skill spells out is implemented,
+  and `tests/test_<module>.py` checks it against cases built from the
+  skill's own rules and examples. A pure_function stays a stub only when
+  the skill leaves a fact unstated, and the stub's `NotImplementedError`
+  message says which. Vendor calls in `external_call` modules stay stubs
+  unless an `mcp:` binding (or probe ground truth) makes them real.
+- **`rote compile` checks the deliverable before calling it done, and the
+  agent repairs what fails.** After the agent stops, rote validates the
+  IR, checks every module the IR names (it defines the function, accepts
+  the node's payload, and parses on Python 3.11), requires every
+  pure_function to be implemented and tested or an explained stub, and
+  runs the generated tests. Problems go back into the same conversation,
+  verbatim, for up to two repair rounds. The `claude` driver now repairs
+  too, through `claude -p --resume`. A deliverable that still fails is
+  kept, and `rote compile` exits 1 and skips the rote cloud deploy.
+  The summary prints how many impl nodes were implemented and every
+  stub with its reason (`verification` in `--json`).
+- **Generated tests run in an OS sandbox, or not at all.** They are code
+  an LLM wrote from a possibly third-party skill, so rote runs them under
+  `sandbox-exec` (macOS) or bubblewrap (Linux): no network, no reads
+  outside the work dir and the Python install, no exec but the
+  interpreter, an env of only `PATH` and locale, and an empty throwaway
+  `HOME`. With no working sandbox they are skipped, and the compile
+  output and a `## rote verification` section in compile-report.md say
+  the deliverable is unverified. `--trust-skill` runs them without a
+  sandbox; `--no-verify-tests` never runs them (both also on
+  `rote analyze`). The static checks always run.
+- **Every outcome the compiled code decides cites the skill, or is a
+  declared assumption.** The rubric has the agent quote the skill text
+  behind each value, category, and branch (`# skill: "..."`), and mark
+  an outcome the skill leaves open `# rote: assumption:`. Verification
+  rejects a quote the skill does not contain, and recorded assumptions
+  with an empty Open questions list in compile-report.md.
+- `rote.contracts` reports syntax that parses on the running Python but
+  not on 3.11 (`needs_newer_python`). `ast.parse(feature_version=...)`
+  misses PEP 701 f-strings, and a real compile on 3.12 wrote a backslash
+  inside an f-string expression that 3.11 cannot import.
+
+### Changed
+- CI and the release workflow's test job install from `uv.lock`
+  (`uv sync --frozen --extra dev` via `astral-sh/setup-uv`) instead of
+  `pip install -e ".[dev]"`, which resolved the newest versions on every
+  run and so never tested the lockfile developers use. Each job also
+  runs `uv lock --check`, failing when the lock is out of date with
+  pyproject. The newest-dependencies workflow still covers what a fresh
+  PyPI install gets. The Python e2e job also reserves the OAuth callback
+  ports (33418-33421) from Linux's ephemeral range, and the registration
+  tests check the first port is free before they start: one run had an
+  unrelated socket on 33418 for its whole duration, which surfaced as
+  nine "rejected the static client credentials" failures.
+- The `claude` compiler driver runs isolated from the invoking user's
+  Claude Code setup: the same context flags as the emitted judge lane
+  (`--setting-sources ""`, `--strict-mcp-config`, auto memory off, now
+  one shared definition), `--tools` set to its allowlist, and the work
+  dir as its cwd. A user's
+  prose-lint hook had cost a real compile 12 of its 48 turns in one-line
+  report edits, the same settings granted Bash, and run from a repo the
+  agent read that repo's earlier compiled output of the same skill.
+- The compiler rubric writes `compile-report.md` once, in one Write at
+  the end, and never spends a turn on a progress marker alone.
+- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
+  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
+  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
+  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
+  and exposes `launch()`, which runs `DBOS.launch()` and then
+  `DBOS.register_queue`. Anything that runs an emitted app in-process
+  must call `launch()` instead of a bare `DBOS.launch()`, or runs
+  enqueued by `rote serve` stay `ENQUEUED`. The removed
+  `run_admin_server` key is gone from both runtimes' config, and the
+  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
+  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
+  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
+  against an app installed today. Apps emitted for 2.x need a re-emit.
+- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
+  system database the way the v5 SDK does. v5 stopped reading
+  `dbos-config.yaml` at launch, so a `system_database_url` key there no
+  longer counts, and the default database name follows the SDK's
+  `toDbName()` (lowercased, leading digit prefixed).
+- A new `Newest dependencies` workflow installs every extra at the top
+  of its range with no lock or cache, daily and on PRs that touch
+  dependencies or DBOS code, and runs the fast suite plus the DBOS
+  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
+  turns CI red instead of reaching fresh installs first.
+- **fastmcp 4.** The `mcp` and `serve` extras now require
+  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
+  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
+  and five hosted servers on both protocol eras. Emitted DBOS READMEs
+  print the same range. Supersedes the blind `<5` bump in #92.
+- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
+  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
+  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
+  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
+  server at all (`-32022`), and v2's default `legacy` mode behaves the
+  same, so the mode is set explicitly. A 401 is now read from
+  `SdkHttpError.status`. Proven against legacy stateless, legacy
+  sessionful, dual-era and modern-only TS SDK servers, from both helper
+  languages, in `tests/test_mcp_era_matrix_e2e.py`.
+- `rote mcp headers` (and any refresh outside `login`) never opens a
+  browser or registers a client: it refreshes or fails with the login
+  hint.
+- **Breaking: an impl must accept its node's constants.** The Python
+  runtimes (dbos, python, temporal) now pass a `pure_function` /
+  `external_call` node's IR `constants` to its `impl` as keyword
+  arguments, merged in the step body so every caller gets them: the DAG,
+  each fan_out element, and an agent loop calling a `loop_body` sub-node
+  as a tool. Before, no step received them, so nodes sharing one `impl`
+  with different constants (ops-report's three fetch nodes, each with its
+  own `file_id`) all got the same empty payload. An `extracted/`
+  function that takes neither the constant nor `**kwargs` would raise
+  TypeError mid-run, so emission now refuses it up front, naming the node
+  and parameter, and `rote emit` reports it as a `constant_not_accepted`
+  contract finding. Most committed `examples/*/runs/` hard-code their
+  constants and no longer emit on a Python runtime until recompiled. The
+  BDR and expense-audit example modules take theirs as keyword
+  parameters, and expense-audit's now apply them, so editing a constant
+  in its pipeline.yaml changes the rule. The refusal names the full path
+  of the file to fix, and `rote compile` exits 1 with the `rote emit`
+  retry command instead of a traceback.
+- A constant reaches an MCP tool only when `mcp.args` names it, the same
+  on every runtime. A constant that reuses an input's name is an IR
+  validation error for impl-backed kinds. The stub for a shared `impl`
+  lists every calling node's constants.
+- **Breaking (TS): the TS runtimes pass each node's constants to its
+  impl, as the Python runtimes do.** Cloudflare, Inngest and DBOS-TS add
+  a `pure_function` / `external_call` node's IR constants to the impl's
+  input after its inputs, on DAG calls, on each fan_out element and on an
+  agent loop's loop_body tool calls (the model's tool schema never shows
+  them). Before, they only appeared in the stub's doc comment, so a TS
+  impl had to hard-code them and an edit in pipeline.yaml did nothing. An
+  MCP-backed step still sends a tool a constant only when `mcp.args`
+  names it. A typed TS impl whose input type does not declare its node's
+  constants now fails `tsc` with an excess-property error; add them to
+  the input type.
 
 ### Fixed
+- **Assumptions no longer fail a compile.** A real bdr-outreach compile
+  exited 1 over 15 declared `# rote: assumption:` markers and one
+  citation that was verbatim but for its quote marks. Now only a
+  citation the skill does not contain fails. Every assumption is listed
+  by node and `file:line` in the compile output, compile-report.md,
+  `--json` and the progress.jsonl summary. An unmarked outcome or an
+  assumption missing from Open questions is still sent back for repair,
+  and is a warning if it survives. `--strict-provenance` (compile and
+  analyze) fails on any of it, for CI. Citations now match regardless of
+  quote style (`'`, `"`, curly quotes).
+- Python string literals in emitted code keep characters outside the BMP
+  intact. `json.dumps` spelled one as a surrogate pair, which Python reads
+  as two lone surrogates, so a constant like an emoji reached its impl or
+  tool changed.
+- Untrusted IR text never lands invisible in emitted source. A bidi
+  override, zero-width space, BOM or other control or format character
+  from a pipeline.yaml is written as an escape in Python literals,
+  docstrings, TS comments and the Cloudflare README (the Trojan Source
+  shape, CVE-2021-42574). A lone surrogate, which used to crash emit with
+  UnicodeEncodeError partway through writing files, now emits code that
+  round-trips it.
+- **A failed `claude -p` compile reports what it cost, and the output cap
+  no longer ends it.** A real invoice-push compile died after 28 minutes
+  on "Claude's response exceeded the 32000 output token maximum" and
+  reported no cost anywhere. The failure's usage and cost are now in the
+  error and in progress.jsonl. The compiler's CLI child gets
+  `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` unless the caller set one, and a
+  run that still hits the cap is resumed once with an instruction to
+  write large files in pieces.
+- **Generated tests run under a uv-managed Python.** CI's setup-uv
+  interpreter lives in `~/.local/share/uv/python`, and every sandboxed
+  generated-test run died with "No module named 'encodings'": the child
+  was launched through the venv, whose `pyvenv.cfg` points at a uv
+  minor-version symlink nothing in the bwrap namespace binds. The child
+  is now launched by the resolved binary. The run's summary is also
+  taken from pytest's stdout, not from a termcap warning the interpreter
+  prints to stderr on exit. The sandbox tests now check the real
+  property (no bind exposes the home's contents, planted secrets in the
+  home and the venv root are unreadable) instead of "nothing under /home
+  is bound", which failed on any in-tree venv.
+- **A compile no longer declares success on an IR `rote emit` refuses.**
+  A real bdr-outreach compile ($4.46) exited 1 at emit because
+  `email_template_loop` took its own `loop_body` sub-node
+  `personalize_email` as an input, a rule only the adapters checked.
+  Input reachability (no same-wave or later source, no loop-body
+  sub-node) and cycles are now IR validation errors, so the repair loop
+  sends them back. Verification also dry-emits for the compile's
+  `--runtime` and sends any refusal back (`emit_refused`), which covers
+  adapter-only rules such as python refusing a `hitl_gate`. The rubric
+  says a loop never binds its own body sub-node.
+- **Compile-time test verification works on a normal install.** pytest
+  was only in the `dev` extra, so `pip install 'rote-cli[dbos]'` had no
+  test runner, the generated tests were silently skipped, and a compile
+  exited 0 with a failing generated test hidden from the repair loop.
+  pytest is now a dependency (`>=9.0,<10`), and a missing runner reports
+  the deliverable as unverified in the output and the compile report.
+- Repair rounds restate the rubric's write-once rules, so a repair no
+  longer rewrites compile-report.md in several one-line Edits.
+- A TypeScript impl typed with a closed input interface, which is what the
+  implement skill asks for, compiles on every TS runtime. DBOS-TS step
+  wrappers took `Record<string, unknown>`, and Cloudflare and Inngest
+  passed `unknown` values into the typed parameter, so following the
+  skill failed tsc. Each value is now asserted to the type the impl
+  declares for its key, and the DBOS-TS wrapper takes the impl's input
+  type, so a key the impl declares that the IR never sends, or the
+  reverse, still fails tsc.
+- **Fixes from an end-to-end newcomer pass over main.**
+  - Stub detection counts a function whose last top-level statement is an
+    unconditional `raise NotImplementedError` and that never returns a
+    value, preamble allowed. BDR's `zoominfo.enrich_batch` validates its
+    batch size first and was missed, so `rote emit` reported three stub
+    modules instead of four and `rote run` would not refuse. A raise on
+    one branch, or a dispatch that returns on its real paths, is still
+    working code.
+  - A missing required input is one line on python and dbos, as on
+    temporal: the app checks the input where it reads argv, prints
+    `error: pipeline input is missing required field(s): ...` and exits
+    2 (dbos before it launches), and `rote run` reports just that line
+    instead of a traceback (about 5 KB on dbos).
+  - `rote emit`'s `next:` hint is a command that runs: it adds `--input`
+    with the `input.json` beside the pipeline (or one level up, the
+    examples' layout) when the pipeline has required inputs, and a
+    placeholder naming the fields when there is no file.
+  - `rote example` also copies `scorecard.md` and `runs/`, and rewrites
+    the copy's README so its commands and layout name the copy's own
+    paths, not `examples/...` and `/tmp/...`.
+  - Missing-extra hints follow the install: `uv tool install
+    'rote-cli[<extras>]'` (keeping the extras the tool already has) for a
+    uv tool install, `uvx --from 'rote-cli[<extra>]'` under uvx, pip
+    otherwise.
+  - The stub refusal's fix is worded per language: TypeScript apps are
+    told to implement the TypeScript files, not to put Python modules
+    beside the pipeline.
+  - `rote doctor` labels "api driver" and the "[api] extra" apart.
+  - Temporal runs use the app dir as their working directory, so
+    expense-audit's report lands in the app like on python and dbos, and
+    the dev server's own startup WARN ("Cluster Id ... not a valid uuid")
+    is no longer printed.
+  - The scorecard's sampled-steps row names its units (agent steps
+    before, pipeline nodes after) and says why the totals differ.
+  - An invalid `\/` escape in the Node MCP helper template no longer
+    warns on import (the emitted TypeScript is byte-identical).
+  - The wheel-contents test builds with uv when available, then
+    `python -m build`, then pip, so it runs in a uv-made venv.
+- **An agent loop now produces its declared output keys, on every
+  runtime.** Downstream nodes read a loop's declared `output` keys
+  (`process_invoices_loop.output.invoice_results`), but the loop returned
+  `{result, provider, iterations}`. The next step raised KeyError on the
+  Python runtimes, got `undefined` on Cloudflare (a run reported
+  `"undefined / NaN"`), and DBOS-TS and Inngest failed tsc with TS7053.
+  The loop now hands its output back through a `submit_result` tool whose
+  schema is the declared output (the CLI lane uses `--json-schema`), and
+  the step returns exactly those keys, failing with the node and the
+  missing keys when the agent does not deliver them. A single-type output
+  is returned bare, and a loop with no `output` still returns
+  `{result: <text>}`. Provider and turn count move to the usage log
+  (Python, `iterations`) and stderr (TS). The emitted TS loop functions
+  are typed by their declared keys. Python agent loops also honor
+  `ROTE_BASE_URL_<ID>` now, as the TS loops and every judge already did.
+  Every lane validates the submission against the declared schema
+  (types, required keys, no extra keys) and fails with one message, the
+  submit tool is a strict tool when the schema allows, and a loop that
+  ends without submitting gets one more turn with `tool_choice` forced to
+  it. On the TS runtimes, a type the IR names but never defines
+  (`InvoiceResult`) is an alias in a new user-editable `src/types.ts`,
+  `JsonValue` until narrowed, and `rote emit` notes each one. The
+  `anthropic` floor is now 1.15 (the `api` and `dev` extras, and the
+  python runtime's requirements.txt), and the lock moves from 0.116.0 to
+  1.15.0.
+- A `claude-cli` judge or agent loop now gets a dollar figure. Its usage
+  rows were logged under the requested model, often an alias (`sonnet`)
+  that no price catalog lists, so `rote run` and `rote eval --run` could
+  never price the subscription lane. The emitted inference helper now
+  logs one row per model from the CLI envelope's `modelUsage`, under the
+  concrete id (`claude-sonnet-5-5`), with the CLI's own `cost_usd`.
+  Pricing takes that estimate as is, since it bills a 1h cache write at
+  twice the 5m rate a catalog publishes (a measured call: $0.0060 from
+  the CLI against $0.0040 from catalog rates). A row with no `modelUsage`
+  keeps the requested id, and an alias is still left unpriced rather than
+  guessed. `rote run`'s judge-usage line now ends with the dollar figure,
+  or says why there is none.
+- **`rote mcp login` holds its callback port from selection to callback.**
+  The port was checked for being free, then bound later by fastmcp's
+  callback server, after the browser had already been sent to it. Anything
+  that took the port in between (seen in CI: a concurrent login) killed
+  the login with EADDRINUSE instead of it using the next published port.
+  The login now binds the port while selecting it (33418 to 33421, both
+  IPv4 and IPv6 localhost), runs the callback server on those sockets, and
+  releases them on every path, so sequential logins never leak a port.
+- `rote run` on an Inngest app reports the error that failed the run
+  (for example `RoteMcpConfigError: no endpoint for MCP server 'vendor':
+  set ROTE_MCP_VENDOR_URL ...`), read from the dev server's run record
+  with its cause chain, instead of the last 500 characters of the app
+  log, which were a stack trace with the message cut off above them.
+- The MCP URL resolution order is documented as the code runs it:
+  `ROTE_MCP_<SERVER>_URL`, then the registry, then the IR `url`
+  (Workers: the variable, then the IR `url`). The registry module, the
+  IR field descriptions and docs/mcp-client.md said the IR `url` came
+  first. No behavior changed for runs. `rote.mcp.resolve_server_url`,
+  which encoded that wrong order and had no caller outside its own
+  test, is removed.
+- An emitted DBOS-TS app whose `DBOS.launch()` fails now exits with the
+  error. It used to hang: the half-launched SDK kept its pools and timers
+  alive and no shutdown ran. `rote run`'s throwaway Postgres for dbos-ts
+  also checks readiness over TCP now. The socket answered during the
+  image's init phase, just before the server restarts, which is how CI
+  reached the hang. A runner timeout now carries the app's output too.
+- Python no longer reads `NaN`, `Infinity` or `-Infinity` in an MCP text
+  result as a float. They are not JSON, the TS helpers' `JSON.parse`
+  rejects them, and a non-finite float would not survive a JSON step
+  boundary, so both runtimes now keep the raw text. The cross-runtime
+  payload test also covers empty content, an empty text block, an error
+  result, structured content next to text, and an embedded resource, and
+  runs the Workers helper itself. The TS integer-precision limit (past
+  2^53) is documented in `docs/mcp-client.md`.
 - **MCP auth hardening.**
   - The client metadata document check has a 5 second total deadline.
     httpx's timeout is per read, so a host sending a byte every few
@@ -104,6 +452,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   app) inherited the loop but not the thread, so its first async call
   blocked forever. The child now resets the loop state through
   `os.register_at_fork`, where the platform has it.
+- The TS MCP helpers (Node, Workers and the rote cloud binding) read a
+  text-only tool result by the Python helper's rules. They used to read
+  only the first text block, throw on text that wasn't JSON, and return
+  `{}` when there was no text, so one MCP step returned different values
+  on the TS and Python runtimes. Now every text block is parsed, non-JSON
+  text is kept verbatim, several blocks give a list, and no text gives
+  `null`, from one TS source spliced into all three helpers.
 - Running the test suite no longer rewrites committed files. Five
   adapter suites emitted the BDR pipeline straight into
   `examples/bdr-outreach/expected/runtimes/`, and the dbos and temporal
@@ -112,7 +467,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   now, `tests/test_committed_snapshots.py` diffs a fresh emission
   against each snapshot, and the suite fails if anything under
   `examples/` changes during a run.
-
+- An optional pipeline input can be omitted on every runtime. The
+  Python runtimes read input fields as `pipeline_input["f"]`, so
+  ops-report's optional `report_date` raised `KeyError` when a caller
+  left it out. An omitted optional field is now left out of the step's
+  payload, so the impl's default (or a judge schema's default) applies,
+  as on the TS runtimes. Every runtime now checks the input on entry and
+  fails with `pipeline input is missing required field(s): ...`, or
+  `pipeline input must be a JSON object` for a run with no payload, where
+  TS used to pass `undefined` through. Temporal raises a non-retryable
+  `ApplicationError` and Inngest a `NonRetriableError`, so a bad input
+  fails once instead of retrying. New derived IR properties
+  `Pipeline.required_input_fields` / `optional_input_fields` define the
+  split, and a field listed as both required and optional is rejected.
+  A long Node failure excerpt (DBOS-TS) keeps the `Error: ...` line that
+  a Node stack prints above its frames.
 - An agent loop's local tools now return their result to the model as
   JSON text. The SDK tool runner iterated a dict result, so the model saw
   only its keys.
@@ -178,10 +547,51 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   retries, and emitted steps work when called from inside a running
   loop. Temporal shares the same helper's async form, which now also
   awaits a coroutine returned by a plain function.
+- `rote emit` (and `analyze`/`compile`) no longer warns "not
+  authenticated, the run will park" for an MCP server that needs no
+  auth. rote now learns each server's requirement and keeps it in
+  `mcp-auth-learned.json` beside the registry (0600, atomic writes),
+  keyed by server name and normalized URL so repointing a name
+  invalidates it. `rote mcp login` records it: a server whose
+  `tools/list` succeeds with no challenge (the OAuth provider discovered
+  nothing) is `none`. Login used to fail there with "completed without
+  storing a token", and still does when a challenge happened but no
+  token landed. `rote mcp add --auth oauth|none` sets it explicitly. A
+  server learned as `none` reports "no auth required" (dated in
+  `mcp list` and `doctor`) with no recommendation, and live compiler MCP
+  tools include it. A tokenless server with nothing learned reports
+  "auth unknown", worded as "if it needs auth, the run will park". Only
+  a server known to need OAuth gets "will park". Evidence overrides a
+  learned `none`: a token for the endpoint wins, and an observed auth
+  park records `oauth`. A token file left by the endpoint a name used to
+  point at no longer counts as a login, in `login` or in the status. The
+  advisory's `"unknown"` state for an unreadable registry is now
+  `"registry unreadable"`.
+- **Version compatibility of `~/.config/rote/mcp.json`.** Released rote
+  versions up to 0.14.0 load the registry with unknown fields rejected,
+  so a field a newer rote writes breaks every older rote on the same
+  machine (a cached `uvx --from rote-cli`, the plugin's `uv run`). That
+  is why learned auth lives in its own file and the registry schema is
+  unchanged by it. `rote mcp add --client-id ... --issuer ...` (new in
+  this release) does write an `issuer` field, so a registry with an
+  issuer-bound client is unreadable to 0.14.0 and older until that
+  entry is removed. From this release on, the registry and the sidecar
+  keep fields they do not know and read unknown `transport`/`auth`
+  values as unsupported or unknown instead of rejecting them, and every
+  writer keeps a higher `version` than its own.
 - README and AGENTS.md accuracy: the compiler skill has six reference
   files, not four; `rote run` executes all six runtimes (AGENTS.md said
   python/dbos only); the slow e2e suites do run in CI; the BDR run flags
   three mandatory nodes, not four.
+- A `fan_out` node can fan over a pipeline-input list
+  (`invoice: pipeline.input.invoices`). The element resolver only knew
+  upstream node outputs, so emission raised, and `rote compile` crashed
+  with a traceback after the agent had been paid.
+- No failure after a paid agent run loses the IR. An emission error
+  prints the cause and the `rote emit` command that retries it, and an
+  IR the validator rejects is kept in the output dir (an update's goes to
+  `<out>.rejected`, leaving the previous output alone) instead of being
+  deleted with the temp work dir.
 - Emitted Python agent loops report the turns that actually ran. The
   vendor-SDK lane returned `max_iterations` as `iterations`, so every loop
   looked saturated, and it logged only the final request's tokens to
@@ -260,71 +670,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   rates. A prompt-cached `claude -p` judge used to log 3 input tokens.
   A cache bucket with no published rate marks the model unpriced instead
   of guessing. `rote run`'s judge-usage line counts cache tokens as input.
-
-### Changed
-- **Emitted TS helpers speak MCP 2026-07-28.** `_roteMcp.ts` (DBOS-TS,
-  Inngest) and the Workers helper move from `@modelcontextprotocol/sdk`
-  ^1.29 to `@modelcontextprotocol/client` ^2.3.1 with
-  `versionNegotiation: { mode: "auto" }`. v1 cannot reach a modern-only
-  server at all (`-32022`), and v2's default `legacy` mode behaves the
-  same, so the mode is set explicitly. A 401 is now read from
-  `SdkHttpError.status`. Proven against legacy stateless, legacy
-  sessionful, dual-era and modern-only TS SDK servers, from both helper
-  languages, in `tests/test_mcp_era_matrix_e2e.py`.
-- `rote mcp headers` (and any refresh outside `login`) never opens a
-  browser or registers a client: it refreshes or fails with the login
-  hint.
-- **Breaking: an impl must accept its node's constants.** The Python
-  runtimes (dbos, python, temporal) now pass a `pure_function` /
-  `external_call` node's IR `constants` to its `impl` as keyword
-  arguments, merged in the step body so every caller gets them: the DAG,
-  each fan_out element, and an agent loop calling a `loop_body` sub-node
-  as a tool. Before, no step received them, so nodes sharing one `impl`
-  with different constants (ops-report's three fetch nodes, each with its
-  own `file_id`) all got the same empty payload. An `extracted/`
-  function that takes neither the constant nor `**kwargs` would raise
-  TypeError mid-run, so emission now refuses it up front, naming the node
-  and parameter, and `rote emit` reports it as a `constant_not_accepted`
-  contract finding. Most committed `examples/*/runs/` hard-code their
-  constants and no longer emit on a Python runtime until recompiled. The
-  BDR and expense-audit example modules take theirs as keyword
-  parameters, and expense-audit's now apply them, so editing a constant
-  in its pipeline.yaml changes the rule. The refusal names the full path
-  of the file to fix, and `rote compile` exits 1 with the `rote emit`
-  retry command instead of a traceback.
-- A constant reaches an MCP tool only when `mcp.args` names it, the same
-  on every runtime. A constant that reuses an input's name is an IR
-  validation error for impl-backed kinds. The stub for a shared `impl`
-  lists every calling node's constants.
-- **fastmcp 4.** The `mcp` and `serve` extras now require
-  `fastmcp>=4.1.1,<5` (MCP Python SDK v2, httpx2), replacing the
-  `>=3.4.2,<4` pin. Verified against FastMCP, TypeScript SDK v1 and v2,
-  and five hosted servers on both protocol eras. Emitted DBOS READMEs
-  print the same range. Supersedes the blind `<5` bump in #92.
-- **The DBOS runtimes target DBOS 3 (Python) and DBOS Transact v5
-  (TypeScript).** The `dbos` extra now requires `dbos>=3.3,<4`. Emitted
-  `main.py` no longer constructs a `Queue` (DBOS 3 raises on import);
-  it declares `QUEUE_NAME`, enqueues through `DBOS.enqueue_workflow`,
-  and exposes `launch()`, which runs `DBOS.launch()` and then
-  `DBOS.register_queue`. Anything that runs an emitted app in-process
-  must call `launch()` instead of a bare `DBOS.launch()`, or runs
-  enqueued by `rote serve` stay `ENQUEUED`. The removed
-  `run_admin_server` key is gone from both runtimes' config, and the
-  emitted DBOS-TS `package.json` pins `@dbos-inc/dbos-sdk` `^5.3.0`.
-  Supporting 2.x alongside 3.x was rejected: a 2.x process or client
-  cannot read workflows 3.x wrote, so a rote CLI on 2.x would fail
-  against an app installed today. Apps emitted for 2.x need a re-emit.
-- `rote mcp login` / `release` now finds a parked DBOS-TS workflow's
-  system database the way the v5 SDK does. v5 stopped reading
-  `dbos-config.yaml` at launch, so a `system_database_url` key there no
-  longer counts, and the default database name follows the SDK's
-  `toDbName()` (lowercased, leading digit prefixed).
-- A new `Newest dependencies` workflow installs every extra at the top
-  of its range with no lock or cache, daily and on PRs that touch
-  dependencies or DBOS code, and runs the fast suite plus the DBOS
-  Python and DBOS-TS e2e suites. An upstream major that breaks rote now
-  turns CI red instead of reaching fresh installs first.
-### Fixed
 - `rote eval` prices a `fan_out` node per element. The estimator gave
   every non-loop node one call per run, so a fanned judge (BDR's
   `personalize_email`, deal-monitor's `classify_thread_step`)
@@ -1188,7 +1533,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/trevhud/rote/compare/v0.12.0...v0.12.1

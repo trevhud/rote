@@ -32,7 +32,9 @@ from rote.adapters._common import (
     STUB_SENTINEL,
     EmitWriter,
     _to_pascal_case,
+    agent_loop_output,
     mcp_tool_arguments,
+    py_str_literal,
     safe_docstring_line,
 )
 from rote.ir import (
@@ -76,12 +78,20 @@ def _ref_to_python_expr(ref: str) -> str:
     | Reference                  | Expression                      |
     |----------------------------|---------------------------------|
     | ``pipeline.input``         | ``pipeline_input``              |
-    | ``pipeline.input.f``       | ``pipeline_input["f"]``         |
+    | ``pipeline.input.f``       | ``pipeline_input.get("f")``     |
     | ``foo.output``             | ``foo_result``                  |
     | ``foo.output.f``           | ``foo_result["f"]``             |
+
+    A pipeline input field is read with ``.get`` so an omitted optional
+    field is None rather than a KeyError. Required fields are checked on
+    entry by :func:`required_inputs_guard`, so ``.get`` never hides one.
     """
     parsed = parse_input_ref(ref)
-    base = "pipeline_input" if parsed.node_id is None else f"{parsed.node_id}_result"
+    if parsed.node_id is None:
+        if parsed.field is None:
+            return "pipeline_input"
+        return f'pipeline_input.get("{parsed.field}")'
+    base = f"{parsed.node_id}_result"
     if parsed.field is None:
         return base
     return f'{base}["{parsed.field}"]'
@@ -143,8 +153,10 @@ def mcp_arguments_line(node: Node, indent: str = "    ") -> str:
     items = ", ".join(
         f"{json.dumps(tool_arg)}: "
         + (
+            # A constant and a literal are both fixed values: an escaped
+            # Python literal, never spliced (invariant #7).
             _constant_literal(node, tool_arg, value)
-            if origin == "constant"
+            if origin in ("constant", "literal")
             else f"payload[{json.dumps(value)}]"
         )
         for tool_arg, origin, value in sources
@@ -165,9 +177,22 @@ def _payload_literal(node: Node, indent: str) -> str:
     inner = indent + "    "
     lines = ["{"]
     for param, ref in node.inputs.items():
-        lines.append(f'{inner}"{param}": {_ref_to_python_expr(ref)},')
+        lines.append(f"{inner}{_payload_entry(param, ref)},")
     lines.append(indent + "}")
     return "\n".join(lines)
+
+
+def _payload_entry(param: str, ref: str) -> str:
+    """One entry of a payload dict literal.
+
+    A pipeline input field is spread in through ``_input_field`` so that
+    an omitted one is left out rather than set to None. Required fields go
+    the same way; the entry check has already proven they are there.
+    """
+    parsed = parse_input_ref(ref)
+    if parsed.node_id is None and parsed.field is not None:
+        return f"**_input_field(pipeline_input, {json.dumps(param)}, {json.dumps(parsed.field)})"
+    return f"{json.dumps(param)}: {_ref_to_python_expr(ref)}"
 
 
 _FAN_OUT_LIST_HELPER_PY = '''\
@@ -332,12 +357,89 @@ def has_legacy_judges(pipeline: Pipeline) -> bool:
     return any(n.kind is NodeKind.LLM_JUDGE and n.signature_spec is None for n in pipeline.nodes)
 
 
+_MISSING_INPUTS_HELPER_PY = '''\
+def _missing_inputs_error(pipeline_input: object, required: tuple[str, ...]) -> str | None:
+    """Why ``pipeline_input`` cannot start a run, or None when it can.
+
+    A step's payload simply leaves out an omitted optional field, so the
+    impl's own default applies. A missing required field would be left out
+    the same way and fail later, somewhere unrelated, so the run checks
+    those first and fails naming them. A run started with no payload at
+    all is reported the same way. The TypeScript runtimes emit the same
+    check (`missingInputsError`), so a bad input reports identically on
+    every target.
+    """
+    if not isinstance(pipeline_input, dict):
+        return (
+            "pipeline input must be a JSON object, got " + type(pipeline_input).__name__
+        )
+    missing = [name for name in required if name not in pipeline_input]
+    if not missing:
+        return None
+    return "pipeline input is missing required field(s): " + ", ".join(missing)
+
+
+def _input_field(pipeline_input: dict, key: str, field: str) -> dict:
+    """``{key: value}`` when the run supplied ``field``, else nothing.
+
+    Spread into a step's payload, so an omitted optional field is absent,
+    not None: a Python default (``def f(d="today")``) or a schema default
+    on a judge's input then applies, the same as on the TS runtimes, where
+    an undefined field is dropped from the JSON payload.
+    """
+    return {key: pipeline_input[field]} if field in pipeline_input else {}
+'''
+
+
+def missing_inputs_helper(pipeline: Pipeline) -> str:
+    """The input-check helpers, or "" when no node reads the pipeline input."""
+    return _MISSING_INPUTS_HELPER_PY if pipeline.needs_input_check else ""
+
+
+def required_inputs_guard(pipeline: Pipeline, raise_stmt: str, indent: str = "    ") -> str:
+    """The entry check that fails a run missing a required input field.
+
+    ``raise_stmt`` is the runtime's way to fail the run with the message in
+    ``_input_error`` (Temporal needs a non-retryable ``ApplicationError``;
+    a plain exception there would retry the workflow task forever).
+    Returns "" when no node reads the pipeline input.
+    """
+    if not pipeline.needs_input_check:
+        return ""
+    names = "".join(f"{json.dumps(name)}, " for name in pipeline.required_input_fields)
+    return (
+        f"{indent}_input_error = _missing_inputs_error(pipeline_input, ({names.rstrip()}))\n"
+        f"{indent}if _input_error is not None:\n"
+        f"{indent}    {raise_stmt}\n"
+    )
+
+
+def cli_input_check(pipeline: Pipeline, indent: str) -> str:
+    """The ``__main__`` check that rejects a bad input before anything starts.
+
+    The same check as :func:`required_inputs_guard`, run where the script
+    reads argv: a missing field is a usage error, so it is one line on
+    stderr and exit status 2, not a traceback (DBOS's ran to ~5 KB). The
+    guard inside ``run_pipeline`` stays for callers that import it.
+    """
+    if not pipeline.needs_input_check:
+        return ""
+    names = "".join(f"{json.dumps(name)}, " for name in pipeline.required_input_fields)
+    return (
+        f"{indent}_input_error = _missing_inputs_error(pipeline_input, ({names.rstrip()}))\n"
+        f"{indent}if _input_error is not None:\n"
+        f'{indent}    print(f"error: {{_input_error}}", file=sys.stderr)\n'
+        f"{indent}    sys.exit(2)\n"
+    )
+
+
 def fan_out_binding(
     node: Node, pipeline: Pipeline, indent: str = ""
 ) -> tuple[str, str, dict[str, str]]:
     """``(element_param, list_expr, scalar_exprs)`` for a ``fan_out`` node.
 
-    ``scalar_exprs`` is every payload key but the element.
+    ``scalar_exprs`` maps every payload key but the element to its
+    complete dict-literal entry (see :func:`_payload_entry`).
 
     The Python rendering of :func:`fan_out_element_param` — which input
     is the list is a language-neutral property of the IR, so it is
@@ -350,7 +452,7 @@ def fan_out_binding(
     # Narrowing only: fan_out_element_param raises on a node with no
     # inputs, so reaching here means there is something to fan over.
     assert node.inputs is not None
-    scalars = {p: _ref_to_python_expr(r) for p, r in node.inputs.items() if p != element_param}
+    scalars = {p: _payload_entry(p, r) for p, r in node.inputs.items() if p != element_param}
     ref = node.inputs[element_param]
     inner = indent + "    "
     # json.dumps, not !r: emitted Python uses double quotes throughout
@@ -392,7 +494,7 @@ def _py_literal(value: Any) -> str:
     containers recurse so nested strings get the same treatment.
     """
     if isinstance(value, str):
-        return json.dumps(value)
+        return py_str_literal(value)
     if isinstance(value, bool) or value is None:
         return repr(value)
     if isinstance(value, list):
@@ -401,6 +503,27 @@ def _py_literal(value: Any) -> str:
         items = ", ".join(f"{_py_literal(k)}: {_py_literal(v)}" for k, v in value.items())
         return "{" + items + "}"
     return repr(value)
+
+
+def _py_literal_block(value: Any, indent: str, width: int = 100) -> str:
+    """:func:`_py_literal`, wrapped one item per line when it overflows.
+
+    Emitted code is committed and ruff-linted at line-length 100. The first
+    line continues whatever precedes it (``output_schema=``), so the block
+    is fitted against ``width`` minus ``indent`` plus a margin for that.
+    """
+    flat = _py_literal(value)
+    if len(indent) + len(flat) + 24 <= width or not isinstance(value, (dict, list)) or not value:
+        return flat
+    inner = indent + "    "
+    if isinstance(value, dict):
+        items = [
+            f"{inner}{_py_literal(k)}: {_py_literal_block(v, inner, width)},"
+            for k, v in value.items()
+        ]
+        return "{\n" + "\n".join(items) + f"\n{indent}}}"
+    items = [f"{inner}{_py_literal_block(v, inner, width)}," for v in value]
+    return "[\n" + "\n".join(items) + f"\n{indent}]"
 
 
 def _literal_alias(name: str, values: list[Any]) -> str:
@@ -651,7 +774,7 @@ def _str_chunks(text: str, indent: str) -> list[str]:
     current = ""
     for ch in text:
         current += ch
-        if len(json.dumps(current)) >= width:
+        if len(py_str_literal(current)) >= width:
             chunks.append(current)
             current = ""
     if current or not chunks:
@@ -663,8 +786,8 @@ def _chunked_str_literal(text: str, indent: str = "    ") -> str:
     """Render a long string as a parenthesized adjacent-literal expression."""
     chunks = _str_chunks(text, indent)
     if len(chunks) == 1:
-        return json.dumps(chunks[0])
-    body = "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+        return py_str_literal(chunks[0])
+    body = "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
     outer = indent[:-4] if len(indent) >= 4 else ""
     return f"(\n{body}\n{outer})"
 
@@ -677,7 +800,7 @@ def _chunked_call_arg(text: str, indent: str) -> str:
     UP034 (extraneous parentheses) quiet.
     """
     chunks = _str_chunks(text, indent)
-    return "\n".join(f"{indent}{json.dumps(c)}" for c in chunks)
+    return "\n".join(f"{indent}{py_str_literal(c)}" for c in chunks)
 
 
 # ───────── signatures/<id>.py emission ─────────
@@ -974,6 +1097,17 @@ def agent_loop_call(
     if node.termination is not None:
         condition = _chunked_str_literal(node.termination.condition, deep)
         lines.append(f"{inner}termination={condition},")
+    # The same per-node endpoint override judges and the TS loops honor.
+    lines.append(f'{inner}base_url=os.environ.get("ROTE_BASE_URL_{node.id.upper()}"),')
+    contract = agent_loop_output(node)
+    if contract.schema is not None:
+        # The declared output, which downstream nodes index: the loop must
+        # hand back exactly these keys (rote.adapters._common).
+        lines.append(f"{inner}output_schema={_py_literal_block(contract.schema, inner)},")
+    if contract.unwrap_key is not None:
+        lines.append(f"{inner}unwrap_key={json.dumps(contract.unwrap_key)},")
+    if contract.strict:
+        lines.append(f"{inner}output_strict=True,")
     lines.append(f"{indent})")
     return "\n".join(lines) + "\n"
 
@@ -1287,6 +1421,17 @@ def write_extracted_package(
     return written
 
 
+class ConstantsNotAccepted(ValueError):
+    """An emit refused because an impl cannot take its node's constants.
+
+    Raised before any file is written (:func:`require_constant_parameters`),
+    so the runtime dir is exactly as it was. A subclass of ``ValueError``
+    so existing handlers still catch it; its own type is what lets ``rote
+    compile`` say that nothing was written, which it cannot promise for
+    any other emit failure.
+    """
+
+
 def require_constant_parameters(
     pipeline: Pipeline,
     writer: EmitWriter,
@@ -1321,7 +1466,7 @@ def require_constant_parameters(
     problems = constants_not_accepted(pipeline, landed, origins)
     if problems:
         detail = "; ".join(problems)
-        raise ValueError(
+        raise ConstantsNotAccepted(
             f"extracted/ functions do not accept their node's constants, which every step "
             f"passes as keyword arguments: {detail}. In each file named, add each constant "
             f"as a keyword parameter (or **kwargs), then re-emit"

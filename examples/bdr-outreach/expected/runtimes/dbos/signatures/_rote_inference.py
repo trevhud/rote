@@ -140,15 +140,21 @@ _AGENT_SYSTEM_PROMPT = (
 #: the flag is variadic (``--tools <tools...>``), so a bare ``--tools`` is
 #: rejected outright ("option '--tools <tools...>' argument missing",
 #: exit 1, on every call).
-_CLI_ISOLATION_FLAGS = (
+#:
+#: The first three flags are the context half, shared with rote's own
+#: compiler driver (``rote.compiler.drivers.claude``), which imports them
+#: from here for the same reason it imports ``build_subscription_env``: a
+#: second copy is how a fix lands in one place and not the other. Only the
+#: tool surface differs: judges and loops take ``--tools ""``, the compiler
+#: ``--tools <its allowlist>``.
+CLI_CONTEXT_ISOLATION_FLAGS = (
     "--setting-sources",
     "",
     "--strict-mcp-config",
     "--settings",
     '{"autoMemoryEnabled": false}',
-    "--tools",
-    "",
 )
+_CLI_ISOLATION_FLAGS = (*CLI_CONTEXT_ISOLATION_FLAGS, "--tools", "")
 
 
 # ───────── subscription environment ─────────
@@ -369,6 +375,47 @@ def _anthropic_usage(usage: Any) -> dict[str, Any]:
     }
 
 
+def _cli_usage_rows(
+    envelope: Mapping[str, Any], requested_model: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """``(model, usage)`` per model a ``claude -p`` call actually ran.
+
+    The model asked for is often an alias (``sonnet``), which no price
+    catalog lists, so a row logged under it could never be priced. The
+    envelope's ``modelUsage`` names the concrete model per entry
+    (``claude-sonnet-5-5``) with its four buckets and the CLI's own cost
+    estimate, covering the whole query. Without ``modelUsage`` the row
+    keeps the requested id and the main-loop ``usage``, and pricing
+    refuses an alias rather than guess which model it meant.
+    """
+    by_model = envelope.get("modelUsage")
+    rows: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(by_model, dict):
+        for name, entry in by_model.items():
+            if not isinstance(entry, dict):
+                continue
+            cost = entry.get("costUSD")
+            rows.append(
+                (
+                    str(name),
+                    {
+                        "input_tokens": _usage_field(entry, "inputTokens"),
+                        "output_tokens": _usage_field(entry, "outputTokens"),
+                        "cache_write_tokens": _usage_field(entry, "cacheCreationInputTokens"),
+                        "cache_read_tokens": _usage_field(entry, "cacheReadInputTokens"),
+                        "cost_usd": (
+                            float(cost)
+                            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                            else None
+                        ),
+                    },
+                )
+            )
+    if rows:
+        return rows
+    return [(_cli_model(requested_model), _anthropic_usage(envelope.get("usage")))]
+
+
 def _openai_usage(usage: Any) -> dict[str, Any]:
     """The same four buckets from an OpenAI chat-completions ``usage``.
 
@@ -387,7 +434,14 @@ def _openai_usage(usage: Any) -> dict[str, Any]:
     }
 
 
-def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, Any]) -> None:
+def _log_usage(
+    *,
+    node_id: str,
+    provider: str,
+    model: str,
+    usage: Mapping[str, Any],
+    iterations: int | None = None,
+) -> None:
     """Append token usage as JSONL to ``$ROTE_USAGE_LOG``, if set.
 
     What lets ``rote eval --run`` measure a graduated pipeline's actual
@@ -412,6 +466,14 @@ def _log_usage(*, node_id: str, provider: str, model: str, usage: Mapping[str, A
             "cache_write_tokens": usage.get("cache_write_tokens"),
             "cache_read_tokens": usage.get("cache_read_tokens"),
         }
+        if usage.get("cost_usd") is not None:
+            # The CLI's own estimate. It knows what a catalog cannot, such
+            # as a 1h cache write billing at twice the 5m rate.
+            record["cost_usd"] = usage["cost_usd"]
+        if iterations is not None:
+            # An agent loop's turns: its result is its declared output, so
+            # this log is where the count is observable.
+            record["iterations"] = iterations
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
     except OSError:
@@ -541,7 +603,7 @@ def _call_claude_cli(
     prompt: str,
     output_schema: dict[str, Any],
     timeout: float,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """One schema-locked judge call through the Claude Code CLI.
 
     ``--json-schema`` makes this a *forced tool call* under the hood
@@ -609,7 +671,7 @@ def _call_claude_cli(
             f"claude -p returned no structured output for {node_id}; "
             f"got: {str(envelope.get('result'))[:200]}"
         )
-    return payload, _anthropic_usage(envelope.get("usage"))
+    return payload, _cli_usage_rows(envelope, model)
 
 
 # ───────── the one entry point emitted judges call ─────────
@@ -638,7 +700,7 @@ def call_judge(
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
 
     if provider == "claude-cli":
-        payload, usage = _call_claude_cli(
+        payload, rows = _call_claude_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -669,13 +731,11 @@ def call_judge(
         )
     else:
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")
+    if provider != "claude-cli":
+        rows = [(model, usage)]
 
-    _log_usage(
-        node_id=node_id,
-        provider=provider,
-        model=_cli_model(model) if provider == "claude-cli" else model,
-        usage=usage,
-    )
+    for row_model, row_usage in rows:
+        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
     return payload
 
 
@@ -750,20 +810,118 @@ def _mcp_config_for(
     return servers, allowed
 
 
+#: The tool an agent loop calls once, at the end, with its declared output
+#: (rote.adapters._common.AGENT_SUBMIT_TOOL; the TS twin uses the same name).
+_SUBMIT_TOOL = "submit_result"
+
+
 def _agent_task_prompt(
-    *, description: str, task: str, termination: str | None, local_tool_names: Sequence[str]
+    *,
+    description: str,
+    task: str,
+    termination: str | None,
+    local_tool_names: Sequence[str],
+    submit: str | None = None,
 ) -> str:
     parts = [description.strip(), "", task.strip()]
     if local_tool_names:
         parts += ["", "Pipeline steps available to you as tools: " + ", ".join(local_tool_names)]
     if termination:
         parts += ["", f"Stop when: {termination}"]
-    parts += [
-        "",
-        "When you are done, state your final answer as the last message. "
-        "Do not ask follow-up questions — nobody is available to answer.",
-    ]
+    if submit == "tool":
+        parts += [
+            "",
+            f"When you are done, call the {_SUBMIT_TOOL} tool exactly once with the "
+            "final answer: its arguments are this step's output, and the next steps "
+            "read them. Do not ask follow-up questions — nobody is available to answer.",
+        ]
+    elif submit == "schema":
+        parts += [
+            "",
+            "When you are done, give the final answer in the required structured "
+            "form: it is this step's output, and the next steps read it. Do not ask "
+            "follow-up questions — nobody is available to answer.",
+        ]
+    else:
+        parts += [
+            "",
+            "When you are done, state your final answer as the last message. "
+            "Do not ask follow-up questions — nobody is available to answer.",
+        ]
     return "\n".join(parts)
+
+
+def _schema_errors(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
+    """Where ``value`` breaks ``schema``: types, required keys, extra keys.
+
+    The subset rote's agent-loop schemas use (``rote.adapters._common
+    .ir_type``): ``type``, ``properties`` / ``required`` /
+    ``additionalProperties: false``, ``items``, ``anyOf`` and ``enum``. A
+    description-only schema (a named type the IR never defines) accepts
+    anything. Stdlib only: this module ships verbatim in emitted apps.
+    """
+    if "anyOf" in schema:
+        options = [_schema_errors(option, value, path) for option in schema["anyOf"]]
+        if any(not errors for errors in options):
+            return []
+        return [f"{path}: matches none of its allowed types"]
+    if "enum" in schema and value not in schema["enum"]:
+        return [f"{path}: {value!r} is not one of {schema['enum']!r}"]
+    kind = schema.get("type")
+    checks = {
+        "string": lambda v: isinstance(v, str),
+        "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+        "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+        "boolean": lambda v: isinstance(v, bool),
+        "null": lambda v: v is None,
+        "object": lambda v: isinstance(v, dict),
+        "array": lambda v: isinstance(v, list),
+    }
+    if kind is None:
+        return []
+    if kind in checks and not checks[kind](value):
+        return [f"{path}: expected {kind}, got {type(value).__name__}"]
+    errors: list[str] = []
+    if kind == "object":
+        properties = schema.get("properties", {})
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}: missing key {key!r}")
+        for key, item in value.items():
+            if key in properties:
+                errors.extend(_schema_errors(properties[key], item, f"{path}.{key}"))
+            elif schema.get("additionalProperties") is False:
+                errors.append(f"{path}: unexpected key {key!r}")
+    if kind == "array" and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            errors.extend(_schema_errors(schema["items"], item, f"{path}[{index}]"))
+    return errors
+
+
+def _declared_output(
+    node_id: str, provider: str, schema: Mapping[str, Any], answer: Any
+) -> dict[str, Any]:
+    """The loop's final answer, validated against its declared output.
+
+    Downstream nodes index these keys, so a missing key, a wrong type or an
+    undeclared key fails here, naming the node, rather than as a KeyError
+    or a bad value in a later step. Every lane ends here, with the same
+    message as the TS twin.
+    """
+    if answer is None:
+        reason = f"it never called {_SUBMIT_TOOL}, even when asked once more"
+        if provider == "claude-cli":
+            reason = "the CLI returned no structured output"
+        raise RuntimeError(
+            f"agent loop {node_id} ({provider}) did not hand back its declared output: {reason}"
+        )
+    errors = _schema_errors(schema, answer, "output")
+    if errors:
+        raise RuntimeError(
+            f"agent loop {node_id} ({provider}) did not hand back its declared output: "
+            + "; ".join(errors)
+        )
+    return dict(answer)
 
 
 def _run_agent_via_cli(
@@ -775,7 +933,8 @@ def _run_agent_via_cli(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, dict[str, Any], int | None]:
+    output_schema: Mapping[str, Any] | None = None,
+) -> tuple[Any, list[tuple[str, dict[str, Any]]], int | None]:
     """A bounded agent loop on the Claude subscription.
 
     Unlike the judge path this one *keeps* its declared MCP tools (that
@@ -805,6 +964,11 @@ def _run_agent_via_cli(
     if allowed:
         command += ["--allowedTools", ",".join(allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
+    if output_schema is not None:
+        # The same forced structured output a judge uses: the CLI adds a
+        # final tool whose arguments are validated against the schema and
+        # returns them in `structured_output`.
+        command += ["--json-schema", json.dumps(output_schema)]
 
     try:
         completed = subprocess.run(
@@ -829,11 +993,12 @@ def _run_agent_via_cli(
     if envelope.get("is_error"):
         reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
         raise RuntimeError(f"claude -p agent loop failed for {node_id}: {str(reason)[:400]}")
-    return (
-        str(envelope.get("result") or ""),
-        _anthropic_usage(envelope.get("usage")),
-        _cli_turns(envelope),
+    answer: Any = (
+        envelope.get("structured_output")
+        if output_schema is not None
+        else str(envelope.get("result") or "")
     )
+    return answer, _cli_usage_rows(envelope, model), _cli_turns(envelope)
 
 
 def _cli_turns(envelope: Mapping[str, Any]) -> int | None:
@@ -878,7 +1043,9 @@ def _run_agent_via_sdk(
     tool_servers: Mapping[str, str] | None,
     max_iterations: int,
     timeout: float,
-) -> tuple[str, dict[str, Any], int]:
+    output_schema: Mapping[str, Any] | None = None,
+    output_strict: bool = False,
+) -> tuple[Any, dict[str, Any], int]:
     """A bounded agent loop on the vendor SDK's own tool runner.
 
     ``anthropic.lib.tools`` ships a tool loop, so this needs no agent
@@ -901,6 +1068,26 @@ def _run_agent_via_sdk(
     # the contract the step enforces are the same object — as rich as the
     # IR's input_schema made that step, no richer and no staler.
     bound = [beta_tool(name=name)(_text_result(fn)) for name, fn in local_tools.items()]
+    submitted: list[dict[str, Any]] = []
+    if output_schema is not None:
+
+        def submit(**answer: Any) -> str:
+            submitted.append(answer)
+            return "Recorded. The step is complete; end your turn."
+
+        bound.append(
+            beta_tool(
+                name=_SUBMIT_TOOL,
+                description=(
+                    "Hand back this step's final output. Call exactly once, when "
+                    "the task is done; the next pipeline steps read these fields."
+                ),
+                input_schema=dict(output_schema),
+                # Grammar-constrained arguments when the schema fits the
+                # strict subset (rote.adapters._common.strict_compatible).
+                strict=True if output_strict else None,
+            )(submit)
+        )
     servers, _allowed = _mcp_config_for(tools, tool_servers)
     mcp_servers = [
         {"type": "url", "url": config["url"], "name": name} for name, config in servers.items()
@@ -932,13 +1119,80 @@ def _run_agent_via_sdk(
             turn_usage = _anthropic_usage(getattr(message, "usage", None))
             usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
         final = runner.until_done()
+        if output_schema is not None and not submitted:
+            # The loop ended (or hit its cap) without handing anything back.
+            # One more turn with the submit tool forced, the mechanism a
+            # judge uses, before failing.
+            forced = _force_submission(client, runner, final, kwargs, bound)
+            turns += 1
+            turn_usage = _anthropic_usage(getattr(forced, "usage", None))
+            usage = {key: _add_tokens(usage[key], turn_usage[key]) for key in usage}
+            submitted.extend(
+                dict(block.input)
+                for block in getattr(forced, "content", [])
+                if getattr(block, "type", "") == "tool_use" and block.name == _SUBMIT_TOOL
+            )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
 
+    if output_schema is not None:
+        # The last submission wins: a model that corrects itself means it.
+        return (submitted[-1] if submitted else None), usage, turns
     text = "\n".join(
         b.text for b in getattr(final, "content", []) if getattr(b, "type", "") == "text"
     )
     return text, usage, turns
+
+
+def _assistant_param(message: Any) -> dict[str, Any]:
+    """A response message as a request message param, on any SDK version.
+
+    ``Message.to_param()`` exists only in newer SDKs, and an emitted app
+    runs on whatever version it installed. A content block dumps to its
+    wire shape (``{"type": "tool_use", "id", "name", "input"}`` and so on);
+    ``parsed_output`` is the SDK's own parse of a text block, never sent.
+    """
+    return {
+        "role": message.role,
+        "content": [
+            block.model_dump(mode="json", exclude_none=True, exclude={"parsed_output"})
+            for block in message.content
+        ],
+    }
+
+
+def _force_submission(
+    client: Any, runner: Any, final: Any, kwargs: Mapping[str, Any], bound: Sequence[Any]
+) -> Any:
+    """One request with ``tool_choice`` forced to the submit tool.
+
+    The conversation is the runner's, read through its public
+    ``set_messages_params``. A turn that ended the loop normally
+    (``end_turn``) is not in it yet, so it is appended. A turn that hit the
+    iteration cap ended on ``tool_use``, and the runner has already run
+    those calls and appended the turn with their results, so the nudge
+    joins that last user message instead: nothing runs twice.
+    """
+    history: list[Any] = []
+
+    def _capture(params: Any) -> Any:
+        history.extend(params["messages"])
+        return params
+
+    runner.set_messages_params(_capture)
+    nudge = {"type": "text", "text": f"Call {_SUBMIT_TOOL} now with the final answer."}
+    if getattr(final, "stop_reason", None) == "tool_use" and history[-1].get("role") == "user":
+        last = history[-1]
+        content = last["content"]
+        blocks = list(content) if isinstance(content, list) else [{"type": "text", "text": content}]
+        messages = [*history[:-1], {**last, "content": [*blocks, nudge]}]
+    else:
+        messages = [*history, _assistant_param(final), {"role": "user", "content": [nudge]}]
+    request = {key: value for key, value in kwargs.items() if key not in ("max_iterations",)}
+    request["tools"] = [tool.to_dict() for tool in bound]
+    request["tool_choice"] = {"type": "tool", "name": _SUBMIT_TOOL}
+    request["messages"] = messages
+    return client.beta.messages.create(**request)
 
 
 def _add_tokens(total: int | None, more: Any) -> int | None:
@@ -960,8 +1214,21 @@ def run_agent_loop(
     max_iterations: int = 10,
     termination: str | None = None,
     base_url: str | None = None,
-) -> dict[str, Any]:
-    """Run one bounded, tool-restricted agent loop and return its result.
+    output_schema: Mapping[str, Any] | None = None,
+    unwrap_key: str | None = None,
+    output_strict: bool = False,
+) -> Any:
+    """Run one bounded, tool-restricted agent loop and return its output.
+
+    The output is the node's declared output, the same as every other
+    node kind returns: ``output_schema`` is the object the loop's final
+    answer must be (``rote.adapters._common.agent_loop_output`` derives it
+    from the IR), and downstream nodes read its keys. On the SDK lane the
+    agent hands it back through a ``submit_result`` tool, on the CLI lane
+    as the CLI's forced structured output. ``unwrap_key`` marks a
+    single-type output, returned as the bare value. A node that declares
+    no output gets ``{"result": <final text>}``. The provider and the
+    turns that ran go to the usage log.
 
     This is what an ``agent_loop`` node executes. It is a real loop on
     both lanes — never a stub — because a pipeline that hands its one
@@ -985,10 +1252,13 @@ def run_agent_loop(
         task=task,
         termination=termination,
         local_tool_names=sorted(local_tools),
+        submit=(
+            None if output_schema is None else "schema" if provider == "claude-cli" else "tool"
+        ),
     )
 
     if provider == "claude-cli":
-        text, usage, turns = _run_agent_via_cli(
+        answer, rows, turns = _run_agent_via_cli(
             node_id=node_id,
             model=model,
             prompt=prompt,
@@ -996,9 +1266,10 @@ def run_agent_loop(
             tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
+            output_schema=output_schema,
         )
     else:
-        text, usage, turns = _run_agent_via_sdk(
+        answer, usage, turns = _run_agent_via_sdk(
             node_id=node_id,
             provider=provider,
             model=model,
@@ -1009,12 +1280,20 @@ def run_agent_loop(
             tool_servers=tool_servers,
             max_iterations=max_iterations,
             timeout=timeout,
+            output_schema=output_schema,
+            output_strict=output_strict,
         )
+        rows = [(model, usage)]
 
-    _log_usage(
-        node_id=node_id,
-        provider=provider,
-        model=_cli_model(model) if provider == "claude-cli" else model,
-        usage=usage,
-    )
-    return {"result": text, "provider": provider, "iterations": turns}
+    for index, (row_model, row_usage) in enumerate(rows):
+        _log_usage(
+            node_id=node_id,
+            provider=provider,
+            model=row_model,
+            usage=row_usage,
+            iterations=turns if index == 0 else None,
+        )
+    if output_schema is None:
+        return {"result": answer}
+    declared = _declared_output(node_id, provider, output_schema, answer)
+    return declared[unwrap_key] if unwrap_key is not None else declared

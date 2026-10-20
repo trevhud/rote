@@ -39,12 +39,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      # Install exactly what uv.lock pins, the environment developers
+      # run. A pip install resolved the newest versions on every run,
+      # so the lockfile was never tested (newest-deps.yml covers that
+      # drift on purpose). setup-uv activates .venv for later steps.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: "3.12"
+          activate-environment: true
+          enable-cache: true
 
-      - name: Install package with dev extras
-        run: python -m pip install -e ".[dev]"
+      - name: Install from uv.lock (fails if the lock is stale)
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
 
       - name: Tag matches package version
         run: |
@@ -54,6 +62,8 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match rote.__version__ ($pkg_version)" >&2
             exit 1
           fi
+
+      - uses: ./.github/actions/bubblewrap
 
       - name: Pytest (fast suite)
         run: pytest tests/

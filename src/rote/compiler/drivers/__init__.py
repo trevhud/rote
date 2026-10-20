@@ -27,12 +27,22 @@ class DriverError(RuntimeError):
 
     The message is user-facing and should explain what went wrong and
     what the user can do about it. Driver implementations should attach
-    any captured stdout / stderr via the ``details`` attribute.
+    any captured stdout / stderr via the ``details`` attribute, and the
+    usage and cost the failed run reported via ``metadata`` (the same keys
+    a :class:`DriverResult` carries): a failed run is still a paid one,
+    and its cost must be reported, not dropped with the run.
     """
 
-    def __init__(self, message: str, *, details: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.details = details
+        self.metadata = metadata
 
 
 @dataclass

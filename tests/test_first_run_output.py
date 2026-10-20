@@ -81,7 +81,8 @@ def test_doctor_hints_use_rote_cli(capsys: pytest.CaptureFixture[str]) -> None:
         "apps": [],
         "ok": False,
     }
-    assert "  ✗ dbos — pip install 'rote-cli[dbos]'" in _render_doctor_text(report).splitlines()
+    lines = _render_doctor_text(report).splitlines()
+    assert "  ✗ [dbos] extra — pip install 'rote-cli[dbos]'" in lines
 
 
 # ───────── 1/2a. failure excerpts: the end of stderr, plus the hint ─────────
@@ -95,6 +96,17 @@ def test_failure_excerpt_keeps_the_end_of_long_output() -> None:
     assert "startup line 0\n" not in text
     assert "earlier characters omitted" in text
     assert len(text) < 1700
+
+
+def test_failure_excerpt_keeps_a_node_errors_message_above_its_stack() -> None:
+    """Node prints the message first and the stack after, so the tail of a
+    long DBOS-TS failure held only `at ...` frames and never said why."""
+    frames = "\n".join(f"    at frame{i} (/app/node_modules/x.js:{i}:1)" for i in range(80))
+    stderr = "startup\nError: pipeline input is missing required field(s): region\n" + frames
+    text = failure_excerpt(stderr)
+    assert text.startswith("Error: pipeline input is missing required field(s): region\n")
+    assert "earlier characters omitted" in text
+    assert text.endswith("x.js:79:1)")
 
 
 def test_failure_excerpt_short_output_is_untouched() -> None:
@@ -125,7 +137,8 @@ def test_missing_module_outside_the_extras_gets_no_hint() -> None:
 
 def _emit(pipeline_yaml: Path, runtime: str, out: Path) -> dict[str, Path]:
     pipeline = load_pipeline(pipeline_yaml)
-    return dict(get_adapter(runtime).emit(pipeline, out))
+    # The real modules beside the IR, as `rote emit` sources them.
+    return dict(get_adapter(runtime, extracted_source_dir=pipeline_yaml.parent).emit(pipeline, out))
 
 
 def test_run_refuses_stubs_before_starting_the_app(
@@ -250,6 +263,32 @@ def test_emit_text_with_no_stubs_points_at_run(
     assert f"  next: rote run {out}" in text
 
 
+def test_emit_next_hint_is_a_command_that_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bare pipeline.yaml has no skill to derive an input from, so a
+    pipeline with required inputs needs --input. The hint points at the
+    example's input file, and following it verbatim works."""
+    import shlex
+
+    draft = REPO_ROOT / "examples" / "expense-audit" / "expected" / "pipeline-draft.yaml"
+    out = tmp_path / "app"
+    assert cli_main(["emit", str(draft), "--runtime", "python", "--out", str(out)]) == 0
+    (hint,) = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("  next: ")]
+    expected_input = REPO_ROOT / "examples" / "expense-audit" / "input.json"
+    assert hint == f"  next: rote run {out} --input {expected_input}"
+    assert cli_main(shlex.split(hint.removeprefix("  next: "))[1:]) == 0
+    assert json.loads(capsys.readouterr().out)["file_report"]["batch_total_usd"] == 3304.15
+
+    # No input file to point at: the placeholder names the required fields.
+    lone = tmp_path / "lone" / "pipeline.yaml"
+    lone.parent.mkdir()
+    lone.write_text(draft.read_text(encoding="utf-8"), encoding="utf-8")
+    assert cli_main(["emit", str(lone), "--runtime", "python", "--out", str(tmp_path / "a2")]) == 0
+    text = capsys.readouterr().out
+    assert "--input '<JSON object with period, submissions>'" in text
+
+
 def test_stub_detection_covers_typescript_layouts(tmp_path: Path) -> None:
     out = tmp_path / "cf"
     _emit(BDR_PIPELINE, "cloudflare", out)
@@ -285,6 +324,67 @@ def test_real_implementation_raising_not_implemented_is_not_a_stub(
     )
     assert cli_main(["run", str(app), "--input", "{}"]) == 0
     assert json.loads(capsys.readouterr().out) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    ("source", "is_stub"),
+    [
+        # BDR's zoominfo.enrich_batch: validates, then raises unconditionally.
+        (
+            "def enrich_batch(contacts, batch_size=10):\n"
+            '    """Enrich a batch."""\n'
+            "    if len(contacts) > batch_size:\n"
+            "        raise ValueError('too many')\n"
+            "    raise NotImplementedError('implement against ZoomInfo')\n",
+            True,
+        ),
+        ("def f(**payload):\n    raise NotImplementedError\n", True),
+        # The unsupported case is a branch: working code.
+        (
+            "def f(region):\n"
+            "    if region == 'us':\n"
+            "        return {'ok': True}\n"
+            "    else:\n"
+            "        raise NotImplementedError(region)\n",
+            False,
+        ),
+        # Dispatch that falls through to the raise: it returns on its real paths.
+        (
+            "def f(kind):\n"
+            "    if kind == 'a':\n"
+            "        return 1\n"
+            "    raise NotImplementedError(kind)\n",
+            False,
+        ),
+        # A nested helper's return does not make the outer stub real.
+        (
+            "def f():\n    def helper():\n        return 1\n    raise NotImplementedError\n",
+            True,
+        ),
+        (
+            "import abc\n\nclass Base(abc.ABC):\n"
+            "    @abc.abstractmethod\n"
+            "    def run(self):\n"
+            "        raise NotImplementedError\n",
+            False,
+        ),
+    ],
+    ids=["preamble-then-raise", "bare", "if-else-branch", "fallthrough", "nested", "abstract"],
+)
+def test_python_stub_shapes(source: str, is_stub: bool) -> None:
+    from rote.adapters._common import _python_module_is_stub
+
+    assert _python_module_is_stub(source) is is_stub
+
+
+def test_bdr_reports_every_stub_module_including_zoominfo(tmp_path: Path) -> None:
+    """BDR has four stub modules. zoominfo's validates its batch size before
+    raising and used to be missed, leaving three."""
+    app = tmp_path / "app"
+    _emit(BDR_PIPELINE, "dbos", app)
+    names = sorted(p.name for p in unimplemented_stubs(app))
+    assert "zoominfo.py" in names
+    assert names == ["exclusion_checks.py", "hubspot.py", "taxonomy.py", "zoominfo.py"]
 
 
 def test_edited_module_with_a_stub_left_is_still_a_stub(tmp_path: Path) -> None:
@@ -346,6 +446,28 @@ def test_stub_refusal_points_at_allow_stubs(
         .err.rstrip()
         .endswith("If the run will not reach them, pass --allow-stubs.")
     )
+
+
+@pytest.mark.parametrize(
+    ("runtime", "fix", "not_said"),
+    [
+        ("dbos", "re-emit with the real modules in an extracted/ directory", "TypeScript"),
+        ("cloudflare", "Implement them in TypeScript in the files above", "re-emit"),
+        ("inngest", "Implement them in TypeScript in the files above", "re-emit"),
+        ("dbos-ts", "Implement them in TypeScript in the files above", "re-emit"),
+    ],
+)
+def test_stub_refusal_fix_matches_the_runtimes_language(
+    runtime: str, fix: str, not_said: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A TS app's implementations are TypeScript: telling its user to put
+    Python modules beside the pipeline.yaml cannot work."""
+    app = tmp_path / "app"
+    _emit(BDR_PIPELINE, runtime, app)
+    assert cli_main(["run", str(app), "--input", "{}"]) == 2
+    err = capsys.readouterr().err
+    assert fix in err
+    assert not_said not in err.split("on their first call:")[1].split("then re-run")[0]
 
 
 def test_untracked_output_says_so_instead_of_none(tmp_path: Path) -> None:
@@ -645,3 +767,27 @@ def test_config_rows_align(capsys: pytest.CaptureFixture[str]) -> None:
     source_cols = {row.index("built-in") for row in rows}
     assert len(value_cols) == 1, rows
     assert len(source_cols) == 1, rows
+
+
+def test_install_hint_follows_the_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A uv tool install has no pip: the hint re-runs `uv tool install`
+    with the extras it already has plus the missing one. Under uvx the
+    next call names the extra. Anything else gets pip."""
+    from rote.extras import install_hint
+
+    tool = tmp_path / "uv" / "tools" / "rote-cli"
+    tool.mkdir(parents=True)
+    (tool / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{ name = "rote-cli", extras = ["temporal"] }]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("sys.prefix", str(tool))
+    assert install_hint("dbos") == "uv tool install 'rote-cli[dbos,temporal]'"
+
+    ephemeral = tmp_path / "cache" / "archive-v0" / "Xq9"
+    ephemeral.mkdir(parents=True)
+    monkeypatch.setattr("sys.prefix", str(ephemeral))
+    assert install_hint("dbos") == "uvx --from 'rote-cli[dbos]' rote ..."
+
+    monkeypatch.setattr("sys.prefix", str(tmp_path / "venv"))
+    assert install_hint("dbos") == "pip install 'rote-cli[dbos]'"

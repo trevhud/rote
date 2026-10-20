@@ -109,6 +109,14 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
         "rote.cli._JsonlProgressSink._resolve_prices",
         staticmethod(lambda _model_id: None),
     )
+    # `rote run`'s judge-usage line prices rows the same way.
+    monkeypatch.setattr("rote.cli._judge_price_catalog", _offline_price_catalog)
+
+
+def _offline_price_catalog() -> object:
+    from rote.eval.pricing import PricingError
+
+    raise PricingError("tests never fetch live prices")
 
 
 #: Credentials that would let a test reach a real model. Scrubbed from

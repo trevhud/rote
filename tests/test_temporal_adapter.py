@@ -27,7 +27,7 @@ from rote.adapters.temporal import (
     emit_workflow,
 )
 from rote.ir import Node, NodeKind, Pipeline
-from tests._helpers import mini_pipeline
+from tests._helpers import mini_pipeline, payload_dict_keys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -299,7 +299,7 @@ def test_downstream_nodes_receive_upstream_results(emit_result: dict[str, Path])
     assert '"contacts": hubspot_upsert_result["upserted"],' in src
     assert '"contacts": exclusion_check_dnc_result["passed"],' in src
     # Pipeline input field selection.
-    assert '"target_quota": pipeline_input["target_quota"],' in src
+    assert '**_input_field(pipeline_input, "target_quota", "target_quota"),' in src
     # Fan-in: the report node pulls from several sources.
     assert '"template_ids": create_sales_template_result["template_ids"],' in src
     # The placeholder TODO is gone for good.
@@ -327,9 +327,7 @@ def test_emitted_workflow_payloads_parse_as_dict_literals(
         assert isinstance(payload_arg, ast.Dict), (
             f"payload for {name_arg.value!r} must be a dict literal"
         )
-        payload_keys_by_node[name_arg.value] = {
-            k.value for k in payload_arg.keys if isinstance(k, ast.Constant)
-        }
+        payload_keys_by_node[name_arg.value] = {k for k in payload_dict_keys(payload_arg)}
 
     nested_ids = {sub for n in bdr_pipeline.nodes if n.loop_body for sub in n.loop_body}
     for node in bdr_pipeline.nodes:
@@ -357,44 +355,6 @@ def test_node_without_inputs_gets_empty_payload(tmp_path: Path) -> None:
     )
     src = TemporalAdapter().emit_workflow(pipeline)
     assert "            {}," in src
-
-
-def test_emit_rejects_forward_reference() -> None:
-    """A node whose inputs reference a later wave must fail at emit time,
-    not as a NameError inside a running workflow."""
-    from rote.ir import Edge, Node, Pipeline, PipelineInput
-
-    pipeline = Pipeline(
-        name="forward-ref",
-        input=PipelineInput(type="X"),
-        nodes=[
-            Node(
-                id="first",
-                kind=NodeKind.PURE_FUNCTION,
-                description="x",
-                impl="x.py:y",
-                inputs={"data": "second.output"},  # runs before `second`
-            ),
-            Node(id="second", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y"),
-        ],
-        edges=[Edge(**{"from": "first", "to": "second"})],
-        entry_nodes=["first"],
-        exit_nodes=["second"],
-    )
-    with pytest.raises(ValueError, match="no result available"):
-        TemporalAdapter().emit_workflow(pipeline)
-
-
-def test_emit_rejects_reference_to_loop_body_node(bdr_pipeline: Pipeline) -> None:
-    """Loop-body sub-nodes never bind a top-level result — referencing one
-    from a top-level node must fail at emit time."""
-    import copy
-
-    pipeline = copy.deepcopy(bdr_pipeline)
-    node = pipeline.node_by_id("hubspot_upsert")
-    node.inputs = {"contacts": "vet_contact.output"}  # loop-body sub-node
-    with pytest.raises(ValueError, match="no result available"):
-        TemporalAdapter().emit_workflow(pipeline)
 
 
 # ───────── Config variations ─────────
