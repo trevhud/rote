@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rote.compiler import system1
+from rote.compiler import system1, tool_grounding
 from rote.compiler.drivers import (
     CompilerDriver,
     DriverError,
@@ -47,6 +47,7 @@ from rote.compiler.drivers import (
 )
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
 from rote.compiler.grounding import (
+    GROUNDING_DIRNAME,
     Grounding,
     Sample,
     contract_brief,
@@ -171,6 +172,20 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _tool_table_servers(skill_dir: Path) -> set[str]:
+    """Servers the skill's own tool table maps a tool to (System-1's parser).
+
+    A skill it cannot parse safely names no server this way; its prose
+    still can.
+    """
+    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
+
+    try:
+        return set(parse_skill(skill_dir).tool_registry.values())
+    except UnsafeSkillText:
+        return set()
+
+
 def _default_compiler_skill_dir() -> Path:
     """Locate the rote-compile skill bundled with the rote source.
 
@@ -219,6 +234,7 @@ class Compiler:
         strict_provenance: bool = False,
         system1: bool = False,
         system1_decider: str = "rules",
+        tool_discovery: tool_grounding.Discovery = "named",
     ) -> None:
         """
         Parameters
@@ -280,6 +296,7 @@ class Compiler:
         self.emit_target = emit_target
         self.strict_provenance = strict_provenance
         self.system1 = system1
+        self.tool_discovery = tool_discovery
         self.system1_decider = system1_decider
 
     @property
@@ -468,11 +485,29 @@ class Compiler:
         ):
             work_dir = Path(work_dir_str)
             compiler_skill_dir = self.compiler_skill_dir
+            # What the contracts are grounded in, decided before anything
+            # else: System-1 makes its input, gate and argument decisions
+            # from it, and the agent is handed it.
+            # Imported here: rote.eval.empirical imports rote.compiler.drivers,
+            # which runs this package's __init__, so a module-level import of
+            # rote.eval.baseline would be circular.
+            from rote.eval.baseline import load_observations
+
+            observations = tuple(load_observations(probe_dir)) if probe_dir else ()
+            grounding = Grounding(
+                sample=sample,
+                observations=observations,
+                tools=await self._tool_schemas(observations, skill_dir),
+            )
             s1_plan: system1.Plan | None = None
             if self.system1:
                 try:
                     s1_plan = system1.prepare(
-                        skill_dir, work_dir, self.system1_decider, sample=sample
+                        skill_dir,
+                        work_dir,
+                        self.system1_decider,
+                        sample=sample,
+                        tools=grounding.tools,
                     )
                 except (system1.UnsafeSkillText, system1.ClefUnavailable) as e:
                     raise CompilerError(str(e)) from e
@@ -498,21 +533,15 @@ class Compiler:
                         "log", "probe artifacts found — feeding observed traffic to the agent"
                     )
                     instructions.append(probe_instructions)
-            # Imported here: rote.eval.empirical imports rote.compiler.drivers,
-            # which runs this package's __init__, so a module-level import of
-            # rote.eval.baseline would be circular.
-            from rote.eval.baseline import load_observations
-
-            grounding = Grounding(
-                sample=sample,
-                observations=tuple(load_observations(probe_dir)) if probe_dir else (),
-            )
             ctx_dir = materialize(work_dir, sample) if sample is not None else None
             if sample is not None:
                 self._emit("log", f"input contract grounded in a sample input: {sample.source}")
             brief = contract_brief(sample, skill_dir, ctx_dir)
             if brief:
                 instructions.append(brief)
+            if grounding.tools:
+                schemas = tool_grounding.materialize(work_dir / GROUNDING_DIRNAME, grounding.tools)
+                instructions.append(tool_grounding.brief(grounding.tools, skill_md_text, schemas))
             run_kwargs: dict[str, Any] = {}
             if instructions:
                 run_kwargs["extra_instructions"] = "\n\n".join(instructions)
@@ -678,6 +707,50 @@ class Compiler:
                 driver_metadata=result.metadata,
                 verification=verification,
             )
+
+    async def _tool_schemas(
+        self, observations: tuple[Any, ...], skill_dir: Path
+    ) -> tool_grounding.ToolSchemas:
+        """Every MCP tool's input schema rote can get, before the agent runs.
+
+        Declared schemas from a live ``tools/list`` on the registered
+        servers ``tool_discovery`` allows (by default only the ones the
+        skill names: a third-party skill must not trigger authenticated
+        requests to the user's other servers), then schemas inferred from a
+        baseline's recorded calls for any tool nothing declared. A server
+        that cannot be listed is logged and skipped.
+        """
+        from rote.mcp import load_registry
+
+        registered = sorted(load_registry().servers)
+        texts = [p.read_text(encoding="utf-8", errors="replace") for p in skill_dir.rglob("*.md")]
+        contact = tool_grounding.servers_to_contact(
+            registered, "\n".join(texts), self.tool_discovery, _tool_table_servers(skill_dir)
+        )
+        declared: tool_grounding.ToolSchemas = {}
+        for server, why in contact.items():
+            self._emit("log", f"tool schemas: listing {server!r} (the skill says: {why!r})")
+        left = [s for s in registered if s not in contact]
+        if left:
+            self._emit(
+                "log",
+                f"tool schemas: not contacting {', '.join(left)} "
+                f"(not named in the skill; --tool-discovery {self.tool_discovery})",
+            )
+        if contact:
+
+            def _skip(server: str, reason: str) -> None:
+                self._emit("log", f"tool schemas: skipped server {server!r}: {reason}")
+
+            declared = await tool_grounding.discover(contact, on_skip=_skip)
+        tools = tool_grounding.merge(declared, tool_grounding.recorded(observations))
+        if tools:
+            servers = sorted({s for s, _ in tools})
+            self._emit(
+                "log",
+                f"tool arguments grounded in {len(tools)} tool schema(s) from {', '.join(servers)}",
+            )
+        return tools
 
     def _emit_verification(self, verification: Verification) -> None:
         """One log line for the per-node implementation tally, one warning per problem."""

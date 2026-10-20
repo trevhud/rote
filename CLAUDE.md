@@ -509,6 +509,24 @@ preserve:
 - **Generated tests cannot catch this.** The model that wrote
   `line["expense_id"]` writes tests with `expense_id` rows. The sample is
   the only input in the loop the agent did not write.
+- **Tool argument names come from the tool, not the skill.**
+  `rote.compiler.tool_grounding` lists the tools (`tools/list`, read-only,
+  through the emitted pipelines' own non-interactive client, all servers
+  concurrently) of the registered servers the skill names, before the
+  agent runs. Only those: a third-party skill must not trigger
+  authenticated requests, and silent token refreshes, against the user's
+  other servers (`--tool-discovery all` opts in, `none` opts out on any
+  driver). Schemas are server-supplied text, so the agent sees only
+  identifier-shaped names and JSON type names, labeled as data.
+  Verification checks each `mcp:` binding's arguments against a declared
+  schema; one that is not a flat object schema (top-level `anyOf`,
+  non-local `$ref`, no `properties`) is an open question, never a
+  failure. The schema
+  is read one way everywhere (`rote.tool_schema`): the bench's fixture
+  servers refuse exactly what verification refuses, and the bench
+  registers those fixtures for each compile, so compile and fidelity see
+  one schema. A schema inferred from a baseline's recorded calls never
+  fails a compile: it only shows what someone sent.
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 

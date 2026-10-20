@@ -70,13 +70,21 @@ interpreter as the bench. Two things are forced, not configurable:
 - **No answer key.** The skill is copied to `<run>/<skill>/r<k>/skill-src/`
   first, so the compiler agent cannot step from the skill dir into
   `expected/`.
-- **The example's sample input.** When `examples/<name>/input.json`
-  exists, the compile gets `--sample-input` pointing at it, the input a
-  user would hand the skill. rote extracts the input contract from it
-  and runs the pipeline's deterministic steps on it before the compile
-  is done (`rote.compiler.grounding`, `rote.compiler.prefix`). The gate
-  answers in `eval-input.json` and `fidelity/cases.yaml` are not passed,
-  so gate payload keys still come from the skill's own words.
+- **The example's MCP servers.** When `fidelity/cases.yaml` declares
+  fixture servers, they run for the length of the compile, with no
+  responses, registered in a registry of the job's own
+  (`<job>/bench-tool-servers/mcp.json`). The compile reads their
+  `tools/list` to ground its tool arguments the way a compile against
+  registered real servers does, so it sees exactly the schemas the
+  fixtures enforce when the pipeline runs.
+- **The example's sample run.** When `examples/<name>/sample.json`
+  exists, the compile gets `--sample-input` pointing at it: the
+  `{"input", "signals"}` envelope a user would supply, with the fidelity
+  cases' keys and none of their values (a test pins both). rote extracts
+  the input contract and gate payload keys from it and runs the
+  pipeline's deterministic steps on it before the compile is done
+  (`rote.compiler.grounding`, `rote.compiler.prefix`). `input.json`,
+  `eval-input.json` and `fidelity/` are never passed.
 
 ## Benching other models through Cloudflare AI Gateway
 

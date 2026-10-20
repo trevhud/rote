@@ -94,14 +94,18 @@ def _call(fn: Any, payload: dict[str, Any]) -> Any:
     return result
 
 
-def _mcp_result(step: dict[str, Any], payload: dict[str, Any]) -> Any:
-    """The recorded result of the call this step would make, or ``_MISSING``."""
+def _mcp_arguments(step: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """The arguments this step sends, built the way every emitter builds them."""
     if step["args"] is None:
-        arguments = payload
-    else:
-        arguments = {}
-        for tool_arg, origin, value in step["args"]:
-            arguments[tool_arg] = value if origin in ("constant", "literal") else payload[value]
+        return payload
+    arguments = {}
+    for tool_arg, origin, value in step["args"]:
+        arguments[tool_arg] = value if origin in ("constant", "literal") else payload[value]
+    return arguments
+
+
+def _mcp_result(step: dict[str, Any], arguments: dict[str, Any]) -> Any:
+    """The recorded result of the call with ``arguments``, or ``_MISSING``."""
     for observed in step["observed"]:
         if observed["input"] == arguments:
             return observed["output"]
@@ -128,12 +132,15 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 if value is not _MISSING:
                     payload[binding[0]] = value
             if step["kind"] == "mcp":
-                output = _mcp_result(step, payload)
+                # The arguments are reported either way: rote checks them
+                # against the tool's schema, recorded call or not.
+                arguments = _mcp_arguments(step, payload)
+                output = _mcp_result(step, arguments)
                 if output is _MISSING:
-                    report[node_id] = {"status": "no_recording"}
+                    report[node_id] = {"status": "no_recording", "arguments": arguments}
                     continue
                 results[node_id] = output
-                report[node_id] = {"status": "ok", "recorded": True}
+                report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}
                 continue
             module = importlib.import_module(step["module"])
             fn = getattr(module, step["symbol"])

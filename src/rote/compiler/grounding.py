@@ -656,6 +656,10 @@ class Grounding:
     sample: Sample | None = None
     #: ``rote baseline`` observations, for the prefix run's MCP stubs.
     observations: tuple[Any, ...] = field(default_factory=tuple)
+    #: ``{(server, tool): ToolSchema}`` (:mod:`rote.compiler.tool_grounding`):
+    #: each MCP tool's input schema, declared by its server or inferred from
+    #: recorded calls.
+    tools: dict[tuple[str, str], Any] = field(default_factory=dict)
 
 
 def unbindable_fields(sample: Sample) -> list[str]:

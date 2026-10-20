@@ -608,7 +608,11 @@ def test_a_recorded_tool_result_stands_in_for_the_call(tmp_path: Path) -> None:
     sample = _sample({"report_date": "2026-10-19"})
     run = run_prefix(pipeline, root, sample, impls, observations=(observed,), trust_skill=True)
     # The real Gmail result was a bare list, so `.output.threads` cannot bind.
-    assert run.steps["search"] == {"status": "ok", "recorded": True}
+    assert run.steps["search"] == {
+        "status": "ok",
+        "recorded": True,
+        "arguments": {"query": "2026-10-19"},
+    }
     [finding] = run.findings
     assert "bound to search.output.threads, but search returned a list" in finding.message
     # A call with other arguments was never recorded: nothing is guessed.
