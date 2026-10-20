@@ -8,7 +8,6 @@ install a tree came from. ``ensure_npm_install`` itself is real.
 from __future__ import annotations
 
 import ast
-import itertools
 import json
 import os
 import re
@@ -171,19 +170,45 @@ def _docstrings(tree: ast.Module) -> set[int]:
     }
 
 
-def _is_npm_install(first: ast.expr, second: ast.expr) -> bool:
-    if not (isinstance(first, ast.Constant) and first.value == "npm"):
-        return False
-    return isinstance(second, ast.Starred) or (
-        isinstance(second, ast.Constant) and second.value in _INSTALL_SUBCOMMANDS
-    )
+def _names_npm(node: ast.expr) -> bool:
+    """``"npm"``, or a variable holding it (``npm``, ``npm_bin``, ``self.npm``)."""
+    if isinstance(node, ast.Constant):
+        return node.value == "npm"
+    if isinstance(node, ast.Name):
+        return "npm" in node.id.lower()
+    if isinstance(node, ast.Attribute):
+        return "npm" in node.attr.lower()
+    return False
+
+
+def _is_npm_install_argv(elts: list[ast.expr]) -> bool:
+    """An argv that runs an npm install, with any flags before the subcommand.
+
+    ``["npm", "--prefix", app, "install"]`` counts, so every argument after
+    npm is checked for an install subcommand. A ``*args`` counts too, unless
+    a plain subcommand (``rebuild``) comes before it.
+    """
+    for index, element in enumerate(elts):
+        if not _names_npm(element):
+            continue
+        subcommand_seen = False
+        for arg in elts[index + 1 :]:
+            if isinstance(arg, ast.Starred) and not subcommand_seen:
+                return True
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                if arg.value in _INSTALL_SUBCOMMANDS:
+                    return True
+                if not arg.value.startswith("-"):
+                    subcommand_seen = True
+    return False
 
 
 def raw_npm_installs(source: str) -> list[int]:
     """Line numbers of npm installs that bypass ``tests/_node_trees.py``.
 
-    Two forms: an argv list (``["npm", "install", ...]``, or a generic
-    ``["npm", *args]`` wrapper) and a shell string. Docstrings and comments
+    Two forms: an argv list (``["npm", "install", ...]``, flags before the
+    subcommand, npm held in a variable, or a generic ``["npm", *args]``
+    wrapper) and a shell string. Docstrings and comments
     describe installs without running one, so they are not flagged.
     """
     tree = ast.parse(source)
@@ -191,7 +216,7 @@ def raw_npm_installs(source: str) -> list[int]:
     lines = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.List, ast.Tuple)):
-            if any(_is_npm_install(a, b) for a, b in itertools.pairwise(node.elts)):
+            if _is_npm_install_argv(node.elts):
                 lines.append(node.lineno)
         elif (
             isinstance(node, ast.Constant)
@@ -209,6 +234,10 @@ def raw_npm_installs(source: str) -> list[int]:
         'subprocess.run(["npm", "install", "--no-audit"], cwd=app)',
         'subprocess.run(["npm", "ci"], cwd=app)',
         'subprocess.run(("npm", *args), cwd=app)',
+        'subprocess.run(["npm", "--prefix", app, "install"])',
+        'subprocess.run(["npm", "--prefix", "/srv/app", "ci"])',
+        'subprocess.run([npm, "install"], cwd=app)',
+        'subprocess.run([self.npm_bin, "--no-audit", "i", "zod"], cwd=app)',
         'subprocess.run("npm install --no-audit", shell=True, cwd=app)',
         'subprocess.run(f"cd {app} && npm ci", shell=True)',
         'os.system("npm i zod")',
@@ -224,6 +253,8 @@ def test_the_guard_flags_each_raw_install_form(source: str) -> None:
         '"""Runs a real ``npm install`` and ``tsc --noEmit``."""',
         "# npm install would write into a shared tree\nx = 1",
         'subprocess.run(["npm", "rebuild", "inngest-cli"], cwd=app)',
+        'subprocess.run(["npm", "rebuild", *flags], cwd=app)',
+        'subprocess.run([npm, "run", "build"], cwd=app)',
         'subprocess.run(["npx", "--no-install", "tsc"], cwd=app)',
         'shutil.which("npm")',
     ],
