@@ -500,6 +500,13 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
         ("Read the subject of each Gmail thread.", True),
         ("Read the names of all Slack channels.", True),
         ("Read the subject of each line.", False),
+        # A capitalized domain noun is not a system (review6).
+        ("Read the owner of each Deal and group them.", False),
+        ("Read the name of every Customer in the batch.", False),
+        ("Read the status of each Order and flag late ones.", False),
+        # A named product, then an object it holds.
+        ("Read the status of every Zendesk ticket.", True),
+        ("Read the stage of each HubSpot deal.", True),
         ("Read the total of each Q3 column.", False),
         # A read from outside is.
         ("Pull open tickets from Zendesk.", True),

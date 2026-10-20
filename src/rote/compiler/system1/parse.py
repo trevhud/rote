@@ -109,6 +109,13 @@ _PERSON = (
 #: name such as Zendesk) or a word for a service. "From the table" or "in the
 #: row" is data the step already has, and the skill's own references are not
 #: a service either.
+#: What a system holds, as the thing a read takes from a named product: the
+#: object after "each Gmail ...", "every HubSpot ...". A closed list, shared
+#: with :data:`_SYSTEM_NOUN` (the system itself).
+_SYSTEM_OBJECT = (
+    r"(?:thread|ticket|issue|message|email|e-mail|document|doc|page|record|board|file"
+    r"|event|contact|deal|invoice|order|pull request|PR|commit|row|cell)s?\b"
+)
 _SYSTEM_NOUN = (
     r"(?:portal|api|database|db|server|endpoint|inbox|channel|crm|system"
     r"|service|site|website|account|bucket|drive|feed|spreadsheet|sheet|folder|warehouse"
@@ -127,12 +134,12 @@ _NAMED_SOURCE = (
     r"|(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)(?-i:[A-Z])[\w.-]*(?![\w.-])"
     r"(?!\s+(?-i:table|tab|column|row|rows|field|list)\b)"
     rf"|the\s+(?-i:[A-Z])[\w.-]*(?:\s+(?-i:[A-Z])[\w.-]*)?\s+{_SYSTEM_NOUN}"
-    # A determiner, then a name, then what is read from it: "each Gmail
-    # thread", "all Slack channels", "the Zendesk ticket". A name alone
-    # after one ("the Controller") is a role, and a label stays data.
+    # A determiner, then a name, then an object a system holds: "each Gmail
+    # thread", "all Slack channels", "the Zendesk ticket". The object comes
+    # from one closed list, so a capitalized domain noun ("each Deal and
+    # group them", "every Customer in the batch") is never a system.
     r"|(?:the|each|every|all)\s+(?!(?-i:Step|Phase|Stage|Section|Part|Appendix)\b)"
-    r"(?-i:[A-Z])[\w.-]*(?![\w.-])\s+(?!(?-i:table|tab|column|row|rows|field|list)\b)"
-    r"(?-i:[a-z])\w+)"
+    rf"(?-i:[A-Z])[\w.-]*(?![\w.-])\s+(?:{_SYSTEM_OBJECT}|{_SYSTEM_NOUN}))"
 )
 _SOURCE = (
     r"(?!(?:the\s+)?\[?references/|\w+\.md\b)"
