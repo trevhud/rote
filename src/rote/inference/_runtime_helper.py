@@ -740,6 +740,7 @@ def _call_anthropic(
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
     max_tokens: int,
+    sdk_client: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """One schema-locked judge call through ``output_config.format``.
 
@@ -750,12 +751,15 @@ def _call_anthropic(
     """
     import anthropic
 
-    endpoint, token = _sdk_target(provider, "anthropic", base_url)
-    client = (
-        anthropic.Anthropic(base_url=endpoint)
-        if token is None
-        else anthropic.Anthropic(base_url=endpoint, auth_token=token)
-    )
+    if sdk_client is not None:
+        client = sdk_client
+    else:
+        endpoint, token = _sdk_target(provider, "anthropic", base_url)
+        client = (
+            anthropic.Anthropic(base_url=endpoint)
+            if token is None
+            else anthropic.Anthropic(base_url=endpoint, auth_token=token)
+        )
     request_schema = structured_output_schema(output_schema, node_id=node_id)
     effort = node_effort(node_id)
     # Any: the SDK types this as a TypedDict, which a dict built at run
@@ -929,6 +933,44 @@ def call_judge(
     judge regardless of its schema.
     """
     provider = select_provider(node_id, client, base_url=base_url)
+    payload, rows = structured_call(
+        node_id=node_id,
+        provider=provider,
+        client=client,
+        model=model,
+        prompt=prompt,
+        output_schema=output_schema,
+        base_url=base_url,
+        sampling=sampling,
+        max_tokens=max_tokens,
+    )
+    for row_model, row_usage in rows:
+        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+    return payload
+
+
+def structured_call(
+    *,
+    node_id: str,
+    provider: str,
+    client: str,
+    model: str,
+    prompt: str,
+    output_schema: dict[str, Any],
+    base_url: str | None = None,
+    sampling: dict[str, Any] | None = None,
+    max_tokens: int = 4096,
+    sdk_client: Any = None,
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+    """One schema-locked call on a provider already chosen: ``(payload, usage rows)``.
+
+    :func:`call_judge` is this plus provider selection and the usage log.
+    Each usage row is ``(concrete model, the four token buckets)``, and a
+    ``claude-cli`` row also carries the CLI's own ``cost_usd``.
+    ``sdk_client`` is an Anthropic client the caller already built (rote's
+    compiler passes its api driver's, so a call bills and routes exactly
+    like the compile); without it one is built for ``provider``.
+    """
     sampling = dict(sampling or {})
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
 
@@ -950,6 +992,7 @@ def call_judge(
             output_schema=output_schema,
             sampling=sampling,
             max_tokens=max_tokens,
+            sdk_client=sdk_client,
         )
     elif client == "openai":
         payload, usage = _call_openai(
@@ -965,10 +1008,7 @@ def call_judge(
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")
     if provider != "claude-cli":
         rows = [(model, usage)]
-
-    for row_model, row_usage in rows:
-        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
-    return payload
+    return payload, rows
 
 
 # ───────── agent loops ─────────

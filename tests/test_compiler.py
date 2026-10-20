@@ -271,6 +271,8 @@ def test_compile_metrics_survive_adapter_failure(
             "compile",
             str(fake_skill_dir),
             "--local",
+            "--tiebreak",
+            "none",
             "--runtime",
             "dbos",
             "--no-eval",
@@ -1117,7 +1119,16 @@ def test_the_compile_report_says_whether_the_tests_ran(
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver())
     out = tmp_path / "run"
-    argv = ["compile", str(fake_skill_dir), "--local", "--runtime", "dbos", "--no-eval"]
+    argv = [
+        "compile",
+        str(fake_skill_dir),
+        "--local",
+        "--tiebreak",
+        "none",
+        "--runtime",
+        "dbos",
+        "--no-eval",
+    ]
     for _ in range(2):  # twice: the section is replaced, not duplicated
         assert main([*argv, *flags, "--out", str(out)]) == 0
     report = (out / "compiled" / "compile-report.md").read_text()

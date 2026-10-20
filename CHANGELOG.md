@@ -9,6 +9,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`--tiebreak haiku` (the default): Claude Haiku decides only the steps
+  System-1 is unsure of.** One schema-locked `claude-haiku-5-5` call a
+  compile, billed like the compile (subscription under the claude driver,
+  the api driver's own client under `--agent api`), about $0.001 and 6 s.
+  On the held-out skills it lifts kind accuracy from 0.49 to 0.68 with the
+  rules, 0.66 to 0.74 with Clef and 0.67 to 0.72 with Jev. `--tiebreak
+  none` (or `tiebreak: none`, `ROTE_TIEBREAK`) turns it off. With no lane
+  the compile fails and says so. `rote bench`'s `cost$` now includes
+  System-1's decision calls.
+
 ### Changed
 
 - **System-1 is the default `rote compile` path.** rote decides the pipeline
