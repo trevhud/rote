@@ -703,9 +703,7 @@ class Compiler:
                         work_dir=work_dir,
                         # An api-backend compile records the agent's web lookups
                         # off the tool events, for the report's docs section.
-                        on_event=self.on_event
-                        if research is None
-                        else research.tee(self.on_event),
+                        on_event=self.on_event if research is None else research.tee(self.on_event),
                         **run_kwargs,
                     )
             except DriverError as e:

@@ -498,3 +498,30 @@ def test_unverified_tool_results_tell_consumers_to_accept_every_shape(tmp_path: 
         assert generate.UNVERIFIED_TOOL_RESULT in module_request(ctx, n, "S", "m").prompt
     for n in reads_code:
         assert generate.UNVERIFIED_TOOL_RESULT not in module_request(ctx, n, "S", "m").prompt
+
+
+@pytest.mark.asyncio
+async def test_a_backend_api_compile_keeps_the_researching_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--backend api modules are researched vendor calls: the parallel calls have
+    no web tools, so the session writes them."""
+    from rote.compiler import CompilerError
+    from rote.compiler.verify import EmitTarget
+
+    class Session(FakeGenerator):
+        ran = False
+
+        async def run(self, *args: Any, **kwargs: Any) -> Any:
+            Session.ran = True
+            raise DriverError("the session ran")
+
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    fake = Session({})
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
+    with pytest.raises(CompilerError, match="the session ran"):
+        await Compiler(run_generated_tests=False, emit_target=EmitTarget("dbos", "api")).compile(
+            skill, tmp_path / "out"
+        )
+    assert Session.ran and fake.requests == []

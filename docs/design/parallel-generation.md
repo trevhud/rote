@@ -1,7 +1,9 @@
 # Parallel per-node generation for System-1 compiles
 
 Status: the default text step of a System-1 compile with the `claude` and
-`api` drivers. `codex` and `openai-api` keep the single SYSTEM1.md session.
+`api` drivers. `codex` and `openai-api` keep the single SYSTEM1.md session,
+and so does a `--backend api` compile, whose external_call modules are
+vendor calls researched with web tools the parallel calls do not have.
 
 After System-1 has decided the structure, one agent session used to write
 all the text: every extracted module, every test, the judge prompts and
