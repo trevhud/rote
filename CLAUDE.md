@@ -652,12 +652,17 @@ Things that will bite if you touch it:
   reproducer (an agent-written docs param plus `os.environ["AWS_SECRET_..."]`
   sent the secret): trust comes from the vendor or the user, never the
   agent. A credential is attached only from a vendor-published spec
-  (Google's OAuth token, which the check supplies itself); a docs spec's
+  (Google's OAuth token, which the check supplies itself, gated on the
+  spec's provenance, `source="google-discovery"` from rote's store, and a
+  googleapis.com host, never on the agent-writable `vendor`; a docs spec
+  claiming a vendor rote reads a spec for is refused at compile time); a docs spec's
   `auth` is the agent's choice of secret, so it is withheld unless the
   user passes both `--allow-host <host>` and `--allow-credential <ENV>`
   (`--yes` never covers either), and any other `{$env:...}` refuses the
   whole check. A docs-spec host is called at all only when it equals, or
-  shares the registrable domain of, a cited page in `web-research.json`
+  shares the registrable domain of (`rote.vendor_specs.psl`: the bundled,
+  pinned Public Suffix List with its private section, so `a.github.io` and
+  `b.github.io` are two owners), a cited page in `web-research.json`
   (rote's own record, written by the Compiler over any file the agent
   wrote), or `--allow-host` names it; "every cited page was fetched"
   vouches for nothing. Every request is built first and the plan is

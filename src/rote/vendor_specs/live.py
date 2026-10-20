@@ -53,6 +53,7 @@ from rote.vendor_specs.check import best_operation, check_deliverable
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
 from rote.vendor_specs.fixture_store import FixtureStore
 from rote.vendor_specs.model import ApiSpec, Operation, host_of, path_segments
+from rote.vendor_specs.psl import registrable_domain
 from rote.vendor_specs.store import SpecStore
 
 LIVE_TIMEOUT_SECONDS = 30.0
@@ -295,19 +296,6 @@ def live_check(
     return report
 
 
-def registrable_domain(host: str) -> str:
-    """``slack.com`` for ``api.slack.com``: the last two labels, three under a
-    two-letter country code's ``co``/``com``/``org``/``net``/``ac``/``gov``/``edu``
-    (``bbc.co.uk``). An IP literal or a one-label host is itself."""
-    labels = host.lower().rstrip(".").split(".")
-    if len(labels) < 2 or all(part.isdigit() for part in labels) or ":" in host:
-        return host.lower()
-    second = {"co", "com", "org", "net", "ac", "gov", "edu"}
-    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in second:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
-
-
 def _refuse_unvouched_hosts(
     used: list[tuple[ApiSpec, Operation]], fetched: set[str], allow_hosts: frozenset[str]
 ) -> None:
@@ -370,13 +358,15 @@ def _build(
     if not site.params_complete:
         raise _Unbuildable("the call spreads parameters the check cannot see (**kwargs)")
     if site.kind == "google_client":
+        if not _from_discovery(spec):
+            raise _Unbuildable("a Google client call whose spec is not Google's own Discovery")
         return _build_google(site, spec, op, kwargs, env), "Google OAuth token"
     if site.auth_kwarg:
         raise _Unbuildable("the call authenticates with an auth= object the check cannot rebuild")
     if site.headers is None:
         raise _Unbuildable("the call passes headers the check cannot read")
     assert site.url is not None and site.method is not None
-    google_api = spec.vendor == "google"
+    google_api = _from_discovery(spec) and google.api_for_url(site.url) is not None
     headers_in = dict(site.headers)
     if google_api:
         # The check sends Google's token itself; the code's own is not used.
@@ -475,6 +465,17 @@ def _build_google(
         _with_query(url, query),
         {"Authorization": f"Bearer {token}"},
     )
+
+
+def _from_discovery(spec: ApiSpec) -> bool:
+    """Whether ``spec`` is Google's own Discovery document, as rote's store read it.
+
+    Its provenance, never its ``vendor``: a docs spec is agent-written, and
+    one claiming ``vendor: "google"`` would otherwise be sent the user's
+    Google token at a host the agent chose. The docs loader always sets
+    ``source="docs"``; only :mod:`rote.vendor_specs.google` sets this one.
+    """
+    return spec.source == "google-discovery"
 
 
 def _google_token(op: Operation, env: dict[str, str]) -> str:
@@ -578,7 +579,10 @@ def _send(request: LiveRequest) -> tuple[int, str, bytes]:
     if request.method not in _READ_METHODS:
         raise LiveCheckRefused(f"refusing to send {request.method}")
     opener = urllib.request.build_opener(_NoRedirect)
-    req = urllib.request.Request(request.url, method=request.method, headers=request.headers)
+    # urllib's own "Python-urllib/3.x" is refused by Cloudflare-fronted APIs
+    # (AniList: 403, error 1010). The code's own User-Agent, if any, wins.
+    headers = {"User-Agent": "rote-live-check", **request.headers}
+    req = urllib.request.Request(request.url, method=request.method, headers=headers)
     try:
         with opener.open(req, timeout=LIVE_TIMEOUT_SECONDS) as response:  # noqa: S310
             return (

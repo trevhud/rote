@@ -801,6 +801,37 @@ def _docs_at(root: Path, url: str, sources: list[str]) -> None:
             (),
             None,
         ),
+        # Two GitHub Pages sites are two owners (the list's private section),
+        # and so are two Heroku apps and two .or.jp organizations.
+        (
+            "https://b.github.io/v1/items",
+            ["https://a.github.io/docs"],
+            ["https://a.github.io/docs"],
+            (),
+            "another domain",
+        ),
+        (
+            "https://evil.herokuapp.com/v1/items",
+            ["https://vendor.herokuapp.com/docs"],
+            ["https://vendor.herokuapp.com/docs"],
+            (),
+            "another domain",
+        ),
+        (
+            "https://api.other.or.jp/v1/items",
+            ["https://docs.vendor.or.jp/a"],
+            ["https://docs.vendor.or.jp/a"],
+            (),
+            "another domain",
+        ),
+        # Its own pages vouch for a GitHub Pages API.
+        (
+            "https://api.vendor.github.io/v1/items",
+            ["https://vendor.github.io/docs"],
+            ["https://vendor.github.io/docs"],
+            (),
+            None,
+        ),
         # Two vendors under one country-code second level are not one domain.
         (
             "https://api.bbc.co.uk/v1/items",
@@ -1129,19 +1160,70 @@ def test_an_input_alias_and_a_constant_are_sent_as_the_code_would(
     assert state.requests == [("GET", "/v1/items?q=asthma&pageSize=10")], report.unchecked
 
 
-@pytest.mark.parametrize(
-    ("host", "domain"),
-    [
-        ("api.slack.com", "slack.com"),
-        ("slack.com", "slack.com"),
-        ("api.bbc.co.uk", "bbc.co.uk"),
-        ("www.googleapis.com", "googleapis.com"),
-        ("127.0.0.1", "127.0.0.1"),
-        ("localhost", "localhost"),
-        ("API.Slack.com.", "slack.com"),
-    ],
-)
-def test_registrable_domain(host: str, domain: str) -> None:
-    from rote.vendor_specs.live import registrable_domain
+# ───────── provenance: the Google token, a docs spec's vendor, the sender ─────────
 
-    assert registrable_domain(host) == domain
+
+def test_a_docs_spec_named_google_never_gets_googles_token(
+    tmp_path: Path, api: tuple[_Api, str]
+) -> None:
+    """review6: the token was gated on `vendor == "google"`, a field the agent
+    writes. A docs spec claiming it sent the user's Google token to the
+    agent's host. Gated on where the spec came from, it is not sent."""
+    from rote.vendor_specs.docs import DocsSpecFile, to_api_spec
+    from rote.vendor_specs.extract import extract
+    from rote.vendor_specs.live import _build
+
+    state, base = api
+    raw = {
+        "vendor": "local",
+        "api": "items",
+        "version": "v1",
+        "sources": ["skill"],
+        "operations": [{"id": "items.list", "method": "GET", "url_template": f"{base}/v1/items"}],
+    }
+    # Past the loader's refusal (next test): a spec object that claims Google.
+    spec = to_api_spec(DocsSpecFile.model_validate(raw), "x").model_copy(
+        update={"vendor": "google"}
+    )
+    [site] = extract(f'import httpx\ndef f():\n    httpx.get("{base}/v1/items")\n')
+    request, credential = _build(
+        site, spec, spec.operations[0], {}, {"GOOGLE_OAUTH_ACCESS_TOKEN": "ya29.users-token"}
+    )
+    assert credential is None
+    assert "ya29.users-token" not in json.dumps(request.headers)
+
+
+def test_a_docs_spec_for_a_vendor_rote_reads_a_spec_for_is_refused(tmp_path: Path) -> None:
+    """Google publishes Discovery: a docs spec claiming to be Google's is the
+    agent standing in for the vendor, and is refused at compile time."""
+    from rote.vendor_specs.docs import DocsSpecError, load
+
+    root = tmp_path / "c"
+    (root / "vendor_specs").mkdir(parents=True)
+    for vendor in ("google", " Google "):
+        (root / "vendor_specs" / "g.json").write_text(
+            json.dumps(
+                {
+                    "vendor": vendor,
+                    "api": "gmail",
+                    "version": "v1",
+                    "sources": ["https://developers.google.com/gmail/api"],
+                    "operations": [
+                        {"id": "x", "method": "GET", "url_template": "https://example.com/x"}
+                    ],
+                }
+            )
+        )
+        with pytest.raises(DocsSpecError, match="publishes a spec rote reads"):
+            load(root)
+
+
+def test_the_live_sender_names_itself(tmp_path: Path, api: tuple[_Api, str]) -> None:
+    """urllib's default `Python-urllib/3.x` is refused by Cloudflare-fronted
+    APIs (AniList answers 403, error 1010); the code's own User-Agent wins."""
+    from rote.vendor_specs.live import _send
+
+    state, base = api
+    _send(LiveRequest("GET", f"{base}/v1/items", {}))
+    _send(LiveRequest("GET", f"{base}/v1/items", {"User-Agent": "the-codes-own"}))
+    assert [h["User-Agent"] for h in state.headers] == ["rote-live-check", "the-codes-own"]
