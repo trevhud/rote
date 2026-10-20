@@ -146,10 +146,40 @@ def _gateway_headers() -> dict[str, str]:
             parsed = json.loads(metadata)
         except json.JSONDecodeError as e:
             raise ClefUnavailable(f"CLOUDFLARE_AI_GATEWAY_METADATA is not JSON: {e}") from None
-        if not isinstance(parsed, dict):
-            raise ClefUnavailable("CLOUDFLARE_AI_GATEWAY_METADATA must be a JSON object")
-        headers["cf-aig-metadata"] = json.dumps(parsed)
+        headers["cf-aig-metadata"] = json.dumps(_checked_metadata(parsed), separators=(",", ":"))
     return headers
+
+
+#: AI Gateway keeps at most this many metadata entries and drops the rest
+#: without an error (developers.cloudflare.com/ai-gateway/observability/custom-metadata/).
+GATEWAY_METADATA_MAX_ENTRIES = 5
+
+
+def _checked_metadata(parsed: object) -> dict[str, str | int | float | bool]:
+    """Refuse metadata the gateway would silently change.
+
+    The gateway drops entries past the fifth, strips keys starting with
+    ``cf.``, and accepts only string, number and boolean values. Any of those
+    could drop the key a host bills on, so each is an error here.
+    """
+    if not isinstance(parsed, dict):
+        raise ClefUnavailable("CLOUDFLARE_AI_GATEWAY_METADATA must be a JSON object")
+    if len(parsed) > GATEWAY_METADATA_MAX_ENTRIES:
+        raise ClefUnavailable(
+            f"CLOUDFLARE_AI_GATEWAY_METADATA has {len(parsed)} entries; the gateway keeps "
+            f"only {GATEWAY_METADATA_MAX_ENTRIES} and drops the rest"
+        )
+    for key, value in parsed.items():
+        if key.startswith("cf."):
+            raise ClefUnavailable(
+                f"CLOUDFLARE_AI_GATEWAY_METADATA key {key!r}: the gateway strips cf.* keys"
+            )
+        if value is None or not isinstance(value, str | int | float | bool):
+            raise ClefUnavailable(
+                f"CLOUDFLARE_AI_GATEWAY_METADATA key {key!r}: values must be a string, "
+                "number or boolean"
+            )
+    return parsed
 
 
 def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
