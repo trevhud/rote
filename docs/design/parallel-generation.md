@@ -48,6 +48,11 @@ because e06c232 predates #164's fix for an ImportError-guarded import
 counted as unshipped. Structural scores match across paths, since structure
 is decided before either runs.
 
+Smoke check at the final head 4f37585 (after the switch to #180's
+`usage_buckets` and `run_cost_usd`), API lane, one compile each:
+expense-audit 0.98 in 64 s and ops-report 0.96 in 59 s, both verified,
+with `cost_usd` $0.34 and $0.34 written to `compile-metrics.json`.
+
 An earlier parallel run at 500238f (before the review fixes and #170) is
 superseded: expense-audit 0.95, 76 s, $0.48, and ops-report 0.96, 52 s,
 $0.30. One of its API-lane expense-audit compiles scored 0.66 because the
