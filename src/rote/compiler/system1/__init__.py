@@ -158,7 +158,7 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     # Details carry agent-written text (a proposal's node, a restored value):
     # one line each, so a newline and "## ..." cannot reshape the report.
     questions = [(" ".join(t.split()), " ".join(d.split())) for t, d in questions]
-    model, asked = _calls_made(work_dir)
+    model, asked, costs = _calls_made(work_dir)
     deciders = ["rules"]
     if model:
         deciders.append(f"the {model.label} decision model")
@@ -171,6 +171,7 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
             f"Compiled with System-1: rote decided the structure with {who}, and the "
             "agent wrote the implementations and judge prompts. Every decision, with its "
             f"confidence and rule, is in `{BRIEF_DIRNAME}/{DECISIONS_FILENAME}`."
+            + _cost_sentence(costs)
         ),
         questions=questions,
         next_steps=(
@@ -189,13 +190,33 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     )
 
 
-def _calls_made(work_dir: Path) -> tuple[decision_model.DecisionModel | None, int]:
-    """From decisions.json: the decision model asked (or None), and how many
-    steps the tie-break was asked about (0 when it did not run or had none)."""
+def _calls_made(
+    work_dir: Path,
+) -> tuple[decision_model.DecisionModel | None, int, dict[str, float | None]]:
+    """From decisions.json: the decision model asked (or None), how many steps
+    the tie-break was asked about (0 when it did not run or had none), and
+    each model call's cost by who made it (``None`` when it could not be priced)."""
     path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
     if not path.is_file():
-        return None, 0
+        return None, 0, {}
     doc = json.loads(path.read_text(encoding="utf-8"))
     decider = doc.get("decider")
     model = None if decider is None else decision_model.MODELS[decider["name"]]
-    return model, len((doc.get("tiebreak") or {}).get("steps_asked") or [])
+    tb = doc.get("tiebreak") or {}
+    asked = len(tb.get("steps_asked") or [])
+    costs: dict[str, float | None] = {}
+    if model is not None:
+        costs[model.label] = decider.get("cost_usd")
+    if asked:
+        costs[tiebreak.MODEL] = tb.get("cost_usd")
+    return model, asked, costs
+
+
+def _cost_sentence(costs: dict[str, float | None]) -> str:
+    """`` Its model calls cost $0.0049 (Clef) and $0.0004 (claude-haiku-5-5).``"""
+    if not costs:
+        return ""
+    parts = [
+        f"{'an unpriced amount' if c is None else f'${c:.4f}'} ({who})" for who, c in costs.items()
+    ]
+    return " Its model calls cost " + " and ".join(parts) + ", on top of the agent's run."

@@ -236,6 +236,8 @@ def test_confident_answers_win_and_unsure_ones_go_to_review(
     assert decisions["cost_usd"] == round(9 * 1000 / 1e6 * model.price_per_m_input, 6)
     report = system1.report_extras(work, plan).preamble
     assert f"rules and the {model.label} decision model" in report
+    spent = round(9 * 1000 / 1e6 * model.price_per_m_input, 4)
+    assert f"Its model calls cost ${spent:.4f} ({model.label})" in report
 
 
 @MODELS
