@@ -205,9 +205,17 @@ def test_the_cache_key_changes_with_the_date(
 
     monkeypatch.setattr(deps, "date", Day)
     first = deps.install_vendor_deps(tmp_path / "app")
+    assert first is not None and first.is_dir()
+    # Another set's install from the same day is not this set's to prune.
+    monkeypatch.setattr(deps, "vendor_requirements", lambda app: ["pkg-b"])
+    other = deps.install_vendor_deps(tmp_path / "app")
+    monkeypatch.setattr(deps, "vendor_requirements", lambda app: ["pkg-a"])
     Day.value = datetime.date(2026, 10, 21)
     second = deps.install_vendor_deps(tmp_path / "app")
     assert first != second
+    # The new day's install of the set replaces the old one on disk.
+    assert second is not None and second.is_dir() and not first.exists()
+    assert other is not None and other.is_dir()
 
 
 def test_a_failed_move_into_place_is_an_error_not_a_lost_race(
