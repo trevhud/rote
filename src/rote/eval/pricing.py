@@ -27,6 +27,7 @@ name patterns, which churn every release.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import time
 import urllib.request
@@ -579,6 +580,18 @@ def fetch_catalog(
     """
     path = cache_path or _default_cache_path()
     cached = _load_cache(path, cache_ttl_seconds, provider)
+    if cached is not None and not cached.web_search_rates:
+        # Written while OpenRouter, the only source of web search rates, was
+        # down: its token prices stand, but the rates are retried on each
+        # read instead of staying empty for the whole TTL.
+        try:
+            rates = _parse_openrouter_web_search(_get_json(OPENROUTER_URL, timeout))
+        except PricingError:
+            rates = {}
+        if rates:
+            cached = dataclasses.replace(cached, web_search_rates=rates)
+            with contextlib.suppress(OSError):
+                _store_cache(path, cached, provider)
     if cached is not None:
         return cached
 
