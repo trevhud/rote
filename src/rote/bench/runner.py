@@ -160,7 +160,7 @@ async def _run_job(
     return {
         "skill": job.skill,
         "repeat": job.repeat,
-        "out_dir": str(job.out_dir),
+        "out_dir": job.out_dir.relative_to(args.out).as_posix(),
         "argv": argv[1:],
         "headline": row,
         **result,
@@ -261,6 +261,14 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--no-tsc", action="store_true", help="Skip npm install + tsc on cloudflare")
     p.add_argument("--label", default=None, help="Free text stored in results.json (a git sha)")
     p.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Keep the jobs already scored in <out>/results.json and run only the "
+            "missing ones (their spend counts toward --budget)"
+        ),
+    )
+    p.add_argument(
         "--rescore",
         type=Path,
         default=None,
@@ -284,7 +292,39 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def portable(obj: Any, replacements: dict[str, str]) -> Any:
+    """``obj`` with every absolute local path prefix replaced by a placeholder.
+
+    results.json is meant to be committed and diffed across machines, so it
+    must not carry a run dir, a checkout path or a home directory. Job dirs
+    are already relative to the run dir; this catches the rest (argv, error
+    messages, tsc output). Longest prefix first, so a run dir inside the
+    checkout is not half-replaced by the checkout's placeholder.
+    """
+    if isinstance(obj, dict):
+        return {k: portable(v, replacements) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [portable(v, replacements) for v in obj]
+    if isinstance(obj, str):
+        for prefix in sorted(replacements, key=len, reverse=True):
+            obj = obj.replace(prefix, replacements[prefix])
+        return obj
+    return obj
+
+
+def _replacements(out: Path, examples: Path | None) -> dict[str, str]:
+    reps = {str(out): "<run>", sys.executable: "<python>", str(Path.home()): "~"}
+    if out.resolve() != out:
+        reps[str(out.resolve())] = "<run>"
+    if examples is not None:
+        reps[str(examples)] = "<examples>"
+        reps[str(examples.resolve())] = "<examples>"
+    return reps
+
+
 def _finish(results: dict[str, Any], args: argparse.Namespace, out: Path | None) -> int:
+    if out is not None:
+        results = portable(results, _replacements(out, args.examples))
     print(render_results(results))
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
@@ -300,15 +340,18 @@ def _finish(results: dict[str, Any], args: argparse.Namespace, out: Path | None)
 
 
 def _rescore(args: argparse.Namespace) -> int:
-    run_dir: Path = args.rescore
+    run_dir: Path = args.rescore.resolve()
     prior = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))
-    examples = args.examples or Path(prior["config"]["examples"])
+    if args.examples is None:
+        print("rote bench: --rescore needs --examples (results.json is portable)", file=sys.stderr)
+        return 2
+    examples = args.examples = args.examples.resolve()
     jobs: list[dict[str, Any]] = []
     for old in prior["jobs"]:
         if "out_dir" not in old:
             jobs.append(old)
             continue
-        out_dir = Path(old["out_dir"])
+        out_dir = run_dir / old["out_dir"]
         _, expected = _skill_paths(examples, old["skill"])
         result = collect_job(
             out_dir,
@@ -348,6 +391,7 @@ def main(argv: list[str]) -> int:
         return 2
     args.examples = args.examples.resolve()
     out: Path = args.out.resolve()
+    args.out = out
     skills = [s.strip() for s in args.skills.split(",") if s.strip()]
     for skill in skills:
         _skill_paths(args.examples, skill)
@@ -361,12 +405,33 @@ def main(argv: list[str]) -> int:
     jobs = [Job(s, k, out / s / f"r{k}") for k in range(1, args.repeat + 1) for s in skills]
     budget = _Budget(args.budget)
     started = datetime.now(UTC).isoformat()
+    kept: list[dict[str, Any]] = []
+    if args.resume and (out / "results.json").is_file():
+        prior = json.loads((out / "results.json").read_text(encoding="utf-8"))
+        wanted = {(j.skill, j.repeat) for j in jobs}
+        kept = [j for j in prior["jobs"] if "headline" in j and (j["skill"], j["repeat"]) in wanted]
+        done = {(j["skill"], j["repeat"]) for j in kept}
+        jobs = [j for j in jobs if (j.skill, j.repeat) not in done]
+        for j in kept:
+            budget.add(j["run"].get("cost_usd"))
+        started = prior.get("started_at", started)
+        print(
+            f"rote bench: resuming: {len(kept)} job(s) kept (${budget.spent:.2f}), "
+            f"{len(jobs)} to run",
+            file=sys.stderr,
+        )
 
     async def _all() -> list[dict[str, Any]]:
         gate = asyncio.Semaphore(args.concurrency)
         return list(await asyncio.gather(*(_run_job(j, args, env, gate, budget) for j in jobs)))
 
-    job_results = asyncio.run(_all())
+    order = {
+        (s, k): i
+        for i, (k, s) in enumerate((k, s) for k in range(1, args.repeat + 1) for s in skills)
+    }
+    job_results = sorted(
+        [*kept, *asyncio.run(_all())], key=lambda j: order[(j["skill"], j["repeat"])]
+    )
     per_skill, agg = summarize(job_results)
     results = {
         "schema_version": RESULTS_SCHEMA_VERSION,
