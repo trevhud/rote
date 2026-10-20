@@ -25,21 +25,21 @@ a wheel of its commit, concurrency 2. Mean, with the range.
 
 | skill | path | fidelity | wall (s) | cost ($) |
 |---|---|---|---|---|
-| expense-audit | serial | 0.92 (0.90 to 0.92) | 321 (281 to 376) | 0.69 (0.60 to 0.81) |
-| expense-audit | parallel, subscription | **0.98** (0.95 to 0.99) | **63** (54 to 74) | **0.43** (0.42 to 0.45) |
-| expense-audit | parallel, API | 0.96 (0.94 to 0.99) | 61 (58 to 66) | 0.37 (0.35 to 0.40) |
-| ops-report | serial | 0.60 (0.50 to 0.80) | 209 (194 to 221) | 0.57 (0.47 to 0.64) |
-| ops-report | parallel, subscription | **0.93** (0.93 to 0.94) | **62** (56 to 68) | **0.33** (0.30 to 0.39) |
-| ops-report | parallel, API | 0.96 (0.95 to 0.96) | 52 (50 to 54) | 0.31 (0.29 to 0.34) |
-| customer-onboarding (holdout) | serial | n/a | 188 (108 to 246) | 0.45 (0.29 to 0.59) |
-| customer-onboarding (holdout) | parallel, subscription | n/a | **41** (35 to 50) | **0.15** (0.12 to 0.19) |
-| customer-onboarding (holdout) | parallel, API | n/a | 44 (37 to 56) | 0.15 (0.13 to 0.18) |
-| saas-spend-audit (holdout) | serial | n/a | 336 (185 to 412) | 0.74 (0.42 to 0.99) |
-| saas-spend-audit (holdout) | parallel, subscription | n/a | **63** (57 to 73) | **0.32** (0.29 to 0.36) |
-| saas-spend-audit (holdout) | parallel, API | n/a | 50 (43 to 61) | 0.21 (0.19 to 0.23) |
-| incident-triage (holdout) | serial | n/a | 336 (289 to 407) | 0.84 (0.65 to 1.16) |
-| incident-triage (holdout) | parallel, subscription | n/a | **58** (54 to 62) | **0.34** (0.28 to 0.38) |
-| incident-triage (holdout) | parallel, API | n/a | 37 (36 to 39) | 0.25 (0.25 to 0.25) |
+| expense-audit | serial e06c232 | 0.92 (0.90 to 0.92) | 321 (281 to 376) | 0.69 (0.60 to 0.81) |
+| expense-audit | parallel 56d5425, subscription | **0.98** (0.95 to 0.99) | **63** (54 to 74) | **0.43** (0.42 to 0.45) |
+| expense-audit | parallel 56d5425, API | 0.96 (0.94 to 0.99) | 61 (58 to 66) | 0.37 (0.35 to 0.40) |
+| ops-report | serial e06c232 | 0.60 (0.50 to 0.80) | 209 (194 to 221) | 0.57 (0.47 to 0.64) |
+| ops-report | parallel 56d5425, subscription | **0.93** (0.93 to 0.94) | **62** (56 to 68) | **0.33** (0.30 to 0.39) |
+| ops-report | parallel 56d5425, API | 0.96 (0.95 to 0.96) | 52 (50 to 54) | 0.31 (0.29 to 0.34) |
+| customer-onboarding (holdout) | serial e06c232 | n/a | 188 (108 to 246) | 0.45 (0.29 to 0.59) |
+| customer-onboarding (holdout) | parallel 56d5425, subscription | n/a | **41** (35 to 50) | **0.15** (0.12 to 0.19) |
+| customer-onboarding (holdout) | parallel 56d5425, API | n/a | 44 (37 to 56) | 0.15 (0.13 to 0.18) |
+| saas-spend-audit (holdout) | serial e06c232 | n/a | 336 (185 to 412) | 0.74 (0.42 to 0.99) |
+| saas-spend-audit (holdout) | parallel 56d5425, subscription | n/a | **63** (57 to 73) | **0.32** (0.29 to 0.36) |
+| saas-spend-audit (holdout) | parallel 56d5425, API | n/a | 50 (43 to 61) | 0.21 (0.19 to 0.23) |
+| incident-triage (holdout) | serial e06c232 | n/a | 336 (289 to 407) | 0.84 (0.65 to 1.16) |
+| incident-triage (holdout) | parallel 56d5425, subscription | n/a | **58** (54 to 62) | **0.34** (0.28 to 0.38) |
+| incident-triage (holdout) | parallel 56d5425, API | n/a | 37 (36 to 39) | 0.25 (0.25 to 0.25) |
 
 The held-out skills have no fidelity cases, so they are judged by
 verification. All 30 parallel compiles verified with their tests passing and
