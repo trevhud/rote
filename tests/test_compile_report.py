@@ -149,7 +149,11 @@ def test_a_mode_adds_its_preamble_review_items_and_next_steps(tmp_path: Path) ->
     root = _deliverable(tmp_path)
     extras = ReportExtras(
         preamble="Compiled with `--system1`.",
-        questions=[("System-1 decision below 0.8 confidence", "route: kind pure_function")],
+        questions=[
+            ("System-1 decision below 0.8 confidence", "route: kind pure_function"),
+            ("Proposed by the agent, not applied", "split route in two"),
+            ("A decision rote restored", "notify: kind external_call"),
+        ],
         next_steps=["Run the pipeline once."],
     )
     report = render_compile_report(load_pipeline(root / "pipeline.yaml"), root, extras)
@@ -158,6 +162,8 @@ def test_a_mode_adds_its_preamble_review_items_and_next_steps(tmp_path: Path) ->
         "### OQ-1: route",
         "### Stub: notify (`extracted/notify.py:notify`, stub)",
         "### System-1 decision below 0.8 confidence",
+        "### Proposed by the agent, not applied",
+        "### A decision rote restored",
     ]
     assert report.rstrip().endswith("## Suggested next steps\n\n- Run the pipeline once.")
     assert "## Suggested next steps" not in _render(root)
