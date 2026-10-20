@@ -186,6 +186,46 @@ What generalizes by construction: explicit MANDATORY markers, "for each",
 rule tables, and the conservative defaults. A missing signal falls to a
 listed low-confidence decision, never to a guess.
 
+## `--system1-decider clef`
+
+Clef (`@cf/cloudflare/clef` on Workers AI, a decision model with no generated
+text) decides each step's kind and whether a person must act. It uses the
+`models` lane's pre-registered phrasings, ensemble and thresholds. Clef wins
+when its ensemble kind confidence is at least 0.85 or its gate probability is
+at least 0.50; otherwise the rules decide, and a disagreement is listed in
+Open questions. Mandatory and fan_out stay on rules. A missing credential
+fails the compile (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`). A
+spot check of three dev steps against the lane's cached answers agreed
+within 0.01 on kind and on which side of the gate threshold each fell.
+
+Skeletons scored with the structural matcher (#151). Structure is fixed
+before the agent runs, so these are the compiled structure. The held-out
+set is not blind any more:
+
+| split | decider | node recall | kind | kind mix | gates found | false gates |
+|---|---|---|---|---|---|---|
+| dev (5) | rules | 0.76 | 0.64 | 0.80 | 4/4 | 1 |
+| dev (5) | clef | 0.76 | 0.64 | 0.80 | 4/4 | 2 |
+| held-out (3) | rules | 0.74 | 0.49 | 0.67 | 2/3 | 0 |
+| held-out (3) | clef | 0.74 | **0.64** | **0.74** | **3/3** | 0 |
+
+Clef's extra dev gate is invoice-push's "Prerequisites Check" (a person
+must be logged in, p = 0.54). Clef cost $0.036 across the 8 skills, about
+$0.0045 a compile.
+
+Behavioral fidelity (`rote bench --fidelity`, Sonnet 5.5 text, one compile
+each):
+
+| skill | rules | clef | default path (from the fidelity table) |
+|---|---|---|---|
+| ops-report | 0.83 | 0.81 | 0.75 |
+| expense-audit | 0.11 | 0.11 | 0.17 |
+
+Expense-audit fails in both modes on the input contract: the code reads
+`request["lines"]`, and the skill's input arrives as `period` +
+`submissions`. That is the `grounding` lane's fix (sample input as the
+contract), not a decider difference.
+
 ## Non-generative models, measured
 
 - **Local embeddings, nearest neighbor**, leave one skill out (52 labeled
@@ -247,7 +287,7 @@ made-up quote. Rule-table rows are cited verbatim from the skill's markdown.
 
 ## Spend for this build
 
-$24.11 of the $26 cap:
+$25.93 of the $30 cap:
 
 | item | cost |
 |---|---|
@@ -260,6 +300,8 @@ $24.11 of the $26 cap:
 | v2 expense-audit on Sonnet 4.6 | $0.81 |
 | held-out, default path | $4.32 |
 | held-out, `--system1` | $1.12 |
+| Clef skeletons, 8 skills x 2 deciders, plus a 3-call spot check | $0.04 |
+| fidelity compiles, rules and clef, expense-audit + ops-report | $1.78 |
 
 The $0 hill-climbing loop is
 `research/system1-routing/score_skeletons.py`. It scores skeletons with the
