@@ -14,9 +14,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import date
 from pathlib import Path
 
 from rote.vendor_specs.store import default_root
@@ -92,16 +95,40 @@ def _importable(name: str) -> bool:
 
 
 def install_vendor_deps(app: Path) -> Path | None:
-    """Install the app's missing vendor libraries into a cached target dir."""
+    """Install the app's missing vendor libraries into a cached target dir.
+
+    Two compiles often install the same set at once (the bench runs two, of
+    the same skill). Each installs into its own temporary sibling, marks it
+    ``.complete`` there, and renames it into place; the loser of the rename
+    discards its copy. So a directory at the key is always a finished
+    install, never one being written or one another run deleted.
+
+    The key includes today's date: the newest compatible releases are
+    installed again the next day instead of the first install sticking.
+    """
     wanted = vendor_requirements(app)
     if not wanted:
         return None
-    digest = hashlib.sha256("\n".join([sys.version, *wanted]).encode()).hexdigest()[:16]
-    target = default_root().parent / "vendor-deps" / digest
+    key = "\n".join([sys.version, date.today().isoformat(), *wanted])
+    target = default_root().parent / "vendor-deps" / hashlib.sha256(key.encode()).hexdigest()[:16]
     if (target / ".complete").is_file():
         return target
-    _uv_install(wanted, target)
-    (target / ".complete").write_text("\n".join(wanted), encoding="utf-8")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{target.name}.", dir=target.parent))
+    try:
+        _uv_install(wanted, staging)
+        (staging / ".complete").write_text("\n".join(wanted), encoding="utf-8")
+        if target.exists() and not (target / ".complete").is_file():
+            # Left by a run that died mid-install under the old in-place scheme.
+            shutil.rmtree(target, ignore_errors=True)
+        try:
+            os.replace(staging, target)
+        except OSError:
+            if not (target / ".complete").is_file():
+                raise  # not a lost race: the rename itself failed
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
     return target
 
 
@@ -110,9 +137,7 @@ def _uv_install(wanted: list[str], target: Path) -> None:
     uv = shutil.which("uv")
     if uv is None:
         raise VendorDepsError(f"installing {', '.join(wanted)} for the app needs uv on PATH")
-    if target.exists():
-        shutil.rmtree(target)
-    result = subprocess.run(
+    result = _run_uv(
         [
             uv,
             "pip",
@@ -123,13 +148,15 @@ def _uv_install(wanted: list[str], target: Path) -> None:
             "--target",
             str(target),
             *wanted,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
+        ]
     )
     if result.returncode != 0:
         raise VendorDepsError(f"could not install {', '.join(wanted)}: {result.stderr[-2000:]}")
+
+
+def _run_uv(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """The uv subprocess itself (tests replace it: they never install packages)."""
+    return subprocess.run(args, capture_output=True, text=True, timeout=600)
 
 
 __all__ = ["DISTRIBUTIONS", "VendorDepsError", "install_vendor_deps", "vendor_requirements"]
