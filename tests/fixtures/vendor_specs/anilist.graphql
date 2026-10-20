@@ -1,0 +1,1888 @@
+type Query {
+  Page(page: Int, perPage: Int): Page
+  Media(id: Int, idMal: Int, startDate: FuzzyDateInt, endDate: FuzzyDateInt, season: MediaSeason, seasonYear: Int, type: MediaType, format: MediaFormat, status: MediaStatus, episodes: Int, duration: Int, chapters: Int, volumes: Int, isAdult: Boolean, genre: String, tag: String, minimumTagRank: Int, tagCategory: String, onList: Boolean, licensedBy: String, licensedById: Int, averageScore: Int, popularity: Int, source: MediaSource, countryOfOrigin: CountryCode, isLicensed: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], idMal_not: Int, idMal_in: [Int], idMal_not_in: [Int], startDate_greater: FuzzyDateInt, startDate_lesser: FuzzyDateInt, startDate_like: String, endDate_greater: FuzzyDateInt, endDate_lesser: FuzzyDateInt, endDate_like: String, format_in: [MediaFormat], format_not: MediaFormat, format_not_in: [MediaFormat], status_in: [MediaStatus], status_not: MediaStatus, status_not_in: [MediaStatus], episodes_greater: Int, episodes_lesser: Int, duration_greater: Int, duration_lesser: Int, chapters_greater: Int, chapters_lesser: Int, volumes_greater: Int, volumes_lesser: Int, genre_in: [String], genre_not_in: [String], tag_in: [String], tag_not_in: [String], tagCategory_in: [String], tagCategory_not_in: [String], licensedBy_in: [String], licensedById_in: [Int], averageScore_not: Int, averageScore_greater: Int, averageScore_lesser: Int, popularity_not: Int, popularity_greater: Int, popularity_lesser: Int, source_in: [MediaSource], countryOfOrigin_in: [CountryCode], countryOfOrigin_not_in: [CountryCode], sort: [MediaSort]): Media
+  MediaTrend(mediaId: Int, date: Int, trending: Int, averageScore: Int, popularity: Int, episode: Int, releasing: Boolean, mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], date_greater: Int, date_lesser: Int, trending_greater: Int, trending_lesser: Int, trending_not: Int, averageScore_greater: Int, averageScore_lesser: Int, averageScore_not: Int, popularity_greater: Int, popularity_lesser: Int, popularity_not: Int, episode_greater: Int, episode_lesser: Int, episode_not: Int, sort: [MediaTrendSort]): MediaTrend
+  AiringSchedule(id: Int, mediaId: Int, episode: Int, airingAt: Int, notYetAired: Boolean, id_not: Int, id_in: [Int], id_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], episode_not: Int, episode_in: [Int], episode_not_in: [Int], episode_greater: Int, episode_lesser: Int, airingAt_greater: Int, airingAt_lesser: Int, sort: [AiringSort]): AiringSchedule
+  Character(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [CharacterSort]): Character
+  Staff(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StaffSort]): Staff
+  MediaList(id: Int, userId: Int, userName: String, type: MediaType, status: MediaListStatus, mediaId: Int, isFollowing: Boolean, notes: String, startedAt: FuzzyDateInt, completedAt: FuzzyDateInt, compareWithAuthList: Boolean, userId_in: [Int], status_in: [MediaListStatus], status_not_in: [MediaListStatus], status_not: MediaListStatus, mediaId_in: [Int], mediaId_not_in: [Int], notes_like: String, startedAt_greater: FuzzyDateInt, startedAt_lesser: FuzzyDateInt, startedAt_like: String, completedAt_greater: FuzzyDateInt, completedAt_lesser: FuzzyDateInt, completedAt_like: String, sort: [MediaListSort]): MediaList
+  MediaListCollection(userId: Int, userName: String, type: MediaType, status: MediaListStatus, notes: String, startedAt: FuzzyDateInt, completedAt: FuzzyDateInt, forceSingleCompletedList: Boolean, chunk: Int, perChunk: Int, status_in: [MediaListStatus], status_not_in: [MediaListStatus], status_not: MediaListStatus, notes_like: String, startedAt_greater: FuzzyDateInt, startedAt_lesser: FuzzyDateInt, startedAt_like: String, completedAt_greater: FuzzyDateInt, completedAt_lesser: FuzzyDateInt, completedAt_like: String, sort: [MediaListSort]): MediaListCollection
+  GenreCollection: [String]
+  MediaTagCollection(status: Int): [MediaTag]
+  User(id: Int, name: String, isModerator: Boolean, search: String, sort: [UserSort]): User
+  Viewer: User
+  Notification(type: NotificationType, resetNotificationCount: Boolean, type_in: [NotificationType]): NotificationUnion
+  Studio(id: Int, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StudioSort]): Studio
+  Review(id: Int, mediaId: Int, userId: Int, mediaType: MediaType, sort: [ReviewSort]): Review
+  Activity(id: Int, userId: Int, messengerId: Int, mediaId: Int, type: ActivityType, isFollowing: Boolean, hasReplies: Boolean, hasRepliesOrTypeText: Boolean, createdAt: Int, id_not: Int, id_in: [Int], id_not_in: [Int], userId_not: Int, userId_in: [Int], userId_not_in: [Int], messengerId_not: Int, messengerId_in: [Int], messengerId_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], type_not: ActivityType, type_in: [ActivityType], type_not_in: [ActivityType], createdAt_greater: Int, createdAt_lesser: Int, sort: [ActivitySort]): ActivityUnion
+  ActivityReply(id: Int, activityId: Int): ActivityReply
+  Following(userId: Int!, sort: [UserSort]): User
+  Follower(userId: Int!, sort: [UserSort]): User
+  Thread(id: Int, userId: Int, replyUserId: Int, subscribed: Boolean, categoryId: Int, mediaCategoryId: Int, search: String, id_in: [Int], sort: [ThreadSort]): Thread
+  ThreadComment(id: Int, threadId: Int, userId: Int, sort: [ThreadCommentSort]): [ThreadComment]
+  Recommendation(id: Int, mediaId: Int, mediaRecommendationId: Int, userId: Int, rating: Int, onList: Boolean, rating_greater: Int, rating_lesser: Int, sort: [RecommendationSort]): Recommendation
+  Like(likeableId: Int, type: LikeableType): User
+  Markdown(markdown: String!): ParsedMarkdown
+  AniChartUser: AniChartUser
+  SiteStatistics: SiteStatistics
+  ExternalLinkSourceCollection(id: Int, type: ExternalLinkType, mediaType: ExternalLinkMediaType): [MediaExternalLink]
+}
+
+type Page {
+  pageInfo: PageInfo
+  users(id: Int, name: String, isModerator: Boolean, search: String, sort: [UserSort]): [User]
+  media(id: Int, idMal: Int, startDate: FuzzyDateInt, endDate: FuzzyDateInt, season: MediaSeason, seasonYear: Int, type: MediaType, format: MediaFormat, status: MediaStatus, episodes: Int, duration: Int, chapters: Int, volumes: Int, isAdult: Boolean, genre: String, tag: String, minimumTagRank: Int, tagCategory: String, onList: Boolean, licensedBy: String, licensedById: Int, averageScore: Int, popularity: Int, source: MediaSource, countryOfOrigin: CountryCode, isLicensed: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], idMal_not: Int, idMal_in: [Int], idMal_not_in: [Int], startDate_greater: FuzzyDateInt, startDate_lesser: FuzzyDateInt, startDate_like: String, endDate_greater: FuzzyDateInt, endDate_lesser: FuzzyDateInt, endDate_like: String, format_in: [MediaFormat], format_not: MediaFormat, format_not_in: [MediaFormat], status_in: [MediaStatus], status_not: MediaStatus, status_not_in: [MediaStatus], episodes_greater: Int, episodes_lesser: Int, duration_greater: Int, duration_lesser: Int, chapters_greater: Int, chapters_lesser: Int, volumes_greater: Int, volumes_lesser: Int, genre_in: [String], genre_not_in: [String], tag_in: [String], tag_not_in: [String], tagCategory_in: [String], tagCategory_not_in: [String], licensedBy_in: [String], licensedById_in: [Int], averageScore_not: Int, averageScore_greater: Int, averageScore_lesser: Int, popularity_not: Int, popularity_greater: Int, popularity_lesser: Int, source_in: [MediaSource], countryOfOrigin_in: [CountryCode], countryOfOrigin_not_in: [CountryCode], sort: [MediaSort]): [Media]
+  characters(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [CharacterSort]): [Character]
+  staff(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StaffSort]): [Staff]
+  studios(id: Int, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StudioSort]): [Studio]
+  mediaList(id: Int, userId: Int, userName: String, type: MediaType, status: MediaListStatus, mediaId: Int, isFollowing: Boolean, notes: String, startedAt: FuzzyDateInt, completedAt: FuzzyDateInt, compareWithAuthList: Boolean, userId_in: [Int], status_in: [MediaListStatus], status_not_in: [MediaListStatus], status_not: MediaListStatus, mediaId_in: [Int], mediaId_not_in: [Int], notes_like: String, startedAt_greater: FuzzyDateInt, startedAt_lesser: FuzzyDateInt, startedAt_like: String, completedAt_greater: FuzzyDateInt, completedAt_lesser: FuzzyDateInt, completedAt_like: String, sort: [MediaListSort]): [MediaList]
+  airingSchedules(id: Int, mediaId: Int, episode: Int, airingAt: Int, notYetAired: Boolean, id_not: Int, id_in: [Int], id_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], episode_not: Int, episode_in: [Int], episode_not_in: [Int], episode_greater: Int, episode_lesser: Int, airingAt_greater: Int, airingAt_lesser: Int, sort: [AiringSort]): [AiringSchedule]
+  mediaTrends(mediaId: Int, date: Int, trending: Int, averageScore: Int, popularity: Int, episode: Int, releasing: Boolean, mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], date_greater: Int, date_lesser: Int, trending_greater: Int, trending_lesser: Int, trending_not: Int, averageScore_greater: Int, averageScore_lesser: Int, averageScore_not: Int, popularity_greater: Int, popularity_lesser: Int, popularity_not: Int, episode_greater: Int, episode_lesser: Int, episode_not: Int, sort: [MediaTrendSort]): [MediaTrend]
+  notifications(type: NotificationType, resetNotificationCount: Boolean, type_in: [NotificationType]): [NotificationUnion]
+  followers(userId: Int!, sort: [UserSort]): [User]
+  following(userId: Int!, sort: [UserSort]): [User]
+  activities(id: Int, userId: Int, messengerId: Int, mediaId: Int, type: ActivityType, isFollowing: Boolean, hasReplies: Boolean, hasRepliesOrTypeText: Boolean, createdAt: Int, id_not: Int, id_in: [Int], id_not_in: [Int], userId_not: Int, userId_in: [Int], userId_not_in: [Int], messengerId_not: Int, messengerId_in: [Int], messengerId_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], type_not: ActivityType, type_in: [ActivityType], type_not_in: [ActivityType], createdAt_greater: Int, createdAt_lesser: Int, sort: [ActivitySort]): [ActivityUnion]
+  activityReplies(id: Int, activityId: Int): [ActivityReply]
+  threads(id: Int, userId: Int, replyUserId: Int, subscribed: Boolean, categoryId: Int, mediaCategoryId: Int, search: String, id_in: [Int], sort: [ThreadSort]): [Thread]
+  threadComments(id: Int, threadId: Int, userId: Int, sort: [ThreadCommentSort]): [ThreadComment]
+  reviews(id: Int, mediaId: Int, userId: Int, mediaType: MediaType, sort: [ReviewSort]): [Review]
+  recommendations(id: Int, mediaId: Int, mediaRecommendationId: Int, userId: Int, rating: Int, onList: Boolean, rating_greater: Int, rating_lesser: Int, sort: [RecommendationSort]): [Recommendation]
+  likes(likeableId: Int, type: LikeableType): [User]
+}
+
+type PageInfo {
+  total: Int
+  perPage: Int
+  currentPage: Int
+  lastPage: Int
+  hasNextPage: Boolean
+}
+
+enum UserSort {
+  ID
+  ID_DESC
+  USERNAME
+  USERNAME_DESC
+  WATCHED_TIME
+  WATCHED_TIME_DESC
+  CHAPTERS_READ
+  CHAPTERS_READ_DESC
+  SEARCH_MATCH
+}
+
+type User {
+  id: Int!
+  name: String!
+  about(asHtml: Boolean): String
+  avatar: UserAvatar
+  bannerImage: String
+  isFollowing: Boolean
+  isFollower: Boolean
+  isBlocked: Boolean
+  bans: Json
+  options: UserOptions
+  mediaListOptions: MediaListOptions
+  favourites(page: Int): Favourites
+  statistics: UserStatisticTypes
+  unreadNotificationCount: Int
+  siteUrl: String
+  donatorTier: Int
+  donatorBadge: String
+  moderatorRoles: [ModRole]
+  createdAt: Int
+  updatedAt: Int
+  stats: UserStats @deprecated(reason: "Deprecated. Replaced with statistics field.")
+  moderatorStatus: String @deprecated(reason: "Deprecated. Replaced with moderatorRoles field.")
+  previousNames: [UserPreviousName]
+}
+
+type UserAvatar {
+  large: String
+  medium: String
+}
+
+scalar Json
+
+type UserOptions {
+  titleLanguage: UserTitleLanguage
+  displayAdultContent: Boolean
+  airingNotifications: Boolean
+  profileColor: String
+  notificationOptions: [NotificationOption]
+  timezone: String
+  activityMergeTime: Int
+  staffNameLanguage: UserStaffNameLanguage
+  restrictMessagesToFollowing: Boolean
+  disabledListActivity: [ListActivityOption]
+}
+
+enum UserTitleLanguage {
+  ROMAJI
+  ENGLISH
+  NATIVE
+  ROMAJI_STYLISED
+  ENGLISH_STYLISED
+  NATIVE_STYLISED
+}
+
+type NotificationOption {
+  type: NotificationType
+  enabled: Boolean
+}
+
+enum NotificationType {
+  ACTIVITY_MESSAGE
+  ACTIVITY_REPLY
+  FOLLOWING
+  ACTIVITY_MENTION
+  THREAD_COMMENT_MENTION
+  THREAD_SUBSCRIBED
+  THREAD_COMMENT_REPLY
+  AIRING
+  ACTIVITY_LIKE
+  ACTIVITY_REPLY_LIKE
+  THREAD_LIKE
+  THREAD_COMMENT_LIKE
+  ACTIVITY_REPLY_SUBSCRIBED
+  RELATED_MEDIA_ADDITION
+  MEDIA_DATA_CHANGE
+  MEDIA_MERGE
+  MEDIA_DELETION
+  MEDIA_SUBMISSION_UPDATE
+  STAFF_SUBMISSION_UPDATE
+  CHARACTER_SUBMISSION_UPDATE
+}
+
+enum UserStaffNameLanguage {
+  ROMAJI_WESTERN
+  ROMAJI
+  NATIVE
+}
+
+type ListActivityOption {
+  disabled: Boolean
+  type: MediaListStatus
+}
+
+enum MediaListStatus {
+  CURRENT
+  PLANNING
+  COMPLETED
+  DROPPED
+  PAUSED
+  REPEATING
+}
+
+type MediaListOptions {
+  scoreFormat: ScoreFormat
+  rowOrder: String
+  useLegacyLists: Boolean @deprecated(reason: "No longer used")
+  animeList: MediaListTypeOptions
+  mangaList: MediaListTypeOptions
+  sharedTheme: Json @deprecated(reason: "No longer used")
+  sharedThemeEnabled: Boolean @deprecated(reason: "No longer used")
+}
+
+enum ScoreFormat {
+  POINT_100
+  POINT_10_DECIMAL
+  POINT_10
+  POINT_5
+  POINT_3
+}
+
+type MediaListTypeOptions {
+  sectionOrder: [String]
+  splitCompletedSectionByFormat: Boolean
+  theme: Json @deprecated(reason: "This field has not yet been fully implemented and may change without warning")
+  customLists: [String]
+  advancedScoring: [String]
+  advancedScoringEnabled: Boolean
+}
+
+type Favourites {
+  anime(page: Int, perPage: Int): MediaConnection
+  manga(page: Int, perPage: Int): MediaConnection
+  characters(page: Int, perPage: Int): CharacterConnection
+  staff(page: Int, perPage: Int): StaffConnection
+  studios(page: Int, perPage: Int): StudioConnection
+}
+
+type MediaConnection {
+  edges: [MediaEdge]
+  nodes: [Media]
+  pageInfo: PageInfo
+}
+
+type MediaEdge {
+  node: Media
+  id: Int
+  relationType(version: Int): MediaRelation
+  isMainStudio: Boolean!
+  characters: [Character]
+  characterRole: CharacterRole
+  characterName: String
+  roleNotes: String
+  dubGroup: String
+  staffRole: String
+  voiceActors(language: StaffLanguage, sort: [StaffSort]): [Staff]
+  voiceActorRoles(language: StaffLanguage, sort: [StaffSort]): [StaffRoleType]
+  favouriteOrder: Int
+}
+
+type Media {
+  id: Int!
+  idMal: Int
+  title: MediaTitle
+  type: MediaType
+  format: MediaFormat
+  status(version: Int): MediaStatus
+  description(asHtml: Boolean): String
+  startDate: FuzzyDate
+  endDate: FuzzyDate
+  season: MediaSeason
+  seasonYear: Int
+  seasonInt: Int @deprecated(reason: "")
+  episodes: Int
+  duration: Int
+  chapters: Int
+  volumes: Int
+  countryOfOrigin: CountryCode
+  isLicensed: Boolean
+  source(version: Int): MediaSource
+  hashtag: String
+  trailer: MediaTrailer
+  updatedAt: Int
+  coverImage: MediaCoverImage
+  bannerImage: String
+  genres: [String]
+  synonyms: [String]
+  averageScore: Int
+  meanScore: Int
+  popularity: Int
+  isLocked: Boolean
+  trending: Int
+  favourites: Int
+  tags: [MediaTag]
+  relations: MediaConnection
+  characters(sort: [CharacterSort], role: CharacterRole, page: Int, perPage: Int): CharacterConnection
+  staff(sort: [StaffSort], page: Int, perPage: Int): StaffConnection
+  studios(sort: [StudioSort], isMain: Boolean): StudioConnection
+  isFavourite: Boolean!
+  isFavouriteBlocked: Boolean!
+  isAdult: Boolean
+  nextAiringEpisode: AiringSchedule
+  airingSchedule(notYetAired: Boolean, page: Int, perPage: Int): AiringScheduleConnection
+  trends(sort: [MediaTrendSort], releasing: Boolean, page: Int, perPage: Int): MediaTrendConnection
+  externalLinks: [MediaExternalLink]
+  streamingEpisodes: [MediaStreamingEpisode]
+  rankings: [MediaRank]
+  mediaListEntry: MediaList
+  reviews(limit: Int, sort: [ReviewSort], page: Int, perPage: Int): ReviewConnection
+  recommendations(sort: [RecommendationSort], page: Int, perPage: Int): RecommendationConnection
+  stats: MediaStats
+  siteUrl: String
+  autoCreateForumThread: Boolean
+  isRecommendationBlocked: Boolean
+  isReviewBlocked: Boolean
+  modNotes: String
+}
+
+type MediaTitle {
+  romaji(stylised: Boolean): String
+  english(stylised: Boolean): String
+  native(stylised: Boolean): String
+  userPreferred: String
+}
+
+enum MediaType {
+  ANIME
+  MANGA
+}
+
+enum MediaFormat {
+  TV
+  TV_SHORT
+  MOVIE
+  SPECIAL
+  OVA
+  ONA
+  MUSIC
+  MANGA
+  NOVEL
+  ONE_SHOT
+}
+
+enum MediaStatus {
+  FINISHED
+  RELEASING
+  NOT_YET_RELEASED
+  CANCELLED
+  HIATUS
+}
+
+type FuzzyDate {
+  year: Int
+  month: Int
+  day: Int
+}
+
+enum MediaSeason {
+  WINTER
+  SPRING
+  SUMMER
+  FALL
+}
+
+scalar CountryCode
+
+enum MediaSource {
+  ORIGINAL
+  MANGA
+  LIGHT_NOVEL
+  VISUAL_NOVEL
+  VIDEO_GAME
+  OTHER
+  NOVEL
+  DOUJINSHI
+  ANIME
+  WEB_NOVEL
+  LIVE_ACTION
+  GAME
+  COMIC
+  MULTIMEDIA_PROJECT
+  PICTURE_BOOK
+}
+
+type MediaTrailer {
+  id: String
+  site: String
+  thumbnail: String
+}
+
+type MediaCoverImage {
+  extraLarge: String
+  large: String
+  medium: String
+  color: String
+}
+
+type MediaTag {
+  id: Int!
+  name: String!
+  description: String
+  category: String
+  rank: Int
+  isGeneralSpoiler: Boolean
+  isMediaSpoiler: Boolean
+  isAdult: Boolean
+  userId: Int
+}
+
+enum CharacterSort {
+  ID
+  ID_DESC
+  ROLE
+  ROLE_DESC
+  SEARCH_MATCH
+  FAVOURITES
+  FAVOURITES_DESC
+  RELEVANCE
+}
+
+enum CharacterRole {
+  MAIN
+  SUPPORTING
+  BACKGROUND
+}
+
+type CharacterConnection {
+  edges: [CharacterEdge]
+  nodes: [Character]
+  pageInfo: PageInfo
+}
+
+type CharacterEdge {
+  node: Character
+  id: Int
+  role: CharacterRole
+  name: String
+  voiceActors(language: StaffLanguage, sort: [StaffSort]): [Staff]
+  voiceActorRoles(language: StaffLanguage, sort: [StaffSort]): [StaffRoleType]
+  media: [Media]
+  favouriteOrder: Int
+}
+
+type Character {
+  id: Int!
+  name: CharacterName
+  image: CharacterImage
+  description(asHtml: Boolean): String
+  gender: String
+  dateOfBirth: FuzzyDate
+  age: String
+  bloodType: String
+  isFavourite: Boolean!
+  isFavouriteBlocked: Boolean!
+  siteUrl: String
+  media(sort: [MediaSort], type: MediaType, onList: Boolean, page: Int, perPage: Int): MediaConnection
+  updatedAt: Int @deprecated(reason: "No data available")
+  favourites: Int
+  modNotes: String
+}
+
+type CharacterName {
+  first: String
+  middle: String
+  last: String
+  full: String
+  native: String
+  alternative: [String]
+  alternativeSpoiler: [String]
+  userPreferred: String
+}
+
+type CharacterImage {
+  large: String
+  medium: String
+}
+
+enum MediaSort {
+  ID
+  ID_DESC
+  TITLE_ROMAJI
+  TITLE_ROMAJI_DESC
+  TITLE_ENGLISH
+  TITLE_ENGLISH_DESC
+  TITLE_NATIVE
+  TITLE_NATIVE_DESC
+  TYPE
+  TYPE_DESC
+  FORMAT
+  FORMAT_DESC
+  START_DATE
+  START_DATE_DESC
+  END_DATE
+  END_DATE_DESC
+  SCORE
+  SCORE_DESC
+  POPULARITY
+  POPULARITY_DESC
+  TRENDING
+  TRENDING_DESC
+  EPISODES
+  EPISODES_DESC
+  DURATION
+  DURATION_DESC
+  STATUS
+  STATUS_DESC
+  CHAPTERS
+  CHAPTERS_DESC
+  VOLUMES
+  VOLUMES_DESC
+  UPDATED_AT
+  UPDATED_AT_DESC
+  SEARCH_MATCH
+  FAVOURITES
+  FAVOURITES_DESC
+}
+
+enum StaffLanguage {
+  JAPANESE
+  ENGLISH
+  KOREAN
+  ITALIAN
+  SPANISH
+  PORTUGUESE
+  FRENCH
+  GERMAN
+  HEBREW
+  HUNGARIAN
+}
+
+enum StaffSort {
+  ID
+  ID_DESC
+  ROLE
+  ROLE_DESC
+  LANGUAGE
+  LANGUAGE_DESC
+  SEARCH_MATCH
+  FAVOURITES
+  FAVOURITES_DESC
+  RELEVANCE
+}
+
+type Staff {
+  id: Int!
+  name: StaffName
+  language: StaffLanguage @deprecated(reason: "Replaced with languageV2")
+  languageV2: String
+  image: StaffImage
+  description(asHtml: Boolean): String
+  primaryOccupations: [String]
+  gender: String
+  dateOfBirth: FuzzyDate
+  dateOfDeath: FuzzyDate
+  age: Int
+  yearsActive: [Int]
+  homeTown: String
+  bloodType: String
+  isFavourite: Boolean!
+  isFavouriteBlocked: Boolean!
+  siteUrl: String
+  staffMedia(sort: [MediaSort], type: MediaType, onList: Boolean, page: Int, perPage: Int): MediaConnection
+  characters(sort: [CharacterSort], page: Int, perPage: Int): CharacterConnection
+  characterMedia(sort: [MediaSort], onList: Boolean, page: Int, perPage: Int): MediaConnection
+  updatedAt: Int @deprecated(reason: "No data available")
+  staff: Staff
+  submitter: User
+  submissionStatus: Int
+  submissionNotes: String
+  favourites: Int
+  modNotes: String
+}
+
+type StaffName {
+  first: String
+  middle: String
+  last: String
+  full: String
+  native: String
+  alternative: [String]
+  userPreferred: String
+}
+
+type StaffImage {
+  large: String
+  medium: String
+}
+
+type StaffRoleType {
+  voiceActor: Staff
+  roleNotes: String
+  dubGroup: String
+}
+
+type StaffConnection {
+  edges: [StaffEdge]
+  nodes: [Staff]
+  pageInfo: PageInfo
+}
+
+type StaffEdge {
+  node: Staff
+  id: Int
+  role: String
+  favouriteOrder: Int
+}
+
+enum StudioSort {
+  ID
+  ID_DESC
+  NAME
+  NAME_DESC
+  SEARCH_MATCH
+  FAVOURITES
+  FAVOURITES_DESC
+}
+
+type StudioConnection {
+  edges: [StudioEdge]
+  nodes: [Studio]
+  pageInfo: PageInfo
+}
+
+type StudioEdge {
+  node: Studio
+  id: Int
+  isMain: Boolean!
+  favouriteOrder: Int
+}
+
+type Studio {
+  id: Int!
+  name: String!
+  isAnimationStudio: Boolean!
+  media(sort: [MediaSort], isMain: Boolean, onList: Boolean, page: Int, perPage: Int): MediaConnection
+  siteUrl: String
+  isFavourite: Boolean!
+  favourites: Int
+}
+
+type AiringSchedule {
+  id: Int!
+  airingAt: Int!
+  timeUntilAiring: Int!
+  episode: Int!
+  mediaId: Int!
+  media: Media
+}
+
+type AiringScheduleConnection {
+  edges: [AiringScheduleEdge]
+  nodes: [AiringSchedule]
+  pageInfo: PageInfo
+}
+
+type AiringScheduleEdge {
+  node: AiringSchedule
+  id: Int
+}
+
+enum MediaTrendSort {
+  ID
+  ID_DESC
+  MEDIA_ID
+  MEDIA_ID_DESC
+  DATE
+  DATE_DESC
+  SCORE
+  SCORE_DESC
+  POPULARITY
+  POPULARITY_DESC
+  TRENDING
+  TRENDING_DESC
+  EPISODE
+  EPISODE_DESC
+}
+
+type MediaTrendConnection {
+  edges: [MediaTrendEdge]
+  nodes: [MediaTrend]
+  pageInfo: PageInfo
+}
+
+type MediaTrendEdge {
+  node: MediaTrend
+}
+
+type MediaTrend {
+  mediaId: Int!
+  date: Int!
+  trending: Int!
+  averageScore: Int
+  popularity: Int
+  inProgress: Int
+  releasing: Boolean!
+  episode: Int
+  media: Media
+}
+
+type MediaExternalLink {
+  id: Int!
+  url: String
+  site: String!
+  siteId: Int
+  type: ExternalLinkType
+  language: String
+  color: String
+  icon: String
+  notes: String
+  isDisabled: Boolean
+}
+
+enum ExternalLinkType {
+  INFO
+  STREAMING
+  SOCIAL
+}
+
+type MediaStreamingEpisode {
+  title: String
+  thumbnail: String
+  url: String
+  site: String
+}
+
+type MediaRank {
+  id: Int!
+  rank: Int!
+  type: MediaRankType!
+  format: MediaFormat!
+  year: Int
+  season: MediaSeason
+  allTime: Boolean
+  context: String!
+}
+
+enum MediaRankType {
+  RATED
+  POPULAR
+}
+
+type MediaList {
+  id: Int!
+  userId: Int!
+  mediaId: Int!
+  status: MediaListStatus
+  score(format: ScoreFormat): Float
+  progress: Int
+  progressVolumes: Int
+  repeat: Int
+  priority: Int
+  private: Boolean
+  notes: String
+  hiddenFromStatusLists: Boolean
+  customLists(asArray: Boolean): Json
+  advancedScores: Json
+  startedAt: FuzzyDate
+  completedAt: FuzzyDate
+  updatedAt: Int
+  createdAt: Int
+  media: Media
+  user: User
+}
+
+enum ReviewSort {
+  ID
+  ID_DESC
+  SCORE
+  SCORE_DESC
+  RATING
+  RATING_DESC
+  CREATED_AT @deprecated(reason: "Use ID instead")
+  CREATED_AT_DESC @deprecated(reason: "Use ID_DESC instead")
+  UPDATED_AT
+  UPDATED_AT_DESC
+}
+
+type ReviewConnection {
+  edges: [ReviewEdge]
+  nodes: [Review]
+  pageInfo: PageInfo
+}
+
+type ReviewEdge {
+  node: Review
+}
+
+type Review {
+  id: Int!
+  userId: Int!
+  mediaId: Int!
+  mediaType: MediaType
+  summary: String
+  body(asHtml: Boolean): String
+  rating: Int
+  ratingAmount: Int
+  userRating: ReviewRating
+  score: Int
+  private: Boolean
+  siteUrl: String
+  createdAt: Int!
+  updatedAt: Int!
+  user: User
+  media: Media
+}
+
+enum ReviewRating {
+  NO_VOTE
+  UP_VOTE
+  DOWN_VOTE
+}
+
+enum RecommendationSort {
+  ID
+  ID_DESC
+  RATING
+  RATING_DESC
+}
+
+type RecommendationConnection {
+  edges: [RecommendationEdge]
+  nodes: [Recommendation]
+  pageInfo: PageInfo
+}
+
+type RecommendationEdge {
+  node: Recommendation
+}
+
+type Recommendation {
+  id: Int!
+  rating: Int
+  userRating: RecommendationRating
+  media: Media
+  mediaRecommendation: Media
+  user: User
+}
+
+enum RecommendationRating {
+  NO_RATING
+  RATE_UP
+  RATE_DOWN
+}
+
+type MediaStats {
+  scoreDistribution: [ScoreDistribution]
+  statusDistribution: [StatusDistribution]
+  airingProgression: [AiringProgression] @deprecated(reason: "Replaced by MediaTrends")
+}
+
+type ScoreDistribution {
+  score: Int
+  amount: Int
+}
+
+type StatusDistribution {
+  status: MediaListStatus
+  amount: Int
+}
+
+type AiringProgression {
+  episode: Float
+  score: Float
+  watching: Int
+}
+
+enum MediaRelation {
+  ADAPTATION
+  PREQUEL
+  SEQUEL
+  PARENT
+  SIDE_STORY
+  CHARACTER
+  SUMMARY
+  ALTERNATIVE
+  SPIN_OFF
+  OTHER
+  SOURCE
+  COMPILATION
+  CONTAINS
+  SAME_UNIVERSE
+}
+
+type UserStatisticTypes {
+  anime: UserStatistics
+  manga: UserStatistics
+}
+
+type UserStatistics {
+  count: Int!
+  meanScore: Float!
+  standardDeviation: Float!
+  minutesWatched: Int!
+  episodesWatched: Int!
+  chaptersRead: Int!
+  volumesRead: Int!
+  formats(limit: Int, sort: [UserStatisticsSort]): [UserFormatStatistic]
+  statuses(limit: Int, sort: [UserStatisticsSort]): [UserStatusStatistic]
+  scores(limit: Int, sort: [UserStatisticsSort]): [UserScoreStatistic]
+  lengths(limit: Int, sort: [UserStatisticsSort]): [UserLengthStatistic]
+  releaseYears(limit: Int, sort: [UserStatisticsSort]): [UserReleaseYearStatistic]
+  startYears(limit: Int, sort: [UserStatisticsSort]): [UserStartYearStatistic]
+  genres(limit: Int, sort: [UserStatisticsSort]): [UserGenreStatistic]
+  tags(limit: Int, sort: [UserStatisticsSort]): [UserTagStatistic]
+  countries(limit: Int, sort: [UserStatisticsSort]): [UserCountryStatistic]
+  voiceActors(limit: Int, sort: [UserStatisticsSort]): [UserVoiceActorStatistic]
+  staff(limit: Int, sort: [UserStatisticsSort]): [UserStaffStatistic]
+  studios(limit: Int, sort: [UserStatisticsSort]): [UserStudioStatistic]
+}
+
+enum UserStatisticsSort {
+  ID
+  ID_DESC
+  COUNT
+  COUNT_DESC
+  PROGRESS
+  PROGRESS_DESC
+  MEAN_SCORE
+  MEAN_SCORE_DESC
+}
+
+type UserFormatStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  format: MediaFormat
+}
+
+type UserStatusStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  status: MediaListStatus
+}
+
+type UserScoreStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  score: Int
+}
+
+type UserLengthStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  length: String
+}
+
+type UserReleaseYearStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  releaseYear: Int
+}
+
+type UserStartYearStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  startYear: Int
+}
+
+type UserGenreStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  genre: String
+}
+
+type UserTagStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  tag: MediaTag
+}
+
+type UserCountryStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  country: CountryCode
+}
+
+type UserVoiceActorStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  voiceActor: Staff
+  characterIds: [Int]!
+}
+
+type UserStaffStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  staff: Staff
+}
+
+type UserStudioStatistic {
+  count: Int!
+  meanScore: Float!
+  minutesWatched: Int!
+  chaptersRead: Int!
+  mediaIds: [Int]!
+  studio: Studio
+}
+
+enum ModRole {
+  ADMIN
+  LEAD_DEVELOPER
+  DEVELOPER
+  LEAD_COMMUNITY
+  COMMUNITY
+  DISCORD_COMMUNITY
+  LEAD_ANIME_DATA
+  ANIME_DATA
+  LEAD_MANGA_DATA
+  MANGA_DATA
+  LEAD_SOCIAL_MEDIA
+  SOCIAL_MEDIA
+  RETIRED
+  CHARACTER_DATA
+  STAFF_DATA
+}
+
+type UserStats {
+  watchedTime: Int
+  chaptersRead: Int
+  activityHistory: [UserActivityHistory]
+  animeStatusDistribution: [StatusDistribution]
+  mangaStatusDistribution: [StatusDistribution]
+  animeScoreDistribution: [ScoreDistribution]
+  mangaScoreDistribution: [ScoreDistribution]
+  animeListScores: ListScoreStats
+  mangaListScores: ListScoreStats
+  favouredGenresOverview: [GenreStats]
+  favouredGenres: [GenreStats]
+  favouredTags: [TagStats]
+  favouredActors: [StaffStats]
+  favouredStaff: [StaffStats]
+  favouredStudios: [StudioStats]
+  favouredYears: [YearStats]
+  favouredFormats: [FormatStats]
+}
+
+type UserActivityHistory {
+  date: Int
+  amount: Int
+  level: Int
+}
+
+type ListScoreStats {
+  meanScore: Int
+  standardDeviation: Int
+}
+
+type GenreStats {
+  genre: String
+  amount: Int
+  meanScore: Int
+  timeWatched: Int
+}
+
+type TagStats {
+  tag: MediaTag
+  amount: Int
+  meanScore: Int
+  timeWatched: Int
+}
+
+type StaffStats {
+  staff: Staff
+  amount: Int
+  meanScore: Int
+  timeWatched: Int
+}
+
+type StudioStats {
+  studio: Studio
+  amount: Int
+  meanScore: Int
+  timeWatched: Int
+}
+
+type YearStats {
+  year: Int
+  amount: Int
+  meanScore: Int
+}
+
+type FormatStats {
+  format: MediaFormat
+  amount: Int
+}
+
+type UserPreviousName {
+  name: String
+  createdAt: Int
+  updatedAt: Int
+}
+
+scalar FuzzyDateInt
+
+enum MediaListSort {
+  MEDIA_ID
+  MEDIA_ID_DESC
+  SCORE
+  SCORE_DESC
+  STATUS
+  STATUS_DESC
+  PROGRESS
+  PROGRESS_DESC
+  PROGRESS_VOLUMES
+  PROGRESS_VOLUMES_DESC
+  REPEAT
+  REPEAT_DESC
+  PRIORITY
+  PRIORITY_DESC
+  STARTED_ON
+  STARTED_ON_DESC
+  FINISHED_ON
+  FINISHED_ON_DESC
+  ADDED_TIME
+  ADDED_TIME_DESC
+  UPDATED_TIME
+  UPDATED_TIME_DESC
+  MEDIA_TITLE_ROMAJI
+  MEDIA_TITLE_ROMAJI_DESC
+  MEDIA_TITLE_ENGLISH
+  MEDIA_TITLE_ENGLISH_DESC
+  MEDIA_TITLE_NATIVE
+  MEDIA_TITLE_NATIVE_DESC
+  MEDIA_POPULARITY
+  MEDIA_POPULARITY_DESC
+}
+
+enum AiringSort {
+  ID
+  ID_DESC
+  MEDIA_ID
+  MEDIA_ID_DESC
+  TIME
+  TIME_DESC
+  EPISODE
+  EPISODE_DESC
+}
+
+union NotificationUnion = AiringNotification | FollowingNotification | ActivityMessageNotification | ActivityMentionNotification | ActivityReplyNotification | ActivityReplySubscribedNotification | ActivityLikeNotification | ActivityReplyLikeNotification | ThreadCommentMentionNotification | ThreadCommentReplyNotification | ThreadCommentSubscribedNotification | ThreadCommentLikeNotification | ThreadLikeNotification | RelatedMediaAdditionNotification | MediaDataChangeNotification | MediaMergeNotification | MediaDeletionNotification | MediaSubmissionUpdateNotification | StaffSubmissionUpdateNotification | CharacterSubmissionUpdateNotification
+
+type AiringNotification {
+  id: Int!
+  type: NotificationType
+  animeId: Int!
+  episode: Int!
+  contexts: [String]
+  createdAt: Int
+  media: Media
+}
+
+type FollowingNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  context: String
+  createdAt: Int
+  user: User
+}
+
+type ActivityMessageNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  message: MessageActivity
+  user: User
+}
+
+type MessageActivity {
+  id: Int!
+  recipientId: Int
+  messengerId: Int
+  type: ActivityType
+  replyCount: Int!
+  message(asHtml: Boolean): String
+  isLocked: Boolean
+  isSubscribed: Boolean
+  likeCount: Int!
+  isLiked: Boolean
+  isPinned: Boolean
+  isPrivate: Boolean
+  siteUrl: String
+  createdAt: Int!
+  recipient: User
+  messenger: User
+  replies: [ActivityReply]
+  likes: [User]
+}
+
+enum ActivityType {
+  TEXT
+  ANIME_LIST
+  MANGA_LIST
+  MESSAGE
+  MEDIA_LIST
+}
+
+type ActivityReply {
+  id: Int!
+  userId: Int
+  activityId: Int
+  text(asHtml: Boolean): String
+  likeCount: Int!
+  isLiked: Boolean
+  createdAt: Int!
+  user: User
+  likes: [User]
+}
+
+type ActivityMentionNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  activity: ActivityUnion
+  user: User
+}
+
+union ActivityUnion = TextActivity | ListActivity | MessageActivity
+
+type TextActivity {
+  id: Int!
+  userId: Int
+  type: ActivityType
+  replyCount: Int!
+  text(asHtml: Boolean): String
+  siteUrl: String
+  isLocked: Boolean
+  isSubscribed: Boolean
+  likeCount: Int!
+  isLiked: Boolean
+  isPinned: Boolean
+  createdAt: Int!
+  user: User
+  replies: [ActivityReply]
+  likes: [User]
+}
+
+type ListActivity {
+  id: Int!
+  userId: Int
+  type: ActivityType
+  replyCount: Int!
+  status: String
+  progress: String
+  isLocked: Boolean
+  isSubscribed: Boolean
+  likeCount: Int!
+  isLiked: Boolean
+  isPinned: Boolean
+  siteUrl: String
+  createdAt: Int!
+  user: User
+  media: Media
+  replies: [ActivityReply]
+  likes: [User]
+}
+
+type ActivityReplyNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  activity: ActivityUnion
+  user: User
+}
+
+type ActivityReplySubscribedNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  activity: ActivityUnion
+  user: User
+}
+
+type ActivityLikeNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  activity: ActivityUnion
+  user: User
+}
+
+type ActivityReplyLikeNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  activityId: Int!
+  context: String
+  createdAt: Int
+  activity: ActivityUnion
+  user: User
+}
+
+type ThreadCommentMentionNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  commentId: Int!
+  context: String
+  createdAt: Int
+  thread: Thread
+  comment: ThreadComment
+  user: User
+}
+
+type Thread {
+  id: Int!
+  title: String
+  body(asHtml: Boolean): String
+  userId: Int!
+  replyUserId: Int
+  replyCommentId: Int
+  replyCount: Int
+  viewCount: Int
+  isLocked: Boolean
+  isSticky: Boolean
+  isSubscribed: Boolean
+  likeCount: Int!
+  isLiked: Boolean
+  repliedAt: Int
+  createdAt: Int!
+  updatedAt: Int!
+  user: User
+  replyUser: User
+  likes: [User]
+  siteUrl: String
+  categories: [ThreadCategory]
+  mediaCategories: [Media]
+}
+
+type ThreadCategory {
+  id: Int!
+  name: String!
+}
+
+type ThreadComment {
+  id: Int!
+  userId: Int
+  threadId: Int
+  comment(asHtml: Boolean): String
+  likeCount: Int!
+  isLiked: Boolean
+  siteUrl: String
+  createdAt: Int!
+  updatedAt: Int!
+  thread: Thread
+  user: User
+  likes: [User]
+  childComments: Json
+  isLocked: Boolean
+}
+
+type ThreadCommentReplyNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  commentId: Int!
+  context: String
+  createdAt: Int
+  thread: Thread
+  comment: ThreadComment
+  user: User
+}
+
+type ThreadCommentSubscribedNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  commentId: Int!
+  context: String
+  createdAt: Int
+  thread: Thread
+  comment: ThreadComment
+  user: User
+}
+
+type ThreadCommentLikeNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  commentId: Int!
+  context: String
+  createdAt: Int
+  thread: Thread
+  comment: ThreadComment
+  user: User
+}
+
+type ThreadLikeNotification {
+  id: Int!
+  userId: Int!
+  type: NotificationType
+  threadId: Int!
+  context: String
+  createdAt: Int
+  thread: Thread
+  comment: ThreadComment
+  user: User
+}
+
+type RelatedMediaAdditionNotification {
+  id: Int!
+  type: NotificationType
+  mediaId: Int!
+  context: String
+  createdAt: Int
+  media: Media
+}
+
+type MediaDataChangeNotification {
+  id: Int!
+  type: NotificationType
+  mediaId: Int!
+  context: String
+  reason: String
+  createdAt: Int
+  media: Media
+}
+
+type MediaMergeNotification {
+  id: Int!
+  type: NotificationType
+  mediaId: Int!
+  deletedMediaTitles: [String]
+  context: String
+  reason: String
+  createdAt: Int
+  media: Media
+}
+
+type MediaDeletionNotification {
+  id: Int!
+  type: NotificationType
+  deletedMediaTitle: String
+  context: String
+  reason: String
+  createdAt: Int
+}
+
+type MediaSubmissionUpdateNotification {
+  id: Int!
+  type: NotificationType
+  contexts: [String]
+  status: String
+  notes: String
+  createdAt: Int
+  media: Media
+  submittedTitle: String
+}
+
+type StaffSubmissionUpdateNotification {
+  id: Int!
+  type: NotificationType
+  contexts: [String]
+  status: String
+  notes: String
+  createdAt: Int
+  staff: Staff
+}
+
+type CharacterSubmissionUpdateNotification {
+  id: Int!
+  type: NotificationType
+  contexts: [String]
+  status: String
+  notes: String
+  createdAt: Int
+  character: Character
+}
+
+enum ActivitySort {
+  ID
+  ID_DESC
+  PINNED
+}
+
+enum ThreadSort {
+  ID
+  ID_DESC
+  TITLE
+  TITLE_DESC
+  CREATED_AT @deprecated(reason: "Use ID instead")
+  CREATED_AT_DESC @deprecated(reason: "Use ID_DESC instead")
+  UPDATED_AT
+  UPDATED_AT_DESC
+  REPLIED_AT
+  REPLIED_AT_DESC
+  REPLY_COUNT
+  REPLY_COUNT_DESC
+  VIEW_COUNT
+  VIEW_COUNT_DESC
+  IS_STICKY
+  SEARCH_MATCH
+}
+
+enum ThreadCommentSort {
+  ID
+  ID_DESC
+}
+
+enum LikeableType {
+  THREAD
+  THREAD_COMMENT
+  ACTIVITY
+  ACTIVITY_REPLY
+}
+
+type MediaListCollection {
+  lists: [MediaListGroup]
+  user: User
+  hasNextChunk: Boolean
+  statusLists(asArray: Boolean): [[MediaList]] @deprecated(reason: "Not GraphQL spec compliant, use lists field instead.")
+  customLists(asArray: Boolean): [[MediaList]] @deprecated(reason: "Not GraphQL spec compliant, use lists field instead.")
+}
+
+type MediaListGroup {
+  entries: [MediaList]
+  name: String
+  isCustomList: Boolean
+  isSplitCompletedList: Boolean
+  status: MediaListStatus
+}
+
+type ParsedMarkdown {
+  html: String
+}
+
+type AniChartUser {
+  user: User
+  settings: Json
+  highlights: Json
+}
+
+type SiteStatistics {
+  users(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  anime(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  manga(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  characters(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  staff(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  studios(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+  reviews(sort: [SiteTrendSort], page: Int, perPage: Int): SiteTrendConnection
+}
+
+enum SiteTrendSort {
+  DATE
+  DATE_DESC
+  COUNT
+  COUNT_DESC
+  CHANGE
+  CHANGE_DESC
+}
+
+type SiteTrendConnection {
+  edges: [SiteTrendEdge]
+  nodes: [SiteTrend]
+  pageInfo: PageInfo
+}
+
+type SiteTrendEdge {
+  node: SiteTrend
+}
+
+type SiteTrend {
+  date: Int!
+  count: Int!
+  change: Int!
+}
+
+enum ExternalLinkMediaType {
+  ANIME
+  MANGA
+  STAFF
+}
+
+type Mutation {
+  UpdateUser(about: String, titleLanguage: UserTitleLanguage, displayAdultContent: Boolean, airingNotifications: Boolean, scoreFormat: ScoreFormat, rowOrder: String, profileColor: String, donatorBadge: String, notificationOptions: [NotificationOptionInput], timezone: String, activityMergeTime: Int, animeListOptions: MediaListOptionsInput, mangaListOptions: MediaListOptionsInput, staffNameLanguage: UserStaffNameLanguage, restrictMessagesToFollowing: Boolean, disabledListActivity: [ListActivityOptionInput]): User
+  SaveMediaListEntry(id: Int, mediaId: Int, status: MediaListStatus, score: Float, scoreRaw: Int, progress: Int, progressVolumes: Int, repeat: Int, priority: Int, private: Boolean, notes: String, hiddenFromStatusLists: Boolean, customLists: [String], advancedScores: [Float], startedAt: FuzzyDateInput, completedAt: FuzzyDateInput): MediaList
+  UpdateMediaListEntries(status: MediaListStatus, score: Float, scoreRaw: Int, progress: Int, progressVolumes: Int, repeat: Int, priority: Int, private: Boolean, notes: String, hiddenFromStatusLists: Boolean, advancedScores: [Float], startedAt: FuzzyDateInput, completedAt: FuzzyDateInput, ids: [Int]): [MediaList]
+  DeleteMediaListEntry(id: Int): Deleted
+  DeleteCustomList(customList: String, type: MediaType): Deleted
+  SaveTextActivity(id: Int, text: String, locked: Boolean): TextActivity
+  SaveMessageActivity(id: Int, message: String, recipientId: Int, private: Boolean, locked: Boolean, asMod: Boolean): MessageActivity
+  SaveListActivity(id: Int, locked: Boolean): ListActivity
+  DeleteActivity(id: Int): Deleted
+  ToggleActivityPin(id: Int, pinned: Boolean): ActivityUnion
+  ToggleActivitySubscription(activityId: Int, subscribe: Boolean): ActivityUnion
+  SaveActivityReply(id: Int, activityId: Int, text: String, asMod: Boolean): ActivityReply
+  DeleteActivityReply(id: Int): Deleted
+  ToggleLike(id: Int, type: LikeableType): [User]
+  ToggleLikeV2(id: Int, type: LikeableType): LikeableUnion
+  ToggleFollow(userId: Int): User
+  ToggleFavourite(animeId: Int, mangaId: Int, characterId: Int, staffId: Int, studioId: Int): Favourites
+  UpdateFavouriteOrder(animeIds: [Int], mangaIds: [Int], characterIds: [Int], staffIds: [Int], studioIds: [Int], animeOrder: [Int], mangaOrder: [Int], characterOrder: [Int], staffOrder: [Int], studioOrder: [Int]): Favourites
+  SaveReview(id: Int, mediaId: Int, body: String, summary: String, score: Int, private: Boolean): Review
+  DeleteReview(id: Int): Deleted
+  RateReview(reviewId: Int, rating: ReviewRating): Review
+  SaveRecommendation(mediaId: Int, mediaRecommendationId: Int, rating: RecommendationRating): Recommendation
+  SaveThread(id: Int, title: String, body: String, categories: [Int], mediaCategories: [Int], sticky: Boolean, locked: Boolean): Thread
+  DeleteThread(id: Int): Deleted
+  ToggleThreadSubscription(threadId: Int, subscribe: Boolean): Thread
+  SaveThreadComment(id: Int, threadId: Int, parentCommentId: Int, comment: String, locked: Boolean): ThreadComment
+  DeleteThreadComment(id: Int): Deleted
+  UpdateAniChartSettings(titleLanguage: String, outgoingLinkProvider: String, theme: String, sort: String): Json
+  UpdateAniChartHighlights(highlights: [AniChartHighlightInput]): Json
+}
+
+input NotificationOptionInput {
+  type: NotificationType
+  enabled: Boolean
+}
+
+input MediaListOptionsInput {
+  sectionOrder: [String]
+  splitCompletedSectionByFormat: Boolean
+  customLists: [String]
+  advancedScoring: [String]
+  advancedScoringEnabled: Boolean
+  theme: String
+}
+
+input ListActivityOptionInput {
+  disabled: Boolean
+  type: MediaListStatus
+}
+
+input FuzzyDateInput {
+  year: Int
+  month: Int
+  day: Int
+}
+
+type Deleted {
+  deleted: Boolean
+}
+
+union LikeableUnion = ListActivity | TextActivity | MessageActivity | ActivityReply | Thread | ThreadComment
+
+input AniChartHighlightInput {
+  mediaId: Int
+  highlight: String
+}
+
+type InternalPage {
+  mediaSubmissions(mediaId: Int, submissionId: Int, userId: Int, assigneeId: Int, status: SubmissionStatus, type: MediaType, sort: [SubmissionSort]): [MediaSubmission]
+  characterSubmissions(characterId: Int, userId: Int, assigneeId: Int, status: SubmissionStatus, sort: [SubmissionSort]): [CharacterSubmission]
+  staffSubmissions(staffId: Int, userId: Int, assigneeId: Int, status: SubmissionStatus, sort: [SubmissionSort]): [StaffSubmission]
+  revisionHistory(userId: Int, mediaId: Int, characterId: Int, staffId: Int, studioId: Int): [RevisionHistory]
+  reports(reporterId: Int, reportedId: Int): [Report]
+  modActions(userId: Int, modId: Int, modId_not: Int, modId_in: [Int], modId_not_in: [Int]): [ModAction]
+  userBlockSearch(search: String): [User]
+  pageInfo: PageInfo
+  users(id: Int, name: String, isModerator: Boolean, search: String, sort: [UserSort]): [User]
+  media(id: Int, idMal: Int, startDate: FuzzyDateInt, endDate: FuzzyDateInt, season: MediaSeason, seasonYear: Int, type: MediaType, format: MediaFormat, status: MediaStatus, episodes: Int, duration: Int, chapters: Int, volumes: Int, isAdult: Boolean, genre: String, tag: String, minimumTagRank: Int, tagCategory: String, onList: Boolean, licensedBy: String, licensedById: Int, averageScore: Int, popularity: Int, source: MediaSource, countryOfOrigin: CountryCode, isLicensed: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], idMal_not: Int, idMal_in: [Int], idMal_not_in: [Int], startDate_greater: FuzzyDateInt, startDate_lesser: FuzzyDateInt, startDate_like: String, endDate_greater: FuzzyDateInt, endDate_lesser: FuzzyDateInt, endDate_like: String, format_in: [MediaFormat], format_not: MediaFormat, format_not_in: [MediaFormat], status_in: [MediaStatus], status_not: MediaStatus, status_not_in: [MediaStatus], episodes_greater: Int, episodes_lesser: Int, duration_greater: Int, duration_lesser: Int, chapters_greater: Int, chapters_lesser: Int, volumes_greater: Int, volumes_lesser: Int, genre_in: [String], genre_not_in: [String], tag_in: [String], tag_not_in: [String], tagCategory_in: [String], tagCategory_not_in: [String], licensedBy_in: [String], licensedById_in: [Int], averageScore_not: Int, averageScore_greater: Int, averageScore_lesser: Int, popularity_not: Int, popularity_greater: Int, popularity_lesser: Int, source_in: [MediaSource], countryOfOrigin_in: [CountryCode], countryOfOrigin_not_in: [CountryCode], sort: [MediaSort]): [Media]
+  characters(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [CharacterSort]): [Character]
+  staff(id: Int, isBirthday: Boolean, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StaffSort]): [Staff]
+  studios(id: Int, search: String, id_not: Int, id_in: [Int], id_not_in: [Int], sort: [StudioSort]): [Studio]
+  mediaList(id: Int, userId: Int, userName: String, type: MediaType, status: MediaListStatus, mediaId: Int, isFollowing: Boolean, notes: String, startedAt: FuzzyDateInt, completedAt: FuzzyDateInt, compareWithAuthList: Boolean, userId_in: [Int], status_in: [MediaListStatus], status_not_in: [MediaListStatus], status_not: MediaListStatus, mediaId_in: [Int], mediaId_not_in: [Int], notes_like: String, startedAt_greater: FuzzyDateInt, startedAt_lesser: FuzzyDateInt, startedAt_like: String, completedAt_greater: FuzzyDateInt, completedAt_lesser: FuzzyDateInt, completedAt_like: String, sort: [MediaListSort]): [MediaList]
+  airingSchedules(id: Int, mediaId: Int, episode: Int, airingAt: Int, notYetAired: Boolean, id_not: Int, id_in: [Int], id_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], episode_not: Int, episode_in: [Int], episode_not_in: [Int], episode_greater: Int, episode_lesser: Int, airingAt_greater: Int, airingAt_lesser: Int, sort: [AiringSort]): [AiringSchedule]
+  mediaTrends(mediaId: Int, date: Int, trending: Int, averageScore: Int, popularity: Int, episode: Int, releasing: Boolean, mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], date_greater: Int, date_lesser: Int, trending_greater: Int, trending_lesser: Int, trending_not: Int, averageScore_greater: Int, averageScore_lesser: Int, averageScore_not: Int, popularity_greater: Int, popularity_lesser: Int, popularity_not: Int, episode_greater: Int, episode_lesser: Int, episode_not: Int, sort: [MediaTrendSort]): [MediaTrend]
+  notifications(type: NotificationType, resetNotificationCount: Boolean, type_in: [NotificationType]): [NotificationUnion]
+  followers(userId: Int!, sort: [UserSort]): [User]
+  following(userId: Int!, sort: [UserSort]): [User]
+  activities(id: Int, userId: Int, messengerId: Int, mediaId: Int, type: ActivityType, isFollowing: Boolean, hasReplies: Boolean, hasRepliesOrTypeText: Boolean, createdAt: Int, id_not: Int, id_in: [Int], id_not_in: [Int], userId_not: Int, userId_in: [Int], userId_not_in: [Int], messengerId_not: Int, messengerId_in: [Int], messengerId_not_in: [Int], mediaId_not: Int, mediaId_in: [Int], mediaId_not_in: [Int], type_not: ActivityType, type_in: [ActivityType], type_not_in: [ActivityType], createdAt_greater: Int, createdAt_lesser: Int, sort: [ActivitySort]): [ActivityUnion]
+  activityReplies(id: Int, activityId: Int): [ActivityReply]
+  threads(id: Int, userId: Int, replyUserId: Int, subscribed: Boolean, categoryId: Int, mediaCategoryId: Int, search: String, id_in: [Int], sort: [ThreadSort]): [Thread]
+  threadComments(id: Int, threadId: Int, userId: Int, sort: [ThreadCommentSort]): [ThreadComment]
+  reviews(id: Int, mediaId: Int, userId: Int, mediaType: MediaType, sort: [ReviewSort]): [Review]
+  recommendations(id: Int, mediaId: Int, mediaRecommendationId: Int, userId: Int, rating: Int, onList: Boolean, rating_greater: Int, rating_lesser: Int, sort: [RecommendationSort]): [Recommendation]
+  likes(likeableId: Int, type: LikeableType): [User]
+}
+
+enum SubmissionStatus {
+  PENDING
+  REJECTED
+  PARTIALLY_ACCEPTED
+  ACCEPTED
+}
+
+enum SubmissionSort {
+  ID
+  ID_DESC
+}
+
+type MediaSubmission {
+  id: Int!
+  submitter: User
+  assignee: User
+  status: SubmissionStatus
+  submitterStats: Json
+  notes: String
+  source: String
+  changes: [String]
+  locked: Boolean
+  media: Media
+  submission: Media
+  characters: [MediaSubmissionComparison]
+  staff: [MediaSubmissionComparison]
+  studios: [MediaSubmissionComparison]
+  relations: [MediaEdge]
+  externalLinks: [MediaSubmissionComparison]
+  createdAt: Int
+}
+
+type MediaSubmissionComparison {
+  submission: MediaSubmissionEdge
+  character: MediaCharacter
+  staff: StaffEdge
+  studio: StudioEdge
+  externalLink: MediaExternalLink
+}
+
+type MediaSubmissionEdge {
+  id: Int
+  characterRole: CharacterRole
+  staffRole: String
+  roleNotes: String
+  dubGroup: String
+  characterName: String
+  isMain: Boolean
+  character: Character
+  characterSubmission: Character
+  voiceActor: Staff
+  voiceActorSubmission: Staff
+  staff: Staff
+  staffSubmission: Staff
+  studio: Studio
+  externalLink: MediaExternalLink
+  media: Media
+}
+
+type MediaCharacter {
+  id: Int
+  role: CharacterRole
+  roleNotes: String
+  dubGroup: String
+  characterName: String
+  character: Character
+  voiceActor: Staff
+}
+
+type CharacterSubmission {
+  id: Int!
+  character: Character
+  submission: Character
+  submitter: User
+  assignee: User
+  status: SubmissionStatus
+  notes: String
+  source: String
+  locked: Boolean
+  createdAt: Int
+}
+
+type StaffSubmission {
+  id: Int!
+  staff: Staff
+  submission: Staff
+  submitter: User
+  assignee: User
+  status: SubmissionStatus
+  notes: String
+  source: String
+  locked: Boolean
+  createdAt: Int
+}
+
+type RevisionHistory {
+  id: Int!
+  action: RevisionHistoryAction
+  changes: Json
+  user: User
+  media: Media
+  character: Character
+  staff: Staff
+  studio: Studio
+  externalLink: MediaExternalLink
+  createdAt: Int
+}
+
+enum RevisionHistoryAction {
+  CREATE
+  EDIT
+}
+
+type Report {
+  id: Int!
+  reporter: User
+  reported: User
+  reason: String
+  createdAt: Int
+  cleared: Boolean
+}
+
+type ModAction {
+  id: Int!
+  user: User
+  mod: User
+  type: ModActionType
+  objectId: Int
+  objectType: String
+  data: String
+  createdAt: Int!
+}
+
+enum ModActionType {
+  NOTE
+  BAN
+  DELETE
+  EDIT
+  EXPIRE
+  REPORT
+  RESET
+  ANON
+}
+
+input MediaTitleInput {
+  romaji: String
+  english: String
+  native: String
+}
+
+input AiringScheduleInput {
+  airingAt: Int
+  episode: Int
+  timeUntilAiring: Int
+}
+
+input MediaExternalLinkInput {
+  id: Int!
+  url: String!
+  site: String!
+}
+
+input CharacterNameInput {
+  first: String
+  middle: String
+  last: String
+  native: String
+  alternative: [String]
+  alternativeSpoiler: [String]
+}
+
+type CharacterSubmissionConnection {
+  edges: [CharacterSubmissionEdge]
+  nodes: [CharacterSubmission]
+  pageInfo: PageInfo
+}
+
+type CharacterSubmissionEdge {
+  node: CharacterSubmission
+  role: CharacterRole
+  voiceActors: [Staff]
+  submittedVoiceActors: [StaffSubmission]
+}
+
+input StaffNameInput {
+  first: String
+  middle: String
+  last: String
+  native: String
+  alternative: [String]
+}
+
+type UserModData {
+  alts: [User]
+  bans: Json
+  ip: Json
+  counts: Json
+  privacy: Int
+  email: String
+}
