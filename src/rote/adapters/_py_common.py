@@ -1213,6 +1213,44 @@ def resolve_extracted_source(source_dir: Path | None, module_name: str) -> str |
     return candidate.read_text(encoding="utf-8")
 
 
+#: Modules rote itself writes into extracted/; never sourced from the agent.
+_ROTE_OWNED_MODULES = frozenset({"__init__", "_rote_mcp"})
+
+
+def helper_module_names(source_dir: Path | None, node_modules: set[str]) -> list[str]:
+    """Modules beside pipeline.yaml that no node names but node code imports.
+
+    A shared helper the agent wrote (``extracted/_common.py``), or the rule
+    tables System-1 generates, is imported by impl modules without being an
+    impl itself. Emitting only the impl modules shipped code that crashed on
+    its first import (#150 fidelity run), so every module in the source's
+    ``extracted/`` ships, verbatim.
+    """
+    if source_dir is None or not (Path(source_dir) / "extracted").is_dir():
+        return []
+    # Top level only, two ways: this glob, and resolve_extracted_source,
+    # which reads extracted/<name>.py and nothing deeper. Widening the glob
+    # alone is an equivalent mutant (a subdirectory or .txt name resolves to
+    # no top-level file and ships nothing), confirmed by
+    # tests/test_emit_helper_modules.py::test_only_top_level_python_modules_ship.
+    return sorted(
+        p.stem
+        for p in (Path(source_dir) / "extracted").glob("*.py")
+        if p.stem not in node_modules and p.stem not in _ROTE_OWNED_MODULES
+    )
+
+
+def write_helper_modules(
+    writer: EmitWriter, source_dir: Path | None, names: list[str]
+) -> dict[str, Path]:
+    written: dict[str, Path] = {}
+    for name in names:
+        content = resolve_extracted_source(source_dir, name)
+        if content is not None:
+            written[f"extracted/{name}"] = writer.write("extracted", f"{name}.py", content=content)
+    return written
+
+
 def _extracted_layout(pipeline: Pipeline) -> dict[str, list[Node]]:
     """Group impl-bearing and agent_loop nodes into extracted modules.
 
@@ -1393,7 +1431,8 @@ def write_extracted_package(
     written: dict[str, Path] = {}
     modules = _extracted_layout(pipeline)
     needs_mcp_helper = any(n.kind is NodeKind.AGENT_LOOP and n.tools for n in pipeline.nodes)
-    if not modules and not needs_mcp_helper:
+    helpers = helper_module_names(source_dir, set(modules))
+    if not modules and not needs_mcp_helper and not helpers:
         return written
 
     written["extracted/__init__"] = writer.write(
@@ -1410,6 +1449,7 @@ def write_extracted_package(
                 module_name, nodes, generated_by=generated_by, caller_note=caller_note
             ),
         )
+    written.update(write_helper_modules(writer, source_dir, helpers))
     if needs_mcp_helper:
         from rote.mcp import _runtime_helper as _mcp_helper
 

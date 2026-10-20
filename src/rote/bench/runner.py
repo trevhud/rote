@@ -99,6 +99,7 @@ def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> l
         argv += ["--model", args.model]
     if args.agent:
         argv += ["--agent", args.agent]
+    argv += args.compile_flag
     return argv
 
 
@@ -322,6 +323,13 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--runtime", default="dbos", help="The compile's --runtime (default: dbos)")
     p.add_argument("--model", default=None, help="Passed to rote compile --model")
     p.add_argument("--agent", default=None, help="Passed to rote compile --agent")
+    p.add_argument(
+        "--compile-flag",
+        action="append",
+        default=[],
+        metavar="FLAG",
+        help="Extra flag passed to every rote compile, repeatable (e.g. --compile-flag=--system1)",
+    )
     p.add_argument("--no-tsc", action="store_true", help="Skip npm install + tsc on cloudflare")
     p.add_argument("--label", default=None, help="Free text stored in results.json (a git sha)")
     p.add_argument(

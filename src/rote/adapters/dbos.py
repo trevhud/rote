@@ -95,6 +95,7 @@ from rote.adapters._py_common import (
     fan_out_binding,
     fan_out_list_helper,
     has_legacy_judges,
+    helper_module_names,
     impl_kwargs_expr,
     mcp_arguments_line,
     missing_inputs_helper,
@@ -103,6 +104,7 @@ from rote.adapters._py_common import (
     required_inputs_guard,
     resolve_extracted_source,
     serialize_helper,
+    write_helper_modules,
     write_signature_package,
 )
 from rote.adapters._py_common import emit_extracted_module as _shared_emit_extracted_module
@@ -1071,7 +1073,8 @@ class DbosAdapter:
         mcp_backed = (
             self.config.external_backend == "mcp" and any(n.mcp is not None for n in pipeline.nodes)
         ) or _agent_loops_need_mcp(pipeline)
-        if extracted_modules or mcp_backed:
+        helpers = helper_module_names(self.config.extracted_source_dir, set(extracted_modules))
+        if extracted_modules or mcp_backed or helpers:
             written["extracted/__init__"] = writer.write(
                 "extracted",
                 "__init__.py",
@@ -1084,6 +1087,7 @@ class DbosAdapter:
                     content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
                     or emit_extracted_module(module_name, nodes),
                 )
+            written.update(write_helper_modules(writer, self.config.extracted_source_dir, helpers))
         if mcp_backed:
             # The connection helper is the *source text* of
             # rote.mcp._runtime_helper — one tested implementation,
