@@ -387,7 +387,10 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
                     {"when": {"file_id": "B"}, "result": {"rows": [1, 2]}},
                 ],
                 "search": [
-                    {"when_contains": {"query": "DOCK"}, "result": [{"id": "t1"}, {"id": "t2"}]}
+                    {"when_contains": {"query": "DOCK"}, "result": [{"id": "t1"}, {"id": "t2"}]},
+                    # A catch-all, so only argument validation can refuse
+                    # the misnamed call below.
+                    {"result": []},
                 ],
             }
         },
@@ -401,6 +404,12 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         )
         with pytest.raises(Exception, match="no fixture response"):
             asyncio.run(call_mcp_tool("drive", None, "read_file_content", {"file_id": "C"}))
+        # The argument the server does not have, as a compiled pipeline sent
+        # it: a real server refuses it, so the fixture must not answer it.
+        with pytest.raises(Exception, match="invalid arguments for search"):
+            asyncio.run(
+                call_mcp_tool("drive", None, "search", {"search_query": "label:dock-activity"})
+            )
         calls = read_calls(log)
     assert a == "site,pct\nEAST1,80"
     assert b == {"rows": [1, 2]}
@@ -410,8 +419,48 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         ("read_file_content", {"file_id": "B"}, True, 1),
         ("search", {"query": "label:dock-activity"}, True, 0),
         ("read_file_content", {"file_id": "C"}, False, None),
+        ("search", {"search_query": "label:dock-activity"}, False, None),
     ]
+    assert "search_query" in calls[-1]["invalid_arguments"]
+    assert calls[0]["invalid_arguments"] is None
     assert json.loads(json.dumps(calls))  # the log is plain JSON
+
+
+def test_fixture_argument_checks_match_a_real_servers() -> None:
+    from rote.bench.fixture_mcp import _schema_error
+
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+        "required": ["query"],
+    }
+    assert _schema_error(schema, {"query": "x", "max_results": 5}) is None
+    assert "missing required argument(s): query" in str(_schema_error(schema, {}))
+    assert "unknown argument(s): search_query" in str(
+        _schema_error(schema, {"query": "x", "search_query": "x"})
+    )
+    assert "must be integer" in str(_schema_error(schema, {"query": "x", "max_results": "5"}))
+    assert "must be integer" in str(_schema_error(schema, {"query": "x", "max_results": True}))
+    assert _schema_error({**schema, "additionalProperties": True}, {"query": "x", "z": 1}) is None
+
+
+def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
+    """The references were recorded before the fixtures checked arguments;
+    a reference call the check would now refuse would make the reference
+    itself unreachable."""
+    from rote.bench.fidelity import load_cases
+    from rote.bench.fixture_mcp import _schema_error
+
+    from .conftest import EXAMPLES_DIR
+
+    for example in ("expense-audit", "ops-report"):
+        casefile = load_cases(EXAMPLES_DIR / example)
+        reference = json.loads(casefile.reference_path.read_text(encoding="utf-8"))
+        for case in reference["cases"].values():
+            for run in case["runs"]:
+                for call in run["calls"]:
+                    tool = casefile.servers[call["server"]]["tools"][call["tool"]]
+                    assert _schema_error(tool["parameters"], call["arguments"]) is None, call
 
 
 def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(

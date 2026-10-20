@@ -275,7 +275,13 @@ An example opts in with `examples/<name>/fidelity/cases.yaml`:
   schemas, plus per-case responses. `rote.bench.fixture_mcp` serves them
   over Streamable HTTP. Both sides talk to the same fixture, so they see
   byte-identical results, and the fixture's call log (not a transcript)
-  is the tool trace for both.
+  is the tool trace for both. A fixture checks arguments against the
+  tool's schema the way a server does: a missing required argument, one
+  the tool does not take, or a value of the wrong type is refused with the
+  reason, and the case lists it under `refused_calls`. A compile that
+  guessed `search_query` for a tool whose argument is `query` gets an
+  error, as it would from the real server, not the fixture's catch-all
+  answer.
 - **Two or three cases**: an input (or a patched copy of the example's
   input), the fixed payload a person gives at each gate, and the fixture
   responses. Each case has several records and crosses different

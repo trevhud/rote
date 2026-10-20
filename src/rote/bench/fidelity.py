@@ -334,7 +334,15 @@ def record_reference(
 
 
 def _portable_call(call: dict[str, Any]) -> dict[str, Any]:
-    keys = ("server", "tool", "arguments", "side_effect", "matched", "response")
+    keys = (
+        "server",
+        "tool",
+        "arguments",
+        "side_effect",
+        "matched",
+        "response",
+        "invalid_arguments",
+    )
     return {k: call.get(k) for k in keys}
 
 
@@ -513,6 +521,7 @@ def failure_site(
     by_id = {n.id: n for n in pipeline.nodes}
     outputs: dict[str, Any] = {}
     failed: str | None = None
+    failed_error: Any = None
     gate_ids = iter(g.id for g in _gate_order(pipeline))
     try:
         for wf in client.list_workflows():
@@ -524,7 +533,8 @@ def failure_site(
                         outputs[gate] = step["output"]
                 elif name in by_id:
                     if step["error"] is not None:
-                        failed = failed or name
+                        if failed is None:
+                            failed, failed_error = name, step["error"]
                     elif by_id[name].fan_out:
                         outputs.setdefault(name, []).append(step["output"])
                     else:
@@ -533,9 +543,26 @@ def failure_site(
         return None
     finally:
         client.destroy()
-    if failed is None or not by_id[failed].impl:
-        return {"node": failed} if failed else None
+    if failed is None:
+        return None
     node = by_id[failed]
+    recorded = (
+        None
+        if failed_error is None
+        else _last_line(f"{type(failed_error).__name__}: {failed_error}")
+    )
+    if node.mcp is not None:
+        # The default backend runs an mcp-bound node as the tool call, not
+        # its impl (often a stub): replaying the impl would blame code that
+        # never ran. The recorded error is the call's own.
+        return {
+            "node": failed,
+            "exception": recorded,
+            "at": f"mcp {node.mcp.server}.{node.mcp.tool}",
+            "code": None,
+        }
+    if not node.impl:
+        return {"node": failed, "exception": recorded, "at": None, "code": None}
     kwargs: dict[str, Any] = dict(node.constants or {})
     for param, ref in (node.inputs or {}).items():
         parsed = parse_input_ref(ref)
@@ -630,6 +657,17 @@ def pipeline_fidelity(
             scored = score_case(ref, trace)
             scored["run_error"] = trace.get("error")
             scored["failure"] = trace.get("failure")
+            # Calls the fixture refused, with why: a retried tool error is
+            # otherwise only "exceeded its maximum of N retries".
+            scored["refused_calls"] = [
+                {
+                    "call": f"{c['server']}.{c['tool']}",
+                    "arguments": c["arguments"],
+                    "why": c.get("invalid_arguments") or "no fixture response for these arguments",
+                }
+                for c in trace.get("calls", [])
+                if not c.get("matched")
+            ]
             scored["unknown_servers"] = trace.get("unknown_servers", [])
             scored["steps"] = len(trace.get("steps", []))
             scored["gate_fit"] = trace.get("gate_fit", [])
