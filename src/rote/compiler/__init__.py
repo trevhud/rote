@@ -461,7 +461,7 @@ class Compiler:
 
         skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         if self.system1 and update:
-            raise CompilerError("--system1 does not support --update yet; run a full compile")
+            raise CompilerError("System-1 does not support --update yet; run a full compile")
         use_system1 = self.system1 if self.system1 is not None else not update
         if not use_system1 and self.system1_decider != "rules":
             raise CompilerError(

@@ -131,7 +131,7 @@ model-specific defects under that are real, though: DeepSeek demands an
 against 0.38 to 0.75 for Sonnet 4.6 compiles, with a fixture caveat on the
 Gmail and Drive result shapes.
 
-With `--compile-flag=--system1` (rules decide, the model writes modules and
+With `--compile-flag=--system1` (opt-in at the time; rules decide, the model writes modules and
 text) on expense-audit: gpt-oss-120b on Groq ran in 31 s at low effort and 67 s
 at medium, but stubbed 7 of 7 and 1 of 7 modules and did not verify (fidelity
 0.17 and 0.11). DeepSeek wrote 0 of 7 in 454 s for $0.12. At high effort

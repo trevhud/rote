@@ -1454,7 +1454,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-verify-tests", args.no_verify_tests),
         ("--trust-skill", args.trust_skill),
         ("--strict-provenance", args.strict_provenance),
-        ("--system1/--no-system1", args.system1 is not None),
+        ("--no-system1", args.system1 is False),
         ("--system1-decider", args.system1_decider != "rules"),
     ):
         if is_set:
@@ -3876,16 +3876,18 @@ def _system1_flag_error(args: argparse.Namespace) -> str | None:
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     """The System-1 flags, shared by ``compile`` and its dry run ``analyze``."""
     p.add_argument(
-        "--system1",
-        action=argparse.BooleanOptionalAction,
+        "--no-system1",
+        dest="system1",
+        action="store_const",
+        const=False,
         default=None,
         help=(
-            "System-1 (the default): rote decides the whole pipeline structure with rules "
-            "(kinds, data flow, fan_out, mandatory, gates, constants, rule tables as code) "
-            "before the agent runs, and the agent then writes only text (implementations, "
-            "judge prompts, the report). --no-system1 runs the full-rubric agent, which "
-            "decides the structure itself. --update always runs the full-rubric agent, "
-            "because System-1 does not support it yet. See docs/design/system1-compile.md"
+            "Run the full-rubric agent, which decides the pipeline structure itself. By "
+            "default (System-1) rote decides the whole structure with rules (kinds, data "
+            "flow, fan_out, mandatory, gates, constants, rule tables as code) before the "
+            "agent runs, and the agent writes only text (implementations, judge prompts, "
+            "the report). --update always runs the full-rubric agent, because System-1 "
+            "does not support it yet. See docs/design/system1-compile.md"
         ),
     )
     p.add_argument(

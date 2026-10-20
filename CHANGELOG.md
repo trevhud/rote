@@ -18,9 +18,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the full-rubric path.
   `--no-system1` runs the full-rubric agent. `--update` always runs it,
   because System-1 does not support incremental re-compilation yet, and the
-  compile log says so. `--system1` is still accepted and is now the default.
-  `rote analyze` takes the same flags. In cloud mode `--system1`,
-  `--no-system1` and `--system1-decider` are local-only flags. `Compiler`
+  compile log says so. The `--system1` flag is gone: there is nothing to opt
+  into. `rote analyze` takes the same flags. In cloud mode `--no-system1`
+  and `--system1-decider` are local-only flags. `Compiler`
   defaults to the same rule (`system1=None`), so library callers such as
   rote-cloud get System-1 too.
 

@@ -124,9 +124,11 @@ def _parsed(argv: list[str]) -> argparse.Namespace:
 
 
 @pytest.mark.parametrize("command", ["compile", "analyze"])
-def test_the_flag_is_tri_state(command: str) -> None:
+def test_the_only_flag_is_the_opt_out(command: str) -> None:
     assert _parsed([command, "s"]).system1 is None
-    assert _parsed([command, "s", "--system1"]).system1 is True
+    # No positive flag: System-1 is the default, so there is nothing to opt into.
+    with pytest.raises(SystemExit):
+        _parsed([command, "s", "--system1"])
     assert _parsed([command, "s", "--no-system1"]).system1 is False
 
 
@@ -144,7 +146,7 @@ def test_the_cli_passes_the_flag_to_the_compiler(
 
     monkeypatch.setattr(Compiler, "__init__", init)
     skill = _skill(tmp_path)
-    for flags, expected in (([], None), (["--no-system1"], False), (["--system1"], True)):
+    for flags, expected in (([], None), (["--no-system1"], False)):
         argv = [command, str(skill), *flags]
         if command == "compile":
             argv += ["--local", "--runtime", "dbos", "--no-eval", "--out", str(tmp_path / "o")]
@@ -164,8 +166,7 @@ def test_a_decider_with_no_system1_is_a_usage_error(tmp_path: Path) -> None:
 def test_cloud_mode_rejects_the_local_system1_flags() -> None:
     assert cli._reject_local_only_cloud_flags(_parsed(["compile", "s"])) is None
     for flags, named in (
-        (["--no-system1"], "--system1/--no-system1"),
-        (["--system1"], "--system1/--no-system1"),
+        (["--no-system1"], "--no-system1"),
         (["--system1-decider", "clef"], "--system1-decider"),
     ):
         message = cli._reject_local_only_cloud_flags(_parsed(["compile", "s", *flags]))
