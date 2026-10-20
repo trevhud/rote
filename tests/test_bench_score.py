@@ -19,12 +19,13 @@ from rote.bench.collect import phase_durations
 from rote.bench.report import aggregate, compare, headline
 from rote.bench.runner import STATE_ENV, isolated_env
 from rote.bench.score import (
+    _Context,
     _max_weight_assignment,
     dependency_edges,
     match_nodes,
     score_pipeline,
 )
-from rote.ir import Pipeline
+from rote.ir import Pipeline, load_pipeline
 
 from .conftest import BDR_PIPELINE_YAML
 
@@ -183,18 +184,20 @@ def test_a_fully_renamed_compile_still_matches_by_structure() -> None:
     """Every id differs and only one description survives, so the old
     lexical matcher found one pair here. Hand-worked, pass 2 (weights:
     position 2, degree 1, neighbor_kinds 1.5, matched_neighbors 2,
-    inputs 1.5, outputs 1, description 2, name 1.5):
+    inputs 1.5, outputs 1, description 2, name 1.5; outputs are the
+    fields downstream nodes read, never the declared output):
 
     fetch_rows ~ pull: position 1, degree 1, neighbor_kinds 1,
-    matched_neighbors 1, outputs 1 (rows -> row), description 1, name 0.
-    Inputs (neither side has any) and MCP (only the expected node is
-    bound: a missing binding is an MCP error, not a different step) do
-    not apply.
+    matched_neighbors 1, outputs 1 (the field total_rows reads, rows ->
+    row), description 1, name 0. Inputs (neither side has any) and MCP
+    (only the expected node is bound: a missing binding is an MCP error,
+    not a different step) do not apply.
     (2 + 1 + 1.5 + 2 + 1 + 2 + 0) / 11 = 0.8636.
 
     total_rows ~ sum_it: everything 1 except description, {sum, amount}
-    vs {add, up, amount} = 1/4, and name 0 ("it" is a stopword).
-    (2 + 1 + 1.5 + 2 + 1.5 + 1 + 0.5 + 0) / 12.5 = 0.76.
+    vs {add, up, amount} = 1/4, and name 0 ("it" is a stopword). Nothing
+    reads either node's output, so outputs does not apply.
+    (2 + 1 + 1.5 + 2 + 1.5 + 0.5 + 0) / 11.5 = 0.7391.
     """
     expected = _pipeline(
         [
@@ -228,7 +231,7 @@ def test_a_fully_renamed_compile_still_matches_by_structure() -> None:
         required=[],
     )
     got = {(m.expected_id, m.compiled_id): m.similarity for m in match_nodes(expected, compiled)}
-    assert got == {("fetch_rows", "pull"): 0.8636, ("total_rows", "sum_it"): 0.76}
+    assert got == {("fetch_rows", "pull"): 0.8636, ("total_rows", "sum_it"): 0.7391}
     s = score_pipeline(expected, compiled)
     assert s["structure"]["kind_accuracy"] == 1.0
     assert s["graph"]["edge_f1"] == 1.0
@@ -236,20 +239,24 @@ def test_a_fully_renamed_compile_still_matches_by_structure() -> None:
 
 def test_a_split_step_matches_the_half_that_sits_where_it_sat() -> None:
     """Expected file_report (render and save) became render_report ->
-    save_report. Hand-worked:
+    save_report. Hand-worked; degree and neighbor_kinds weigh the
+    downstream side 3 to 1, as (up + 3 down) / 4:
 
-    pass 1: file_report ~ save_report 6.75 / 10.5 = 0.6429 (position 1,
-    degree 1, neighbor_kinds 0.5, inputs 0, outputs 1, description 3/4,
-    name 1/3) beats file_report ~ render_report 5.5 / 10.5 = 0.5238
-    (position 0.5, degree 0.75, neighbor_kinds 0.5, inputs 1, outputs 0,
-    description 2/4, name 1/3). fetch ~ fetch is 8.25 / 9 = 0.9167.
+    pass 1: file_report ~ save_report: position 1, degree 1,
+    neighbor_kinds (0 + 3) / 4 = 0.75, inputs 0, description 3/4, name
+    1/3; outputs does not apply (nothing reads either). 6.125 / 9.5 =
+    0.6447. file_report ~ render_report: position 0.5, degree
+    (1 + 1.5) / 4 = 0.625, neighbor_kinds 1/4, inputs 1, outputs 0 (only
+    render_report's markdown is read), description 2/4, name 1/3.
+    5.0 / 10.5 = 0.4762.
 
-    pass 2 adds matched_neighbors. fetch's successor is matched to
-    save_report, but the compiled fetch feeds render_report: 0, so
-    fetch ~ fetch = 8.25 / 11 = 0.75. file_report's predecessor fetch is
-    not save_report's predecessor: 0, so 6.75 / 12.5 = 0.54. Against
-    render_report it is 1 / 2: (5.5 + 1) / 12.5 = 0.52, still lower.
-    So save_report is the match, and render_report is the one extra.
+    pass 2 adds matched_neighbors. file_report's predecessor fetch is not
+    save_report's predecessor: 0, so 6.125 / 11.5 = 0.5326. Against
+    render_report it is 1/2: (5.0 + 1) / 12.5 = 0.48, still lower. fetch's
+    successor maps to save_report, but the compiled fetch feeds
+    render_report: 0. So fetch ~ fetch is position 1, degree 1,
+    neighbor_kinds (1 + 0) / 4, outputs 1, description 1, name 1:
+    7.875 / 11 = 0.7159. save_report is the match, render_report the extra.
     """
     expected = _pipeline(
         [
@@ -284,7 +291,7 @@ def test_a_split_step_matches_the_half_that_sits_where_it_sat() -> None:
         required=[],
     )
     got = {(m.expected_id, m.compiled_id): m.similarity for m in match_nodes(expected, compiled)}
-    assert got == {("fetch", "fetch"): 0.75, ("file_report", "save_report"): 0.54}
+    assert got == {("fetch", "fetch"): 0.7159, ("file_report", "save_report"): 0.5326}
     s = score_pipeline(expected, compiled)["structure"]
     assert (s["node_recall"], s["node_precision"]) == (1.0, 0.6667)
     assert s["extra"] == ["render_report"]
@@ -605,3 +612,93 @@ def test_a_failed_compile_still_reports_what_it_spent(tmp_path: Path) -> None:
     budget = _Budget(2.0)
     budget.add(run["cost_usd"])
     assert budget.exhausted()
+
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "bench"
+_EXAMPLES = Path(__file__).parent.parent / "examples"
+
+
+def test_a_moved_join_does_not_swap_the_steps_around_it() -> None:
+    """A real compile moved the duplicate and late joins from the fanned
+    audit onto the grouping node. With upstream and downstream weighed
+    equally, that join placement outweighed position and name: the swap
+    won 1.084 to 1.050 and scored a correct fan_out as one miss plus one
+    spurious fan. What a step feeds is the steadier signal, and edgeF1
+    already charges for where the join landed."""
+    expected = load_pipeline(_EXAMPLES / "expense-audit" / "expected" / "pipeline.yaml")
+    compiled = load_pipeline(_FIXTURES / "expense-audit-joins-moved.yaml")
+    pairs = {m.expected_id: m.compiled_id for m in match_nodes(expected, compiled)}
+    assert pairs["group_by_employee"] == "group_audit_employee_s_report"
+    assert pairs["audit_report"] == "audit_employee_s_report_each"
+    fan = score_pipeline(expected, compiled)["fan_out"]
+    assert (fan["precision"], fan["recall"]) == (1.0, 1.0)
+
+
+def test_ties_resolve_the_same_whatever_the_node_order() -> None:
+    """Two compiled nodes identical in everything but id tie exactly, so
+    only the id sort decides which one matches. Every input order, of
+    either pipeline, must give the same answer: the lower id."""
+    expected = _pipeline(
+        [_pure("start", "load"), _pure("check", "check rows")],
+        [("start", "check")],
+        required=[],
+    )
+    compiled = _pipeline(
+        [_pure("start", "load"), _pure("zz_check", "check rows"), _pure("aa_check", "check rows")],
+        [("start", "zz_check"), ("start", "aa_check")],
+        required=[],
+    )
+    want = {("check", "aa_check"), ("start", "start")}
+    for e_step, c_step in [(1, 1), (-1, 1), (1, -1), (-1, -1)]:
+        e = expected.model_copy(update={"nodes": expected.nodes[::e_step]})
+        c = compiled.model_copy(update={"nodes": compiled.nodes[::c_step]})
+        assert {(m.expected_id, m.compiled_id) for m in match_nodes(e, c)} == want
+
+
+def test_an_edgeless_loop_body_node_takes_its_loops_rank() -> None:
+    """start -> loop -> end has depths 0, 1, 2, so ranks 0, 0.5, 1. The
+    body sub-node declares no edges, so plain depth would put it at the
+    start (rank 0). It runs inside the loop, so it gets the loop's 0.5."""
+    p = _pipeline(
+        [
+            _pure("start", "load"),
+            {
+                "id": "loop",
+                "kind": "agent_loop",
+                "description": "work the queue",
+                "tools": ["search"],
+                "loop_body": ["body"],
+            },
+            _pure("body", "one item"),
+            _pure("end", "write"),
+        ],
+        [("start", "loop"), ("loop", "end")],
+        required=[],
+    )
+    rank = _Context(p).rank
+    assert (rank["start"], rank["loop"], rank["body"], rank["end"]) == (0.0, 0.5, 0.5, 1.0)
+
+
+def test_a_gates_declared_payload_does_not_steer_its_match() -> None:
+    """gateJ grades the payload, so the payload must not pick the gate.
+    Two compiled gates sit in identical positions; the one whose payload
+    copies the gold's must not win on that alone. Only fields a
+    downstream node reads count as outputs, and none do here, so the two
+    tie and the id sort picks aa_gate."""
+    gate = {"kind": "hitl_gate", "description": "approve", "signal": "approve"}
+    expected = _pipeline(
+        [_pure("start", "load"), {"id": "review", **gate, "output": {"approved_ids": "list"}}],
+        [("start", "review")],
+        required=[],
+    )
+    compiled = _pipeline(
+        [
+            _pure("start", "load"),
+            {"id": "aa_gate", **gate, "output": {"note": "str"}},
+            {"id": "zz_gate", **gate, "output": {"approved_ids": "list"}},
+        ],
+        [("start", "aa_gate"), ("start", "zz_gate")],
+        required=[],
+    )
+    pairs = {m.expected_id: m.compiled_id for m in match_nodes(expected, compiled)}
+    assert pairs["review"] == "aa_gate"

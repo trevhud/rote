@@ -17,10 +17,12 @@ spurious mandatory for it. So matching is name-independent:
 1. :func:`node_similarity` scores every (expected, compiled) pair from
    what the node *is* in its pipeline (:data:`SIGNAL_WEIGHTS`): its
    topological rank, its in- and out-degree, its neighbors' kinds, the
-   skill section it cites, its input and output names, its MCP server
-   and tool, and only weakly its id and description. A node's own kind,
-   flags and gate fields are deliberately left out: they are what the
-   metrics grade, so matching on them would grade the matcher's choice.
+   skill section it cites, its input names and the output fields its
+   consumers read, its MCP server and tool, its description, and only
+   weakly its id. Degree and neighbor kinds weigh downstream over
+   upstream (:data:`SUCCESSOR_WEIGHT`). A node's own kind, flags and
+   gate fields are deliberately left out: they are what the metrics
+   grade, so matching on them would grade the matcher's choice.
 2. An optimal one-to-one assignment (:func:`_max_weight_assignment`, the
    Hungarian algorithm) maximizes the total similarity, so competing
    candidates are settled for the pipeline as a whole, not first-come.
@@ -51,9 +53,10 @@ from rote.ir import Node, NodeKind, Pipeline, parse_input_ref
 
 #: Minimum :func:`node_similarity` for an assigned pair to count as the
 #: same step. This value and :data:`SIGNAL_WEIGHTS` were chosen by a
-#: sweep scored against hand labels of 200 contested matches across 48
-#: real compiles: the committed snapshots plus every bench run on disk
-#: (described in the PR that introduced this matcher). Below 0.35,
+#: sweep scored against hand labels of contested matches across the real
+#: compiles on disk: the committed snapshots plus every bench run (79
+#: compiles and 259 labels at the last check, in the PR that introduced
+#: this matcher). Below 0.35,
 #: leftovers pair with unrelated nodes. Above it, real counterparts in
 #: restructured compiles start dropping out.
 MATCH_THRESHOLD = 0.35
@@ -195,17 +198,6 @@ def _input_tokens(node: Node) -> set[str]:
     return toks | {t for r in (node.inputs or {}).values() for t in _ref_field_tokens(r)}
 
 
-def _output_tokens(node: Node) -> set[str]:
-    keys: set[str] = set()
-    if isinstance(node.output, dict):
-        keys |= set(node.output)
-    elif node.output:
-        keys.add(node.output)
-    if node.output_schema:
-        keys |= set((node.output_schema.get("properties") or {}).keys())
-    return {t for k in keys for t in _name_tokens(k)}
-
-
 def _mcp_facts(node: Node) -> set[str]:
     """The MCP servers and tools a node reaches, from either declaration."""
     facts: set[str] = set()
@@ -229,6 +221,19 @@ class _Context:
                 self.succs[a].add(b)
         self.kind = {nid: n.kind.value for nid, n in nodes.items()}
         self.rank = self._ranks(pipeline)
+        # The output fields downstream nodes actually read, by producer.
+        # Data flow, not the declared output: a gate's declared output is
+        # its resume payload, which gateJ grades, so matching on it would
+        # let the graded payload pick the gate's counterpart.
+        self.consumed: dict[str, set[str]] = {nid: set() for nid in nodes}
+        for n in pipeline.nodes:
+            for ref in (n.inputs or {}).values():
+                try:
+                    parsed = parse_input_ref(ref)
+                except ValueError:
+                    continue
+                if parsed.node_id in nodes and parsed.field:
+                    self.consumed[parsed.node_id] |= _name_tokens(parsed.field)
 
     def _ranks(self, pipeline: Pipeline) -> dict[str, float]:
         """Longest-path depth over dependencies, scaled to ``[0, 1]``.
@@ -282,6 +287,19 @@ def _matched_neighbors(
     return agree / (len(mine) + len(theirs) - agree)
 
 
+#: How much the downstream side counts in ``degree`` and
+#: ``neighbor_kinds``, against 1 for the upstream side. What a step feeds
+#: rarely moves between compiles; where a join lands (which step takes
+#: the duplicate and late flags) often does. That placement is an edge
+#: difference edgeF1 already charges, so it must not also decide the
+#: matching and get charged a second time through kind and flag metrics.
+SUCCESSOR_WEIGHT = 3.0
+
+
+def _sided(upstream: float, downstream: float) -> float:
+    return (upstream + SUCCESSOR_WEIGHT * downstream) / (1 + SUCCESSOR_WEIGHT)
+
+
 def similarity_signals(
     expected: Node,
     ec: _Context,
@@ -298,16 +316,14 @@ def similarity_signals(
     e, c = expected, compiled
     signals: dict[str, float] = {
         "position": 1.0 - abs(ec.rank[e.id] - cc.rank[c.id]),
-        "degree": (
-            1 / (1 + abs(len(ec.preds[e.id]) - len(cc.preds[c.id])))
-            + 1 / (1 + abs(len(ec.succs[e.id]) - len(cc.succs[c.id])))
-        )
-        / 2,
-        "neighbor_kinds": (
-            _multiset_jaccard(ec.neighbor_kinds(e.id, "in"), cc.neighbor_kinds(c.id, "in"))
-            + _multiset_jaccard(ec.neighbor_kinds(e.id, "out"), cc.neighbor_kinds(c.id, "out"))
-        )
-        / 2,
+        "degree": _sided(
+            1 / (1 + abs(len(ec.preds[e.id]) - len(cc.preds[c.id]))),
+            1 / (1 + abs(len(ec.succs[e.id]) - len(cc.succs[c.id]))),
+        ),
+        "neighbor_kinds": _sided(
+            _multiset_jaccard(ec.neighbor_kinds(e.id, "in"), cc.neighbor_kinds(c.id, "in")),
+            _multiset_jaccard(ec.neighbor_kinds(e.id, "out"), cc.neighbor_kinds(c.id, "out")),
+        ),
     }
     if assignment is not None:
         signals["matched_neighbors"] = _matched_neighbors(e.id, ec, c.id, cc, assignment)
@@ -320,7 +336,7 @@ def similarity_signals(
     ein, cin = _input_tokens(e), _input_tokens(c)
     if ein or cin:
         signals["inputs"] = _jaccard(ein, cin)
-    eout, cout = _output_tokens(e), _output_tokens(c)
+    eout, cout = ec.consumed[e.id], cc.consumed[c.id]
     if eout or cout:
         signals["outputs"] = _jaccard(eout, cout)
     # Both sides, or the signal does not apply: a compile that forgot a

@@ -136,23 +136,34 @@ reads this one matching: kind, mandatory, fan_out, gates, edges and
 waves. `structure.matches` in the JSON lists the pairs and their
 similarity.
 
-What changes, measured on the 55 compiles on disk when this landed
-(committed snapshots plus every bench run). The counts below come from
-200 hand-labeled contested matches:
+What changes, measured on the 79 compiles on disk when this landed
+(committed snapshots plus every bench run), against 259 hand-labeled
+contested matches:
 
 - **Renamed steps are now found.** expense-audit's `find_duplicates` as
   `check_duplicate_submissions`, and customer-onboarding's announce pair.
-  The old matcher got 171 of the 200 right, the new one 183.
+  The old matcher got 224 of the 259 right, the new one 238.
 - **A fully renamed copy of every gold pipeline is recovered 95/95**,
   even with every description blanked. The old matcher recovered 0 with
   descriptions blanked.
 - **Splits match the half that sits where the step sat.** The other half
   is an extra node.
-- **Known residual.** When a compile moves a join onto a neighboring node,
-  so the structure itself swaps two steps' roles, the matcher can follow
-  the structure. That happened on three system-1 expense-audit compiles
-  (`group_by_employee` and `audit_report`), and those runs read
-  fan_out 0 where the old matcher read 1.
+- **A moved join does not swap steps.** Degree and neighbor kinds weigh
+  what a node feeds 3 to 1 over what feeds it. Compiles often move a
+  join (which step takes the duplicate and late flags), but rarely what
+  a step feeds, and edgeF1 already charges the moved edge. An earlier
+  equal weighting swapped expense-audit's grouping and fanned audit on
+  three compiles, and charged a correct fan_out as a miss plus a
+  spurious fan (regression fixture:
+  `tests/fixtures/bench/expense-audit-joins-moved.yaml`).
+
+Two couplings are left on purpose:
+
+- The structural signals read the same edges edgeF1 and waves grade.
+  Structural matching cannot avoid that.
+- The `outputs` signal reads only the fields downstream nodes consume,
+  never a node's declared output. A gate's declared output is its
+  resume payload, which gateJ grades.
 
 `kmix` stays matching-free, as a cross-check.
 
