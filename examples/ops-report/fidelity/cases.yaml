@@ -5,6 +5,14 @@
 # the agent and the compiled pipeline talk to the fixture servers below,
 # so they see identical tool results. The duty manager's answers are fixed.
 # Every list has several rows and each case crosses different thresholds.
+#
+# Each case's `http:` section is the same data as its MCP fixtures, as the
+# Google APIs return it, for pipelines compiled with `--backend api`
+# (Drive files.export, Sheets values.get, Gmail threads.list and
+# threads.get). Every body is checked against the vendor's Discovery spec
+# when the bench loads it, and each response's `reads` names the MCP
+# fixture response with the same data, so a read through the API and the
+# skill's read through the tool score as the same read.
 
 output_fields:
   active_sites: the number of active sites in the KPI header
@@ -104,6 +112,394 @@ cases:
               - {id: t-905, subject: "Dock appointment REQUESTED: EAST1 PO-4471 10/19 08:00", from: carrier-ops@example.com, date: "2026-10-18T09:30:00Z", snippet: "Requesting a dock appointment for PO-4471."}
               - {id: t-906, subject: "Dock appointment REQUESTED: SOUTH3 PO-4462 10/19 13:00", from: carrier-ops@example.com, date: "2026-10-18T08:55:00Z", snippet: "Requesting a dock appointment for PO-4462."}
           - result: []
+    http:
+      google/drive/v3:
+        operations:
+          drive.files.export:
+          - when:
+              fileId: 1ExampleShipmentContainersFileId00000000000
+            body: 'Site,Active,Loaded,Staged,Shipped,COMPLETION %
+
+              EAST1,40,12,8,20,82%
+
+              WEST2,35,5,10,20,71%
+
+              SOUTH3,22,6,2,14,90%
+
+              '
+            reads: google_drive.read_file_content[0]
+          - when:
+              fileId: 1ExampleDockPendingLogFileId0000000000000000
+            body: 'Date,Site,Issue Type,PO Number,Resolved
+
+              2026-10-18,EAST1,PO Number,PO-4471,FALSE
+
+              2026-10-18,EAST1,Pallet/Piece Count Discrepancy,PO-4473,FALSE
+
+              2026-10-18,WEST2,Pallet/Piece Count Discrepancy,PO-4480,FALSE
+
+              2026-10-17,EAST1,Pallet/Piece Count Discrepancy,PO-4459,TRUE
+
+              2026-10-17,SOUTH3,PO Number,PO-4462,FALSE
+
+              2026-10-16,WEST2,PO Number,PO-4440,TRUE
+
+              '
+            reads: google_drive.read_file_content[1]
+          - when:
+              fileId: 1ExampleDwellTicketLogFileId0000000000000000
+            body: 'Ticket,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description,Open/Closed
+
+              DW-101,2026-10-18,EAST1,30,Northwind Apparel,12,Missorted to the wrong lane,Open
+
+              DW-102,2026-10-18,WEST2,45,Lumen Home,85,Trailer loaded short,Open
+
+              DW-103,2026-10-17,SOUTH3,10,Acme Pet,5,Label reprint,Closed
+
+              DW-104,2026-10-17,EAST1,8,Orchid Beauty,3,Late carrier pickup,Open
+
+              '
+            reads: google_drive.read_file_content[2]
+      google/sheets/v4:
+        operations:
+          sheets.spreadsheets.values.get:
+          - when:
+              spreadsheetId: 1ExampleShipmentContainersFileId00000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Site
+                - Active
+                - Loaded
+                - Staged
+                - Shipped
+                - COMPLETION %
+              - - EAST1
+                - '40'
+                - '12'
+                - '8'
+                - '20'
+                - 82%
+              - - WEST2
+                - '35'
+                - '5'
+                - '10'
+                - '20'
+                - 71%
+              - - SOUTH3
+                - '22'
+                - '6'
+                - '2'
+                - '14'
+                - 90%
+            reads: google_drive.read_file_content[0]
+          - when:
+              spreadsheetId: 1ExampleDockPendingLogFileId0000000000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Date
+                - Site
+                - Issue Type
+                - PO Number
+                - Resolved
+              - - '2026-10-18'
+                - EAST1
+                - PO Number
+                - PO-4471
+                - 'FALSE'
+              - - '2026-10-18'
+                - EAST1
+                - Pallet/Piece Count Discrepancy
+                - PO-4473
+                - 'FALSE'
+              - - '2026-10-18'
+                - WEST2
+                - Pallet/Piece Count Discrepancy
+                - PO-4480
+                - 'FALSE'
+              - - '2026-10-17'
+                - EAST1
+                - Pallet/Piece Count Discrepancy
+                - PO-4459
+                - 'TRUE'
+              - - '2026-10-17'
+                - SOUTH3
+                - PO Number
+                - PO-4462
+                - 'FALSE'
+              - - '2026-10-16'
+                - WEST2
+                - PO Number
+                - PO-4440
+                - 'TRUE'
+            reads: google_drive.read_file_content[1]
+          - when:
+              spreadsheetId: 1ExampleDwellTicketLogFileId0000000000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Ticket
+                - Date
+                - Facility
+                - '# Packages'
+                - Client Impact
+                - Carrier Impact
+                - Issue Description
+                - Open/Closed
+              - - DW-101
+                - '2026-10-18'
+                - EAST1
+                - '30'
+                - Northwind Apparel
+                - '12'
+                - Missorted to the wrong lane
+                - Open
+              - - DW-102
+                - '2026-10-18'
+                - WEST2
+                - '45'
+                - Lumen Home
+                - '85'
+                - Trailer loaded short
+                - Open
+              - - DW-103
+                - '2026-10-17'
+                - SOUTH3
+                - '10'
+                - Acme Pet
+                - '5'
+                - Label reprint
+                - Closed
+              - - DW-104
+                - '2026-10-17'
+                - EAST1
+                - '8'
+                - Orchid Beauty
+                - '3'
+                - Late carrier pickup
+                - Open
+            reads: google_drive.read_file_content[2]
+      google/gmail/v1:
+        operations:
+          gmail.users.threads.list:
+          - when_contains:
+              q: dock-activity
+            body:
+              threads:
+              - id: t-901
+                snippet: Your appointment request for PO-4471 is approved.
+                historyId: '9000'
+              - id: t-902
+                snippet: Requesting a dock appointment for PO-4480.
+                historyId: '9001'
+              - id: t-903
+                snippet: Your appointment request for PO-4462 is approved.
+                historyId: '9002'
+              - id: t-904
+                snippet: Requesting a dock appointment for PO-4490.
+                historyId: '9003'
+              - id: t-905
+                snippet: Requesting a dock appointment for PO-4471.
+                historyId: '9004'
+              - id: t-906
+                snippet: Requesting a dock appointment for PO-4462.
+                historyId: '9005'
+              resultSizeEstimate: 6
+            reads: gmail.search_threads[0]
+          - body:
+              resultSizeEstimate: 0
+            reads: gmail.search_threads[1]
+          gmail.users.threads.get:
+          - when:
+              id: t-901
+            reads: gmail.search_threads[0]
+            body:
+              id: t-901
+              historyId: '9000'
+              snippet: Your appointment request for PO-4471 is approved.
+              messages:
+              - id: m-t-901
+                threadId: t-901
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Your appointment request for PO-4471 is approved.
+                historyId: '9000'
+                internalDate: '1792339320000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment APPROVED: EAST1 PO-4471 10/19 08:00'
+                  - name: From
+                    value: scheduler@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 16:02:00 +0000
+                  body:
+                    size: 49
+                    data: WW91ciBhcHBvaW50bWVudCByZXF1ZXN0IGZvciBQTy00NDcxIGlzIGFwcHJvdmVkLg
+          - when:
+              id: t-902
+            reads: gmail.search_threads[0]
+            body:
+              id: t-902
+              historyId: '9001'
+              snippet: Requesting a dock appointment for PO-4480.
+              messages:
+              - id: m-t-902
+                threadId: t-902
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4480.
+                historyId: '9001'
+                internalDate: '1792334400000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: WEST2 PO-4480 10/19 10:00'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 14:40:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ0ODAu
+          - when:
+              id: t-903
+            reads: gmail.search_threads[0]
+            body:
+              id: t-903
+              historyId: '9002'
+              snippet: Your appointment request for PO-4462 is approved.
+              messages:
+              - id: m-t-903
+                threadId: t-903
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Your appointment request for PO-4462 is approved.
+                historyId: '9002'
+                internalDate: '1792325700000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment APPROVED: SOUTH3 PO-4462 10/19 13:00'
+                  - name: From
+                    value: scheduler@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 12:15:00 +0000
+                  body:
+                    size: 49
+                    data: WW91ciBhcHBvaW50bWVudCByZXF1ZXN0IGZvciBQTy00NDYyIGlzIGFwcHJvdmVkLg
+          - when:
+              id: t-904
+            reads: gmail.search_threads[0]
+            body:
+              id: t-904
+              historyId: '9003'
+              snippet: Requesting a dock appointment for PO-4490.
+              messages:
+              - id: m-t-904
+                threadId: t-904
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4490.
+                historyId: '9003'
+                internalDate: '1792321500000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: WEST2 PO-4490 10/20 09:00'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 11:05:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ0OTAu
+          - when:
+              id: t-905
+            reads: gmail.search_threads[0]
+            body:
+              id: t-905
+              historyId: '9004'
+              snippet: Requesting a dock appointment for PO-4471.
+              messages:
+              - id: m-t-905
+                threadId: t-905
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4471.
+                historyId: '9004'
+                internalDate: '1792315800000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: EAST1 PO-4471 10/19 08:00'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 09:30:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ0NzEu
+          - when:
+              id: t-906
+            reads: gmail.search_threads[0]
+            body:
+              id: t-906
+              historyId: '9005'
+              snippet: Requesting a dock appointment for PO-4462.
+              messages:
+              - id: m-t-906
+                threadId: t-906
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4462.
+                historyId: '9005'
+                internalDate: '1792313700000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: SOUTH3 PO-4462 10/19 13:00'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Sun, 18 Oct 2026 08:55:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ0NjIu
 
   - id: quiet_day
     description: every site above 75%, one open pending row, every request approved, no dwell over a threshold
@@ -147,3 +543,300 @@ cases:
               - {id: t-913, subject: "Dock appointment APPROVED: EAST1 PO-4510 10/20 11:00", from: scheduler@example.com, date: "2026-10-19T09:45:00Z", snippet: "Your appointment request for PO-4510 is approved."}
               - {id: t-914, subject: "Dock appointment REQUESTED: EAST1 PO-4510 10/20 11:00", from: carrier-ops@example.com, date: "2026-10-19T08:00:00Z", snippet: "Requesting a dock appointment for PO-4510."}
           - result: []
+    http:
+      google/drive/v3:
+        operations:
+          drive.files.export:
+          - when:
+              fileId: 1ExampleShipmentContainersFileId00000000000
+            body: 'Site,Active,Loaded,Staged,Shipped,COMPLETION %
+
+              EAST1,38,10,6,22,88%
+
+              WEST2,30,8,4,18,79%
+
+              SOUTH3,25,5,3,17,92%
+
+              NORTH4,12,2,2,8,84%
+
+              '
+            reads: google_drive.read_file_content[0]
+          - when:
+              fileId: 1ExampleDockPendingLogFileId0000000000000000
+            body: 'Date,Site,Issue Type,PO Number,Resolved
+
+              2026-10-19,NORTH4,PO Number,PO-4501,FALSE
+
+              2026-10-18,EAST1,PO Number,PO-4471,TRUE
+
+              2026-10-18,WEST2,Pallet/Piece Count Discrepancy,PO-4480,TRUE
+
+              '
+            reads: google_drive.read_file_content[1]
+          - when:
+              fileId: 1ExampleDwellTicketLogFileId0000000000000000
+            body: 'Ticket,Date,Facility,# Packages,Client Impact,Carrier Impact,Issue Description,Open/Closed
+
+              DW-104,2026-10-17,EAST1,8,Orchid Beauty,3,Late carrier pickup,Open
+
+              DW-105,2026-10-19,NORTH4,16,Acme Pet,20,Missing ASN,Open
+
+              DW-101,2026-10-18,EAST1,30,Northwind Apparel,12,Missorted to the wrong lane,Closed
+
+              '
+            reads: google_drive.read_file_content[2]
+      google/sheets/v4:
+        operations:
+          sheets.spreadsheets.values.get:
+          - when:
+              spreadsheetId: 1ExampleShipmentContainersFileId00000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Site
+                - Active
+                - Loaded
+                - Staged
+                - Shipped
+                - COMPLETION %
+              - - EAST1
+                - '38'
+                - '10'
+                - '6'
+                - '22'
+                - 88%
+              - - WEST2
+                - '30'
+                - '8'
+                - '4'
+                - '18'
+                - 79%
+              - - SOUTH3
+                - '25'
+                - '5'
+                - '3'
+                - '17'
+                - 92%
+              - - NORTH4
+                - '12'
+                - '2'
+                - '2'
+                - '8'
+                - 84%
+            reads: google_drive.read_file_content[0]
+          - when:
+              spreadsheetId: 1ExampleDockPendingLogFileId0000000000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Date
+                - Site
+                - Issue Type
+                - PO Number
+                - Resolved
+              - - '2026-10-19'
+                - NORTH4
+                - PO Number
+                - PO-4501
+                - 'FALSE'
+              - - '2026-10-18'
+                - EAST1
+                - PO Number
+                - PO-4471
+                - 'TRUE'
+              - - '2026-10-18'
+                - WEST2
+                - Pallet/Piece Count Discrepancy
+                - PO-4480
+                - 'TRUE'
+            reads: google_drive.read_file_content[1]
+          - when:
+              spreadsheetId: 1ExampleDwellTicketLogFileId0000000000000000
+            body:
+              range: Sheet1!A1:Z1000
+              majorDimension: ROWS
+              values:
+              - - Ticket
+                - Date
+                - Facility
+                - '# Packages'
+                - Client Impact
+                - Carrier Impact
+                - Issue Description
+                - Open/Closed
+              - - DW-104
+                - '2026-10-17'
+                - EAST1
+                - '8'
+                - Orchid Beauty
+                - '3'
+                - Late carrier pickup
+                - Open
+              - - DW-105
+                - '2026-10-19'
+                - NORTH4
+                - '16'
+                - Acme Pet
+                - '20'
+                - Missing ASN
+                - Open
+              - - DW-101
+                - '2026-10-18'
+                - EAST1
+                - '30'
+                - Northwind Apparel
+                - '12'
+                - Missorted to the wrong lane
+                - Closed
+            reads: google_drive.read_file_content[2]
+      google/gmail/v1:
+        operations:
+          gmail.users.threads.list:
+          - when_contains:
+              q: dock-activity
+            body:
+              threads:
+              - id: t-911
+                snippet: Your appointment request for PO-4501 is approved.
+                historyId: '9000'
+              - id: t-912
+                snippet: Requesting a dock appointment for PO-4501.
+                historyId: '9001'
+              - id: t-913
+                snippet: Your appointment request for PO-4510 is approved.
+                historyId: '9002'
+              - id: t-914
+                snippet: Requesting a dock appointment for PO-4510.
+                historyId: '9003'
+              resultSizeEstimate: 4
+            reads: gmail.search_threads[0]
+          - body:
+              resultSizeEstimate: 0
+            reads: gmail.search_threads[1]
+          gmail.users.threads.get:
+          - when:
+              id: t-911
+            reads: gmail.search_threads[0]
+            body:
+              id: t-911
+              historyId: '9000'
+              snippet: Your appointment request for PO-4501 is approved.
+              messages:
+              - id: m-t-911
+                threadId: t-911
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Your appointment request for PO-4501 is approved.
+                historyId: '9000'
+                internalDate: '1792423200000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment APPROVED: NORTH4 PO-4501 10/20 07:30'
+                  - name: From
+                    value: scheduler@example.com
+                  - name: Date
+                    value: Mon, 19 Oct 2026 15:20:00 +0000
+                  body:
+                    size: 49
+                    data: WW91ciBhcHBvaW50bWVudCByZXF1ZXN0IGZvciBQTy00NTAxIGlzIGFwcHJvdmVkLg
+          - when:
+              id: t-912
+            reads: gmail.search_threads[0]
+            body:
+              id: t-912
+              historyId: '9001'
+              snippet: Requesting a dock appointment for PO-4501.
+              messages:
+              - id: m-t-912
+                threadId: t-912
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4501.
+                historyId: '9001'
+                internalDate: '1792404600000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: NORTH4 PO-4501 10/20 07:30'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Mon, 19 Oct 2026 10:10:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ1MDEu
+          - when:
+              id: t-913
+            reads: gmail.search_threads[0]
+            body:
+              id: t-913
+              historyId: '9002'
+              snippet: Your appointment request for PO-4510 is approved.
+              messages:
+              - id: m-t-913
+                threadId: t-913
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Your appointment request for PO-4510 is approved.
+                historyId: '9002'
+                internalDate: '1792403100000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment APPROVED: EAST1 PO-4510 10/20 11:00'
+                  - name: From
+                    value: scheduler@example.com
+                  - name: Date
+                    value: Mon, 19 Oct 2026 09:45:00 +0000
+                  body:
+                    size: 49
+                    data: WW91ciBhcHBvaW50bWVudCByZXF1ZXN0IGZvciBQTy00NTEwIGlzIGFwcHJvdmVkLg
+          - when:
+              id: t-914
+            reads: gmail.search_threads[0]
+            body:
+              id: t-914
+              historyId: '9003'
+              snippet: Requesting a dock appointment for PO-4510.
+              messages:
+              - id: m-t-914
+                threadId: t-914
+                labelIds:
+                - INBOX
+                - Label_dock-activity
+                snippet: Requesting a dock appointment for PO-4510.
+                historyId: '9003'
+                internalDate: '1792396800000'
+                sizeEstimate: 512
+                payload:
+                  partId: ''
+                  mimeType: text/plain
+                  filename: ''
+                  headers:
+                  - name: Subject
+                    value: 'Dock appointment REQUESTED: EAST1 PO-4510 10/20 11:00'
+                  - name: From
+                    value: carrier-ops@example.com
+                  - name: Date
+                    value: Mon, 19 Oct 2026 08:00:00 +0000
+                  body:
+                    size: 42
+                    data: UmVxdWVzdGluZyBhIGRvY2sgYXBwb2ludG1lbnQgZm9yIFBPLTQ1MTAu

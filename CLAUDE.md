@@ -64,7 +64,12 @@ comes from keeping them clean.
   kinds and gates is the layered `decider` setting: `rules` (built-in, no
   call), or the `clef` / `jev` decision models through one Workers AI
   client (`system1/decision_model.py`), each with thresholds fitted on the
-  dev skills and frozen before a held-out run. See
+  dev skills and frozen before a held-out run. Steps still below 0.7 after
+  that go to Haiku in one schema-locked call (`system1/tiebreak.py`,
+  layered `tiebreak` setting, default `none` because it did not beat
+  rules-only fidelity). It bills through the
+  compile's own lane via `structured_call` in the inference helper. Don't
+  give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
 
 **When you edit this layer:** you are changing how the agent
@@ -598,6 +603,31 @@ server tool it did not ask for, and stops when one request bills more than
 versions without a measured run. The ceiling is checked on the response,
 so it stops the next request, not the one that crossed it.
 
+### Fidelity for `--backend api` pipelines fakes the vendor, from its spec
+
+`rote bench --fidelity` runs an api pipeline against a local fake of each
+vendor API (`rote.vendor_specs.fake`), built from the vendor's spec and
+answered from the case's `http:` fixtures (`rote.bench.http_fixtures`).
+Things that will bite if you touch it:
+
+- **Routing is a `sitecustomize`** (`rote/vendor_specs/intercept/`), put on
+  the pipeline process's `PYTHONPATH`. It patches httpx, requests,
+  httplib2, urllib and `google.auth.default`, rewrites the faked hosts to
+  the fake, and BLOCKS every other host of a vendor in play
+  (`ROTE_HTTP_FIXTURE_BLOCK`), so a bench run cannot reach a real API. It
+  must stay standard-library-only at module level: it runs in the app's
+  environment, not rote's.
+- **A fixture is held to the spec at load** (`rote.vendor_specs.fixtures.
+  validate`): a field the response schema lacks is an error, so a fixture
+  can never teach a pipeline a field the real API does not return.
+- **`reads: <server>.<tool>[i]` is what makes API and MCP reads
+  comparable.** Without it an API read keys by operation and counts as
+  unexpected against the skill's reference.
+- **Vendor libraries are installed per requirement set** into
+  `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
+  a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
+  import is an error, never a guessed package name.
+
 ### Vendor requests are checked against the vendor's spec, in code
 
 On `--backend api`, verification reads every request an external_call
@@ -745,9 +775,16 @@ loops on every lane, and an empty value omits it (the temperature knob's
 shape). On the `claude-cli` lane it is `claude -p --effort`, added by one
 function (`_cli_effort_flags`) to both the judge and the agent-loop
 command lines. The CLI does not fail on an unknown level: it warns on
-stderr and runs at its default, exit 0, so `_refuse_ignored_effort`
-reads that warning and raises; without it the knob is a silent no-op on
-a subscription while the SDK lanes 400. The default stays unset on
+stderr and runs at its default, exit 0. So before any paid call the
+helper asks the CLI itself with `claude --effort <level> --version`
+(free, ~50ms, validated before `--version` exits), once per process:
+first with a level nothing accepts, which must draw a warning rote
+recognizes (any line naming effort and saying unknown / invalid /
+unsupported), then with the real level, which must not. Never hardcode
+the level list in the helper; it goes stale. If a CLI release rewords
+the warning past recognition, the self-check fails loudly instead of
+letting every bad level through. Tested against a stub CLI
+(`tests/test_cli_effort_check.py`). The default stays unset on
 data: on 2026-10-20, 8 example judges x 6 inputs, `low` cut output tokens
 15% (sonnet-4-6) and 33% (sonnet-5-5) but changed decisions the default
 made the same way twice, including dropping an ARR stated in the input.

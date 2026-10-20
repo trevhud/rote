@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -679,31 +680,110 @@ def node_effort(node_id: str) -> str | None:
     return DEFAULT_JUDGE_EFFORT
 
 
-def _cli_effort_flags(node_id: str) -> list[str]:
+def _cli_effort_flags(node_id: str, binary: str) -> list[str]:
     """``claude -p`` flags for this node's effort: ``--effort <level>`` or none.
 
     One function for the judge and the agent-loop command lines, because
     their flag blocks are separate copies and the agent-loop copy is the
     one that drifted every time before (see ``_CLI_ISOLATION_FLAGS``).
-    ``claude --help`` (2026-10-20) lists low, medium, high, xhigh, max.
+
+    The CLI does not fail on an unknown level: it warns on stderr and runs
+    at its default, exit 0 (Claude Code 2.1.304), so a bad value would be a
+    silent no-op here while the SDK lanes 400 on it. The level is therefore
+    checked before any call is paid for, by :func:`_check_cli_effort`.
+    The helper never holds its own list of levels, which would go stale;
+    the CLI is asked.
     """
     effort = node_effort(node_id)
-    return [] if effort is None else ["--effort", effort]
+    if effort is None:
+        return []
+    _check_cli_effort(binary, effort, node_id)
+    return ["--effort", effort]
+
+
+#: A level no CLI will ever accept, for :func:`_check_cli_effort`'s self-check.
+_EFFORT_PROBE = "rote-self-check-not-a-level"
+
+#: ``(binary, level)`` pairs already checked in this process.
+_CHECKED_EFFORTS: set[tuple[str, str]] = set()
+
+_EFFORT_WORD = re.compile(r"\beffort\b", re.IGNORECASE)
+_REJECTION_WORD = re.compile(
+    r"\b(unknown|invalid|unsupported|unrecognized|not supported|not a valid|not valid)\b",
+    re.IGNORECASE,
+)
+
+
+def _effort_warning(stderr: str | None) -> str | None:
+    """The CLI's line saying it rejected an effort level, or None.
+
+    Matched by meaning, not by exact text: any line naming effort and
+    saying unknown, invalid, unsupported (and so on). Today's wording is
+    "Warning: Unknown --effort value 'x' — ignoring it and using the
+    default effort."
+    """
+    for line in (stderr or "").splitlines():
+        if _EFFORT_WORD.search(line) and _REJECTION_WORD.search(line):
+            return line.strip()[:300]
+    return None
+
+
+def _cli_effort_stderr(binary: str, level: str) -> str:
+    """stderr of ``claude --effort <level> --version``: no prompt, no cost.
+
+    ``--version`` exits before any model call, measured at about 50ms,
+    and the CLI validates ``--effort`` first, so this reports on a level
+    without spending a token.
+    """
+    try:
+        completed = subprocess.run(
+            [binary, "--effort", level, "--version"],
+            capture_output=True,
+            text=True,
+            env=build_subscription_env(),
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"`{binary} --effort {level} --version` did not exit in 30s") from None
+    return completed.stderr or ""
+
+
+def _check_cli_effort(binary: str, level: str, node_id: str) -> None:
+    """Fail before a paid call when the CLI would ignore ``level``.
+
+    Two checks, once per process each. The self-check gives the CLI a level
+    nothing accepts and requires a recognizable rejection: if a CLI release
+    changes its wording past :func:`_effort_warning`, every effort check
+    would silently pass, so that case fails loudly instead. Then the real
+    level, which must draw no rejection.
+    """
+    if (binary, _EFFORT_PROBE) not in _CHECKED_EFFORTS:
+        stderr = _cli_effort_stderr(binary, _EFFORT_PROBE)
+        if _effort_warning(stderr) is None:
+            raise RuntimeError(
+                f"claude -p for {node_id}: cannot verify the effort level. Given an "
+                f"invalid --effort, this claude CLI printed no warning rote recognizes "
+                f"(stderr: {stderr.strip()[:200]!r}), so an unsupported level would be "
+                "ignored silently. Update rote, or unset ROTE_EFFORT_<NODE_ID> / "
+                "ROTE_JUDGE_EFFORT to run at the CLI's default."
+            )
+        _CHECKED_EFFORTS.add((binary, _EFFORT_PROBE))
+    if (binary, level) not in _CHECKED_EFFORTS:
+        warning = _effort_warning(_cli_effort_stderr(binary, level))
+        if warning is not None:
+            raise RuntimeError(f"claude -p for {node_id}: {warning}")
+        _CHECKED_EFFORTS.add((binary, level))
 
 
 def _refuse_ignored_effort(node_id: str, stderr: str | None) -> None:
-    """Raise when ``claude -p`` ignored the ``--effort`` it was given.
+    """Raise when a ``claude -p`` run says it ignored its ``--effort``.
 
-    The CLI does not fail on an unknown level: it warns on stderr
-    ("Unknown --effort value 'x' — ignoring it and using the default
-    effort", Claude Code 2.1.304) and runs at its default, so the knob would
-    be a silent no-op on the subscription lane while the SDK lanes 400 on
-    the same value. Reading the warning keeps both lanes loud without
-    copying the CLI's list of levels here.
+    The pre-check in :func:`_check_cli_effort` should make this
+    unreachable; it stays because the run's own stderr is the last word.
     """
-    for line in (stderr or "").splitlines():
-        if "Unknown --effort value" in line:
-            raise RuntimeError(f"claude -p for {node_id}: {line.strip()[:300]}")
+    warning = _effort_warning(stderr)
+    if warning is not None:
+        raise RuntimeError(f"claude -p for {node_id}: {warning}")
 
 
 # ───────── transport: vendor SDK ─────────
@@ -740,6 +820,7 @@ def _call_anthropic(
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
     max_tokens: int,
+    sdk_client: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """One schema-locked judge call through ``output_config.format``.
 
@@ -750,12 +831,15 @@ def _call_anthropic(
     """
     import anthropic
 
-    endpoint, token = _sdk_target(provider, "anthropic", base_url)
-    client = (
-        anthropic.Anthropic(base_url=endpoint)
-        if token is None
-        else anthropic.Anthropic(base_url=endpoint, auth_token=token)
-    )
+    if sdk_client is not None:
+        client = sdk_client
+    else:
+        endpoint, token = _sdk_target(provider, "anthropic", base_url)
+        client = (
+            anthropic.Anthropic(base_url=endpoint)
+            if token is None
+            else anthropic.Anthropic(base_url=endpoint, auth_token=token)
+        )
     request_schema = structured_output_schema(output_schema, node_id=node_id)
     effort = node_effort(node_id)
     # Any: the SDK types this as a TypedDict, which a dict built at run
@@ -863,7 +947,7 @@ def _call_claude_cli(
         # A judge reasons over its prompt and answers; it must not read
         # files, run commands, or see anything of the user's setup.
         *_CLI_ISOLATION_FLAGS,
-        *_cli_effort_flags(node_id),
+        *_cli_effort_flags(node_id, binary),
     ]
     try:
         completed = subprocess.run(
@@ -929,6 +1013,44 @@ def call_judge(
     judge regardless of its schema.
     """
     provider = select_provider(node_id, client, base_url=base_url)
+    payload, rows = structured_call(
+        node_id=node_id,
+        provider=provider,
+        client=client,
+        model=model,
+        prompt=prompt,
+        output_schema=output_schema,
+        base_url=base_url,
+        sampling=sampling,
+        max_tokens=max_tokens,
+    )
+    for row_model, row_usage in rows:
+        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+    return payload
+
+
+def structured_call(
+    *,
+    node_id: str,
+    provider: str,
+    client: str,
+    model: str,
+    prompt: str,
+    output_schema: dict[str, Any],
+    base_url: str | None = None,
+    sampling: dict[str, Any] | None = None,
+    max_tokens: int = 4096,
+    sdk_client: Any = None,
+) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+    """One schema-locked call on a provider already chosen: ``(payload, usage rows)``.
+
+    :func:`call_judge` is this plus provider selection and the usage log.
+    Each usage row is ``(concrete model, the four token buckets)``, and a
+    ``claude-cli`` row also carries the CLI's own ``cost_usd``.
+    ``sdk_client`` is an Anthropic client the caller already built (rote's
+    compiler passes its api driver's, so a call bills and routes exactly
+    like the compile); without it one is built for ``provider``.
+    """
     sampling = dict(sampling or {})
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
 
@@ -950,6 +1072,7 @@ def call_judge(
             output_schema=output_schema,
             sampling=sampling,
             max_tokens=max_tokens,
+            sdk_client=sdk_client,
         )
     elif client == "openai":
         payload, usage = _call_openai(
@@ -965,10 +1088,7 @@ def call_judge(
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")
     if provider != "claude-cli":
         rows = [(model, usage)]
-
-    for row_model, row_usage in rows:
-        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
-    return payload
+    return payload, rows
 
 
 # ───────── agent loops ─────────
@@ -1190,7 +1310,7 @@ def _run_agent_via_cli(
         "--system-prompt",
         _AGENT_SYSTEM_PROMPT,
         *_CLI_ISOLATION_FLAGS,
-        *_cli_effort_flags(node_id),
+        *_cli_effort_flags(node_id, binary),
         "--max-turns",
         str(max_iterations),
     ]

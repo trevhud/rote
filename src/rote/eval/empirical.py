@@ -485,6 +485,7 @@ def run_pipeline_trial(
     timeout_seconds: float = 600.0,
     park_watch: ParkWatchFactory | None = None,
     extra_env: dict[str, str] | None = None,
+    base_env: Mapping[str, str] | None = None,
 ) -> MeasuredRun:
     """Run the emitted pipeline once and measure it.
 
@@ -499,6 +500,9 @@ def run_pipeline_trial(
     ``extra_env`` is laid over the inherited environment for this run only
     (the compile bench points ``ROTE_MCP_<SERVER>_URL`` at fixture servers
     per case, from concurrent threads, so it cannot touch ``os.environ``).
+    ``base_env`` replaces the inherited environment (the fidelity bench
+    passes an allowlist, so a pipeline never sees the user's vendor
+    credentials).
     """
     from rote.mcp.parked import DbosAuthChannel, app_parks_on_auth, wait_for_exit
 
@@ -521,7 +525,7 @@ def run_pipeline_trial(
         # environment: emitted judges construct anthropic.Anthropic() /
         # openai.OpenAI() directly and NEED their API keys. Only the
         # `claude -p` spawn scrubs keys (subscription billing).
-        env = os.environ.copy()
+        env = dict(os.environ if base_env is None else base_env)
         env.update(extra_env or {})
         env["ROTE_USAGE_LOG"] = str(usage_log)
         args = [python, str(main_py), json.dumps(input_payload)]

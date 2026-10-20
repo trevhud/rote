@@ -9,6 +9,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`--tiebreak haiku` (opt-in): Claude Haiku decides only the steps
+  System-1 is unsure of.** One schema-locked `claude-haiku-5-5` call a
+  compile, billed like the compile (subscription under the claude driver,
+  the api driver's own client under `--agent api`), about $0.001 and 6 s.
+  On the held-out skills it lifts kind accuracy from 0.49 to 0.68 with the
+  rules, 0.66 to 0.74 with Clef and 0.67 to 0.72 with Jev. It is off by
+  default: in a cached-API fidelity bench (3 compiles per cell) it scored
+  0.909 against the rules' 0.915 on expense-audit and 0.855 against 0.858 on
+  ops-report, within the spread but not at least the rules' level.
+  `--tiebreak haiku` (or `tiebreak: haiku`, `ROTE_TIEBREAK`) turns it on. With no lane
+  the compile fails and says so. `rote bench`'s `cost$` now includes
+  System-1's decision calls.
+
 ### Changed
 
 - **System-1 is the default `rote compile` path.** rote decides the pipeline
@@ -35,6 +50,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   output tokens but changed decisions. Works on every runtime.
 
 ### Fixed
+
+- **An unknown effort level fails before a subscription call is paid for.**
+  `claude -p` ignores an unknown `--effort` with only a warning, so rote now
+  asks the CLI with a free `claude --effort <level> --version` first, and
+  self-checks once per process that the CLI still warns in a way rote
+  recognizes.
 
 - **`ROTE_TEMPERATURE_<NODE_ID>` reaches judges on DBOS-TS and Inngest.**
   Those runtimes pass each judge a narrow env object, which left the

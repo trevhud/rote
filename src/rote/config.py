@@ -67,6 +67,12 @@ def _decider_choices() -> tuple[str, ...]:
     return DECIDERS
 
 
+def _tiebreak_choices() -> tuple[str, ...]:
+    from rote.compiler.system1 import TIEBREAKS
+
+    return TIEBREAKS
+
+
 @dataclass(frozen=True)
 class ConfigKey:
     """One configurable default: its name, env override, and validity."""
@@ -75,7 +81,7 @@ class ConfigKey:
     env: str
     description: str
     choices: tuple[str, ...] | None = None
-    # "runtime" | "agent" | "inference" | "effort" | "decider" — resolved on demand
+    # "runtime" | "agent" | "inference" | "effort" | "decider" | "tiebreak" — resolved on demand
     lazy_choices: str | None = None
 
     def valid_choices(self) -> tuple[str, ...] | None:
@@ -89,6 +95,8 @@ class ConfigKey:
             return _effort_choices()
         if self.lazy_choices == "decider":
             return _decider_choices()
+        if self.lazy_choices == "tiebreak":
+            return _tiebreak_choices()
         return self.choices
 
 
@@ -133,6 +141,15 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
             "(Workers AI on your Cloudflare account); unset = rules"
         ),
         lazy_choices="decider",
+    ),
+    ConfigKey(
+        name="tiebreak",
+        env="ROTE_TIEBREAK",
+        description=(
+            "who decides the steps System-1 is still unsure of: haiku (one small call, "
+            "billed like the compile) or none; unset = none"
+        ),
+        lazy_choices="tiebreak",
     ),
     ConfigKey(
         name="inference",

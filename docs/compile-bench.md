@@ -180,6 +180,12 @@ with Jev's thresholds fitted on dev and frozen before the held-out run:
 The method and the fitted thresholds are in
 [`docs/design/system1-compile.md`](design/system1-compile.md#--decider-jev).
 
+With the Haiku tie-break on (`--tiebreak haiku`; off by default) for the steps still unsure after
+the decider, three trials each, kind dev / held-out: rules 0.63 / 0.68,
+clef 0.64 / 0.74, jev 0.67 / 0.72, for about $0.001 a compile. Gates do
+not change. The table and method are in
+[the design doc](design/system1-compile.md#the-haiku-tie-break---tiebreak-haiku-opt-in), which also has the fidelity bench that kept it off by default.
+
 ## What it reports
 
 Every job is checked the same way, whatever exit path its compile took:
@@ -204,7 +210,7 @@ own offline checks on it.
 | `citeE`, `assum`, `OQ` | citations that are not in the skill, `# rote: assumption:` markers, Open questions entries in compile-report.md. rote renders that report, so `OQ` is distinct assumptions plus stubs. Before that change the agent wrote it, so `OQ` in older results (the baseline) counts the agent's entries |
 | `ok` | rote's verification verdict on the deliverable |
 | `exit`, `rep`, `turns` | compile exit code, repair rounds, agent turns |
-| `cost$`, `inTok`, `outTok` | `total_cost_usd` and tokens. `inTok` includes cache writes and reads, which are nearly all of it |
+| `cost$`, `inTok`, `outTok` | `total_cost_usd` plus System-1's own model calls (the decider and the tie-break, from `system1/decisions.json`), and the agent's tokens. `inTok` includes cache writes and reads, which are nearly all of it. `results.json` keeps the two parts as `driver_cost_usd` and `decisions_cost_usd` (`null` when a call could not be priced, and then `cost$` leaves it out) |
 | `wall_s` | wall time of the compile subprocess |
 | `dbos`, `cf`, `tsc` | does the IR emit on dbos and cloudflare, does the Cloudflare app type-check |
 
@@ -375,6 +381,47 @@ repo's own examples, which are the only skills fidelity runs on. Running
 it on an untrusted skill's compile needs that sandbox around both the
 pipeline run and the replay first.
 
+### `--backend api` pipelines
+
+An api pipeline calls the vendor directly, so the bench fakes the vendor
+instead of the MCP server. A case's `http:` section holds one fixture set
+per vendor API version (`google/gmail/v1`), in the shareable format of
+`rote.vendor_specs.fixtures`. The bench:
+
+1. reads the backend from `backend.json` beside the compiled IR and emits
+   for it;
+2. builds a fake of each API from the vendor's own spec
+   (`rote.vendor_specs.fake`). The fake rejects what the real API would
+   (an unknown operation, a missing credential, an undeclared, mistyped or
+   missing required parameter) and answers from the fixtures. With no
+   matching fixture it returns the smallest spec-shaped answer: `{}` for an
+   empty list, 404 for a file;
+3. routes the pipeline process's requests to the fake through a
+   `sitecustomize` on its `PYTHONPATH` (`rote.vendor_specs.intercept`:
+   httpx, requests, httplib2, urllib and `google.auth.default`). Any other
+   host of a vendor in play is blocked, so a fidelity run never reaches a
+   real API. Name resolution is guarded too: a client the intercept does
+   not patch (`http.client`, `httpcore` or `urllib3` used directly,
+   aiohttp) is refused when it resolves a vendor host, `gethostbyname` of
+   one is refused, and so is any non-loopback IP literal (the fake listens
+   on loopback; judges reach their models by name). This guards
+   cooperative clients and is not a sandbox: a raw socket connected to an
+   address the code already holds is not seen. Real isolation needs
+   egress filtering. Gmail and every other Google API are also answered on
+   `www.googleapis.com` at their own paths, as the request check accepts;
+4. runs the pipeline with an allowlisted environment
+   (`rote.bench.fidelity.bench_environment`): the process essentials, the
+   judges' inference credentials, and `DBOS_*` / `ROTE_*` / `LC_*`. A
+   vendor credential the user has exported never reaches the run, even
+   one read under a name built at run time. The fixture credential the
+   bench sets for each name the modules read is the only one there;
+5. installs the app's vendor libraries (`google-api-python-client`, ...)
+   into a cached target directory, since they are not rote's own
+   dependencies;
+6. scores the fake's request log like the MCP call log. A fixture's
+   `reads: <server>.<tool>[i]` makes an API read and the skill's tool read
+   the same read.
+
 ### What fidelity does and does not measure
 
 Read the number with these limits in mind:
@@ -393,6 +440,12 @@ Read the number with these limits in mind:
   individual dwell, sorter and container rows behind a summary are not
   compared, so a pipeline can get a row-level detail wrong and keep a
   correct total.
+- **An api pipeline's writes are not scored.** The fake never reads a
+  request body, and a write is keyed by its operation and its query and
+  path parameters, so it can never equal the skill's MCP write arguments.
+  An api pipeline that writes scores 0 on side effects whether the write
+  is right or wrong. ops-report makes no writes, so its api scores are
+  unaffected; a skill that writes needs body-level write fixtures first.
 - **expense-audit exercises no reads or side effects.** It uses no MCP,
   and the report file is not compared. Its score is outputs, outcome and
   gate fit only.
