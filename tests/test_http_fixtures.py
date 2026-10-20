@@ -812,3 +812,29 @@ def test_the_fake_answers_a_google_api_on_the_shared_host(tmp_path: Path, store:
         "gmail.users.threads.list"
     ]
     assert "www.googleapis.com" in api.hosts
+
+
+def test_a_host_is_compared_in_its_normal_form(tmp_path: Path, store: SpecStore) -> None:
+    """Case and a trailing root dot do not hide a vendor host; a bracketed IPv6
+    loopback is loopback (the fake can listen there)."""
+    api = _api(store, tmp_path / "log.jsonl")
+    out = _intercepted(
+        api,
+        """
+import socket
+try:
+    socket.getaddrinfo("GMAIL.googleapis.com.", 443)
+    blocked = None
+except Exception as e:
+    blocked = str(e)
+from sitecustomize import _refusal
+out = {
+    "blocked": blocked,
+    "loopback": _refusal("[::1]"),
+    "ipv6": _refusal("[2001:db8::1]"),
+}
+""",
+    )
+    assert "the fidelity bench blocks gmail.googleapis.com" in (out["blocked"] or ""), out
+    assert out["loopback"] is None
+    assert "blocks the IP address 2001:db8::1" in (out["ipv6"] or "")
