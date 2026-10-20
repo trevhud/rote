@@ -195,6 +195,7 @@ def live_check(
     *,
     confirm: Confirm,
     allow_hosts: frozenset[str] = frozenset(),
+    allow_credentials: frozenset[str] = frozenset(),
 ) -> LiveReport:
     """Send each entry vendor read once to the real API, built statically; compare shapes.
 
@@ -264,7 +265,14 @@ def live_check(
             check = next(c for c in checks if c.path == rel and c.line == site.line)
             spec, op = ops[check.operation or ""]
             try:
-                request, credential = _build(site, spec, op, kwargs, env)
+                request, credential = _build(
+                    site,
+                    spec,
+                    op,
+                    kwargs,
+                    env,
+                    frozenset((h, c) for h in allow_hosts for c in allow_credentials),
+                )
             except _Unbuildable as e:
                 report.unchecked[key] = str(e)
                 continue
@@ -287,31 +295,55 @@ def live_check(
     return report
 
 
+def registrable_domain(host: str) -> str:
+    """``slack.com`` for ``api.slack.com``: the last two labels, three under a
+    two-letter country code's ``co``/``com``/``org``/``net``/``ac``/``gov``/``edu``
+    (``bbc.co.uk``). An IP literal or a one-label host is itself."""
+    labels = host.lower().rstrip(".").split(".")
+    if len(labels) < 2 or all(part.isdigit() for part in labels) or ":" in host:
+        return host.lower()
+    second = {"co", "com", "org", "net", "ac", "gov", "edu"}
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in second:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
 def _refuse_unvouched_hosts(
-    used: list[tuple[ApiSpec, Operation]], fetched: set[str] | None, allow_hosts: frozenset[str]
+    used: list[tuple[ApiSpec, Operation]], fetched: set[str], allow_hosts: frozenset[str]
 ) -> None:
-    """A docs spec is the agent's claim: its host is trusted only when every page it
-    cites was fetched in the compile (rote's own record), or the user allows it."""
+    """A docs spec is the agent's claim, and so is the host it declares. That host
+    is called only when it equals, or shares the registrable domain of, a page the
+    spec cites that rote itself recorded fetching, or when the user names it.
+
+    "Every cited page was fetched" vouches for nothing: any fetched page would
+    then vouch for any host (review6 reproduced a python.org page vouching for
+    127.0.0.1)."""
     for spec, op in used:
         if spec.source != "docs":
             continue
         host = (host_of(op.url_template) or "").split(":")[0]
+        if host in allow_hosts:
+            continue
         pages = [s for s in spec.sources if s != "skill"]
-        vouched = (
-            bool(pages)
-            and fetched is not None
-            and all(api_docs.normalize_url(p) in fetched for p in pages)
+        page_hosts = {
+            h.split(":")[0]
+            for p in pages
+            if api_docs.normalize_url(p) in fetched and (h := host_of(p))
+        }
+        if host in page_hosts or registrable_domain(host) in {
+            registrable_domain(h) for h in page_hosts
+        }:
+            continue
+        if not pages:
+            why = "cites only the skill"
+        elif not page_hosts:
+            why = "cites pages this compile has no record of fetching"
+        else:
+            why = f"cites fetched pages on {', '.join(sorted(page_hosts))}, another domain"
+        raise LiveCheckRefused(
+            f"{host} comes from the compile's own docs spec ({spec.key}), which {why}: "
+            f"pass --allow-host {host} to call it anyway"
         )
-        if not vouched and host not in allow_hosts:
-            why = (
-                "cites only the skill"
-                if not pages
-                else "cites pages this compile has no record of fetching"
-            )
-            raise LiveCheckRefused(
-                f"{host} comes from the compile's own docs spec ({spec.key}), which {why}: "
-                f"pass --allow-host {host} to call it anyway"
-            )
 
 
 class CredentialRefused(LiveCheckRefused):
@@ -319,7 +351,12 @@ class CredentialRefused(LiveCheckRefused):
 
 
 def _build(
-    site: CallSite, spec: ApiSpec, op: Operation, kwargs: dict[str, Any], env: dict[str, str]
+    site: CallSite,
+    spec: ApiSpec,
+    op: Operation,
+    kwargs: dict[str, Any],
+    env: dict[str, str],
+    allowed: frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[LiveRequest, str | None]:
     """The exact GET/HEAD ``site`` makes, and the credential it carries.
 
@@ -345,8 +382,18 @@ def _build(
         # The check sends Google's token itself; the code's own is not used.
         headers_in = {k: v for k, v in headers_in.items() if k.lower() != "authorization"}
     used = _check_credentials(site.url, site.params, headers_in, spec)
+    params_in = dict(site.params)
+    if used is not None and spec.auth is not None:
+        host = (host_of(site.url) or "").split(":")[0]
+        if (host, spec.auth.env) not in allowed:
+            # A docs spec's credential is the agent's choice of secret: sent
+            # only when the user names both the host and the variable.
+            target = headers_in if spec.auth.location == "header" else params_in
+            for name in [n for n in target if n.lower() == spec.auth.name.lower()]:
+                del target[name]
+            used = None
     url = _fill(site.url, kwargs, env, path=True)
-    query = {name: _resolve(value, kwargs, env) for name, value in site.params.items()}
+    query = {name: _resolve(value, kwargs, env) for name, value in params_in.items()}
     headers = {name: str(_resolve(value, kwargs, env)) for name, value in headers_in.items()}
     _refuse_method_override(headers)
     credential = used

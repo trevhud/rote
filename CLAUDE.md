@@ -650,14 +650,19 @@ Things that will bite if you touch it:
   "not live-checked", never sent. A docs operation named like a write is
   refused whatever its method. Three more rules, from review6's exfil
   reproducer (an agent-written docs param plus `os.environ["AWS_SECRET_..."]`
-  sent the secret): only the credential the spec declares is sent (a docs
-  spec's `auth`, Google's OAuth token, which the check supplies itself),
-  and any other `{$env:...}` refuses the whole check; every request is
-  built first and the plan (host, operation, credential) is confirmed
-  (`--yes`, or a TTY answer; neither exits 2 having sent nothing); and a
-  docs-spec host is called only when every page it cites is in the
-  compile's own `web-research.json` (written by the Compiler, never the
-  agent), or `--allow-host` names it. The report holds the operation's path
+  sent the secret): trust comes from the vendor or the user, never the
+  agent. A credential is attached only from a vendor-published spec
+  (Google's OAuth token, which the check supplies itself); a docs spec's
+  `auth` is the agent's choice of secret, so it is withheld unless the
+  user passes both `--allow-host <host>` and `--allow-credential <ENV>`
+  (`--yes` never covers either), and any other `{$env:...}` refuses the
+  whole check. A docs-spec host is called at all only when it equals, or
+  shares the registrable domain of, a cited page in `web-research.json`
+  (rote's own record, written by the Compiler over any file the agent
+  wrote), or `--allow-host` names it; "every cited page was fetched"
+  vouches for nothing. Every request is built first and the plan is
+  confirmed (`--yes`, or a TTY answer; neither exits 2 having sent
+  nothing). The report holds the operation's path
   template and schema paths (a map's keys and any non-field-like live key
   are `{key}`), and an error is its exception type and HTTP status, never
   its text (a URL in it carries query credentials). For a docs spec, extra

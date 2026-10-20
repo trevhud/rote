@@ -232,7 +232,8 @@ this compile targets `--backend api`. Now you are expected to write
    not show. `auth` names the one credential the requests carry, as the
    docs describe it: the environment variable your code reads, and the
    header or query parameter it goes in. Read no other environment
-   variable into a request: `rote run --live-check` sends only that one.
+   variable into a request: the live check refuses any other, and sends
+   even this one only when the user names it on the command line.
 
    **Internal or undocumented APIs.** A company's own service often has no
    public reference. If the skill or its references state the endpoint,

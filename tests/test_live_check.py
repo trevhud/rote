@@ -180,6 +180,7 @@ def _check(tmp_path: Path, root: Path, **kwargs: Any) -> Any:
         env=kwargs.pop("env", {}),
         confirm=kwargs.pop("confirm", _yes),
         allow_hosts=kwargs.pop("allow_hosts", LOCAL),
+        allow_credentials=kwargs.pop("allow_credentials", frozenset()),
         **kwargs,
     )
 
@@ -414,9 +415,15 @@ def test_the_users_credential_is_sent_from_the_environment_the_code_names(
     """
     root = _compiled(tmp_path, base, module=module)
     _declare_auth(root, "ITEMS_TOKEN", "header", "Authorization")
-    report = _check(tmp_path, root, env={"ITEMS_TOKEN": "tok-123"})
+    # By default a docs spec's credential is not sent, --yes or not.
+    _check(tmp_path, root, env={"ITEMS_TOKEN": "tok-123"})
     assert state.requests == [("GET", "/v1/items?q=x")]
-    assert state.headers[0]["Authorization"] == "Bearer tok-123"
+    assert "Authorization" not in state.headers[0]
+    # Only with the host and the variable both named by the user.
+    report = _check(
+        tmp_path, root, env={"ITEMS_TOKEN": "tok-123"}, allow_credentials=frozenset({"ITEMS_TOKEN"})
+    )
+    assert state.headers[1]["Authorization"] == "Bearer tok-123"
     assert "tok-123" not in json.dumps(report.as_dict())
 
 
@@ -721,45 +728,199 @@ def test_a_declared_credential_that_is_not_set_is_not_sent(
     """
     root = _compiled(tmp_path, base, module=module)
     _declare_auth(root, "ITEMS_TOKEN", "header", "Authorization")
-    report = _check(tmp_path, root, env={})
+    report = _check(tmp_path, root, env={}, allow_credentials=frozenset({"ITEMS_TOKEN"}))
     assert state.requests == []
     assert "ITEMS_TOKEN" in next(iter(report.unchecked.values()))
 
 
-def test_a_docs_host_the_compile_did_not_fetch_is_refused(
+def _docs_at(root: Path, url: str, sources: list[str]) -> None:
+    spec_path = root / "vendor_specs" / "local.items.v1.json"
+    raw = json.loads(spec_path.read_text())
+    raw["sources"] = sources
+    raw["operations"][0]["url_template"] = url
+    spec_path.write_text(json.dumps(raw))
+    module = root / "extracted" / "items.py"
+    text = module.read_text()
+    module.write_text(text.replace(text.split('BASE = "', 1)[1].split('"', 1)[0], url))
+
+
+@pytest.mark.parametrize(
+    ("api_url", "sources", "fetched", "allow", "refusal"),
+    [
+        # Skill-only, with a research record present: still the agent's word.
+        (
+            "https://api.items.example/v1/items",
+            ["skill"],
+            ["https://docs.items.example/a"],
+            (),
+            "cites only the skill",
+        ),
+        # Cited, but rote has no record of fetching it.
+        (
+            "https://api.items.example/v1/items",
+            ["https://docs.items.example/a"],
+            [],
+            (),
+            "no record of fetching",
+        ),
+        # review6's reproducer: an unrelated fetched page vouched for any host.
+        (
+            "https://api.items.example/v1/items",
+            ["https://docs.python.org/3/library/json.html"],
+            ["https://docs.python.org/3/library/json.html"],
+            (),
+            "another domain",
+        ),
+        # A different registrable domain is a different vendor (docs.slack.dev, slack.com).
+        (
+            "https://slack.com/api/x",
+            ["https://docs.slack.dev/x"],
+            ["https://docs.slack.dev/x"],
+            (),
+            "another domain",
+        ),
+        # Vouched: the same host, or the same registrable domain.
+        (
+            "https://api.items.example/v1/items",
+            ["https://api.items.example/docs"],
+            ["https://api.items.example/docs"],
+            (),
+            None,
+        ),
+        (
+            "https://api.items.example/v1/items",
+            ["https://docs.items.example/a"],
+            ["https://docs.items.example/a"],
+            (),
+            None,
+        ),
+        (
+            "https://api.bbc.co.uk/v1/items",
+            ["https://docs.bbc.co.uk/a"],
+            ["https://docs.bbc.co.uk/a"],
+            (),
+            None,
+        ),
+        # Two vendors under one country-code second level are not one domain.
+        (
+            "https://api.bbc.co.uk/v1/items",
+            ["https://docs.other.co.uk/a"],
+            ["https://docs.other.co.uk/a"],
+            (),
+            "another domain",
+        ),
+        # The user names the host: allowed whatever vouches.
+        ("https://api.items.example/v1/items", ["skill"], [], ("api.items.example",), None),
+    ],
+)
+def test_a_docs_host_is_called_only_when_rote_or_the_user_vouches_for_it(
+    tmp_path: Path,
+    api: tuple[_Api, str],
+    api_url: str,
+    sources: list[str],
+    fetched: list[str],
+    allow: tuple[str, ...],
+    refusal: str | None,
+) -> None:
+    from rote.compiler import api_docs
+
+    _, base = api
+    root = _compiled(tmp_path, base)
+    _docs_at(root, api_url, sources)
+    api_docs.write_research(root, api_docs.WebResearch(fetched=fetched))
+    sent: list[LiveRequest] = []
+
+    def capture(request: LiveRequest) -> Any:
+        sent.append(request)
+        return 200, "application/json", b"{}"
+
+    if refusal is None:
+        _check(tmp_path, root, allow_hosts=frozenset(allow), send=capture)
+        assert [r.url.split("?")[0] for r in sent] == [api_url]
+    else:
+        with pytest.raises(LiveCheckRefused, match=refusal):
+            _check(tmp_path, root, allow_hosts=frozenset(allow), send=capture)
+        assert sent == []
+
+
+def test_an_agent_declared_secret_is_never_sent_unless_the_user_names_it(
     tmp_path: Path, api: tuple[_Api, str]
 ) -> None:
-    """The docs spec is the agent's claim; its host needs the compile's own fetch
-    record, or the user's --allow-host."""
+    """review6's second reproducer: the docs spec declares
+    `auth: {env: AWS_SECRET_ACCESS_KEY, location: query, name: k}`, an
+    unrelated page is recorded as fetched, and --yes sent the secret."""
     from rote.compiler import api_docs
 
     state, base = api
-    root = _compiled(tmp_path, base)
-    # sources: ["skill"] only.
-    with pytest.raises(LiveCheckRefused, match="cites only the skill: pass --allow-host 127.0.0.1"):
-        _check(tmp_path, root, allow_hosts=frozenset())
+    root = _compiled(tmp_path, base, module=_EXFIL)
+    _declare_auth(root, "AWS_SECRET_ACCESS_KEY", "query", "k")
     spec_path = root / "vendor_specs" / "local.items.v1.json"
     raw = json.loads(spec_path.read_text())
-    raw["sources"] = ["https://docs.items.example/v1/items"]
+    raw["sources"] = ["https://docs.python.org/3/library/json.html"]
     spec_path.write_text(json.dumps(raw))
-    with pytest.raises(LiveCheckRefused, match="no record of fetching"):
-        _check(tmp_path, root, allow_hosts=frozenset())
-    # Every cited page must be in the record, not just one.
-    raw["sources"] = ["https://docs.items.example/v1/items", "https://docs.items.example/other"]
-    spec_path.write_text(json.dumps(raw))
-    api_docs.write_research(
-        root, api_docs.WebResearch(fetched=["https://docs.items.example/v1/items"])
-    )
-    with pytest.raises(LiveCheckRefused, match="no record of fetching"):
-        _check(tmp_path, root, allow_hosts=frozenset())
-    raw["sources"] = ["https://docs.items.example/v1/items"]
-    spec_path.write_text(json.dumps(raw))
-    # rote's own record of the compile's fetches vouches for it.
-    api_docs.write_research(
-        root, api_docs.WebResearch(fetched=["https://docs.items.example/v1/items"])
-    )
-    _check(tmp_path, root, allow_hosts=frozenset())
+    api_docs.write_research(root, api_docs.WebResearch(fetched=raw["sources"]))
+    env = {"AWS_SECRET_ACCESS_KEY": "AKIA-SECRET"}
+    # Not vouched: refused outright.
+    with pytest.raises(LiveCheckRefused, match="another domain"):
+        _check(tmp_path, root, env=env, allow_hosts=frozenset())
+    # The host allowed and --yes: sent, without the credential.
+    _check(tmp_path, root, env=env)
     assert state.requests == [("GET", "/v1/items?q=x")]
+    # Only naming the variable too attaches it: the user's choice, not the agent's.
+    _check(tmp_path, root, env=env, allow_credentials=frozenset({"AWS_SECRET_ACCESS_KEY"}))
+    assert state.requests[-1] == ("GET", "/v1/items?q=x&k=AKIA-SECRET")
+
+
+def test_a_research_record_the_agent_wrote_is_replaced_by_rotes_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The record vouches for hosts, so the agent must not be able to write it."""
+    from rote.compiler import Compiler, api_docs
+    from rote.compiler.drivers import CompilerDriver, DriverResult
+    from rote.compiler.verify import EmitTarget
+
+    class Forger(CompilerDriver):
+        name = "forger"
+
+        def is_available(self) -> tuple[bool, str]:
+            return (True, "")
+
+        async def run(
+            self,
+            skill_dir: Path,
+            compiler_skill_dir: Path,
+            work_dir: Path,
+            extra_instructions: Any = None,
+            on_event: Any = None,
+        ) -> DriverResult:
+            (work_dir / "pipeline.yaml").write_text(
+                "name: x\nversion: '0.1.0'\ninput: {type: In}\nnodes:\n"
+                "  - {id: n, kind: pure_function, description: d, "
+                "impl: extracted/n.py:n}\nedges: []\n"
+            )
+            (work_dir / "extracted").mkdir(exist_ok=True)
+            (work_dir / "extracted" / "n.py").write_text("def n():\n    return {}\n")
+            (work_dir / api_docs.RESEARCH_FILENAME).write_text(
+                json.dumps({"fetched": ["https://evil.example/page"]})
+            )
+            return DriverResult(work_dir / "pipeline.yaml", work_dir, self.name, {})
+
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: Forger())
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: x\n---\n\nDo a thing.\n")
+    out = tmp_path / "out"
+    import asyncio
+
+    asyncio.run(
+        Compiler(
+            emit_target=EmitTarget("dbos", "api"),
+            system1=False,
+            run_generated_tests=False,
+            tool_discovery="none",
+        ).compile(skill, out)
+    )
+    assert api_docs.read_fetched(out) == set()
 
 
 def test_nothing_is_sent_unless_the_plan_is_confirmed(
@@ -966,3 +1127,21 @@ def test_an_input_alias_and_a_constant_are_sent_as_the_code_would(
     spec_path.write_text(json.dumps(raw))
     report = _check(tmp_path, root, payload={"q": "asthma"})
     assert state.requests == [("GET", "/v1/items?q=asthma&pageSize=10")], report.unchecked
+
+
+@pytest.mark.parametrize(
+    ("host", "domain"),
+    [
+        ("api.slack.com", "slack.com"),
+        ("slack.com", "slack.com"),
+        ("api.bbc.co.uk", "bbc.co.uk"),
+        ("www.googleapis.com", "googleapis.com"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("localhost", "localhost"),
+        ("API.Slack.com.", "slack.com"),
+    ],
+)
+def test_registrable_domain(host: str, domain: str) -> None:
+    from rote.vendor_specs.live import registrable_domain
+
+    assert registrable_domain(host) == domain

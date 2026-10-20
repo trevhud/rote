@@ -3145,6 +3145,7 @@ def _cmd_live_check(args: argparse.Namespace) -> int:
             payload,
             confirm=confirm,
             allow_hosts=frozenset(args.allow_host or ()),
+            allow_credentials=frozenset(args.allow_credential or ()),
         )
     except LiveCheckRefused as e:
         print(f"rote run: live check refused: {e}", file=sys.stderr)
@@ -4551,6 +4552,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "With --live-check: allow a host from the compile's own docs spec whose "
             "cited pages the compile did not fetch (repeatable)"
+        ),
+    )
+    run_p.add_argument(
+        "--allow-credential",
+        action="append",
+        metavar="ENV",
+        help=(
+            "With --live-check and --allow-host: send the credential the compile's own "
+            "docs spec declares in this environment variable (repeatable; --yes never "
+            "covers it, and without it a docs-spec host is called with no credential)"
         ),
     )
     run_p.add_argument(

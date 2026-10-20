@@ -319,11 +319,11 @@ def write_research(compiled_dir: Path, research: WebResearch) -> Path:
     return path
 
 
-def read_fetched(compiled_dir: Path) -> set[str] | None:
-    """The normalized URLs the compile fetched, or ``None`` when it recorded none."""
+def read_fetched(compiled_dir: Path) -> set[str]:
+    """The normalized URLs rote recorded the compile fetching (none without a record)."""
     path = compiled_dir / RESEARCH_FILENAME
     if not path.is_file():
-        return None
+        return set()
     raw = json.loads(path.read_text(encoding="utf-8"))
     return {normalize_url(u) for u in raw.get("fetched") or []}
 
