@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -38,7 +39,11 @@ from typing import Any
 import yaml
 
 from rote.bench.fidelity_score import fidelity_summary, score_case, stable_reference
+from rote.bench.http_fixtures import HttpFixtureError, api_calls, api_side, load_http
+from rote.compiler.api_docs import api_view
+from rote.compiler.backend import read_backend
 from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.vendor_specs.store import SpecStore
 
 FIDELITY_DIRNAME = "fidelity"
 CASES_FILENAME = "cases.yaml"
@@ -59,6 +64,8 @@ class Case:
     gates: list[dict[str, Any]]
     gate_instructions: str | None
     fixtures: dict[str, dict[str, list[dict[str, Any]]]]
+    #: ``--backend api`` fixtures: spec key -> FixtureSet (rote.vendor_specs.fixtures).
+    http: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,7 @@ def load_cases(example_dir: Path) -> CaseFile:
                 gates=list(c.get("gates") or []),
                 gate_instructions=c.get("gate_instructions"),
                 fixtures=c.get("fixtures") or {},
+                http=load_http(c.get("http")),
             )
         )
     return CaseFile(
@@ -417,18 +425,70 @@ def _dbos_objects(app: Path) -> tuple[list[dict[str, Any]], list[Any]]:
         client.destroy()
 
 
+#: What a bench pipeline inherits from the user's environment, by exact name:
+#: the process essentials, and the credentials its judges call a model with.
+#: Nothing else, so a vendor credential (GOOGLE_APPLICATION_CREDENTIALS, a
+#: HUBSPOT_TOKEN, one read under a name built at run time) never reaches the
+#: run: the fixture credential api_side sets is the only one there.
+BENCH_ENV_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "TZ",
+        "TERM",
+        "SYSTEMROOT",
+        "VIRTUAL_ENV",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    }
+)
+#: And by prefix: locale, the DBOS runtime's own settings, rote's (its
+#: per-node inference knobs, isolation paths, MCP endpoints).
+BENCH_ENV_PREFIXES = ("LC_", "DBOS_", "ROTE_")
+
+
+def bench_environment() -> dict[str, str]:
+    """The allowlisted part of ``os.environ`` a bench pipeline runs with."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k in BENCH_ENV_NAMES or k.startswith(BENCH_ENV_PREFIXES)
+    }
+
+
 def run_pipeline_case(
-    compiled_dir: Path, casefile: CaseFile, case: Case, work: Path
+    compiled_dir: Path,
+    casefile: CaseFile,
+    case: Case,
+    work: Path,
+    spec_store: SpecStore | None = None,
 ) -> dict[str, Any]:
     """Emit ``compiled_dir`` for DBOS, run one case, return its trace."""
     from rote.adapters import get_adapter
     from rote.eval.empirical import run_pipeline_trial
 
     pipeline = load_pipeline(compiled_dir / "pipeline.yaml")
+    backend = read_backend(compiled_dir) or "mcp"
     app = work / "app"
     if app.exists():
         shutil.rmtree(app)
-    get_adapter("dbos", extracted_source_dir=compiled_dir).emit(pipeline, app)
+    get_adapter("dbos", external_backend=backend, extracted_source_dir=compiled_dir).emit(
+        pipeline, app
+    )
 
     gates = _gate_order(pipeline)
     signals: dict[str, Any] = {}
@@ -443,17 +503,35 @@ def run_pipeline_case(
     for extra in case.gates[len(gates) :]:
         gate_fit.append({"gate": None, "signal": None, "fit": 0.0, "unused_payload": extra})
 
-    mapped, unknown = map_servers(pipeline, casefile)
-    with fixture_servers(casefile, case, work / "fixtures") as (urls, calls_log):
+    # On the api backend no binding is called: the vendor requests go to the
+    # spec-checked fake, and only an agent loop's servers still need MCP.
+    called = api_view(pipeline) if backend == "api" else pipeline
+    mapped, unknown = map_servers(called, casefile)
+    if backend == "api" and not case.http:
+        raise HttpFixtureError(
+            f"case {case.id!r} has no http: fixtures, so an --backend api pipeline has "
+            f"nothing to call (fidelity/cases.yaml)"
+        )
+    with contextlib.ExitStack() as stack:
+        urls, calls_log = stack.enter_context(fixture_servers(casefile, case, work / "fixtures"))
+        http_env: dict[str, str] = {}
+        python: str | None = None
+        http_log: Path | None = None
+        if backend == "api":
+            http_env, python, http_log = stack.enter_context(
+                api_side(app, case.http, work / "http", spec_store)
+            )
         env = {f"ROTE_MCP_{server.upper()}_URL": urls[target] for server, target in mapped.items()}
         run = run_pipeline_trial(
             app,
             case.input,
             signals=signals or None,
             timeout_seconds=PIPELINE_TIMEOUT_SECONDS,
-            extra_env=env,
+            extra_env={**env, **http_env},
+            base_env=bench_environment(),
+            python_executable=python,
         )
-        calls = read_calls(calls_log)
+        calls = read_calls(calls_log) + (api_calls(http_log) if http_log else [])
     steps, objects = _dbos_objects(app)
     if run.output is not None:
         objects.append(run.output)
@@ -466,6 +544,7 @@ def run_pipeline_case(
         "calls": [_portable_call(c) for c in calls],
         "gate_fit": gate_fit,
         "unknown_servers": unknown,
+        "backend": backend,
         "judge_usage": list(run.judge_usage),
         "wall_seconds": round(run.wall_seconds, 1),
     }
@@ -617,7 +696,10 @@ def has_cases(example_dir: Path) -> bool:
 
 
 def pipeline_fidelity(
-    compiled_dir: Path, example_dir: Path, work: Path | None = None
+    compiled_dir: Path,
+    example_dir: Path,
+    work: Path | None = None,
+    spec_store: SpecStore | None = None,
 ) -> dict[str, Any]:
     """Score one compiled pipeline on every case of its example.
 
@@ -643,8 +725,8 @@ def pipeline_fidelity(
                 contract=[*casefile.output_fields, "outcome"],
             )
             try:
-                trace = run_pipeline_case(compiled_dir, casefile, case, root / case.id)
-            except FixtureError:
+                trace = run_pipeline_case(compiled_dir, casefile, case, root / case.id, spec_store)
+            except (FixtureError, HttpFixtureError):
                 raise  # the bench's environment, not the pipeline: never a score
             except Exception as e:  # noqa: BLE001 (an unrunnable pipeline is a result)
                 trace = {

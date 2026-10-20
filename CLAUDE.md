@@ -598,6 +598,31 @@ server tool it did not ask for, and stops when one request bills more than
 versions without a measured run. The ceiling is checked on the response,
 so it stops the next request, not the one that crossed it.
 
+### Fidelity for `--backend api` pipelines fakes the vendor, from its spec
+
+`rote bench --fidelity` runs an api pipeline against a local fake of each
+vendor API (`rote.vendor_specs.fake`), built from the vendor's spec and
+answered from the case's `http:` fixtures (`rote.bench.http_fixtures`).
+Things that will bite if you touch it:
+
+- **Routing is a `sitecustomize`** (`rote/vendor_specs/intercept/`), put on
+  the pipeline process's `PYTHONPATH`. It patches httpx, requests,
+  httplib2, urllib and `google.auth.default`, rewrites the faked hosts to
+  the fake, and BLOCKS every other host of a vendor in play
+  (`ROTE_HTTP_FIXTURE_BLOCK`), so a bench run cannot reach a real API. It
+  must stay standard-library-only at module level: it runs in the app's
+  environment, not rote's.
+- **A fixture is held to the spec at load** (`rote.vendor_specs.fixtures.
+  validate`): a field the response schema lacks is an error, so a fixture
+  can never teach a pipeline a field the real API does not return.
+- **`reads: <server>.<tool>[i]` is what makes API and MCP reads
+  comparable.** Without it an API read keys by operation and counts as
+  unexpected against the skill's reference.
+- **Vendor libraries are installed per requirement set** into
+  `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
+  a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
+  import is an error, never a guessed package name.
+
 ### Vendor requests are checked against the vendor's spec, in code
 
 On `--backend api`, verification reads every request an external_call
