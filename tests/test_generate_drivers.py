@@ -369,9 +369,13 @@ def _gate_run(tmp_path: Path, gates: dict[str, dict[str, Any]]) -> Any:
     from tests.test_grounding import _ROWS, _pipeline, _prefix_root, _sample
 
     root = _prefix_root(tmp_path)
-    ir = (root / "pipeline.yaml").read_text().replace(
-        "    signal: controller_review\n",
-        "    signal: controller_review\n    output: {approved_ids: list, notes: str}\n",
+    ir = (
+        (root / "pipeline.yaml")
+        .read_text()
+        .replace(
+            "    signal: controller_review\n",
+            "    signal: controller_review\n    output: {approved_ids: list, notes: str}\n",
+        )
     )
     (root / "pipeline.yaml").write_text(ir)
     pipeline = _pipeline(root)

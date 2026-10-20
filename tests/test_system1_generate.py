@@ -294,6 +294,15 @@ def test_module_checks_name_each_contract_break(tmp_path: Path) -> None:
         assert problems and all(f"extracted/{node.id}.py" in p for p in problems), newer
 
 
+def test_a_judge_interface_must_name_its_decision_fields(tmp_path: Path) -> None:
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    node = _node(ctx, NodeKind.LLM_JUDGE)
+    bare = {"description": "x", "output_schema": {"type": "object"}}
+    assert any("names no properties" in p for p in interface_problems(ctx, node, bare))
+    named = {"description": "x", "output_schema": _schema_for(node)}
+    assert interface_problems(ctx, node, named) == []
+
+
 def test_judge_prompt_variables_must_exist_in_the_input_schema(tmp_path: Path) -> None:
     ctx, _ = _context(tmp_path, "deal-monitor")
     node = _node(ctx, NodeKind.LLM_JUDGE)
@@ -477,7 +486,10 @@ async def test_compile_with_a_generating_driver_writes_text_in_parallel(
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
     events: list[str] = []
     result = await Compiler(
-        run_generated_tests=False, max_parallel=2, on_event=lambda e: events.append(e.message)
+        run_generated_tests=False,
+        system1_tiebreak="none",
+        max_parallel=2,
+        on_event=lambda e: events.append(e.message),
     ).compile(skill, tmp_path / "out")
     assert fake.requests and fake.max_in_flight <= 2
     assert result.verification is not None and result.verification.ok
@@ -543,9 +555,11 @@ async def test_a_backend_api_compile_keeps_the_researching_session(
     fake = Session({})
     monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
     with pytest.raises(CompilerError, match="the session ran"):
-        await Compiler(run_generated_tests=False, emit_target=EmitTarget("dbos", "api")).compile(
-            skill, tmp_path / "out"
-        )
+        await Compiler(
+            run_generated_tests=False,
+            system1_tiebreak="none",
+            emit_target=EmitTarget("dbos", "api"),
+        ).compile(skill, tmp_path / "out")
     assert Session.ran and fake.requests == []
 
 
@@ -711,7 +725,9 @@ async def test_the_compile_verdict_fails_on_a_piece_that_never_passed(
     fake.scripted[node.id] = [_bad(node, ctx) for _ in range(50)]
     monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
-    result = await Compiler(run_generated_tests=False).compile(skill, tmp_path / "out")
+    result = await Compiler(run_generated_tests=False, system1_tiebreak="none").compile(
+        skill, tmp_path / "out"
+    )
     assert result.verification is not None and not result.verification.ok
     kinds = {(f.node_id, f.kind) for f in result.verification.errors}
     assert (node.id, "generation_check_failed") in kinds

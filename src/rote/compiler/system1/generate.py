@@ -642,6 +642,10 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
     kind = schema.get("type")
     if node.kind in (NodeKind.PURE_FUNCTION, NodeKind.LLM_JUDGE) and kind != "object":
         problems.append(f"output_schema has type {kind!r}: this node must return an object")
+    if node.kind is NodeKind.LLM_JUDGE and not (schema.get("properties") or {}):
+        # A judge's decision is its output fields: a spec with none is
+        # incomplete (verify.judge_spec_findings) and decides nothing.
+        problems.append("output_schema names no properties: a judge's decision is its fields")
     if isinstance(node.output, dict) and "items" in node.output:
         items = (schema.get("properties") or {}).get("items")
         if not isinstance(items, dict) or items.get("type") != "array":
