@@ -787,9 +787,10 @@ def infeasible_kinds(
         return {}
     return {
         "external_call": (
-            "no declared system can perform it (no MCP server or tool the skill or "
-            "the registry declares, and no named API), so its result is the "
-            "pipeline's output"
+            "no declared or named system can perform it (no MCP server or tool, no "
+            "named product, API or interface), so it keeps the rules' decision: its "
+            "result is returned in the pipeline's output for the caller to deliver, "
+            "and the step is listed in Open questions"
         )
     }
 
@@ -812,10 +813,18 @@ def declares_a_system(
     ``mcp`` and ``tools``); a tool from the skill's tool tables or a
     registered server's ``tools/list`` (``registry``, ``tools``) whose name
     the step uses, or whose server it names; a write tool whose object the
-    step names (:func:`_registry_tool_for`); or a named API (a URL, an HTTP
-    verb with a path).
+    step names (:func:`_registry_tool_for`); a named API (a URL, an HTTP
+    verb with a path); or a named product or service (Google Sheets, Slack,
+    PagerDuty, a #channel or @handle); or a user interface it operates. A
+    named product has an API the compile can bind or research, so the step
+    can do what the skill does.
+    Only a write to no identifiable system at all is infeasible.
     """
-    if u.mcp or u.tools or _NAMED_API.search(u.text):
+    if u.mcp or u.tools or _NAMED_API.search(u.text) or _names_a_product(u.text):
+        return True
+    # A step that operates a user interface (click, navigate, select) acts on
+    # the application the skill drives, which is its system.
+    if _UI_ACTION.search(f"{u.title}\n{u.text}"):
         return True
     # A tool the step names in code, verb first (`update_incident`), is a
     # tool the skill declares even outside a tool table.
@@ -833,6 +842,18 @@ def declares_a_system(
         return True
     sentences = re.split(r"(?<=[.!?])\s+|\n+", u.text)
     return bool(reg) and any(_registry_tool_for(x, reg) for x in sentences)
+
+
+#: A capitalized word inside a sentence: a product or service name. A
+#: sentence's first word, and a title's words, say nothing.
+_MID_SENTENCE_NAME = re.compile(r"(?<=[a-z0-9,] )(?-i:[A-Z][A-Za-z0-9]+)")
+_HANDLE = re.compile(r"(?<![\w])[#@][A-Za-z][\w-]+")
+
+
+def _names_a_product(text: str) -> bool:
+    if _HANDLE.search(text):
+        return True
+    return any(m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(text))
 
 
 def role_of_kind(kind: str) -> str:

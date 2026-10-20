@@ -179,11 +179,21 @@ def test_a_rule_constraint_overrules_the_model(
     doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
     assert doc["overruled"] == {
         "1": [
-            "external_call: no declared system can perform it (no MCP server or tool the "
-            "skill or the registry declares, and no named API), so its result is the "
-            "pipeline's output"
+            "external_call: no declared or named system can perform it (no MCP server or "
+            "tool, no named product, API or interface), so it keeps the rules' decision: "
+            "its result is returned in the pipeline's output for the caller to deliver, "
+            "and the step is listed in Open questions"
         ]
     }
+
+    questions = system1.report_extras(work, plan).questions
+    assert (
+        "claude-haiku-5-5 proposed a kind a rule forbids",
+        "step `Step 2: File the summary`: external_call: no declared or named system can "
+        "perform it (no MCP server or tool, no named product, API or interface), so it "
+        "keeps the rules' decision: its result is returned in the pipeline's output for the "
+        "caller to deliver, and the step is listed in Open questions",
+    ) in questions
 
     # Nothing allowed left: the rules' decision stands, node for node.
     rules = unit_segments(parsed)[1]
@@ -223,8 +233,16 @@ _EMAIL = {"send_email": "gmail"}
         ("Notify the account owner by email.", _EMAIL, [], False),
         ("Email the summary to the customer.", _EMAIL, [], False),
         ("Save it to the finance shared folder as `<period>.md`.", {}, [], True),
-        ("Save it to Google Drive.", {}, [], True),
-        ("Save it to Google Drive.", {}, [("google_drive", "upload_file")], False),
+        # A named product or service is a system: its API can be bound or researched.
+        ("Save it to Google Drive.", {}, [], False),
+        ("Email the summary via Gmail.", {}, [], False),
+        ("Post it in #ops-alerts.", {}, [], False),
+        ("Post the summary to the team's incident channel.", {}, [], True),
+        # A sentence's first word is not a name.
+        ("Save it to the shared folder. Payroll pays from it.", {}, [], True),
+        # A user interface the step operates is the application it drives.
+        ("Click the filters panel, then clear all.", {}, [], False),
+        ("Save it to the shared drive.", {}, [("shared_drive", "upload_file")], False),
         ("Set the priority with `update_incident`.", {}, [], False),
         ("Append one row with `append_sheet_values`.", {}, [], False),
         ("Invite each admin: `POST /v1/workspaces/{id}/invites`.", {}, [], False),
@@ -331,8 +349,9 @@ def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) ->
     assert lane.sdk_client.default_headers["cf-aig-metadata"] == "m"
     assert lane.model == "claude-haiku-5-5"
     # A gateway that wants provider-prefixed ids gets the same prefix.
-    gateway = AnthropicApiDriver(model="anthropic/claude-sonnet-5")
-    assert tb.lane_for(gateway).model == "anthropic/claude-haiku-5-5"
+    gateway = AnthropicApiDriver(model="anthropic/claude-sonnet-4.6")
+    assert tb.lane_for(gateway).model == "anthropic/claude-haiku-5.5"
+    assert tb.gateway_model_id("anthropic", "claude-sonnet-4-6") == "anthropic/claude-sonnet-4.6"
 
 
 def test_no_lane_at_all_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
