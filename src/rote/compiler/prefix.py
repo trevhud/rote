@@ -168,6 +168,24 @@ def findings_from_report(
                     path=at.get("path"),
                 )
             )
+        elif step.get("status") == "shape_assumption":
+            at = step.get("at") or {}
+            upstream = ", ".join(step.get("upstream") or [])
+            findings.append(
+                ContractFinding(
+                    node_id=node_id,
+                    kind="prefix_shape_assumption",
+                    severity="error",
+                    message=(
+                        f"{node_id} crashes when {upstream} returns a JSON list: "
+                        f"{step.get('type')}: {step.get('message')}{_where(at)}. The tool "
+                        f"declares no result shape, and MCP tools often return a bare list "
+                        f"(Gmail's search_threads does), so read the result as either a list "
+                        f"or a dict holding the list, and test both"
+                    ),
+                    path=at.get("path"),
+                )
+            )
         elif step.get("status") == "not_json":
             findings.append(
                 ContractFinding(
