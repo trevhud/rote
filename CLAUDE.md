@@ -636,6 +636,14 @@ Things that will bite if you touch it:
   stamped with the spec revision on save, re-validated on load. Only
   authored data goes there: a live check compares shapes and never keeps
   what it read.
+- **`rote run --live-check` is read-only twice over.** It refuses a
+  deliverable with any request that is not a spec-resolved GET/HEAD
+  before anything runs, and the intercept's live mode
+  (`ROTE_HTTP_LIVE_RECORD`) raises on any other method to a vendor host
+  at run time. It reports field paths and types, never values, and
+  deletes the recorded responses. For a docs spec, extra live fields are
+  not drift (the spec lists what the code needs); for a vendor's own spec
+  they are.
 - **Vendor libraries are installed per requirement set** into
   `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped

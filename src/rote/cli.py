@@ -3104,6 +3104,57 @@ def _judge_cost_text(rows: Sequence[Mapping[str, Any]]) -> str:
     return f"${total:.4f}"
 
 
+def _cmd_live_check(args: argparse.Namespace) -> int:
+    """``rote run <compile dir> --live-check --input ...`` (rote.vendor_specs.live)."""
+    from rote.compiler.backend import read_backend
+    from rote.vendor_specs.deps import VendorDepsError
+    from rote.vendor_specs.live import LiveCheckRefused, live_check
+
+    root = Path(args.path)
+    compiled = root / "compiled" if (root / "compiled" / "pipeline.yaml").is_file() else root
+    if not (compiled / "pipeline.yaml").is_file():
+        print(f"error: {root} holds no compiled pipeline.yaml", file=sys.stderr)
+        return 2
+    if read_backend(compiled) != "api":
+        print(
+            "error: --live-check checks the vendor calls of a `--backend api` compile, and "
+            f"{compiled} was not compiled for it (backend.json)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.input is None:
+        print("error: --live-check needs --input (a JSON object or a file)", file=sys.stderr)
+        return 2
+    raw = Path(args.input).read_text(encoding="utf-8") if Path(args.input).is_file() else args.input
+    payload = json.loads(raw)
+    try:
+        report = live_check(compiled.resolve(), payload)
+    except (LiveCheckRefused, VendorDepsError) as e:
+        print(f"rote run: live check refused: {e}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        for c in report.checked:
+            where = f"{c.method} {c.host}{c.path}"
+            print(f"{c.node_id}: {where} -> {c.status} ({c.operation or 'unknown operation'})")
+            for path in c.reads_missing:
+                print(f"  the code reads {path}; the live response does not have it")
+            for line in c.schema_drift:
+                print(f"  spec drift: {line}")
+            for path in c.spec_only:
+                print(f"  the spec has {path}; the live response did not return it")
+            for path in c.fixture_only:
+                print(f"  fixtures have {path}; the live response did not")
+            for path in c.live_only:
+                print(f"  live response has {path}; no stored fixture does")
+        for node, why in report.skipped.items():
+            print(f"{node}: not called ({why})")
+        for node, error in report.errors.items():
+            print(f"{node}: raised {error}")
+    return 1 if report.drifted or report.errors else 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """One-off local execution of a skill or an emitted pipeline.
 
@@ -3113,6 +3164,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     cross-process). The run's output JSON goes to stdout so it pipes;
     status lines go to stderr.
     """
+    if args.live_check:
+        return _cmd_live_check(args)
     from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval.empirical import EmpiricalError, measured_run_record
     from rote.ir import NodeKind
@@ -4470,6 +4523,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Pipeline runs: start even though emitted extracted/ modules are "
             "still stubs (for a run that will not reach them)"
+        ),
+    )
+    run_p.add_argument(
+        "--live-check",
+        action="store_true",
+        help=(
+            "For a `--backend api` compile: call each entry vendor read once, for "
+            "real and read-only, with your credentials, and compare the responses' "
+            "shape with the spec and the stored fixtures (values are never kept)"
         ),
     )
     run_p.add_argument(

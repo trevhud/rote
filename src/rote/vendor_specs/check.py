@@ -145,10 +145,10 @@ def _check(
                 )
             return _against(site, node_ids, rel, from_docs, done)
         try:
+            resolved = store.resolve_google_url(named)
             listed = store.google_versions(named.api)
         except SpecUnavailable as e:
             return done("spec_unavailable", note=str(e))
-        resolved = next((v for v in named.versions if v in listed), None)
         if resolved is None:
             if listed and named.versions and named.dedicated_host:
                 # The API's own host, a version Google does not list: wrong.
