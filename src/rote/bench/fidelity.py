@@ -410,7 +410,7 @@ def run_pipeline_case(
         objects.append(run.output)
     return {
         "completed": run.error is None,
-        "error": (run.error or "")[:1500] or None,
+        "error": _last_line(run.error),
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
@@ -419,6 +419,18 @@ def run_pipeline_case(
         "judge_usage": list(run.judge_usage),
         "wall_seconds": round(run.wall_seconds, 1),
     }
+
+
+def _last_line(error: str | None) -> str | None:
+    """The line that says what failed: a traceback's final line, trimmed.
+
+    The rest of a traceback is frames inside the emitted app and DBOS, the
+    same on every run and full of local paths.
+    """
+    if not error:
+        return None
+    lines = [ln.strip() for ln in error.strip().splitlines() if ln.strip()]
+    return lines[-1][:500] if lines else None
 
 
 def load_reference(casefile: CaseFile) -> dict[str, Any]:

@@ -402,7 +402,12 @@ def portable(obj: Any, replacements: dict[str, str]) -> Any:
 
 
 def _replacements(out: Path, examples: Path | None) -> dict[str, str]:
-    reps = {str(out): "<run>", sys.executable: "<python>", str(Path.home()): "~"}
+    reps = {
+        str(out): "<run>",
+        sys.executable: "<python>",
+        sys.prefix: "<venv>",
+        str(Path.home()): "~",
+    }
     if out.resolve() != out:
         reps[str(out.resolve())] = "<run>"
     if examples is not None:

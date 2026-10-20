@@ -303,3 +303,18 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         ("read_file_content", {"file_id": "C"}, False, None),
     ]
     assert json.loads(json.dumps(calls))  # the log is plain JSON
+
+
+def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:
+    from rote.bench.fidelity import _last_line
+
+    tb = "\n".join(
+        [
+            "Traceback (most recent call last):",
+            '  File "/x/y.py", line 1',
+            "",
+            "KeyError: 'shipper_brand'",
+        ]
+    )
+    assert _last_line(tb) == "KeyError: 'shipper_brand'"
+    assert _last_line(None) is None
