@@ -9,6 +9,26 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-19
+
+### Upgrading from 0.14
+This release has breaking changes. Each one has a full entry below.
+- **DBOS 3 and DBOS Transact TS v5 are required** (`dbos>=3.3,<4`,
+  `@dbos-inc/dbos-sdk ^5`). DBOS 3 cannot read workflows written by 2.x:
+  let in-flight 2.x workflows finish, then re-emit your DBOS apps.
+- **Implementations receive their node's constants.** On every runtime,
+  a node's `constants:` arrive as arguments (Python keyword arguments,
+  TS input fields). `rote emit` now refuses a Python implementation that
+  can't accept them and names the file to fix. Make constants that every
+  caller passes required parameters with no default.
+- **Agent loops return their declared output keys.** A loop now submits
+  its result through a `submit_result` tool that matches the node's
+  declared `output:`, and downstream nodes receive those keys. Provider
+  and iteration counts moved to the usage log.
+- **`anthropic>=1.15`** and **`fastmcp>=4.1.1,<5`** are the new floors,
+  and `pytest` is now a runtime dependency, so compile-time verification
+  works on a plain `pip`/`uv` install.
+
 ### Added
 - `mcp.args` takes fixed values: `{literal: "BDR do not contact"}`, or a
   number or boolean, next to the existing references (a bare string,
@@ -1513,7 +1533,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/trevhud/rote/compare/v0.12.0...v0.12.1
