@@ -466,17 +466,24 @@ def test_judge_inputs_accept_what_their_upstream_really_returns(tmp_path: Path) 
     pipeline = load_pipeline(work / "pipeline.yaml")
     out = tmp_path / "out"
     get_adapter("dbos", extracted_source_dir=work).emit(pipeline, out)
+    from rote.ir import fan_out_element_param
+
     request = {"report_date": "2026-10-19"}
-    cases = {
-        # fanned over a thread list: one thread, of any shape
-        "classify_warehouse_thread_pipeline_judge": {
-            "search_gmail_outbound_quoting": {"id": "t1", "subject": "PO 4411"},
-        },
-        # the fanned judge's results: a list
-        "score_new_opportunities_judge": {
-            "classify_warehouse_thread_pipeline_judge": [{"verdict": "a"}, {"verdict": "b"}],
-        },
-    }
+    cases: dict[str, dict[str, Any]] = {}
+    for node in pipeline.nodes:
+        if node.kind.value != "llm_judge":
+            continue
+        element = fan_out_element_param(node, pipeline) if node.fan_out else None
+        cases[node.id] = {
+            # one element of the fanned list, any shape; any other upstream
+            # result as the list a fanned node returns
+            param: {"id": "t1", "subject": "PO 4411"}
+            if param == element
+            else [{"verdict": "a"}, {"verdict": "b"}]
+            for param, ref in node.inputs.items()
+            if ref != "pipeline.input"
+        }
+    assert len(cases) == 2 and any(cases.values())
     sys.path.insert(0, str(out))
     try:
         for judge, inputs in cases.items():
