@@ -74,6 +74,7 @@ from rote.contracts import (
     implementation_status,
 )
 from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
 
 #: Wall-clock cap on one generated-test run. Pure-function tests are
 #: millisecond-scale, so hitting this means an infinite loop, which the
@@ -627,6 +628,8 @@ class Verification:
     #: Contracts nothing grounded (no sample input, unrecorded tool
     #: results), listed for review. Never a failure.
     questions: list[ContractQuestion] = field(default_factory=list)
+    #: ``--backend api``: every vendor request, checked against its spec.
+    spec_checks: list[RequestCheck] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ContractFinding]:
@@ -719,6 +722,7 @@ def verify_deliverable(
     grounding: Grounding | None = None,
     portable_judges: bool = False,
     web_research: WebResearch | None = None,
+    spec_store: SpecStore | None = None,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -741,6 +745,11 @@ def verify_deliverable(
 
     ``web_research`` is what the agent fetched so far (``--backend api``):
     with it, a cited docs page the agent never fetched is an error.
+
+    ``spec_store`` (``--backend api``) is where vendor specs come from: every
+    vendor request in an external_call module is checked against its
+    vendor's machine-readable spec (:mod:`rote.vendor_specs`), and each
+    violation is an error. ``spec_checks`` on the result lists every request.
 
     ``grounding`` is what the compile's contracts are grounded in
     (:mod:`rote.compiler.grounding`). With a sample input, the pipeline's
@@ -765,6 +774,7 @@ def verify_deliverable(
             grounding,
             portable_judges,
             web_research,
+            spec_store,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -796,6 +806,7 @@ def _verify_or_raise(
     grounding: Grounding | None,
     portable_judges: bool = False,
     web_research: WebResearch | None = None,
+    spec_store: SpecStore | None = None,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -809,6 +820,7 @@ def _verify_or_raise(
             grounding=grounding,
             portable_judges=portable_judges,
             web_research=web_research,
+            spec_store=spec_store,
         )
     import shutil
     import tempfile
@@ -835,6 +847,7 @@ def _verify_or_raise(
             grounding=grounding,
             portable_judges=portable_judges,
             web_research=web_research,
+            spec_store=spec_store,
         )
 
 
@@ -849,6 +862,7 @@ def _verify(
     grounding: Grounding | None = None,
     portable_judges: bool = False,
     web_research: WebResearch | None = None,
+    spec_store: SpecStore | None = None,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -869,6 +883,12 @@ def _verify(
         + emit_findings(pipeline, root, emit_target)
         + (judge_spec_findings(pipeline) if portable_judges else [])
     )
+    # Schema before code before tests: the vendor's own spec decides whether
+    # a request is valid, ahead of any test the agent wrote for it.
+    spec_checks: list[RequestCheck] = []
+    if api_backend and spec_store is not None:
+        spec_checks = check_deliverable(pipeline, root, spec_store)
+        findings += spec_findings(spec_checks)
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     if grounding is not None:
@@ -902,4 +922,5 @@ def _verify(
         assumptions=assumptions(pipeline, root),
         prefix=prefix,
         questions=questions,
+        spec_checks=spec_checks,
     )
