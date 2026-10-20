@@ -46,7 +46,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.compiler.drivers import (
+    CompilerDriver,
+    DriverError,
+    DriverResult,
+    Generation,
+    GenerationRequest,
+)
 from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     anthropic_tool_schemas,
@@ -478,6 +484,75 @@ class AnthropicApiDriver(CompilerDriver):
             "The ANTHROPIC_API_KEY environment variable is not set. "
             "Export it or use the `claude` / `codex` driver to authenticate "
             "via your existing Claude Max/Pro or ChatGPT subscription.",
+        )
+
+    async def generate(self, request: GenerationRequest) -> Generation:
+        """One schema-locked call: a single forced tool whose input is the answer.
+
+        The shared prefix is the system prompt, marked for the prompt
+        cache, so the calls of one compile after the first read it at the
+        cache rate. Usage keeps all four buckets for that reason. No
+        ``temperature``: current models reject it, and the forced tool is
+        what makes the answer's shape fixed. The lane reports no cost, so
+        ``cost_usd`` is ``None`` (the token counts are exact).
+        """
+        if not _ANTHROPIC_AVAILABLE:
+            raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
+        started = time.monotonic()
+        client = anthropic.AsyncAnthropic(**self._client_kwargs())
+        tool = {
+            "name": "answer",
+            "description": "Submit the answer. Call this exactly once.",
+            "input_schema": request.schema,
+        }
+        try:
+            message = await _streamed_message(
+                client,
+                {
+                    "model": request.model,
+                    "max_tokens": self.max_tokens_per_turn,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": request.system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": [{"role": "user", "content": request.prompt}],
+                    "tools": [tool],
+                    "tool_choice": {"type": "tool", "name": "answer"},
+                },
+            )
+        except Exception as e:  # noqa: BLE001 (any SDK failure is this call's)
+            raise DriverError(f"Anthropic API call failed for {request.label}: {e}") from e
+        finally:
+            await client.close()
+        usage = message.usage
+
+        def tokens(name: str) -> int:
+            return int(getattr(usage, name, 0) or 0)
+
+        payload = next(
+            (b.input for b in message.content if getattr(b, "type", None) == "tool_use"), None
+        )
+        metadata = {
+            "input_tokens": tokens("input_tokens"),
+            "output_tokens": tokens("output_tokens"),
+            "cache_write_tokens": tokens("cache_creation_input_tokens"),
+            "cache_read_tokens": tokens("cache_read_input_tokens"),
+        }
+        if not isinstance(payload, dict):
+            raise DriverError(
+                f"Anthropic API returned no answer for {request.label} "
+                f"(stop_reason {message.stop_reason!r})",
+                metadata=metadata,
+            )
+        return Generation(
+            payload=payload,
+            model=str(message.model),
+            cost_usd=None,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            **metadata,
         )
 
     async def run(

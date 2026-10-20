@@ -269,7 +269,9 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 report[node_id] = {"status": "not_json", "message": where}
                 continue
             results[node_id] = output
-            report[node_id] = {"status": "ok"}
+            # The result goes back to rote, which checks it against the
+            # node's declared output_schema (rote.compiler.prefix).
+            report[node_id] = {"status": "ok", "output": output}
         except BindingError as e:
             report[node_id] = {"status": "binding_error", "message": str(e)}
         except NotImplementedError as e:

@@ -898,6 +898,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         system1=args.system1,
         system1_decider=args.decider,
         system1_tiebreak=args.tiebreak,
+        max_parallel=args.max_parallel,
         # Tool schemas come from a read-only tools/list; --no-mcp means the
         # compile touches no MCP server at all.
         tool_discovery="none" if args.no_mcp else args.tool_discovery,
@@ -2669,6 +2670,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         system1=args.system1,
         system1_decider=decider,
         system1_tiebreak=tiebreak,
+        max_parallel=args.max_parallel,
     )
 
     out_ctx: Any = (
@@ -4009,6 +4011,8 @@ def _local_tiebreak(args: argparse.Namespace, resolved: Resolved) -> str:
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     """The System-1 flags, shared by ``compile`` and its dry run ``analyze``."""
+    from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
+
     p.add_argument(
         "--no-system1",
         dest="system1",
@@ -4051,6 +4055,17 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "driver, the api driver's own client under --agent api, otherwise an "
             "Anthropic key or the claude CLI. 'none' makes no call: those steps take "
             "a conservative default and are listed for review"
+        ),
+    )
+    p.add_argument(
+        "--max-parallel",
+        type=int,
+        default=DEFAULT_MAX_PARALLEL,
+        metavar="N",
+        help=(
+            "The most model calls in flight at once while System-1 writes the text "
+            "(one call per node, all at once, with the claude and api drivers; "
+            f"default {DEFAULT_MAX_PARALLEL}). See docs/design/parallel-generation.md"
         ),
     )
 

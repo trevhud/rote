@@ -273,6 +273,49 @@ def _argument_findings(
     return findings
 
 
+def output_findings(
+    pipeline: Pipeline, report: dict[str, dict[str, Any]], sample: Sample
+) -> list[ContractFinding]:
+    """Each result on the sample, against its node's declared ``output_schema``.
+
+    The schema is the contract the node's consumers were written against
+    (System-1 fixes it before any module is written), so a module that
+    returns another shape fails here, on data no model wrote, instead of in
+    the next node. A fan_out node's result is one value per element, each
+    checked. A node without an ``output_schema`` declares nothing to check.
+    """
+    from rote.compiler.grounding import schema_mismatches
+
+    findings: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        step = report.get(node.id) or {}
+        if not node.output_schema or step.get("status") != "ok" or "output" not in step:
+            continue
+        values = step["output"] if node.fan_out else [step["output"]]
+        if not isinstance(values, list):
+            continue
+        for i, value in enumerate(values):
+            where = f"{node.id}[{i}]" if node.fan_out else node.id
+            problems = schema_mismatches(node.output_schema, value, where)
+            if problems:
+                findings.append(
+                    ContractFinding(
+                        node_id=node.id,
+                        kind="output_schema_mismatch",
+                        severity="error",
+                        message=(
+                            f"on the sample input ({sample.source}), {node.id} returned a "
+                            f"value its output_schema does not allow: {'; '.join(problems[:5])}. "
+                            "Its consumers were written against that schema: return what it "
+                            "says"
+                        ),
+                        path=node.impl.partition(":")[0] if node.impl else "pipeline.yaml",
+                    )
+                )
+                break  # one element names the problem; the rest repeat it
+    return findings
+
+
 def summarize(report: dict[str, dict[str, Any]]) -> str:
     counts: dict[str, int] = {}
     for step in report.values():
@@ -359,9 +402,13 @@ def run_prefix(
         )
         return PrefixRun(status="failed", summary="crashed", findings=[finding])
     report: dict[str, dict[str, Any]] = json.loads(written)
-    findings = findings_from_report(report, sample) + _argument_findings(
-        pipeline, report, tools or {}
+    findings = (
+        findings_from_report(report, sample)
+        + _argument_findings(pipeline, report, tools or {})
+        + output_findings(pipeline, report, sample)
     )
+    for step in report.values():
+        step.pop("output", None)  # checked; the verdict carries no payloads
     return PrefixRun(
         status="failed" if findings else "ran",
         summary=summarize(report),
