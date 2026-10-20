@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -30,6 +29,7 @@ import pytest
 
 from rote.adapters import _ts_common, get_adapter
 from rote.ir import Pipeline
+from tests import _node_trees as node_trees
 from tests.test_mcp_oauth_e2e import _free_port, _wait_port
 
 #: Each tool declares no output schema (``output_schema=None``), the shape
@@ -278,18 +278,6 @@ def _pipeline(url: str) -> Pipeline:
     )
 
 
-def _npm(app: Path, *args: str) -> None:
-    proc = subprocess.run(
-        ["npm", *args, "--no-audit", "--no-fund"],
-        cwd=app,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert proc.returncode == 0, proc.stderr
-
-
 def _last_json_line(app: Path, *command: str) -> dict[str, Any]:
     run = subprocess.run(list(command), cwd=app, capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr
@@ -301,7 +289,7 @@ def _node_payloads(url: str, tmp_path: Path) -> dict[str, Any]:
     app = tmp_path / "node-app"
     get_adapter("dbos-ts").emit(_pipeline(url), app)
     (app / "src" / "driver.ts").write_text(NODE_DRIVER_TS, encoding="utf-8")
-    _npm(app, "install")
+    node_trees.install(app)
     build = subprocess.run(["npx", "tsc"], cwd=app, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, build.stdout + build.stderr
     return _last_json_line(app, "node", "dist/driver.js", url)
@@ -313,8 +301,7 @@ def _workers_payloads(url: str, tmp_path: Path) -> dict[str, Any]:
     app = tmp_path / "workers-app"
     get_adapter("cloudflare").emit(_pipeline(url), app)
     (app / "src" / "driver.ts").write_text(WORKERS_DRIVER_TS, encoding="utf-8")
-    _npm(app, "install")
-    _npm(app, "install", "--no-save", "esbuild")
+    node_trees.install(app, "--no-save", "esbuild")
     bundle = subprocess.run(
         [
             "npx",

@@ -40,6 +40,7 @@ import pytest
 
 from rote.adapters.cloudflare import CloudflareAdapter
 from rote.ir import Pipeline, fan_out_element_param, parse_input_ref
+from tests import _node_trees as node_trees
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -61,21 +62,7 @@ def emitted_dir(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
     out = tmp_path_factory.mktemp("cf-e2e")
     CloudflareAdapter().emit(bdr_pipeline, out)
 
-    # Install dependencies. Use a fresh cache to avoid stale lockfile drift,
-    # but keep silent unless something fails (the install is noisy).
-    proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    if proc.returncode != 0:
-        pytest.fail(
-            f"npm install failed in {out}:\n--- stdout ---\n{proc.stdout}\n"
-            f"--- stderr ---\n{proc.stderr}"
-        )
+    node_trees.install(out)
     return out
 
 
@@ -282,16 +269,7 @@ def wrangler_dev_session(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPa
     CloudflareAdapter().emit(bdr_pipeline, out)
     _write_test_overlay(out, bdr_pipeline)
 
-    npm_proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    if npm_proc.returncode != 0:
-        pytest.fail(f"npm install failed in {out}:\n{npm_proc.stdout}\n{npm_proc.stderr}")
+    node_trees.install(out)
 
     port = _find_free_port()
     log_path = out / "wrangler-dev.log"
@@ -524,19 +502,7 @@ def binding_emitted_dir(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPat
     out = tmp_path_factory.mktemp("cf-binding-e2e")
     CloudflareAdapter().emit(bdr_pipeline, out, mcp_client="binding")
 
-    proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    if proc.returncode != 0:
-        pytest.fail(
-            f"npm install failed in {out}:\n--- stdout ---\n{proc.stdout}\n"
-            f"--- stderr ---\n{proc.stderr}"
-        )
+    node_trees.install(out)
     return out
 
 

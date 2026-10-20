@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from rote.ir import Pipeline, load_pipeline
+from tests import _node_trees as node_trees
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BDR_PIPELINE_YAML = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
@@ -249,6 +250,30 @@ def _no_inference_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
         return real_which(cmd, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(shutil, "which", _which_without_subscription_clis)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _node_trees_root(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Where ``tests/_node_trees.py`` keeps the session's shared installs."""
+    node_trees.set_root(tmp_path_factory.getbasetemp() / "node-trees")
+
+
+@pytest.fixture(autouse=True)
+def _shared_node_trees_in_runners(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slow tests that ``rote run`` an emitted TS app share its node_modules.
+
+    The runners install through ``ensure_npm_install``. Routing their copies
+    through ``node_trees.install`` gives them the same per-dependency-set
+    trees as the tests that install directly, and a miss still runs the real
+    ``ensure_npm_install``. Fast tests keep the real function, because some
+    of them assert on what it does.
+    """
+    if request.node.get_closest_marker("slow") is None:
+        return
+    for module in ("_node", "cloudflare", "dbos_ts", "inngest"):
+        monkeypatch.setattr(f"rote.runners.{module}.ensure_npm_install", node_trees.install)
 
 
 @pytest.fixture(scope="session")

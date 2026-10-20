@@ -49,6 +49,7 @@ import pytest
 from rote.adapters._common import _execution_waves, _to_camel_case
 from rote.adapters.dbos_ts import DbosTsAdapter
 from rote.ir import NodeKind, Pipeline
+from tests import _node_trees as node_trees
 from tests._helpers import FAN_OUT_ELEMENTS, fan_out_element, fan_out_source_keys
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -74,19 +75,6 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _npm_install(cwd: Path) -> None:
-    proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    if proc.returncode != 0:
-        pytest.fail(f"npm install failed in {cwd}:\n{proc.stdout}\n{proc.stderr}")
-
-
 # ───────── Tier 1 + 2: compile against the real packages ─────────
 
 
@@ -97,7 +85,7 @@ def emitted_dir(bdr_pipeline: Pipeline, tmp_path_factory: pytest.TempPathFactory
         pytest.skip("Node / npm not available — skipping dbos-ts e2e tests")
     out = tmp_path_factory.mktemp("dbos-ts-e2e")
     DbosTsAdapter().emit(bdr_pipeline, out)
-    _npm_install(out)
+    node_trees.install(out)
     return out
 
 
@@ -429,7 +417,7 @@ def dbos_ts_session(
     record_path = out / "record.jsonl"
     DbosTsAdapter().emit(bdr_pipeline, out)
     _write_test_overlay(out, bdr_pipeline)
-    _npm_install(out)
+    node_trees.install(out)
 
     build = subprocess.run(
         ["npx", "--no-install", "tsc"],

@@ -34,7 +34,6 @@ No inference: tsc only.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import textwrap
@@ -49,6 +48,7 @@ from rote.adapters.cloudflare import CloudflareAdapter
 from rote.adapters.dbos_ts import DbosTsAdapter
 from rote.adapters.inngest import InngestAdapter
 from rote.ir import Pipeline
+from tests import _node_trees as node_trees
 
 pytestmark = pytest.mark.slow
 
@@ -233,16 +233,7 @@ def emitted(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFac
     pipeline = Pipeline.model_validate(yaml.safe_load(_PIPELINE_YAML))
     out = tmp_path_factory.mktemp(f"typed-{request.param}")
     _ADAPTERS[request.param]().emit(pipeline, out)
-    proc = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=out,
-        capture_output=True,
-        text=True,
-        timeout=300,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    if proc.returncode != 0:
-        pytest.fail(f"npm install failed in {out}:\n{proc.stdout}\n{proc.stderr}")
+    node_trees.install(out)
     return out
 
 

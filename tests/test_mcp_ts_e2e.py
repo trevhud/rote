@@ -39,6 +39,7 @@ from rote.adapters import get_adapter  # noqa: E402
 from rote.ir import Pipeline  # noqa: E402
 from rote.mcp import McpServerConfig, read_token_file, write_token_file  # noqa: E402
 from rote.mcp.auth import login  # noqa: E402
+from tests import _node_trees as node_trees  # noqa: E402
 from tests.test_mcp_oauth_e2e import SERVER_SCRIPT, _free_port, _wait_port  # noqa: E402
 
 
@@ -140,15 +141,7 @@ def test_ts_runtime_reads_refreshes_and_rotates_python_tokens(
     app_dir = tmp_path / "app"
     get_adapter("dbos-ts").emit(_pipeline(protected_server), app_dir)
     (app_dir / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     build = subprocess.run(["npx", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
 
@@ -203,15 +196,7 @@ def test_cloudflare_mcp_output_typechecks(tmp_path: Path) -> None:
 
     app_dir = tmp_path / "cf-app"
     get_adapter("cloudflare").emit(_p("https://mcp.example.com/mcp"), app_dir)
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app_dir)
     proc = subprocess.run(
         ["npx", "--no-install", "tsc", "--noEmit"],
         cwd=app_dir,

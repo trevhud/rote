@@ -26,6 +26,7 @@ import pytest
 from rote.adapters import get_adapter
 from rote.inference import structured_output_schema
 from rote.ir import Pipeline
+from tests import _node_trees as node_trees
 from tests._messages_api import CURRENT_SONNET, reject_like_the_api, send_json, structured_message
 
 pytestmark = [
@@ -143,15 +144,7 @@ def judge_app(tmp_path_factory: pytest.TempPathFactory) -> Path:
     app = tmp_path_factory.mktemp("ts-judge") / "app"
     get_adapter("dbos-ts").emit(PIPELINE, app)
     (app / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
-    install = subprocess.run(
-        ["npm", "install", "--no-audit", "--no-fund"],
-        cwd=app,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert install.returncode == 0, f"npm install failed:\n{install.stdout}\n{install.stderr}"
+    node_trees.install(app)
     build = subprocess.run(["npx", "tsc"], cwd=app, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
     return app

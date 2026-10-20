@@ -55,6 +55,7 @@ from mcp_types.version import MODERN_PROTOCOL_VERSIONS  # noqa: E402
 from rote.adapters import get_adapter  # noqa: E402
 from rote.ir import Pipeline  # noqa: E402
 from rote.mcp import _runtime_helper as helper  # noqa: E402
+from tests import _node_trees as node_trees  # noqa: E402
 from tests._oauth_fixture import free_port, wait_port  # noqa: E402
 
 MODERN = "2026-07-28"
@@ -229,18 +230,6 @@ class Running:
         self.era_log.write_text("", encoding="utf-8")
 
 
-def _npm(cwd: Path, *args: str) -> None:
-    proc = subprocess.run(
-        ["npm", *args, "--no-audit", "--no-fund"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env={**os.environ, "npm_config_progress": "false"},
-    )
-    assert proc.returncode == 0, f"npm {args} failed:\n{proc.stdout}\n{proc.stderr}"
-
-
 @pytest.fixture(scope="module")
 def server_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if shutil.which("node") is None or shutil.which("npm") is None:
@@ -249,7 +238,7 @@ def server_project(tmp_path_factory: pytest.TempPathFactory) -> Path:
     (root / "package.json").write_text(
         json.dumps({"name": "era-servers", "private": True, "type": "module"}), encoding="utf-8"
     )
-    _npm(root, "install", *(f"{name}@{v}" for name, v in _SERVER_PACKAGES.items()))
+    node_trees.install(root, *(f"{name}@{v}" for name, v in _SERVER_PACKAGES.items()))
     (root / "v1.mjs").write_text(_V1_SERVER, encoding="utf-8")
     (root / "v2.mjs").write_text(_V2_SERVER, encoding="utf-8")
     (root / "legacy_probe.mjs").write_text(_LEGACY_MODE_PROBE, encoding="utf-8")
@@ -330,7 +319,7 @@ def ts_app(tmp_path_factory: pytest.TempPathFactory, server_project: Path) -> Pa
     app = tmp_path_factory.mktemp("era-ts-app")
     get_adapter("dbos-ts").emit(pipeline, app)
     (app / "src" / "driver.ts").write_text(_TS_DRIVER, encoding="utf-8")
-    _npm(app, "install")
+    node_trees.install(app)
     build = subprocess.run(["npx", "tsc"], cwd=app, capture_output=True, text=True, timeout=300)
     assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
     return app
