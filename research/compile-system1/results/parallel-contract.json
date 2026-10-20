@@ -1,0 +1,155 @@
+{
+ "parts": [
+  [
+   "Step 1: Convert every line to USD",
+   "Step 2: Check for duplicate submissions (MANDATORY)",
+   "Step 3: Check for late submissions (MANDATORY)"
+  ],
+  [
+   "Step 4: Audit each employee's report",
+   "Step 5: Summarize the batch"
+  ],
+  [
+   "Step 6: Controller review",
+   "Step 7: File the audit report"
+  ]
+ ],
+ "contract": {
+  "pipeline_input": [
+   {
+    "name": "expense_lines",
+    "type": "list[ExpenseLine]",
+    "description": "Month's export: one row per expense line (expense id, employee, merchant, amount, currency, date, category, receipt flag, pre-approval id)"
+   },
+   {
+    "name": "period",
+    "type": "str",
+    "description": "Reporting period in YYYY-MM format"
+   }
+  ],
+  "parts": [
+   {
+    "part": "a",
+    "imports": [],
+    "exports": [
+     {
+      "name": "converted_lines",
+      "type": "list[ConvertedLine]",
+      "description": "All expense lines with original fields plus amount_usd (converted at period month-end rate, rounded to cent)"
+     },
+     {
+      "name": "duplicate_flags",
+      "type": "list[Flag]",
+      "description": "Duplicate findings: expense_id, employee, rule='duplicate', severity='block', detail"
+     },
+     {
+      "name": "late_flags",
+      "type": "list[Flag]",
+      "description": "Late-submission findings: expense_id, employee, rule='late', severity='review', detail"
+     }
+    ]
+   },
+   {
+    "part": "b",
+    "imports": [
+     {
+      "name": "converted_lines",
+      "type": "list[ConvertedLine]",
+      "description": "Expense lines with amount_usd",
+      "from_part": "a"
+     },
+     {
+      "name": "duplicate_flags",
+      "type": "list[Flag]",
+      "description": "Duplicate block findings",
+      "from_part": "a"
+     },
+     {
+      "name": "late_flags",
+      "type": "list[Flag]",
+      "description": "Late review findings",
+      "from_part": "a"
+     }
+    ],
+    "exports": [
+     {
+      "name": "review_queue",
+      "type": "list[Finding]",
+      "description": "All findings, one row per finding (expense_id, employee, rule, severity, detail), sorted by employee then expense id"
+     },
+     {
+      "name": "auto_approved_employees",
+      "type": "list[str]",
+      "description": "Employees with no findings and total within limit"
+     },
+     {
+      "name": "batch_total_usd",
+      "type": "number",
+      "description": "Total of the batch in USD"
+     },
+     {
+      "name": "employee_totals",
+      "type": "list[EmployeeTotal]",
+      "description": "Per-employee report totals in USD and reimbursable-candidate info"
+     }
+    ]
+   },
+   {
+    "part": "c",
+    "imports": [
+     {
+      "name": "converted_lines",
+      "type": "list[ConvertedLine]",
+      "description": "Expense lines with amount_usd",
+      "from_part": "a"
+     },
+     {
+      "name": "review_queue",
+      "type": "list[Finding]",
+      "description": "All findings with severity",
+      "from_part": "b"
+     },
+     {
+      "name": "auto_approved_employees",
+      "type": "list[str]",
+      "description": "Auto-approved employees",
+      "from_part": "b"
+     },
+     {
+      "name": "batch_total_usd",
+      "type": "number",
+      "description": "Batch total in USD",
+      "from_part": "b"
+     },
+     {
+      "name": "employee_totals",
+      "type": "list[EmployeeTotal]",
+      "description": "Per-employee totals in USD",
+      "from_part": "b"
+     }
+    ],
+    "exports": [
+     {
+      "name": "controller_decisions",
+      "type": "list[Decision]",
+      "description": "Per review item expense_id and decision (approve/reject)"
+     },
+     {
+      "name": "report_path",
+      "type": "str",
+      "description": "Path of the filed <period>-expense-audit.md"
+     },
+     {
+      "name": "report_status",
+      "type": "str",
+      "description": "Report status, e.g. final or open/escalated"
+     }
+    ]
+   }
+  ]
+ },
+ "usage": {
+  "wall_s": 7.0,
+  "cost_usd": 0.010967000000000001
+ }
+}

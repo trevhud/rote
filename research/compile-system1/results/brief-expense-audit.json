@@ -1,0 +1,22 @@
+{
+ "rc": 0,
+ "brief": {
+  "cost_usd": 0.00082391,
+  "wall_s": 7.8,
+  "build_s": 7.8
+ },
+ "compile_wall_s": 1286,
+ "metadata": {
+  "cache_read_tokens": 2214479,
+  "cache_write_tokens": 153464,
+  "cost_usd": 3.1118126999999993,
+  "duration_ms": 1280629,
+  "input_tokens": 25,
+  "num_turns": 50,
+  "output_tokens": 101774,
+  "repair_rounds": 2,
+  "session_id": "fca55561-3db9-4c3c-af7e-634131165d00",
+  "usage_complete": true,
+  "usage_source": "modelUsage"
+ }
+}

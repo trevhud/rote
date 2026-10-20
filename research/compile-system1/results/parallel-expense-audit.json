@@ -1,0 +1,137 @@
+{
+ "parts": [
+  [
+   "Step 1: Convert every line to USD",
+   "Step 2: Check for duplicate submissions (MANDATORY)",
+   "Step 3: Check for late submissions (MANDATORY)"
+  ],
+  [
+   "Step 4: Audit each employee's report",
+   "Step 5: Summarize the batch"
+  ],
+  [
+   "Step 6: Controller review",
+   "Step 7: File the audit report"
+  ]
+ ],
+ "planner": {
+  "wall_s": 7.0,
+  "cost_usd": 0.010967000000000001
+ },
+ "runs": [
+  {
+   "part": "skill",
+   "rc": 0,
+   "wall_s": 869,
+   "cost_usd": 1.5192771000000003,
+   "num_turns": 30,
+   "output_tokens": 53867,
+   "cache_read_tokens": 472027,
+   "repair_rounds": 1
+  },
+  {
+   "part": "skill",
+   "rc": 0,
+   "wall_s": 761,
+   "cost_usd": 1.6627121999999999,
+   "num_turns": 30,
+   "output_tokens": 59019,
+   "cache_read_tokens": 599614,
+   "repair_rounds": null
+  },
+  {
+   "part": "skill",
+   "rc": 0,
+   "wall_s": 975,
+   "cost_usd": 2.0164988999999998,
+   "num_turns": 30,
+   "output_tokens": 73076,
+   "cache_read_tokens": 777823,
+   "repair_rounds": 1
+  }
+ ],
+ "compile_wall_s": 975,
+ "end_to_end_wall_s": null,
+ "total_cost_usd": 5.209,
+ "merge": {
+  "problems": [
+   "part a: rewired 0 input(s) to earlier parts",
+   "pipeline input `expense_lines` declared differently by two parts; kept the first",
+   "pipeline input `period` declared differently by two parts; kept the first",
+   "part b: rewired 3 input(s) to earlier parts",
+   "pipeline input `expense_lines` declared differently by two parts; kept the first",
+   "part c: rewired 9 input(s) to earlier parts"
+  ],
+  "nodes": 10,
+  "edges": 16
+ },
+ "check": {
+  "ir_valid": true,
+  "verify_ok": false,
+  "verify_errors": [
+   "(provenance):citation_not_in_skill: extracted/a_checks.py line 66 cites the skill as \"Duplicate findings: expense_id, employee, rule='duplicate', severity='block', detail\", but the skill's prose contains no such text (headings do not co",
+   "(provenance):citation_not_in_skill: extracted/c_resolve_reimbursability.py line 41 cites the skill as \"controller_decisions (list[Decision]): Per review item expense_id and decision (approve/reject)\", but the skill's prose contains no s"
+  ],
+  "tests": {
+   "passed": true,
+   "status": "passed",
+   "summary": "143 passed in 0.14s"
+  },
+  "score": {
+   "structure": {
+    "expected_nodes": 8,
+    "compiled_nodes": 10,
+    "node_recall": 0.75,
+    "node_precision": 0.6,
+    "kind_accuracy": 0.75
+   },
+   "graph": {
+    "expected_edges": 3,
+    "compiled_edges": 3,
+    "edge_precision": 0.0,
+    "edge_recall": 0.0,
+    "edge_f1": 0.0,
+    "expected_waves": 6,
+    "compiled_waves": 8,
+    "wave_order_agreement": 0.9333
+   },
+   "mandatory": {
+    "expected": 5,
+    "compiled": 10,
+    "true_positive": 5,
+    "precision": 0.5,
+    "recall": 1.0,
+    "f1": 0.6667,
+    "missed": [],
+    "spurious": [
+     "audit_employee_reports",
+     "build_batch_summary",
+     "c_resolve_reimbursability",
+     "c_validate_controller_decisions",
+     "controller_review"
+    ]
+   },
+   "fan_out": {
+    "expected": 1,
+    "compiled": 0,
+    "true_positive": 0,
+    "precision": null,
+    "recall": 0.0,
+    "f1": null,
+    "missed": [
+     "audit_report"
+    ],
+    "spurious": []
+   },
+   "gates": {
+    "expected": 1,
+    "found": 1,
+    "signal_matches": 0
+   },
+   "inputs": {
+    "precision": 0.5,
+    "recall": 0.5
+   }
+  }
+ }
+}
