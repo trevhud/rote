@@ -220,7 +220,7 @@ class Compiler:
         strict_provenance: bool = False,
         system1: bool = False,
         system1_decider: str = "rules",
-        discover_tools: bool = True,
+        tool_discovery: tool_grounding.Discovery = "named",
     ) -> None:
         """
         Parameters
@@ -282,7 +282,7 @@ class Compiler:
         self.emit_target = emit_target
         self.strict_provenance = strict_provenance
         self.system1 = system1
-        self.discover_tools = discover_tools
+        self.tool_discovery = tool_discovery
         self.system1_decider = system1_decider
 
     @property
@@ -483,7 +483,7 @@ class Compiler:
             grounding = Grounding(
                 sample=sample,
                 observations=observations,
-                tools=await self._tool_schemas(observations),
+                tools=await self._tool_schemas(observations, skill_dir),
             )
             s1_plan: system1.Plan | None = None
             if self.system1:
@@ -694,22 +694,43 @@ class Compiler:
                 verification=verification,
             )
 
-    async def _tool_schemas(self, observations: tuple[Any, ...]) -> tool_grounding.ToolSchemas:
+    async def _tool_schemas(
+        self, observations: tuple[Any, ...], skill_dir: Path
+    ) -> tool_grounding.ToolSchemas:
         """Every MCP tool's input schema rote can get, before the agent runs.
 
-        Declared schemas from a live ``tools/list`` on each registered
-        server (unless ``discover_tools`` is off: ``--no-mcp``), then
-        schemas inferred from a baseline's recorded calls for any tool
-        nothing declared. A server that cannot be listed is logged and
-        skipped.
+        Declared schemas from a live ``tools/list`` on the registered
+        servers ``tool_discovery`` allows (by default only the ones the
+        skill names: a third-party skill must not trigger authenticated
+        requests to the user's other servers), then schemas inferred from a
+        baseline's recorded calls for any tool nothing declared. A server
+        that cannot be listed is logged and skipped.
         """
+        from rote.mcp import load_registry
+
+        registered = sorted(load_registry().servers)
+        texts = [p.read_text(encoding="utf-8", errors="replace") for p in skill_dir.rglob("*.md")]
+        contact = tool_grounding.servers_to_contact(
+            registered, "\n".join(texts), self.tool_discovery
+        )
         declared: tool_grounding.ToolSchemas = {}
-        if self.discover_tools:
+        if registered:
+            left = [s for s in registered if s not in contact]
+            self._emit(
+                "log",
+                f"tool schemas: listing {', '.join(contact) or 'no server'}"
+                + (
+                    f"; not contacting {', '.join(left)} (--tool-discovery {self.tool_discovery})"
+                    if left
+                    else ""
+                ),
+            )
+        if contact:
 
             def _skip(server: str, reason: str) -> None:
                 self._emit("log", f"tool schemas: skipped server {server!r}: {reason}")
 
-            declared = await tool_grounding.discover(on_skip=_skip)
+            declared = await tool_grounding.discover(contact, on_skip=_skip)
         tools = tool_grounding.merge(declared, tool_grounding.recorded(observations))
         if tools:
             servers = sorted({s for s, _ in tools})

@@ -863,9 +863,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         strict_provenance=args.strict_provenance,
         system1=args.system1,
         system1_decider=args.system1_decider,
-        # Tool schemas come from a read-only tools/list on each registered
-        # server; --no-mcp means the compile touches no MCP server at all.
-        discover_tools=not args.no_mcp,
+        # Tool schemas come from a read-only tools/list; --no-mcp means the
+        # compile touches no MCP server at all.
+        tool_discovery="none" if args.no_mcp else args.tool_discovery,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.
@@ -1449,6 +1449,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--baseline", args.baseline),
         ("--baseline-input", args.baseline_input is not None),
         ("--sample-input", args.sample_input is not None),
+        ("--tool-discovery", args.tool_discovery != "named"),
         ("--yes", args.yes),
         ("--no-eval", args.no_eval),
         ("--no-mcp", args.no_mcp),
@@ -4102,6 +4103,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Task payload for --baseline as a JSON object file. Omit to have "
             "one derived from SKILL.md and confirmed before spending."
+        ),
+    )
+    compile_p.add_argument(
+        "--tool-discovery",
+        choices=("named", "all", "none"),
+        default="named",
+        help=(
+            "Which registered MCP servers rote sends a read-only tools/list to before "
+            "the agent runs, to ground tool argument names in each tool's own schema. "
+            "named (default): only servers whose registered name appears in the skill's "
+            "text (google_drive matches 'Google Drive'). all: every registered server, "
+            "with its stored credentials. none: no server. --no-mcp implies none. Works "
+            "on every compiler driver."
         ),
     )
     compile_p.add_argument(

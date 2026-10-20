@@ -11,6 +11,13 @@ The reading is the part of JSON Schema a tool's flat object schema uses:
 required keys present, no key the schema does not list unless it allows
 extra properties, and each value of its declared JSON type. An argument
 a server does not declare is one it rejects or ignores, never acts on.
+
+Only a flat object schema is read (:func:`checkable`). One that combines
+schemas at the top (``anyOf``, ``oneOf``, ``allOf``), points elsewhere
+with a ``$ref`` that is not a plain local definition, or lists no
+``properties`` at all says nothing this reading can check exactly, so it
+is reported as not checkable and never refuses anything: a check that
+fails a valid call is worse than none.
 """
 
 from __future__ import annotations
@@ -39,6 +46,45 @@ def is_json_type(value: Any, want: str | list[str]) -> bool:
     return False
 
 
+#: Top-level keywords whose meaning this reading does not model.
+_COMBINATORS = ("anyOf", "oneOf", "allOf", "not", "if", "then", "else")
+#: A ``$ref`` this reading resolves: a plain local definition.
+_LOCAL_REF = ("#/$defs/", "#/definitions/")
+_REF_ONLY_KEYS = {"$ref", "$defs", "definitions", "title", "description", "$schema"}
+
+
+def checkable(schema: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The flat object schema to check arguments against, or ``None``.
+
+    A top-level ``{"$ref": "#/$defs/X", "$defs": {...}}`` with nothing else
+    beside it resolves to ``X`` (pydantic emits this shape); anything less
+    simple is not resolved.
+    """
+    for _ in range(4):  # a ref to a ref, bounded
+        ref = schema.get("$ref")
+        if ref is None:
+            break
+        if not isinstance(ref, str) or set(schema) - _REF_ONLY_KEYS:
+            return None
+        prefix = next((p for p in _LOCAL_REF if ref.startswith(p)), None)
+        if prefix is None:
+            return None
+        table = schema.get(prefix[2:-1]) or {}
+        target = table.get(ref[len(prefix) :]) if isinstance(table, Mapping) else None
+        if not isinstance(target, Mapping):
+            return None
+        schema = {**target, **{k: v for k, v in schema.items() if k in ("$defs", "definitions")}}
+    else:
+        return None
+    if "$ref" in schema or any(k in schema for k in _COMBINATORS):
+        return None
+    if schema.get("type", "object") != "object":
+        return None
+    if not isinstance(schema.get("properties"), Mapping):
+        return None
+    return schema
+
+
 def allows_extra(schema: Mapping[str, Any]) -> bool:
     """Whether the schema accepts properties it does not list.
 
@@ -55,8 +101,13 @@ def names_problem(
 
     The static half: which keys go out, not their values. ``check_unknown``
     is off for a schema inferred from recorded calls, which only lists the
-    keys someone happened to send.
+    keys someone happened to send. A schema that is not :func:`checkable`
+    refuses nothing.
     """
+    view = checkable(schema)
+    if view is None:
+        return None
+    schema = view
     sent = set(names)
     properties: Mapping[str, Any] = schema.get("properties") or {}
     missing = [k for k in schema.get("required") or [] if k not in sent]
@@ -79,7 +130,10 @@ def argument_problem(
     problem = names_problem(schema, arguments, check_unknown=check_unknown)
     if problem is not None:
         return problem
-    properties: Mapping[str, Any] = schema.get("properties") or {}
+    view = checkable(schema)
+    if view is None:
+        return None
+    properties: Mapping[str, Any] = view.get("properties") or {}
     for key, value in arguments.items():
         want = (properties.get(key) or {}).get("type")
         if want is not None and not is_json_type(value, want):
