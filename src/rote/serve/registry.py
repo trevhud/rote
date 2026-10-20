@@ -30,6 +30,30 @@ REGISTRY_SCHEMA_VERSION = 1
 #: registry enforces the same one for tool names.
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
+#: Tool names ``rote serve`` reserves for its built-in tools
+#: (``rote_list_pipelines``, ``rote_describe_pipeline``, and any added
+#: later). ``rote register`` refuses a pipeline whose tool name starts with
+#: this prefix so a registered pipeline can never shadow a built-in. The
+#: server also skips such an entry if it reaches a hand-edited registry.
+BUILTIN_TOOL_PREFIX = "rote_"
+
+#: The ``runtime`` discriminator values of :data:`Trigger`, as a type the
+#: built-in ``rote_list_pipelines`` tool can offer as a filter enum.
+RuntimeName = Literal["temporal", "cloudflare", "dbos"]
+
+#: ``scheme://user:password@host`` in any URL-shaped string. The DBOS
+#: system database URL is the one trigger field that carries a credential.
+_URL_PASSWORD_RE = re.compile(r"(://[^/@:]+):[^@/]+@")
+
+
+def redact_url_password(value: str) -> str:
+    """Replace the password in a ``scheme://user:password@host`` URL with ``***``.
+
+    Strings with no userinfo password come back unchanged, so this is safe
+    to apply to every string field of a trigger.
+    """
+    return _URL_PASSWORD_RE.sub(r"\1:***@", value)
+
 
 def default_registry_path() -> Path:
     """The registry location used when ``--registry`` is not given."""
@@ -127,6 +151,21 @@ class DbosTrigger(BaseModel):
 Trigger = Annotated[
     TemporalTrigger | CloudflareTrigger | DbosTrigger, Field(discriminator="runtime")
 ]
+
+
+def redacted_trigger_dump(
+    trigger: TemporalTrigger | CloudflareTrigger | DbosTrigger,
+) -> dict[str, Any]:
+    """The trigger as a JSON-ready dict with every URL password replaced by ``***``.
+
+    This is what ``rote serve`` shows an MCP client that asks to describe a
+    pipeline: the full trigger configuration, minus credentials.
+    """
+    dump = trigger.model_dump(mode="json")
+    return {
+        key: redact_url_password(value) if isinstance(value, str) else value
+        for key, value in dump.items()
+    }
 
 
 class RegistryEntry(BaseModel):
@@ -243,6 +282,11 @@ def entry_from_pipeline(
         # names must start alphanumeric or RegistryEntry validation raises.
         else re.sub(r"[^A-Za-z0-9_-]+", "-", pipeline.name).lstrip("-_") or "pipeline"
     )
+    if tool_name.startswith(BUILTIN_TOOL_PREFIX):
+        raise ValueError(
+            f"tool name {tool_name!r} starts with {BUILTIN_TOOL_PREFIX!r}, which rote "
+            f"serve reserves for its built-in tools. Pick another name with --name."
+        )
     return RegistryEntry(
         name=tool_name,
         description=pipeline.description.strip(),

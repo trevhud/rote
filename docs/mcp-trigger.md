@@ -100,6 +100,38 @@ Each registry entry becomes two tools (three for DBOS):
   trigger a pipeline, watch it park at a gate (`status: "pending"`),
   and deliver the approval itself.
 
+#### Built-in tools
+
+Two tools are always present, registry or not, so a client can find
+out what the server offers before anything is registered (and so MCP
+directories such as Glama, which score a server by its tool
+definitions, see tools on a fresh install):
+
+- **`rote_list_pipelines`** lists every registered pipeline: name,
+  description, runtime, a one-line trigger summary, the names of its
+  trigger / status / signal tools, the `pipeline.yaml` path and the
+  registration time, plus the registry path and whether the file
+  exists. Optional `runtime` argument (`temporal`, `cloudflare`,
+  `dbos`) filters the list. An empty or missing registry returns an
+  empty `pipelines` array, not an error.
+- **`rote_describe_pipeline`** takes a pipeline `name` and returns its
+  full registry entry: the `input_schema` the trigger tool accepts, the
+  trigger configuration with any URL password replaced by `***`, and
+  the tool names. An unknown name fails with the list of registered
+  names.
+
+Both are read-only (annotated `readOnlyHint` / `idempotentHint`),
+return structured content with an `outputSchema`, and re-read the
+registry on every call, so they see a `rote register` immediately.
+
+The `rote_` prefix is reserved for built-ins. `rote register` refuses
+a tool name that starts with it (pick another with `--name`). If such
+an entry reaches a hand-edited registry anyway, the built-in keeps its
+name and the entry is left out of the tool list and of the built-ins'
+output, with one warning on stderr naming the fix. The same rule
+applies to companion names: an entry is skipped if its `<name>_status`
+or `<name>_signal` would collide with a built-in.
+
 Backends connect lazily: the server starts and lists tools even when
 the runtime is down; unreachability surfaces as a clear tool-call error
 (e.g. `Temporal at localhost:7233 ... is unreachable`). Triggering DBOS

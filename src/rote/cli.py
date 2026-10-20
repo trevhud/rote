@@ -1829,8 +1829,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     registry_path = Path(args.registry) if args.registry else default_registry_path()
     if not registry_path.exists():
         print(
-            f"rote serve: registry {registry_path} does not exist yet — serving an "
-            f"empty tool list. Register a pipeline with `rote register`.",
+            f"rote serve: registry {registry_path} does not exist yet. Serving only "
+            f"the built-in rote_list_pipelines and rote_describe_pipeline tools. "
+            f"Register a pipeline with `rote register`.",
             file=sys.stderr,
         )
 

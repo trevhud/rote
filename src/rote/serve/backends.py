@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import uuid
 from typing import Any
 
@@ -30,6 +29,7 @@ from rote.serve.registry import (
     DbosTrigger,
     RegistryEntry,
     TemporalTrigger,
+    redact_url_password,
 )
 
 #: How long to wait for a Temporal frontend connection before declaring
@@ -232,11 +232,6 @@ async def _status_cloudflare(trigger: CloudflareTrigger, workflow_id: str) -> di
 # which is why the status tool reports that state verbatim.
 
 
-def _redacted_db_url(url: str) -> str:
-    """Strip the password from a database URL for error messages."""
-    return re.sub(r"(://[^/@:]+):[^@/]+@", r"\1:***@", url)
-
-
 async def _dbos_client(trigger: DbosTrigger) -> Any:
     try:
         from dbos import DBOSClient
@@ -251,7 +246,7 @@ async def _dbos_client(trigger: DbosTrigger) -> Any:
         return await asyncio.to_thread(DBOSClient, system_database_url=trigger.system_database_url)
     except Exception as e:
         raise BackendError(
-            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"DBOS system database at {redact_url_password(trigger.system_database_url)} "
             f"is unreachable: {e}"
         ) from e
 
@@ -278,7 +273,7 @@ async def _start_dbos(
         )
     except Exception as e:
         raise BackendError(
-            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"DBOS system database at {redact_url_password(trigger.system_database_url)} "
             f"refused to enqueue workflow {trigger.workflow_name!r} on queue "
             f"{trigger.queue_name!r}: {e}"
         ) from e
@@ -298,7 +293,7 @@ async def _status_dbos(trigger: DbosTrigger, workflow_id: str) -> dict[str, Any]
         status = await handle.get_status()
     except Exception as e:
         raise BackendError(
-            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"DBOS system database at {redact_url_password(trigger.system_database_url)} "
             f"could not retrieve workflow {workflow_id!r}: {e}"
         ) from e
     finally:
@@ -331,7 +326,7 @@ async def _signal_dbos(
         await client.send_async(workflow_id, payload, topic=signal)
     except Exception as e:
         raise BackendError(
-            f"DBOS system database at {_redacted_db_url(trigger.system_database_url)} "
+            f"DBOS system database at {redact_url_password(trigger.system_database_url)} "
             f"could not deliver signal {signal!r} to workflow {workflow_id!r}: {e}"
         ) from e
     finally:

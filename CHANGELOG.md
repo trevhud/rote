@@ -9,6 +9,32 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`rote serve` always exposes two built-in tools.** With no registry
+  file the server used to answer `tools/list` with nothing, which left
+  MCP directories (Glama scores a server by its tool definitions) with
+  no tool to score and a fresh install with nothing to call.
+  `rote_list_pipelines` lists every registered pipeline (name,
+  description, runtime, trigger summary, trigger/status/signal tool
+  names, `pipeline.yaml` path, registration time) plus the registry path
+  and whether the file exists, with an optional `runtime` filter. An
+  empty registry returns an empty list. `rote_describe_pipeline` returns
+  one entry's input schema and trigger configuration with URL passwords
+  replaced by `***`, and names the registered pipelines when asked for
+  an unknown one. Both are read-only, return structured content with an
+  output schema, and re-read the registry per call. The `rote_` prefix
+  is reserved: `rote register` refuses it, and an entry in a hand-edited
+  registry whose trigger or companion name collides with a built-in is
+  skipped with one stderr warning instead of shadowing it.
+
+### Fixed
+- A `tools/list` or tool call that landed while the registry file was
+  corrupt (hand-edit typo, torn write) raised inside the provider and
+  FastMCP answered with no tools. Only the background watcher tolerated
+  a corrupt file. Every read path now logs the parse error and keeps
+  serving the previous entries, and the next read retries, so fixing
+  the file recovers the server without a restart.
+
 ## [0.15.0] - 2026-10-19
 
 ### Upgrading from 0.14
