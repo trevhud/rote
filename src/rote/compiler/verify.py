@@ -76,7 +76,8 @@ from rote.contracts import (
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
-from rote.vendor_specs.docs import unfetched_sources
+from rote.vendor_specs.docs import DOCS_DIRNAME, unfetched_sources
+from rote.vendor_specs.grounding import docs_grounding_findings
 
 #: Wall-clock cap on one generated-test run. Pure-function tests are
 #: millisecond-scale, so hitting this means an infinite loop, which the
@@ -916,6 +917,23 @@ def _verify(
         findings += spec_findings(spec_checks)
         if web_research is not None and web_research.reported:
             findings += unfetched_sources(root, web_research.was_fetched)
+        elif any((root / DOCS_DIRNAME).glob("*.json")):
+            # Said, not skipped in silence: this lane cannot report its fetches.
+            findings.append(
+                ContractFinding(
+                    node_id="(deliverable)",
+                    kind="docs_spec_fetches_unreported",
+                    severity="warning",
+                    message=(
+                        "the compile's docs specs were not checked against the pages it "
+                        "fetched: this driver does not report its web fetches"
+                    ),
+                    path=DOCS_DIRNAME,
+                )
+            )
+        findings += docs_grounding_findings(
+            root, Path(skill_dir) if skill_dir is not None else None, spec_store.root / "docs-pages"
+        )
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     if grounding is not None:

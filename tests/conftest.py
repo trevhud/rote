@@ -124,6 +124,8 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # injected fetch, never the network, and never the developer's cache.
     monkeypatch.setenv("ROTE_SPEC_CACHE_DIR", str(tmp_path / "vendor-specs"))
     monkeypatch.setattr("rote.vendor_specs.store.http_get_json", _offline_spec_fetch)
+    # Nor fetch the pages a docs spec cites (rote.vendor_specs.grounding).
+    monkeypatch.setattr("rote.vendor_specs.grounding.http_get_text", _offline_page_fetch)
     # Nor install an app's vendor libraries (rote.vendor_specs.deps).
     monkeypatch.setattr("rote.vendor_specs.deps._run_uv", _no_package_install)
 
@@ -138,6 +140,12 @@ def _offline_price_fetch(*args: object, **kwargs: object) -> object:
     from rote.eval.pricing import PricingError
 
     raise PricingError("tests never fetch live prices")
+
+
+def _offline_page_fetch(url: str) -> str:
+    from rote.vendor_specs.grounding import PageUnavailable
+
+    raise PageUnavailable(f"tests never fetch docs pages ({url})")
 
 
 def _offline_spec_fetch(url: str) -> object:
