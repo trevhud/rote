@@ -242,3 +242,33 @@ def occupied_ports(*ports: int) -> Iterator[None]:
     finally:
         for sock in held:
             sock.close()
+
+
+def fill_system1_judges(work: Path) -> None:
+    """Write what the System-1 text agent writes for each judge (a prompt and
+    output fields) into ``work``'s text.yaml, and settle it.
+
+    A bare System-1 skeleton is not a deliverable: its judges have no prompt
+    and an output schema with no properties, which every adapter refuses at
+    emit (structured outputs cannot express a free-form object)."""
+    import yaml
+
+    from rote.compiler.system1.enforce import enforce
+
+    doc = yaml.safe_load((work / "pipeline.yaml").read_text())
+    text = {
+        n["id"]: {
+            "signature_spec": {
+                "prompt": "Decide from {{ request }}.",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"verdict": {"type": "string"}},
+                    "required": ["verdict"],
+                },
+            }
+        }
+        for n in doc["nodes"]
+        if n["kind"] == "llm_judge"
+    }
+    (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
+    enforce(work, final=True)

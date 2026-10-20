@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -40,6 +41,33 @@ def _serialize(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     return obj
+
+
+def _not_json(value: Any, path: str = "result") -> str | None:
+    """Where ``value`` stops being plain JSON, or None when it is JSON throughout.
+
+    A step result crosses a durable boundary (a DBOS row, a Workers step, a
+    JSON run result), so a set, a datetime or an object there either fails
+    or silently turns into its ``repr``: a real compile's duplicate check
+    returned ``{'EXP-2412'}``, a Python set, and the run reported the string
+    instead of the list."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return None
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            where = _not_json(item, f"{path}[{i}]")
+            if where:
+                return where
+        return None
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return f"{path} has a {type(key).__name__} key {key!r}"
+            where = _not_json(item, f"{path}.{key}")
+            if where:
+                return where
+        return None
+    return f"{path} is a {type(value).__name__}"
 
 
 class BindingError(Exception):
@@ -112,10 +140,87 @@ def _mcp_result(step: dict[str, Any], arguments: dict[str, Any]) -> Any:
     return _MISSING
 
 
+#: Probe values by shape: what the finding calls it, and a fresh empty value.
+_SHAPES: dict[str, tuple[str, Any]] = {
+    "list": ("a JSON list", list),
+    "text": ("text", str),
+    "object": ("an object", dict),
+}
+#: The errors that mean code treated a list or a string as a dict. Any other
+#: AttributeError or TypeError is about something else and is no verdict.
+_DICT_ASSUMPTION = re.compile(
+    r"'(?:list|str)' object has no attribute '(?:get|keys|items|values|setdefault|pop)'"
+    r"|list indices must be integers or slices, not str"
+    r"|string indices must be integers"
+)
+
+
+def _probe_shapes(
+    step: dict[str, Any],
+    sample: dict[str, Any],
+    results: dict[str, Any],
+    unrecorded: dict[str, list[str]],
+    root: Path,
+) -> dict[str, Any] | None:
+    """Run a code step that reads an unrecorded MCP result whole, on a list and on text.
+
+    rote knows a tool's input schema, never its result's shape, and MCP
+    tools commonly return a bare JSON list (a real Gmail search_threads
+    did). A consumer that only works on a dict crashes on every real run,
+    and nothing before it would say so: 7 of 9 real ops-report compiles
+    called ``.get("threads")`` on that list. A tool that answers in text
+    (Drive's read_file_content returns CSV) reaches the code as a string, and
+    the next compile called ``.get`` on that. The probe calls the step once
+    with an empty list and once with an empty string in place of each
+    unrecorded result. Only a crash that assumes a dict counts
+    (AttributeError, TypeError). Any other outcome says nothing about the
+    real data, so the step stays not reached and its result is never used
+    downstream.
+    """
+    if step["kind"] != "call" or step["fan_param"] is not None:
+        return None
+    probed = [b for b in step["bindings"] if b[1] == "node" and b[2] in unrecorded and b[3] is None]
+    others = [b for b in step["bindings"] if b not in probed]
+    if not probed:
+        return None
+    # An other input whose node did not run cannot resolve (KeyError below):
+    # such a consumer is never called, so it gets no verdict.
+    try:
+        payload = {}
+        for binding in others:
+            value = _resolve(binding, sample, results)
+            if value is not _MISSING:
+                payload[binding[0]] = value
+        fn = getattr(importlib.import_module(step["module"]), step["symbol"])
+    except (Exception, SystemExit):  # noqa: BLE001 (no verdict on made-up data)
+        return None
+    shapes = [s for s in _SHAPES if any(s in unrecorded[b[2]] for b in probed)]
+    for shape in shapes:
+        label, empty = _SHAPES[shape]
+        try:
+            _call(fn, payload | {b[0]: empty() for b in probed} | (step["constants"] or {}))
+        except (AttributeError, TypeError) as e:
+            if not _DICT_ASSUMPTION.search(str(e)):
+                continue
+            return {
+                "status": "shape_assumption",
+                "upstream": sorted({b[2] for b in probed}),
+                "shape": label,
+                "type": type(e).__name__,
+                "message": str(e)[:300],
+                "at": _location(e, root),
+            }
+        except (Exception, SystemExit):  # noqa: BLE001 (no verdict on made-up data)
+            continue
+    return None
+
+
 def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
     sample = plan["sample"]
     results: dict[str, Any] = {}
     report: dict[str, Any] = {}
+    #: MCP nodes that ran with no recorded result, and the shapes to probe.
+    unrecorded: dict[str, list[str]] = {}
     for step in plan["steps"]:
         node_id = step["id"]
         if step["kind"] == "skip":
@@ -123,7 +228,10 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             continue
         not_run = [b[2] for b in step["bindings"] if b[1] == "node" and b[2] not in results]
         if not_run:
-            report[node_id] = {"status": "not_reached", "upstream": sorted(set(not_run))}
+            report[node_id] = _probe_shapes(step, sample, results, unrecorded, root) or {
+                "status": "not_reached",
+                "upstream": sorted(set(not_run)),
+            }
             continue
         try:
             payload = {}
@@ -138,6 +246,7 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 output = _mcp_result(step, arguments)
                 if output is _MISSING:
                     report[node_id] = {"status": "no_recording", "arguments": arguments}
+                    unrecorded[node_id] = step.get("probe_shapes") or ["list", "text"]
                     continue
                 results[node_id] = output
                 report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}
@@ -155,7 +264,10 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                         f"fan_out over `{fan}` expected a list, got {type(items).__name__}"
                     )
                 output = [_serialize(_call(fn, {**payload, fan: item})) for item in items]
-            json.dumps(output, default=str)  # a step result must cross a durable boundary
+            where = _not_json(output)
+            if where:
+                report[node_id] = {"status": "not_json", "message": where}
+                continue
             results[node_id] = output
             report[node_id] = {"status": "ok"}
         except BindingError as e:

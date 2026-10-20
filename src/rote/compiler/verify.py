@@ -75,6 +75,7 @@ from rote.contracts import (
 )
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
+from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 
 #: Wall-clock cap on one generated-test run. Pure-function tests are
 #: millisecond-scale, so hitting this means an infinite loop, which the
@@ -156,7 +157,10 @@ def generated_test_env(artifact_dir: Path, home: Path) -> dict[str, str]:
 
 
 def run_generated_tests(
-    artifact_dir: Path | str, *, trust_skill: bool = False
+    artifact_dir: Path | str,
+    *,
+    trust_skill: bool = False,
+    extra_paths: tuple[Path, ...] = (),
 ) -> GeneratedTests | None:
     """Run ``<artifact_dir>/tests`` with pytest, if there is anything to run.
 
@@ -213,7 +217,11 @@ def run_generated_tests(
         ]
 
     run = run_confined(
-        root, _pytest_args, trust_skill=trust_skill, timeout=GENERATED_TESTS_TIMEOUT_SECONDS
+        root,
+        _pytest_args,
+        trust_skill=trust_skill,
+        timeout=GENERATED_TESTS_TIMEOUT_SECONDS,
+        extra_paths=extra_paths,
     )
     if run.unconfined_reason is not None:
         return GeneratedTests(
@@ -265,6 +273,7 @@ def run_confined(
     trust_skill: bool,
     timeout: float,
     read_back: tuple[str, ...] = (),
+    extra_paths: tuple[Path, ...] = (),
 ) -> ConfinedRun:
     """Run the interpreter on agent-written code in ``root``, confined.
 
@@ -275,6 +284,9 @@ def run_confined(
     :func:`generated_test_env`; the OS sandbox is
     :mod:`rote.compiler.sandbox`, skipped only with ``trust_skill``.
     ``read_back`` names scratch files to return in :attr:`ConfinedRun.files`.
+    ``extra_paths`` are import roots the code also needs (the app's vendor
+    libraries, :mod:`rote.vendor_specs.deps`): on ``PYTHONPATH``, and
+    readable inside the sandbox.
     """
     from rote.compiler import sandbox
 
@@ -283,6 +295,11 @@ def run_confined(
         box, why = sandbox.detect()
         if box is None:
             return ConfinedRun(unconfined_reason=why)
+        unsafe = sandbox.refusal(sandbox.current_layout(extra_paths))
+        if unsafe is not None:
+            return ConfinedRun(
+                unconfined_reason=f"the vendor libraries cannot be confined: {unsafe}"
+            )
     try:
         with tempfile.TemporaryDirectory(prefix="rote-test-") as scratch_str:
             scratch = Path(scratch_str).resolve()
@@ -290,15 +307,22 @@ def run_confined(
             home.mkdir()
             args = python_args(scratch)
             env = generated_test_env(root, home)
+            extra = [str(p) for p in extra_paths]
             if box is None:
+                env["PYTHONPATH"] = os.pathsep.join([str(root), *extra])
                 argv = [sys.executable, *args]
             else:
                 # -S: no site processing, so no .pth file (which can point
                 # anywhere and run code) is read. The site-packages dirs that
                 # hold pytest are passed explicitly instead.
-                env["PYTHONPATH"] = os.pathsep.join([str(root), *sandbox.import_path()])
+                env["PYTHONPATH"] = os.pathsep.join([str(root), *extra, *sandbox.import_path()])
                 argv, env = sandbox.wrap(
-                    box, [sandbox.launch_executable(), "-S", *args], root, scratch, env
+                    box,
+                    [sandbox.launch_executable(), "-S", *args],
+                    root,
+                    scratch,
+                    env,
+                    extra_read_dirs=extra_paths,
                 )
             proc = subprocess.run(
                 argv, cwd=root, env=env, capture_output=True, text=True, timeout=timeout
@@ -444,29 +468,49 @@ class EmitTarget:
 
 
 def judge_spec_findings(pipeline: Pipeline) -> list[ContractFinding]:
-    """Every llm_judge without a ``signature_spec``.
+    """Every llm_judge whose ``signature_spec`` is missing or still the skeleton's.
 
     The legacy ``signature`` path only emits on the Python runtimes. The
     TypeScript adapters need the spec, and a logged-in compile emits
     cloudflare by default, so a judge without one is a pipeline that breaks
     the moment it is emitted for another runtime. A real System-1 compile
-    shipped exactly that and failed at the cloudflare emit.
+    shipped exactly that and failed at the cloudflare emit. System-1 now
+    writes each spec's input schema itself; the agent owes the prompt and
+    the output fields, and an empty one of either is a judge that answers
+    nothing useful.
     """
-    return [
-        ContractFinding(
-            node_id=n.id,
-            kind="missing_signature_spec",
-            severity="error",
-            message=(
-                f"llm_judge `{n.id}` has no signature_spec. Write one for it in "
-                "system1/text.yaml (input_schema, output_schema, prompt, client), so "
-                "the pipeline emits on every runtime, not only the Python ones"
-            ),
-            path="pipeline.yaml",
+    findings: list[ContractFinding] = []
+    for n in pipeline.nodes:
+        if n.kind.value != "llm_judge":
+            continue
+        spec = n.signature_spec
+        missing = (
+            ["signature_spec"]
+            if spec is None
+            else [
+                part
+                for part, empty in (
+                    ("a prompt", not spec.prompt.strip()),
+                    ("output fields", not spec.output_schema.get("properties")),
+                )
+                if empty
+            ]
         )
-        for n in pipeline.nodes
-        if n.kind.value == "llm_judge" and n.signature_spec is None
-    ]
+        if missing:
+            findings.append(
+                ContractFinding(
+                    node_id=n.id,
+                    kind="incomplete_signature_spec",
+                    severity="error",
+                    message=(
+                        f"llm_judge `{n.id}` is missing {' and '.join(missing)}. Write it "
+                        "under its signature_spec in system1/text.yaml (prompt, "
+                        "output_schema with properties), so the judge emits on every runtime"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+    return findings
 
 
 def emit_findings(
@@ -913,7 +957,26 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
-    tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
+    vendor_paths: tuple[Path, ...] = ()
+    if api_backend and run_tests:
+        # The agent's tests import the vendor's SDK, which rote does not
+        # ship: without it they fail on an ImportError, and the agent
+        # rewrites working code to satisfy an environment problem.
+        try:
+            deps = install_vendor_deps(root)
+            vendor_paths = (deps,) if deps is not None else ()
+        except VendorDepsError as e:
+            questions.append(
+                ContractQuestion(
+                    "(deliverable)",
+                    f"the generated tests ran without the app's vendor libraries: {e}",
+                )
+            )
+    tests = (
+        run_generated_tests(root, trust_skill=trust_skill, extra_paths=vendor_paths)
+        if run_tests
+        else None
+    )
     return Verification(
         pipeline=pipeline,
         findings=findings,

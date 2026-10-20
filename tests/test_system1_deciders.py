@@ -139,11 +139,44 @@ def test_the_request_is_the_pre_registered_one(
         "Step 2: Tidy the notes",
         "Step 3: Score the leads",
     ]
-    variants = [_request(c["body"])["questions"] for c in calls[:3]]
-    assert [v["kind"]["criteria"] for v in variants] == [dm.KINDS[k] for k in ("v0", "v1", "v2")]
-    assert [v["human"]["instructions"] for v in variants] == [
-        dm.HUMAN[k] for k in ("v0", "v1", "v2")
+    # The calls run in parallel, so group them by step instead of trusting order.
+    step1 = [
+        _request(c["body"])["questions"]
+        for c in calls
+        if _request(c["body"])["state"]["this_step"]["title"] == "Step 1: Total the batch"
     ]
+    pairs = sorted((q["kind"]["criteria"] == dm.KINDS[v], v) for q in step1 for v in dm.KINDS)
+    assert sorted(v for ok, v in pairs if ok) == ["v0", "v1", "v2"]
+    assert sorted(q["human"]["instructions"] for q in step1) == sorted(dm.HUMAN.values())
+    for q in step1:
+        variant = next(v for v, c in dm.KINDS.items() if c == q["kind"]["criteria"])
+        assert q["human"]["instructions"] == dm.HUMAN[variant]
+
+
+def test_the_calls_run_in_parallel(monkeypatch: pytest.MonkeyPatch, creds: None) -> None:
+    """Nine independent calls must not take nine call latencies: the first two
+    only return once both are in flight, which a serial loop never reaches."""
+    import tempfile
+    import threading
+
+    from rote.compiler.system1.parse import parse_skill
+
+    both_in_flight = threading.Barrier(2, timeout=5)
+    arrivals = {"n": 0}
+    lock = threading.Lock()
+
+    def meet(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        with lock:
+            arrivals["n"] += 1
+            first_two = arrivals["n"] <= 2
+        if first_two:
+            both_in_flight.wait()  # BrokenBarrierError when the calls are serial
+        return _answers({**ZERO, "pure_function": 1.0}, 0.0)
+
+    monkeypatch.setattr(dm, "_post", meet)
+    with tempfile.TemporaryDirectory() as t:
+        verdicts = dm.decide(CLEF, parse_skill(_skill(Path(t))))
+    assert set(verdicts.by_unit) == {0, 1, 2}
 
 
 def test_the_thresholds_are_the_frozen_ones() -> None:
@@ -203,6 +236,8 @@ def test_confident_answers_win_and_unsure_ones_go_to_review(
     assert decisions["cost_usd"] == round(9 * 1000 / 1e6 * model.price_per_m_input, 6)
     report = system1.report_extras(work, plan).preamble
     assert f"rules and the {model.label} decision model" in report
+    spent = round(9 * 1000 / 1e6 * model.price_per_m_input, 4)
+    assert f"Its model calls cost ${spent:.4f} ({model.label})" in report
 
 
 @MODELS
@@ -218,7 +253,7 @@ async def test_asking_for_a_model_without_credentials_fails_the_compile(
 
     monkeypatch.setattr(dm, "_post", no_call)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
-    compiler = Compiler(system1_decider=model.name)
+    compiler = Compiler(system1_decider=model.name, system1_tiebreak="none")
     with pytest.raises(
         CompilerError, match=f"--decider {model.name} needs CLOUDFLARE_ACCOUNT_ID and"
     ):
@@ -262,8 +297,23 @@ def test_a_refused_request_fails_at_once(monkeypatch: pytest.MonkeyPatch, creds:
     assert attempts["n"] == 1
 
 
+def test_an_empty_gateway_balance_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import urllib.error
+
+    def raise_402(req: object, timeout: float) -> object:
+        raise urllib.error.HTTPError(
+            "u", 402, "m", {}, io.BytesIO(b'{"errors":[{"message":"Insufficient balance"}]}')
+        )  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dm.urllib.request, "urlopen", raise_402)
+    with pytest.raises(dm.DeciderRejected, match="HTTP 402.*Unified Billing credits"):
+        dm._post("https://example.invalid", "t", {})
+
+
 @pytest.mark.parametrize(
-    ("code", "rejected"), [(401, True), (403, True), (404, True), (429, False), (500, False)]
+    ("code", "rejected"),
+    [(401, True), (402, True), (403, True), (404, True), (429, False), (500, False)],
 )
 def test_http_status_maps_to_retry_or_not(
     monkeypatch: pytest.MonkeyPatch, code: int, rejected: bool

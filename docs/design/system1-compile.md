@@ -283,6 +283,64 @@ that is a decision for the user, not this change. The decider is a layered
 setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
 `--decider`), and `rote init` asks for it.
 
+## The Haiku tie-break (`--tiebreak haiku`, opt-in)
+
+After the decider, a step whose kind decision is still below
+`REVIEW_BELOW` (0.7) is unsure: the rules had no clear signal, or a
+decision model disagreed below its threshold. The unsure steps of one
+compile go to `claude-haiku-5-5` in one schema-locked call
+(`src/rote/compiler/system1/tiebreak.py`), with node-kinds.md, the step
+list, and each unsure step's text, rule guess and model guess. Haiku's node
+list replaces the conservative default for those steps and nothing else.
+Its decisions are settled (confidence 0.7, the rule names the model and its
+reason) and are recorded under `tiebreak` in decisions.json with their usage
+and cost.
+
+The call bills the way the compile does: `claude -p` on the subscription
+under the claude driver, the api driver's own client (gateway base URL,
+headers and model-id prefix) under `--agent api`, otherwise an Anthropic
+key, then the CLI. With none of them the compile fails and names
+`--tiebreak none`. It goes through `structured_call` in
+`rote.inference._runtime_helper`, the code emitted judges run: a forced
+tool call, no temperature, all four usage buckets.
+
+This replaces the earlier offline replay (`route_haiku.py`), which scored
+an older rule set (0.456 to 0.531 kind). Nothing was fitted for it: the
+threshold is the existing `REVIEW_BELOW`. Measured on skeletons
+(`score_deciders.py score --tiebreak 3`, three trials each, means):
+
+| split | decider | kind | + tie-break | kind mix | + tie-break | gates, false gates (+ tie-break) | unsure steps | tie-break $ / compile |
+|---|---|---|---|---|---|---|---|---|
+| dev (5) | rules | 0.64 | 0.63 | 0.78 | 0.81 | 4/4, 1 (same) | 14 | 0.001 |
+| dev (5) | clef | 0.64 | 0.64 | 0.78 | 0.80 | 4/4, 2 (same) | 16 | 0.001 |
+| dev (5) | jev | 0.62 | 0.67 | 0.78 | 0.77 | 4/4, 2 (same) | 20 | 0.001 |
+| held-out (3) | rules | 0.49 | **0.68** | 0.71 | 0.77 | 2/3, 0 (one trial 1) | 8 | 0.001 |
+| held-out (3) | clef | 0.66 | **0.74** | 0.74 | 0.76 | 3/3, 0 (same) | 6 | 0.001 |
+| held-out (3) | jev | 0.67 | **0.72** | 0.72 | 0.74 | 3/3, 1 (same) | 5 | 0.001 |
+
+On the held-out skills the tie-break adds 0.19 kind accuracy to the rules,
+0.08 to Clef and 0.05 to Jev. On dev it is flat for rules and Clef (the
+rules were written on those skills, so their unsure steps are the hard
+ones) and adds 0.05 to Jev. Clef plus the tie-break is the best held-out
+row. It never finds the gate the rules miss: gates are a decider's job.
+One call adds about 6 s to a compile.
+
+**Fidelity decides the default, and it says off.** The bar for default-on
+was fidelity at least the rules' level over repeated compiles. Cached API
+driver (#180), Sonnet 4.6, 3 compiles per cell, `rote bench --fidelity`:
+
+| skill | rules | rules + Haiku |
+|---|---|---|
+| expense-audit | 0.915 (0.903 to 0.921) | 0.909 (0.903 to 0.921) |
+| ops-report | 0.858 (0.823 to 0.879) | 0.855 (0.833 to 0.889) |
+
+The difference is inside the run-to-run spread, but it is not at least the
+rules' level. So `--tiebreak none` is the default, and `--tiebreak haiku` (or
+`tiebreak: haiku`) turns it on. Its gain is in kind accuracy on held-out
+skeletons, which have no fidelity cases, so it stays available until a
+fidelity case shows it helping behavior. Cost per compile was $1.2 to $1.9
+either way. The Haiku call itself was $0.0007 to $0.0008.
+
 ## Non-generative models, measured
 
 - **Local embeddings, nearest neighbor**, leave one skill out (52 labeled

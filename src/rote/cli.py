@@ -51,7 +51,8 @@ from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.compiler.provenance import PROVENANCE_NODE
-from rote.compiler.system1 import DECIDERS
+from rote.compiler.system1 import DECIDERS, TIEBREAKS
+from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
 from rote.extras import EXTRAS, install_hint
@@ -645,6 +646,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         model_rv = rote_config.resolve("model", args.model, layers=layers)
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
         decider_rv = rote_config.resolve("decider", args.decider, layers=layers)
+        tiebreak_rv = rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -683,6 +685,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     args.effort = effort_rv.value
     try:
         args.decider = _local_decider(args, decider_rv, "compile")
+        args.tiebreak = _local_tiebreak(args, tiebreak_rv)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -894,6 +897,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         strict_provenance=args.strict_provenance,
         system1=args.system1,
         system1_decider=args.decider,
+        system1_tiebreak=args.tiebreak,
         # Tool schemas come from a read-only tools/list; --no-mcp means the
         # compile touches no MCP server at all.
         tool_discovery="none" if args.no_mcp else args.tool_discovery,
@@ -1489,6 +1493,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--strict-provenance", args.strict_provenance),
         ("--no-system1", args.system1 is False),
         ("--decider", args.decider is not None),
+        ("--tiebreak", args.tiebreak is not None),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2637,6 +2642,9 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         decider = _local_decider(
             args, rote_config.resolve("decider", args.decider, layers=layers), "analyze"
         )
+        tiebreak = _local_tiebreak(
+            args, rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
+        )
     except (rote_config.ConfigError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -2660,6 +2668,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         strict_provenance=args.strict_provenance,
         system1=args.system1,
         system1_decider=decider,
+        system1_tiebreak=tiebreak,
     )
 
     out_ctx: Any = (
@@ -3541,6 +3550,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["effort"].source,
         ),
         "decider": (resolved["decider"].value or "rules", resolved["decider"].source),
+        "tiebreak": (
+            resolved["tiebreak"].value or DEFAULT_TIEBREAK,
+            resolved["tiebreak"].source,
+        ),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3559,6 +3572,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "effort": resolved["effort"].value,
             # Concrete like runtime: unset means rules, which is what runs.
             "decider": resolved["decider"].value or "rules",
+            "tiebreak": resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -3961,8 +3975,7 @@ def _local_decider(args: argparse.Namespace, resolved: Resolved, command: str) -
     compiles, so this one compile says it does not apply and uses none.
     """
     decider = resolved.value or "rules"
-    runs_system1 = args.system1 if args.system1 is not None else not getattr(args, "update", False)
-    if decider == "rules" or runs_system1:
+    if decider == "rules" or _runs_system1(args):
         return decider
     why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
     if resolved.source == "flag":
@@ -3975,6 +3988,23 @@ def _local_decider(args: argparse.Namespace, resolved: Resolved, command: str) -
         file=sys.stderr,
     )
     return "rules"
+
+
+def _runs_system1(args: argparse.Namespace) -> bool:
+    """Whether this compile takes the System-1 path (the Compiler's own rule)."""
+    return bool(args.system1) if args.system1 is not None else not getattr(args, "update", False)
+
+
+def _local_tiebreak(args: argparse.Namespace, resolved: Resolved) -> str:
+    """The tie-break a local compile (or analyze) uses: the layered ``tiebreak``
+    setting, else :data:`DEFAULT_TIEBREAK` (``none``). A ``--tiebreak`` flag on
+    a compile that does not run System-1 is a usage error, like ``--decider``.
+    A configured value is a standing preference and needs no note: on that
+    path nothing would ask."""
+    if resolved.source == "flag" and not _runs_system1(args):
+        why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
+        raise ValueError(f"--tiebreak applies to System-1 compiles, and {why} does not run one")
+    return resolved.value or DEFAULT_TIEBREAK
 
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
@@ -4005,7 +4035,22 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "and 'jev' (Typesafe) are decision models: each answers where it is confident, "
             "and the rules decide elsewhere. Both send every step's text to your "
             "Cloudflare account's Workers AI and need CLOUDFLARE_ACCOUNT_ID and "
-            "CLOUDFLARE_API_TOKEN. Clef costs about $0.005 a compile and Jev about $0.001"
+            "CLOUDFLARE_API_TOKEN. Clef costs about $0.005 a compile, billed to Workers AI. "
+            "Jev costs about $0.001, billed to the account's AI Gateway credits"
+        ),
+    )
+    p.add_argument(
+        "--tiebreak",
+        choices=TIEBREAKS,
+        default=None,
+        help=(
+            "Who decides the steps System-1 is still unsure of (default: the `tiebreak` "
+            f"setting, else {DEFAULT_TIEBREAK}). 'haiku' asks Claude Haiku in one "
+            "schema-locked call, "
+            "billed like the compile: claude -p on your subscription under the claude "
+            "driver, the api driver's own client under --agent api, otherwise an "
+            "Anthropic key or the claude CLI. 'none' makes no call: those steps take "
+            "a conservative default and are listed for review"
         ),
     )
 

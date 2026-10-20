@@ -58,6 +58,8 @@ from rote.compiler.grounding import (
 )
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
+from rote.compiler.system1 import TIEBREAKS
+from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
@@ -79,6 +81,13 @@ PROBE_CONTEXT_DIRNAME = "probe-context"
 #: for repair before the run fails with the last validation error. Caps
 #: the token cost of the repair loop.
 MAX_VALIDATION_REPAIRS = 2
+#: Appended to a System-1 IR-validation repair: where the agent's fix belongs.
+SYSTEM1_REPAIR_NOTE = (
+    "\n\nOn this compile rote restores every decision in pipeline.yaml after each "
+    "stop and then applies system1/text.yaml over it: fix the text fields you wrote "
+    "(descriptions, a judge's prompt and output_schema) in system1/text.yaml, not in "
+    "pipeline.yaml."
+)
 
 COMPILE_METRICS_FILENAME = "compile-metrics.json"
 
@@ -241,6 +250,7 @@ class Compiler:
         strict_provenance: bool = False,
         system1: bool | None = None,
         system1_decider: str = "rules",
+        system1_tiebreak: str = DEFAULT_TIEBREAK,
         tool_discovery: tool_grounding.Discovery = "named",
     ) -> None:
         """
@@ -304,6 +314,11 @@ class Compiler:
             Who decides step kinds and gates on the System-1 path
             (:data:`rote.compiler.system1.DECIDERS`). A model decider with
             System-1 off is an error, never ignored.
+        system1_tiebreak
+            ``"haiku"``: on the System-1 path, the steps still unsure after
+            the decider go to Haiku in one schema-locked call, billed the way
+            the compile's driver bills (:mod:`rote.compiler.system1.tiebreak`).
+            ``"none"`` (the default): no call.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -317,6 +332,9 @@ class Compiler:
         self.system1 = system1
         self.tool_discovery = tool_discovery
         self.system1_decider = system1_decider
+        if system1_tiebreak not in TIEBREAKS:
+            raise CompilerError(f"unknown --tiebreak {system1_tiebreak!r}; choose from {TIEBREAKS}")
+        self.system1_tiebreak = system1_tiebreak
 
     @property
     def api_backend(self) -> bool:
@@ -559,18 +577,38 @@ class Compiler:
             s1_plan: system1.Plan | None = None
             if use_system1:
                 try:
+                    lane = (
+                        system1.tiebreak.lane_for(driver)
+                        if self.system1_tiebreak == "haiku"
+                        else None
+                    )
                     s1_plan = system1.prepare(
                         skill_dir,
                         work_dir,
                         self.system1_decider,
                         sample=sample,
                         tools=grounding.tools,
+                        tiebreak_lane=lane,
+                        # rote's own rubric, whichever compiler skill the agent gets.
+                        rubric=_default_compiler_skill_dir() / "references" / "node-kinds.md",
                     )
-                except (system1.UnsafeSkillText, system1.DeciderUnavailable) as e:
+                except (
+                    system1.UnsafeSkillText,
+                    system1.DeciderUnavailable,
+                    system1.TieBreakUnavailable,
+                ) as e:
                     raise CompilerError(str(e)) from e
+                tb = s1_plan.tiebreak
+                if tb is not None:
+                    cost = "cost unknown" if tb.cost_usd is None else f"${tb.cost_usd:.4f}"
+                    self._emit(
+                        "log",
+                        f"system1: tie-break asked {tb.model} about {len(tb.asked)} unsure "
+                        f"step(s) via {tb.lane} ({cost})",
+                    )
                 self._emit(
                     "log",
-                    f"system1: decided {len(s1_plan.nodes)} node(s) with rules; "
+                    f"system1: decided {len(s1_plan.nodes)} node(s); "
                     f"{len(s1_plan.review)} decision(s) below {system1.REVIEW_BELOW} "
                     "confidence go to the report",
                 )
@@ -914,6 +952,11 @@ class Compiler:
             instruction = verification.repair_instruction(artifact_dir)
             if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
                 return None
+            if portable_judges and verification.pipeline_error is not None:
+                # System-1 restores pipeline.yaml's decisions after every stop
+                # and lays text.yaml over it, so an edit to pipeline.yaml alone
+                # is undone and the same error comes back.
+                instruction += SYSTEM1_REPAIR_NOTE
             attempts += 1
             if verification.pipeline_error is not None:
                 what = "pipeline.yaml failed validation"

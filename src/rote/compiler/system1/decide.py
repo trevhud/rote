@@ -164,6 +164,9 @@ class Plan:
     #: one. Data outranks the skill's wording: its keys become the input
     #: schema and the gates' payload keys.
     sample: Any = None
+    #: The tie-break's answers and cost (:class:`rote.compiler.system1.tiebreak.TieBreak`),
+    #: when one ran.
+    tiebreak: Any = None
 
 
 # ── kinds and segmentation ────────────────────────────────────────────────
@@ -228,6 +231,10 @@ def _segment(
         )
     if s.get("write") and _names_a_system(u, registry):
         out.append(("write", "external_call", _kind_confidence(s, "write"), "side-effect signal"))
+    # A read from a named API or product the parser's fetch signal missed
+    # ("query the AniList GraphQL API"). Never a second call in one step.
+    if _reads_a_named_api(u.text) and not any(k == "external_call" for _, k, _, _ in out):
+        out.insert(0, ("fetch", "external_call", 0.8, "reads from a named API or product"))
     if not out:
         out.append(("process", "pure_function", 0.3, "no signal: most deterministic kind"))
     if s.get("write") and not _names_a_system(u, registry):
@@ -728,22 +735,14 @@ def _route(
     return segments
 
 
-def plan(
-    skill: SkillParse,
-    verdicts: Verdicts | None = None,
-    tools: Mapping[tuple[str, str], Any] | None = None,
-) -> Plan:
-    """Every decision for ``skill``. With ``verdicts`` (``--decider clef`` or
-    ``jev``), the model's confident kind and gate answers override the rules
-    per step. With
-    ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
-    names come from each tool's input schema."""
-    nodes: list[NodePlan] = []
-    used: set[str] = set()
-    last_of: dict[int, str] = {}
-    loop_nodes: dict[int, NodePlan] = {}
-    review: list[str] = []
-    deps = _unit_dependencies(skill)
+#: (role, kind, confidence, rule) for one node a step becomes.
+Segment = tuple[str, str, float, str]
+
+
+def unit_segments(skill: SkillParse, verdicts: Verdicts | None = None) -> dict[int, list[Segment]]:
+    """The nodes each step unit becomes, by unit index: the rules' segmentation,
+    then (with ``verdicts``) the decision model's confident answers over it."""
+    out: dict[int, list[Segment]] = {}
     for u in skill.units:
         segments = (
             [("loop", "agent_loop", 0.7, "a heading whose sub-steps run per item")]
@@ -752,8 +751,221 @@ def plan(
         )
         if verdicts is not None and not u.loop_container and u.index in verdicts.by_unit:
             segments = _route(segments, verdicts.by_unit[u.index], verdicts.model)
+        out[u.index] = segments
+    return out
+
+
+def unsure_units(skill: SkillParse, segments: Mapping[int, list[Segment]]) -> list[Unit]:
+    """The step units whose kind decision is below REVIEW_BELOW: the rules had
+    no clear signal, or a decision model disagreed below its threshold.
+
+    A loop container is never unsure: its kind comes from the skill's shape
+    (a heading whose sub-steps run per item), not from wording."""
+    return [
+        u
+        for u in skill.units
+        if not u.loop_container and min(conf for _, _, conf, _ in segments[u.index]) < REVIEW_BELOW
+    ]
+
+
+def infeasible_kinds(
+    u: Unit,
+    registry: Mapping[str, str] | None = None,
+    tools: Collection[tuple[str, str]] = (),
+) -> dict[str, str]:
+    """Kinds this step cannot be, whoever proposes them, with the rule why.
+
+    These are the rules that are constraints, not guesses: a model deciding
+    an unsure step (the tie-break) may pick any other kind, never these. A
+    real expense-audit compile shows why: the tie-break made "save it to the
+    finance shared folder" an external_call, the agent could only write a
+    stub for a system the skill never declares, and every run died there.
+
+    Only a write is constrained: a step that writes, reads nothing, and that
+    no declared system could perform (:func:`declares_a_system`). A read
+    ("load the last 7 days of tickets") is never forbidden here, because its
+    data has to come from somewhere and the agent's code can still be
+    pointed at it. Within writes it is grounded in what is declared, not in
+    phrasing: "email the summary" and "notify the owner by email" are
+    treated alike, as calls when an email tool is declared and as output
+    when nothing is.
+    """
+    writes = any(SIGNALS["write"].search(x) or _DELIVERS.search(x) for x in (u.title, u.text))
+    reads = bool(u.signals.get("fetch")) or any(_READS.search(x) for x in (u.title, u.text))
+    if not writes or reads or declares_a_system(u, registry, tools):
+        return {}
+    return {
+        "external_call": (
+            "it writes to no declared or named system (no MCP server or tool, no named "
+            "product, API, interface or path), so it keeps the rules' decision: what it "
+            "would write is returned in the pipeline's output for the caller to deliver, "
+            "and the step is listed in Open questions"
+        )
+    }
+
+
+_CODE_SPAN = re.compile(r"`([a-z][a-z0-9]*_[a-z0-9_]+)`")
+#: The first word of a tool name that makes a code span a tool call.
+_CALL_VERBS = _TOOL_VERBS | _WRITE_VERBS | {"append", "insert"}
+#: A named API: a URL, or an HTTP verb with a path.
+_NAMED_API = re.compile(r"https?://\S+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
+#: Verbs that deliver a result somewhere, beyond the parser's write signal
+#: ("email the summary", "notify the owner", "write it up", "run upload_x").
+#: Words that are also common nouns in reads (file, log, record) are left out.
+_DELIVERS = re.compile(
+    r"\b(?:e-?mail|notify|send|post|upload|publish|share|store|save|write|export|"
+    r"append|insert)(?:s|ed|ing)?\b|\b\w*upload_\w+",
+    re.I,
+)
+#: Verbs that bring data in. A step that also reads is not constrained.
+_READS = re.compile(
+    r"\b(?:fetch|read|load|pull|retrieve|download|query|look(?:s|ed|ing)? up)(?:s|ed|ing)?\b",
+    re.I,
+)
+#: A local path (``~/reports/``, ``/var/data/``): the file system is the system.
+_LOCAL_PATH = re.compile(r"(?<![\w.])[~/][\w.-]*/")
+
+
+def declares_a_system(
+    u: Unit,
+    registry: Mapping[str, str] | None = None,
+    tools: Collection[tuple[str, str]] = (),
+) -> bool:
+    """Whether a declared system could perform this step.
+
+    Declared means one of: an MCP server or tool the step names (the parser's
+    ``mcp`` and ``tools``); a tool from the skill's tool tables or a
+    registered server's ``tools/list`` (``registry``, ``tools``) whose name
+    the step uses, or whose server it names; a write tool whose object the
+    step names (:func:`_registry_tool_for`); a named API (a URL, an HTTP
+    verb with a path); a local path (the file system); a named product or
+    service (Google Sheets, Slack, PagerDuty, a #channel or @handle); or a
+    user interface it operates. A named product has an API the compile can
+    bind or research, so the step can do what the skill does. Tool names
+    match on word boundaries: a server's ``search`` tool does not make "do
+    the research" a call.
+    """
+    if u.mcp or u.tools or _NAMED_API.search(u.text) or _names_a_product(u.text):
+        return True
+    if _LOCAL_PATH.search(u.text):
+        return True
+    # A step that operates a user interface (click, navigate, select) acts on
+    # the application the skill drives, which is its system.
+    if _UI_ACTION.search(f"{u.title}\n{u.text}"):
+        return True
+    # A tool the step names in code, verb first (`update_incident`), is a
+    # tool the skill declares even outside a tool table.
+    for span in _CODE_SPAN.findall(u.text):
+        if span.split("_", 1)[0] in _CALL_VERBS:
+            return True
+    text = f"{u.title}\n{u.text}"
+    words = set(slug(text).split("_"))
+    reg = dict(registry or {})
+    names = set(reg) | {t for _, t in tools}
+    if any(re.search(rf"\b{re.escape(name)}\b", text, re.I) for name in names if name):
+        return True
+    servers = set(reg.values()) | {s for s, _ in tools}
+    if any(set(slug(server).split("_")) <= words for server in servers if server):
+        return True
+    sentences = re.split(r"(?<=[.!?])\s+|\n+", u.text)
+    return bool(reg) and any(_registry_tool_for(x, reg) for x in sentences)
+
+
+#: A capitalized word inside a sentence: a product or service name. A
+#: sentence's first word, and a title's words, say nothing.
+_MID_SENTENCE_NAME = re.compile(r"(?<=[a-z0-9,] )(?-i:[A-Z][A-Za-z0-9]+)")
+_HANDLE = re.compile(r"(?<![\w])[#@][A-Za-z][\w-]+")
+
+
+def _names_a_product(text: str) -> bool:
+    if _HANDLE.search(text):
+        return True
+    return any(m.group(0).upper() not in _NOT_SYSTEMS for m in _MID_SENTENCE_NAME.finditer(text))
+
+
+def _reads_a_named_api(text: str) -> bool:
+    """A read whose source is a named API or product: "query the AniList
+    GraphQL API", "fetch the rates from https://...". The parser's fetch
+    signal misses both, and a --backend api compile then made no vendor
+    call at all (the step became a judge or a pure_function)."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        verb = _READS.search(sentence)
+        if verb is None:
+            continue
+        # The source comes after the read verb, in the same sentence: "read
+        # the error log" and an "API" two sentences on are not one read.
+        rest = sentence[verb.end() :]
+        if _NAMED_API.search(rest) or re.search(r"\bAPIs?\b", rest) or _read_source_product(rest):
+            return True
+    return False
+
+
+#: A product named as the source of a read: "from HubSpot", "in Salesforce",
+#: "via the Zendesk ...". Only after a source preposition, so a capitalized
+#: word elsewhere ("the batch the Controller approved") is never a source.
+_SOURCE_NAME = re.compile(
+    r"\b(?:from|in|via|through|using)\s+(?:the\s+|their\s+|our\s+)?"
+    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([a-z]+))?"
+)
+#: Capitalized words that name a part of the skill or a role, never a product.
+_NOT_PRODUCTS = frozenset(
+    ["STEP", "PHASE", "STAGE", "PART", "SECTION", "APPENDIX", "TABLE", "TAB", "SHEET"]
+)
+#: A lowercase word after the name that makes it a label inside the data
+#: ("the FX table", "the Q3 column"), not a system.
+_IN_DATA = frozenset(["table", "tab", "column", "row", "rows", "field", "list", "step", "phase"])
+
+
+def _read_source_product(text: str) -> bool:
+    for m in _SOURCE_NAME.finditer(text):
+        first = m.group(1).split()[0].upper()
+        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or m.group(2) in _IN_DATA:
+            continue
+        return True
+    return False
+
+
+def _through_gates(sources: list[str], by_id: Mapping[str, NodePlan]) -> list[str]:
+    """The non-gate nodes each gate in ``sources`` reads, in order, no repeats."""
+    out: list[str] = []
+    for src in sources:
+        gate = by_id.get(src)
+        if gate is None or gate.kind != "hitl_gate":
+            continue
+        for ref in gate.inputs.values():
+            upstream = ref.split(".", 1)[0]
+            if upstream != "pipeline" and upstream not in sources and upstream not in out:
+                out.append(upstream)
+    return out
+
+
+def role_of_kind(kind: str) -> str:
+    """The node role a kind decided outside the rules gets."""
+    return _ROLE_OF_KIND[kind]
+
+
+def plan(
+    skill: SkillParse,
+    verdicts: Verdicts | None = None,
+    tools: Mapping[tuple[str, str], Any] | None = None,
+    segments: Mapping[int, list[Segment]] | None = None,
+) -> Plan:
+    """Every decision for ``skill``. With ``verdicts`` (``--decider clef`` or
+    ``jev``), the model's confident kind and gate answers override the rules
+    per step. ``segments`` (from :func:`unit_segments`, possibly revised by
+    the tie-break) replaces that step: the nodes each unit becomes. With
+    ``tools`` (grounding's ``ToolSchema`` per ``(server, tool)``), MCP argument
+    names come from each tool's input schema."""
+    by_unit = segments if segments is not None else unit_segments(skill, verdicts)
+    nodes: list[NodePlan] = []
+    used: set[str] = set()
+    last_of: dict[int, str] = {}
+    loop_nodes: dict[int, NodePlan] = {}
+    review: list[str] = []
+    deps = _unit_dependencies(skill)
+    for u in skill.units:
         unit_nodes: list[NodePlan] = []
-        for role, kind, conf, rule in segments:
+        for role, kind, conf, rule in by_unit[u.index]:
             nid = _ROLE_IDS[role].format(b=_base(u.title, u.section if u.sibling_group else None))
             base_id, k = nid, 2
             while nid in used:
@@ -771,16 +983,26 @@ def plan(
             upstream, dconf, drule = prev, 0.8, f"runs inside {loop.id}, after the sub-step before"
             for n in unit_nodes:
                 n.in_loop = loop.id
+        by_id = {x.id: x for x in [*nodes, *unit_nodes]}
         for pos, node in enumerate(unit_nodes):
             node.inputs = {"request": "pipeline.input"}
             sources = upstream if pos == 0 else [unit_nodes[pos - 1].id]
             for src in sources:
                 node.inputs[src] = f"{src}.output"
+            # A gate is a pause, not a transformation: the step after it also
+            # reads what the gate's reviewer saw. Without this, "file the
+            # report" after an approval gate had the decision and nothing to
+            # report on, and the agent could only write a stub (a real
+            # expense-audit compile).
+            through = _through_gates(sources, by_id)
+            for src in through:
+                node.inputs.setdefault(src, f"{src}.output")
             node.decide(
                 "inputs",
                 dict(node.inputs),
                 dconf if pos == 0 else 0.9,
-                drule if pos == 0 else "inside one step, each node reads the one before",
+                (drule if pos == 0 else "inside one step, each node reads the one before")
+                + (f"; past the gate it also reads {', '.join(through)}" if through else ""),
             )
             each = None if loop is not None else _per_item(f"{u.title}\n{u.text}")
             # Only judges and "for each X" work fan out. A pure_function over a

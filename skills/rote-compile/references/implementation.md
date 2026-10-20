@@ -273,7 +273,12 @@ For a **Regime 2** implementation, add:
   the documented request and parses the documented response — using
   the observed payloads as the canned response body. **No test may
   touch the network**, require credentials, or be nondeterministic:
-  they must pass with plain `pytest` in an offline environment.
+  they must pass with plain `pytest` in an offline environment. On
+  `--backend api` the vendor libraries your modules import are installed
+  for the tests, so stub the transport the library itself provides
+  (`httpx.MockTransport`, `googleapiclient.http.HttpMock` /
+  `HttpMockSequence`), never the library: a `sys.modules` stand-in for
+  `googleapiclient` tests your fake, not the vendor's code.
 - **Constants get pinned.** Every constant lifted in Phase 3 (batch
   sizes, thresholds, day windows) gets one assertion, so a silent edit
   fails a test instead of shipping.

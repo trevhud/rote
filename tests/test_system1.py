@@ -26,6 +26,7 @@ from rote.compiler import Compiler, system1
 from rote.compiler.drivers import CompilerDriver, DriverResult
 from rote.compiler.system1.enforce import check_proposals, enforce
 from rote.ir import load_pipeline
+from tests._helpers import fill_system1_judges
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
@@ -41,6 +42,7 @@ def _skeleton(tmp_path: Path, skill: str) -> tuple[system1.Plan, dict[str, Any]]
 @pytest.mark.parametrize("skill", SKILLS)
 def test_skeleton_is_a_valid_ir_that_emits(tmp_path: Path, skill: str) -> None:
     system1.prepare(EXAMPLES / skill / "skill", tmp_path)
+    fill_system1_judges(tmp_path)  # a judge's prompt and outputs are the agent's text
     pipeline = load_pipeline(tmp_path / "pipeline.yaml")
     assert pipeline.nodes
     out = tmp_path / "emit"
@@ -253,7 +255,9 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
     agent = _TextAgent()
     monkeypatch.setattr(Compiler, "select_driver", lambda self: agent)
     out = tmp_path / "out"
-    result = await Compiler(system1=True, run_generated_tests=False).compile(skill, out)
+    result = await Compiler(
+        system1=True, system1_tiebreak="none", run_generated_tests=False
+    ).compile(skill, out)
 
     assert agent.rubric is not None and agent.rubric.name.startswith("rote-system1-rubric-")
     first = result.pipeline.nodes[0]
@@ -269,7 +273,7 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
 @pytest.mark.asyncio
 async def test_system1_refuses_update(tmp_path: Path) -> None:
     with pytest.raises(Exception, match="System-1 does not support --update"):
-        await Compiler(system1=True).compile(
+        await Compiler(system1=True, system1_tiebreak="none").compile(
             EXAMPLES / "expense-audit" / "skill", tmp_path, update=True
         )
 
@@ -290,7 +294,7 @@ def test_repair_rounds_verify_the_enforced_pipeline(tmp_path: Path) -> None:
     doc = yaml.safe_load((work / "pipeline.yaml").read_text())
     doc["nodes"][0]["fan_out"] = True  # an agent edit the repair round must not see
     (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
-    compiler = Compiler(system1=True, run_generated_tests=False)
+    compiler = Compiler(system1=True, system1_tiebreak="none", run_generated_tests=False)
     repair = compiler._deliverable_repairer(
         None, EXAMPLES / "expense-audit" / "skill", before_verify=enforce
     )
