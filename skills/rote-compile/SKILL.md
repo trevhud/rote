@@ -25,9 +25,9 @@ folder with sub-files.
 
 **Output:** an intermediate representation (`pipeline.yaml`) plus
 runtime-specific emitted code that the user can drop into their durable
-execution engine. Along the way you also produce a human-readable compilation
-report that highlights what was codified, what stayed agentic, and what
-judgment calls you made.
+execution engine. rote then renders a human-readable compilation report
+(`compile-report.md`) from your `pipeline.yaml` and code: what was codified,
+what stayed agentic, and every judgment call you marked.
 
 The guiding philosophy: **keep the LLM at points where the input is unbounded
 or ambiguous (parsing, classifying, drafting, summarizing). Codify everything
@@ -48,7 +48,7 @@ re-deriving a known-fixed procedure at runtime is waste.
 
 **Think in files, not in your head.** Your reasoning is not a draft.
 Anything you would write out in full (the classification table, a
-module, a test, the report) belongs in a file, written once. Reason
+module, a test) belongs in a file, written once. Reason
 about one decision at a time, just before the Write it informs. Do not
 plan the whole compile, or draft its files, in one long block of
 thinking first: a real compile spent 64,000 tokens and 14 minutes that
@@ -63,7 +63,9 @@ per-response output limit. So the order is:
    parameters, which is a check rote runs.
 3. Write each module together with its test, two or three modules per
    turn.
-4. `eval.yaml`, then `compile-report.md` once, last. Then stop.
+4. `eval.yaml`, last. Then stop, and end your turn with one short
+   sentence, not a summary: rote renders `compile-report.md` and prints
+   the verdict, so a summary is output nobody reads.
 
 **Progress markers.** At the START of each Phase N, rewrite
 `progress.ndjson` in the work directory so it holds one JSON line per
@@ -154,7 +156,7 @@ codification opportunity:
 Each extraction's record (source file and line, the prose, the function
 and its signature, the constants lifted into config) lives in the module
 itself, in its docstring and `# skill: "..."` citations. Do not write it
-out anywhere first. The report's crystallization log summarizes it.
+out anywhere first. rote's report lists every module's citations.
 
 Five provenance mistakes account for nearly every repair round real
 compiles were sent back for. Get them right as you write each module:
@@ -166,10 +168,16 @@ compiles were sent back for. Get them right as you write each module:
   paraphrase of it.
 - Never shorten a citation below 4 words of prose per fragment. Quote
   the sentence, not the label.
+- Copy the skill's characters, never retype them: keep its quote marks
+  and parentheticals, and drop words only with `...`. A line that is all
+  bold (`**1. Dock Log (Drive MCP, read_file)**`) is a heading and
+  cannot be cited.
 - Close a multi-line `# skill: "` quote with a `"` at the end of its last
   comment line.
-- Every `# rote: assumption:` gets its own Open questions entry in the
-  report: count them before you write it.
+- Anything a reviewer must check that the skill does not state is a
+  `# rote: assumption:` marker in the code. rote lists every marker under
+  the report's Open questions, so the marker's text is the whole entry:
+  say what you chose and what the skill leaves open.
 
 ### Phase 4: LLM-Judge Extraction
 
@@ -280,35 +288,33 @@ agent trajectory.
 
 ### Phase 7: Compilation Report
 
-Write `compile-report.md` **once, with a single Write, as the last file
-you produce**. Do not create it earlier, and do not Edit it afterwards to
-polish wording: every extra turn re-reads the whole conversation, and a
-real compile spent a quarter of its turns on one-line report edits. The
-classification and the extraction records already exist, in
-`pipeline.yaml` and the modules. This report summarizes them for a human
-reviewer, in one pass. Cover:
+**rote writes `compile-report.md`. Do not write it.** Every fact a
+reviewer needs is already in your deliverable, and rote renders the
+report from it after you stop:
 
-- **Summary metrics**: total nodes, breakdown by kind, estimated token cost
-  reduction per run, list of HITL gates and what they block on.
-- **Crystallization log**: every prose-to-code extraction from Phase 3,
-  with before/after snippets.
-- **Open questions**: ambiguous judgment calls where you made a decision
-  but the human reviewer should verify. Be explicit about what you chose
-  and why. List every `pure_function` you left as a stub, with the
-  fact the skill did not state, and every outcome you marked
-  `# rote: assumption:` in the code (implementation.md, "Every outcome
-  cites the skill").
-- **Suggested next steps**: what to dogfood first, which evals to run,
-  which node to recompile after the first production run reveals new
-  information.
+- **Summary and node table**: from `pipeline.yaml`. Each node's
+  `description` is its row, so make it the one specific sentence that
+  justifies the node's kind.
+- **Crystallization log**: every `# skill: "..."` citation in
+  `extracted/`, per module and line, under the module docstring's first
+  line.
+- **Open questions**: every `# rote: assumption:` marker, and every stub
+  with its `NotImplementedError` message. A judgment call the reviewer
+  should check belongs in one of those two places, in words that stand
+  alone: what you chose, and what the skill leaves open.
+
+A report written by the agent cost real compiles 17 to 66 seconds of
+output, was rewritten in repair rounds, and sent compiles back to repair
+when it listed fewer questions than the code had markers.
 
 ## Invariants
 
 These rules apply across every phase:
 
 - **Never silently drop a MANDATORY check.** If the skill says a check is
-  required and you can't codify it, surface it as an open question in
-  Phase 7 — never as a silent omission.
+  required and you can't codify it, stub it with a `NotImplementedError`
+  that says why, or mark it `# rote: assumption:`. rote lists both under
+  the report's Open questions. Never omit it silently.
 - **Prefer deterministic over agentic.** When in doubt, codify. Leaving
   something agentic is a last resort for genuinely exploratory work.
 - **The IR is the source of truth, not the emitted code.** If the IR and

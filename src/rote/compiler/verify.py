@@ -401,15 +401,15 @@ def emit_findings(
 
 
 #: The rubric's write-once rules, restated in every repair turn. A resumed
-#: conversation is far from the rubric, and a real ops-report repair round
-#: spent three turns on separate Edits to compile-report.md, each one
-#: re-reading the whole context, though SKILL.md says to write it once.
+#: conversation is far from the rubric: a real ops-report repair round
+#: spent three turns on separate Edits to compile-report.md, a file rote
+#: now renders itself, and every repair round closed with a 400 to 650
+#: token summary that nobody reads (rote prints the verdict).
 WRITE_ONCE_RULES = (
-    "Write-once rules still hold in a repair round: leave compile-report.md "
-    "alone unless a problem below names it or a decision it records changed, "
-    "and then rewrite it with ONE Write after your other fixes, never a series "
-    "of Edits. Do not touch progress.ndjson. Send independent fixes as parallel "
-    "tool calls in one turn."
+    "Do not write or edit compile-report.md: rote renders it from your "
+    "pipeline.yaml and code. Do not touch progress.ndjson. Send independent "
+    "fixes as parallel tool calls in one turn. When you are done, end your "
+    "turn with one short sentence, not a summary: rote reports the result."
 )
 
 

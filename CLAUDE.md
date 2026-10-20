@@ -950,6 +950,66 @@ is the fallback. To profile a compile, read its
 transcript under `~/.claude/projects/<work-dir-slug>/<session_id>.jsonl`:
 the `cost-state` records carry `thinkingTokens` per invocation.
 
+### rote writes compile-report.md; the agent does not
+
+The report was the agent's last file, and none of it was a decision:
+the kind breakdown, gates and each node's reason are in `pipeline.yaml`,
+the crystallization log is the `# skill:` citations, and the Open
+questions are the `# rote: assumption:` markers plus the stub messages.
+Writing it cost 17 to 66 seconds of output per compile (profiled
+2026-10-19), repair rounds rewrote it, and the `unlisted_assumption`
+check sent whole compiles back to repair when its question count fell
+short of the markers. `rote.compiler.report.render_compile_report`
+renders it from the deliverable after the final verification (from
+`output_dir`, after an update's merge), and the CLI appends its
+`## rote verification` section as before. The Open questions keep the
+`###` shape `provenance.open_questions` parses, so `rote bench`'s `OQ`
+is now "distinct assumptions + stubs" and comparable across runs. The
+`unlisted_assumption` finding is gone with it. Two consequences to keep:
+a judgment call a reviewer must see belongs in a marker or a stub
+message (the rubric says so), and every turn now ends in one sentence,
+because the closing summary was 400 to 650 output tokens nobody read.
+Tests: `tests/test_compile_report.py`, each verified by a mutation.
+
+### The compiler child writes a 5-minute prompt cache
+
+On a subscription, Claude Code writes the prompt cache with the 1-hour
+TTL, billed at 2x the input rate (5 minutes is 1.25x). A compile's calls
+follow each other within seconds, so the hour buys nothing, and
+profiled compiles put 35 to 40 percent of `total_cost_usd` in 1-hour
+cache writes. `ClaudeDriver` sets `FORCE_PROMPT_CACHING_5M=1`
+(`PROMPT_CACHE_ENV`), which outranks every other TTL setting
+(https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself).
+Confirm it in a transcript: `usage.cache_creation.ephemeral_5m_input_tokens`
+carries the writes and `ephemeral_1h_input_tokens` is 0.
+
+### Sonnet 5.5 is faster and cheaper, but not yet the default
+
+Measured 2026-10-19 with `rote bench` (one run each, effort `low` unless
+named), against Sonnet 4.6 at `low`:
+
+| skill | model | wall | cost | tests | notes |
+| --- | --- | --- | --- | --- | --- |
+| expense-audit | 4.6 low | 489 s | $1.36 | 91 | |
+| expense-audit | 5.5 low | 183 s | $0.65 | 25 | |
+| expense-audit | 5.5 medium | 264 s | $0.81 | 42 | |
+| expense-audit | 5.5 high | 405 s | $1.12 | 69 | no repair round |
+| ops-report | 4.6 low | 427 s | $1.15 | 58 | |
+| ops-report | 5.5 low | 246 s | $0.78 | 14 | no pipeline input, empty gate payload |
+| ops-report | 5.5 medium | 249 s | $0.77 | 15 | |
+
+Structure held on 5.5 (kind mix, wave order, gates, every compile
+verified; the lower `kind`/`nodeR` on 5.5 low are matching artifacts
+like `check_duplicates` for `find_duplicates`). What did not hold is
+coverage: 5.5 writes about half the code and a third to half the test
+assertions (ops-report: 33 asserts against 88), and at `low` it dropped
+the pipeline input schema and the gate's resume payload. Fidelity comes
+before speed, so the default stays 4.6 until `rote bench` has a
+behavioral-equivalence check that can say whether the leaner modules
+behave the same. 5.5 `medium` is the candidate to measure then: 46 and
+42 percent faster, 40 and 33 percent cheaper. Haiku 5.5 is not one: it
+was slower (402 s, 92k output tokens) for $0.27.
+
 ### `DEFAULT_MAX_TURNS = 60`
 
 BDR-scale skills need ~25 tool calls minimum, realistically 40-50
@@ -1497,7 +1557,9 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
     `tests/test_packaging.py::test_the_package_requires_pytest_without_any_extra`.
   - **Repair prompts restate the write-once rules** (`verify.WRITE_ONCE_RULES`):
     a real repair round made three separate one-line Edits to
-    compile-report.md, each re-reading the whole context.
+    compile-report.md, each re-reading the whole context. They now say
+    not to touch the report at all (rote renders it) and to end the turn
+    with one sentence.
   - Not isolated: file metadata on macOS (above), CPU and memory (only the
     120 s timeout), writes inside the work dir (a test can modify the
     deliverable it tests).
@@ -1521,8 +1583,9 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   independent checks do not, because proximity let a real compile's
   cap severity pass under an unrelated citation), labels reached by
   reference (module constants, policy tables, Enum members) are checked at
-  their definition, and Open questions must have one entry per distinct
-  assumption. Presence guards against an accidental unmarked label, not a
+  their definition. (Open questions used to need one entry per distinct
+  assumption too; rote now renders them itself, see "rote writes
+  compile-report.md".) Presence guards against an accidental unmarked label, not a
   deliberate evasion: a slot whose name is not in `OUTCOME_WORDS`, or a
   label built at run time, is not seen.
   `tests/test_provenance.py` holds the gaming cases, each verified by a
@@ -1535,7 +1598,7 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   `file:line` in the compile output, in compile-report.md's
   `## rote verification`, and as `provenance` in `--json` and the
   progress.jsonl summary (`Verification.provenance_report`). A missing
-  declaration (`uncited_outcome`, `unlisted_assumption`, `REVIEW_KINDS`)
+  declaration (`uncited_outcome`, `REVIEW_KINDS`)
   is a `review_gap`: the repair loop is sent it like an error, and if it
   survives it is a warning. Not exit 1, because a reviewer closes it from
   the listed assumptions, and failing would throw away a paid run over

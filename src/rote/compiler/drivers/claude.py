@@ -136,6 +136,18 @@ EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 ``max``; they are left out on purpose, since Sonnet 4.6 has no ``xhigh``
 (it runs as ``high``) and ``max`` is the costliest level there is."""
 
+PROMPT_CACHE_ENV: dict[str, str] = {"FORCE_PROMPT_CACHING_5M": "1"}
+"""Forces Claude Code's 5-minute prompt-cache TTL in the compiler child.
+
+On a subscription, Claude Code writes the cache with the 1-hour TTL, which
+bills a write at 2x the input rate against 1.25x for 5 minutes. A
+compile's calls follow each other within seconds, and every read renews
+the TTL, so the extra hour buys nothing. Profiled compiles (2026-10-19,
+Sonnet 4.6 and 5.5) put 35 to 40 percent of ``total_cost_usd`` in 1-hour
+cache writes. The variable outranks every other TTL setting, including
+a user's own ``promptCacheTtl``.
+https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself"""
+
 DEFAULT_ALLOWED_TOOLS = "Read,Write,Edit,Glob,Grep"
 """Conservative tool allowlist for the compiler. No Bash (no shell
 access needed), no WebFetch / WebSearch by default (no external
@@ -710,6 +722,7 @@ class ClaudeDriver(CompilerDriver):
         env.setdefault("CLAUDE_CODE_MAX_OUTPUT_TOKENS", MAX_OUTPUT_TOKENS)
         # Claude Code ranks this above --effort; see DEFAULT_EFFORT.
         env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
+        env.update(PROMPT_CACHE_ENV)
         return env
 
     def _build_system_prompt(self, skill_md_text: str) -> str:

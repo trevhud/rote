@@ -39,8 +39,9 @@ hardcoded include/exclude lists. The LLM reads this file, mentally
 **What to do:**
 - Extract the code verbatim into an `extracted/*.py` module.
 - Create a `pure_function` node that calls it.
-- Note the extraction in the compilation report so the human reviewer
-  can verify the extraction matches the original.
+- Cite the source with `# skill: "..."` so the human reviewer can
+  verify the extraction matches the original (rote's compilation report
+  lists every citation).
 
 **How to detect:** grep for ` ```python`, ` ```py`, and `def `. Also
 look for `for contact in`-style pseudocode in plain prose — it's the
@@ -276,8 +277,8 @@ things agentic when:
 
 ## The estimation heuristic
 
-When producing the Phase 7 compilation report, estimate the
-"% codifiable" as:
+rote's compilation report computes the "% codifiable"; check your
+classification against it before you stop:
 
 ```
 codifiable_nodes = count(pure_function) + count(external_call)
@@ -305,7 +306,7 @@ When doing Phase 3, walk through the source skill in this order:
    above.** Note every hit. You'll usually find more patterns than
    nodes — several patterns often apply to the same node.
 
-Record every extraction candidate in the compilation report with
-`file:line`, the current prose, and the proposed codified form. This
-is the primary audit trail for the compilation and the thing the human
-reviewer will check first.
+Every extraction carries the prose it codifies as a `# skill: "..."`
+citation. rote's compilation report lists them per module and line:
+the primary audit trail, and the thing the human reviewer checks
+first.

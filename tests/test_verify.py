@@ -204,7 +204,8 @@ def test_any_crash_inside_verification_becomes_a_finding(
 
 def test_every_repair_prompt_restates_the_write_once_rules(tmp_path: Path) -> None:
     """A real repair round re-edited compile-report.md three times, one turn
-    each. Both prompt shapes (invalid IR, failed checks) carry the rule."""
+    each, and every round ended in a long summary. Both prompt shapes
+    (invalid IR, failed checks) carry the rule."""
     from rote.compiler.verify import WRITE_ONCE_RULES
 
     (tmp_path / "bad").mkdir()
@@ -214,7 +215,8 @@ def test_every_repair_prompt_restates_the_write_once_rules(tmp_path: Path) -> No
     failing = verify_deliverable(root).repair_instruction(root)
     for prompt in (invalid, failing):
         assert prompt is not None and WRITE_ONCE_RULES in prompt
-    assert "ONE Write" in WRITE_ONCE_RULES and "compile-report.md" in WRITE_ONCE_RULES
+    assert "Do not write or edit compile-report.md" in WRITE_ONCE_RULES
+    assert "one short sentence" in WRITE_ONCE_RULES
 
 
 def test_an_invalid_pipeline_short_circuits_with_the_validation_text(tmp_path: Path) -> None:
@@ -350,26 +352,28 @@ _ASSUMED = _CITED.replace(
         ("## Open questions\n\n## Next steps\n\n### Step 1\n- ship it\n", False),
     ],
 )
-def test_a_recorded_assumption_must_reach_the_open_questions(
+def test_an_assumption_is_never_sent_back_whatever_the_report_says(
     tmp_path: Path, report: str | None, covered: bool
 ) -> None:
-    """An assumption never fails the compile. One the Open questions do not
-    cover is a gap the repair loop is asked to close; left open, it is a
-    warning, and only --strict-provenance makes it a failure."""
+    """rote renders the Open questions itself now (rote.compiler.report),
+    so an agent report that misses an assumption, or no report at all, is
+    no longer a gap to repair: it cost real compiles a whole repair round.
+    The parser still reads each shape, since ``rote bench`` counts with it."""
+    from rote.compiler.provenance import open_questions
+
     root = _provenance_case(tmp_path, _ASSUMED, report)
     v = verify_deliverable(root, skill_dir=tmp_path / "skill", run_tests=False)
     assert v.ok, v.errors
     assert [a.text for a in v.assumptions] == [
         "an over-cap line is a block (the skill names the rule, not its severity)"
     ]
-    assert [f.kind for f in v.review_gaps] == ([] if covered else ["unlisted_assumption"])
-    assert (v.repair_instruction(root) is None) is covered
+    assert v.review_gaps == []
+    assert v.repair_instruction(root) is None
     strict = verify_deliverable(
         root, skill_dir=tmp_path / "skill", run_tests=False, strict_provenance=True
     )
-    assert strict.ok is covered
-    if not covered:
-        assert [f.kind for f in strict.errors] == ["unlisted_assumption"]
+    assert strict.ok
+    assert (len(open_questions(report or "")) == 1) is covered
 
 
 def test_no_tests_dir_means_nothing_to_run(tmp_path: Path) -> None:

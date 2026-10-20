@@ -10,15 +10,14 @@ of two ways:
 * ``# skill: "<verbatim text>"`` quoting the skill sentence that decides
   it, or
 * ``# rote: assumption: <what was chosen>`` for an outcome the skill does
-  not state, listed under the compile report's Open questions.
+  not state, which rote lists under the compile report's Open questions.
 
 These checks keep the markers honest. They are deliberately mechanical:
 a citation has to be a real, non-trivial quote of the skill's prose, and
 an outcome literal with no marker at all is reported rather than trusted.
 A review showed every looser version could be satisfied without telling
 a reviewer anything (one-word quotes, quoting a heading, fragments
-matched out of order, no comment at all, one Open question for many
-assumptions), so each of those is a test.
+matched out of order, no comment at all), so each of those is a test.
 
 What a finding costs the compile depends on what it means:
 
@@ -29,8 +28,7 @@ What a finding costs the compile depends on what it means:
   however many there are, they never fail the compile. They are listed
   for review instead (:func:`assumptions`).
 * A *review gap* is a declaration that is missing, not false: an outcome
-  with no marker (``uncited_outcome``) or assumptions the report's Open
-  questions do not cover (``unlisted_assumption``). The repair loop asks
+  with no marker (``uncited_outcome``). The repair loop asks
   the agent to close it, and one that survives the repair rounds is a
   warning, not a failure. A reviewer can close it from the listed
   assumptions and the warning, while failing the compile over it would
@@ -531,7 +529,7 @@ PROVENANCE_NODE = "(provenance)"
 FACTUAL_KINDS = frozenset({"citation_not_in_skill", "malformed_citation"})
 
 #: Findings about a missing declaration. Repaired, then warnings unless strict.
-REVIEW_KINDS = frozenset({"uncited_outcome", "unlisted_assumption"})
+REVIEW_KINDS = frozenset({"uncited_outcome"})
 
 
 @dataclass(frozen=True)
@@ -597,7 +595,11 @@ def assumptions(pipeline: Pipeline, root: Path) -> list[Assumption]:
 def provenance_findings(
     pipeline: Pipeline, root: Path, skill_dir: Path | None, *, strict: bool = False
 ) -> list[ContractFinding]:
-    """Citations quote the skill, outcomes are marked, assumptions are listed."""
+    """Citations quote the skill and outcomes are marked.
+
+    Assumptions need no check here: rote lists every one in
+    compile-report.md itself (:mod:`rote.compiler.report`).
+    """
 
     def _finding(kind: str, message: str, path: str) -> ContractFinding:
         severity = "error" if strict or kind in FACTUAL_KINDS else "warning"
@@ -638,7 +640,8 @@ def provenance_findings(
                             f'{rel} line {cite.line} cites the skill as "{cite.quote}", but '
                             f"{problem}. Quote the sentence that decides the outcome "
                             f"verbatim, or if the skill does not state it, mark it "
-                            f"'# rote: assumption: ...' and list it under Open questions",
+                            f"'# rote: assumption: ...' (rote lists it under the "
+                            f"report's Open questions)",
                             rel,
                         )
                     )
@@ -654,26 +657,4 @@ def provenance_findings(
                         rel,
                     )
                 )
-    # One assumption marked at two call sites is one question, not two: a
-    # real report listed it once and was bounced twice for the duplicate.
-    marked = assumptions(pipeline, root)
-    distinct = {_normalized(a.text) for a in marked}
-    if marked:
-        report = root / REPORT_FILENAME
-        listed = (
-            open_questions(report.read_text(encoding="utf-8", errors="replace"))
-            if report.is_file()
-            else []
-        )
-        if len(listed) < len(distinct):
-            sample = "; ".join(f"{a.path}: {a.text}" for a in marked[:3])
-            findings.append(
-                _finding(
-                    "unlisted_assumption",
-                    f"the extracted code records {len(distinct)} distinct assumption(s) the skill "
-                    f"does not state ({sample}), but {REPORT_FILENAME} lists "
-                    f"{len(listed)} Open question(s). Give each assumption its own entry",
-                    REPORT_FILENAME,
-                )
-            )
     return findings

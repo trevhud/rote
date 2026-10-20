@@ -265,9 +265,9 @@ For each `llm_judge` node:
 3. A `signature_spec:` block embedded directly in the
    `pipeline.yaml` node — see "Cross-runtime signature_spec" below.
 
-Record every signature extracted in the Phase 7 compilation report with
-the source rubric location and a one-line summary of the output schema.
-This is the audit trail for the human reviewer.
+The node's `description` names the source rubric and what the output
+schema decides; rote's compilation report lists it for the human
+reviewer.
 
 ## Cross-runtime signature_spec
 

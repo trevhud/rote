@@ -55,11 +55,11 @@ raise NotImplementedError(
 )
 ```
 
-The message names what is missing and why. rote reports every stub
-with this message, and rejects a pure_function stub without one. List
-each stub under **Open questions** in the compilation report. "The input
-format is not shown" is not a reason (rule 2 above), and "the rule is
-complex" is not a reason either.
+The message names what is missing and why. rote lists every stub
+with this message under **Open questions** in the compilation report,
+and rejects a pure_function stub without one. "The input format is not
+shown" is not a reason (rule 2 above), and "the rule is complex" is not
+a reason either.
 
 ### Every outcome cites the skill, or is a declared assumption
 
@@ -101,16 +101,12 @@ WRONG_ITEM_WINDOW_DAYS = 30
 # skill: "Look up each store's region in references/stores.md"
 ```
 
-Each assumption gets its own Open questions entry, one `###`
-sub-heading per assumption, naming the file it is marked in:
+rote gives each assumption its own Open questions entry in the
+compilation report, with the marker's text and its file and line, so the
+marker carries the whole entry:
 
-```markdown
-## Open questions
-
-### OQ-1: Route for a damaged return
-`extracted/routing.py` marks it `# rote: assumption:`. The skill lists
-"Damaged in Transit" as a reason but not whether it is refunded at once
-or reviewed. Chosen: manual review, since the carrier must be billed.
+```python
+# rote: assumption: a damaged return goes to manual review, since the carrier must be billed; the skill lists "Damaged in Transit" but not whether it is refunded at once
 ```
 
 Every outcome literal the code writes needs a marker: a label it
@@ -131,14 +127,12 @@ two:
 
 1. **Decide, and declare it.** Write the branch with the outcome you
    think is most defensible, mark it
-   `# rote: assumption: <the outcome you chose, and what the skill leaves open>`,
-   and give it its own entry under **Open questions** in the compilation
-   report (a list item, or a `###` sub-heading per question). A test
-   that pins the assumed outcome carries the same comment, so it reads
-   as an assumption, not a rule. Declaring is the point: assumptions
-   never fail the compile, however many there are; rote lists each one
-   for review. Fewer Open questions entries than recorded assumptions
-   is a gap rote sends back for you to close. A `# skill:` quote the
+   `# rote: assumption: <the outcome you chose, and what the skill leaves open>`.
+   rote lists it under **Open questions** in the compilation report. A
+   test that pins the assumed outcome carries the same comment, so it
+   reads as an assumption, not a rule. Declaring is the point:
+   assumptions never fail the compile, however many there are; rote
+   lists each one for review. A `# skill:` quote the
    skill does not contain does fail the compile, so when the skill is
    silent, assume and declare rather than cite.
 2. **Stub the function**, when the unstated fact is what the function is
@@ -174,12 +168,12 @@ WebFetch. Now you are expected to write **working implementations**:
 1. **Contract from observation.** The observed input payload keys are
    your function parameters; the observed result shape is your return
    contract. If the skill prose disagrees with the observed traffic,
-   trust the traffic and note the discrepancy in the compilation report.
+   trust the traffic and mark the discrepancy `# rote: assumption:`.
 2. **Endpoint from current docs, never memory.** Before writing a
    vendor call, use WebSearch/WebFetch to confirm the current endpoint,
    auth scheme, request/response shape, and official SDK name. Cite the
    doc URL in the module docstring. If you cannot verify a shape, fall
-   back to Regime 1 for that function and say why in the report.
+   back to Regime 1 for that function and say why in its stub message.
 3. **Credentials via environment variables only.** One variable per
    vendor, named `<VENDOR>_API_KEY` (or the vendor's own documented
    convention, e.g. `GOOGLE_APPLICATION_CREDENTIALS`). Read it at call
@@ -241,7 +235,7 @@ For a **Regime 2** implementation, add:
 
 Tests use plain `pytest` and the stdlib, nothing else. If a test would
 need something you can't provide deterministically, don't write a flaky
-approximation. Note the gap in the compilation report instead.
+approximation. Mark the gap `# rote: assumption:` in the module instead.
 
 ## What rote checks after you stop
 
@@ -255,8 +249,7 @@ these checks on your work dir when you end your turn:
    `NotImplementedError` message says why.
 4. Every `# skill: "..."` citation quotes the skill's prose (4+ words
    per fragment, in order, one paragraph), every outcome literal in a
-   pure_function module has a marker, and the report has at least one
-   Open questions entry per `# rote: assumption:`.
+   pure_function module has a marker.
 5. Every implemented `pure_function` is called from a file under
    `tests/`.
 6. `python -m pytest tests` passes. It runs in a sandbox with no
