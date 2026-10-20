@@ -7,6 +7,7 @@ missing credential fails the compile instead of quietly using the rules.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -236,3 +237,61 @@ def test_the_clef_decider_needs_system1(tmp_path: Path) -> None:
         ]
     )
     assert code == 2
+
+
+def _sent_headers(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """Run one real _post against a captured urlopen; return the headers sent."""
+    import io
+
+    sent: dict[str, str] = {}
+
+    def capture(req: Any, timeout: float) -> Any:
+        sent.update({k.lower(): v for k, v in req.header_items()})
+        return io.BytesIO(b'{"result": {}}')
+
+    monkeypatch.setattr(clef.urllib.request, "urlopen", capture)
+    clef._post("https://example.invalid", "t", {})
+    return sent
+
+
+def test_gateway_metadata_tags_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host meters Clef per compile by filtering gateway logs on this metadata."""
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", '{"graduation_id": "g1"}')
+    sent = _sent_headers(monkeypatch)
+    assert sent["cf-aig-gateway-id"] == "rote"
+    assert json.loads(sent["cf-aig-metadata"]) == {"graduation_id": "g1"}
+
+
+def test_no_gateway_settings_send_no_gateway_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CLOUDFLARE_AI_GATEWAY_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_AI_GATEWAY_METADATA", raising=False)
+    sent = _sent_headers(monkeypatch)
+    assert "cf-aig-gateway-id" not in sent and "cf-aig-metadata" not in sent
+
+
+@pytest.mark.parametrize(
+    ("gateway", "metadata", "match"),
+    [
+        ("", '{"a": "b"}', "CLOUDFLARE_AI_GATEWAY_ID is not"),
+        ("rote", "not json", "is not JSON"),
+        ("rote", '["a"]', "must be a JSON object"),
+    ],
+)
+def test_bad_gateway_metadata_fails_before_any_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    creds: None,
+    gateway: str,
+    metadata: str,
+    match: str,
+) -> None:
+    """Untagged calls would bill the host with no compile to charge: refuse up front."""
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", gateway)
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", metadata)
+    calls = _stub(monkeypatch, {})
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(clef.ClefUnavailable, match=match):
+        system1.prepare(_skill(tmp_path), work, decider="clef")
+    assert calls == []
