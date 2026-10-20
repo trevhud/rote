@@ -28,6 +28,8 @@ from rote.compiler import api_docs
 from rote.compiler.provenance import Assumption, _normalized, assumptions, citations
 from rote.contracts import NodeImplementation, implementation_status
 from rote.ir import NodeKind, Pipeline
+from rote.vendor_specs import RequestCheck
+from rote.vendor_specs import report_section as spec_report_section
 
 #: Kinds in the order the rubric introduces them, so every report reads
 #: the breakdown the same way.
@@ -64,6 +66,8 @@ class ReportExtras:
     api_backend: bool = False
     #: The agent's web lookups in this compile (``--backend api``).
     web_research: api_docs.WebResearch | None = None
+    #: Every vendor request, checked against its vendor's spec (``--backend api``).
+    spec_checks: Sequence[RequestCheck] = field(default_factory=tuple)
 
 
 def _cell(text: str) -> str:
@@ -259,6 +263,10 @@ def render_compile_report(
                 "## Vendor API docs",
                 "",
                 *api_docs.report_section(pipeline, root, extras.web_research),
+                "",
+                "### Vendor API spec checks",
+                "",
+                *spec_report_section(list(extras.spec_checks)),
                 "",
             ]
             if extras.api_backend
