@@ -23,9 +23,9 @@ from rote.bench.http_fixtures import (
     api_calls,
     credential_variables,
     load_http,
-    vendor_requirements,
 )
 from rote.vendor_specs import SpecStore, SpecUnavailable
+from rote.vendor_specs.deps import VendorDepsError, vendor_requirements
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from tests.test_vendor_specs import _Fetch
@@ -431,7 +431,7 @@ def test_vendor_requirements_name_known_distributions_and_refuse_guesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "rote.bench.http_fixtures._importable", lambda name: name.split(".")[0] in ("httpx", "json")
+        "rote.vendor_specs.deps._importable", lambda name: name.split(".")[0] in ("httpx", "json")
     )
     app = _app(
         tmp_path,
@@ -443,7 +443,7 @@ def test_vendor_requirements_name_known_distributions_and_refuse_guesses(
     )
     assert vendor_requirements(app) == ["google-api-python-client", "google-auth"]
     (app / "extracted" / "more.py").write_text("import hubspot_sdk\n", encoding="utf-8")
-    with pytest.raises(HttpFixtureError, match="hubspot_sdk"):
+    with pytest.raises(VendorDepsError, match="hubspot_sdk"):
         vendor_requirements(app)
 
 

@@ -1142,3 +1142,86 @@ def test_a_boolean_is_not_an_integer(tmp_path: Path, store: SpecStore) -> None:
         return httpx.get("{_GMAIL_THREADS}", params={{"maxResults": True}})
     """
     assert _kinds(_deliverable(tmp_path, module), store) == ["spec_param_value"]
+
+
+_PAGED = """
+from googleapiclient.discovery import build
+
+def names():
+    drive = build("drive", "v3")
+    request = drive.files().list()
+    out = []
+    while request is not None:
+        resp = request.execute()
+        out += [f["name"] for f in resp.get("files", [])]
+        request = drive.files().list_next(request, resp)
+    return out
+
+def second_page():
+    drive = build("drive", "v3")
+    first = drive.files().list()
+    page = first.execute()
+    following = drive.files().list_next(first, page)
+    return following.execute()["nextPageToken"]
+"""
+
+
+def test_a_zero_argument_request_bound_to_a_name_is_a_request(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    """`request = drive.files().list()` reads like a resource step; its
+    `.execute()` says it is a request. It was dropped, reads, pages and all."""
+    sites = extract(textwrap.dedent(_PAGED))
+    assert [(s.function, s.google_method_id) for s in sites] == [
+        ("names", "drive.files.list"),
+        ("names", "drive.files.list_next"),
+        ("second_page", "drive.files.list"),
+        ("second_page", "drive.files.list_next"),
+    ]
+    assert [p for p, _ in sites[0].response_reads] == [("files",), ("files", "[]", "name")]
+    assert [p for p, _ in sites[3].response_reads] == [("nextPageToken",)]
+    root = _deliverable(tmp_path, _PAGED)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [(c.operation, c.status) for c in checks] == [("drive.files.list", "ok")] * 4, [
+        f.message for c in checks for f in c.findings
+    ]
+    for old, new, kind in (
+        ('f["name"]', 'f["title"]', "spec_unknown_response_field"),
+        ('["nextPageToken"]', '["nextToken"]', "spec_unknown_response_field"),
+        ("first = drive.files().list()", "first = drive.files().lisst()", "spec_unknown_operation"),
+    ):
+        broken = _PAGED.replace(old, new)
+        assert _kinds(_deliverable(tmp_path / new, broken), store) == [kind]
+
+
+def test_a_named_resource_is_still_a_resource() -> None:
+    sites = extract(
+        textwrap.dedent(
+            """
+            from googleapiclient.discovery import build
+
+            def threads():
+                svc = build("gmail", "v1")
+                t = svc.users().threads()
+                return t.list(userId="me").execute()["threads"]
+            """
+        )
+    )
+    assert [s.google_method_id for s in sites] == ["gmail.users.threads.list"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Only run.
+        'req = drive.files().list()\n    return req.execute()["files"]',
+        # Only paged: a page token from elsewhere, the request never run itself.
+        "req = drive.files().list()\n    return drive.files().list_next(req, previous).execute()",
+    ],
+)
+def test_either_use_makes_a_name_a_request(body: str) -> None:
+    source = (
+        "from googleapiclient.discovery import build\n\n"
+        f"def f(previous):\n    drive = build('drive', 'v3')\n    {body}\n"
+    )
+    assert extract(source)[0].google_method_id == "drive.files.list"
