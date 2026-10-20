@@ -52,9 +52,88 @@ def test_the_documented_server_tool_versions() -> None:
     compile used as a second workspace at ~$14 of extra input tokens. A
     typo is a 400 on every api compile."""
     assert WEB_TOOL_SCHEMAS == (
-        {"type": "web_search_20250305", "name": "web_search"},
-        {"type": "web_fetch_20250910", "name": "web_fetch", "max_content_tokens": 32000},
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+        {
+            "type": "web_fetch_20250910",
+            "name": "web_fetch",
+            "max_uses": 10,
+            "max_content_tokens": 32000,
+        },
     )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "web_search_20260318", "name": "web_search"},
+        {"type": "web_fetch_20260318", "name": "web_fetch"},
+        {"type": "code_execution_20260120", "name": "code_execution"},
+        # The pinned type with its caps removed is not the pinned tool.
+        {"type": "web_search_20250305", "name": "web_search"},
+    ],
+)
+def test_the_driver_refuses_any_server_tool_but_the_pinned_ones(schema: dict[str, Any]) -> None:
+    from rote.compiler.drivers import DriverError
+    from rote.compiler.drivers.anthropic_api import _check_server_tools
+
+    _check_server_tools([{"name": "read_file", "input_schema": {"type": "object"}}])
+    _check_server_tools([dict(t) for t in WEB_TOOL_SCHEMAS])
+    with pytest.raises(DriverError, match="refusing to send server tool"):
+        _check_server_tools([schema])
+
+
+def _write_turn(work_dir: Path) -> Any:
+    return _tool_use(
+        "w", "write_file", {"path": str(work_dir / "pipeline.yaml"), "content": VALID_PIPELINE_YAML}
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unrequested_server_tool_stops_the_run(
+    fake_skills: tuple[Path, Path, Path],  # noqa: F811
+    fake_anthropic: Any,  # noqa: F811
+) -> None:
+    from rote.compiler.drivers import DriverError
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    client = fake_anthropic(
+        [
+            _msg(
+                [_server_tool_use("code_execution", {"code": "print(1)"})], stop_reason="pause_turn"
+            ),
+            _msg([_write_turn(work_dir)], stop_reason="tool_use"),
+        ]
+    )
+    with pytest.raises(DriverError, match="'code_execution', which the api driver did not ask for"):
+        await AnthropicApiDriver(web_tools=True).run(skill_dir, compiler_dir, work_dir)
+    assert len(client.messages.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("billed", "stops"), [(400_001, True), (400_000, False)])
+async def test_a_request_over_the_input_ceiling_stops_the_run(
+    fake_skills: tuple[Path, Path, Path],  # noqa: F811
+    fake_anthropic: Any,  # noqa: F811
+    billed: int,
+    stops: bool,
+) -> None:
+    """Cache buckets count: the ceiling is on what the request billed."""
+    from rote.compiler.drivers import DriverError
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    work_dir.mkdir()
+    heavy = _msg([_write_turn(work_dir)], stop_reason="tool_use", input_tokens=1)
+    heavy.usage.cache_read_input_tokens = billed - 1
+    client = fake_anthropic([heavy, _msg([_text("done")], stop_reason="end_turn")])
+    driver = AnthropicApiDriver(web_tools=True)
+    if stops:
+        with pytest.raises(DriverError, match=f"billed {billed} input tokens"):
+            await driver.run(skill_dir, compiler_dir, work_dir)
+        assert len(client.messages.calls) == 1
+    else:
+        await driver.run(skill_dir, compiler_dir, work_dir)
+        assert len(client.messages.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -240,3 +319,25 @@ def test_openai_driver_refuses_web_tools_instead_of_compiling_from_memory(
     available, reason = OpenAIApiDriver(model="m", web_tools=True).is_available()
     assert not available and "--agent claude, codex or api" in reason
     assert OpenAIApiDriver(model="m").is_available() == (True, "")
+
+
+@pytest.mark.asyncio
+async def test_run_checks_the_tool_list_before_the_first_request(
+    fake_skills: tuple[Path, Path, Path],  # noqa: F811
+    fake_anthropic: Any,  # noqa: F811
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whatever assembles the tool list, an unpinned server tool never leaves."""
+    from rote.compiler.drivers import DriverError, anthropic_api
+
+    skill_dir, compiler_dir, work_dir = fake_skills
+    real = anthropic_api.anthropic_tool_schemas
+    monkeypatch.setattr(
+        anthropic_api,
+        "anthropic_tool_schemas",
+        lambda: [*real(), {"type": "web_search_20260318", "name": "web_search"}],
+    )
+    client = fake_anthropic([])
+    with pytest.raises(DriverError, match="refusing to send server tool"):
+        await AnthropicApiDriver().run(skill_dir, compiler_dir, work_dir)
+    assert client.messages.calls == []

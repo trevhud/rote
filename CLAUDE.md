@@ -580,6 +580,24 @@ both the legacy and the System-1 path:
   other backend drops code the compile wrote for this one. python and
   temporal never call a binding, so they advertise no MCP server for one.
 
+### Newer Anthropic web tool versions start a code execution container
+
+`web_search_20260209`+ and `web_fetch_20260209`+ turn on "dynamic
+filtering": the API provisions code execution for the request on its own,
+with no tool in your `tools` array asking for it. Inside the api driver's
+compile loop the model used that container as a second workspace, 70+
+`code_execution` / `bash_code_execution` calls inside two requests, billed
+as 3.69M and 2.91M input tokens ($8.04 + $6.18, measured on the Cloudflare
+AI Gateway logs). The same skill compiles for about $1 on the claude driver.
+
+So the api driver pins `web_search_20250305` / `web_fetch_20250910` with
+`max_uses` caps and `max_content_tokens`, refuses to send any other server
+tool (`_check_server_tools`), stops the run when a response carries a
+server tool it did not ask for, and stops when one request bills more than
+`DEFAULT_MAX_INPUT_TOKENS_PER_REQUEST` input tokens. Do not "upgrade" the
+versions without a measured run. The ceiling is checked on the response,
+so it stops the next request, not the one that crossed it.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,

@@ -127,12 +127,46 @@ DEFAULT_MAX_ITERATIONS = 60
 #: the claude driver. The basic versions run no code. ``max_content_tokens``
 #: bounds what one fetched page adds to a context this loop resends every
 #: turn; a vendor reference page is typically 10k to 25k tokens.
+#: ``max_uses`` caps each tool per request (a search is billed per call).
+#: The pinned pair is the only server tool this driver will send
+#: (:func:`_check_server_tools`) or accept back (``_ALLOWED_SERVER_TOOLS``).
 #: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
 #: https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool
 WEB_TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
-    {"type": "web_search_20250305", "name": "web_search"},
-    {"type": "web_fetch_20250910", "name": "web_fetch", "max_content_tokens": 32000},
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 5},
+    {
+        "type": "web_fetch_20250910",
+        "name": "web_fetch",
+        "max_uses": 10,
+        "max_content_tokens": 32000,
+    },
 )
+
+#: Server tool names a response may carry. Anything else (``code_execution``
+#: above all) means the API provisioned a tool this driver did not ask
+#: for, and the run stops before it spends more.
+_ALLOWED_SERVER_TOOLS = frozenset(str(t["name"]) for t in WEB_TOOL_SCHEMAS)
+
+#: Input tokens one request may bill before the run stops. A normal turn of
+#: this loop is bounded by the context window; the dynamic-filtering run
+#: above billed 3.69M in ONE request because the server ran its own loop
+#: inside it. The check runs on the response, so it stops the next request,
+#: not the one that crossed it.
+DEFAULT_MAX_INPUT_TOKENS_PER_REQUEST = 400_000
+
+
+def _check_server_tools(tool_schemas: list[dict[str, Any]]) -> None:
+    """Refuse any server tool (a schema with a top-level ``type``) not pinned above."""
+    pinned = [dict(t) for t in WEB_TOOL_SCHEMAS]
+    for schema in tool_schemas:
+        if "type" in schema and schema not in pinned:
+            raise DriverError(
+                f"refusing to send server tool {schema.get('type')!r}: the api driver "
+                f"only sends the pinned web tools ({', '.join(str(t['type']) for t in pinned)}). "
+                f"Newer web tool versions provision code execution, which one real "
+                f"compile used for $14 of input tokens in two requests."
+            )
+
 
 #: Per-turn output-token cap. This is a ceiling, not a spend — only a
 #: runaway turn pays it — so it's set generously: Claude 5-family models
@@ -323,6 +357,7 @@ class AnthropicApiDriver(CompilerDriver):
         model: str = DEFAULT_MODEL,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         max_tokens_per_turn: int = DEFAULT_MAX_TOKENS_PER_TURN,
+        max_input_tokens_per_request: int = DEFAULT_MAX_INPUT_TOKENS_PER_REQUEST,
         base_url: str | None = None,
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
@@ -363,6 +398,7 @@ class AnthropicApiDriver(CompilerDriver):
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
+        self.max_input_tokens_per_request = max_input_tokens_per_request
         self.base_url = base_url
         self.default_headers = default_headers
         self.mcp_servers = mcp_servers
@@ -518,6 +554,7 @@ class AnthropicApiDriver(CompilerDriver):
             tool_schemas = tool_schemas + live.anthropic_tool_schemas()
         if self.web_tools:
             tool_schemas = tool_schemas + [dict(t) for t in WEB_TOOL_SCHEMAS]
+        _check_server_tools(tool_schemas)
 
         task_prompt = build_task_prompt(skill_dir, compiler_skill_dir, work_dir)
         if extra_instructions:
@@ -574,6 +611,24 @@ class AnthropicApiDriver(CompilerDriver):
                 server = getattr(usage, "server_tool_use", None)
                 server_tools["web_search"] += getattr(server, "web_search_requests", 0) or 0
                 server_tools["web_fetch"] += getattr(server, "web_fetch_requests", 0) or 0
+                billed = sum(
+                    getattr(usage, key, 0) or 0
+                    for key in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    )
+                )
+                if billed > self.max_input_tokens_per_request:
+                    raise DriverError(
+                        f"turn {iteration} billed {billed} input tokens in one request, "
+                        f"over the {self.max_input_tokens_per_request} ceiling; stopping "
+                        f"before the next one. A server-side loop inside a request is "
+                        f"the usual cause.",
+                        metadata=self._metadata(
+                            totals, server_tools, completed_iterations, repair_rounds
+                        ),
+                    )
 
             # The AI Gateway unified endpoint can return `content: null` for
             # a turn that was entirely (stripped) thinking blocks — normalize
@@ -597,11 +652,21 @@ class AnthropicApiDriver(CompilerDriver):
             if content:
                 messages.append({"role": "assistant", "content": content})
 
-            # The API ran these itself (web search / fetch, and the code
-            # execution that filters them); they are only reported.
+            # The API ran these itself (web search / fetch); they are only
+            # reported, and any other server tool stops the run.
             for block in content:
                 if block.type == "server_tool_use":
                     emit_safely(on_event, _server_tool_event(block, iteration))
+                    if block.name not in _ALLOWED_SERVER_TOOLS:
+                        raise DriverError(
+                            f"the API ran server tool {block.name!r}, which the api "
+                            f"driver did not ask for; stopping before it spends more.",
+                            metadata={
+                                "model": self.model,
+                                "input_tokens": total_input_tokens,
+                                "output_tokens": total_output_tokens,
+                            },
+                        )
 
             if response.stop_reason == "pause_turn":
                 # A long server-tool turn the API paused: send the paused
