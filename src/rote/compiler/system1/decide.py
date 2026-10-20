@@ -211,8 +211,6 @@ def _segment(
     out: list[tuple[str, str, float, str]] = []
     if s.get("fetch") or any(tool for _, tool in u.mcp):
         out.append(("fetch", "external_call", _kind_confidence(s, "fetch"), "tool-call signal"))
-    elif _reads_a_named_api(u.text):
-        out.append(("fetch", "external_call", 0.8, "reads from a named API or product"))
     grouped = _GROUP_BY.search(u.text) and _FOR_EACH.search(u.text)
     if grouped:
         out.append(("group", "pure_function", 0.8, "'group ... by' before 'for each'"))
@@ -233,6 +231,10 @@ def _segment(
         )
     if s.get("write") and _names_a_system(u, registry):
         out.append(("write", "external_call", _kind_confidence(s, "write"), "side-effect signal"))
+    # A read from a named API or product the parser's fetch signal missed
+    # ("query the AniList GraphQL API"). Never a second call in one step.
+    if _reads_a_named_api(u.text) and not any(k == "external_call" for _, k, _, _ in out):
+        out.insert(0, ("fetch", "external_call", 0.8, "reads from a named API or product"))
     if not out:
         out.append(("process", "pure_function", 0.3, "no signal: most deterministic kind"))
     if s.get("write") and not _names_a_system(u, registry):
@@ -886,9 +888,41 @@ def _reads_a_named_api(text: str) -> bool:
     GraphQL API", "fetch the rates from https://...". The parser's fetch
     signal misses both, and a --backend api compile then made no vendor
     call at all (the step became a judge or a pure_function)."""
-    return bool(_READS.search(text)) and bool(
-        _NAMED_API.search(text) or re.search(r"\bAPIs?\b", text) or _names_a_product(text)
-    )
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        verb = _READS.search(sentence)
+        if verb is None:
+            continue
+        # The source comes after the read verb, in the same sentence: "read
+        # the error log" and an "API" two sentences on are not one read.
+        rest = sentence[verb.end() :]
+        if _NAMED_API.search(rest) or re.search(r"\bAPIs?\b", rest) or _read_source_product(rest):
+            return True
+    return False
+
+
+#: A product named as the source of a read: "from HubSpot", "in Salesforce",
+#: "via the Zendesk ...". Only after a source preposition, so a capitalized
+#: word elsewhere ("the batch the Controller approved") is never a source.
+_SOURCE_NAME = re.compile(
+    r"\b(?:from|in|via|through|using)\s+(?:the\s+|their\s+|our\s+)?"
+    r"(?-i:([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+)*))(?:\s+([a-z]+))?"
+)
+#: Capitalized words that name a part of the skill or a role, never a product.
+_NOT_PRODUCTS = frozenset(
+    ["STEP", "PHASE", "STAGE", "PART", "SECTION", "APPENDIX", "TABLE", "TAB", "SHEET"]
+)
+#: A lowercase word after the name that makes it a label inside the data
+#: ("the FX table", "the Q3 column"), not a system.
+_IN_DATA = frozenset(["table", "tab", "column", "row", "rows", "field", "list", "step", "phase"])
+
+
+def _read_source_product(text: str) -> bool:
+    for m in _SOURCE_NAME.finditer(text):
+        first = m.group(1).split()[0].upper()
+        if first in _NOT_PRODUCTS or first in _NOT_SYSTEMS or m.group(2) in _IN_DATA:
+            continue
+        return True
+    return False
 
 
 def role_of_kind(kind: str) -> str:
