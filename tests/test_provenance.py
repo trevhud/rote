@@ -302,36 +302,25 @@ _TWO_ASSUMPTIONS = (
 )
 
 
-@pytest.mark.parametrize(
-    ("report", "ok"),
-    [
-        ("## Open questions\n\n- Unlisted reasons go to manual review.\n", False),
-        (
-            "## Open questions\n\n- Unlisted reasons go to manual review.\n"
-            "- A missing amount counts as zero.\n",
-            True,
-        ),
-        # Sub-headings are the entries; the bullets under one are its detail.
-        (
-            "## Open questions\n\n### OQ-1: unlisted reasons\n- we chose review\n"
-            "- because nothing says otherwise\n",
-            False,
-        ),
-    ],
-)
-def test_each_assumption_needs_its_own_open_question(tmp_path: Path, report: str, ok: bool) -> None:
+def test_each_assumption_gets_its_own_open_question(tmp_path: Path) -> None:
+    """rote renders the Open questions, one entry per distinct assumption,
+    so the agent can no longer under-count them (a gap that used to cost a
+    repair round), and no provenance finding asks it to."""
+    from rote.compiler.report import render_compile_report
+
     (tmp_path / "extracted").mkdir()
     (tmp_path / "extracted" / "route.py").write_text(_TWO_ASSUMPTIONS)
-    (tmp_path / "compile-report.md").write_text(report)
-    kinds = [f.kind for f in provenance_findings(_pipeline(), tmp_path, None)]
-    assert (kinds == []) is ok, kinds
-    if not ok:
-        assert kinds == ["unlisted_assumption"]
+    assert provenance_findings(_pipeline(), tmp_path, None) == []
+    entries = open_questions(render_compile_report(_pipeline(), tmp_path))
+    assert entries == ["### OQ-1: route", "### OQ-2: route"]
 
 
 def test_one_assumption_marked_twice_is_one_question(tmp_path: Path) -> None:
     """A real report listed the "-" placeholder assumption once although the
-    renderer marked it at two call sites, and was bounced for it."""
+    renderer marked it at two call sites, and was bounced for it. The
+    rendered report lists it once, at both locations."""
+    from rote.compiler.report import render_compile_report
+
     twice = (
         "def route(ret):\n"
         "    # rote: assumption: an unlisted reason is manual review\n"
@@ -342,8 +331,9 @@ def test_one_assumption_marked_twice_is_one_question(tmp_path: Path) -> None:
     )
     (tmp_path / "extracted").mkdir()
     (tmp_path / "extracted" / "route.py").write_text(twice)
-    (tmp_path / "compile-report.md").write_text("## Open questions\n\n- Unlisted reasons.\n")
-    assert provenance_findings(_pipeline(), tmp_path, None) == []
+    report = render_compile_report(_pipeline(), tmp_path)
+    assert open_questions(report) == ["### OQ-1: route"]
+    assert "`extracted/route.py:2`, `extracted/route.py:4`" in report
 
 
 def test_a_punctuation_placeholder_is_not_an_outcome() -> None:

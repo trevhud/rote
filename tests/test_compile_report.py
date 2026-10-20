@@ -1,0 +1,252 @@
+"""compile-report.md is rendered by rote from the deliverable.
+
+The agent used to write it, which cost 17 to 66 seconds of output per
+compile and a repair round whenever its Open questions under-counted the
+code's assumption markers. Every fact it held is in pipeline.yaml or the
+extracted code, so these tests pin that each one reaches the report.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from rote.compiler.provenance import open_questions
+from rote.compiler.report import render_compile_report
+from rote.ir import load_pipeline
+
+PIPELINE = """\
+name: returns
+input:
+  type: Batch
+  required: [returns]
+entry_nodes: [route]
+exit_nodes: [notify]
+nodes:
+  - id: route
+    kind: pure_function
+    description: Route each return by the skill's | table of reasons.
+    impl: extracted/route.py:route
+    inputs: {returns: pipeline.input.returns}
+    mandatory: true
+    source: {section: Review}
+  - id: approve
+    kind: hitl_gate
+    description: A manager approves the routed batch.
+    signal: batch_approved
+    timeout: 2d
+    inputs: {routed: route.output}
+  - id: notify
+    kind: external_call
+    description: Post the batch to the finance channel.
+    impl: extracted/notify.py:notify
+    inputs: {routed: route.output}
+edges:
+  - {from: route, to: approve}
+  - {from: approve, to: notify}
+"""
+
+ROUTE = '''\
+"""Route returns by reason."""
+
+
+def route(returns):
+    # skill: "A return over $50.00 without a receipt goes to manual review"
+    if returns and returns[0]["amount"] > 50:
+        return {"route": "manual_review"}
+    # rote: assumption: an unlisted reason is refunded at once
+    return {"route": "refund"}
+'''
+
+NOTIFY = """\
+def notify(routed):
+    raise NotImplementedError("the skill never names the finance channel's API")
+"""
+
+
+def _deliverable(root: Path) -> Path:
+    for rel, text in {
+        "pipeline.yaml": PIPELINE,
+        "extracted/route.py": ROUTE,
+        "extracted/notify.py": NOTIFY,
+    }.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    return root
+
+
+def _render(root: Path) -> str:
+    return render_compile_report(load_pipeline(root / "pipeline.yaml"), root)
+
+
+def test_the_summary_counts_every_kind_and_names_the_gate(tmp_path: Path) -> None:
+    report = _render(_deliverable(tmp_path))
+    assert report.startswith("# Compile report: returns\n")
+    assert (
+        "- 3 node(s): 1 `pure_function`, 1 `external_call`, 0 `llm_judge`, "
+        "0 `agent_loop`, 1 `hitl_gate`." in report
+    )
+    assert "- Codified (`pure_function` + `external_call`): 2 of 2 non-gate node(s), 100%." in (
+        report
+    )
+    assert "- Implemented impl node(s): 1 of 2." in report
+    assert "- Mandatory: `route`." in report
+    assert (
+        "- HITL gate `approve` (signal `batch_approved`, timeout 2d): "
+        "A manager approves the routed batch." in report
+    )
+
+
+def test_each_node_is_a_row_with_its_status_section_and_reason(tmp_path: Path) -> None:
+    report = _render(_deliverable(tmp_path))
+    assert (
+        "| `route` | pure_function | `extracted/route.py:route` (implemented) | Review "
+        "| Route each return by the skill's \\| table of reasons. |" in report
+    )
+    assert "| `notify` | external_call | `extracted/notify.py:notify` (stub) |" in report
+    assert "| `approve` | hitl_gate | signal `batch_approved` |" in report
+
+
+def test_the_crystallization_log_quotes_each_citation(tmp_path: Path) -> None:
+    report = _render(_deliverable(tmp_path))
+    assert "- `extracted/route.py`: Route returns by reason. (1 skill citation(s))" in report
+    assert '  - line 5: "A return over $50.00 without a receipt goes to manual review"' in report
+    assert "- `extracted/notify.py` (0 skill citation(s))" in report
+
+
+def test_open_questions_hold_every_assumption_and_every_stub(tmp_path: Path) -> None:
+    report = _render(_deliverable(tmp_path))
+    assert open_questions(report) == [
+        "### OQ-1: route",
+        "### Stub: notify (`extracted/notify.py:notify`, stub)",
+    ]
+    assert "an unlisted reason is refunded at once" in report
+    assert "Marked `# rote: assumption:` at `extracted/route.py:8`." in report
+    assert "the skill never names the finance channel's API" in report
+
+
+def test_nothing_to_question_says_so_and_counts_zero(tmp_path: Path) -> None:
+    root = _deliverable(tmp_path)
+    (root / "extracted/route.py").write_text(
+        ROUTE.replace("    # rote: assumption: an unlisted reason is refunded at once\n", ""),
+        encoding="utf-8",
+    )
+    (root / "extracted/notify.py").write_text("def notify(routed):\n    return routed\n")
+    report = _render(root)
+    assert open_questions(report) == []
+    assert "None: the code records no assumption and leaves no stub." in report
+
+
+def test_rendering_is_a_pure_function_of_the_deliverable(tmp_path: Path) -> None:
+    root = _deliverable(tmp_path)
+    assert _render(root) == _render(root)
+
+
+def test_a_mode_adds_its_preamble_review_items_and_next_steps(tmp_path: Path) -> None:
+    """--system1 renders through the same function: its review items are
+    Open questions after the assumptions and stubs, never instead of them."""
+    from rote.compiler.report import ReportExtras
+
+    root = _deliverable(tmp_path)
+    extras = ReportExtras(
+        preamble="Compiled with `--system1`.",
+        questions=[
+            ("System-1 decision below 0.8 confidence", "route: kind pure_function"),
+            ("Proposed by the agent, not applied", "split route in two"),
+            ("A decision rote restored", "notify: kind external_call"),
+        ],
+        next_steps=["Run the pipeline once."],
+    )
+    report = render_compile_report(load_pipeline(root / "pipeline.yaml"), root, extras)
+    assert "\n\nCompiled with `--system1`.\n\n## Summary" in report
+    assert open_questions(report) == [
+        "### OQ-1: route",
+        "### Stub: notify (`extracted/notify.py:notify`, stub)",
+        "### System-1 decision below 0.8 confidence",
+        "### Proposed by the agent, not applied",
+        "### A decision rote restored",
+    ]
+    assert report.rstrip().endswith("## Suggested next steps\n\n- Run the pipeline once.")
+    assert "## Suggested next steps" not in _render(root)
+
+
+def test_every_marker_in_any_extracted_module_reaches_the_open_questions(
+    tmp_path: Path,
+) -> None:
+    """Removing the unlisted_assumption check must not let a judgment call
+    hide: a marker anywhere under extracted/, including a module no node
+    names and one added after the first pass, is an Open questions entry."""
+    root = _deliverable(tmp_path)
+    (root / "extracted/helpers.py").write_text(
+        "# rote: assumption: currency codes are upper case\nX = 1\n", encoding="utf-8"
+    )
+    report = _render(root)
+    assert open_questions(report)[:2] == ["### OQ-1: module helper", "### OQ-2: route"]
+    assert "currency codes are upper case" in report
+
+
+def test_assumption_text_cannot_add_headings_or_items(tmp_path: Path) -> None:
+    """A marker's text is the agent's: ``### OQ-9: fake`` on a line of its
+    own would be a real heading that open_questions counts. Every body
+    line from the deliverable is quoted, so the count stays one per entry."""
+    root = _deliverable(tmp_path)
+    (root / "extracted/route.py").write_text(
+        ROUTE.replace("an unlisted reason is refunded at once", "### OQ-9: fake heading"),
+        encoding="utf-8",
+    )
+    (root / "extracted/notify.py").write_text(
+        NOTIFY.replace("the skill never", "### Stub: forged"), encoding="utf-8"
+    )
+    report = _render(root)
+    assert open_questions(report) == [
+        "### OQ-1: route",
+        "### Stub: notify (`extracted/notify.py:notify`, stub)",
+    ]
+    assert "\n> ### OQ-9: fake heading\n" in report
+    assert "\n> ### Stub: forged names the finance channel's API\n" in report
+
+
+def test_an_mcp_bound_stub_is_not_a_question(tmp_path: Path) -> None:
+    """The default backend calls the node's MCP tool, not the stub, so the
+    stub is not a gap to review: listing it would ask about nothing."""
+    root = _deliverable(tmp_path)
+    yaml = (root / "pipeline.yaml").read_text(encoding="utf-8")
+    (root / "pipeline.yaml").write_text(
+        yaml.replace(
+            "    impl: extracted/notify.py:notify\n",
+            "    impl: extracted/notify.py:notify\n    mcp: {server: slack, tool: post}\n",
+        ),
+        encoding="utf-8",
+    )
+    report = _render(root)
+    assert open_questions(report) == ["### OQ-1: route"]
+    assert "the skill never names the finance channel's API" not in report
+
+
+def test_markers_in_signatures_and_pipeline_yaml_reach_the_open_questions(
+    tmp_path: Path,
+) -> None:
+    """A structural guess lives in pipeline.yaml and a prompt's guess in a
+    judge's signature module: both are judgment calls the report lists,
+    each owned by its node."""
+    root = _deliverable(tmp_path)
+    yaml = (root / "pipeline.yaml").read_text(encoding="utf-8")
+    (root / "pipeline.yaml").write_text(
+        yaml.replace(
+            "    signal: batch_approved\n",
+            "    # rote: assumption: one manager approves; the skill names no quorum\n"
+            "    signal: batch_approved\n",
+        )
+        + "# rote: assumption: batches never overlap\n",
+        encoding="utf-8",
+    )
+    (root / "signatures").mkdir()
+    (root / "signatures" / "route.py").write_text(
+        "# rote: assumption: the judge sees only the reason text\nPROMPT = 'x'\n",
+        encoding="utf-8",
+    )
+    report = _render(root)
+    entries = open_questions(report)
+    assert "### OQ-2: route" in entries  # signatures/route.py, owned by its stem
+    assert "### OQ-3: approve" in entries
+    assert "### OQ-4: pipeline" in entries
+    assert "`pipeline.yaml:" in report and "`signatures/route.py:1`" in report

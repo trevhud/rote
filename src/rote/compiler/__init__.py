@@ -43,6 +43,8 @@ from rote.compiler.drivers import (
     get_driver,
 )
 from rote.compiler.events import CompilationEvent, EventCallback, emit_safely
+from rote.compiler.provenance import REPORT_FILENAME
+from rote.compiler.report import render_compile_report
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
@@ -530,6 +532,14 @@ class Compiler:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
             _write_compile_metrics(result, output_dir)
+
+            # The report is rendered, not written by the agent: everything
+            # in it is already in pipeline.yaml and the extracted code (see
+            # rote.compiler.report). Rendered from output_dir, after an
+            # update's merge, so it describes the deliverable as kept.
+            (output_dir / REPORT_FILENAME).write_text(
+                render_compile_report(pipeline, output_dir), encoding="utf-8"
+            )
 
             # The agent records source_skill relative to its own temp
             # work dir, which is deleted the moment this context manager

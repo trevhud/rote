@@ -92,7 +92,7 @@ own offline checks on it.
 | `inR`, `inP` | pipeline input field names, recall and precision |
 | `impl` | pure_function nodes implemented / total (the rest are stubs) |
 | `tests` | the generated tests, run in the OS sandbox |
-| `citeE`, `assum`, `OQ` | citations that are not in the skill, `# rote: assumption:` markers, Open questions entries in compile-report.md |
+| `citeE`, `assum`, `OQ` | citations that are not in the skill, `# rote: assumption:` markers, Open questions entries in compile-report.md. rote renders that report, so `OQ` is distinct assumptions plus stubs. Before that change the agent wrote it, so `OQ` in older results (the baseline) counts the agent's entries |
 | `ok` | rote's verification verdict on the deliverable |
 | `exit`, `rep`, `turns` | compile exit code, repair rounds, agent turns |
 | `cost$`, `inTok`, `outTok` | `total_cost_usd` and tokens. `inTok` includes cache writes and reads, which are nearly all of it |

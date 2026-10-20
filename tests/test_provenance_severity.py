@@ -3,8 +3,9 @@
 The user's rule, from a real BDR compile that exited 1 on 15 recorded
 assumptions: a citation the skill does not contain is a factual error and
 fails; an assumption is a declared decision and never fails, it is listed
-for review; a missing declaration (an unmarked outcome, an assumption the
-Open questions do not cover) is repaired, then a warning. CI opts into
+for review; a missing declaration (an unmarked outcome) is repaired, then
+a warning. rote renders the report's Open questions from the markers
+itself, so an assumption can no longer be missing from them. CI opts into
 failing on all of it with ``--strict-provenance``.
 """
 
@@ -110,8 +111,10 @@ def skill(tmp_path: Path) -> Path:
 # ───────── Verification ─────────
 
 
-def test_any_number_of_covered_assumptions_never_fails(tmp_path: Path, skill: Path) -> None:
-    root = _deliverable(tmp_path / "out", _module(extra=6), COVERED)
+@pytest.mark.parametrize("report", [COVERED, UNCOVERED])
+def test_any_number_of_assumptions_never_fails(tmp_path: Path, skill: Path, report: str) -> None:
+    """Nor does an agent report that lists fewer of them: rote lists them."""
+    root = _deliverable(tmp_path / "out", _module(extra=6), report)
     v = verify_deliverable(root, skill_dir=skill, run_tests=False)
     assert v.ok and v.review_gaps == [] and v.repair_instruction(root) is None
     assert len(v.assumptions) == 9
@@ -147,17 +150,11 @@ def test_a_real_citation_passes(tmp_path: Path, skill: Path) -> None:
     assert verify_deliverable(root, skill_dir=skill, run_tests=False).ok
 
 
-@pytest.mark.parametrize(
-    ("module", "report", "gap"),
-    [
-        (_module(), UNCOVERED, "unlisted_assumption"),
-        (_module(unmarked=True), COVERED, "uncited_outcome"),
-    ],
-)
 def test_a_review_gap_is_repaired_then_a_warning_and_strict_makes_it_fail(
-    tmp_path: Path, skill: Path, module: str, report: str, gap: str
+    tmp_path: Path, skill: Path
 ) -> None:
-    root = _deliverable(tmp_path / "out", module, report)
+    gap = "uncited_outcome"
+    root = _deliverable(tmp_path / "out", _module(unmarked=True), COVERED)
     v = verify_deliverable(root, skill_dir=skill, run_tests=False)
     assert v.ok, v.errors
     assert [f.kind for f in v.review_gaps] == [gap]
@@ -174,11 +171,7 @@ def test_a_review_gap_is_repaired_then_a_warning_and_strict_makes_it_fail(
 async def test_a_gap_the_repairs_do_not_close_still_completes_the_compile(
     tmp_path: Path, skill: Path
 ) -> None:
-    files = {
-        "extracted/foo.py": _module(),
-        "tests/test_foo.py": TEST,
-        "compile-report.md": UNCOVERED,
-    }
+    files = {"extracted/foo.py": _module(unmarked=True), "tests/test_foo.py": TEST}
     driver = _RepairableDriver([PIPELINE], files=files)
     compiler_dir = tmp_path / "compiler"
     compiler_dir.mkdir()
@@ -192,7 +185,7 @@ async def test_a_gap_the_repairs_do_not_close_still_completes_the_compile(
     assert result.verification is not None and result.verification.ok
     messages = [getattr(e, "message", "") for e in events]
     assert any(m.startswith("provenance review:") for m in messages)
-    assert any("3 assumption(s) the skill does not state" in m for m in messages)
+    assert any("2 assumption(s) the skill does not state" in m for m in messages)
 
 
 def _run_compile(
@@ -220,29 +213,25 @@ def test_rote_compile_lists_assumptions_and_exits_by_policy(
     strict: bool,
     rc: int,
 ) -> None:
-    files = {
-        "extracted/foo.py": _module(),
-        "tests/test_foo.py": TEST,
-        "compile-report.md": UNCOVERED,
-    }
+    files = {"extracted/foo.py": _module(unmarked=True), "tests/test_foo.py": TEST}
     extra = ["--json", *(["--strict-provenance"] if strict else [])]
     code, out = _run_compile(tmp_path, skill, monkeypatch, files, *extra)
     assert code == rc
     captured = capsys.readouterr()
-    assert "3 assumption(s) the skill does not state" in captured.err
+    assert "2 assumption(s) the skill does not state" in captured.err
     assert "  only_node:\n    extracted/foo.py:" in captured.err
-    assert "  second_node:\n    extracted/foo.py:" in captured.err
-    assert ("provenance warning (unlisted_assumption)" in captured.err) is not strict
+    assert ("provenance warning (uncited_outcome)" in captured.err) is not strict
     payload = json.loads(captured.out)
     prov = payload["provenance"]
-    assert prov["assumptions"] == 3 and len(prov["assumption_list"]) == 3
-    assert {a["node"] for a in prov["assumption_list"]} == {"only_node", "second_node"}
+    assert prov["assumptions"] == 2 and len(prov["assumption_list"]) == 2
+    assert {a["node"] for a in prov["assumption_list"]} == {"only_node"}
     assert (prov["review_gaps"], prov["errors"]) == ((0, 1) if strict else (1, 0))
     summary = json.loads((out / "progress.jsonl").read_text().splitlines()[-1])
     assert summary["type"] == "summary"
-    assert summary["provenance"]["assumptions"] == 3
+    assert summary["provenance"]["assumptions"] == 2
     report = (out / "compiled" / "compile-report.md").read_text()
-    assert "- Assumptions the skill does not state: 3. Review each one:" in report
+    assert "### OQ-1: only_node" in report and "### OQ-2: only_node" in report
+    assert "- Assumptions the skill does not state: 2. Review each one:" in report
     assert "  - only_node:\n    - `extracted/foo.py:" in report
 
 
@@ -271,15 +260,11 @@ def test_rote_analyze_fails_only_under_strict_provenance(
 ) -> None:
     from rote.cli import main
 
-    files = {
-        "extracted/foo.py": _module(),
-        "tests/test_foo.py": TEST,
-        "compile-report.md": UNCOVERED,
-    }
+    files = {"extracted/foo.py": _module(unmarked=True), "tests/test_foo.py": TEST}
     driver = _RepairableDriver([PIPELINE], files=files)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
     argv = ["analyze", str(skill), "--json", *(["--strict-provenance"] if strict else [])]
     assert main(argv) == rc
     report = json.loads(capsys.readouterr().out)
-    assert report["provenance"]["assumptions"] == 3
+    assert report["provenance"]["assumptions"] == 2
     assert report["provenance"]["review_gaps" if not strict else "errors"] == 1

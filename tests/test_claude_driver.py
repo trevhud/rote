@@ -414,6 +414,31 @@ async def test_effort_is_rotes_alone(
     assert "CLAUDE_CODE_EFFORT_LEVEL" not in recorder.calls[0]["env"]
 
 
+@pytest.mark.asyncio
+async def test_the_child_writes_the_prompt_cache_for_five_minutes(
+    fake_skills: tuple[Path, Path, Path],
+    fake_claude_subprocess,  # noqa: ANN001
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude Code picks the 1-hour cache TTL on a subscription, which bills
+    every cache write at 2x input instead of 1.25x; a compile reuses its
+    prefix within seconds. Both buckets' documented controls are set, the
+    values are asserted, not just the keys, and a caller's own 1-hour
+    exports do not reach the child."""
+    skill_dir, compiler_dir, work_dir = fake_skills
+    monkeypatch.setenv("ENABLE_PROMPT_CACHING_1H", "1")
+    monkeypatch.setenv("CLAUDE_CODE_PROMPT_CACHE_TTL", "1h")
+    monkeypatch.setenv("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", "1h")
+    recorder = fake_claude_subprocess(
+        stdout_text=_stream(_result_line(result="ok")),
+        write_files={"pipeline.yaml": VALID_PIPELINE_YAML},
+    )
+    await ClaudeDriver().run(skill_dir, compiler_dir, work_dir)
+    env = recorder.calls[0]["env"]
+    assert env["CLAUDE_CODE_PROMPT_CACHE_TTL"] == "5m"
+    assert env["CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL"] == "5m"
+
+
 def test_effort_outside_the_accepted_levels_is_rejected() -> None:
     with pytest.raises(ValueError, match="effort"):
         ClaudeDriver(effort="max")

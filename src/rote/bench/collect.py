@@ -199,7 +199,6 @@ def verification_metrics(pipeline: Pipeline, compiled: Path, skill_dir: Path) ->
             "citation_errors": provenance_kinds.get("citation_not_in_skill", 0)
             + provenance_kinds.get("malformed_citation", 0),
             "uncited_outcomes": provenance_kinds.get("uncited_outcome", 0),
-            "unlisted_assumption": provenance_kinds.get("unlisted_assumption", 0),
             "assumptions": len(v.assumptions),
             "open_questions": oq,
         },

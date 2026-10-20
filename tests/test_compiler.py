@@ -1104,6 +1104,8 @@ def test_the_compile_report_says_whether_the_tests_ran(
     for _ in range(2):  # twice: the section is replaced, not duplicated
         assert main([*argv, *flags, "--out", str(out)]) == 0
     report = (out / "compiled" / "compile-report.md").read_text()
-    assert report.startswith("# Report\n\nThe agent's text.")
+    # rote renders the report; an agent-written one is replaced, not kept.
+    assert report.startswith("# Compile report: ")
+    assert "The agent's text." not in report
     assert report.count("## rote verification") == 1
     assert expected in report
