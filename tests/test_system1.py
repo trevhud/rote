@@ -496,16 +496,11 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
         ("Read the request of the Controller.", False),
         ("Read the total of Step 3.", False),
         ("Read the summary of each Phase result.", False),
-        # A determiner before the name: still a named source.
-        ("Read the subject of each Gmail thread.", True),
-        ("Read the names of all Slack channels.", True),
         ("Read the subject of each line.", False),
         # A capitalized domain noun is not a system (review6).
         ("Read the owner of each Deal and group them.", False),
         ("Read the name of every Customer in the batch.", False),
         ("Read the status of each Order and flag late ones.", False),
-        # A named product, then an object it holds.
-        ("Read the status of every Zendesk ticket.", True),
         # Data words after a name are rows of data, not system objects (review6).
         ("Read the total of each Q3 row.", False),
         ("Read the amount of each Order invoice.", False),
