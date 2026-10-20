@@ -925,6 +925,20 @@ def _read_source_product(text: str) -> bool:
     return False
 
 
+def _through_gates(sources: list[str], by_id: Mapping[str, NodePlan]) -> list[str]:
+    """The non-gate nodes each gate in ``sources`` reads, in order, no repeats."""
+    out: list[str] = []
+    for src in sources:
+        gate = by_id.get(src)
+        if gate is None or gate.kind != "hitl_gate":
+            continue
+        for ref in gate.inputs.values():
+            upstream = ref.split(".", 1)[0]
+            if upstream != "pipeline" and upstream not in sources and upstream not in out:
+                out.append(upstream)
+    return out
+
+
 def role_of_kind(kind: str) -> str:
     """The node role a kind decided outside the rules gets."""
     return _ROLE_OF_KIND[kind]
@@ -969,16 +983,26 @@ def plan(
             upstream, dconf, drule = prev, 0.8, f"runs inside {loop.id}, after the sub-step before"
             for n in unit_nodes:
                 n.in_loop = loop.id
+        by_id = {x.id: x for x in [*nodes, *unit_nodes]}
         for pos, node in enumerate(unit_nodes):
             node.inputs = {"request": "pipeline.input"}
             sources = upstream if pos == 0 else [unit_nodes[pos - 1].id]
             for src in sources:
                 node.inputs[src] = f"{src}.output"
+            # A gate is a pause, not a transformation: the step after it also
+            # reads what the gate's reviewer saw. Without this, "file the
+            # report" after an approval gate had the decision and nothing to
+            # report on, and the agent could only write a stub (a real
+            # expense-audit compile).
+            through = _through_gates(sources, by_id)
+            for src in through:
+                node.inputs.setdefault(src, f"{src}.output")
             node.decide(
                 "inputs",
                 dict(node.inputs),
                 dconf if pos == 0 else 0.9,
-                drule if pos == 0 else "inside one step, each node reads the one before",
+                (drule if pos == 0 else "inside one step, each node reads the one before")
+                + (f"; past the gate it also reads {', '.join(through)}" if through else ""),
             )
             each = None if loop is not None else _per_item(f"{u.title}\n{u.text}")
             # Only judges and "for each X" work fan out. A pure_function over a
