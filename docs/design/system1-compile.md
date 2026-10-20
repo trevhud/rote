@@ -283,7 +283,7 @@ that is a decision for the user, not this change. The decider is a layered
 setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
 `--decider`), and `rote init` asks for it.
 
-## The Haiku tie-break (`--tiebreak haiku`, the default)
+## The Haiku tie-break (`--tiebreak haiku`, opt-in)
 
 After the decider, a step whose kind decision is still below
 `REVIEW_BELOW` (0.7) is unsure: the rules had no clear signal, or a
@@ -324,6 +324,22 @@ rules were written on those skills, so their unsure steps are the hard
 ones) and adds 0.05 to Jev. Clef plus the tie-break is the best held-out
 row. It never finds the gate the rules miss: gates are a decider's job.
 One call adds about 6 s to a compile.
+
+**Fidelity decides the default, and it says off.** The bar for default-on
+was fidelity at least the rules' level over repeated compiles. Cached API
+driver (#180), Sonnet 4.6, 3 compiles per cell, `rote bench --fidelity`:
+
+| skill | rules | rules + Haiku |
+|---|---|---|
+| expense-audit | 0.915 (0.903 to 0.921) | 0.909 (0.903 to 0.921) |
+| ops-report | 0.858 (0.823 to 0.879) | 0.855 (0.833 to 0.889) |
+
+The difference is inside the run-to-run spread, but it is not at least the
+rules' level. So `--tiebreak none` is the default, and `--tiebreak haiku` (or
+`tiebreak: haiku`) turns it on. Its gain is in kind accuracy on held-out
+skeletons, which have no fidelity cases, so it stays available until a
+fidelity case shows it helping behavior. Cost per compile was $1.2 to $1.9
+either way. The Haiku call itself was $0.0007 to $0.0008.
 
 ## Non-generative models, measured
 

@@ -66,7 +66,8 @@ comes from keeping them clean.
   client (`system1/decision_model.py`), each with thresholds fitted on the
   dev skills and frozen before a held-out run. Steps still below 0.7 after
   that go to Haiku in one schema-locked call (`system1/tiebreak.py`,
-  layered `tiebreak` setting, default `haiku`). It bills through the
+  layered `tiebreak` setting, default `none` because it did not beat
+  rules-only fidelity). It bills through the
   compile's own lane via `structured_call` in the inference helper. Don't
   give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).

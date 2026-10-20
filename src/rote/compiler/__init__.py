@@ -59,6 +59,7 @@ from rote.compiler.grounding import (
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS
+from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
     UpdatePlan,
@@ -242,7 +243,7 @@ class Compiler:
         strict_provenance: bool = False,
         system1: bool | None = None,
         system1_decider: str = "rules",
-        system1_tiebreak: str = "haiku",
+        system1_tiebreak: str = DEFAULT_TIEBREAK,
         tool_discovery: tool_grounding.Discovery = "named",
     ) -> None:
         """
@@ -307,10 +308,10 @@ class Compiler:
             (:data:`rote.compiler.system1.DECIDERS`). A model decider with
             System-1 off is an error, never ignored.
         system1_tiebreak
-            ``"haiku"`` (the default): on the System-1 path, the steps still
-            unsure after the decider go to Haiku in one schema-locked call,
-            billed the way the compile's driver bills
-            (:mod:`rote.compiler.system1.tiebreak`). ``"none"``: no call.
+            ``"haiku"``: on the System-1 path, the steps still unsure after
+            the decider go to Haiku in one schema-locked call, billed the way
+            the compile's driver bills (:mod:`rote.compiler.system1.tiebreak`).
+            ``"none"`` (the default): no call.
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir

@@ -180,11 +180,11 @@ with Jev's thresholds fitted on dev and frozen before the held-out run:
 The method and the fitted thresholds are in
 [`docs/design/system1-compile.md`](design/system1-compile.md#--decider-jev).
 
-With the Haiku tie-break on (the default) for the steps still unsure after
+With the Haiku tie-break on (`--tiebreak haiku`; off by default) for the steps still unsure after
 the decider, three trials each, kind dev / held-out: rules 0.63 / 0.68,
 clef 0.64 / 0.74, jev 0.67 / 0.72, for about $0.001 a compile. Gates do
 not change. The table and method are in
-[the design doc](design/system1-compile.md#the-haiku-tie-break---tiebreak-haiku-the-default).
+[the design doc](design/system1-compile.md#the-haiku-tie-break---tiebreak-haiku-opt-in), which also has the fidelity bench that kept it off by default.
 
 ## What it reports
 

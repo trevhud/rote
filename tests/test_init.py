@@ -84,7 +84,7 @@ def test_local_path_picks_runtime_driver_and_model(
 
     # hosting=2 (local), runtime=2 (temporal), driver=1 (claude), model=m-9,
     # decider=1 (rules, the default, so it is not written)
-    _run(["2", "2", "1", "m-9", "1", "y"])
+    _run(["2", "2", "1", "m-9", "1", "n"])
     assert load_config_file(config_path) == {
         "runtime": "temporal",
         "deploy": "none",
@@ -171,15 +171,15 @@ def _raise_eof(prompt: str = "") -> str:
     raise EOFError
 
 
-def test_the_wizard_can_turn_the_tiebreak_off(
+def test_the_wizard_can_turn_the_tiebreak_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config_path = tmp_path / "cfg" / "config.yaml"
     monkeypatch.setenv("ROTE_CONFIG_PATH", str(config_path))
 
-    _run(["2", "1", "", "", "", "n"])
+    _run(["2", "1", "", "", "", "y"])
     assert load_config_file(config_path) == {
         "runtime": "dbos",
         "deploy": "none",
-        "tiebreak": "none",
+        "tiebreak": "haiku",
     }
