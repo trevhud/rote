@@ -40,7 +40,6 @@ roots via ``Path.relative_to``.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
@@ -80,6 +79,7 @@ from rote.compiler.events import (
     relative_display_path,
 )
 from rote.extras import install_hint
+from rote.inference import structured_answer, structured_output_schema
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, ToolResultBlockParam
@@ -514,6 +514,13 @@ class AnthropicApiDriver(CompilerDriver):
         """
         if not _ANTHROPIC_AVAILABLE:
             raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
+        try:
+            # The one rewrite into the subset structured outputs accepts
+            # (shared with emitted judges): it refuses an open object rather
+            # than closing it.
+            schema = structured_output_schema(request.schema, node_id=request.label)
+        except RuntimeError as e:
+            raise DriverError(f"cannot lock the answer for {request.label}: {e}") from e
         started = time.monotonic()
         client = anthropic.AsyncAnthropic(**self._client_kwargs())
         try:
@@ -525,7 +532,7 @@ class AnthropicApiDriver(CompilerDriver):
                     "system": cached_system(request.system),
                     "messages": [{"role": "user", "content": request.prompt}],
                     "output_config": {
-                        "format": {"type": "json_schema", "schema": request.schema},
+                        "format": {"type": "json_schema", "schema": schema},
                         "effort": self.effort,
                     },
                 },
@@ -536,17 +543,14 @@ class AnthropicApiDriver(CompilerDriver):
             await client.close()
         totals = usage_buckets(message.usage)
         metadata = {f"{bucket}_tokens": count for bucket, count in totals.items()}
-        text = "".join(
-            getattr(b, "text", "") for b in message.content if getattr(b, "type", None) == "text"
-        )
         try:
-            payload = json.loads(text) if text else None
-        except ValueError:
-            payload = None
+            payload = structured_answer(message, node_id=request.label)
+        except RuntimeError as e:  # truncated, refused, or not JSON: still a paid call
+            raise DriverError(f"Anthropic API returned no answer: {e}", metadata=metadata) from e
         if not isinstance(payload, dict):
             raise DriverError(
-                f"Anthropic API returned no answer for {request.label} "
-                f"(stop_reason {message.stop_reason!r}): {text[:200]!r}",
+                f"Anthropic API returned no answer for {request.label}: a JSON "
+                f"{type(payload).__name__}, not an object",
                 metadata=metadata,
             )
         return Generation(

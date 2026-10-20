@@ -161,11 +161,11 @@ class _Client:
         self.closed = True
 
 
-def _message(content: list[Any]) -> Any:
+def _message(content: list[Any], stop_reason: str = "end_turn") -> Any:
     return SimpleNamespace(
         content=content,
         model="claude-sonnet-5-5",
-        stop_reason="tool_use",
+        stop_reason=stop_reason,
         usage=SimpleNamespace(
             input_tokens=5,
             output_tokens=60,
@@ -194,7 +194,9 @@ async def test_api_generate_locks_the_answer_and_caches_the_shared_prefix(
     (call,) = client.calls
     # Structured outputs, never a forced tool: current models 400 on tool_choice "tool".
     assert call["output_config"] == {
-        "format": {"type": "json_schema", "schema": SCHEMA},
+        # Rewritten by the one shared rewrite (#182): an object that declares its
+        # properties is closed, which only narrows what the model may write.
+        "format": {"type": "json_schema", "schema": {**SCHEMA, "additionalProperties": False}},
         "effort": "low",  # unset, the API's default cost 5x the output tokens
     }
     assert "tool_choice" not in call and "tools" not in call
@@ -457,3 +459,31 @@ async def test_api_generate_asks_for_the_full_output_budget_and_refuses_a_list(
     with pytest.raises(DriverError, match="no answer"):
         await AnthropicApiDriver().generate(REQUEST)
     assert client.calls[0]["max_tokens"] == DEFAULT_MAX_TOKENS_PER_TURN
+
+
+@pytest.mark.asyncio
+async def test_api_generate_refuses_a_truncated_answer_and_keeps_its_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valid-looking JSON that stopped on max_tokens is not an answer (#182's rule)."""
+    client = _Client(_message([SimpleNamespace(type="text", text='{"x": "z"}')], "max_tokens"))
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    with pytest.raises(DriverError, match="not a complete answer") as err:
+        await AnthropicApiDriver().generate(REQUEST)
+    assert err.value.metadata is not None and err.value.metadata["output_tokens"] == 60
+
+
+@pytest.mark.asyncio
+async def test_api_generate_refuses_an_open_object_before_any_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    client = _Client(_message([]))
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **k: client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
+    open_schema = {"type": "object", "properties": {"m": {"type": "object"}}, "required": ["m"]}
+    with pytest.raises(DriverError, match="cannot lock the answer"):
+        await AnthropicApiDriver().generate(replace(REQUEST, schema=open_schema))
+    assert client.calls == []

@@ -226,7 +226,8 @@ ones a compile already uses.
   `modelUsage` (all four buckets), cost from `total_cost_usd`. An
   `is_error` envelope inside a zero exit is a failure.
 - `AnthropicApiDriver.generate`: `output_config.format` with the answer
-  schema (current models reject a forced `tool_choice` with a 400), the
+  schema, rewritten by the shared `structured_output_schema` and read back
+  by `structured_answer` (#182, the code emitted judges use) (current models reject a forced `tool_choice` with a 400), the
   shared prefix marked `cache_control`, `output_config.effort` (unset, the
   API's default spent 12k to 21k output tokens per piece against 2k to 3k
   at low), all four usage buckets, no `temperature`. Each call is priced
