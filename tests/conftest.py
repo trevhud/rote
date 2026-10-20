@@ -124,6 +124,7 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # the trimmed real documents in tests/fixtures/vendor_specs through an
     # injected fetch, never the network, and never the developer's cache.
     monkeypatch.setenv("ROTE_SPEC_CACHE_DIR", str(tmp_path / "vendor-specs"))
+    monkeypatch.setenv("ROTE_FIXTURE_DIR", str(tmp_path / "vendor-fixtures"))
     monkeypatch.setattr("rote.vendor_specs.store.http_get_json", _offline_spec_fetch)
     # Nor install an app's vendor libraries (rote.vendor_specs.deps).
     monkeypatch.setattr("rote.vendor_specs.deps._run_uv", _no_package_install)

@@ -65,6 +65,11 @@ class FixtureSet(BaseModel):
     #: For ``trust: docs``: the pages the fixture was written from.
     sources: list[str] = Field(default_factory=list)
     operations: dict[str, list[FixtureResponse]] = Field(default_factory=dict)
+    #: Set by the store (rote.vendor_specs.fixture_store): its name there, the
+    #: spec revision it was validated against, and what produced it.
+    name: str | None = None
+    spec_revision: str | None = None
+    origin: str | None = None
 
 
 class FixtureError(ValueError):
