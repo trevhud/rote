@@ -524,6 +524,29 @@ def emit_findings(
     ]
 
 
+def _optional_imports(tree: ast.Module) -> set[int]:
+    """``id()`` of every import in a ``try`` body whose handlers catch ImportError."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        caught = {name for h in node.handlers for name in _handler_names(h.type)}
+        if caught & {"ImportError", "ModuleNotFoundError"}:
+            for stmt in node.body:
+                found |= {
+                    id(n) for n in ast.walk(stmt) if isinstance(n, ast.Import | ast.ImportFrom)
+                }
+    return found
+
+
+def _handler_names(expr: ast.expr | None) -> list[str]:
+    if isinstance(expr, ast.Name):
+        return [expr.id]
+    if isinstance(expr, ast.Tuple):
+        return [e.id for e in expr.elts if isinstance(e, ast.Name)]
+    return []
+
+
 def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
     """(file, module) for every ``extracted`` import the emitted runtime cannot satisfy.
 
@@ -532,6 +555,12 @@ def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
     ``extracted._common`` / ``extracted.rule_tables``, which the work dir
     had and the emitted runtime did not. Static (AST) resolution, so no
     deliverable code runs outside the test sandbox.
+
+    An import inside a ``try`` that catches ImportError is optional by
+    construction and is not counted: the verbatim inference helper imports
+    ``extracted._rote_mcp`` that way for agent loops only, and a dbos
+    pipeline with a judge and no called MCP binding (every ``--backend api``
+    one) was failing verification on it.
     """
     extracted = runtime_dir / "extracted"
     have = {p.stem for p in extracted.glob("*.py")} if extracted.is_dir() else set()
@@ -543,7 +572,10 @@ def unshipped_imports(runtime_dir: Path) -> list[tuple[str, str]]:
         except SyntaxError:
             continue  # reported by the syntax check, not here
         inside = path.parent == extracted
+        optional = _optional_imports(tree)
         for node in ast.walk(tree):
+            if id(node) in optional:
+                continue
             wanted: list[str] = []
             if isinstance(node, ast.Import):
                 wanted = [
