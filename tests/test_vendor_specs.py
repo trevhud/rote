@@ -383,6 +383,7 @@ async def test_a_compile_bounces_a_spec_violation_and_reports_every_check(
     (rubric / "SKILL.md").write_text("# r", encoding="utf-8")
     driver = _Driver()
     compiler = Compiler(
+        system1=False,  # a fake rubric
         compiler_skill_dir=rubric,
         emit_target=EmitTarget("dbos", "api"),
         run_generated_tests=False,
