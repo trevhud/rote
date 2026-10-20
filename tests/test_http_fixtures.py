@@ -541,3 +541,27 @@ def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
         assert case["run_error"] is None
         assert case["reads"] == 1.0
         assert case["score"] == 1.0
+
+
+def test_the_fake_routes_like_the_check_matches(tmp_path: Path, store: SpecStore) -> None:
+    """Upload URLs are the operation's, and the most specific operation wins:
+    the fake and the spec check share one matcher."""
+    people = store.google("people", "v1")
+    drive = store.google("drive", "v3")
+    assert people is not None and drive is not None
+    api = FakeApi([(drive, None), (people, None)], tmp_path / "log.jsonl")
+    for method, target in [
+        ("POST", "/www.googleapis.com/upload/drive/v3/files?uploadType=media"),
+        ("GET", "/people.googleapis.com/v1/people/me/connections?personFields=names"),
+        ("GET", "/people.googleapis.com/v1/people/me?personFields=names"),
+    ]:
+        status, _, body = api.answer(method, target, AUTH)
+        assert status == 200, body
+    assert [
+        (e["operation"], e["params"].get("resourceName")) for e in read_log(tmp_path / "log.jsonl")
+    ] == [
+        ("drive.files.create", None),
+        ("people.people.connections.list", "people/me"),
+        ("people.people.get", "people/me"),
+    ]
+    assert "www.googleapis.com" in api.hosts and "people.googleapis.com" in api.hosts

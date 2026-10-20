@@ -30,9 +30,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from rote.vendor_specs import schema
-from rote.vendor_specs.check import match_path
+from rote.vendor_specs.check import best_operation
 from rote.vendor_specs.fixtures import FixtureSet, validate
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of, path_segments
+from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of
 
 
 class FakeApi:
@@ -52,7 +52,8 @@ class FakeApi:
             h
             for spec, _ in self.served
             for op in spec.operations
-            if (h := host_of(op.url_template))
+            for template in op.templates()
+            if (h := host_of(template))
         }
 
     def answer(self, method: str, target: str, headers: dict[str, str]) -> tuple[int, str, bytes]:
@@ -93,14 +94,14 @@ class FakeApi:
     def _route(
         self, method: str, host: str, path: str
     ) -> tuple[ApiSpec, FixtureSet | None, Operation, dict[str, str]] | None:
-        call = path_segments(path)
+        # The check's own matcher: the most specific operation, upload URLs
+        # included. The host is the fake's to filter (the check is
+        # host-agnostic: Gmail also answers at www.googleapis.com/gmail/v1).
         for spec, fixtures in self.served:
-            for op in spec.operations:
-                if op.method != method or host_of(op.url_template) != host:
-                    continue
-                bound = match_path(op.segments(), call)
-                if bound is not None:
-                    return spec, fixtures, op, bound
+            ops = [op for op in spec.operations if host in {host_of(t) for t in op.templates()}]
+            op, bound = best_operation(ops, method, f"https://{host}{path}")
+            if op is not None:
+                return spec, fixtures, op, bound
         return None
 
     def _ok(self, entry: dict[str, Any], media: bool, body: Any) -> tuple[int, str, bytes]:
