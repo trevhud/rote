@@ -977,7 +977,7 @@ def test_compile_threads_probe_dir_to_driver_instructions(
                 driver_name="fake",
             )
 
-    compiler = Compiler(agent="claude")
+    compiler = Compiler(system1=False, agent="claude")
     monkeypatch.setattr(compiler, "select_driver", lambda: _FakeDriver())
 
     result = asyncio.run(compiler.compile(skill, tmp_path / "out" / "compiled", probe_dir=probe))

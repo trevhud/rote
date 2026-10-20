@@ -43,7 +43,7 @@ _KIND_ORDER = (
 class ReportExtras:
     """What a compile mode adds to the one shared report.
 
-    The default compile passes none. ``--system1`` passes its preamble
+    The full-rubric compile (``--no-system1``) passes none. System-1 passes its preamble
     (rote decided the structure), its review items (low-confidence
     decisions, the agent's proposals, decisions rote restored) and its
     next steps. Every mode renders through :func:`render_compile_report`,

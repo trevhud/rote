@@ -327,7 +327,7 @@ async def test_compile_metrics_exclude_prose_and_preserve_incomplete_usage(
     )
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
     output = tmp_path / "compiled-run"
-    await Compiler().compile(fake_skill_dir, output)
+    await Compiler(system1=False).compile(fake_skill_dir, output)
     text = (output / "compile-metrics.json").read_text()
     assert "sensitive-value" not in text
     assert json.loads(text) == {
@@ -352,7 +352,7 @@ async def test_no_change_compile_preserves_previous_metrics(
     driver = _FakeDriver(VALID_YAML, metadata={"input_tokens": 3, "output_tokens": 12})
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
     output = tmp_path / "compiled-run"
-    compiler = Compiler()
+    compiler = Compiler(system1=False)
     await compiler.compile(fake_skill_dir, output)
     metrics = output / "compile-metrics.json"
     previous = metrics.read_bytes()
@@ -379,7 +379,7 @@ async def test_compile_happy_path(
         metadata={"tokens": 1234, "iterations": 5},
     )
 
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     # Bypass select_driver so we don't need any real backend
     compiler.select_driver = lambda: fake_driver  # type: ignore[method-assign]
 
@@ -419,7 +419,7 @@ async def test_compile_repoints_dead_source_skill_pointer(
         'version: "0.1.0"\n',
         'version: "0.1.0"\nsource_skill: ../../rote-compile-gone/skill\n',
     )
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=dead_pointer_yaml)  # type: ignore[method-assign]
 
     result = await compiler.compile(fake_skill_dir, output_dir)
@@ -459,7 +459,7 @@ async def test_compile_repoints_eval_sidecar_source_skill(
         "    estimated_turns: {low: 3, high: 6}\n"
         "    iterations: {low: 20, high: 90}\n"
     )
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(  # type: ignore[method-assign]
         pipeline_yaml=VALID_YAML, extras={"eval.yaml": dead_sidecar}
     )
@@ -486,7 +486,7 @@ async def test_compile_adds_source_skill_when_agent_omits_it(
     """VALID_YAML has no source_skill at all — the orchestrator inserts a
     resolvable one rather than leaving the baseline undiscoverable."""
     output_dir = tmp_path / "output"
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=VALID_YAML)  # type: ignore[method-assign]
 
     result = await compiler.compile(fake_skill_dir, output_dir)
@@ -507,7 +507,7 @@ async def test_compile_overwrites_existing_output_files(
     (output_dir / "pipeline.yaml").write_text("OLD CONTENT")
 
     fake_driver = _FakeDriver(pipeline_yaml=VALID_YAML)
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: fake_driver  # type: ignore[method-assign]
 
     await compiler.compile(fake_skill_dir, output_dir)
@@ -536,7 +536,7 @@ async def test_compile_stamps_provenance_sidecar(
         "    impl: extracted/foo.py:only_node\n    source:\n      section: Fake skill\n",
     )
     fake_driver = _FakeDriver(pipeline_yaml=yaml_with_source)
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: fake_driver  # type: ignore[method-assign]
 
     output_dir = tmp_path / "output"
@@ -558,7 +558,7 @@ async def test_explicit_unknown_agent_raises(
     fake_compiler_skill_dir: Path,
     tmp_path: Path,
 ) -> None:
-    compiler = Compiler(agent="bogus", compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, agent="bogus", compiler_skill_dir=fake_compiler_skill_dir)
     with pytest.raises(CompilerError, match="bogus"):
         await compiler.compile(fake_skill_dir, tmp_path / "out")
 
@@ -573,7 +573,9 @@ async def test_explicit_unavailable_agent_raises_with_reason(
     """User asks for `--agent claude` but claude isn't installed."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with patch("rote.compiler.drivers.claude.which", return_value=None):
-        compiler = Compiler(agent="claude", compiler_skill_dir=fake_compiler_skill_dir)
+        compiler = Compiler(
+            system1=False, agent="claude", compiler_skill_dir=fake_compiler_skill_dir
+        )
         with pytest.raises(CompilerError, match="not available"):
             await compiler.compile(fake_skill_dir, tmp_path / "out")
 
@@ -590,7 +592,7 @@ async def test_auto_detect_with_no_drivers_available_raises_helpful_error(
         patch("rote.compiler.drivers.claude.which", return_value=None),
         patch("rote.compiler.drivers.codex.which", return_value=None),
     ):
-        compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+        compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
         with pytest.raises(CompilerError) as excinfo:
             await compiler.compile(fake_skill_dir, tmp_path / "out")
 
@@ -608,7 +610,7 @@ async def test_missing_skill_dir_raises(
     fake_compiler_skill_dir: Path,
     tmp_path: Path,
 ) -> None:
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     with pytest.raises(CompilerError, match="does not exist"):
         await compiler.compile(tmp_path / "nonexistent", tmp_path / "out")
 
@@ -620,7 +622,7 @@ async def test_skill_dir_without_skill_md_raises(
 ) -> None:
     skill_dir = tmp_path / "not-a-skill"
     skill_dir.mkdir()  # but no SKILL.md inside
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     with pytest.raises(CompilerError, match="no SKILL.md"):
         await compiler.compile(skill_dir, tmp_path / "out")
 
@@ -634,7 +636,7 @@ async def test_driver_error_wrapped_with_details(
     fake_compiler_skill_dir: Path,
     tmp_path: Path,
 ) -> None:
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FailingDriver()  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError) as excinfo:
@@ -652,7 +654,7 @@ async def test_invalid_pipeline_yaml_raises_validation_error(
     tmp_path: Path,
 ) -> None:
     fake_driver = _FakeDriver(pipeline_yaml=INVALID_YAML)
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: fake_driver  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError, match="invalid pipeline.yaml"):
@@ -706,6 +708,7 @@ async def test_model_override_flows_through_to_driver(
     )
 
     compiler = Compiler(
+        system1=False,
         agent="api",
         compiler_skill_dir=fake_compiler_skill_dir,
         model="claude-opus-4-6",
@@ -721,7 +724,7 @@ def test_default_compiler_skill_dir_finds_bundled_skill() -> None:
     if not BUNDLED_COMPILER_SKILL.is_dir():
         pytest.skip("rote-compile skill not found in source tree")
 
-    compiler = Compiler()
+    compiler = Compiler(system1=False)
     assert compiler.compiler_skill_dir == BUNDLED_COMPILER_SKILL
     assert (compiler.compiler_skill_dir / "SKILL.md").is_file()
 
@@ -796,7 +799,9 @@ async def test_validation_failure_triggers_a_repair_round(
     output_dir = tmp_path / "output"
     events: list[object] = []
     driver = _RepairableDriver([INVALID_YAML, VALID_YAML])
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append)
+    compiler = Compiler(
+        system1=False, compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append
+    )
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     result = await compiler.compile(fake_skill_dir, output_dir)
@@ -825,7 +830,9 @@ async def test_repair_gives_up_after_two_attempts_with_the_last_error(
     output_dir = tmp_path / "output"
     events: list[object] = []
     driver = _RepairableDriver([INVALID_YAML])  # never gets fixed
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append)
+    compiler = Compiler(
+        system1=False, compiler_skill_dir=fake_compiler_skill_dir, on_event=events.append
+    )
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError, match="produced an invalid"):
@@ -875,6 +882,7 @@ async def test_an_ir_the_target_adapter_refuses_is_repaired_not_shipped(
     assert "hitl_gate" in GATED_YAML
     driver = _RepairableDriver([GATED_YAML, VALID_YAML])
     compiler = Compiler(
+        system1=False,
         compiler_skill_dir=fake_compiler_skill_dir,
         emit_target=EmitTarget(runtime) if runtime else None,
     )
@@ -904,7 +912,15 @@ def test_rote_compile_dry_emits_for_its_runtime_and_then_emits(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
     out = tmp_path / "run"
     rc = main(
-        ["compile", str(fake_skill_dir), "--local", "--runtime", "python", "--no-eval"]
+        [
+            "compile",
+            str(fake_skill_dir),
+            "--local",
+            "--no-system1",
+            "--runtime",
+            "python",
+            "--no-eval",
+        ]
         + ["--out", str(out)]
     )
     assert rc == 0
@@ -930,7 +946,7 @@ async def test_repair_callback_not_passed_to_drivers_without_the_parameter(
     must keep today's one-shot behavior for it (subprocess drivers are in
     the same position), not crash on an unexpected kwarg."""
     output_dir = tmp_path / "output"
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=INVALID_YAML)  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError, match="produced an invalid"):
@@ -954,7 +970,7 @@ async def test_an_invalid_ir_is_kept_after_the_paid_run(
     filled = "def only_node():\n    return {'filled': 'by the user'}\n"
     (output_dir / "extracted" / "foo.py").write_text(filled)
 
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: _FakeDriver(pipeline_yaml=INVALID_YAML)  # type: ignore[method-assign]
 
     with pytest.raises(CompilerError) as excinfo:
@@ -992,7 +1008,7 @@ async def test_red_generated_tests_are_repaired_in_the_same_conversation(
         },
         file_fixes=[{"extracted/foo.py": _LOGIC_IMPL}],
     )
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     result = await compiler.compile(fake_skill_dir, tmp_path / "out")
@@ -1019,7 +1035,7 @@ async def test_an_unrepaired_deliverable_is_returned_and_marked_not_ok(
             "tests/test_foo.py": _LOGIC_TEST,
         },
     )
-    compiler = Compiler(compiler_skill_dir=fake_compiler_skill_dir)
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
 
     result = await compiler.compile(fake_skill_dir, tmp_path / "out")
@@ -1050,6 +1066,7 @@ def test_cli_exits_nonzero_when_the_deliverable_fails_verification(
             "compile",
             str(fake_skill_dir),
             "--local",
+            "--no-system1",
             "--runtime",
             "dbos",
             "--no-eval",

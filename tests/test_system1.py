@@ -262,24 +262,24 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
     assert "## Open questions" in report
     assert "### The agent edited a decision; rote restored it" in report
     assert f"> `{first.id}` fan_out: agent wrote True, kept None" in report
-    assert "Compiled with `--system1`" in report
+    assert "Compiled with System-1" in report
     assert (out / "system1" / "decisions.json").is_file()
 
 
 @pytest.mark.asyncio
 async def test_system1_refuses_update(tmp_path: Path) -> None:
-    with pytest.raises(Exception, match="--system1 does not support --update"):
+    with pytest.raises(Exception, match="System-1 does not support --update"):
         await Compiler(system1=True).compile(
             EXAMPLES / "expense-audit" / "skill", tmp_path, update=True
         )
 
 
 def test_bench_passes_extra_compile_flags(tmp_path: Path) -> None:
-    args = _parser().parse_args(["--compile-flag=--system1"])
+    args = _parser().parse_args(["--compile-flag=--no-system1"])
     argv = compile_argv(tmp_path / "skill", tmp_path / "out", args)
-    assert argv[-1] == "--system1"
+    assert argv[-1] == "--no-system1"
     plain = compile_argv(tmp_path / "skill", tmp_path / "out", _parser().parse_args([]))
-    assert "--system1" not in plain
+    assert "--no-system1" not in plain
 
 
 def test_repair_rounds_verify_the_enforced_pipeline(tmp_path: Path) -> None:

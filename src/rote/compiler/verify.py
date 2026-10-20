@@ -420,6 +420,32 @@ class EmitTarget:
             )
 
 
+def judge_spec_findings(pipeline: Pipeline) -> list[ContractFinding]:
+    """Every llm_judge without a ``signature_spec``.
+
+    The legacy ``signature`` path only emits on the Python runtimes. The
+    TypeScript adapters need the spec, and a logged-in compile emits
+    cloudflare by default, so a judge without one is a pipeline that breaks
+    the moment it is emitted for another runtime. A real System-1 compile
+    shipped exactly that and failed at the cloudflare emit.
+    """
+    return [
+        ContractFinding(
+            node_id=n.id,
+            kind="missing_signature_spec",
+            severity="error",
+            message=(
+                f"llm_judge `{n.id}` has no signature_spec. Write one for it in "
+                "system1/text.yaml (input_schema, output_schema, prompt, client), so "
+                "the pipeline emits on every runtime, not only the Python ones"
+            ),
+            path="pipeline.yaml",
+        )
+        for n in pipeline.nodes
+        if n.kind.value == "llm_judge" and n.signature_spec is None
+    ]
+
+
 def emit_findings(
     pipeline: Pipeline, artifact_dir: Path, target: EmitTarget | None
 ) -> list[ContractFinding]:
@@ -637,6 +663,7 @@ def verify_deliverable(
     emit_target: EmitTarget | None = None,
     strict_provenance: bool = False,
     grounding: Grounding | None = None,
+    portable_judges: bool = False,
 ) -> Verification:
     """Verify the deliverable in ``artifact_dir`` (the dir holding pipeline.yaml).
 
@@ -663,6 +690,10 @@ def verify_deliverable(
     prefix must run on it (when ``run_tests``, since that executes the
     agent's code). Without one, the contract the agent chose is listed in
     ``questions``.
+
+    ``portable_judges`` (System-1 compiles) makes a judge without a
+    ``signature_spec`` an error (:func:`judge_spec_findings`), whatever the
+    runtime emitted now, so the same IR emits on every runtime.
     """
     try:
         return _verify_or_raise(
@@ -674,6 +705,7 @@ def verify_deliverable(
             emit_target,
             strict_provenance,
             grounding,
+            portable_judges,
         )
     except Exception as e:  # noqa: BLE001 (a crash here must not cost the paid run)
         # Verification runs inside the driver's repair loop, where only
@@ -703,6 +735,7 @@ def _verify_or_raise(
     emit_target: EmitTarget | None,
     strict_provenance: bool,
     grounding: Grounding | None,
+    portable_judges: bool = False,
 ) -> Verification:
     skill = Path(skill_dir) if skill_dir is not None else None
     if base_dir is None:
@@ -714,6 +747,7 @@ def _verify_or_raise(
             emit_target=emit_target,
             strict_provenance=strict_provenance,
             grounding=grounding,
+            portable_judges=portable_judges,
         )
     import shutil
     import tempfile
@@ -738,6 +772,7 @@ def _verify_or_raise(
             emit_target=emit_target,
             strict_provenance=strict_provenance,
             grounding=grounding,
+            portable_judges=portable_judges,
         )
 
 
@@ -750,6 +785,7 @@ def _verify(
     emit_target: EmitTarget | None,
     strict_provenance: bool,
     grounding: Grounding | None = None,
+    portable_judges: bool = False,
 ) -> Verification:
     try:
         pipeline = load_pipeline(root / "pipeline.yaml")
@@ -761,6 +797,7 @@ def _verify(
         + _deliverable_findings(pipeline, root, implementations)
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
+        + (judge_spec_findings(pipeline) if portable_judges else [])
     )
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []

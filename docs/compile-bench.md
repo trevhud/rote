@@ -49,6 +49,7 @@ options:
 | `--concurrency N` | Compiles in flight at once (default 1) |
 | `--budget USD` | Stop launching compiles once total `total_cost_usd` reaches this. Running ones finish, so the overshoot is at most `N - 1` compiles |
 | `--model`, `--agent` | Passed to `rote compile` |
+| `--compile-flag F` | Passed to every `rote compile`, repeatable. Compiles run System-1 by default, so `--compile-flag=--no-system1` benches the full-rubric path. Older rows below that say `--system1` were measured when it was opt-in |
 | `--runtime` | The compile's `--runtime` (default `dbos`, the logged-out default) |
 | `--no-tsc` | Skip `npm install` + `tsc --noEmit` on the Cloudflare emit |
 | `--compare OLD.json` | Print this run's deltas against an older results.json |
@@ -130,7 +131,7 @@ model-specific defects under that are real, though: DeepSeek demands an
 against 0.38 to 0.75 for Sonnet 4.6 compiles, with a fixture caveat on the
 Gmail and Drive result shapes.
 
-With `--compile-flag=--system1` (rules decide, the model writes modules and
+With `--compile-flag=--system1` (opt-in at the time; rules decide, the model writes modules and
 text) on expense-audit: gpt-oss-120b on Groq ran in 31 s at low effort and 67 s
 at medium, but stubbed 7 of 7 and 1 of 7 modules and did not verify (fidelity
 0.17 and 0.11). DeepSeek wrote 0 of 7 in 454 s for $0.12. At high effort

@@ -181,12 +181,23 @@ and want to run a thousand more, unattended.
 
 ## How it works
 
-One `rote compile` run does the whole thing. An LLM agent (itself
-defined as a skill) reads the source skill, applies a structured
-compilation rubric, and emits a runtime-agnostic intermediate
-representation (`pipeline.yaml`), extracted Python modules for the
-deterministic parts, typed signature stubs for the LLM-judge parts, and
+One `rote compile` run does the whole thing. First rote decides the
+pipeline's structure itself, with rules over the skill's text: which
+nodes exist and of which kind, how they are wired, which run once per
+item, which are mandatory, where a person must approve, and which
+constants they carry (System-1, see
+[`docs/design/system1-compile.md`](docs/design/system1-compile.md)).
+Then an LLM agent (itself defined as a skill) writes only the text those
+decisions need: the extracted Python modules for the deterministic
+parts, their tests, and the typed signatures and prompts for the
+LLM-judge parts. rote holds the agent to its decisions, and emits a
+runtime-agnostic intermediate representation (`pipeline.yaml`) plus
 runnable code for the durable execution engine of your choice.
+
+`--no-system1` runs the original path instead, where the agent applies
+the full compilation rubric and decides the structure too. `--update`
+always uses that path, because System-1 does not support incremental
+re-compilation yet.
 
 The agent implements the deterministic `pure_function` steps the skill
 spells out and writes tests for them. Before the compile reports

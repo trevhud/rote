@@ -177,7 +177,7 @@ async def test_a_gap_the_repairs_do_not_close_still_completes_the_compile(
     compiler_dir.mkdir()
     (compiler_dir / "SKILL.md").write_text("# fake compiler")
     events: list[object] = []
-    compiler = Compiler(compiler_skill_dir=compiler_dir, on_event=events.append)
+    compiler = Compiler(system1=False, compiler_skill_dir=compiler_dir, on_event=events.append)
     compiler.select_driver = lambda: driver  # type: ignore[method-assign]
     result = await compiler.compile(skill, tmp_path / "out")
     assert len(driver.repair_instructions) == 2
@@ -200,7 +200,17 @@ def _run_compile(
     driver = _RepairableDriver([PIPELINE], files=files)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
     out = tmp_path / "run"
-    argv = ["compile", str(skill), "--local", "--runtime", "dbos", "--no-eval", "--out", str(out)]
+    argv = [
+        "compile",
+        str(skill),
+        "--local",
+        "--no-system1",
+        "--runtime",
+        "dbos",
+        "--no-eval",
+        "--out",
+        str(out),
+    ]
     return main([*argv, *extra]), out
 
 
@@ -263,7 +273,13 @@ def test_rote_analyze_fails_only_under_strict_provenance(
     files = {"extracted/foo.py": _module(unmarked=True), "tests/test_foo.py": TEST}
     driver = _RepairableDriver([PIPELINE], files=files)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
-    argv = ["analyze", str(skill), "--json", *(["--strict-provenance"] if strict else [])]
+    argv = [
+        "analyze",
+        str(skill),
+        "--no-system1",
+        "--json",
+        *(["--strict-provenance"] if strict else []),
+    ]
     assert main(argv) == rc
     report = json.loads(capsys.readouterr().out)
     assert report["provenance"]["assumptions"] == 2

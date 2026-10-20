@@ -52,6 +52,16 @@ comes from keeping them clean.
   Python modules, designs typed signatures for LLM-judge steps, and
   assembles the whole thing into a `pipeline.yaml`
 - **Runs under:** a pluggable driver layer (see Layer 2)
+- **System-1 is the default compile path.** Before the agent runs,
+  [`src/rote/compiler/system1/`](src/rote/compiler/system1/) decides
+  the whole structure with rules (kinds, data flow, fan_out, mandatory,
+  gates, constants), and the agent gets the smaller
+  `skills/rote-compile/SYSTEM1.md` rubric and writes only text. rote
+  restores every decision after each agent stop. The full rubric above
+  runs under `--no-system1` and for `--update`. `Compiler(system1=None)`
+  means exactly that rule, and rote-cloud constructs `Compiler` with the
+  default, so flipping it there changes cloud compiles too. See
+  [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
 
 **When you edit this layer:** you are changing how the agent
 behaves. Changes are testable by running `rote compile` end-to-end
