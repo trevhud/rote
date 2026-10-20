@@ -19,6 +19,19 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   References are recorded once with `--record-reference`, and
   `--fidelity-of DIR` scores any compiled dir. Cases and references ship
   for expense-audit and ops-report. See `docs/compile-bench.md`.
+- **`rote compile --system1` (experimental): rules decide, the agent only
+  writes code.** Before the agent runs, rote decides the whole pipeline
+  structure from the skill's text with no inference: steps and node kinds,
+  data flow, fan_out, per-item loops, mandatory flags, gates with their
+  signals, payloads and timeouts, input fields named in the skill's own
+  words, constants, and the skill's markdown rule tables as tested Python.
+  Every decision carries a confidence and the rule behind it. The agent
+  then gets a short rubric and writes only module implementations, tests
+  and judge prompts. rote restores every decision after each of its stops,
+  lists any change it proposes without applying it, and writes
+  `compile-report.md` itself from data. The default compile path is
+  unchanged. `rote bench --compile-flag=--system1` benchmarks it. See
+  `docs/design/system1-compile.md`.
 - **`rote bench`, a scored compile benchmark (dev tool, spends tokens).**
   It compiles the example skills, scores each `pipeline.yaml` against the
   hand-written `expected/pipeline.yaml` (node and kind match, edges, wave
