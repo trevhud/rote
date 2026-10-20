@@ -111,9 +111,9 @@ async def test_every_request_caches_tools_system_and_the_last_two_user_turns(
 
 
 def test_the_previous_requests_breakpoint_is_read_however_wide_the_turn() -> None:
-    """A turn of 12 parallel reads adds 24 blocks, past the 20-block
-    lookback: the second-to-last user turn is where the previous request's
-    entry was written, and it keeps a breakpoint."""
+    """The second-to-last user turn, where the previous request wrote its
+    entry, keeps a breakpoint however many blocks the turn between added
+    (alternating blocks can pass the 20-position lookback)."""
     uses = [SimpleNamespace(type="tool_use", id=f"t{i}") for i in range(12)]
     results = [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "x"} for i in range(12)]
     messages = [

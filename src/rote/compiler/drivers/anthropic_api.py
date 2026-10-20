@@ -267,9 +267,12 @@ def cached_messages(messages: list[Any]) -> list[Any]:
     uncached input tokens. The last user turn's breakpoint writes this
     request's prefix. The one before it is where the previous request wrote
     its own, so it reads that entry however wide the turn in between was. A
-    breakpoint only looks back 20 blocks for an earlier entry, and a turn of
-    ten parallel tool calls adds twenty (the tool_use blocks and their
-    results): the rubric asks for exactly such turns.
+    breakpoint only looks back 20 positions for an earlier entry. A run of
+    consecutive tool_use (or tool_result) blocks is one position, so plain
+    parallel calls never reach that; alternating blocks do: text between
+    calls, or web research, whose server_tool_use and result blocks
+    interleave with text. Measured live: a 24-block alternating turn lost
+    the previous entry under one rolling breakpoint and kept it with two.
 
     With the tools' and the system's that is all four breakpoints the API
     allows. The history itself is not changed (a copy is returned), so the
