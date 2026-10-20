@@ -151,7 +151,9 @@ def test_the_answer_replaces_only_the_unsure_step(
     doc = json.loads((work / "system1" / "decisions.json").read_text())["tiebreak"]
     assert doc["model"] == "claude-haiku-5-5" and doc["steps_asked"] == [str(UNSURE)]
     assert doc["cost_usd"] == 0.0017 and doc["lane"] == "claude -p (subscription)"
-    assert "claude-haiku-5-5 for the 1 step(s)" in system1.report_extras(work, plan).preamble
+    preamble = system1.report_extras(work, plan).preamble
+    assert "claude-haiku-5-5 for the 1 step(s)" in preamble
+    assert "Its model calls cost $0.0017 (claude-haiku-5-5), on top of the agent's run." in preamble
 
 
 def test_a_rule_constraint_overrules_the_model(
