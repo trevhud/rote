@@ -27,7 +27,7 @@ from typing import Any, Literal
 
 from rote.contracts import ContractFinding
 from rote.ir import NodeKind, Pipeline
-from rote.vendor_specs import google
+from rote.vendor_specs import docs, google
 from rote.vendor_specs.extract import UNKNOWN, CallSite, extract
 from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, host_of, path_segments
 from rote.vendor_specs.store import SpecStore, SpecUnavailable
@@ -57,6 +57,15 @@ def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[
         if node.kind is NodeKind.EXTERNAL_CALL and node.impl:
             modules.setdefault(node.impl.partition(":")[0], []).append(node.id)
     checks: list[RequestCheck] = []
+    try:
+        written = [spec for _, spec in docs.load(root)]
+    except docs.DocsSpecError as e:
+        first = next(iter(modules.values()), ["(pipeline)"])
+        bad = _finding(first[0], docs.DOCS_DIRNAME, 0, "docs_spec_invalid", str(e))
+        checks.append(
+            RequestCheck(tuple(first), docs.DOCS_DIRNAME, 0, "violations", findings=[bad])
+        )
+        written = []
     for rel, node_ids in sorted(modules.items()):
         try:
             source = (root / rel).read_text(encoding="utf-8")
@@ -76,7 +85,7 @@ def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[
                 )
             )
         for site in sites:
-            checks.append(_check(site, tuple(node_ids), rel, store))
+            checks.append(_check(site, tuple(node_ids), rel, store, written))
     return checks
 
 
@@ -84,7 +93,13 @@ def spec_findings(checks: list[RequestCheck]) -> list[ContractFinding]:
     return [f for c in checks for f in c.findings]
 
 
-def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore) -> RequestCheck:
+def _check(
+    site: CallSite,
+    node_ids: tuple[str, ...],
+    rel: str,
+    store: SpecStore,
+    written: list[ApiSpec] | None = None,
+) -> RequestCheck:
     def done(status: CheckStatus, **kw: Any) -> RequestCheck:
         return RequestCheck(node_ids, rel, site.line, status, **kw)
 
@@ -101,8 +116,34 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
             )
         named = google.api_for_url(site.url)
         if named is None:
-            host = host_of(site.url) or site.url
-            return done("unresolved", note=f"no machine-readable spec source for {host} yet")
+            host = host_of(site.url)
+            if host is None:
+                return done("unresolved", note="the URL's host is built at run time")
+            from_docs = next(
+                (
+                    s
+                    for s in written or []
+                    if any(host_of(o.url_template) == host for o in s.operations)
+                ),
+                None,
+            )
+            if from_docs is None:
+                return done(
+                    "violations",
+                    findings=[
+                        _finding(
+                            node_ids[0],
+                            rel,
+                            site.line,
+                            "spec_missing",
+                            f"line {site.line}: {host} publishes no spec rote can read. Write "
+                            f"{docs.DOCS_DIRNAME}/<vendor>.<api>.<version>.json from the docs "
+                            f"pages you fetched, one operation per request you make "
+                            f'(implementation.md, "Specs written from the docs")',
+                        )
+                    ],
+                )
+            return _against(site, node_ids, rel, from_docs, done)
         try:
             listed = store.google_versions(named.api)
         except SpecUnavailable as e:
@@ -152,7 +193,21 @@ def _check(site: CallSite, node_ids: tuple[str, ...], rel: str, store: SpecStore
                 )
             ],
         )
-    label = f"{spec.key} rev {spec.revision}"
+    return _against(site, node_ids, rel, spec, done)
+
+
+def _against(
+    site: CallSite,
+    node_ids: tuple[str, ...],
+    rel: str,
+    spec: ApiSpec,
+    done: Callable[..., RequestCheck],
+) -> RequestCheck:
+    label = (
+        f"{spec.key} (docs, lower trust)"
+        if spec.source == "docs"
+        else f"{spec.key} rev {spec.revision}"
+    )
     op, matched_path = _operation(site, spec)
     if op is None and site.kind == "http" and site.url and _could_match(spec, site):
         # A segment built at run time (f".../users/me/{kind}") could be any

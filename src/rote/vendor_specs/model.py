@@ -92,6 +92,8 @@ class ApiSpec(BaseModel):
     revision: str
     source: Literal["google-discovery", "openapi", "graphql-sdl", "docs"]
     source_url: str
+    #: Every page a ``docs`` spec was written from (``source="docs"``).
+    sources: list[str] = Field(default_factory=list)
     #: Parameters every operation accepts (Discovery's top-level
     #: ``parameters``: ``fields``, ``alt``, ``key``, ...).
     global_params: dict[str, ParamSpec] = Field(default_factory=dict)

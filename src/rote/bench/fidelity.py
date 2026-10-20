@@ -519,7 +519,7 @@ def run_pipeline_case(
         http_log: Path | None = None
         if backend == "api":
             http_env, python, http_log = stack.enter_context(
-                api_side(app, case.http, work / "http", spec_store)
+                api_side(app, case.http, work / "http", spec_store, compiled_dir)
             )
         env = {f"ROTE_MCP_{server.upper()}_URL": urls[target] for server, target in mapped.items()}
         run = run_pipeline_trial(

@@ -347,11 +347,13 @@ def test_what_cannot_be_checked_is_listed_not_failed(tmp_path: Path, tmp_path_fa
 
     store = SpecStore(root=tmp_path_factory.mktemp("specs"), fetch=offline)
     checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
-    assert [(c.status, c.findings) for c in checks] == [
-        ("unresolved", []),
+    # A vendor with no spec rote reads asks for one written from the docs;
+    # an unreachable spec service is listed, never failed.
+    assert [(c.status, [f.kind for f in c.findings]) for c in checks] == [
+        ("violations", ["spec_missing"]),
         ("spec_unavailable", []),
     ]
-    assert "api.hubapi.com" in (checks[0].note or "")
+    assert "api.hubapi.com" in checks[0].findings[0].message
 
 
 # ───────── In the compile ─────────
@@ -1142,3 +1144,138 @@ def test_a_boolean_is_not_an_integer(tmp_path: Path, store: SpecStore) -> None:
         return httpx.get("{_GMAIL_THREADS}", params={{"maxResults": True}})
     """
     assert _kinds(_deliverable(tmp_path, module), store) == ["spec_param_value"]
+
+
+# ───────── Specs written from the docs ─────────
+
+SLACK_SPEC = {
+    "vendor": "slack",
+    "api": "web",
+    "version": "v1",
+    "sources": ["https://docs.slack.dev/reference/methods/conversations.history"],
+    "operations": [
+        {
+            "id": "conversations.history",
+            "method": "GET",
+            "url_template": "https://slack.com/api/conversations.history",
+            "params": {
+                "channel": {"location": "query", "type": "string", "required": True},
+                "limit": {"location": "query", "type": "integer"},
+            },
+            "response_example": {
+                "ok": True,
+                "messages": [{"type": "message", "ts": "1.2", "text": "hi", "user": "U1"}],
+                "has_more": False,
+            },
+        }
+    ],
+}
+
+SLACK_PIPELINE = """\
+name: intake
+version: "0.1.0"
+description: d
+input: {type: In}
+nodes:
+  - id: read_intake
+    kind: external_call
+    description: Read the channel.
+    impl: extracted/slack.py:read_intake
+edges: []
+entry_nodes: [read_intake]
+exit_nodes: [read_intake]
+"""
+
+SLACK_MODULE = """
+import os
+
+import httpx
+
+
+def read_intake(channel: str) -> dict:
+    body = httpx.get(
+        "https://slack.com/api/conversations.history",
+        params={"channel": channel, "limit": 50},
+        headers={"Authorization": f"Bearer {os.environ['SLACK_TOKEN']}"},
+    ).json()
+    return {"texts": [m["text"] for m in body.get("messages", [])]}
+"""
+
+
+def _slack(tmp_path: Path, module: str, spec: dict[str, Any] | None) -> Path:
+    root = tmp_path / "d"
+    (root / "extracted").mkdir(parents=True)
+    (root / "pipeline.yaml").write_text(SLACK_PIPELINE, encoding="utf-8")
+    (root / "extracted" / "slack.py").write_text(textwrap.dedent(module), encoding="utf-8")
+    if spec is not None:
+        (root / "vendor_specs").mkdir()
+        (root / "vendor_specs" / "slack.web.v1.json").write_text(json.dumps(spec), encoding="utf-8")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "kinds"),
+    [
+        (None, None, []),
+        ('"limit": 50', '"count": 50', ["spec_unknown_param"]),
+        ('"limit": 50', '"limit": "fifty"', ["spec_param_value"]),
+        (
+            'params={"channel": channel, "limit": 50}',
+            'params={"limit": 50}',
+            ["spec_missing_required"],
+        ),
+        ('m["text"]', 'm["body"]', ["spec_unknown_response_field"]),
+        ("conversations.history", "conversations.historyy", ["spec_unknown_operation"]),
+    ],
+)
+def test_a_docs_spec_checks_requests_like_a_vendors_own(
+    tmp_path: Path, store: SpecStore, old: str | None, new: str | None, kinds: list[str]
+) -> None:
+    module = SLACK_MODULE if old is None else SLACK_MODULE.replace(old, new or "", 1)
+    root = _slack(tmp_path, module, SLACK_SPEC)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    assert [f.kind for f in check.findings] == kinds
+    assert check.spec == "slack/web/v1 (docs, lower trust)"
+
+
+def test_a_host_with_no_spec_asks_for_one_from_the_docs(tmp_path: Path, store: SpecStore) -> None:
+    root = _slack(tmp_path, SLACK_MODULE, None)
+    [check] = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    [finding] = check.findings
+    assert finding.kind == "spec_missing" and "slack.com publishes no spec" in finding.message
+    assert "vendor_specs/<vendor>.<api>.<version>.json" in finding.message
+
+
+def test_a_docs_spec_that_does_not_parse_is_reported_by_file(
+    tmp_path: Path, store: SpecStore
+) -> None:
+    bad = {**SLACK_SPEC, "sources": []}
+    root = _slack(tmp_path, SLACK_MODULE, bad)
+    checks = check_deliverable(load_pipeline(root / "pipeline.yaml"), root, store)
+    kinds = [f.kind for c in checks for f in c.findings]
+    assert kinds[0] == "docs_spec_invalid"
+    assert "slack.web.v1.json" in checks[0].findings[0].message
+
+
+@pytest.mark.parametrize(
+    ("fetched", "kinds"),
+    [
+        (["https://docs.slack.dev/reference/methods/conversations.history"], []),
+        (["https://elsewhere.example"], ["docs_spec_unfetched_source"]),
+    ],
+)
+def test_a_docs_spec_must_come_from_pages_fetched_in_this_compile(
+    tmp_path: Path, store: SpecStore, fetched: list[str], kinds: list[str]
+) -> None:
+    from rote.compiler.api_docs import WebResearch
+
+    module = SLACK_MODULE.replace("def read_intake", "# docs: skill\ndef read_intake")
+    root = _slack(tmp_path, module, SLACK_SPEC)
+    result = verify_deliverable(
+        root,
+        run_tests=False,
+        emit_target=EmitTarget("dbos", "api"),
+        spec_store=store,
+        web_research=WebResearch(fetched=fetched),
+    )
+    assert [f.kind for f in result.errors if f.kind.startswith(("docs_", "spec_"))] == kinds

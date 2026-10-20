@@ -206,6 +206,30 @@ this compile targets `--backend api`. Now you are expected to write
    to you like a failing test. Keep requests readable without running
    them: a literal URL or a module constant, and `params` as a dict.
 
+   **Specs written from the docs.** When the vendor publishes no spec rote
+   can read (rote says so: `spec_missing`), write one from the pages you
+   fetched, one file per API version, at
+   `vendor_specs/<vendor>.<api>.<version>.json`:
+
+   ```json
+   {"vendor": "slack", "api": "web", "version": "v1",
+    "sources": ["<every page you used, each fetched in this compile>"],
+    "operations": [{"id": "conversations.history", "method": "GET",
+      "url_template": "https://slack.com/api/conversations.history",
+      "params": {"channel": {"location": "query", "type": "string", "required": true},
+                 "limit": {"location": "query", "type": "integer"}},
+      "response_example": {"ok": true, "messages": [{"ts": "1.2", "text": "hi"}],
+                           "has_more": false}}]}
+   ```
+
+   One operation per request your code makes: the documented URL, every
+   parameter you send (with its documented type, and `required` where the
+   page says so), and the documented example response, copied from the
+   page with the fields your code reads. rote checks your requests
+   against this file exactly as it checks a vendor's own spec, and reports
+   it as lower trust. Never add a field to the example that the page does
+   not show.
+
    **Internal or undocumented APIs.** A company's own service often has no
    public reference. If the skill or its references state the endpoint,
    auth and shapes, implement from that text: quote it in `# skill:`

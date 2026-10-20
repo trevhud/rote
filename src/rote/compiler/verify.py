@@ -76,6 +76,7 @@ from rote.contracts import (
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
+from rote.vendor_specs.docs import unfetched_sources
 
 #: Wall-clock cap on one generated-test run. Pure-function tests are
 #: millisecond-scale, so hitting this means an infinite loop, which the
@@ -913,6 +914,8 @@ def _verify(
     if api_backend and spec_store is not None:
         spec_checks = check_deliverable(pipeline, root, spec_store)
         findings += spec_findings(spec_checks)
+        if web_research is not None and web_research.reported:
+            findings += unfetched_sources(root, web_research.was_fetched)
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     if grounding is not None:

@@ -23,6 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from rote.vendor_specs import docs
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.fake import FakeApi, read_log, serving
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
@@ -53,12 +54,22 @@ def load_http(raw: dict[str, Any] | None) -> dict[str, FixtureSet]:
     return {key: FixtureSet(spec=key, **value) for key, value in (raw or {}).items()}
 
 
-def specs_for(fixtures: dict[str, FixtureSet], store: SpecStore) -> list[ApiSpec]:
+def specs_for(
+    fixtures: dict[str, FixtureSet], store: SpecStore, compiled_dir: Path | None = None
+) -> list[ApiSpec]:
+    """The spec each fixture set answers for: the vendor's own, else the
+    compile's docs spec (``vendor_specs/``, lower trust)."""
+    written = {s.key: s for _, s in docs.load(compiled_dir)} if compiled_dir else {}
     out: list[ApiSpec] = []
     for key in fixtures:
         vendor, api, version = key.split("/")
+        if key in written:
+            out.append(written[key])
+            continue
         if vendor != "google":
-            raise HttpFixtureError(f"no spec source for vendor {vendor!r} ({key})")
+            raise HttpFixtureError(
+                f"no spec for {key}: neither a source rote reads nor a docs spec in the compile"
+            )
         try:
             spec = store.google(api, version)
         except SpecUnavailable as e:
@@ -73,11 +84,15 @@ def specs_for(fixtures: dict[str, FixtureSet], store: SpecStore) -> list[ApiSpec
 
 @contextmanager
 def api_side(
-    app: Path, fixtures: dict[str, FixtureSet], work: Path, store: SpecStore | None = None
+    app: Path,
+    fixtures: dict[str, FixtureSet],
+    work: Path,
+    store: SpecStore | None = None,
+    compiled_dir: Path | None = None,
 ) -> Iterator[tuple[dict[str, str], str | None, Path]]:
     """Fake every vendor the case has fixtures for; yield ``(env, python, log)``."""
     store = store or SpecStore()
-    specs = specs_for(fixtures, store)
+    specs = specs_for(fixtures, store, compiled_dir)
     work.mkdir(parents=True, exist_ok=True)
     log = work / "http-calls.jsonl"
     log.write_text("", encoding="utf-8")
