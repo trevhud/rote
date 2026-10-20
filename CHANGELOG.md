@@ -36,6 +36,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **An unknown effort level fails before a subscription call is paid for.**
+  `claude -p` ignores an unknown `--effort` with only a warning, so rote now
+  asks the CLI with a free `claude --effort <level> --version` first, and
+  self-checks once per process that the CLI still warns in a way rote
+  recognizes.
+
 - **`ROTE_TEMPERATURE_<NODE_ID>` reaches judges on DBOS-TS and Inngest.**
   Those runtimes pass each judge a narrow env object, which left the
   temperature knob out, so an empty value could not drop the parameter.
