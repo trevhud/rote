@@ -4929,8 +4929,16 @@ def _resolve_retired_command(argv: list[str]) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = _build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw[:1] == ["bench"]:
+        # A dev tool, dispatched before the user-facing parser so it stays
+        # out of `rote --help` (argparse cannot hide a subcommand cleanly).
+        # It spends tokens and needs the repo's examples/; it ships in the
+        # wheel so it runs from an immutable install of the branch it judges.
+        from rote.bench.runner import main as bench_main
+
+        return bench_main(raw[1:])
+    parser = _build_parser()
     args = parser.parse_args(_resolve_retired_command(raw))
 
     if not getattr(args, "command", None):
