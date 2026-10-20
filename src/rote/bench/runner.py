@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,6 +99,55 @@ def sample_input(examples: Path, skill: str) -> Path | None:
     """
     path = examples / skill / SAMPLE_INPUT_FILENAME
     return path if path.is_file() else None
+
+
+#: The per-job MCP registry the compile reads, beside the job's output.
+TOOL_REGISTRY_RELPATH = "bench-tool-servers/mcp.json"
+
+
+@contextlib.contextmanager
+def tool_servers(example: Path, job_dir: Path, env: dict[str, str]) -> Iterator[dict[str, str]]:
+    """Register the example's fixture MCP servers for the length of one compile.
+
+    A real compile lists each registered server's tools (``tools/list``)
+    to ground its tool arguments (:mod:`rote.compiler.tool_grounding`).
+    The bench's analog of "the user has these servers registered" is the
+    fidelity fixtures, started here with no responses at all: the compile
+    only ever lists their tools, and the schemas it reads are the very
+    ``parameters`` the fixtures enforce when the pipeline later runs, with
+    no second copy to drift. Yields the compile's environment, pointing
+    ``ROTE_MCP_CONFIG`` at a registry of this job's own, so concurrent
+    jobs never share one. An example without fixture servers changes
+    nothing.
+    """
+    from rote.bench.fidelity import Case, fixture_servers, has_cases, load_cases
+
+    if not has_cases(example):
+        yield env
+        return
+    casefile = load_cases(example)
+    if not casefile.servers:
+        yield env
+        return
+    silent = Case(
+        id="compile", description="", input={}, gates=[], gate_instructions=None, fixtures={}
+    )
+    registry = job_dir / TOOL_REGISTRY_RELPATH
+    with fixture_servers(casefile, silent, registry.parent) as (urls, _log):
+        registry.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "servers": {
+                        name: {"url": url, "transport": "streamable-http"}
+                        for name, url in urls.items()
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        yield {**env, "ROTE_MCP_CONFIG": str(registry)}
 
 
 def compile_argv(
@@ -192,11 +243,12 @@ async def _run_job(
         print(f"rote bench: {job.label}: compiling -> {job.out_dir}", file=sys.stderr)
         started = time.monotonic()
         with (
+            tool_servers(args.examples / job.skill, job.out_dir, env) as job_env,
             (job.out_dir / "bench-compile.stdout.log").open("wb") as out,
             (job.out_dir / "bench-compile.stderr.log").open("wb") as err,
         ):
             proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=job.out_dir, env=env, stdout=out, stderr=err
+                *argv, cwd=job.out_dir, env=job_env, stdout=out, stderr=err
             )
             code = await proc.wait()
         wall = time.monotonic() - started

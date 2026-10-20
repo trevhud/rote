@@ -863,6 +863,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         strict_provenance=args.strict_provenance,
         system1=args.system1,
         system1_decider=args.system1_decider,
+        # Tool schemas come from a read-only tools/list on each registered
+        # server; --no-mcp means the compile touches no MCP server at all.
+        discover_tools=not args.no_mcp,
         # Verification dry-emits for the runtime emitted below, so an IR
         # this adapter refuses is repaired inside the paid run, not
         # reported after it.

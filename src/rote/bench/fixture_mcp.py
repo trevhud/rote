@@ -46,6 +46,8 @@ from fastmcp import FastMCP
 from fastmcp.tools import Tool, ToolResult
 from mcp.types import TextContent
 
+from rote.tool_schema import argument_problem
+
 
 def _matches(response: dict[str, Any], arguments: dict[str, Any]) -> bool:
     for key, want in (response.get("when") or {}).items():
@@ -58,51 +60,9 @@ def _matches(response: dict[str, Any], arguments: dict[str, Any]) -> bool:
     return True
 
 
-def _schema_error(schema: dict[str, Any], arguments: dict[str, Any]) -> str | None:
-    """Why ``arguments`` break the tool's input schema, or ``None``.
-
-    The checks a server's argument validation makes on a flat object
-    schema, which is all a fixture declares: required keys present, no key
-    the schema does not list (a fixture lists the server's real parameters,
-    and an argument the server does not have is one it would reject or
-    ignore, never act on), and each value of its declared JSON type.
-    """
-    properties: dict[str, Any] = schema.get("properties") or {}
-    missing = [k for k in schema.get("required") or [] if k not in arguments]
-    if missing:
-        return f"missing required argument(s): {', '.join(missing)}"
-    if schema.get("additionalProperties", False) is False:
-        unknown = sorted(set(arguments) - set(properties))
-        if unknown:
-            return (
-                f"unknown argument(s): {', '.join(unknown)} "
-                f"(the tool takes: {', '.join(sorted(properties)) or 'none'})"
-            )
-    for key, value in arguments.items():
-        want = (properties.get(key) or {}).get("type")
-        if want is not None and not _is_json_type(value, want):
-            return f"argument {key!r} must be {want}, got {type(value).__name__}"
-    return None
-
-
-_JSON_TYPES: dict[str, tuple[type, ...]] = {
-    "string": (str,),
-    "integer": (int,),
-    "number": (int, float),
-    "boolean": (bool,),
-    "array": (list,),
-    "object": (dict,),
-    "null": (type(None),),
-}
-
-
-def _is_json_type(value: Any, want: str | list[str]) -> bool:
-    for name in [want] if isinstance(want, str) else want:
-        if name in ("integer", "number") and isinstance(value, bool):
-            continue
-        if isinstance(value, _JSON_TYPES.get(name, (object,))):
-            return True
-    return False
+#: The one reading of a tool's input schema (:mod:`rote.tool_schema`), so
+#: the fixtures refuse exactly what verification refuses in a compile.
+_schema_error = argument_problem
 
 
 class FixtureTool(Tool):

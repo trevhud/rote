@@ -181,6 +181,40 @@ def findings_from_report(
     return findings
 
 
+def _argument_findings(
+    pipeline: Pipeline, report: dict[str, dict[str, Any]], tools: dict[tuple[str, str], Any]
+) -> list[ContractFinding]:
+    """The values an MCP node would send on the sample, against the declared schema."""
+    from rote.tool_schema import argument_problem, names_problem
+
+    findings: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        step = report.get(node.id) or {}
+        if node.mcp is None or "arguments" not in step:
+            continue
+        schema = tools.get((node.mcp.server, node.mcp.tool))
+        if schema is None or not schema.declared:
+            continue
+        if names_problem(schema.input_schema, step["arguments"]) is not None:
+            continue  # the static check already names it (tool_findings)
+        problem = argument_problem(schema.input_schema, step["arguments"])
+        if problem is not None:
+            findings.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind="tool_arguments_invalid",
+                    severity="error",
+                    message=(
+                        f"on the sample input, {node.id} would call "
+                        f"{node.mcp.server}.{node.mcp.tool} with {step['arguments']!r}: "
+                        f"{problem} (schema: {schema.source})"
+                    ),
+                    path="pipeline.yaml",
+                )
+            )
+    return findings
+
+
 def summarize(report: dict[str, dict[str, Any]]) -> str:
     counts: dict[str, int] = {}
     for step in report.values():
@@ -207,8 +241,15 @@ def run_prefix(
     *,
     observations: tuple[Any, ...] = (),
     trust_skill: bool = False,
+    tools: dict[tuple[str, str], Any] | None = None,
 ) -> PrefixRun:
-    """Build the plan, run it confined, and turn the report into findings."""
+    """Build the plan, run it confined, and turn the report into findings.
+
+    ``tools`` are the MCP tools' schemas (:mod:`rote.compiler.tool_grounding`).
+    An MCP node the prefix reaches reports the arguments it would send, and
+    their values are checked against the tool's declared schema here: the
+    static check can only see the names of arguments taken from the payload.
+    """
     from rote.compiler.verify import run_confined
 
     plan = build_plan(pipeline, root, sample, implementations, observations)
@@ -260,7 +301,9 @@ def run_prefix(
         )
         return PrefixRun(status="failed", summary="crashed", findings=[finding])
     report: dict[str, dict[str, Any]] = json.loads(written)
-    findings = findings_from_report(report, sample)
+    findings = findings_from_report(report, sample) + _argument_findings(
+        pipeline, report, tools or {}
+    )
     return PrefixRun(
         status="failed" if findings else "ran",
         summary=summarize(report),

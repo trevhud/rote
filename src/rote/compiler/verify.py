@@ -65,6 +65,7 @@ from rote.compiler.provenance import (
     assumptions,
     provenance_findings,
 )
+from rote.compiler.tool_grounding import tool_findings, tool_questions
 from rote.contracts import (
     ContractFinding,
     NodeImplementation,
@@ -765,7 +766,11 @@ def _verify(
     questions: list[ContractQuestion] = []
     if grounding is not None:
         findings += grounding_findings(pipeline, skill_dir, grounding.sample)
-        questions = contract_questions(pipeline, skill_dir, grounding)
+        findings += tool_findings(pipeline, grounding.tools)
+        questions = contract_questions(pipeline, skill_dir, grounding) + [
+            ContractQuestion(node_id, text)
+            for node_id, text in tool_questions(pipeline, grounding.tools)
+        ]
         if run_tests and grounding.sample is not None:
             prefix = run_prefix(
                 pipeline,
@@ -774,6 +779,7 @@ def _verify(
                 implementations,
                 observations=grounding.observations,
                 trust_skill=trust_skill,
+                tools=grounding.tools,
             )
             findings += prefix.findings
     tests = run_generated_tests(root, trust_skill=trust_skill) if run_tests else None
