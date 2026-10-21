@@ -262,6 +262,13 @@ class Context:
             tables=list(decisions.get("rule_tables") or []),
         )
 
+    def reload(self) -> None:
+        """Read the skeleton again, after the structure pass re-decided part of it."""
+        self.doc = yaml.safe_load(
+            (self.work_dir / BRIEF_DIRNAME / SKELETON_FILENAME).read_text("utf-8")
+        )
+        self.pipeline = Pipeline.model_validate(self.doc)
+
     def node(self, node_id: str) -> Any:
         return next(n for n in self.pipeline.nodes if n.id == node_id)
 
@@ -299,8 +306,12 @@ class Context:
         call returned), then the outputSchema the server declares. Both
         describe what the step receives: a recorded result is decoded from
         its text, and fastmcp's ``{"result": ...}`` wrapper is removed by
-        the same rule the emitted runtime helper applies.
+        the same rule the emitted runtime helper applies. A skeleton that
+        already fixes the node's ``output_schema`` (the structure pass fixes a
+        list builder's element type to its tool parameter's) wins over both.
         """
+        if node.output_schema:
+            return dict(node.output_schema), "fixed by the skeleton"
         if node.mcp is None:
             return None
         from rote.mcp._runtime_helper import returned_schema
@@ -740,6 +751,15 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         lines.append(
             "Its output MUST be an object with an `items` array: a later node runs once per item."
         )
+    decided = (
+        [k for k in node.output or {} if k != "items"] if isinstance(node.output, dict) else []
+    )
+    if decided and node.kind is not NodeKind.HITL_GATE:
+        lines.append(
+            "Its output MUST have these keys, named by the skeleton: "
+            + ", ".join(f"`{k}`" for k in decided)
+            + "."
+        )
     if node.loop_body:
         lines.append(f"Its loop body (called per item): {', '.join(node.loop_body)}")
     if _needs_termination(node):
@@ -786,6 +806,15 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
         # A judge's decision is its output fields: a spec with none is
         # incomplete (verify.judge_spec_findings) and decides nothing.
         problems.append("output_schema names no properties: a judge's decision is its fields")
+    if isinstance(node.output, dict) and node.kind is not NodeKind.HITL_GATE:
+        missing = [
+            k for k in node.output if k != "items" and k not in (schema.get("properties") or {})
+        ]
+        if missing:
+            problems.append(
+                "output_schema lacks the keys the skeleton names for this node: "
+                + ", ".join(f"`{k}`" for k in missing)
+            )
     if isinstance(node.output, dict) and "items" in node.output:
         items = (schema.get("properties") or {}).get("items")
         if not isinstance(items, dict) or items.get("type") != "array":
@@ -967,6 +996,19 @@ def _parse(source: str, what: str, problems: list[str]) -> ast.Module | None:
     if newer:
         problems += [f"{what} line {line}: {msg}" for line, msg in newer]
         return None
+    for stmt in tree.body:
+        # `extracted/draft_brief.py` on the first line parses (a division of
+        # names) and only fails when imported. Seen live, six re-asks running,
+        # while the error named only a NameError.
+        if isinstance(stmt, ast.Expr) and isinstance(
+            stmt.value, (ast.Name, ast.Attribute, ast.BinOp)
+        ):
+            problems.append(
+                f"{what} line {stmt.lineno} is the bare expression "
+                f"`{ast.get_source_segment(source, stmt) or ''}`, which fails on import. "
+                "The text must be only Python code: no file path or heading line"
+            )
+            return None
     return tree
 
 
@@ -1192,6 +1234,22 @@ def text_entries(ctx: Context, judges: dict[str, dict[str, Any]]) -> dict[str, d
 _TEST_FILE_RE = re.compile(r"tests/test_([A-Za-z_][A-Za-z0-9_]*)\.py")
 
 
+#: Re-decides MCP bindings: ``{node id: finding messages}`` -> what changed.
+Redecide = Callable[[dict[str, list[str]]], list[str]]
+
+
+def binding_findings(verification: Any, writable: Iterable[str]) -> dict[str, list[str]]:
+    """``{node id: messages}`` for each binding finding a text piece cannot fix."""
+    from rote.compiler.system1.structure import BINDING_FINDINGS
+
+    pieces = set(writable)
+    out: dict[str, list[str]] = {}
+    for f in verification.errors:
+        if f.kind in BINDING_FINDINGS and f.node_id not in pieces:
+            out.setdefault(f.node_id, []).append(f.message)
+    return out
+
+
 def attribute(verification: Any, writable: Iterable[str]) -> tuple[dict[str, list[str]], list[str]]:
     """``({node id: problems}, unattributed)`` for a :class:`Verification`.
 
@@ -1278,7 +1336,9 @@ class TextWriter:
         skill_dir: Path | None = None,
         run_tests: bool = False,
         trust_skill: bool = False,
+        redecide: Redecide | None = None,
     ) -> None:
+        self.redecide = redecide
         self.skill_dir = skill_dir
         self.run_tests = run_tests
         self.trust_skill = trust_skill
@@ -1493,6 +1553,18 @@ class TextWriter:
                     "generate: findings no node owns, so no piece can repair them: "
                     + " | ".join(x[:300] for x in loose),
                 )
+            bindings = binding_findings(verification, writable)
+            if bindings and self.redecide is not None:
+                # A binding is a structure decision no text piece can change:
+                # the structure pass re-decides it, with these findings.
+                changes = await asyncio.to_thread(self.redecide, bindings)
+                for change in changes:
+                    self._emit("log", f"generate: {change}")
+                if any(": re-bound to " in c for c in changes):
+                    self.ctx.reload()
+                    rounds += 1
+                    verification = self.verified(verify)
+                    continue
             if not per:
                 break
             rounds += 1
@@ -1550,6 +1622,7 @@ async def write_text(
     on_event: EventCallback | None = None,
     run_tests: bool = False,
     trust_skill: bool = False,
+    redecide: Redecide | None = None,
 ) -> DriverResult:
     """Write a System-1 skeleton's text in ``work_dir``; return it as a DriverResult.
 
@@ -1576,6 +1649,7 @@ async def write_text(
         skill_dir=skill_dir,
         run_tests=run_tests,
         trust_skill=trust_skill,
+        redecide=redecide,
     )
     rounds = 0
     try:

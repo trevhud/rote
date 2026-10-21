@@ -16,11 +16,12 @@ from __future__ import annotations
 import json
 import shutil
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from rote.compiler.report import ReportExtras
-from rote.compiler.system1 import decision_model, tiebreak
+from rote.compiler.system1 import decision_model, structure, tiebreak
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan, unit_segments, unsure_units
 from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
@@ -68,6 +69,7 @@ def prepare(
     tools: Mapping[tuple[str, str], Any] | None = None,
     tiebreak_lane: Lane | None = None,
     rubric: Path | None = None,
+    structure_lane: Lane | None = None,
 ) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
@@ -86,6 +88,26 @@ def prepare(
     if decider not in DECIDERS:
         raise ValueError(f"unknown --decider {decider!r}; choose from {DECIDERS}")
     skill = parse_skill(skill_dir)
+    if structure_lane is not None:
+        # PROTOTYPE: the whole-skill structure pass decides the skeleton
+        # (rote.compiler.system1.structure); code only checks it.
+        if rubric is None:
+            raise ValueError("the structure pass needs the node-kinds rubric")
+        p, record = structure.decide(
+            replace(skill, units=structure.section_units(skill_dir)),
+            structure.skill_text(skill_dir),
+            rubric.read_text("utf-8"),
+            structure_lane,
+            tools=tools,
+            sample=sample,
+        )
+        p.structure = record
+        write(p, work_dir)
+        path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["structure"] = record.as_dict()
+        path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+        return p
     model = decision_model.MODELS.get(decider)
     verdicts = decision_model.decide(model, skill) if model is not None else None
     segments = unit_segments(skill, verdicts)
