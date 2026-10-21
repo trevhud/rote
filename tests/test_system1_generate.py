@@ -1306,3 +1306,30 @@ async def test_an_unrepairable_finding_costs_no_call(
         verdict = Verification(pipeline=None, findings=[stub])
     verification, rounds = await writer.repair(lambda _: verdict)
     assert not verification.ok and rounds == 0 and fake.requests == []
+
+
+def _validation(error: str) -> Any:
+    from rote.compiler.verify import Verification
+
+    return Verification(pipeline=None, pipeline_error=error)
+
+
+def test_a_node_only_read_in_a_validation_error_gets_no_repair() -> None:
+    """review6's real shape: `fetch` is referenced, `summarize` is at fault."""
+    error = (
+        "1 validation error for Pipeline\n  Value error, node summarize reads "
+        "fetch.output.rows [type=value_error, input_value={'nodes': [...]}, "
+        "input_type=dict]"
+    )
+    per, _ = attribute(_validation(error), ["summarize", "fetch"], [], [])
+    assert list(per) == ["summarize"]
+
+
+def test_pydantics_type_tail_names_no_node() -> None:
+    """A node id `type` must not match `[type=value_error, ...]`."""
+    error = (
+        "1 validation error for Pipeline\n  Value error, summarize: bad output "
+        "[type=value_error, input_value={'nodes': [{'id': 'type'}]}, input_type=dict]"
+    )
+    per, _ = attribute(_validation(error), ["summarize", "type"], [], [])
+    assert list(per) == ["summarize"]

@@ -1264,6 +1264,12 @@ def binding_findings(verification: Any, writable: Iterable[str]) -> dict[str, li
     return out
 
 
+#: Pydantic's per-error tail: ``[type=value_error, input_value={...},
+#: input_type=dict]``. Its input_value may hold brackets, so it ends at
+#: ``input_type=<name>]``.
+_PYDANTIC_TAIL = re.compile(r"\s*\[type=.*?input_type=\w+\]", re.DOTALL)
+
+
 def attribute(
     verification: Any,
     writable: Iterable[str],
@@ -1304,7 +1310,14 @@ def attribute(
         named = {
             on_disk[int(i)] for i in re.findall(r"\bnodes\.(\d+)\b", error) if int(i) < len(on_disk)
         }
-        named |= {i for i in owned if re.search(rf"(?<![\w.]){re.escape(i)}(?!\w)", error)}
+        # Pydantic's "[type=..., input_value=..., input_type=...]" tail quotes
+        # the input, not the node at fault, and `<id>.output...` is a node
+        # being read: neither names the node to repair (each would be a paid
+        # call that may rewrite a node that was fine).
+        bare = _PYDANTIC_TAIL.sub("", error)
+        named |= {
+            i for i in owned if re.search(rf"(?<![\w.]){re.escape(i)}(?!\w)(?!\.output\b)", bare)
+        }
         text = f"pipeline.yaml: {error}"
         if not named & owned:
             loose.append(text)
