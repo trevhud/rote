@@ -81,26 +81,6 @@ def isolated_env(state_dir: Path) -> dict[str, str]:
     return env
 
 
-#: The sample input an example ships beside its skill (examples/<name>/).
-SAMPLE_INPUT_FILENAME = "sample.json"
-
-
-def sample_input(examples: Path, skill: str) -> Path | None:
-    """The example's sample run, which every compile is grounded in.
-
-    ``sample.json`` is the ``{"input", "signals"}`` envelope: the skill's
-    input and the answer a person gives at each gate. It has the same keys
-    as the fidelity cases and none of their values (different people, ids
-    and amounts; pinned by a test), the analog of the sample a real user
-    supplies: the keys are the contract, the values are test data. It sits
-    beside the skill, not in it, so the bench passes it with
-    ``--sample-input``. ``input.json``, ``expected/`` and ``fidelity/``
-    stay out of the compile, since the cases are built from them.
-    """
-    path = examples / skill / SAMPLE_INPUT_FILENAME
-    return path if path.is_file() else None
-
-
 #: The per-job MCP registry the compile reads, beside the job's output.
 TOOL_REGISTRY_RELPATH = "bench-tool-servers/mcp.json"
 
@@ -150,9 +130,14 @@ def tool_servers(example: Path, job_dir: Path, env: dict[str, str]) -> Iterator[
         yield {**env, "ROTE_MCP_CONFIG": str(registry)}
 
 
-def compile_argv(
-    skill_copy: Path, out_dir: Path, args: argparse.Namespace, sample: Path | None = None
-) -> list[str]:
+def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> list[str]:
+    """The plain ``rote compile`` a user runs, on the job's copy of the skill.
+
+    No ``--sample-input``: an example bundles its sample run in the skill
+    dir (``skill/sample-input.json``), so the copy carries it and the
+    compile finds it the way it finds a user's
+    (:data:`rote.compiler.grounding.SAMPLE_INPUT_NAMES`).
+    """
     argv = [
         sys.executable,
         "-m",
@@ -170,8 +155,6 @@ def compile_argv(
     ]
     if args.model:
         argv += ["--model", args.model]
-    if sample is not None:
-        argv += ["--sample-input", str(sample)]
     if args.agent:
         argv += ["--agent", args.agent]
     argv += args.compile_flag
@@ -239,7 +222,7 @@ async def _run_job(
         job.out_dir.mkdir(parents=True)
         skill_copy = job.out_dir / "skill-src" / job.skill
         shutil.copytree(skill_dir, skill_copy)
-        argv = compile_argv(skill_copy, job.out_dir, args, sample_input(args.examples, job.skill))
+        argv = compile_argv(skill_copy, job.out_dir, args)
         print(f"rote bench: {job.label}: compiling -> {job.out_dir}", file=sys.stderr)
         started = time.monotonic()
         with (
@@ -436,6 +419,14 @@ def _parser() -> argparse.ArgumentParser:
         help=(
             "Score one compiled dir (holding pipeline.yaml and extracted/) on the "
             "fidelity cases of the single --skills example, print JSON, and exit"
+        ),
+    )
+    p.add_argument(
+        "--save-fixtures",
+        action="store_true",
+        help=(
+            "Validate each --skills example's http: fixtures against the vendors' specs "
+            "and save them to the fixture store as <example>.<case> (no compile, no tokens)"
         ),
     )
     p.add_argument(
@@ -654,6 +645,41 @@ def _fidelity_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _save_fixtures(args: argparse.Namespace) -> int:
+    """``--save-fixtures``: each case's http: sets, validated, into the fixture store."""
+    from rote.bench.fidelity import has_cases, load_cases
+    from rote.bench.http_fixtures import specs_for
+    from rote.vendor_specs.fixture_store import FixtureStore
+    from rote.vendor_specs.store import SpecStore
+
+    if args.examples is None:
+        print("rote bench: --examples is required", file=sys.stderr)
+        return 2
+    examples = args.examples.resolve()
+    skills = (
+        discover_skills(examples)
+        if args.skills is None
+        else [s.strip() for s in args.skills.split(",") if s.strip()]
+    )
+    store, specs = FixtureStore(), SpecStore()
+    saved = 0
+    for skill in skills:
+        if not has_cases(examples / skill):
+            continue
+        for case in load_cases(examples / skill).cases:
+            for spec in specs_for(case.http, specs):
+                path = store.save(
+                    case.http[spec.key],
+                    spec,
+                    name=f"{skill}.{case.id}",
+                    origin=f"examples/{skill}/fidelity/cases.yaml#{case.id}",
+                )
+                print(f"rote bench: saved {spec.key} rev {spec.revision} -> {path}")
+                saved += 1
+    print(f"rote bench: {saved} fixture set(s) in {store.root}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     args = _parser().parse_args(argv)
     if args.report is not None:
@@ -674,6 +700,8 @@ def main(argv: list[str]) -> int:
         os.environ.pop(key, None)
     if args.rescore is not None:
         return _rescore(args)
+    if args.save_fixtures:
+        return _save_fixtures(args)
     if args.record_reference or args.fidelity_of is not None:
         return _fidelity_command(args)
     if args.examples is None or args.out is None:

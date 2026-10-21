@@ -78,14 +78,17 @@ interpreter as the bench. Two things are forced, not configurable:
   `tools/list` to ground its tool arguments the way a compile against
   registered real servers does, so it sees exactly the schemas the
   fixtures enforce when the pipeline runs.
-- **The example's sample run.** When `examples/<name>/sample.json`
-  exists, the compile gets `--sample-input` pointing at it: the
+- **The example's sample run.** An example with fidelity cases bundles
+  its sample run in the skill dir, at `skill/sample-input.json`, so the
+  bench's copy carries it and the compile finds it exactly as a plain
+  `rote compile examples/<name>/skill` does. It is the
   `{"input", "signals"}` envelope a user would supply, with the fidelity
   cases' keys and none of their values (a test pins both). rote extracts
   the input contract and gate payload keys from it and runs the
   pipeline's deterministic steps on it before the compile is done
   (`rote.compiler.grounding`, `rote.compiler.prefix`). `input.json`,
-  `eval-input.json` and `fidelity/` are never passed.
+  `eval-input.json` and `fidelity/` sit beside the skill, not in it, so
+  the compile never sees them.
 
 ## Benching other models through Cloudflare AI Gateway
 
@@ -421,6 +424,16 @@ per vendor API version (`google/gmail/v1`), in the shareable format of
 6. scores the fake's request log like the MCP call log. A fixture's
    `reads: <server>.<tool>[i]` makes an API read and the skill's tool read
    the same read.
+
+Fixture sets can also live in the fixture store
+(`rote.vendor_specs.fixture_store`, `ROTE_FIXTURE_DIR`, default
+`~/.local/share/rote/fixtures`), one JSON file per set at
+`<vendor>/<api>/<version>/<name>.json`, which is the layout a shared store
+will hold. `rote bench --examples examples --skills ops-report
+--save-fixtures` validates every case's sets against the live specs and
+saves them as `<example>.<case>`, stamped with the spec revision they fit.
+A case uses a stored set with `http: {google/gmail/v1: {from_store: <name>}}`,
+and loading one re-validates it against the current spec.
 
 ### What fidelity does and does not measure
 

@@ -26,6 +26,7 @@ from typing import Any
 from rote.vendor_specs import docs
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.fake import FakeApi, read_log, serving
+from rote.vendor_specs.fixture_store import FixtureStore
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet
 from rote.vendor_specs.model import ApiSpec
 from rote.vendor_specs.store import SpecStore, SpecUnavailable
@@ -49,9 +50,22 @@ class HttpFixtureError(RuntimeError):
     """The bench could not stand up the api side (environment, not pipeline)."""
 
 
-def load_http(raw: dict[str, Any] | None) -> dict[str, FixtureSet]:
-    """A case's ``http:`` section: ``{spec key: {trust?, sources?, operations}}``."""
-    return {key: FixtureSet(spec=key, **value) for key, value in (raw or {}).items()}
+def load_http(
+    raw: dict[str, Any] | None, store: FixtureStore | None = None
+) -> dict[str, FixtureSet]:
+    """A case's ``http:`` section: ``{spec key: {trust?, sources?, operations}}``.
+
+    ``{spec key: {from_store: <name>}}`` reads that set from the fixture
+    store (:mod:`rote.vendor_specs.fixture_store`) instead, which is how a
+    case uses fixtures someone else published.
+    """
+    out: dict[str, FixtureSet] = {}
+    for key, value in (raw or {}).items():
+        if isinstance(value, dict) and set(value) == {"from_store"}:
+            out[key] = (store or FixtureStore()).load(key, str(value["from_store"]))
+        else:
+            out[key] = FixtureSet(spec=key, **value)
+    return out
 
 
 def specs_for(
