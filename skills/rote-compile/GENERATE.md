@@ -146,8 +146,13 @@ already fixed its input schema (the node's `inputs:`) and output schema.
 - Variables are `{{ name }}` or `{{ name.field }}` over the input
   schema's properties, and every one must exist there. There are no
   filters or control blocks.
-- Reproduce the skill's rubric for this decision inline, in prose, with
-  each category or tier the output can take.
+- State the skill's own criteria for this decision, quoted or closely
+  paraphrased from the section text and the rubric it points to. Name each
+  category the output can take, with only what the skill says about it.
+- Add nothing the skill does not state: no bands, thresholds, definitions,
+  examples or tie-break rules of your own. A category the skill leaves
+  undefined stays undefined, and the judge decides it from the skill's
+  criteria. Invented bands moved a live judge off the skill's answers.
 - Do not paste whole reference files, only the rubric.
 - End with: "Return your decision via the structured output tool."
 

@@ -48,8 +48,18 @@ def _camel(node_id: str) -> str:
 
 
 def _description(n: NodePlan) -> str:
+    if n.intent:
+        return f"{n.unit.title}: {n.intent}"[:400]
     first = re.split(r"(?<=[.!?])\s", " ".join(n.unit.text.split()), maxsplit=1)[0]
     return f"{n.unit.title}: {first}"[:400]
+
+
+def _output(n: NodePlan) -> dict[str, str] | str:
+    """The node's ``output``: the fanned list's `items`, the decided keys, or "dict"."""
+    keys = {k: "Any" for k in n.output_keys}
+    if n.lists_output:
+        return {"items": "list", **{k: v for k, v in keys.items() if k != "items"}}
+    return keys or "dict"
 
 
 def judge_input_schema(
@@ -72,7 +82,8 @@ def judge_input_schema(
         source = ref.split(".", 1)[0]
         if ref == "pipeline.input":
             props[param] = request_schema
-        elif ref.endswith(".output.items") and n.fan_out and n.element_source == source:
+        elif n.fan_out and n.element_source == source:
+            # The list is `.output.items`, or a fan_out source's whole result.
             props[param] = {"description": f"one element of {ref.removesuffix('.items')}"}
         elif ref.endswith(".output.items"):
             props[param] = {"type": "array", "description": f"the list {ref}"}
@@ -100,8 +111,10 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
             "source": {"section": n.unit.section},
             "description": _description(n),
             "inputs": dict(n.inputs),
-            "output": {"items": "list"} if n.lists_output else "dict",
+            "output": _output(n),
         }
+        if n.output_schema is not None:
+            node["output_schema"] = dict(n.output_schema)
         if n.mandatory:
             node["mandatory"] = True
         if n.fan_out:
@@ -235,7 +248,7 @@ def input_schema(plan: Plan) -> dict[str, Any]:
         from rote.compiler.grounding import input_contract
 
         return input_contract(plan.sample)
-    fields = input_fields(plan)
+    fields = plan.input_fields if plan.input_fields is not None else input_fields(plan)
     schema: dict[str, Any] = {"type": "object", "additionalProperties": True}
     if fields:
         schema["properties"] = {k: {"description": v} for k, v in fields.items()}

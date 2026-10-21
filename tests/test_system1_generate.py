@@ -966,3 +966,67 @@ def test_a_judges_output_refuses_nullable(tmp_path: Path) -> None:
         pure,
     )
     assert entry["output_schema"]["properties"]["total"]["type"] == ["number", "null"]
+
+
+def test_a_file_path_line_in_module_text_is_named() -> None:
+    from rote.compiler.system1.generate import _parse
+
+    problems: list[str] = []
+    assert _parse("extracted/draft_brief.py\n\ndef f():\n    return 1\n", "m.py", problems) is None
+    assert problems == [
+        "m.py line 1 is the bare expression `extracted/draft_brief.py`, which fails on "
+        "import. The text must be only Python code: no file path or heading line"
+    ]
+    ok: list[str] = []
+    assert _parse('"""Doc."""\n\nmain()\n', "m.py", ok) is not None and ok == []
+
+
+def test_interface_keeps_the_output_keys_the_skeleton_names(tmp_path: Path) -> None:
+    """The MCP demo lost `missing_limits_page`: no node's result was required to have it."""
+    ctx, _ = _context(tmp_path)
+    node = _node(ctx, NodeKind.PURE_FUNCTION).model_copy(
+        update={"output": {"products": "Any", "missing_limits_page": "Any"}}
+    )
+    only_products = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"products": {"type": "array"}}},
+    }
+    assert interface_problems(ctx, node, only_products) == [
+        "output_schema lacks the keys the skeleton names for this node: `missing_limits_page`"
+    ]
+    both = {
+        "description": "x",
+        "output_schema": {
+            "type": "object",
+            "properties": {"products": {"type": "array"}, "missing_limits_page": {"type": "array"}},
+        },
+    }
+    assert interface_problems(ctx, node, both) == []
+
+
+@pytest.mark.asyncio
+async def test_repair_sends_a_binding_finding_to_the_structure_pass(tmp_path: Path) -> None:
+    """No text piece can change an MCP binding; the repair loop re-decides it instead."""
+    from rote.compiler.system1.generate import Settings, TextWriter
+    from rote.compiler.verify import Verification
+    from rote.contracts import ContractFinding
+
+    ctx, _ = _context(tmp_path, "ops-report")
+    mcp_node = next(n.id for n in ctx.pipeline.nodes if n.mcp is not None)
+    bad = ContractFinding(
+        node_id=mcp_node,
+        kind="tool_arguments_invalid",
+        severity="error",
+        message="missing required argument(s): query",
+    )
+    calls: list[dict[str, list[str]]] = []
+    verdicts = iter([Verification(pipeline=None, findings=[bad]), Verification(pipeline=None)])
+
+    def redecide(findings: dict[str, list[str]]) -> list[str]:
+        calls.append(findings)
+        return [f"`{mcp_node}`: re-bound to gmail.search_threads with args {{'query': 'q'}}"]
+
+    writer = TextWriter(None, ctx, "", Settings(), None, redecide=redecide)  # type: ignore[arg-type]
+    verification, rounds = await writer.repair(lambda _: next(verdicts))
+    assert calls == [{mcp_node: ["missing required argument(s): query"]}]
+    assert verification.ok and rounds == 1

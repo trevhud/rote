@@ -1,0 +1,82 @@
+# Does this step read from or write to a system outside the pipeline, and which?
+# Each case is one step of a one-step skill. Labels: none | read | write, and the
+# system when there is one. `tools` lists declared (server, tool) pairs, standing in
+# for a skill's tool table or a registered server's tools/list. Collected from the
+# #167 / #181 reviews and the probes behind them; fixed before any model was asked.
+cases:
+  # internal reads: part of the skill or the data
+  - {text: "Read the summary from Step 3.", label: none}
+  - {text: "Look up each line's rate in the FX table.", label: none}
+  - {text: "Look up each line's rate in FX table.", label: none}
+  - {text: "Use the rows you read in Phase 2.", label: none}
+  - {text: "Load the request from the Controller.", label: none}
+  - {text: "Retrieve the batch the Controller approved.", label: none}
+  - {text: "Load the lines and group them by Employee.", label: none}
+  - {text: "Read the totals from earlier.", label: none}
+  - {text: "Read each row of the table.", label: none}
+  - {text: "Read the total of Step 3.", label: none}
+  - {text: "Read the summary of each Phase result.", label: none}
+  - {text: "Read the subject of each line.", label: none}
+  - {text: "Read the owner of each Deal and group them.", label: none}
+  - {text: "Read the name of every Customer in the batch.", label: none}
+  - {text: "Read the status of each Order and flag late ones.", label: none}
+  - {text: "Read the total of each Q3 row.", label: none}
+  - {text: "Read the amount of each Order invoice.", label: none}
+  - {text: "Read the value of each Budget cell.", label: none}
+  - {text: "Read the owner of each Deal record.", label: none}
+  - {text: "Read the total of each Customer order.", label: none}
+  - {text: "Read the amount of each Expense row.", label: none}
+  - {text: "Read the name of each Invoice file.", label: none}
+  - {text: "Pull the totals in the Q3 column.", label: none}
+  - {text: "Read the balance of the account.", label: none}
+  - {text: "Read the name of the folder.", label: none}
+  - {text: "Read the first line of the queue entry.", label: none}
+  - {text: "Read the status of the service in the request.", label: none}
+  - {text: "Read the request of the Controller.", label: none}
+  - {text: "Read the error log lines. The API latency doubled overnight.", label: none}
+  - {text: "HubSpot is down today, so load the cached copy.", label: none}
+  - {text: "With the Stripe API down, read the cached copy.", label: none}
+  - {text: "Total the lines in USD.", label: none}
+  - {text: "Classify each deal by stage.", label: none}
+  - {text: "Do the research and write it up.", label: none, tools: [[web, search], [web, fetch]]}
+  # reads from outside
+  - {text: "Pull open tickets from Zendesk.", label: read, system: zendesk}
+  - {text: "Read the 50 most recent messages from #deal-intake.", label: read, system: slack}
+  - {text: "Look up the customer in Salesforce.", label: read, system: salesforce}
+  - {text: "Pull this week's tickets from the Zendesk API.", label: read, system: zendesk}
+  - {text: "Read the attendees from the shared inbox.", label: read, system: email}
+  - {text: "Retrieve the order history using Shopify.", label: read, system: shopify}
+  - {text: "Query the AniList GraphQL API for the user's watch list.", label: read, system: anilist}
+  - {text: "Fetch the rates from https://api.example.com/v1/rates.", label: read, system: api.example.com}
+  - {text: "Download the invoices through Stripe.", label: read, system: stripe}
+  - {text: "Load this week's invoices via Stripe.", label: read, system: stripe}
+  - {text: "Download the invoices through the Stripe dashboard.", label: read, system: stripe}
+  - {text: "Read each row of the Google Sheet.", label: read, system: google_sheets}
+  - {text: "Read the open deals of HubSpot.", label: read, system: hubspot}
+  - {text: "Read the last messages of #finance.", label: read, system: slack}
+  - {text: "Read the subject of each Gmail thread.", label: read, system: gmail}
+  - {text: "Read the names of all Slack channels.", label: read, system: slack}
+  - {text: "Read the status of every Zendesk ticket.", label: read, system: zendesk}
+  - {text: "Read the stage of each Salesforce deal.", label: read, system: salesforce, tools: [[salesforce, query]]}
+  - {text: "Read the status of each Shopify order.", label: read, system: shopify, tools: [[shopify, get_orders]]}
+  - {text: "Read the rows of each Google Sheets tab.", label: read, system: google_sheets, tools: [[google_sheets, read]]}
+  - {text: "Search the receipts with the Gmail MCP server.", label: read, system: gmail}
+  - {text: "Read the runbook at ~/runbooks/db.md.", label: read, system: filesystem}
+  # writes to outside
+  - {text: "Save it to Google Drive.", label: write, system: google_drive}
+  - {text: "Email the summary via Gmail.", label: write, system: gmail}
+  - {text: "Post it in #ops-alerts.", label: write, system: slack}
+  - {text: "Set the priority with `update_incident`.", label: write, system: pagerduty}
+  - {text: "Append one row with `append_sheet_values`.", label: write, system: google_sheets}
+  - {text: "Invite each admin: `POST /v1/workspaces/{id}/invites`.", label: write, system: workspace_api}
+  - {text: "Save it to ~/reports/ as a file.", label: write, system: filesystem}
+  - {text: "Notify the account owner by email.", label: write, system: email, tools: [[gmail, send_email]]}
+  - {text: "Email the summary to the customer.", label: write, system: email, tools: [[gmail, send_email]]}
+  - {text: "Save it to the shared drive.", label: write, system: shared_drive, tools: [[shared_drive, upload_file]]}
+  # writes whose system the skill never declares: the intent is still a write.
+  # What the pipeline does about it (bind, or an open question instead of a stub)
+  # is a separate decision; the label is the step's intent.
+  - {text: "Save it to the finance shared folder as `<period>.md`.", label: write, system: shared_folder}
+  - {text: "Post the summary to the team's incident channel.", label: write, system: chat}
+  - {text: "Notify the account owner by email.", label: write, system: email}
+  - {text: "Email the summary to the customer.", label: write, system: email}
