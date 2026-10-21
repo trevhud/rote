@@ -90,7 +90,8 @@ def build_plan(
     answers = _gate_answers(pipeline, sample)
     recorded: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for o in observations:
-        output = parse_tool_result(o.result)
+        declared = (tools or {}).get((o.server, o.tool))
+        output = parse_tool_result(o.result, getattr(declared, "output_schema", None))
         if output is not None and not o.is_error:
             recorded.setdefault((o.server, o.tool), []).append({"input": o.input, "output": output})
     steps: list[dict[str, Any]] = []

@@ -1010,3 +1010,82 @@ def test_compile_reports_generated_tests(
     payload = json.loads(captured.out)
     assert payload["generated_tests"]["passed"] is True
     assert "generated tests passed" in captured.err
+
+
+def test_compile_types_a_wrapped_result_as_the_step_receives_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """DeepWiki (fastmcp) records `{"result": "..."}` and hands the step the
+    string. The compile's own record of the declared outputSchema decides."""
+    from rote.compiler import CompilationResult
+    from rote.compiler.tool_grounding import DECLARED_FILENAME
+    from rote.ir import Pipeline
+
+    _isolate_mcp_stores(monkeypatch, tmp_path)
+    fixtures = json.loads(
+        (Path(__file__).parent / "fixtures" / "mcp_results" / "docs_digest.json").read_text()
+    )
+    declared = [
+        {"server": d["server"], "tool": d["tool"], "output_schema": d["output_schema"]}
+        for d in fixtures["declared"]
+    ]
+    recorded = next(o for o in fixtures["observations"] if o["server"] == "deepwiki")
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "wiki",
+            "version": "0.1.0",
+            "input": {"type": "In"},
+            "nodes": [
+                {
+                    "id": "outline",
+                    "kind": "external_call",
+                    "description": "d",
+                    "mcp": {"server": "deepwiki", "tool": "read_wiki_structure"},
+                    "output": {"result": "string"},
+                }
+            ],
+            "edges": [],
+        }
+    )
+
+    class _WikiCompiler:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def compile(self, skill_path, output_dir, update=False, **_kwargs):  # noqa: ANN001
+            from rote.ir import save_pipeline
+
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            save_pipeline(pipeline, output_dir / "pipeline.yaml")
+            (output_dir / DECLARED_FILENAME).write_text(json.dumps(declared), encoding="utf-8")
+            return CompilationResult(
+                pipeline=pipeline, output_dir=output_dir, driver_name="mock", driver_metadata={}
+            )
+
+    monkeypatch.setattr("rote.cli.Compiler", _WikiCompiler)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n")
+    input_file = tmp_path / "input.json"
+    input_file.write_text("{}", encoding="utf-8")
+    _install_fake_claude(
+        monkeypatch,
+        [
+            _tool_use_event("t1", "mcp__deepwiki__read_wiki_structure", recorded["input"]),
+            _tool_result_event("t1", recorded["result"]),
+            _result_event(),
+        ],
+        write_result={"ok": True},
+    )
+    out = tmp_path / "out"
+    argv = ["compile", str(skill), "--out", str(out), "--no-eval", "--json"]
+    assert cli_main([*argv, "--baseline", "--baseline-input", str(input_file)]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    from rote.ir import load_pipeline
+
+    node = load_pipeline(out / "compiled" / "pipeline.yaml").node_by_id("outline")
+    assert node.output_schema == {"type": "string"}
+    # The step gets a string, so the node's declared `result` key cannot come from it.
+    [mismatch] = payload["mcp_cross_check"]["output_mismatch"]
+    assert mismatch["node"] == "outline"
