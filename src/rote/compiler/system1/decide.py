@@ -29,6 +29,10 @@ from rote.tool_schema import checkable
 #: At or above this, a decision is reported as settled; below, it is listed
 #: in the report for a person to check.
 REVIEW_BELOW = 0.7
+#: Prefix of a node input an MCP argument reads (``arg_<param>``), whoever
+#: binds it: the structure pass or recorded calls. One convention, so the
+#: input can never collide with `request`, a read node's id or another input.
+ARG_INPUT_PREFIX = "arg_"
 
 _NUMBER_WORDS = {
     "a": 1,
