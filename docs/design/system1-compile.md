@@ -303,9 +303,12 @@ that measured better on kinds than the whole skill), with the rules path's
 state, phrasings and thresholds. A confident answer the skeleton contradicts
 (a kind that is not among the heading's nodes, a person the skeleton does not
 pause for, a pause where no person acts) is a second opinion, never an
-override: it goes back to the pass for one more round, which may change the
-node or keep it, and what the pass keeps is an Open question with both
-answers. Mandatory and fan_out are not checked. The tie-break still does not
+override: it goes back to the pass for one more round, which must either
+change the skeleton so the disagreement no longer holds, or keep its answer
+and quote a passage from under that heading that supports it. Code checks the
+quote the way it checks a node's (verbatim, under its own heading); a keep
+without one, or a reply that breaks a code check, goes back once more. What
+the pass keeps is an Open question with both answers and its quote. Mandatory and fan_out are not checked. The tie-break still does not
 run with the pass on; the compile says so and resolves no lane for it.
 compile-report.md names the pass, its model and lane, its rounds, the
 checker's disagreements and kept ones, and the cost.
@@ -331,8 +334,29 @@ as a gate (both trials each, false), and saas-spend-audit's "Log the
 actions" as an external_call (one trial), which is right: the skeleton had
 made the `append_sheet_values` write a pure_function. Fidelity with Jev
 checking: ops-report 0.937, expense-audit 0.921 (no disagreements in
-either), the pass's usual range. The built-in decider stays `rules` until
-the default is chosen from these numbers.
+either), the pass's usual range.
+
+So the round was changed to require a quote for every keep, and measured
+again (2 trials, same arms):
+
+| split | arm | kind | kind mix | edge F1 | gates found | false gates | $/skill |
+|---|---|---|---|---|---|---|---|
+| dev | pass + Clef | 0.596 | 0.748 | 0.553 | 2/4 | 3 | 0.0239 |
+| dev | pass + Jev | 0.643 | 0.704 | 0.531 | 2.5/4 | 3.5 | 0.0205 |
+| holdout | pass + Clef | 0.960 | 0.874 | 0.785 | 3/3 | 0 | 0.0164 |
+| holdout | pass + Jev | 0.879 | 0.800 | 0.817 | 2.5/3 | 0.5 | 0.0149 |
+
+Eight disagreements over the 32 compiles. One led to a change, and it was
+right: Clef read customer-onboarding's "Sanctions screen" as an
+external_call, which is what "Run the company name through `screen_entity`
+on the compliance MCP" says and the gold pipeline has. The other seven were
+kept, each with a verbatim passage from its own heading, and all seven were
+false alarms the gold pipeline agrees with (ops-report's title as a gate,
+invoice-push's "Prerequisites Check" as a gate, incident-triage's step 9 as
+a gate). The quote check proves the passage is there, not that it supports
+the keep: "Do not proceed until both prerequisites are confirmed." was one
+pass's reason for keeping the prerequisites check gateless. The built-in
+decider stays `rules` until the default is chosen from these numbers.
 
 Step-by-step rules misread skills whose structure lives in their intent: a
 per-item step inside a loop, an alternative entry point, a judge that weighs
