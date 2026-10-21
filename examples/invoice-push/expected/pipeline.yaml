@@ -131,18 +131,84 @@ nodes:
 
   # ── Main processing loop ───────────────────────────────────────────────
 
+  # The skill marks the eligibility check MANDATORY ("Never push an invoice
+  # imported today"). A loop's agent decides what it calls, so the check runs
+  # outside any loop: collect every row, classify each one unconditionally,
+  # and hand the push loop only the rows the check passed, by data.
+  - id: collect_rows_loop
+    kind: agent_loop
+    phase: "Processing"
+    source:
+      section: "Step 7 — Process Each Invoice Row"
+    description: |
+      Page through every qualifying row and read all 15 columns of each
+      (Step 7a), paginating until all pages are read. Returns the rows.
+    inputs:
+      date_window: calculate_date_window.output
+      total_count: read_initial_metadata.output.total_count
+    output:
+      items: list
+    tools:
+      - chrome_cdp_click
+      - chrome_cdp_goto
+      - chrome_cdp_snapshot
+      - playwright_cli_snapshot
+    loop_body:
+      - read_page_rows
+    termination:
+      condition: no_more_pages
+      max_iterations: 200
+    timeout: 30m
+
+  - id: classify_invoice_row
+    kind: pure_function
+    phase: "Processing"
+    source:
+      section: "Step 7b — Check Status Eligibility"
+    description: |
+      Determine eligibility for a single invoice row using two mandatory rules:
+      (1) only IMPORTED status is eligible; (2) rows imported within 24 hours
+      of run_start_time are ineligible regardless of status.
+      Returns a RowDecision and optional failure detail string.
+    inputs:
+      row: collect_rows_loop.output.items
+      run_time: read_initial_metadata.output.run_start_time
+    output:
+      decision: RowDecision
+      failure_detail: "str | null"
+    impl: extracted/row_classifier.py:classify_invoice_row
+    fan_out: true
+    mandatory: true
+    constants:
+      eligible_statuses:
+        - IMPORTED
+
+  - id: select_eligible_rows
+    kind: pure_function
+    phase: "Processing"
+    source:
+      section: "Step 7b — Check Status Eligibility"
+    description: |
+      Keep the rows classify_invoice_row marked ELIGIBLE, in screen order:
+      the only rows the push loop receives.
+    inputs:
+      rows: collect_rows_loop.output.items
+      decisions: classify_invoice_row.output
+    output:
+      items: list
+    impl: extracted/row_classifier.py:select_eligible_rows
+    mandatory: true
+
   - id: process_invoices_loop
     kind: agent_loop
     phase: "Processing"
     source:
       section: "Step 7 — Process Each Invoice Row"
     description: |
-      Iterate over all qualifying invoice rows across all pages. Per row:
-      read all 15 columns, check status eligibility and 24-hour rule, push
-      to the procurement portal via the ⋮ menu, interpret the toast result, and (on success)
-      refresh and capture the Sent Date. On ERR-AUTH or ERR-CONN, stop
-      the run and emit run_aborted=true so the workflow can alert the user.
-      Paginates until all pages are processed.
+      Push each eligible row (and only those) to the procurement portal via
+      the ⋮ menu, interpret the toast result, and (on success) refresh and
+      capture the Sent Date. On ERR-AUTH or ERR-CONN, stop the run and emit
+      run_aborted=true so the workflow can alert the user.
     input:
       date_window: DateWindow
       total_count: int
@@ -151,6 +217,7 @@ nodes:
       date_window: calculate_date_window.output
       total_count: read_initial_metadata.output.total_count
       run_start_time: read_initial_metadata.output.run_start_time
+      eligible_rows: select_eligible_rows.output.items
     output:
       invoice_results: "list[InvoiceResult]"
       run_aborted: bool
@@ -161,8 +228,6 @@ nodes:
       - chrome_cdp_snapshot
       - playwright_cli_snapshot
     loop_body:
-      - read_page_rows
-      - classify_invoice_row
       - execute_push
       - interpret_toast_result
       - capture_sent_date
@@ -190,30 +255,9 @@ nodes:
       max: 3
       backoff: exponential
 
-  - id: classify_invoice_row
-    kind: pure_function
-    phase: "Processing"
-    source:
-      section: "Step 7b — Check Status Eligibility"
-    description: |
-      Determine eligibility for a single invoice row using two mandatory rules:
-      (1) only IMPORTED status is eligible; (2) rows imported within 24 hours
-      of run_start_time are ineligible regardless of status.
-      Returns a RowDecision and optional failure detail string.
-    input:
-      status: str
-      date_imported: str
-      run_time: str
-    output:
-      decision: RowDecision
-      failure_detail: "str | null"
-    impl: extracted/row_classifier.py:classify_invoice_row
-    mandatory: true
-    fan_out: true
-    constants:
-      eligible_statuses:
-        - IMPORTED
-
+  # rote: assumption: the skill marks the push and the Sent Date capture
+  # MANDATORY; they run inside process_invoices_loop, whose agent calls them,
+  # and the loop only ever receives rows the eligibility check passed.
   - id: execute_push
     kind: external_call
     phase: "Processing"
@@ -233,7 +277,6 @@ nodes:
     retry:
       max: 1
       backoff: constant
-    mandatory: true
     constants:
       toast_timeout_seconds: 5
 
@@ -273,7 +316,6 @@ nodes:
     retry:
       max: 3
       backoff: exponential
-    mandatory: true
 
   # ── Report wave (parallel) ─────────────────────────────────────────────
 
@@ -358,6 +400,13 @@ edges:
   - { from: calculate_date_window,     to: clear_and_apply_filters }
   # Linear setup chain
   - { from: clear_and_apply_filters,   to: read_initial_metadata }
+  # Every row is read, then classified unconditionally; the push loop gets
+  # only the eligible ones.
+  - { from: read_initial_metadata,     to: collect_rows_loop }
+  - { from: collect_rows_loop,         to: classify_invoice_row, fan_out: true }
+  - { from: collect_rows_loop,         to: select_eligible_rows }
+  - { from: classify_invoice_row,      to: select_eligible_rows }
+  - { from: select_eligible_rows,      to: process_invoices_loop }
   - { from: read_initial_metadata,     to: process_invoices_loop }
   # Report phase: build_report_data and ensure_archive_folder run in parallel
   - { from: process_invoices_loop,     to: build_report_data }
