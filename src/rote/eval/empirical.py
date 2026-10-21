@@ -817,12 +817,14 @@ def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
 def default_corpus_path() -> Path:
     """Where ``rote eval --run`` appends its measurements.
 
-    ``ROTE_EVAL_CORPUS_PATH`` overrides ``~/.local/share/rote/eval-corpus.jsonl``.
+    ``ROTE_EVAL_CORPUS_PATH`` > ``$XDG_DATA_HOME/rote/eval-corpus.jsonl`` >
+    ``~/.local/share/rote/eval-corpus.jsonl``.
     """
     override = os.environ.get("ROTE_EVAL_CORPUS_PATH")
     if override:
         return Path(override)
-    return Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "eval-corpus.jsonl"
 
 
 def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | None = None) -> Path:

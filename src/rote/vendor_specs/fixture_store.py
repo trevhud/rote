@@ -36,7 +36,8 @@ def default_root() -> Path:
     override = os.environ.get("ROTE_FIXTURE_DIR")
     if override:
         return Path(override)
-    return Path.home() / ".local" / "share" / "rote" / "fixtures"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "fixtures"
 
 
 class FixtureStore:
