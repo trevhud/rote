@@ -102,7 +102,10 @@ comes from keeping them clean.
   (`system1/checker.py`). Its confident disagreements go back to the pass as
   one more repair round; what the pass keeps is an Open question. Keep it a
   second opinion: an override would let a one-step reader beat the model
-  that read the whole skill.
+  that read the whole skill. The default (`auto`) is the first of
+  `decision_model.CHECKER_ORDER` with credentials (Clef via Cloudflare, then
+  Jev via `TYPESAFE_API_KEY`), else no check; change the order there, citing
+  the bench that moved it.
 - **System-1's text is written in parallel** when the driver has
   `generate()` (`claude`, `api`): one schema-locked call per node's
   interface entry, then one per `pure_function` (module + tests) and per

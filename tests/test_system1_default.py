@@ -301,7 +301,7 @@ def _compile_argv(tmp_path: Path, *flags: str) -> list[str]:
 def test_the_decider_is_a_layered_setting(
     command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """flag > ROTE_DECIDER > project rote.yaml > user config > rules."""
+    """flag > ROTE_DECIDER > project rote.yaml > user config > auto."""
     seen = _compiler_kwargs(monkeypatch)
     user = tmp_path / "user.yaml"
     project = tmp_path / "rote.yaml"
@@ -315,7 +315,7 @@ def test_the_decider_is_a_layered_setting(
             cli.main([*argv, *flags])
         return str(seen[-1]["system1_decider"])
 
-    assert decider() == "rules"
+    assert decider() == "auto"
     user.write_text("decider: clef\n")
     assert decider() == "clef"
     project.write_text("decider: jev\n")
@@ -369,7 +369,7 @@ def test_rote_config_reports_the_decider(
 
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["decider"]
-    assert setting == {"value": "rules", "source": "built-in default"}
+    assert setting == {"value": "auto", "source": "built-in default"}
     monkeypatch.setenv("ROTE_DECIDER", "jev")
     assert cli.main(["config", "--json"]) == 0
     setting = json.loads(capsys.readouterr().out)["settings"]["decider"]

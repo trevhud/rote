@@ -158,6 +158,11 @@ _INFERENCE_CREDENTIAL_VARS = (
     "OPENAI_BASE_URL",
     "ROTE_INFERENCE",
     "ROTE_CLOUD_TOKEN",
+    # The decision models: with these set, the default decider (auto) would
+    # call Clef or Jev from any compile test.
+    "CLOUDFLARE_ACCOUNT_ID",
+    "CLOUDFLARE_API_TOKEN",
+    "TYPESAFE_API_KEY",
 )
 
 #: Subscription-auth CLIs. These are the dangerous ones: `claude -p`

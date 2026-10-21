@@ -253,7 +253,7 @@ class Compiler:
         emit_target: EmitTarget | None = None,
         strict_provenance: bool = False,
         system1: bool | None = None,
-        system1_decider: str = "rules",
+        system1_decider: str = "auto",
         system1_tiebreak: str = DEFAULT_TIEBREAK,
         system1_structure: str = DEFAULT_STRUCTURE,
         tool_discovery: tool_grounding.Discovery = "named",
@@ -317,9 +317,15 @@ class Compiler:
             ``False`` (``--no-system1``) is the full-rubric agent always.
             ``True`` with ``update=True`` is an error.
         system1_decider
-            Who decides step kinds and gates on the System-1 path
-            (:data:`rote.compiler.system1.DECIDERS`). A model decider with
-            System-1 off is an error, never ignored.
+            The decision model on the System-1 path
+            (:data:`rote.compiler.system1.DECIDERS`): it checks the structure
+            pass, or decides kinds and gates on the rules path. ``"auto"``
+            (the default) takes the first of
+            :data:`rote.compiler.system1.decision_model.CHECKER_ORDER` with
+            credentials, and none means no check; the compile says which and
+            why. A model asked for by name with no credentials fails before
+            any spend. A model decider with System-1 off is an error, never
+            ignored.
         system1_tiebreak
             ``"haiku"``: on the System-1 path, the steps still unsure after
             the decider go to Haiku in one schema-locked call, billed the way
@@ -366,6 +372,16 @@ class Compiler:
         if self._explicit_compiler_skill_dir is not None:
             return self._explicit_compiler_skill_dir
         return _default_compiler_skill_dir()
+
+    def _resolve_decider(self) -> tuple[str, str]:
+        """``(decider, why)`` for this compile; ``auto`` resolved, and said."""
+        if self.system1_decider != "auto":
+            return self.system1_decider, f"--decider {self.system1_decider}"
+        decider, why = system1.decision_model.default_checker()
+        # One line either way: which model runs and why, or what was skipped
+        # and the variables that would enable one.
+        self._emit("log" if decider != "rules" else "warning", f"system1: {why}")
+        return decider, why
 
     def select_driver(self) -> CompilerDriver:
         """Choose a driver based on the agent setting or auto-detect.
@@ -538,7 +554,7 @@ class Compiler:
         if self.system1 and update:
             raise CompilerError("System-1 does not support --update yet; run a full compile")
         use_system1 = self.system1 if self.system1 is not None else not update
-        if not use_system1 and self.system1_decider != "rules":
+        if not use_system1 and self.system1_decider not in ("rules", "auto"):
             raise CompilerError(
                 f"--decider {self.system1_decider} decides System-1's structure, "
                 "and this compile does not run System-1"
@@ -604,6 +620,7 @@ class Compiler:
             )
             s1_plan: system1.Plan | None = None
             if use_system1:
+                decider, decider_why = self._resolve_decider()
                 structure_runs = self.system1_structure != "rules"
                 if structure_runs and self.system1_tiebreak == "haiku":
                     # The structure pass decides every kind and gate, so the
@@ -624,7 +641,8 @@ class Compiler:
                     s1_plan = system1.prepare(
                         skill_dir,
                         work_dir,
-                        self.system1_decider,
+                        decider,
+                        decider_why=decider_why,
                         sample=sample,
                         tools=grounding.tools,
                         observations=grounding.observations,

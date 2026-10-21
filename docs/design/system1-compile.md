@@ -355,8 +355,21 @@ false alarms the gold pipeline agrees with (ops-report's title as a gate,
 invoice-push's "Prerequisites Check" as a gate, incident-triage's step 9 as
 a gate). The quote check proves the passage is there, not that it supports
 the keep: "Do not proceed until both prerequisites are confirmed." was one
-pass's reason for keeping the prerequisites check gateless. The built-in
-decider stays `rules` until the default is chosen from these numbers.
+pass's reason for keeping the prerequisites check gateless.
+
+The built-in decider is `auto`, one rule for local and rote cloud compiles:
+the first of `decision_model.CHECKER_ORDER` that has credentials, best
+measured first. sk-check2 set it to Clef, then Jev. Clef needs
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (Workers AI). Jev runs on
+Typesafe's own API with `TYPESAFE_API_KEY` (`POST
+https://api.typesafe.ai/v1/systemone`, Bearer key, pinned to `jev-1.14.0`,
+the version its thresholds were fitted on; its answer has no `result`
+wrapper and no AI Gateway header is sent), or on Workers AI with the
+Cloudflare variables. With neither, the compile runs unchecked and prints
+one line naming the variables that enable each. `--decider clef|jev` by
+name still fails before any spend without its credentials. decisions.json's
+`checker` entry and compile-report.md say which ran and why. A later bench
+changes the order in `CHECKER_ORDER` and nowhere else.
 
 Step-by-step rules misread skills whose structure lives in their intent: a
 per-item step inside a loop, an alternative entry point, a judge that weighs

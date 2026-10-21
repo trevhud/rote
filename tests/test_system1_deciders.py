@@ -82,12 +82,16 @@ def creds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dm.time, "sleep", lambda _s: None)
 
 
+def _workers_ai() -> dm.Route:
+    return dm.Route(CLEF.url("a"), "t", CLEF.body, "Workers AI", cloudflare=True)
+
+
 def _stub(
     monkeypatch: pytest.MonkeyPatch, by_title: dict[str, Any], model: DecisionModel = CLEF
 ) -> list[dict]:
     calls: list[dict[str, Any]] = []
 
-    def post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def post(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         calls.append({"url": url, "token": token, "body": body})
         req = _request(body)
         answer = by_title[req["state"]["this_step"]["title"]]
@@ -165,7 +169,7 @@ def test_the_calls_run_in_parallel(monkeypatch: pytest.MonkeyPatch, creds: None)
     arrivals = {"n": 0}
     lock = threading.Lock()
 
-    def meet(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def meet(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         with lock:
             arrivals["n"] += 1
             first_two = arrivals["n"] <= 2
@@ -185,7 +189,12 @@ def test_the_thresholds_are_the_frozen_ones() -> None:
     assert (CLEF.kind_threshold, CLEF.human_threshold) == (0.85, 0.50)
     assert (JEV.kind_threshold, JEV.human_threshold) == (JEV_KIND, JEV_HUMAN)
     assert (CLEF.price_per_m_input, JEV.price_per_m_input) == (0.24, 0.042)
-    assert set(dm.MODELS) == {"clef", "jev"} and system1.DECIDERS == ("rules", "clef", "jev")
+    assert set(dm.MODELS) == {"clef", "jev"} and system1.DECIDERS == (
+        "auto",
+        "rules",
+        "clef",
+        "jev",
+    )
 
 
 def _just_above(x: float) -> float:
@@ -248,7 +257,7 @@ async def test_asking_for_a_model_without_credentials_fails_the_compile(
     monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
     monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
 
-    def no_call(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def no_call(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         raise AssertionError("the model was called without credentials")
 
     monkeypatch.setattr(dm, "_post", no_call)
@@ -257,7 +266,10 @@ async def test_asking_for_a_model_without_credentials_fails_the_compile(
         system1_decider=model.name, system1_tiebreak="none", system1_structure="rules"
     )
     with pytest.raises(
-        CompilerError, match=f"--decider {model.name} needs CLOUDFLARE_ACCOUNT_ID and"
+        CompilerError,
+        match=f"--decider {model.name} needs "
+        + (r"TYPESAFE_API_KEY \(Typesafe's own API\) or " if model.name == "jev" else "")
+        + "CLOUDFLARE_ACCOUNT_ID and",
     ):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
 
@@ -267,35 +279,35 @@ def test_a_rate_limit_is_retried_and_a_dead_endpoint_is_loud(
 ) -> None:
     attempts = {"n": 0}
 
-    def flaky(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def flaky(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         attempts["n"] += 1
         if attempts["n"] < 3:
             raise dm.DeciderUnavailable("Workers AI answered HTTP 429")
         return _answers({**ZERO, "pure_function": 1.0}, 0.0)
 
     monkeypatch.setattr(dm, "_post", flaky)
-    assert dm.ask(CLEF, "a", "t", {}, "v0")["answers"]["human"]["noul"] == 0.0
+    assert dm.ask(CLEF, _workers_ai(), {}, "v0")["answers"]["human"]["noul"] == 0.0
     assert attempts["n"] == 3
 
-    def dead(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def dead(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         raise dm.DeciderUnavailable("Workers AI answered HTTP 500")
 
     monkeypatch.setattr(dm, "_post", dead)
     with pytest.raises(dm.DeciderUnavailable, match="did not answer after 6 tries"):
-        dm.ask(CLEF, "a", "t", {}, "v0")
+        dm.ask(CLEF, _workers_ai(), {}, "v0")
 
 
 def test_a_refused_request_fails_at_once(monkeypatch: pytest.MonkeyPatch, creds: None) -> None:
     """A 401/403/404 fails the same way every time: no six rounds of backoff."""
     attempts = {"n": 0}
 
-    def refused(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def refused(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         attempts["n"] += 1
         raise dm.DeciderRejected("Workers AI answered HTTP 401: b'bad token'")
 
     monkeypatch.setattr(dm, "_post", refused)
     with pytest.raises(dm.DeciderRejected, match="HTTP 401"):
-        dm.ask(CLEF, "a", "t", {}, "v0")
+        dm.ask(CLEF, _workers_ai(), {}, "v0")
     assert attempts["n"] == 1
 
 
