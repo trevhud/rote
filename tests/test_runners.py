@@ -181,6 +181,22 @@ def test_parse_signal_args_requires_name_and_json() -> None:
         parse_signal_args(["approve={broken"])
 
 
+def test_parse_signal_args_reads_an_at_file(tmp_path: Path) -> None:
+    """``NAME=@FILE`` is the file's JSON, the help text's documented form."""
+    payload = tmp_path / "manual.json"
+    payload.write_text('{"sorter": [{"site": "MTN6", "volume": 22800}]}', encoding="utf-8")
+    signals = parse_signal_args([f"manual_data=@{payload}", 'approve={"ok": true}'])
+    assert signals == {
+        "manual_data": {"sorter": [{"site": "MTN6", "volume": 22800}]},
+        "approve": {"ok": True},
+    }
+    with pytest.raises(TargetError, match=r"manual_data: cannot read .*missing\.json"):
+        parse_signal_args([f"manual_data=@{tmp_path / 'missing.json'}"])
+    (tmp_path / "bad.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TargetError, match=r"bad\.json is not valid JSON"):
+        parse_signal_args([f"manual_data=@{tmp_path / 'bad.json'}"])
+
+
 def test_resolve_gate_signals_all_provided() -> None:
     provided = {"g1": {"ok": True}}
     assert resolve_gate_signals(["g1"], provided, interactive=False) == provided

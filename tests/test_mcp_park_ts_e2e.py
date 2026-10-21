@@ -341,6 +341,10 @@ def test_ts_missing_endpoint_runs_the_step_once(
         timeout=180,
     )
     output = proc.stdout + proc.stderr
-    assert proc.returncode != 0, output
     assert attempts_in(output, node_id) == 1, output
-    assert "set ROTE_MCP_VENDOR_URL" in output
+    # Configuration, so the app's last word is one `error:` line and exit
+    # 2, the shape `rote run` relays as the whole failure. (The stacks
+    # above it are DBOS's own step-failure log.)
+    assert proc.returncode == 2, output
+    last = proc.stderr.strip().splitlines()[-1]
+    assert last.startswith("error: ") and "set ROTE_MCP_VENDOR_URL" in last, output

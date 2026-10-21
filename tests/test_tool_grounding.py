@@ -550,6 +550,127 @@ def test_verification_runs_the_value_check_on_the_sample(tmp_path: Path) -> None
     assert len(bad) == 1 and "must be string, got int" in bad[0].message
 
 
+def test_verification_names_the_bindings_no_schema_checked(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    unchecked = verify_deliverable(
+        root, grounding=Grounding(sample=None, tools={}), run_tests=False, trust_skill=True
+    ).unchecked_tools
+    assert unchecked == {"gmail": ["search_threads"]}
+    checked = verify_deliverable(
+        root, grounding=Grounding(sample=None, tools=DECLARED), run_tests=False, trust_skill=True
+    ).unchecked_tools
+    assert checked == {}
+
+
+@pytest.mark.parametrize(
+    ("registered", "unlisted", "says", "not_said"),
+    [
+        (False, {}, "rote mcp add gmail <url>", "rote mcp login"),
+        (
+            True,
+            {"gmail": "MCPError: Unauthorized. Provide a valid Bearer token."},
+            "Log in, then compile again: rote mcp login gmail",
+            "rote mcp add",
+        ),
+        (
+            True,
+            {"gmail": "the skill does not name it (--tool-discovery named)"},
+            "rote did not read gmail's tools: the skill does not name it",
+            "rote mcp login",
+        ),
+        (True, {}, "gmail's tools/list has no search_threads", "rote mcp add"),
+    ],
+)
+def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    registered: bool,
+    unlisted: dict[str, str],
+    says: str,
+    not_said: str,
+) -> None:
+    """In the summary, not only among the open questions: the parameter
+    names are a guess a real server refuses (ops-report sent `search_query`
+    where Gmail takes `query`), and the fix depends on why there was no
+    schema."""
+    from rote.cli import main as cli_main
+    from rote.compiler.verify import Verification
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+    from tests.test_cli import _install_mock_compiler
+
+    root = _root(tmp_path / "ir")
+    if registered:
+        save_registry(
+            McpRegistry(servers={"gmail": McpServerConfig(url="https://gmail.example/mcp")})
+        )
+    pipeline = _pipeline(root)
+    _install_mock_compiler(
+        monkeypatch,
+        root / "pipeline.yaml",
+        verification=Verification(
+            pipeline=pipeline,
+            unchecked_tools={"gmail": ["search_threads"]},
+            unlisted_servers=unlisted,
+        ),
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n", encoding="utf-8")
+    argv = ["compile", str(skill), "--local", "--runtime", "dbos", "--no-eval"]
+    cli_main([*argv, "--out", str(tmp_path / "out")])
+    out = capsys.readouterr().out
+    summary = out.split("rote compile: ✓", 1)[1]
+    head = "WARNING: tool arguments NOT checked against a schema: gmail.search_threads."
+    assert head in summary
+    # The warning's own lines; the auth advisories above it say other things.
+    warning = summary.split(head, 1)[1]
+    assert says in warning
+    assert not_said not in warning
+
+
+def test_the_compile_records_why_a_registered_server_was_not_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tools/list failure reaches the verification, not only a log line."""
+    from rote.compiler import tool_grounding
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "gmail": McpServerConfig(url="https://gmail.example/mcp"),
+                "slack": McpServerConfig(url="https://slack.example/mcp"),
+            }
+        )
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("Search Gmail for the dock threads.\n", encoding="utf-8")
+
+    async def _discover(servers: Any, on_skip: Any = None, **_: Any) -> dict[Any, Any]:
+        for server in servers:
+            on_skip(server, "MCPError: Unauthorized. Provide a valid Bearer token.")
+        return {}
+
+    monkeypatch.setattr(tool_grounding, "discover", _discover)
+    tools, unlisted = asyncio.run(Compiler()._tool_schemas((), skill))
+    assert tools == {}
+    assert unlisted == {
+        "gmail": "MCPError: Unauthorized. Provide a valid Bearer token.",
+        "slack": "the skill does not name it (--tool-discovery named)",
+    }
+
+
+def test_the_summary_says_nothing_when_every_binding_was_checked() -> None:
+    from rote.cli import _unchecked_tool_lines
+
+    servers: list[dict[str, object]] = [{"server": "gmail", "auth": "not registered"}]
+    assert _unchecked_tool_lines({}, servers) == []
+    # A server this runtime never calls (python and temporal emit the impl).
+    assert _unchecked_tool_lines({"gmail": ["search_threads"]}, []) == []
+
+
 def test_a_bench_compile_runs_with_the_fixture_servers_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
