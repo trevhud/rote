@@ -29,6 +29,7 @@ from rote.compiler.tool_grounding import (
     recorded,
     tool_findings,
     tool_questions,
+    unbound_tool_findings,
 )
 from rote.compiler.verify import verify_deliverable
 from rote.contracts import implementation_status
@@ -167,6 +168,127 @@ def test_verification_sends_a_bad_argument_to_repair(tmp_path: Path) -> None:
     assert "`query` (string, required)" in (v.repair_instruction(root) or "")
     bare = verify_deliverable(root, grounding=Grounding(), run_tests=False)
     assert [q.node_id for q in bare.questions if "are guessed" in q.text] == ["search"]
+
+
+# ───────── a named tool that no node calls ─────────
+
+DOCS = {
+    ("cloudflare_docs", "search_cloudflare_documentation"): ToolSchema(
+        "cloudflare_docs",
+        "search_cloudflare_documentation",
+        {"type": "object", "properties": {"query": {"type": "string"}}},
+        "tools/list on the registered 'cloudflare_docs'",
+        True,
+    ),
+    ("cloudflare_docs", "migrate_pages_to_workers_guide"): ToolSchema(
+        "cloudflare_docs", "migrate_pages_to_workers_guide", {"type": "object"}, "x", True
+    ),
+}
+
+
+def _named_skill(tmp_path: Path, text: str) -> Path:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(f"---\nname: docs\ndescription: d\n---\n\n# Docs\n\n{text}\n")
+    return skill
+
+
+_PLAIN = """\
+name: docs
+input: {type: Q}
+nodes:
+  - id: answer
+    kind: pure_function
+    description: answer the question
+    impl: extracted/a.py:answer
+    inputs: {request: pipeline.input}
+edges: []
+entry_nodes: [answer]
+exit_nodes: [answer]
+"""
+
+_LOOP = _PLAIN.replace(
+    """    kind: pure_function
+    description: answer the question
+    impl: extracted/a.py:answer
+""",
+    """    kind: agent_loop
+    description: answer the question
+    tools: [search_cloudflare_documentation]
+    termination: {condition: answered, max_iterations: 3}
+""",
+)
+
+
+def _ir(tmp_path: Path, text: str) -> Pipeline:
+    (tmp_path / "pipeline.yaml").write_text(text)
+    return load_pipeline(tmp_path / "pipeline.yaml")
+
+
+def test_a_named_declared_tool_that_no_node_calls_fails(tmp_path: Path) -> None:
+    """e2echeck's live demo: a plain MCP skill compiled with no binding, exit 0."""
+    skill = _named_skill(
+        tmp_path, "Call `search_cloudflare_documentation` on the cloudflare_docs server."
+    )
+    [finding] = unbound_tool_findings(_ir(tmp_path, _PLAIN), skill, DOCS)
+    assert (finding.kind, finding.severity) == ("declared_tool_unbound", "error")
+    assert finding.message == (
+        "the skill names the tool `search_cloudflare_documentation` (cloudflare_docs), but no "
+        "node calls it. Bind the step that uses it: an external_call with `mcp: {server: "
+        "cloudflare_docs, tool: search_cloudflare_documentation}`, or list it in an "
+        "agent_loop's `tools`"
+    )
+
+
+def test_a_binding_or_a_loop_that_uses_the_tool_passes(tmp_path: Path) -> None:
+    skill = _named_skill(tmp_path, "Use search_cloudflare_documentation to find the page.")
+    bound = _PLAIN.replace(
+        "    impl: extracted/a.py:answer\n",
+        "    impl: extracted/a.py:answer\n"
+        "    mcp: {server: cloudflare_docs, tool: search_cloudflare_documentation}\n",
+    ).replace("kind: pure_function", "kind: external_call")
+    assert unbound_tool_findings(_ir(tmp_path, bound), skill, DOCS) == []
+    assert unbound_tool_findings(_ir(tmp_path, _LOOP), skill, DOCS) == []
+
+
+def test_only_an_exact_name_counts(tmp_path: Path) -> None:
+    skill = _named_skill(
+        tmp_path, "Search the docs (see `search_cloudflare_documentation_v2` and docs-search)."
+    )
+    assert unbound_tool_findings(_ir(tmp_path, _PLAIN), skill, DOCS) == []
+    assert unbound_tool_findings(_ir(tmp_path, _PLAIN), None, DOCS) == []
+
+
+def test_a_plain_word_tool_counts_only_as_a_code_span(tmp_path: Path) -> None:
+    plain = {
+        ("files", name): ToolSchema("files", name, {"type": "object"}, "x", True)
+        for name in ("search", "fetch", "get", "list", "query", "read", "run")
+    }
+    prose = _named_skill(tmp_path, "Search the archive folder and fetch the latest copy.")
+    assert unbound_tool_findings(_ir(tmp_path, _PLAIN), prose, plain) == []
+    (tmp_path / "b").mkdir()
+    spans = _named_skill(tmp_path / "b", "Call `search` for the folder, then `fetch(id)`.")
+    found = unbound_tool_findings(_ir(tmp_path, _PLAIN), spans, plain)
+    assert [f.message.split("`")[1] for f in found] == ["fetch", "search"]
+
+
+def test_verification_sends_an_unbound_tool_to_repair(tmp_path: Path) -> None:
+    skill = _named_skill(tmp_path, "Call `search_cloudflare_documentation`.")
+    root = tmp_path / "out"
+    root.mkdir()
+    (root / "pipeline.yaml").write_text(_PLAIN)
+    (root / "extracted").mkdir()
+    (root / "extracted" / "a.py").write_text("def answer(request):\n    return {}\n")
+    v = verify_deliverable(root, grounding=Grounding(tools=DOCS), run_tests=False, skill_dir=skill)
+    assert "declared_tool_unbound" in {f.kind for f in v.errors} and not v.ok
+    bound = tmp_path / "skill-no-tool"
+    bound.mkdir()
+    (bound / "SKILL.md").write_text("# Docs\n\nAnswer from what you know.\n")
+    clean = verify_deliverable(
+        root, grounding=Grounding(tools=DOCS), run_tests=False, skill_dir=bound
+    )
+    assert "declared_tool_unbound" not in {f.kind for f in clean.errors}
+    assert "search_cloudflare_documentation" in (v.repair_instruction(root) or "")
 
 
 def test_the_brief_spells_out_the_tools_the_skill_names() -> None:

@@ -71,6 +71,7 @@ from rote.compiler.tool_grounding import (
     stale_bundled,
     tool_findings,
     tool_questions,
+    unbound_tool_findings,
     unchecked_tools,
 )
 from rote.contracts import (
@@ -1012,6 +1013,9 @@ def _verify(
         unchecked = unchecked_tools(called, grounding.tools)
         tool_sources = schema_sources(called, grounding.tools)
         stale = stale_bundled(called, grounding.tools, grounding.bundled)
+        # The full pipeline: on the api backend a binding stays declared
+        # even though its impl is what runs.
+        findings += unbound_tool_findings(pipeline, skill_dir, grounding.tools)
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
             for node_id, text in tool_questions(called, grounding.tools)
