@@ -26,7 +26,12 @@ from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan, unit_segments
 from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
 from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
-from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME, write
+from rote.compiler.system1.skeleton import (
+    BRIEF_DIRNAME,
+    DECISIONS_FILENAME,
+    SKELETON_FILENAME,
+    write,
+)
 from rote.compiler.system1.structure import STRUCTURE_NOTE_PREFIX
 from rote.compiler.system1.tiebreak import TIEBREAKS, Lane, TieBreakUnavailable
 
@@ -205,14 +210,32 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     # Details carry agent-written text (a proposal's node, a restored value):
     # one line each, so a newline and "## ..." cannot reshape the report.
     questions = [(" ".join(t.split()), " ".join(d.split())) for t, d in questions]
-    model, asked, costs = _calls_made(work_dir)
-    deciders = ["rules"]
-    if model:
-        deciders.append(f"the {model.label} decision model")
-    if asked:
-        deciders.append(f"{tiebreak.MODEL} for the {asked} step(s) they were unsure of")
-    who = deciders[0] if len(deciders) == 1 else ", ".join(deciders[:-1]) + " and " + deciders[-1]
-    sources = [x for x in (model.label if model else None, tiebreak.MODEL if asked else None) if x]
+    st = p.structure
+    if st is not None:
+        # The structure pass decided every node; no step decider or
+        # tie-break ran. Its cost covers every round and any re-decide.
+        cost = tiebreak._cost(st.usage) if st.usage else st.cost_usd
+        redecided = f", and re-decided {len(st.redecided)} binding(s)" if st.redecided else ""
+        who = (
+            f"a structure pass: {st.model} via {st.lane} read the whole skill and proposed "
+            f"every node in {st.rounds} round(s){redecided}, and code checked each one "
+            "against the skill's text, its tools' schemas and the sample input"
+        )
+        costs: dict[str, float | None] = {f"{st.model}, structure pass": cost}
+        sources = [f"{st.model}'s structure pass"]
+    else:
+        model, asked, costs = _calls_made(work_dir)
+        deciders = ["rules"]
+        if model:
+            deciders.append(f"the {model.label} decision model")
+        if asked:
+            deciders.append(f"{tiebreak.MODEL} for the {asked} step(s) they were unsure of")
+        who = (
+            deciders[0] if len(deciders) == 1 else ", ".join(deciders[:-1]) + " and " + deciders[-1]
+        )
+        sources = [
+            x for x in (model.label if model else None, tiebreak.MODEL if asked else None) if x
+        ]
     return ReportExtras(
         preamble=(
             f"Compiled with System-1: rote decided the structure with {who}, and the "
@@ -226,7 +249,12 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
             "not state, and each low-confidence decision took a conservative default.",
             "Run the pipeline once (`rote run`) and compare it with a run of the skill.",
             (
-                "Recompile with `rote compile` after the skill changes. Some "
+                "Recompile with `rote compile` after the skill changes. The skeleton is "
+                f"a model's answer ({sources[0]}), checked by code, so two compiles of "
+                f"one skill can differ: compare `{BRIEF_DIRNAME}/{SKELETON_FILENAME}` between "
+                "runs before trusting a diff."
+                if st is not None
+                else "Recompile with `rote compile` after the skill changes. Some "
                 f"decisions are model answers ({' and '.join(sources)}), and rules "
                 "elsewhere: compare decisions.json between runs before trusting a diff."
                 if sources

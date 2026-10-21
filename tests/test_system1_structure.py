@@ -1434,3 +1434,60 @@ def test_a_failed_redecide_keeps_the_compile_and_counts_its_calls(
         "re-deciding MCP bindings (m) failed: x"
     ]
     assert record.usage == [_SPENT_ROW]
+
+
+def test_the_report_names_the_structure_pass_and_its_cost(skill: Any, tmp_path: Path) -> None:
+    """compile-report.md said the structure was decided "with rules" and left
+    out the pass's cost when the pass decided it."""
+    from rote.compiler.system1 import report_extras
+
+    plan, rec, _ = run(skill, good_answer())
+    plan.structure = rec
+    work = tmp_path / "work"
+    work.mkdir()
+    extras = report_extras(work, plan)
+    assert extras.preamble.startswith(
+        "Compiled with System-1: rote decided the structure with a structure pass: "
+        "claude-haiku-5-5 via claude -p (subscription) read the whole skill and proposed "
+        "every node in 1 round(s), and code checked each one"
+    )
+    assert "with rules" not in extras.preamble
+    assert "Its model calls cost $0.0100 (claude-haiku-5-5, structure pass)" in extras.preamble
+    assert "skeleton.yaml" in extras.next_steps[-1]
+
+
+def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--tiebreak haiku resolved its lane (and could fail the compile) for a call
+    the structure pass makes sure never happens; --decider clef went unused silently."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import decision_model, tiebreak
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("resolved or called for a pass that does not run")
+
+    monkeypatch.setattr(tiebreak, "lane_for", never)
+    monkeypatch.setattr(decision_model, "decide", never)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    monkeypatch.setattr(structure, "decide", lambda *a, **k: (_ for _ in ()).throw(_Asked("pass")))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    logs: list[str] = []
+    compiler = Compiler(
+        run_generated_tests=False,
+        tool_discovery="none",
+        system1_decider="clef",
+        system1_tiebreak="haiku",
+        on_event=lambda e: logs.append(e.message),
+    )
+    with pytest.raises(_Asked, match="pass"):
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    assert (
+        "system1: --decider clef and --tiebreak haiku do not run while the structure pass "
+        "(haiku) decides the skeleton; pass --structure rules to use them"
+    ) in logs

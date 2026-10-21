@@ -348,6 +348,10 @@ class Compiler:
         if max_parallel < 1:
             raise CompilerError(f"--max-parallel must be at least 1, got {max_parallel}")
         self.max_parallel = max_parallel
+        #: The model the selected driver runs, once :meth:`compile` has chosen
+        #: it (None before, or for a driver that names none): what live
+        #: progress is priced as.
+        self.driver_model: str | None = None
         if system1_structure not in ("rules", *STRUCTURE_MODELS):
             raise CompilerError(f"unknown --structure {system1_structure!r}")
         self.system1_structure = system1_structure
@@ -568,6 +572,7 @@ class Compiler:
                 )
 
         driver = self.select_driver()
+        self.driver_model = getattr(driver, "model", None)
         self._emit("log", f"driver selected: {driver.name}")
 
         with (
@@ -599,10 +604,30 @@ class Compiler:
             )
             s1_plan: system1.Plan | None = None
             if use_system1:
+                structure_runs = self.system1_structure != "rules"
+                unused = [
+                    flag
+                    for flag, on in (
+                        (f"--decider {self.system1_decider}", self.system1_decider != "rules"),
+                        ("--tiebreak haiku", self.system1_tiebreak == "haiku"),
+                    )
+                    if on
+                ]
+                if structure_runs and unused:
+                    # The structure pass decides every kind and gate, so a step
+                    # decider and the tie-break never run: say so, never ignore
+                    # them silently, and resolve no lane for a call never made.
+                    self._emit(
+                        "warning",
+                        f"system1: {' and '.join(unused)} "
+                        f"{'does' if len(unused) == 1 else 'do'} not run while the structure "
+                        f"pass ({self.system1_structure}) decides the skeleton; pass "
+                        "--structure rules to use them",
+                    )
                 try:
                     lane = (
                         system1.tiebreak.lane_for(driver)
-                        if self.system1_tiebreak == "haiku"
+                        if self.system1_tiebreak == "haiku" and not structure_runs
                         else None
                     )
                     s1_plan = system1.prepare(

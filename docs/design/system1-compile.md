@@ -296,6 +296,12 @@ The choice is a layered setting like the decider and the tie-break:
 `haiku`. `rules` makes no call. In cloud mode the flag is rejected, since
 the server decides how its compiles run.
 
+The pass decides every kind and gate, so while it runs a step decider
+(`--decider clef|jev`) and the tie-break are not asked. The compile says so
+in a warning and resolves no lane for them; `--structure rules` brings them
+back. compile-report.md names the pass, its model and lane, its rounds and
+its cost.
+
 Step-by-step rules misread skills whose structure lives in their intent: a
 per-item step inside a loop, an alternative entry point, a judge that weighs
 a whole list. The structure pass reads the whole skill instead. One
@@ -395,7 +401,7 @@ could not run because that gateway had no Unified Billing balance):
 
 Quality is about Haiku's, at twice the time and roughly ten times the
 cost. BDR failed: Workers AI answered HTTP 408 (request timeout) on its
-first call, which is what the retry below is for.
+first call, which is what the retry above is for.
 
 The rules were fitted on the dev skills, so dev is where they look best; on
 the held-out skills the structure pass is ahead on every score. Sonnet 5.5

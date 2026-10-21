@@ -415,10 +415,20 @@ class _JsonlProgressSink:
     ``cost_usd`` and the run continues.
     """
 
-    def __init__(self, path: Path, model_id: str) -> None:
+    def __init__(
+        self,
+        path: Path,
+        model_id: str | None,
+        model_of: Callable[[], str | None] | None = None,
+    ) -> None:
+        """``model_id`` is what a token-carrying event is priced as until
+        ``model_of`` (the model the selected driver actually runs, asked at
+        each event) names one. A compile that ran several models prices its
+        summary per call instead (:meth:`write_summary`)."""
         self._path = path
         self._model_id = model_id
-        self._prices = self._resolve_prices(model_id)
+        self._model_of = model_of
+        self._rates: dict[str, _Rates | None] = {}
         self._file: Any = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,7 +467,19 @@ class _JsonlProgressSink:
             cache_write_per_mtok=rates[3],
         )
 
-    def _cost_usd(self, tokens: dict[str, int]) -> float | None:
+    def _model(self) -> str | None:
+        ran = self._model_of() if self._model_of is not None else None
+        return ran or self._model_id
+
+    def _prices_for(self, model_id: str | None) -> _Rates | None:
+        """Rates for ``model_id``, fetched once per model."""
+        if model_id is None:
+            return None
+        if model_id not in self._rates:
+            self._rates[model_id] = self._resolve_prices(model_id)
+        return self._rates[model_id]
+
+    def _cost_usd(self, tokens: dict[str, int], model_id: str | None = None) -> float | None:
         """Price the four token buckets, or return ``None`` honestly.
 
         A ``claude -p`` run is prompt-cached, so ``cache_write`` and
@@ -472,7 +494,7 @@ class _JsonlProgressSink:
         magnitude. No figure beats a wrong figure, and the claude lane
         reports its own whole-query ``total_cost_usd`` estimate.
         """
-        rates = self._prices
+        rates = self._prices_for(model_id or self._model())
         if rates is None or tokens.get("output") is None:
             return None
         cache_write = tokens.get("cache_write", 0)
@@ -511,7 +533,24 @@ class _JsonlProgressSink:
             # A progress-file bug must never sink a paid run.
             pass
 
-    def write_summary(self, summary: dict[str, Any], reported_cost: float | None = None) -> None:
+    def _call_cost(self, call: dict[str, Any]) -> float | None:
+        """One recorded call priced at its own model's rates, or None."""
+        if call.get("output_tokens") is None:
+            return None
+        tokens = {
+            "input": int(call.get("input_tokens") or 0),
+            "output": int(call["output_tokens"]),
+            "cache_write": int(call.get("cache_write_tokens") or 0),
+            "cache_read": int(call.get("cache_read_tokens") or 0),
+        }
+        return self._cost_usd(tokens, call.get("model"))
+
+    def write_summary(
+        self,
+        summary: dict[str, Any],
+        reported_cost: float | None = None,
+        calls: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
         Prices the run's ``total_tokens`` into a ``cost_usd`` field the
@@ -521,10 +560,19 @@ class _JsonlProgressSink:
         (e.g. from ``claude -p``), not authoritative billing data. It wins
         when present because it includes the per-model usage split that
         this single-model catalog estimate cannot represent.
+
+        ``calls`` are a parallel compile's per-call records, each with its
+        own ``model``: priced one by one at that model's rates, since its
+        calls run different models (Sonnet 5.5 text, Haiku structure). One
+        unpriceable call leaves the cost out rather than understating it.
         """
         try:
             if reported_cost is not None:
                 summary = {**summary, "cost_usd": reported_cost}
+            elif calls:
+                priced = [self._call_cost(c) for c in calls]
+                if all(x is not None for x in priced):
+                    summary = {**summary, "cost_usd": round(sum(x or 0.0 for x in priced), 6)}
             else:
                 total = summary.get("total_tokens")
                 if isinstance(total, dict):
@@ -857,15 +905,15 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # body is self-guarded (and emit_safely wraps the whole callback
     # anyway).
     printer = _compile_progress_printer()
-    # Price against the model the run actually uses: the --model override
-    # when given, else the compiler's default (the subscription path's
-    # Sonnet). Both subprocess and api drivers share this default.
-    from rote.compiler.drivers.claude import DEFAULT_MODEL as _COMPILER_DEFAULT_MODEL
-
+    # Price against the model the run actually uses: the selected driver's
+    # own model once the Compiler has chosen it (`compiler` is bound below,
+    # before any event fires), else the --model override. A parallel
+    # compile's summary is priced per call (write_summary's `calls`).
     progress_path = Path(args.progress_file) if args.progress_file else out_dir / "progress.jsonl"
     progress_sink: _JsonlProgressSink | None = _JsonlProgressSink(
         progress_path,
-        model_id=args.model or _COMPILER_DEFAULT_MODEL,
+        model_id=args.model,
+        model_of=lambda: getattr(compiler, "driver_model", None),
     )
     print(f"rote compile: watch progress with: tail -f {progress_path}", file=sys.stderr)
 
@@ -1353,6 +1401,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "usage_complete": meta.get("usage_complete", True),
             },
             reported_cost=meta.get("cost_usd"),
+            calls=meta.get("generations"),
         )
         progress_sink.close()
     return exit_code

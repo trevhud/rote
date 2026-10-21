@@ -486,7 +486,9 @@ async def test_the_compile_fails_loudly_without_a_lane(
 ) -> None:
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
     with pytest.raises(CompilerError, match="--tiebreak none"):
-        await Compiler(system1_tiebreak="haiku").compile(_skill(tmp_path), tmp_path / "out")
+        await Compiler(system1_tiebreak="haiku", system1_structure="rules").compile(
+            _skill(tmp_path), tmp_path / "out"
+        )
 
 
 @pytest.mark.asyncio
@@ -744,9 +746,9 @@ async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
     monkeypatch.setattr(decision_model, "decide", no_decider)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Codex())
     with pytest.raises(CompilerError, match=r"the 'codex' driver has no client.*--tiebreak none"):
-        await Compiler(system1_decider="clef", system1_tiebreak="haiku").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+        await Compiler(
+            system1_decider="clef", system1_tiebreak="haiku", system1_structure="rules"
+        ).compile(_skill(tmp_path), tmp_path / "out")
 
 
 def test_the_openai_api_driver_lends_its_own_client() -> None:
