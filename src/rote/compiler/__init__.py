@@ -605,6 +605,7 @@ class Compiler:
                         self.system1_decider,
                         sample=sample,
                         tools=grounding.tools,
+                        observations=grounding.observations,
                         tiebreak_lane=lane,
                         # rote's own rubric, whichever compiler skill the agent gets.
                         rubric=_default_compiler_skill_dir() / "references" / "node-kinds.md",
