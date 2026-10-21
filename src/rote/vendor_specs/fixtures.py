@@ -75,6 +75,11 @@ def validate(fixtures: FixtureSet, spec: ApiSpec) -> None:
     """Hold every fixture to the spec: a known operation, and a body of the right shape."""
     if fixtures.spec != spec.key:
         raise FixtureError(f"fixture set for {fixtures.spec} checked against {spec.key}")
+    if spec.source == "docs" and fixtures.trust != "docs":
+        raise FixtureError(
+            f"{spec.key} is a spec written from docs, so its fixtures are trust: docs "
+            f"(lower trust), not {fixtures.trust!r}"
+        )
     errors: list[str] = []
     for op_id, responses in fixtures.operations.items():
         op = spec.operation(op_id)
