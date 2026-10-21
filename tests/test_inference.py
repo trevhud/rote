@@ -762,7 +762,7 @@ def test_agent_loop_cli_never_passes_a_bare_tools_flag(
     machine with no registry. Asserting the flag's *value* is the point;
     asserting its presence is what let the bug through.
     """
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     result = helper.run_agent_loop(
@@ -794,8 +794,10 @@ def test_agent_loop_cli_wires_resolved_servers_and_allowlists_tools(
     anything else is unreachable.
     """
     servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
-    allowed = ["mcp__vendor__bright_data_search"]
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
+    allowed = [("vendor", "bright_data_search")]
+    monkeypatch.setattr(
+        helper, "_mcp_config_for", lambda *_a: helper.AgentMcp(servers, allowed, [], {})
+    )
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     helper.run_agent_loop(
@@ -847,16 +849,16 @@ def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPa
     monkeypatch.setitem(sys.modules, "extracted._rote_mcp", _FakeMcp)
 
     tools = ["web_search", "lookup_account"]
-    servers, allowed = helper._mcp_config_for(
+    servers, allowed, _removed, _withheld = helper._mcp_config_for(
         tools, {"web_search": "brightdata", "lookup_account": "internal"}
     )
 
     assert set(servers) == {"brightdata", "internal"}
-    assert allowed == ["mcp__brightdata__web_search", "mcp__internal__lookup_account"]
+    assert allowed == [("brightdata", "web_search"), ("internal", "lookup_account")]
 
     # Unresolved names still reach every wired server: there is nothing
     # better to go on, and a name no server provides never resolves anyway.
-    _servers, unpinned = helper._mcp_config_for(tools, None)
+    unpinned = helper._mcp_config_for(tools, None).allowed
     assert len(unpinned) == 4
 
 
@@ -888,7 +890,7 @@ def test_judge_cli_replaces_the_default_coding_agent_prompt(
     property is that it is *short and custom* — dropping the flag is
     what restores the 37k-token default.
     """
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, _cli_envelope(structured_output={"grade": 9}))
 
     helper.call_judge(
@@ -911,7 +913,7 @@ def test_agent_loop_cli_replaces_the_default_coding_agent_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Same contract on the agent-loop path, which had no coverage of it."""
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     helper.run_agent_loop(
@@ -938,7 +940,7 @@ def test_agent_loop_cli_does_not_inherit_user_settings(
     pipeline behaves differently per laptop, which is the opposite of
     what compiling a skill is for.
     """
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, _agent_envelope())
 
     helper.run_agent_loop(
@@ -963,7 +965,7 @@ def test_agent_loop_cli_surfaces_the_envelopes_error(
     the workflow proceeds on a garbage result. Covered on the judge
     path; this is the loop half.
     """
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _capture_cli(monkeypatch, _agent_envelope(is_error=True, result="rate limited"))
 
     with pytest.raises(RuntimeError, match="rate limited"):
@@ -991,7 +993,7 @@ def test_agent_loop_cli_reports_the_envelopes_turn_count(
     The loop's result is its declared output, so the count is logged."""
     log = tmp_path / "usage.jsonl"
     monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _capture_cli(monkeypatch, _agent_envelope(num_turns=4))
 
     result = helper.run_agent_loop(
@@ -1014,7 +1016,7 @@ def test_agent_loop_cli_without_a_turn_count_reports_none_not_zero(
     as a loop that never ran."""
     log = tmp_path / "usage.jsonl"
     monkeypatch.setenv("ROTE_USAGE_LOG", str(log))
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     envelope = json.loads(_agent_envelope())
     del envelope["num_turns"]
     _capture_cli(monkeypatch, json.dumps(envelope))
@@ -1104,7 +1106,7 @@ def test_agent_loop_sdk_reports_turns_run_and_usage_of_every_turn(
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     usage_log = tmp_path / "usage.jsonl"
     monkeypatch.setenv("ROTE_USAGE_LOG", str(usage_log))
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     looked_up: list[str] = []
 
     def lookup(account: str) -> str:
@@ -1154,10 +1156,12 @@ def _run_cli_path(
     """Drive one CLI path through the public entry point and capture argv."""
     if path == "agent_loop_with_servers":
         servers = {"vendor": {"type": "http", "url": "https://mcp.example.com/mcp"}}
-        allowed = ["mcp__vendor__bright_data_search"]
-        monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: (servers, allowed))
+        allowed = [("vendor", "bright_data_search")]
+        monkeypatch.setattr(
+            helper, "_mcp_config_for", lambda *_a: helper.AgentMcp(servers, allowed, [], {})
+        )
     else:
-        monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+        monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, envelope, stderr, seen)
     if path == "judge":
         helper.call_judge(
@@ -1457,7 +1461,7 @@ class _SubmitStub(BaseHTTPRequestHandler):
 def submit_stub(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.setenv("ROTE_INFERENCE", "api")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _SubmitStub.requests = []
     server = HTTPServer(("127.0.0.1", 0), _SubmitStub)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1530,7 +1534,7 @@ def test_cli_loop_asks_for_the_declared_output_as_structured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The subscription lane gets the same contract through --json-schema."""
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(
         monkeypatch,
         _agent_envelope(structured_output={"summary": "acme is gold", "score": 7}),
@@ -1548,7 +1552,7 @@ def test_cli_loop_asks_for_the_declared_output_as_structured_output(
 
 
 def test_a_loop_without_declared_output_returns_its_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     seen = _capture_cli(monkeypatch, _agent_envelope())
     out = helper.run_agent_loop(
         node_id="research",
@@ -1636,7 +1640,7 @@ def force_stub(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[str]
     monkeypatch.setenv("ROTE_INFERENCE", "api")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")
     monkeypatch.setenv("ROTE_USAGE_LOG", str(tmp_path / "usage.jsonl"))
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _ForceStub.requests = []
     _ForceStub.first = "text"
     _ForceStub.forced_answer = None
@@ -1843,7 +1847,7 @@ def test_strict_marks_the_submit_tool_only_when_asked(submit_stub: str) -> None:
 def test_cli_lane_without_structured_output_fails_with_the_shared_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: ({}, []))
+    monkeypatch.setattr(helper, "_mcp_config_for", lambda *_a: helper.AgentMcp({}, [], [], {}))
     _capture_cli(monkeypatch, _agent_envelope())
     with pytest.raises(
         RuntimeError,

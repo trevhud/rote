@@ -263,9 +263,12 @@ function taskPrompt(
     task: unknown,
     termination: string | null,
     submit: boolean,
+    withheld: Record<string, string> = {},
 ): string {
     const parts = [description.trim(), "", JSON.stringify(task, null, 2)];
     if (termination) parts.push("", `Stop when: ${termination}`);
+    const names = Object.keys(withheld).sort();
+    if (names.length > 0) parts.push("", withheldNote(names));
     if (submit) {
         parts.push(
             "",
@@ -275,6 +278,16 @@ function taskPrompt(
         );
     }
     return parts.join("\n");
+}
+
+/** What a read-only run tells a loop about the declared tools it withheld.
+ *  The same text as the Python helper's _withheld_note. */
+function withheldNote(names: string[]): string {
+    return (
+        `This run is read-only, so these tools are not available to you because ` +
+        `they may write: ${names.join(", ")}. Do not say you used them or that ` +
+        "their part of the task is done: say plainly which part you could not do."
+    );
 }
 
 /** Endpoint + credential for the SDK lanes. */
@@ -541,6 +554,8 @@ export async function runAgentLoop(opts: {
     outputFormat?: Record<string, unknown> | null;
     unwrapKey?: string | null;
     outputStrict?: boolean;
+    /** Declared tools a read-only run withheld ({name: why}), from bindAgentTools. */
+    withheld?: Record<string, string>;
 }): Promise<unknown> {
     const workersAi = opts.workersAi ?? null;
     const outputSchema = opts.outputSchema ?? null;
@@ -550,6 +565,7 @@ export async function runAgentLoop(opts: {
         opts.task,
         opts.termination ?? null,
         outputSchema !== null,
+        opts.withheld ?? {},
     );
     const submitted: Record<string, unknown>[] | null = outputSchema ? [] : null;
     const tools = submitted

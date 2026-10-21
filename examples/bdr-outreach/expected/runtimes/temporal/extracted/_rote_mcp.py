@@ -827,17 +827,55 @@ async def call_mcp_tool(
         # lands after a 401 must cancel the step, not park it. (A
         # BaseExceptionGroup only arises when one of its members is a
         # BaseException, so it falls through here too.)
-        input_required = _find_in_tree(exc, RoteMcpInputRequired)
-        if input_required is not None:
-            raise RoteMcpInputRequired(server, tool, input_required.requests) from exc
-        refused = _refused_capabilities(exc)
-        if refused is not None:
-            raise RoteMcpInputRequired(server, tool, refused) from exc
-        auth_needed = _find_in_tree(exc, RoteMcpAuthNeeded)
-        if auth_needed is exc:
+        translated = _mcp_failure(exc, server, tool, http_status)
+        if translated is None:
             raise
-        if auth_needed is not None:
-            raise auth_needed from exc
-        if http_status.unauthorized:
-            raise RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized") from exc
-        raise
+        raise translated from exc
+
+
+def _mcp_failure(exc: Exception, server: str, tool: str, http_status: Any) -> BaseException | None:
+    """What a failed MCP exchange means to the workflow, or ``None`` to re-raise ``exc``."""
+    input_required = _find_in_tree(exc, RoteMcpInputRequired)
+    if input_required is not None:
+        return RoteMcpInputRequired(server, tool, input_required.requests)
+    refused = _refused_capabilities(exc)
+    if refused is not None:
+        return RoteMcpInputRequired(server, tool, refused)
+    auth_needed = _find_in_tree(exc, RoteMcpAuthNeeded)
+    if auth_needed is exc:
+        return None
+    if auth_needed is not None:
+        return auth_needed
+    if http_status.unauthorized:
+        return RoteMcpAuthNeeded(server, "the server returned 401 Unauthorized")
+    return None
+
+
+async def agent_tool_refusals(
+    server: str, pipeline_url: str | None, tools: Sequence[str]
+) -> dict[str, str]:
+    """``{tool: why}`` for each of ``tools`` a read-only run withholds from an agent loop.
+
+    An agent loop calls its MCP tools through its own client (``claude -p``,
+    the Anthropic MCP connector, the SDK tool runner), where no
+    :func:`call_mcp_tool` stands in between. So a read-only run filters what
+    the loop is handed instead, by the same rule a pipeline step's call
+    meets (:func:`write_refusal`): a tool the server does not mark
+    ``readOnlyHint``, on a server not registered read-only at this
+    endpoint, is withheld. Empty, with no network call, when the run may
+    write.
+    """
+    if os.environ.get(READ_ONLY_ENV) != "1" or not tools:
+        return {}
+    url = resolve_url(server, pipeline_url)
+    http_status = _HttpStatusWatch()
+    try:
+        async with mcp_client(server, pipeline_url, http_status=http_status) as client:
+            listed = await client.list_tools()
+    except Exception as exc:
+        translated = _mcp_failure(exc, server, "tools/list", http_status)
+        if translated is None:
+            raise
+        raise translated from exc
+    refusals = {tool: write_refusal(server, url, tool, listed) for tool in tools}
+    return {tool: why for tool, why in refusals.items() if why is not None}

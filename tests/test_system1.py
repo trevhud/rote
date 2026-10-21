@@ -430,6 +430,8 @@ def test_per_item_container_becomes_a_loop_over_its_sub_steps(tmp_path: Path) ->
     assert not [n for n in outside for ref in n["inputs"].values() if ref.split(".")[0] in body]
     after = next(n for n in outside if n["source"]["section"].startswith("Step 8"))
     assert loop["id"] in after["inputs"]
+    # The loop's agent decides whether to call a sub-step: none is mandatory.
+    assert not [b for b in body if nodes[b].get("mandatory")]
     load_pipeline(tmp_path / "pipeline.yaml")
 
 
@@ -472,3 +474,29 @@ def test_a_ui_step_is_one_action_unless_it_computes(tmp_path: Path) -> None:
     step2 = [n for n in doc["nodes"] if n["source"]["section"].startswith("Step 2")]
     # "Clear All Existing Filter Pills": click the x on each pill. Nothing is computed.
     assert [n["kind"] for n in step2] == ["external_call"]
+
+
+def test_a_mandatory_step_inside_a_loop_is_never_dropped_silently(tmp_path: Path) -> None:
+    """The rules cannot move a step out of its loop, so the lost guarantee is reported."""
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: rows\ndescription: push rows\n---\n\n# Rows\n\n"
+        "## Step 1: Process each row\n\nFor each visible row:\n\n"
+        "### 1a Check eligibility (MANDATORY)\n\nCheck that the row's status is IMPORTED.\n\n"
+        "### 1b Push the row\n\nClick Push to send the row.\n"
+    )
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(skill, work)
+    loop = next(n for n in plan.nodes if n.kind == "agent_loop")
+    check = next(n for n in plan.nodes if n.in_loop == loop.id and "eligib" in n.id)
+    assert not check.mandatory
+    assert any(
+        line.startswith(f"`{check.id}` mandatory = False (confidence 0.30)")
+        and f"the skill marks '1a Check eligibility (MANDATORY)' MANDATORY, but it runs "
+        f"inside {loop.id}, so rote cannot guarantee it runs"
+        in line
+        for line in plan.review
+    ), plan.review
+    load_pipeline(work / "pipeline.yaml")

@@ -934,13 +934,30 @@ class Pipeline(BaseModel):
             if exit_id not in node_ids:
                 raise ValueError(f"exit_nodes references unknown node: {exit_id!r}")
 
-        # loop_body references must also be valid node IDs
+        # loop_body references must also be valid node IDs, of a kind a loop
+        # can call per iteration. A hitl_gate cannot be one: a durable human
+        # pause is not a tool call. And a sub-node runs only when the loop's
+        # agent chooses to call it, so it cannot be mandatory (invariant #4).
+        by_id = {n.id: n for n in self.nodes}
+        callable_kinds = (NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL, NodeKind.LLM_JUDGE)
         for node in self.nodes:
             if node.loop_body:
                 for body_id in node.loop_body:
                     if body_id not in node_ids:
                         raise ValueError(
                             f"Node {node.id!r} loop_body references unknown node: {body_id!r}"
+                        )
+                    sub = by_id[body_id]
+                    if sub.kind not in callable_kinds:
+                        raise ValueError(
+                            f"Node {node.id!r} loop_body has {body_id!r}, a {sub.kind.value}: a "
+                            "loop calls only pure_function, external_call and llm_judge nodes "
+                            "per iteration"
+                        )
+                    if sub.mandatory:
+                        raise ValueError(
+                            f"Node {node.id!r} loop_body has {body_id!r}, marked mandatory: the "
+                            "loop's agent decides whether to call it, so it cannot be mandatory"
                         )
 
         # inputs references must parse and point at real sources.
