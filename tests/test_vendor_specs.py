@@ -1038,9 +1038,9 @@ def test_a_required_parameter_is_found_under_its_client_name() -> None:
     )
     op, bound = _operation(site, spec)
     assert op is not None and op.id == "mail.users.messages.import"
-    assert _violations(site, op, spec, bound) == []
+    assert _violations(site, op, spec, bound) == ([], [])
     missing = CallSite(**{**site.__dict__, "params": {"userId": "me"}})
-    assert [k for k, _ in _violations(missing, op, spec, bound)] == ["spec_missing_required"]
+    assert [k for k, _ in _violations(missing, op, spec, bound)[0]] == ["spec_missing_required"]
 
 
 @pytest.mark.parametrize(

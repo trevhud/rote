@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rote import isolation
 from rote.bench.collect import collect_job
 from rote.bench.report import (
     aggregate,
@@ -41,17 +42,6 @@ from rote.bench.report import (
 #: The examples with a hand-written expected/pipeline.yaml, smallest
 #: first. expense-audit alone is the cheap inner loop (about $2.5).
 DEFAULT_SKILLS = ("expense-audit", "ops-report", "invoice-push", "deal-monitor", "bdr-outreach")
-
-#: The ``ROTE_*`` overrides ``tests/conftest.py`` sets, relative to the
-#: state dir. Keep the two lists in step.
-STATE_ENV = {
-    "ROTE_APPS_PATH": "rote-apps/apps.json",
-    "ROTE_CONFIG_PATH": "rote-config/config.yaml",
-    "ROTE_PROJECT_CONFIG_PATH": "rote-config/rote.yaml",
-    "ROTE_CLOUD_CRED_PATH": "cloud-cred/cloud.json",
-    "ROTE_MCP_CONFIG": "mcp-config/mcp.json",
-    "ROTE_MCP_TOKEN_DIR": "mcp-tokens",
-}
 
 RESULTS_SCHEMA_VERSION = 1
 
@@ -69,9 +59,7 @@ class Job:
 
 def isolated_env(state_dir: Path) -> dict[str, str]:
     """The child environment: the caller's, with every rote state path moved."""
-    env = dict(os.environ)
-    for key, rel in STATE_ENV.items():
-        env[key] = str(state_dir / rel)
+    env = isolation.isolated_env(state_dir)
     # The bench passes --runtime/--model/--agent explicitly; an exported
     # ROTE_RUNTIME etc. would otherwise change what is being measured.
     for key in ("ROTE_RUNTIME", "ROTE_DEPLOY", "ROTE_AGENT", "ROTE_MODEL"):

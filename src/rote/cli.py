@@ -4821,7 +4821,7 @@ def _build_parser() -> argparse.ArgumentParser:
     register.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: ~/.rote/registry.json)",
+        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
     )
     register.add_argument(
         "--runtime",
@@ -4911,7 +4911,7 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--registry",
         default=None,
-        help="Registry file (default: ~/.rote/registry.json)",
+        help="Registry file (default: $ROTE_SERVE_REGISTRY_PATH, else ~/.rote/registry.json)",
     )
     serve.add_argument(
         "--http",
