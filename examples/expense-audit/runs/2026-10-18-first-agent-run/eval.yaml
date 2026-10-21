@@ -1,5 +1,5 @@
 version: 1
-source_skill: ../../src/examples/expense-audit/skill
+source_skill: ../../skill
 steps:
   - description: "Convert every expense line to USD using the period's month-end rates"
     node_id: convert_to_usd

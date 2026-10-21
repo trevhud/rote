@@ -733,6 +733,27 @@ Violations are errors that go back to the agent. Three rules:
   the same brackets (`metadata[order_id]`). GitHub's `x-multi-segment`
   path parameters become `{+name}` (a file path keeps its slashes). The
   body's media type is checked too: Stripe takes form bodies, never JSON.
+- **GraphQL is checked by graphql-core against the vendor's schema**
+  (`rote.vendor_specs.graphql.REGISTRY`, endpoint -> SDL file or the
+  endpoint's own introspection), plus the variables sent (names, and a
+  literal value's type) and the response fields read against the
+  document's selection, inline and named fragments followed. Four traps:
+  - **Build with `assume_valid=True`.** GitHub's public schema fails
+    graphql-core's schema validation (a deprecated field implementing one
+    its interface does not deprecate), and `validate()` raises a
+    `TypeError` on such a schema. The request is still validated in full.
+  - **The operation is chosen as GraphQL's GetOperation does**: one
+    operation, or the one `operationName` names; several and no name is a
+    real request error; a computed `operationName` is not checked.
+  - **A document is read only from a name bound once.** A name rebound,
+    or bound under an `if`, could send either document (a mutation where
+    a query was read), so it is "built at run time", never guessed. The
+    same goes for a body dict.
+  - **A read below a custom scalar is not checked** (AniList's `Json`);
+    below a built-in scalar or an enum it is a finding.
+  A GraphQL read is a POST: the live check sends only a document whose one
+  operation is a query, to a declared endpoint. A GET to an endpoint is not
+  checked.
 - **Where no spec exists, the agent writes one, from fetched pages.**
   `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
   becomes an `ApiSpec` with `source="docs"`, checked the same way and
@@ -742,6 +763,24 @@ Violations are errors that go back to the agent. Three rules:
 - **Tests never fetch a spec.** conftest replaces `http_get_json` and
   points `ROTE_SPEC_CACHE_DIR` at the test's tmp dir. Tests use the trimmed
   real documents in `tests/fixtures/vendor_specs/` through an injected fetch.
+
+### A tool result has one shape: what the step receives
+
+Four places read an MCP result: the emitted helper at run time, and at
+compile time the baseline's schema inference (`rote.probe`), the prefix
+run's recorded stubs (`rote.compiler.prefix`) and System-1's interface
+(`Context.known_result_schema`). All four go through
+`_runtime_helper.returned_value` / `returned_schema`, so a fastmcp tool
+that returns a string (wrapped on the wire as `{"result": ...}` under an
+`x-fastmcp-wrap-result` output schema, DeepWiki's shape) is a string
+everywhere. A recording is decoded before its schema is inferred; without
+that, every text-recorded result was typed `string`. When nothing is
+recorded, the outputSchema the server declares is the shape, never a
+guess from the skill's words: a guessed `url` where Microsoft Learn says
+`contentUrl` made every live run raise. The compile writes the declared
+schemas to `compiled/declared-tools.json` itself, after the agent's work
+dir is moved, because the post-compile enrichment and cross-check run in
+the CLI and must not read an agent-written file.
 
 ### An mcp-bound node is a BARE tool call — post-processing must split
 

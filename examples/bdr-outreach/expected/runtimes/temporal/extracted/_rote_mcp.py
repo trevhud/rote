@@ -635,6 +635,42 @@ def _reject_non_finite(name: str) -> Any:
     raise ValueError(f"{name} is not JSON")
 
 
+def wraps_result(output_schema: Mapping[str, Any] | None) -> bool:
+    """Whether a tool's result arrives in fastmcp's ``{"result": ...}`` wrapper.
+
+    fastmcp wraps a non-object return and flags the declared output schema
+    with ``x-fastmcp-wrap-result``. The value the tool returned is the
+    wrapped one, and that is what :func:`call_mcp_tool` gives the step.
+    """
+    return bool(output_schema and output_schema.get("x-fastmcp-wrap-result"))
+
+
+def returned_value(payload: Any, output_schema: Mapping[str, Any] | None) -> Any:
+    """A result's decoded JSON as the step receives it: the wrapper removed.
+
+    The one rule for every reader of a tool result: this helper at run
+    time, and at compile time the recorded baseline results rote infers
+    schemas from and replays (``rote.probe``, ``rote.compiler``).
+    """
+    if wraps_result(output_schema) and isinstance(payload, dict) and "result" in payload:
+        return payload["result"]
+    return payload
+
+
+def returned_schema(output_schema: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The JSON Schema of what a step receives, from the tool's declared outputSchema.
+
+    ``None`` when the tool declares none, or wraps a result its schema
+    does not describe.
+    """
+    if not output_schema:
+        return None
+    if wraps_result(output_schema):
+        inner = (output_schema.get("properties") or {}).get("result")
+        return dict(inner) if isinstance(inner, Mapping) else None
+    return {k: v for k, v in output_schema.items() if not k.startswith("x-")}
+
+
 def _result_payload(result: Any, output_schema: Mapping[str, Any] | None = None) -> Any:
     """Extract the useful payload from a fastmcp ``CallToolResult``.
 
@@ -659,10 +695,9 @@ def _result_payload(result: Any, output_schema: Mapping[str, Any] | None = None)
     structured = result.structured_content
     if structured is not None:
         fastmcp_meta = (result.meta or {}).get("fastmcp")
-        wrapped = (isinstance(fastmcp_meta, dict) and fastmcp_meta.get("wrap_result")) or bool(
-            output_schema and output_schema.get("x-fastmcp-wrap-result")
-        )
-        return structured.get("result") if wrapped else structured
+        if isinstance(fastmcp_meta, dict) and fastmcp_meta.get("wrap_result"):
+            return structured.get("result")
+        return returned_value(structured, output_schema)
     # Duck-typed on `.text` so image/audio blocks are skipped without
     # importing mcp.types (this module ships verbatim in emitted apps).
     texts = [block.text for block in result.content if getattr(block, "text", None) is not None]

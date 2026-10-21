@@ -23,6 +23,7 @@ callers surface ``samples`` so downstream consumers can weigh confidence.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -121,7 +122,7 @@ def _schema_for_kind(kind: str, samples: list[Any]) -> dict[str, Any]:
 # ───────── MCP result envelope → JSON value ─────────
 
 
-def parse_tool_result(result: Any) -> Any:
+def parse_tool_result(result: Any, output_schema: Mapping[str, Any] | None = None) -> Any:
     """The JSON value behind an observed tool result, best-effort.
 
     MCP tool results arrive as content blocks; structured payloads ride
@@ -132,9 +133,21 @@ def parse_tool_result(result: Any) -> Any:
     * a bare string → JSON-parsed if possible, else the string;
     * anything else → returned as-is.
 
+    With the tool's declared ``output_schema``, a fastmcp-wrapped result
+    is unwrapped the way the emitted runtime helper unwraps it
+    (:func:`rote.mcp._runtime_helper.returned_value`), so a recording
+    describes what a pipeline step will receive.
+
     Returns ``None`` for an empty/missing result — callers must treat
     that as "no sample", not "the tool returns null".
     """
+    from rote.mcp._runtime_helper import returned_value
+
+    value = _decoded(result)
+    return None if value is None else returned_value(value, output_schema)
+
+
+def _decoded(result: Any) -> Any:
     if result is None:
         return None
     if isinstance(result, list):
@@ -180,7 +193,13 @@ class InferredToolSchema:
         }
 
 
-def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str, Any]:
+#: ``{(server, tool): declared outputSchema}`` from a live ``tools/list``.
+OutputSchemas = Mapping[tuple[str, str], Mapping[str, Any] | None]
+
+
+def cross_check(
+    pipeline: Any, observations: list[ObservedToolCall], output_schemas: OutputSchemas | None = None
+) -> dict[str, Any]:
     """Static MCP bindings vs. observed traffic — the two-source check.
 
     The compiler *infers* the skill's MCP usage from prose; the baseline
@@ -265,7 +284,8 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
     ]
     payloads_by_tool: dict[tuple[str, str], list[Any]] = {}
     for o in observations:
-        if not o.is_error and (parsed := parse_tool_result(o.result)) is not None:
+        declared = (output_schemas or {}).get((o.server, o.tool))
+        if not o.is_error and (parsed := parse_tool_result(o.result, declared)) is not None:
             payloads_by_tool.setdefault((o.server, o.tool), []).append(parsed)
 
     node_by_id = {node.id: node for node in pipeline.nodes}
@@ -304,14 +324,15 @@ def cross_check(pipeline: Any, observations: list[ObservedToolCall]) -> dict[str
 
 
 def infer_tool_schemas(
-    observations: list[ObservedToolCall],
+    observations: list[ObservedToolCall], output_schemas: OutputSchemas | None = None
 ) -> list[InferredToolSchema]:
     """Per-(server, tool) schemas inferred from a baseline's observations.
 
     Error results are excluded from output inference (a 401 body is not
     the tool's contract) but their *inputs* still count — the skill
     reached for the tool with that shape either way. Tools observed only
-    in error get an empty output schema.
+    in error get an empty output schema. ``output_schemas`` (declared, from
+    ``tools/list``) unwraps fastmcp-wrapped results as a step receives them.
     """
     grouped: dict[tuple[str, str], list[ObservedToolCall]] = {}
     for o in observations:
@@ -323,7 +344,9 @@ def infer_tool_schemas(
         outputs = [
             parsed
             for c in calls
-            if not c.is_error and (parsed := parse_tool_result(c.result)) is not None
+            if not c.is_error
+            and (parsed := parse_tool_result(c.result, (output_schemas or {}).get((server, tool))))
+            is not None
         ]
         inferred.append(
             InferredToolSchema(

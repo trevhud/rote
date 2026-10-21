@@ -964,10 +964,13 @@ def _cmd_compile(args: argparse.Namespace) -> int:
 
     pipeline = result.pipeline
     if observations:
+        from rote.compiler.tool_grounding import declared_output_schemas
         from rote.ir import save_pipeline
         from rote.probe import enrich_pipeline, infer_tool_schemas
 
-        pipeline, enriched_ids = enrich_pipeline(pipeline, infer_tool_schemas(observations))
+        pipeline, enriched_ids = enrich_pipeline(
+            pipeline, infer_tool_schemas(observations, declared_output_schemas(compiled_dir))
+        )
         if enriched_ids:
             save_pipeline(pipeline, compiled_dir / "pipeline.yaml")
             print(
@@ -1163,9 +1166,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # loud ones: the skill demonstrably calls a tool the pipeline missed.
     cross: dict[str, object] | None = None
     if observations:
+        from rote.compiler.tool_grounding import declared_output_schemas
         from rote.probe import cross_check
 
-        cross = cross_check(pipeline, observations)
+        cross = cross_check(pipeline, observations, declared_output_schemas(compiled_dir))
         observed_only = cross["observed_only"]
         static_only = cross["static_only"]
         confirmed = cross["confirmed"]
