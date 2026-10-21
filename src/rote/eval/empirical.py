@@ -51,7 +51,6 @@ if TYPE_CHECKING:
 
 RESULT_FILENAME = "result.json"
 MCP_CONFIG_FILENAME = "mcp-config.json"
-DEFAULT_CORPUS_PATH = Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
 
 # IR transport values → Claude Code mcp-config `type` values. The CLI
 # spells Streamable HTTP as plain "http" (verified against the current
@@ -231,6 +230,26 @@ class MeasuredRun:
 
 
 # ───────── Skill (before) trials ─────────
+
+
+def gate_answers_instructions(answers: str) -> str:
+    """The prompt text that hands a skill run the answers a person gives at
+    its gates, so the run does not stop to ask (``answers``: one per line,
+    in the order the skill asks). One wording for ``rote run <skill>
+    --signal`` and the compile bench's fidelity references."""
+    return (
+        "When the skill needs a person's input or approval, do not wait and do "
+        "not ask: these are the answers you get, in the order the skill asks:\n"
+        f"{answers}"
+    )
+
+
+def signal_answers(signals: dict[str, Any]) -> str:
+    """``--signal`` payloads as numbered answers, in the order given."""
+    return "\n".join(
+        f"{i}. {name}: {json.dumps(payload)}"
+        for i, (name, payload) in enumerate(signals.items(), 1)
+    )
 
 
 def _skill_prompt(
@@ -788,9 +807,20 @@ def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
     }
 
 
+def default_corpus_path() -> Path:
+    """Where ``rote eval --run`` appends its measurements.
+
+    ``ROTE_EVAL_CORPUS_PATH`` overrides ``~/.local/share/rote/eval-corpus.jsonl``.
+    """
+    override = os.environ.get("ROTE_EVAL_CORPUS_PATH")
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
+
+
 def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | None = None) -> Path:
     """Append this measurement to the local calibration corpus (JSONL)."""
-    corpus_path = path or DEFAULT_CORPUS_PATH
+    corpus_path = path or default_corpus_path()
     corpus_path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "generated_at": generated_at,

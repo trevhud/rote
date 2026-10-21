@@ -17,7 +17,7 @@ import pytest
 
 from rote.bench.collect import phase_durations
 from rote.bench.report import aggregate, compare, headline
-from rote.bench.runner import STATE_ENV, isolated_env
+from rote.bench.runner import isolated_env
 from rote.bench.score import (
     _Context,
     _max_weight_assignment,
@@ -26,6 +26,7 @@ from rote.bench.score import (
     score_pipeline,
 )
 from rote.ir import Pipeline, load_pipeline
+from rote.isolation import STATE_PATHS
 
 from .conftest import BDR_PIPELINE_YAML
 
@@ -523,20 +524,15 @@ def test_phase_durations_from_progress_jsonl(tmp_path: Path) -> None:
 def test_isolated_env_moves_every_state_path_the_suite_isolates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Same six overrides as conftest's _isolated_mcp_state, all under the
-    run's state dir, and the per-run ROTE_* defaults dropped."""
+    """Every rote.isolation state path under the run's state dir (that list
+    is checked against the source in test_isolated_rote.py), a cloud login
+    in the environment dropped, and the per-run ROTE_* defaults dropped."""
     monkeypatch.setenv("ROTE_RUNTIME", "temporal")
     monkeypatch.setenv("ROTE_MODEL", "claude-opus-4-6")
+    monkeypatch.setenv("ROTE_CLOUD_TOKEN", "rote_live_key")
     env = isolated_env(tmp_path / "state")
-    assert set(STATE_ENV) == {
-        "ROTE_APPS_PATH",
-        "ROTE_CONFIG_PATH",
-        "ROTE_PROJECT_CONFIG_PATH",
-        "ROTE_CLOUD_CRED_PATH",
-        "ROTE_MCP_CONFIG",
-        "ROTE_MCP_TOKEN_DIR",
-    }
-    for key in STATE_ENV:
+    assert "ROTE_CLOUD_TOKEN" not in env
+    for key in STATE_PATHS:
         assert Path(env[key]).is_relative_to(tmp_path / "state"), key
     assert "ROTE_RUNTIME" not in env
     assert "ROTE_MODEL" not in env

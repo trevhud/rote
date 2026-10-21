@@ -17,7 +17,7 @@ import pytest
 from rote.compiler.verify import EmitTarget, verify_deliverable
 from rote.ir import load_pipeline
 from rote.vendor_specs import SpecStore, SpecUnavailable, check_deliverable
-from rote.vendor_specs.extract import UNKNOWN, extract
+from rote.vendor_specs.extract import Expr, extract
 from rote.vendor_specs.google import DIRECTORY_URL, UrlApi, api_for_url, from_discovery
 
 FIXTURES = Path(__file__).parent / "fixtures" / "vendor_specs"
@@ -222,7 +222,7 @@ def test_extraction_reads_requests_and_response_fields_from_raw_http() -> None:
         "GET",
         "https://gmail.googleapis.com/gmail/v1/users/me/threads",
     )
-    assert emails.params == {"q": UNKNOWN, "maxResults": 500}
+    assert emails.params == {"q": Expr("{query}"), "maxResults": 500}
     assert {p for p, _ in emails.response_reads} == {
         ("threads",),
         ("threads", "[]", "id"),
@@ -1038,9 +1038,9 @@ def test_a_required_parameter_is_found_under_its_client_name() -> None:
     )
     op, bound = _operation(site, spec)
     assert op is not None and op.id == "mail.users.messages.import"
-    assert _violations(site, op, spec, bound) == []
+    assert _violations(site, op, spec, bound) == ([], [])
     missing = CallSite(**{**site.__dict__, "params": {"userId": "me"}})
-    assert [k for k, _ in _violations(missing, op, spec, bound)] == ["spec_missing_required"]
+    assert [k for k, _ in _violations(missing, op, spec, bound)[0]] == ["spec_missing_required"]
 
 
 @pytest.mark.parametrize(

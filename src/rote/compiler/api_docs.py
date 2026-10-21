@@ -24,6 +24,7 @@ Three parts, one per party:
 from __future__ import annotations
 
 import ast
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -81,7 +82,8 @@ def brief() -> str:
         "it left unconfirmed, rather than a call from memory. A page you cite "
         "but never fetched in this compile is sent back to you.\n"
         "5. Where the vendor publishes a machine-readable spec (Google APIs: the "
-        "Discovery document), rote checks every request against it in code: the "
+        "Discovery document; others: their OpenAPI document), rote checks every "
+        "request against it in code: the "
         "method and path, each parameter's name, type and enum, the required "
         "parameters, and every response field the code reads. Write requests a "
         "static reader can follow: literal URLs or module constants, and params "
@@ -299,6 +301,32 @@ def _quotes_skill(root: Path, citation: DocCitation) -> bool:
 #: Tool names the drivers report a page fetch / a web search under.
 FETCH_TOOLS = frozenset({"WebFetch", "web_fetch"})
 SEARCH_TOOLS = frozenset({"WebSearch", "web_search"})
+
+
+#: rote's record, beside the IR, of the pages a compile fetched.
+RESEARCH_FILENAME = "web-research.json"
+
+
+def write_research(compiled_dir: Path, research: WebResearch) -> Path:
+    path = compiled_dir / RESEARCH_FILENAME
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "fetched": research.fetched, "searches": research.searches},
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def read_fetched(compiled_dir: Path) -> set[str]:
+    """The normalized URLs rote recorded the compile fetching (none without a record)."""
+    path = compiled_dir / RESEARCH_FILENAME
+    if not path.is_file():
+        return set()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return {normalize_url(u) for u in raw.get("fetched") or []}
 
 
 @dataclass

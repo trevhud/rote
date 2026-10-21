@@ -69,10 +69,16 @@ exists under `examples/bdr-outreach/runs/`.
 ## Running the real compiler
 
 ```sh
-rote compile examples/bdr-outreach/skill \
+scripts/isolated-rote compile examples/bdr-outreach/skill \
   --runtime temporal \
   --out /tmp/bdr-compiled
 ```
+
+`scripts/isolated-rote` runs the repo's rote with its per-user state
+(app registry, MCP registry and tokens, cloud login, config) moved into a
+throwaway directory, so repo runs never touch yours. Use it for any rote
+command you run to maintain the repo, such as regenerating the
+`examples/` snapshots.
 
 This spawns an agent (auto-detected: `claude` CLI → `codex` CLI →
 Anthropic SDK). Expect ~13 minutes wall clock on the BDR example

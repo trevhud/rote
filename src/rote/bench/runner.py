@@ -17,19 +17,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import shutil
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from rote import isolation
 from rote.bench.collect import collect_job
 from rote.bench.report import (
     aggregate,
@@ -43,17 +42,6 @@ from rote.bench.report import (
 #: The examples with a hand-written expected/pipeline.yaml, smallest
 #: first. expense-audit alone is the cheap inner loop (about $2.5).
 DEFAULT_SKILLS = ("expense-audit", "ops-report", "invoice-push", "deal-monitor", "bdr-outreach")
-
-#: The ``ROTE_*`` overrides ``tests/conftest.py`` sets, relative to the
-#: state dir. Keep the two lists in step.
-STATE_ENV = {
-    "ROTE_APPS_PATH": "rote-apps/apps.json",
-    "ROTE_CONFIG_PATH": "rote-config/config.yaml",
-    "ROTE_PROJECT_CONFIG_PATH": "rote-config/rote.yaml",
-    "ROTE_CLOUD_CRED_PATH": "cloud-cred/cloud.json",
-    "ROTE_MCP_CONFIG": "mcp-config/mcp.json",
-    "ROTE_MCP_TOKEN_DIR": "mcp-tokens",
-}
 
 RESULTS_SCHEMA_VERSION = 1
 
@@ -71,9 +59,7 @@ class Job:
 
 def isolated_env(state_dir: Path) -> dict[str, str]:
     """The child environment: the caller's, with every rote state path moved."""
-    env = dict(os.environ)
-    for key, rel in STATE_ENV.items():
-        env[key] = str(state_dir / rel)
+    env = isolation.isolated_env(state_dir)
     # The bench passes --runtime/--model/--agent explicitly; an exported
     # ROTE_RUNTIME etc. would otherwise change what is being measured.
     for key in ("ROTE_RUNTIME", "ROTE_DEPLOY", "ROTE_AGENT", "ROTE_MODEL"):
@@ -81,62 +67,13 @@ def isolated_env(state_dir: Path) -> dict[str, str]:
     return env
 
 
-#: The per-job MCP registry the compile reads, beside the job's output.
-TOOL_REGISTRY_RELPATH = "bench-tool-servers/mcp.json"
-
-
-@contextlib.contextmanager
-def tool_servers(example: Path, job_dir: Path, env: dict[str, str]) -> Iterator[dict[str, str]]:
-    """Register the example's fixture MCP servers for the length of one compile.
-
-    A real compile lists each registered server's tools (``tools/list``)
-    to ground its tool arguments (:mod:`rote.compiler.tool_grounding`).
-    The bench's analog of "the user has these servers registered" is the
-    fidelity fixtures, started here with no responses at all: the compile
-    only ever lists their tools, and the schemas it reads are the very
-    ``parameters`` the fixtures enforce when the pipeline later runs, with
-    no second copy to drift. Yields the compile's environment, pointing
-    ``ROTE_MCP_CONFIG`` at a registry of this job's own, so concurrent
-    jobs never share one. An example without fixture servers changes
-    nothing.
-    """
-    from rote.bench.fidelity import Case, fixture_servers, has_cases, load_cases
-
-    if not has_cases(example):
-        yield env
-        return
-    casefile = load_cases(example)
-    if not casefile.servers:
-        yield env
-        return
-    silent = Case(
-        id="compile", description="", input={}, gates=[], gate_instructions=None, fixtures={}
-    )
-    registry = job_dir / TOOL_REGISTRY_RELPATH
-    with fixture_servers(casefile, silent, registry.parent) as (urls, _log):
-        registry.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "servers": {
-                        name: {"url": url, "transport": "streamable-http"}
-                        for name, url in urls.items()
-                    },
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        yield {**env, "ROTE_MCP_CONFIG": str(registry)}
-
-
 def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> list[str]:
     """The plain ``rote compile`` a user runs, on the job's copy of the skill.
 
     No ``--sample-input``: an example bundles its sample run in the skill
-    dir (``skill/sample-input.json``), so the copy carries it and the
-    compile finds it the way it finds a user's
-    (:data:`rote.compiler.grounding.SAMPLE_INPUT_NAMES`).
+    dir (``skill/sample-input.json``), and its tools' schemas
+    (``skill/mcp-tools.json``), so the copy carries both and the compile
+    finds them the way it finds a user's.
     """
     argv = [
         sys.executable,
@@ -225,13 +162,15 @@ async def _run_job(
         argv = compile_argv(skill_copy, job.out_dir, args)
         print(f"rote bench: {job.label}: compiling -> {job.out_dir}", file=sys.stderr)
         started = time.monotonic()
+        # Nothing is registered (the state dir is the job's own): like a
+        # user's first compile, it grounds tool arguments in the skill's
+        # bundled tools/list, the same schemas the fixture servers enforce.
         with (
-            tool_servers(args.examples / job.skill, job.out_dir, env) as job_env,
             (job.out_dir / "bench-compile.stdout.log").open("wb") as out,
             (job.out_dir / "bench-compile.stderr.log").open("wb") as err,
         ):
             proc = await asyncio.create_subprocess_exec(
-                *argv, cwd=job.out_dir, env=job_env, stdout=out, stderr=err
+                *argv, cwd=job.out_dir, env=env, stdout=out, stderr=err
             )
             code = await proc.wait()
         wall = time.monotonic() - started
