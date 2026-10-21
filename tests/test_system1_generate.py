@@ -49,11 +49,32 @@ def _context(tmp_path: Path, skill: str = "expense-audit") -> tuple[Context, sys
     return Context.load(work, plan, Grounding()), plan
 
 
+def _field(path: str, kind: str, items: str = "", required: bool = True, **extra: Any) -> Any:
+    return {
+        "path": path,
+        "type": kind,
+        "items": items,
+        "required": required,
+        "enum": extra.get("enum", []),
+        "description": extra.get("description", ""),
+    }
+
+
+def _fields_for(node: Any) -> list[dict[str, Any]]:
+    """What the fake model answers for a node's return value."""
+    if isinstance(node.output, dict) and "items" in node.output:
+        return [_field("items", "array", "object")]
+    return [_field("total", "number")]
+
+
 def _schema_for(node: Any) -> dict[str, Any]:
+    """The JSON Schema :func:`_fields_for` describes, written out by hand."""
     if isinstance(node.output, dict) and "items" in node.output:
         return {
             "type": "object",
-            "properties": {"items": {"type": "array", "items": {"type": "object"}}},
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object", "properties": {}}}
+            },
             "required": ["items"],
         }
     return {"type": "object", "properties": {"total": {"type": "number"}}, "required": ["total"]}
@@ -62,7 +83,7 @@ def _schema_for(node: Any) -> dict[str, Any]:
 def _blank() -> dict[str, Any]:
     return {
         "description": "",
-        "output_schema": "",
+        "output_fields": [],
         "termination": {"condition": "", "max_iterations": 0},
         "module": "",
         "test": "",
@@ -130,7 +151,7 @@ class FakeGenerator:
             elif request.label.startswith("interface:"):
                 node = self.nodes[request.label.split(":", 1)[1]]
                 answer["description"] = f"Does {node.id}."
-                answer["output_schema"] = json.dumps(_schema_for(node))
+                answer["output_fields"] = _fields_for(node)
                 if node.kind is NodeKind.AGENT_LOOP and node.termination is None:
                     answer["termination"] = {"condition": "all done", "max_iterations": 3}
             else:
@@ -326,12 +347,17 @@ def test_interface_checks_fan_out_sources_and_consumer_fields(tmp_path: Path) ->
     assert any("must return an object" in p for p in interface_problems(ctx, source, listy))
     from rote.compiler.system1.generate import _interface_entry
 
-    broken = _interface_entry({"description": "x", "output_schema": "{not json"}, ctx, source)
-    assert any("not valid JSON text" in p for p in interface_problems(ctx, source, broken))
     parsed = _interface_entry(
-        {"description": "x", "output_schema": json.dumps(_schema_for(source))}, ctx, source
+        {"description": "x", "output_fields": _fields_for(source)}, ctx, source
     )
     assert parsed["output_schema"] == _schema_for(source)
+    assert interface_problems(ctx, source, parsed) == []
+    orphan = _interface_entry(
+        {"description": "x", "output_fields": [*_fields_for(source), _field("meta.n", "integer")]},
+        ctx,
+        source,
+    )
+    assert any("needs its parent `meta`" in p for p in interface_problems(ctx, source, orphan))
     assert "description is empty" in interface_problems(
         ctx, source, {"description": " ", "output_schema": _schema_for(source)}
     )
@@ -652,7 +678,7 @@ async def test_an_interface_entry_that_never_passes_fails_the_compile(tmp_path: 
     ctx, plan = _context(tmp_path)
     fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
     target = generate.interface_targets(ctx)[0]
-    empty = {"description": "", "output_schema": json.dumps(_schema_for(target))}
+    empty = {"description": "", "output_fields": _fields_for(target)}
     fake.scripted[f"interface:{target.id}"] = [empty] * (generate.MAX_CHECK_RETRIES + 1)
     with pytest.raises(generate.GenerationFailed, match="description is empty"):
         await _write(ctx, plan, fake)
@@ -772,3 +798,120 @@ def test_a_fanned_producers_whole_output_is_a_list_to_its_consumer(tmp_path: Pat
     assert ctx.param_schema(node, param) == {"type": "array", "items": _schema_for(fanned)}
     assert f"`{param}: list" in def_line(ctx, node).replace("(", "`").replace(", ", " `")
     assert "this is every run's value" in module_request(ctx, node, "S", "m").prompt
+
+
+# ───────── the return value is a field list, built into a schema by code ─────────
+
+
+def test_the_answer_schema_asks_for_fields_never_a_schema_string() -> None:
+    """The JSON-text output_schema failed live: Sonnet 4.6 closed a nested schema
+    with one brace too many, through every re-ask. Nothing asks for schema text."""
+    props = ANSWER_SCHEMA["properties"]
+    assert "output_schema" not in props and "output_schema" not in ANSWER_SCHEMA["required"]
+    assert props["output_fields"]["items"] is generate.FIELD_SCHEMA
+
+    # Strict structured outputs lock every object: each one closes its properties.
+    def objects(node: Any) -> list[dict[str, Any]]:
+        found = []
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                found.append(node)
+            for v in node.values():
+                found += objects(v)
+        elif isinstance(node, list):
+            for v in node:
+                found += objects(v)
+        return found
+
+    assert all(o.get("additionalProperties") is False for o in objects(ANSWER_SCHEMA))
+    from rote.inference import structured_output_schema
+
+    assert structured_output_schema(ANSWER_SCHEMA, node_id="x") == ANSWER_SCHEMA
+
+
+def test_a_schema_string_answer_is_refused(tmp_path: Path) -> None:
+    from rote.compiler.system1.generate import _interface_entry
+
+    ctx, _ = _context(tmp_path)
+    source = generate.interface_targets(ctx)[0]
+    old = _interface_entry(
+        {"description": "x", "output_schema": '{"type": "object"}}'}, ctx, source
+    )
+    assert "output_fields is empty" in interface_problems(ctx, source, old)
+
+
+def test_fields_build_nested_objects_arrays_of_objects_and_enums() -> None:
+    schema, problems = generate.fields_to_schema(
+        [
+            _field("findings[].severity", "string", enum=["block", "review"]),
+            _field("findings", "array", "object", description="one row per finding"),
+            _field("findings[].expense_id", "string"),
+            _field("totals", "object"),
+            _field("totals.usd", "number"),
+            _field("totals.by_currency", "array", "string", required=False),
+            _field("note", "string", required=False),
+        ]
+    )
+    assert problems == []
+    assert schema == {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "description": "one row per finding",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string", "enum": ["block", "review"]},
+                        "expense_id": {"type": "string"},
+                    },
+                    "required": ["severity", "expense_id"],
+                },
+            },
+            "totals": {
+                "type": "object",
+                "properties": {
+                    "usd": {"type": "number"},
+                    "by_currency": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["usd"],
+            },
+            "note": {"type": "string"},
+        },
+        "required": ["findings", "totals"],
+    }
+
+
+def test_fields_describe_a_value_that_is_not_an_object() -> None:
+    # An MCP call returning the list itself, or its text.
+    rows, problems = generate.fields_to_schema(
+        [_field("", "array", "object"), _field("[].id", "string")]
+    )
+    assert problems == []
+    assert rows == {
+        "type": "array",
+        "items": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
+    }
+    text, _ = generate.fields_to_schema([_field("", "string")])
+    assert text == {"type": "string"}
+
+
+def test_a_faulty_field_list_names_each_fault() -> None:
+    _, problems = generate.fields_to_schema(
+        [
+            _field("a", "string"),
+            _field("a", "number"),
+            _field("b", "string", "object"),
+            _field("c", "integer", enum=["1"]),
+            _field("d.x", "string"),
+            _field("a.y", "string"),
+            _field("e[0]", "string"),
+        ]
+    )
+    joined = " | ".join(problems)
+    assert "`a` is given twice" in joined
+    assert "`b` sets items but has type string" in joined
+    assert "`c` lists enum values but has type integer" in joined
+    assert "`d.x` needs its parent `d`" in joined
+    assert "`a.y` needs its parent `a`" in joined
+    assert "`e[0]`: a name may not contain" in joined
