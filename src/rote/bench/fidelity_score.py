@@ -242,6 +242,59 @@ def call_key(call: dict[str, Any]) -> str:
     return f"{call['server']}.{call['tool']}({json.dumps(args, sort_keys=True)})"
 
 
+def _arg_value(value: Any) -> Any:
+    return normalize(value) if _is_scalar(value) else value
+
+
+def write_fields(runs: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """``{"server.tool": argument names}`` a write is identified by.
+
+    An argument identifies a write when every run sent the same values for
+    it to that tool (as a multiset, so two runs writing the same records in
+    a different order still agree on them). Prose arguments differ in every
+    agent run (a drafted brief, a message body): kept in the key, no two
+    runs would ever agree on a write, and a pipeline that made the same
+    write would count as an extra one. A tool none of whose arguments
+    agree is identified by the tool alone.
+    """
+    tools: dict[str, set[str]] = {}
+    for run in runs:
+        for c in run.get("calls", []):
+            if c.get("side_effect"):
+                tools.setdefault(f"{c['server']}.{c['tool']}", set()).update(c["arguments"])
+    fields: dict[str, list[str]] = {}
+    for tool, names in sorted(tools.items()):
+        stable = []
+        for name in sorted(names):
+            per_run = {
+                json.dumps(
+                    sorted(
+                        json.dumps(_arg_value(c["arguments"].get(name)), sort_keys=True)
+                        for c in run.get("calls", [])
+                        if c.get("side_effect") and f"{c['server']}.{c['tool']}" == tool
+                    )
+                )
+                for run in runs
+            }
+            if len(per_run) == 1:
+                stable.append(name)
+        fields[tool] = stable
+    return fields
+
+
+def effect_key(call: dict[str, Any], fields: dict[str, list[str]] | None) -> str:
+    """A write's identity: server, tool and the arguments the reference agrees on.
+
+    ``fields`` from :func:`write_fields`; ``None`` keys on every argument
+    (:func:`call_key`). A tool no reference run wrote keeps every argument.
+    """
+    tool = f"{call['server']}.{call['tool']}"
+    if fields is None or tool not in fields:
+        return call_key(call)
+    args = {k: _arg_value(call["arguments"][k]) for k in fields[tool] if k in call["arguments"]}
+    return f"{tool}({json.dumps(args, sort_keys=True)})"
+
+
 def _lcs(a: list[str], b: list[str]) -> int:
     table = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
     for i, x in enumerate(a):
@@ -282,7 +335,8 @@ def stable_reference(
     number differently in two runs is not a disagreement. Reads: calls (by
     :func:`call_key`) made in every run. Side effects: the ordered
     sequence, when every run made the same one; otherwise only the calls
-    every run made, unordered. ``seen_calls`` is every call any run made:
+    every run made, unordered. A write is keyed by the arguments every run
+    agreed on (``write_fields``, :func:`write_fields`). ``seen_calls`` is every call any run made:
     a pipeline call outside it is one no agent run ever made.
 
     ``contract`` limits fields to the output contract's top-level names: an
@@ -344,12 +398,16 @@ def stable_reference(
         "uncovered_missing_in_some_runs": missing,
     }
 
+    counted = [] if insufficient else ok
+    effect_fields = write_fields(counted)
+
     def keys(run: dict[str, Any], side_effect: bool) -> list[str]:
         return [
-            call_key(c) for c in run.get("calls", []) if bool(c.get("side_effect")) == side_effect
+            effect_key(c, effect_fields) if side_effect else call_key(c)
+            for c in run.get("calls", [])
+            if bool(c.get("side_effect")) == side_effect
         ]
 
-    counted = [] if insufficient else ok
     read_sets = [set(keys(r, False)) for r in counted]
     effect_seqs = [keys(r, True) for r in counted]
     ordered = len({tuple(s) for s in effect_seqs}) == 1
@@ -364,6 +422,7 @@ def stable_reference(
         "reads": sorted(set.intersection(*read_sets)) if read_sets else [],
         "side_effects": effect_seqs[0] if counted and ordered else None,
         "side_effects_unordered": sorted(set.intersection(*effect_sets)) if effect_sets else [],
+        "write_fields": effect_fields,
         "seen_calls": sorted({call_key(c) for r in ok for c in r.get("calls", [])}),
     }
 
@@ -407,7 +466,8 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     else:
         reads = None
 
-    pipe_effects = [call_key(c) for c in calls if c.get("side_effect")]
+    write_ids = reference.get("write_fields")
+    pipe_effects = [effect_key(c, write_ids) for c in calls if c.get("side_effect")]
     ordered = reference.get("side_effects")
     if ordered is not None and (ordered or pipe_effects):
         effects: float | None = round(
