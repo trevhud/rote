@@ -291,8 +291,22 @@ def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
     assert cli_main([*argv, "--signal", 'second={"n": 2}']) == 0
     text = captured["extra_instructions"]
     assert "do not wait and do not ask" in text
-    assert '1. approval: {"approved": true, "reviewer": "Priya"}' in text
-    assert '2. second: {"n": 2}' in text
+    assert '1. {"approved": true, "reviewer": "Priya"}' in text
+    assert '2. {"n": 2}' in text
+    # Byte-identical to what the bench's fidelity references are told.
+    from rote.bench.fidelity import Case as FidelityCase
+    from rote.bench.fidelity import CaseFile, agent_instructions
+
+    case = FidelityCase(
+        id="c",
+        description="",
+        input={},
+        gates=[{"approved": True, "reviewer": "Priya"}, {"n": 2}],
+        gate_instructions=None,
+        fixtures={},
+    )
+    bench = agent_instructions(CaseFile(tmp_path, {"x": "y"}, {}, [case]), case)
+    assert text in bench
     # Without --signal the prompt carries no answers at all.
     captured.clear()
     assert cli_main(["run", str(skill), "--input", "{}"]) == 0
@@ -325,6 +339,69 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
     assert captured["kwargs"] == {"signals": {"g": {"ok": True}}, "timeout_seconds": 30.0}
     assert outcome.runtime == "dbos"
     assert outcome.run.output == {"done": 1}
+
+
+@pytest.mark.parametrize(
+    ("allow_writes", "seen"),
+    [
+        (False, {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "docs"}),
+        (True, {"ROTE_MCP_READ_ONLY": None, "ROTE_MCP_READ_ONLY_SERVERS": None}),
+    ],
+)
+def test_a_pipeline_run_is_read_only_unless_writes_are_allowed(
+    allow_writes: bool,
+    seen: dict[str, str | None],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The app sees the gate for the length of the run, with the servers
+    the user registered read-only, and the environment is restored after."""
+    import os
+
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "docs": McpServerConfig(url="https://docs.example/mcp", read_only=True),
+                "briefs": McpServerConfig(url="https://briefs.example/mcp"),
+            }
+        )
+    )
+    observed: dict[str, str | None] = {}
+
+    def fake_trial(app_dir: Any, payload: Any, **kwargs: Any) -> MeasuredRun:
+        observed.update({k: os.environ.get(k) for k in seen})
+        return MeasuredRun(wall_seconds=0.5, output={"done": 1})
+
+    monkeypatch.setattr("rote.runners.run_pipeline_trial", fake_trial)
+    target = RunTarget(kind="pipeline", path=tmp_path, runtime="dbos")
+    outcome = run_pipeline(target, {}, allow_writes=allow_writes)
+    assert observed == seen
+    assert outcome.read_only is not allow_writes
+    assert "ROTE_MCP_READ_ONLY" not in os.environ
+
+
+def test_mcp_add_read_only_is_stored_and_trusted_by_both_sides(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One declaration, read by the skill side's allowlist predicate and the
+    pipeline side's environment alike."""
+    from types import SimpleNamespace
+
+    from rote.cli import main as cli_main
+    from rote.mcp.live_tools import read_only_tools
+    from rote.mcp.registry import declared_read_only, load_registry, read_only_servers
+
+    assert cli_main(["mcp", "add", "deepwiki", "https://mcp.deepwiki.com/mcp", "--read-only"]) == 0
+    assert cli_main(["mcp", "add", "briefs", "https://briefs.example/mcp"]) == 0
+    assert "read-only: every tool on it" in capsys.readouterr().out
+    assert load_registry().servers["deepwiki"].read_only is True
+    assert load_registry().servers["briefs"].read_only is None
+    assert read_only_servers() == ["deepwiki"]
+    unannotated = [SimpleNamespace(name="ask_question", annotations=None)]
+    assert read_only_tools(unannotated, declared_read_only("deepwiki")) == unannotated
+    assert read_only_tools(unannotated, declared_read_only("briefs")) == []
 
 
 def test_runnable_runtimes_is_the_current_set() -> None:
@@ -388,6 +465,8 @@ def test_run_pipeline_dispatches_cloudflare(
         "signals": {"g1": {"ok": True}},
         "gate_order": ["g1"],
         "timeout_seconds": 42.0,
+        # Read-only by default, passed as Worker vars (workerd sees no env).
+        "worker_vars": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": ""},
     }
 
 

@@ -870,3 +870,19 @@ def test_install_hint_follows_the_install(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("sys.prefix", str(tmp_path / "venv"))
     assert install_hint("dbos") == "pip install 'rote-cli[dbos]'"
+
+
+def test_an_apps_one_line_error_survives_runtime_noise_after_it() -> None:
+    """A DBOS child workflow still finishing at shutdown logs after the app's
+    `error:` line, so the line is found wherever it sits."""
+    from rote.eval.empirical import usage_error
+
+    stderr = (
+        "12:00:01 [    INFO] (dbos) DBOS launched!\n"
+        "error: this run is read-only, and briefs.publish_brief may write\n"
+        "Traceback (most recent call last):\n"
+        '  File "dbos/_core.py", line 1126, in _execute_workflow_wthread\n'
+        "dbos._error.DBOSException: System database accessed before DBOS was launched\n"
+    )
+    assert usage_error(stderr) == "this run is read-only, and briefs.publish_brief may write"
+    assert usage_error("Traceback (most recent call last):\nValueError: boom\n") is None

@@ -833,6 +833,8 @@ def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPa
     }
 
     class _FakeMcp:
+        READ_ONLY_ENV = "ROTE_MCP_READ_ONLY"
+
         @staticmethod
         def _registry_servers() -> dict[str, dict[str, str]]:
             return registry

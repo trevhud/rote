@@ -12,9 +12,12 @@ and :mod:`rote.eval.empirical` for the execution primitives.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -377,7 +380,7 @@ def run_skill(
         timeout_seconds=timeout_seconds,
         mcp_servers=servers or None,
         extra_instructions=(
-            gate_answers_instructions(signal_answers(signals)) if signals else None
+            gate_answers_instructions(signal_answers(list(signals.values()))) if signals else None
         ),
     )
     return SkillRunOutcome(
@@ -449,12 +452,47 @@ class PipelineRunOutcome:
     run: MeasuredRun
     runtime: str
     app_dir: Path
+    #: MCP tools that may write were refused (``--allow-writes`` lifts it).
+    read_only: bool = True
+
+
+def read_only_env(allow_writes: bool) -> dict[str, str]:
+    """The variables that make an emitted app's MCP calls read-only.
+
+    The pipeline side of the gate a skill run gets from its tool
+    allowlist: every emitted MCP helper refuses a tool that may write
+    (``rote.mcp._runtime_helper.write_refusal``), with the servers the user
+    registered read-only passed along, since a Worker cannot read the
+    registry.
+    """
+    from rote.mcp._runtime_helper import READ_ONLY_ENV, READ_ONLY_SERVERS_ENV
+    from rote.mcp.registry import read_only_servers
+
+    if allow_writes:
+        return {}
+    return {READ_ONLY_ENV: "1", READ_ONLY_SERVERS_ENV: ",".join(read_only_servers())}
+
+
+@contextlib.contextmanager
+def _environ(values: dict[str, str]) -> Iterator[None]:
+    """``values`` in ``os.environ`` for the length of one run, then restored."""
+    saved = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def run_pipeline(
     target: RunTarget,
     input_payload: dict[str, Any],
     *,
+    allow_writes: bool = False,
     signals: dict[str, Any] | None = None,
     gate_order: list[str] | None = None,
     pipeline: Any = None,
@@ -480,11 +518,33 @@ def run_pipeline(
     from rote.mcp.parked import watch_factory
 
     park_watch = watch_factory(interactive)
-    if target.runtime not in RUNNABLE_RUNTIMES:
+    runtime = target.runtime
+    if runtime is None or runtime not in RUNNABLE_RUNTIMES:
         raise TargetError(
-            f"`rote run` cannot orchestrate the `{target.runtime}` runtime yet — "
-            f"{native_run_hint(target.runtime or '')}"
+            f"`rote run` cannot orchestrate the `{runtime}` runtime yet — "
+            f"{native_run_hint(runtime or '')}"
         )
+    gate = read_only_env(allow_writes)
+    with _environ(gate):
+        run = _dispatch(
+            target, input_payload, signals, gate_order, pipeline, timeout_seconds, park_watch, gate
+        )
+    return PipelineRunOutcome(
+        run=run, runtime=runtime, app_dir=target.path, read_only=not allow_writes
+    )
+
+
+def _dispatch(
+    target: RunTarget,
+    input_payload: dict[str, Any],
+    signals: dict[str, Any] | None,
+    gate_order: list[str] | None,
+    pipeline: Any,
+    timeout_seconds: float,
+    park_watch: Any,
+    gate: dict[str, str],
+) -> MeasuredRun:
+    """One run on ``target``'s runtime (see :func:`run_pipeline`)."""
     if target.runtime == "cloudflare":
         from rote.runners.cloudflare import run_cloudflare
 
@@ -495,6 +555,8 @@ def run_pipeline(
             gate_order=gate_order or sorted(signals or {}),
             timeout_seconds=timeout_seconds,
             park_watch=park_watch,
+            # workerd does not see this process's environment.
+            worker_vars=gate,
         )
     elif target.runtime == "inngest":
         if pipeline is None:
@@ -542,4 +604,4 @@ def run_pipeline(
             timeout_seconds=timeout_seconds,
             park_watch=park_watch,
         )
-    return PipelineRunOutcome(run=run, runtime=target.runtime, app_dir=target.path)
+    return run

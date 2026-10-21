@@ -90,6 +90,14 @@ class McpServerConfig(BaseModel):
         default=None,
         description="OAuth scopes to request at login. Omit to let the server decide.",
     )
+    read_only: bool | None = Field(
+        default=None,
+        description=(
+            "The user's word that no tool on this server writes (`rote mcp add "
+            "--read-only`). Read-only runs then call every tool on it, whether or "
+            "not the server sets readOnlyHint, which many real servers never do."
+        ),
+    )
     headers: dict[str, str] | None = Field(
         default=None,
         description=(
@@ -105,6 +113,17 @@ class McpRegistry(BaseModel):
 
     version: int = 1
     servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+
+
+def declared_read_only(server: str) -> bool:
+    """Whether the user registered ``server`` read-only (``rote mcp add --read-only``)."""
+    config = load_registry().servers.get(server)
+    return config is not None and config.read_only is True
+
+
+def read_only_servers() -> list[str]:
+    """Every server the user registered read-only, for a read-only run's environment."""
+    return sorted(name for name, c in load_registry().servers.items() if c.read_only is True)
 
 
 def load_registry(path: Path | None = None) -> McpRegistry:

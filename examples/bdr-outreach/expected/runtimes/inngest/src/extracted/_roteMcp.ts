@@ -408,6 +408,55 @@ async function unwrapFastmcpResult(
 }
 
 
+/**
+ * Why a read-only run must not call `server.tool`, or null. `rote run`
+ * sets ROTE_MCP_READ_ONLY=1 unless --allow-writes, and names the servers
+ * the user registered read-only in ROTE_MCP_READ_ONLY_SERVERS. A tool may
+ * be called when its server is one of those or the server marks it
+ * readOnlyHint: the same rule a skill run's tool allowlist applies.
+ */
+async function writeRefusal(
+    client: Client,
+    server: string,
+    tool: string,
+    readOnly: unknown,
+    declaredServers: unknown,
+): Promise<string | null> {
+    if (readOnly !== "1") return null;
+    const declared = String(declaredServers ?? "").split(",").map((s) => s.trim());
+    if (declared.includes(server)) return null;
+    let cursor: string | undefined;
+    do {
+        const page = await client.listTools(cursor ? { cursor } : undefined);
+        const spec = page.tools.find((t) => t.name === tool);
+        if (spec) {
+            if (spec.annotations?.readOnlyHint === true) return null;
+            break;
+        }
+        cursor = page.nextCursor;
+    } while (cursor);
+    return (
+        `this run is read-only, and ${server}.${tool} may write: ${server} does not ` +
+        `mark it readOnlyHint and is not registered read-only. Pass --allow-writes ` +
+        `to let the run write, or register the server with "rote mcp add ${server} ` +
+        `<url> --read-only" if none of its tools write.`
+    );
+}
+
+/**
+ * An agent loop's MCP tools are not held to read-only calls yet, so a
+ * read-only run refuses to start one rather than let it write.
+ */
+function refuseAgentToolsWhenReadOnly(readOnly: unknown, allowed: string[]): void {
+    if (readOnly === "1" && allowed.length > 0) {
+        throw new RoteMcpConfigError(
+            `this run is read-only, and an agent loop's MCP tools (${allowed.join(", ")}) ` +
+                "cannot be held to read-only calls yet. Pass --allow-writes to run it.",
+        );
+    }
+}
+
+
 /** The input the server asked for, if `err` is the SDK reporting that a
  * call needs a human: either the client could not fulfil an embedded
  * `input_required` request (no handler, by design), or the server refused
@@ -485,6 +534,14 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<unknown> {
     return withMcpSession(server, pipelineUrl, async (client) => {
+        const refusal = await writeRefusal(
+            client,
+            server,
+            tool,
+            process.env.ROTE_MCP_READ_ONLY,
+            process.env.ROTE_MCP_READ_ONLY_SERVERS,
+        );
+        if (refusal) throw new RoteMcpConfigError(refusal);
         const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
@@ -587,6 +644,7 @@ export async function bindAgentTools(
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
+    refuseAgentToolsWhenReadOnly(process.env.ROTE_MCP_READ_ONLY, allowed);
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const failures: unknown[] = [];
