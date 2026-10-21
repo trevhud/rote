@@ -349,6 +349,17 @@ def _durable_error(exc: Exception, *, node_id: str, provider: str, model: str) -
     )
 
 
+def _billed(error: RuntimeError, rows: list[tuple[str, dict[str, Any]]]) -> RuntimeError:
+    """``error`` carrying the usage of the response that failed.
+
+    A call can fail after the provider billed it: an answer truncated at
+    ``max_tokens``, a refusal, a ``claude -p`` envelope with ``is_error``.
+    The rows ride on the exception as ``usage_rows`` (a plain attribute, so
+    it pickles), and a caller that counts cost adds them."""
+    error.usage_rows = rows  # type: ignore[attr-defined]
+    return error
+
+
 # ───────── usage log ─────────
 
 
@@ -857,10 +868,17 @@ def _call_anthropic(
         )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
-    answer = structured_answer(response, node_id=node_id)
+    usage = _anthropic_usage(getattr(response, "usage", None))
+    try:
+        answer = structured_answer(response, node_id=node_id)
+    except RuntimeError as e:
+        raise _billed(e, [(model, usage)]) from None
     if not isinstance(answer, dict):
-        raise RuntimeError(f"structured output for {node_id} is not a JSON object")
-    return answer, _anthropic_usage(getattr(response, "usage", None))
+        raise _billed(
+            RuntimeError(f"structured output for {node_id} is not a JSON object"),
+            [(model, usage)],
+        )
+    return answer, usage
 
 
 def _call_openai(
@@ -900,10 +918,17 @@ def _call_openai(
         )
     except openai.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
+    usage = _openai_usage(getattr(response, "usage", None))
     content = response.choices[0].message.content
     if not content:
-        raise RuntimeError(f"OpenAI returned no content for {node_id}")
-    return json.loads(content), _openai_usage(getattr(response, "usage", None))
+        raise _billed(RuntimeError(f"OpenAI returned no content for {node_id}"), [(model, usage)])
+    try:
+        return json.loads(content), usage
+    except ValueError:
+        raise _billed(
+            RuntimeError(f"OpenAI returned non-JSON content for {node_id}: {content[:200]!r}"),
+            [(model, usage)],
+        ) from None
 
 
 # ───────── transport: claude -p subprocess ─────────
@@ -982,7 +1007,10 @@ def _call_claude_cli(
 
     if envelope.get("is_error"):
         reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
-        raise RuntimeError(f"claude -p failed for {node_id}: {str(reason)[:400]}")
+        raise _billed(
+            RuntimeError(f"claude -p failed for {node_id}: {str(reason)[:400]}"),
+            _cli_usage_rows(envelope, model),
+        )
 
     payload = envelope.get("structured_output")
     if payload is None:
@@ -992,9 +1020,12 @@ def _call_claude_cli(
         except ValueError:
             payload = None
     if not isinstance(payload, dict):
-        raise RuntimeError(
-            f"claude -p returned no structured output for {node_id}; "
-            f"got: {str(envelope.get('result'))[:200]}"
+        raise _billed(
+            RuntimeError(
+                f"claude -p returned no structured output for {node_id}; "
+                f"got: {str(envelope.get('result'))[:200]}"
+            ),
+            _cli_usage_rows(envelope, model),
         )
     return payload, _cli_usage_rows(envelope, model)
 

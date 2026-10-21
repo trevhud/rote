@@ -131,3 +131,49 @@ def test_the_drivers_client_does_not_retry_under_ours(
     assert all(str(r.url) == f"{GATEWAY_URL}/chat/completions" for r in requests)
     # The lane keeps the driver's client as it was; only System-1's calls opt out.
     assert lane.sdk_client.max_retries == 2
+
+
+def test_a_permanent_status_quoting_a_transient_one_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, waits: list[float]
+) -> None:
+    """The match is anchored on the status the lane reports, not the body."""
+    error = (
+        "BadRequestError (HTTP 400) calling m for n via api: schema rejected; "
+        "see HTTP 429 limits and API Error: 503 docs"
+    )
+    flaky = _Flaky(error)
+    with pytest.raises(RuntimeError):
+        _call(monkeypatch, flaky)
+    assert len(flaky.calls) == 1 and waits == []
+    assert not lane_call.transient(
+        RuntimeError("claude -p failed for n: bad input, not API Error: 529")
+    )
+
+
+class _Billed:
+    """Fails like a billed-then-failed call (usage on the error), then answers."""
+
+    def __init__(self, *errors: str) -> None:
+        self.errors = list(errors)
+
+    def __call__(self, **kwargs: Any) -> Any:
+        if self.errors:
+            e = RuntimeError(self.errors.pop(0))
+            e.usage_rows = [("m", {"input_tokens": 7, "output_tokens": 3})]  # type: ignore[attr-defined]
+            raise e
+        return ANSWER
+
+
+def test_a_billed_failed_attempt_is_counted(
+    monkeypatch: pytest.MonkeyPatch, waits: list[float]
+) -> None:
+    transient = "claude -p failed for n: API Error: 529 overloaded"
+    _, rows = _call(monkeypatch, _Billed(transient))  # type: ignore[arg-type]
+    assert rows == [("m", {"input_tokens": 7, "output_tokens": 3}), *ANSWER[1]]
+    # A final failure carries every billed attempt's usage.
+    with pytest.raises(RuntimeError) as e:
+        _call(monkeypatch, _Billed(*[transient] * 3))  # type: ignore[arg-type]
+    assert len(e.value.usage_rows) == 3  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError) as e:
+        _call(monkeypatch, _Billed("claude -p failed for n: model not found"))  # type: ignore[arg-type]
+    assert len(e.value.usage_rows) == 1  # type: ignore[attr-defined]

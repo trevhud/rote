@@ -40,13 +40,19 @@ from typing import Any
 #: Calls in all for one answer, and the wait before each retry (seconds).
 ATTEMPTS = 3
 BACKOFF_S = (2.0, 8.0)
-#: An HTTP status a retry can cure: request timeout, conflict, too early,
+#: The HTTP statuses a retry can cure: request timeout, conflict, too early,
 #: rate limit, and any server error (529 is Anthropic's overloaded).
-_TRANSIENT_STATUS = re.compile(r"(?:HTTP |API Error: |status[ :]+)(408|409|425|429|5\d\d)\b")
-#: Transport failures with no status: the SDKs' connection and timeout
-#: errors (by class name, as the helper reports them) and a reset socket.
-_TRANSIENT_TRANSPORT = re.compile(
-    r"\b(APIConnectionError|APITimeoutError|ECONNRESET|Connection reset|connection reset)\b"
+_STATUS = r"(?:408|409|425|429|5\d\d)\b"
+#: Each lane's own failure line, anchored where it names the status, so a
+#: 400 whose body quotes "429" is not retried. The helper's SDK errors start
+#: ``<Type> (HTTP NNN) calling`` (``_durable_error``) or name a transport
+#: error type; claude -p reports ``failed for <node>: API Error: NNN``; codex
+#: reports a dropped stream or a reset connection.
+_TRANSIENT = re.compile(
+    rf"^\w+ \(HTTP {_STATUS}\) calling "
+    r"|^(?:APIConnectionError|APITimeoutError) calling "
+    rf"|^claude -p failed for \S+: API Error: {_STATUS}"
+    r"|^codex exec for \S+ failed \(exit \d+\): (?s:.*)(?:Connection reset|stream disconnected)"
 )
 #: Waits between attempts; tests replace it.
 _sleep = time.sleep
@@ -153,7 +159,12 @@ def call(
         # answered; only a failed exit or no answer at all is a failure.
         if proc.returncode != 0 or (message is None and failure):
             tail = (failure or proc.stderr or proc.stdout)[-500:]
-            raise RuntimeError(f"codex exec for {node_id} failed (exit {proc.returncode}): {tail}")
+            error = RuntimeError(
+                f"codex exec for {node_id} failed (exit {proc.returncode}): {tail}"
+            )
+            if usage is not None:
+                error.usage_rows = [(model or "codex", usage_row(usage))]  # type: ignore[attr-defined]
+            raise error
         text = (
             message if message is not None else (last.read_text("utf-8") if last.exists() else "")
         )
@@ -171,20 +182,26 @@ def call(
 def transient(error: BaseException) -> bool:
     """Whether a failed call is worth the same call again: a retryable HTTP
     status or a dropped connection, as the lane reported it."""
-    text = str(error)
-    return bool(_TRANSIENT_STATUS.search(text) or _TRANSIENT_TRANSPORT.search(text))
+    return bool(_TRANSIENT.match(str(error)))
 
 
 def structured_call(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """``structured_call`` for every System-1 lane, retried on a transient failure."""
+    #: Usage of attempts that failed after the provider billed them, so the
+    #: compile's cost counts every call it paid for.
+    billed: list[tuple[str, dict[str, Any]]] = []
     for attempt in range(ATTEMPTS):
         try:
-            return _once(**kwargs)
+            payload, rows = _once(**kwargs)
+            return payload, [*billed, *rows]
         except RuntimeError as e:
+            billed += getattr(e, "usage_rows", None) or []
             if attempt == ATTEMPTS - 1 or not transient(e):
-                if attempt:
-                    raise RuntimeError(f"{e} (after {attempt + 1} attempts)") from e
-                raise
+                error = RuntimeError(f"{e} (after {attempt + 1} attempts)") if attempt else e
+                error.usage_rows = billed  # type: ignore[attr-defined]
+                if error is e:
+                    raise
+                raise error from e
             _sleep(BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)])
     raise AssertionError("unreachable")  # pragma: no cover
 
