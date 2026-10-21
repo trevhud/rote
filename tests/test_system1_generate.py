@@ -1121,3 +1121,39 @@ def test_a_known_mcp_result_keeps_its_reader_typed(tmp_path: Path) -> None:
     )
     assert not ctx.unverified_tool_result(mcp.id)
     assert ctx.param_schema(reader, param) == fixed
+
+
+@pytest.mark.asyncio
+async def test_the_parallel_path_builds_none_of_the_sessions_briefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pieces read grounding through generate.Context and are repaired by
+    generate's own loop: the session's briefs, context files and repairer were
+    built and thrown away, which hid what actually runs."""
+    import rote.compiler as compiler_module
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the parallel path built a session-only piece")
+
+    monkeypatch.setattr(compiler_module, "contract_brief", never)
+    monkeypatch.setattr(compiler_module, "materialize", never)
+    monkeypatch.setattr(compiler_module.tool_grounding, "brief", never)
+    monkeypatch.setattr(Compiler, "_deliverable_repairer", never)
+    monkeypatch.setattr(Compiler, "_materialize_probe_context", never)
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    skeleton = tmp_path / "skeleton"
+    skeleton.mkdir()
+    nodes = {
+        n.id: n
+        for n in load_pipeline(
+            (system1.prepare(skill, skeleton), skeleton / "pipeline.yaml")[1]
+        ).nodes
+    }
+    fake = FakeGenerator(nodes)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
+    monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
+    result = await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, tmp_path / "out", probe_dir=tmp_path)
+    assert fake.requests and result.verification is not None and result.verification.ok

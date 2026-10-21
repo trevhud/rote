@@ -11,10 +11,11 @@ split by what each piece depends on:
    a model: the direct-API stub of every ``external_call``, each judge's
    input schema, each function's ``def`` line, the merge into
    ``system1/text.yaml``.
-2. **The interface, one call.** Every node's return value as a JSON Schema,
-   plus descriptions and any loop's stop condition. It is the only call
-   that sees the whole pipeline, and its answer fixes the contract every
-   other call writes against, so two pieces cannot disagree on a field.
+2. **The interface, one call per node, all at once.** Each node's return
+   value as a JSON Schema, its description and any loop's stop condition.
+   Every interface call sees the whole pipeline's outline, and a node
+   describes only what it produces, which fixes the contract the pieces
+   write against, so two pieces cannot disagree on a field.
 3. **The pieces, all at once.** One call per ``pure_function`` (module and
    tests) and per ``llm_judge`` (its prompt), under a concurrency bound.
    Each answer is checked by code the moment it arrives (it parses on
