@@ -1016,7 +1016,18 @@ def plan(
                 node.decide("fan_out", True, 0.7, f"per-item wording {each!r} over {src}")
             if node.kind not in ("agent_loop", "hitl_gate") and loop is not None:
                 # The loop's agent decides whether to call it (invariant #4).
-                node.decide("mandatory", False, 0.9, f"runs when {loop.id} calls it")
+                if u.mandatory:
+                    # Never dropped silently: the rules cannot move the step out
+                    # of the loop, so a reviewer must know it is not guaranteed.
+                    node.decide(
+                        "mandatory",
+                        False,
+                        0.3,
+                        f"the skill marks {u.title!r} MANDATORY, but it runs inside "
+                        f"{loop.id}, so rote cannot guarantee it runs",
+                    )
+                else:
+                    node.decide("mandatory", False, 0.9, f"runs when {loop.id} calls it")
             elif node.kind not in ("agent_loop", "hitl_gate"):  # a gate is mandatory implicitly
                 optional = _OPTIONAL.search(f"{u.title}\n{u.text}")
                 if u.mandatory:

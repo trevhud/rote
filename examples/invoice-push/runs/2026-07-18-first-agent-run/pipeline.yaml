@@ -256,6 +256,10 @@ nodes:
       max: 2
       backoff: constant
 
+  # rote: assumption: this run marked the eligibility check mandatory inside
+  # its loop, which the IR now refuses (a loop's agent decides what it calls).
+  # The flag is removed so the record still loads; examples/invoice-push/
+  # expected/pipeline.yaml shows the shape that keeps the guarantee.
   - id: check_row_eligibility
     kind: pure_function
     phase: "Processing"

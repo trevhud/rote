@@ -54,21 +54,31 @@ def test_ops_report_is_the_full_roteness_hitl_archetype() -> None:
 
 def test_invoice_push_is_the_agent_loop_archetype() -> None:
     pipeline = load_pipeline(REPO_ROOT / "examples" / "invoice-push" / "expected" / "pipeline.yaml")
-    loops = [n for n in pipeline.nodes if n.kind is NodeKind.AGENT_LOOP]
-    assert [n.id for n in loops] == ["process_invoices_loop"]
-    (loop,) = loops
-    # The archetype: a bounded loop with a declared body — the browser
-    # cycle the compiler could not (and should not) crystallize.
-    assert loop.loop_body and len(loop.loop_body) == 5
-    assert loop.termination is not None
-    assert loop.termination.max_iterations is not None
-    # Everything around the loop is deterministic: no judges, no gates.
+    loops = {n.id: n for n in pipeline.nodes if n.kind is NodeKind.AGENT_LOOP}
+    # The archetype: bounded loops with declared bodies, the browser cycles
+    # the compiler could not (and should not) crystallize.
+    assert sorted(loops) == ["collect_rows_loop", "process_invoices_loop"]
+    assert loops["collect_rows_loop"].loop_body == ["read_page_rows"]
+    assert loops["process_invoices_loop"].loop_body == [
+        "execute_push",
+        "interpret_toast_result",
+        "capture_sent_date",
+    ]
+    for loop in loops.values():
+        assert loop.termination is not None and loop.termination.max_iterations is not None
+    # The skill's MANDATORY eligibility check runs outside every loop, on every
+    # row, and the push loop receives only what it passed, by data.
+    check = pipeline.node_by_id("classify_invoice_row")
+    assert check.mandatory and check.fan_out
+    assert not any("classify_invoice_row" in (n.loop_body or []) for n in loops.values())
+    assert (
+        loops["process_invoices_loop"].inputs["eligible_rows"]
+        == "select_eligible_rows.output.items"
+    )
+    # Everything around the loops is deterministic: no judges, no gates.
     kinds = {n.kind for n in pipeline.nodes}
     assert NodeKind.LLM_JUDGE not in kinds
     assert NodeKind.HITL_GATE not in kinds
-    # Loop-body sub-nodes exist top-level (testable in isolation) but
-    # the loop is the only sampled step: roteness = 12 of 13.
-    assert sum(1 for n in pipeline.nodes if n.kind is NodeKind.AGENT_LOOP) == 1
 
 
 def test_invoice_push_sidecar_is_the_loop_aware_calibration_fixture() -> None:
