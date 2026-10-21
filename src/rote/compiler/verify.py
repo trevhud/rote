@@ -678,6 +678,9 @@ class Verification:
     #: ``{server: [tool, ...]}`` whose arguments no schema checked
     #: (:func:`rote.compiler.tool_grounding.unchecked_tools`).
     unchecked_tools: dict[str, list[str]] = field(default_factory=dict)
+    #: ``{server: why}`` for the registered servers rote did not list
+    #: (:attr:`rote.compiler.grounding.Grounding.unlisted`).
+    unlisted_servers: dict[str, str] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[ContractFinding]:
@@ -995,4 +998,5 @@ def _verify(
         questions=questions,
         spec_checks=spec_checks,
         unchecked_tools=unchecked,
+        unlisted_servers=dict(grounding.unlisted) if grounding is not None else {},
     )

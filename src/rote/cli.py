@@ -1114,7 +1114,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         for line in _mcp_recommendation_lines(mcp_servers):
             print(line, file=summary_stream)
     if deliverable is not None:
-        for line in _unchecked_tool_lines(deliverable.unchecked_tools, mcp_servers):
+        for line in _unchecked_tool_lines(
+            deliverable.unchecked_tools, mcp_servers, deliverable.unlisted_servers
+        ):
             print(line, file=summary_stream)
 
     # ── Static contract check ── `impl: extracted/x.py:f` is a promise the
@@ -2460,17 +2462,26 @@ def _mcp_recommendation_lines(mcp_servers: list[dict[str, object]]) -> list[str]
     return lines
 
 
+#: A ``tools/list`` failure that a login fixes, as the MCP client words it.
+_AUTH_FAILURE = re.compile(r"RoteMcpAuthNeeded|Unauthorized|\b401\b")
+
+
 def _unchecked_tool_lines(
-    unchecked: dict[str, list[str]], mcp_servers: list[dict[str, object]]
+    unchecked: dict[str, list[str]],
+    mcp_servers: list[dict[str, object]],
+    unlisted: dict[str, str] | None = None,
 ) -> list[str]:
     """The summary's warning for MCP calls whose arguments no schema checked.
 
     The parameter names are the compile's guess (a skill says "search
     Gmail", never that the argument is ``query``), and a real server
     refuses a wrong one, so this sits in the summary rather than only in
-    the open questions. The fix depends on why there was no schema.
+    the open questions. The fix depends on why there was no schema:
+    the server is not registered, needs a login, was not listed, or
+    listed tools that do not include this one.
     """
     auth = {entry["server"]: entry["auth"] for entry in mcp_servers}
+    unlisted = unlisted or {}
     # A server the run does not call (python/temporal emit the impl) is not
     # this run's problem.
     unchecked = {server: tools for server, tools in unchecked.items() if server in auth}
@@ -2481,18 +2492,29 @@ def _unchecked_tool_lines(
         f"  WARNING: tool arguments NOT checked against a schema: {calls}. The "
         "parameter names are a guess, and a real server refuses a wrong one."
     ]
-    for server in unchecked:
-        if auth.get(server) == "not registered":
-            lines.append(
-                f"    {server} is not registered, so rote could not read its tools. "
+    for server, tools in unchecked.items():
+        why = unlisted.get(server)
+        if auth[server] == "not registered":
+            fix = (
+                f"{server} is not registered, so rote could not read its tools. "
                 f"Register it, then compile again: rote mcp add {server} <url>"
             )
-        else:
-            lines.append(
-                f"    {server} is registered, but rote did not read its tools (the skill "
-                "does not name it, or listing failed: see progress.jsonl). Compile again "
-                "with --tool-discovery all, or check the server"
+        elif why is not None and _AUTH_FAILURE.search(why):
+            fix = (
+                f"{server} needs a login before rote can read its tools ({why}). "
+                f"Log in, then compile again: rote mcp login {server}"
             )
+        elif why is not None:
+            fix = (
+                f"rote did not read {server}'s tools: {why}. Fix that (or pass "
+                "--tool-discovery all), then compile again"
+            )
+        else:
+            fix = (
+                f"{server}'s tools/list has no {', '.join(tools)}. Check the binding's "
+                "tool name against the server"
+            )
+        lines.append(f"    {fix}")
     return lines
 
 

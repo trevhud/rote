@@ -563,10 +563,22 @@ def test_verification_names_the_bindings_no_schema_checked(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize(
-    ("registered", "says", "not_said"),
+    ("registered", "unlisted", "says", "not_said"),
     [
-        (False, "gmail is not registered", "--tool-discovery all"),
-        (True, "Compile again with --tool-discovery all", "rote mcp add gmail"),
+        (False, {}, "rote mcp add gmail <url>", "rote mcp login"),
+        (
+            True,
+            {"gmail": "MCPError: Unauthorized. Provide a valid Bearer token."},
+            "Log in, then compile again: rote mcp login gmail",
+            "rote mcp add",
+        ),
+        (
+            True,
+            {"gmail": "the skill does not name it (--tool-discovery named)"},
+            "rote did not read gmail's tools: the skill does not name it",
+            "rote mcp login",
+        ),
+        (True, {}, "gmail's tools/list has no search_threads", "rote mcp add"),
     ],
 )
 def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
@@ -574,6 +586,7 @@ def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     registered: bool,
+    unlisted: dict[str, str],
     says: str,
     not_said: str,
 ) -> None:
@@ -595,7 +608,11 @@ def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
     _install_mock_compiler(
         monkeypatch,
         root / "pipeline.yaml",
-        verification=Verification(pipeline=pipeline, unchecked_tools={"gmail": ["search_threads"]}),
+        verification=Verification(
+            pipeline=pipeline,
+            unchecked_tools={"gmail": ["search_threads"]},
+            unlisted_servers=unlisted,
+        ),
     )
     skill = tmp_path / "skill"
     skill.mkdir()
@@ -604,9 +621,45 @@ def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
     cli_main([*argv, "--out", str(tmp_path / "out")])
     out = capsys.readouterr().out
     summary = out.split("rote compile: ✓", 1)[1]
-    assert "WARNING: tool arguments NOT checked against a schema: gmail.search_threads." in summary
-    assert says in summary
-    assert not_said not in summary
+    head = "WARNING: tool arguments NOT checked against a schema: gmail.search_threads."
+    assert head in summary
+    # The warning's own lines; the auth advisories above it say other things.
+    warning = summary.split(head, 1)[1]
+    assert says in warning
+    assert not_said not in warning
+
+
+def test_the_compile_records_why_a_registered_server_was_not_listed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tools/list failure reaches the verification, not only a log line."""
+    from rote.compiler import tool_grounding
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "gmail": McpServerConfig(url="https://gmail.example/mcp"),
+                "slack": McpServerConfig(url="https://slack.example/mcp"),
+            }
+        )
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("Search Gmail for the dock threads.\n", encoding="utf-8")
+
+    async def _discover(servers: Any, on_skip: Any = None, **_: Any) -> dict[Any, Any]:
+        for server in servers:
+            on_skip(server, "MCPError: Unauthorized. Provide a valid Bearer token.")
+        return {}
+
+    monkeypatch.setattr(tool_grounding, "discover", _discover)
+    tools, unlisted = asyncio.run(Compiler()._tool_schemas((), skill))
+    assert tools == {}
+    assert unlisted == {
+        "gmail": "MCPError: Unauthorized. Provide a valid Bearer token.",
+        "slack": "the skill does not name it (--tool-discovery named)",
+    }
 
 
 def test_the_summary_says_nothing_when_every_binding_was_checked() -> None:
