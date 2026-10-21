@@ -58,14 +58,44 @@ def test_state_paths_names_every_state_override_the_source_reads() -> None:
 _DISPLAY_ONLY_HOME = {("cli.py", "_cmd_config"), ("bench/runner.py", "_replacements")}
 
 
+def _is_tilde(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and str(node.value).startswith("~")
+
+
+def _touches_home(node: ast.AST) -> bool:
+    """``Path.home()``, ``os.path.expanduser("~...")`` or ``Path("~...").expanduser()``.
+
+    ``expanduser`` on a path the user passed in is fine; only a literal
+    ``~`` names a default under the home dir.
+    """
+    for n in ast.walk(node):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+            continue
+        if (
+            n.func.attr == "home"
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "Path"
+        ):
+            return True
+        if n.func.attr == "expanduser":
+            receiver = n.func.value
+            if n.args and _is_tilde(n.args[0]):
+                return True
+            if isinstance(receiver, ast.Call) and receiver.args and _is_tilde(receiver.args[0]):
+                return True
+    return False
+
+
 def _home_paths_without_an_override() -> list[str]:
-    """Each ``Path.home()`` in src/rote whose function reads no STATE_PATHS
-    override, directly or through a module constant naming one."""
+    """Each home-dir default in src/rote whose function reads no STATE_PATHS
+    override, directly or through a module constant naming one. A home-dir
+    default at module level has no function to hold an override, so it
+    always counts."""
     found = []
     src = REPO / "src" / "rote"
     for path in sorted(src.rglob("*.py")):
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        rel = str(path.relative_to(src))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         constants = {
             target.id
             for node in tree.body
@@ -78,29 +108,37 @@ def _home_paths_without_an_override() -> list[str]:
         for func in ast.walk(tree):
             if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            calls_home = any(
-                isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Attribute)
-                and n.func.attr == "home"
-                and isinstance(n.func.value, ast.Name)
-                and n.func.value.id == "Path"
-                for n in ast.walk(func)
-            )
-            if not calls_home or (str(path.relative_to(src)), func.name) in _DISPLAY_ONLY_HOME:
+            if not _touches_home(func) or (rel, func.name) in _DISPLAY_ONLY_HOME:
                 continue
             reads = {n.value for n in ast.walk(func) if isinstance(n, ast.Constant)} | {
                 n.id for n in ast.walk(func) if isinstance(n, ast.Name)
             }
             if not (reads & set(STATE_PATHS) or reads & constants):
-                found.append(f"{path.relative_to(src)}:{func.name}")
-        module_level_home = [
-            node
+                found.append(f"{rel}:{func.name}")
+        found.extend(
+            f"{rel}:{node.lineno}"
             for node in tree.body
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and "Path.home()" in (ast.get_source_segment(source, node) or "")
-        ]
-        found.extend(f"{path.relative_to(src)}:{n.lineno}" for n in module_level_home)
+            and _touches_home(node)
+        )
     return found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "STATE = Path.home() / '.rote' / 'x.json'",
+        "STATE = Path(os.path.expanduser('~/.rote/x.json'))",
+        "STATE = Path('~/.rote/x.json').expanduser()",
+    ],
+)
+def test_the_home_guard_sees_each_home_dir_form(source: str) -> None:
+    assert _touches_home(ast.parse(source))
+
+
+def test_the_home_guard_allows_expanding_a_path_the_user_passed() -> None:
+    assert not _touches_home(ast.parse("out = Path(args.out).expanduser()"))
+    assert not _touches_home(ast.parse("out = os.path.expanduser(args.out)"))
 
 
 def test_every_home_dir_path_has_a_state_override() -> None:
