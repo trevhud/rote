@@ -437,7 +437,7 @@ def test_a_step_the_model_would_truncate_is_refused_before_any_call(
 ) -> None:
     """Workers AI truncates a long text state without an error: the verdict
     would be on part of the step."""
-    skill = _long_skill(tmp_path, int(model.context_tokens * 2.5))
+    skill = _long_skill(tmp_path, int(model.context_tokens * 1.5))
     calls = _stub(
         monkeypatch,
         {u.title: _answers({**ZERO, "pure_function": 0.9}, 0.0) for u in skill.units},
@@ -446,7 +446,7 @@ def test_a_step_the_model_would_truncate_is_refused_before_any_call(
     with pytest.raises(dm.DeciderUnavailable, match="truncates a longer state"):
         dm.decide(model, skill)
     assert calls == []
-    fits = _long_skill(tmp_path / "fits", int(model.context_tokens * 2.5 * 0.5))
+    fits = _long_skill(tmp_path / "fits", int(model.context_tokens * 1.5 * 0.5))
     calls = _stub(
         monkeypatch,
         {u.title: _answers({**ZERO, "pure_function": 0.9}, 0.0) for u in fits.units},
@@ -466,9 +466,41 @@ def test_a_call_that_filled_the_window_is_refused(
     full = _answers({**ZERO, "pure_function": 0.9}, 0.0)
     full["result"]["usage"]["input_tokens"] = model.context_tokens
     _stub(monkeypatch, {u.title: full for u in skill.units}, model)
-    with pytest.raises(dm.DeciderUnavailable, match="likely truncated"):
+    with pytest.raises(
+        dm.DeciderUnavailable, match="likely truncated. Use --decider rules for this skill$"
+    ):
         dm.decide(model, skill)
 
 
 def test_the_windows_are_clefs_documented_one_and_jevs_assumed_one() -> None:
     assert (CLEF.context_tokens, JEV.context_tokens) == (65_536, 32_768)
+
+
+@MODELS
+def test_a_table_heavy_step_the_old_estimate_let_through_is_refused(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    """A markdown table tokenizes far denser than prose: at 2.5 characters a
+    token this step passed, and its real token count is over the window."""
+    from rote.compiler.system1.parse import parse_skill
+
+    row = "| 2024-01-01 | 3f9a1c | 1,234.56 | USD | ok |\n"
+    # Just under the old limit: 90% of the window at 2.5 characters a token.
+    rows = int(model.context_tokens * 0.9 * 2.5 * 0.97 / len(row))
+    d = tmp_path / "table"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: t\ndescription: x\n---\n\n# T\n\n## Step 1: Rates\n\n"
+        "| date | id | amount | ccy | status |\n|---|---|---|---|---|\n" + row * rows
+    )
+    skill = parse_skill(d)
+    state = dm.state_for(skill, skill.units[0])
+    assert len(json.dumps(state)) / 2.5 <= model.context_tokens * 0.9  # the old check passed it
+    calls = _stub(
+        monkeypatch,
+        {u.title: _answers({**ZERO, "pure_function": 0.9}, 0.0) for u in skill.units},
+        model,
+    )
+    with pytest.raises(dm.DeciderUnavailable, match="truncates a longer state"):
+        dm.decide(model, skill)
+    assert calls == []

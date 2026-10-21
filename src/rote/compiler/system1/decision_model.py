@@ -334,8 +334,12 @@ VARIANTS = ("v0", "v1", "v2")
 
 
 #: Characters per token assumed when sizing a state before sending it: low,
-#: so the estimate errs toward refusing a state that might not fit.
-_CHARS_PER_TOKEN = 2.5
+#: so the estimate errs toward refusing a state that might not fit. Prose runs
+#: near 4, but markdown tables, base64, hashes and code tokenize far denser
+#: (review6, on o200k: 2.5 counted only 0.62 of a table's real tokens), and
+#: a step can be mostly a table. 1.5 still allows about 88k characters a step
+#: on Clef and 44k on Jev.
+_CHARS_PER_TOKEN = 1.5
 
 
 def _check_fits(model: DecisionModel, states: list[dict[str, Any]]) -> None:
@@ -376,7 +380,7 @@ def decide(model: DecisionModel, skill: SkillParse) -> Verdicts:
     if filled:
         raise DeciderUnavailable(
             f"{model.label} read {filled[0]['usage']['input_tokens']} tokens, its whole window: "
-            "the state was likely truncated"
+            "the state was likely truncated. Use --decider rules for this skill"
         )
     by_unit: dict[int, list[dict[str, Any]]] = {}
     for (u, _), res in zip(jobs, results, strict=True):
