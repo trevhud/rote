@@ -337,11 +337,19 @@ Both this pass and the tie-break run on the compile driver's own client
 Haiku id in the compile model's form under `--agent api`, and the openai-api
 driver's OpenAI-compatible client with the compile's own model (GPT-5.5, GLM,
 Kimi) under `--agent openai-api`, through an OpenAI-shaped `json_schema`
-call. Nothing falls back to another provider's key or binary. A fallback
+call, and `codex exec --output-schema` with the codex driver's model under
+`--agent codex` (`system1/codex_call.py`). codex sends that schema as the
+Responses API's strict `json_schema` format, so it is as schema-locked as
+the other lanes. It has no token cap and carries about 25k tokens of codex's
+own system prompt per call (measured, 7 s for a one-step tie-break). The run
+is read-only, ephemeral and in a scratch directory, and only the last agent
+message is the answer, because codex applies the schema to every message of
+the turn. Nothing falls back to another provider's key or binary. A fallback
 would bill the user's Claude subscription on a compile they sent to another
 provider, and rote-cloud's container has neither, so every such compile
-failed there. The codex driver has no client rote can call, so with no lane
-the compile fails before the agent runs and names `--structure rules`. `rote-cloud` constructs `Compiler` with the default,
+failed there. Any other driver fails before the agent runs and names
+`--structure rules`. An OpenAI-lane call sends the pass's answer cap as
+`max_completion_tokens`; emitted judges still send none. `rote-cloud` constructs `Compiler` with the default,
 so cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
@@ -352,6 +360,19 @@ Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/sk
 | dev | haiku | 0.630 | 0.720 | 0.594 | 0.015 | 76 |
 | holdout | rules | 0.494 | 0.707 | 0.580 | 0 | 0.03 |
 | holdout | haiku | 0.879 | 0.778 | 0.775 | 0.014 | 70 |
+
+On an openai-api compile the pass runs on the compile's own model. GLM 5.2
+on Workers AI (1 trial, 2026-10-21, through the personal account; GPT-5.5
+could not run because that gateway had no Unified Billing balance):
+
+| split | kind | kind mix | edge F1 | s/skill | output tokens/skill |
+|---|---|---|---|---|---|
+| dev (4 of 5) | 0.700 | 0.800 | 0.727 | 158 | 27.6k |
+| holdout | 0.831 | 0.774 | 0.822 | 183 | 32.3k |
+
+Quality is about Haiku's, at twice the time and roughly ten times the
+cost. BDR failed: Workers AI answered HTTP 408 (request timeout) on its
+first call.
 
 The rules were fitted on the dev skills, so dev is where they look best; on
 the held-out skills the structure pass is ahead on every score. Sonnet 5.5

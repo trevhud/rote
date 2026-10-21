@@ -4270,7 +4270,8 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "again up to twice. It costs about $0.015 a compile on Haiku. It runs on "
             "the compile driver's own client: claude -p under the claude driver, the "
             "api driver's client under --agent api, and the openai-api driver's "
-            "client and model under --agent openai-api. Under codex it cannot run. "
+            "client and model under --agent openai-api, and codex exec --output-schema "
+            "under codex. "
             "'rules' makes no call and decides the skeleton step by step from the "
             "skill's text"
         ),
@@ -4284,8 +4285,8 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             f"setting, else {DEFAULT_TIEBREAK}). 'haiku' asks Claude Haiku in one "
             "schema-locked call, "
             "on the compile driver's own client, like --structure: claude -p on your "
-            "subscription, the api driver's client, or the openai-api driver's client "
-            "and model. 'none' makes no call: those steps take "
+            "subscription, the api driver's client, the openai-api driver's client "
+            "and model, or codex exec. 'none' makes no call: those steps take "
             "a conservative default and are listed for review"
         ),
     )

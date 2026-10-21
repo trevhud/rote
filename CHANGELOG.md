@@ -25,11 +25,11 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 - **System-1's model calls run on the compile driver's own client only.**
   The structure pass and the tie-break use `claude -p` under the claude
   driver, the api driver's client under `--agent api`, and now the
-  openai-api driver's client and model under `--agent openai-api`. They
-  used to fall back to an `ANTHROPIC_*` key or a `claude` on PATH, which
-  billed your Claude account for a compile sent to another provider and
-  failed in containers that have neither. Under codex, pass
-  `--structure rules`.
+  openai-api driver's client and model under `--agent openai-api`, and
+  `codex exec --output-schema` under `--agent codex`. They used to fall
+  back to an `ANTHROPIC_*` key or a `claude` on PATH, which billed your
+  Claude account for a compile sent to another provider and failed in
+  containers that have neither.
 
 ### Added
 

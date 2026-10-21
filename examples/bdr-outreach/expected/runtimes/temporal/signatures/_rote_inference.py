@@ -873,6 +873,7 @@ def _call_openai(
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
     sdk_client: Any = None,
+    max_tokens: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import openai
 
@@ -889,6 +890,8 @@ def _call_openai(
         response = client.chat.completions.create(
             model=model,
             **sampling,
+            # Sent as max_completion_tokens: reasoning models reject max_tokens.
+            **({} if max_tokens is None else {"max_completion_tokens": max_tokens}),
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": node_id, "schema": output_schema, "strict": True},
@@ -999,6 +1002,10 @@ def _call_claude_cli(
 # ───────── the one entry point emitted judges call ─────────
 
 
+#: An Anthropic call's answer cap when the caller sets none.
+_DEFAULT_MAX_TOKENS = 4096
+
+
 def call_judge(
     *,
     node_id: str,
@@ -1008,7 +1015,7 @@ def call_judge(
     output_schema: dict[str, Any],
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Run one schema-locked judge call and return its raw output dict.
 
@@ -1043,7 +1050,7 @@ def structured_call(
     output_schema: dict[str, Any],
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     sdk_client: Any = None,
 ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """One schema-locked call on a provider already chosen: ``(payload, usage rows)``.
@@ -1055,6 +1062,10 @@ def structured_call(
     to match ``client`` (rote's compiler passes its driver's, so a call bills
     and routes exactly like the compile); without it one is built for
     ``provider``.
+
+    ``max_tokens`` caps the answer. Unset, an Anthropic call gets
+    :data:`_DEFAULT_MAX_TOKENS` (the API requires one) and an OpenAI call
+    gets none, so the model's own limit applies.
     """
     sampling = dict(sampling or {})
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
@@ -1076,7 +1087,7 @@ def structured_call(
             prompt=prompt,
             output_schema=output_schema,
             sampling=sampling,
-            max_tokens=max_tokens,
+            max_tokens=_DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens,
             sdk_client=sdk_client,
         )
     elif client == "openai":
@@ -1089,6 +1100,7 @@ def structured_call(
             output_schema=output_schema,
             sampling=sampling,
             sdk_client=sdk_client,
+            max_tokens=max_tokens,
         )
     else:
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")

@@ -1042,7 +1042,8 @@ def test_an_openai_api_structure_pass_goes_only_to_the_compiles_gateway(
     work.mkdir()
     lane = structure.lane_for(openai_compile_driver(), "haiku")
     plan = system1.prepare(d, work, tools=TOOLS, structure_lane=lane, rubric=rubric)
-    assert_sent_through_the_gateway(requests)
+    # The pass's own answer cap reaches an OpenAI lane too.
+    assert_sent_through_the_gateway(requests, max_completion_tokens=structure.MAX_TOKENS)
     assert plan.structure is not None and plan.structure.model == "openai/gpt-5.5"
     assert plan.structure.lane == "OpenAI-compatible API"
     assert [n.id for n in plan.nodes] == ["fetch_emails", "summarize_email", "render_digest"]
@@ -1282,3 +1283,61 @@ def test_the_loop_rule_defers_to_mandatory() -> None:
     task = " ".join(structure._TASK.split())
     assert "not top-level steps before or after it, unless the skill marks it MANDATORY" in task
     assert "a step the skill marks MANDATORY never goes in_loop" in task
+
+
+def test_a_codex_structure_pass_runs_on_codex_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A default codex compile's skeleton comes from codex itself."""
+    from rote.compiler import system1
+    from rote.compiler.drivers.codex import CodexDriver
+    from tests._helpers import fake_codex, fake_codex_runs, refuse_anthropic
+
+    refuse_anthropic(monkeypatch)
+    script = fake_codex(tmp_path, [good_answer()])
+    lane = structure.lane_for(CodexDriver(model="gpt-5.5", codex_executable=str(script)), "haiku")
+    assert (lane.provider, lane.model) == ("codex-cli", "gpt-5.5")
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "w"
+    work.mkdir()
+    plan = system1.prepare(d, work, tools=TOOLS, structure_lane=lane, rubric=rubric)
+    [run] = fake_codex_runs(script)
+    assert run["schema"] == structure.SCHEMA
+    assert plan.structure is not None and plan.structure.lane == "codex exec"
+    assert [n.id for n in plan.nodes] == ["fetch_emails", "summarize_email", "render_digest"]
+
+
+def test_a_default_codex_compile_reaches_the_structure_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression the flip would have shipped: every default codex compile failing."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.drivers.codex import CodexDriver
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [])
+    lanes: list[Lane] = []
+
+    def asked(skill: Any, skill_md: str, rubric: str, lane: Lane, **kw: Any) -> Any:
+        lanes.append(lane)
+        raise _Asked("asked")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    driver = CodexDriver(model="gpt-5.5", codex_executable=str(script))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    with pytest.raises(_Asked):
+        asyncio.run(
+            Compiler(run_generated_tests=False, tool_discovery="none").compile(
+                skill, tmp_path / "o"
+            )
+        )
+    assert [(lane.provider, lane.model) for lane in lanes] == [("codex-cli", "gpt-5.5")]

@@ -17,6 +17,9 @@ import pytest
 
 from rote import cli
 from rote.compiler import Compiler, CompilerError, system1
+
+# Imported at load: codex.py binds shutil.which on import, and tests here patch it.
+from rote.compiler.drivers.codex import CodexDriver
 from rote.compiler.system1 import tiebreak as tb
 from rote.compiler.system1.decide import REVIEW_BELOW, unit_segments, unsure_units
 from rote.compiler.system1.parse import parse_skill
@@ -340,7 +343,7 @@ def test_the_lane_is_the_compile_drivers_own(monkeypatch: pytest.MonkeyPatch) ->
     # Another driver never borrows a key or the claude CLI it finds lying around.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     with pytest.raises(TieBreakUnavailable, match="'codex' driver has no client"):
-        tb.lane_for(_Named("codex"))
+        tb.lane_for(_Named("codex"))  # named codex, but not the CodexDriver
     # A driver named like one rote knows but not that class has no client either.
     with pytest.raises(TieBreakUnavailable, match="'openai-api' driver has no client"):
         tb.lane_for(_Named("openai-api"))
@@ -420,6 +423,8 @@ def test_the_sdk_lane_sends_a_schema_locked_call_with_the_lent_client() -> None:
     expected = structured_output_schema(tb.SCHEMA, node_id="system1_tiebreak")
     assert sent["output_config"] == {"format": {"type": "json_schema", "schema": expected}}
     assert "tools" not in sent and "tool_choice" not in sent and "temperature" not in sent
+    # No cap asked for: the API still needs one, and it is the helper's default.
+    assert sent["max_tokens"] == 4096
     assert rows == [
         (
             "claude-haiku-5-5",
@@ -785,3 +790,70 @@ def test_a_lane_without_a_client_is_refused(tmp_path: Path) -> None:
     work.mkdir()
     with pytest.raises(TieBreakUnavailable, match="no client for its lane"):
         system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("api"), rubric=RUBRIC)
+
+
+def _codex_driver(script: Path, model: str | None = "gpt-5.5") -> Any:
+    return CodexDriver(model=model, codex_executable=str(script))
+
+
+def test_the_codex_driver_lends_codex_exec(tmp_path: Path) -> None:
+    from rote.compiler.system1.codex_call import CodexCli
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [])
+    lane = tb.lane_for(_codex_driver(script))
+    assert lane == Lane("codex-cli", CodexCli(str(script)), "gpt-5.5", client="openai")
+    assert lane.label == "codex exec"
+    # No model configured: codex's own default, not a guessed id.
+    assert tb.lane_for(_codex_driver(script, model=None)).model == ""
+
+
+def test_a_codex_lane_without_the_cli_names_the_opt_out(tmp_path: Path) -> None:
+    with pytest.raises(TieBreakUnavailable, match="cannot use codex exec.*--tiebreak none"):
+        tb.lane_for(_codex_driver(tmp_path / "no-such-codex"))
+
+
+def test_a_codex_tiebreak_is_one_schema_locked_codex_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole call through a stand-in codex binary: the schema goes in as
+    --output-schema, the prompt on stdin, the run is read-only and leaves no
+    session, the LAST agent message is the answer, and Anthropic is never reached."""
+    from tests._helpers import fake_codex, fake_codex_runs, refuse_anthropic
+
+    refuse_anthropic(monkeypatch)
+    script = fake_codex(tmp_path, [_answer("llm_judge")])
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(
+        _skill(tmp_path), work, tiebreak_lane=tb.lane_for(_codex_driver(script)), rubric=RUBRIC
+    )
+    [run] = fake_codex_runs(script)
+    argv = run["argv"]
+    assert argv[0] == "exec" and argv[-1] == "-"
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    assert argv[argv.index("--model") + 1] == "gpt-5.5"
+    assert {"--ephemeral", "--skip-git-repo-check", "--json"} <= set(argv)
+    assert run["schema"] == tb.SCHEMA
+    assert "Tidy the notes for the file." in run["stdin"]
+    assert plan.tiebreak is not None and plan.tiebreak.segments[UNSURE][0][1] == "llm_judge"
+    assert plan.tiebreak.usage == [
+        {
+            "model": "gpt-5.5",
+            "input_tokens": 600,
+            "output_tokens": 50,
+            "cache_write_tokens": None,
+            "cache_read_tokens": 400,
+        }
+    ]
+
+
+def test_a_failed_codex_exec_fails_the_tiebreak(tmp_path: Path) -> None:
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [_answer("llm_judge")], exit_code=1)
+    work = tmp_path / "work"
+    work.mkdir()
+    lane = tb.lane_for(_codex_driver(script))
+    with pytest.raises(TieBreakUnavailable, match="codex exec for system1_tiebreak failed"):
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=lane, rubric=RUBRIC)

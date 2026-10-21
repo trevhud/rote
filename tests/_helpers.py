@@ -284,22 +284,51 @@ GATEWAY_HEADERS = {"cf-aig-authorization": "Bearer gw-token", "cf-aig-metadata":
 STRAY_ANTHROPIC_KEY = "sk-ant-must-not-be-sent"
 
 
-def openai_gateway(monkeypatch: Any, answers: list[dict[str, Any]]) -> list[Any]:
-    """Serve every ``openai.OpenAI`` client from an in-process gateway that
-    answers ``answers`` in turn, and return the requests it saw.
-
-    Everything another provider could be billed through fails the test: an
-    Anthropic client, a ``claude`` lookup or subprocess. An Anthropic key
-    sits in the environment so a request carrying it is visible."""
-    import json
+def refuse_anthropic(monkeypatch: Any) -> None:
+    """Make every way to reach Anthropic fail the test: its SDK clients, a
+    ``claude`` lookup or subprocess. An Anthropic key sits in the environment
+    so a request carrying it is visible, and pricing is offline."""
     import shutil
     import subprocess
 
     import anthropic
-    import httpx
-    import openai
 
     from rote.eval import pricing
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"a non-Anthropic compile reached Anthropic: {args!r}")
+
+    def offline(*args: Any, **kwargs: Any) -> Any:
+        raise pricing.PricingError("offline in tests")
+
+    real_which, real_run = shutil.which, subprocess.run
+
+    def run(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        if "claude" in str(argv[0] if isinstance(argv, (list, tuple)) else argv):
+            refuse(argv)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(anthropic, "Anthropic", refuse)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", refuse)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: refuse(name) if "claude" in str(name) else real_which(name, *a, **k),
+    )
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(pricing, "fetch_catalog", offline)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", STRAY_ANTHROPIC_KEY)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", STRAY_ANTHROPIC_KEY)
+
+
+def openai_gateway(monkeypatch: Any, answers: list[dict[str, Any]]) -> list[Any]:
+    """Serve every ``openai.OpenAI`` client from an in-process gateway that
+    answers ``answers`` in turn, and return the requests it saw. Anthropic
+    is refused (:func:`refuse_anthropic`)."""
+    import json
+
+    import httpx
+    import openai
 
     seen: list[httpx.Request] = []
 
@@ -329,28 +358,59 @@ def openai_gateway(monkeypatch: Any, answers: list[dict[str, Any]]) -> list[Any]
     def client(**kwargs: Any) -> Any:
         return real(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(answer)))
 
-    def refuse(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError(f"an openai-api compile reached another provider: {args!r}")
-
-    real_which = shutil.which
     monkeypatch.setattr(openai, "OpenAI", client)
-    monkeypatch.setattr(anthropic, "Anthropic", refuse)
-    monkeypatch.setattr(anthropic, "AsyncAnthropic", refuse)
-    monkeypatch.setattr(
-        shutil,
-        "which",
-        lambda name, *a, **k: refuse(name) if "claude" in str(name) else real_which(name, *a, **k),
-    )
-    monkeypatch.setattr(subprocess, "run", refuse)
-
-    def offline(*args: Any, **kwargs: Any) -> Any:
-        raise pricing.PricingError("offline in tests")
-
-    monkeypatch.setattr(pricing, "fetch_catalog", offline)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", STRAY_ANTHROPIC_KEY)
-    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", STRAY_ANTHROPIC_KEY)
+    refuse_anthropic(monkeypatch)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     return seen
+
+
+def fake_codex(tmp_path: Path, answers: list[dict[str, Any]], exit_code: int = 0) -> Path:
+    """An executable standing in for ``codex``: it records its argv, stdin and
+    the schema file it was given, prints ``--json`` events (a schema-shaped
+    progress message, then the answer, then usage) and exits ``exit_code``.
+    Each run answers the next of ``answers``."""
+    import json
+    import sys
+
+    state = tmp_path / "fake-codex"
+    state.mkdir(exist_ok=True)
+    (state / "answers.json").write_text(json.dumps(answers))
+    script = state / "codex"
+    script.write_text(
+        f"""#!{sys.executable}
+import json, sys
+from pathlib import Path
+state = Path({str(state)!r})
+argv = sys.argv[1:]
+runs = sorted(state.glob("run-*.json"))
+n = len(runs)
+schema = argv[argv.index("--output-schema") + 1]
+record = {{"argv": argv, "stdin": sys.stdin.read(), "schema": json.loads(Path(schema).read_text())}}
+(state / f"run-{{n}}.json").write_text(json.dumps(record))
+answers = json.loads((state / "answers.json").read_text())
+def emit(event):
+    print(json.dumps(event), flush=True)
+def message(i, text):
+    item = {{"id": f"item_{{i}}", "type": "agent_message", "text": text}}
+    emit({{"type": "item.completed", "item": item}})
+emit({{"type": "thread.started", "thread_id": "t"}})
+message(0, "{{}}")
+if {exit_code}:
+    emit({{"type": "turn.failed", "error": {{"message": "usage limit reached"}}}})
+    sys.exit({exit_code})
+message(1, json.dumps(answers[n]))
+usage = {{"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 50}}
+emit({{"type": "turn.completed", "usage": usage}})
+"""
+    )
+    script.chmod(0o755)
+    return script
+
+
+def fake_codex_runs(script: Path) -> list[dict[str, Any]]:
+    import json
+
+    return [json.loads(p.read_text()) for p in sorted(script.parent.glob("run-*.json"))]
 
 
 def openai_compile_driver(model: str = "openai/gpt-5.5") -> Any:
@@ -359,7 +419,9 @@ def openai_compile_driver(model: str = "openai/gpt-5.5") -> Any:
     return OpenAIApiDriver(model=model, base_url=GATEWAY_URL, default_headers=GATEWAY_HEADERS)
 
 
-def assert_sent_through_the_gateway(requests: list[Any], model: str = "openai/gpt-5.5") -> None:
+def assert_sent_through_the_gateway(
+    requests: list[Any], model: str = "openai/gpt-5.5", max_completion_tokens: int | None = None
+) -> None:
     """Each request went to the compile's gateway, with its headers and model,
     schema-locked, and none carried the stray Anthropic key."""
     import json
@@ -375,3 +437,4 @@ def assert_sent_through_the_gateway(requests: list[Any], model: str = "openai/gp
         assert body["model"] == model
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
+        assert body.get("max_completion_tokens") == max_completion_tokens

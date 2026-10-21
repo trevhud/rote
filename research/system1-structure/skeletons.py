@@ -1,7 +1,8 @@
 """Skeleton scores: the rules against the whole-skill structure pass.
 
-usage: python skeletons.py [haiku|sonnet ...] [--trials N] [--json out.json]
-(Anthropic key in the environment)
+usage: python skeletons.py [haiku|sonnet|openai:<model> ...] [--trials N] [--json out.json]
+(Anthropic key in the environment; for openai:<model>, the lane an openai-api
+compile gets: OPENAI_BASE_URL and CF_AIG_TOKEN, a Cloudflare AI endpoint)
 """
 
 from __future__ import annotations
@@ -45,13 +46,32 @@ SPLITS = {
 CHOICES = [*structure.MODELS, *(f"{m}-low" for m in structure.MODELS)]
 
 
+def openai_lane(model: str) -> Lane:
+    """What an openai-api compile on rote-cloud gets: the driver's own client."""
+    from rote.compiler.drivers.openai_api import OpenAIApiDriver
+    from rote.compiler.system1 import tiebreak
+
+    token = os.environ["CF_AIG_TOKEN"]
+    os.environ.setdefault("OPENAI_API_KEY", token)
+    driver = OpenAIApiDriver(
+        model=model,
+        base_url=os.environ["OPENAI_BASE_URL"],
+        default_headers={
+            "Authorization": f"Bearer {token}",
+            "cf-aig-authorization": f"Bearer {token}",
+        },
+    )
+    return tiebreak.lane_for(driver)
+
+
 def row(examples: Path, skill: str, *, choice: str) -> dict[str, Any]:
     model = choice.removesuffix("-low")
-    lane = (
-        None
-        if choice == "rules"
-        else structure.lane_with(Lane("api", anthropic.Anthropic()), model)
-    )
+    if choice == "rules":
+        lane = None
+    elif choice.startswith("openai:"):
+        lane = openai_lane(choice.removeprefix("openai:"))
+    else:
+        lane = structure.lane_with(Lane("api", anthropic.Anthropic()), model)
     start = time.monotonic()
     with tempfile.TemporaryDirectory() as t:
         try:
@@ -84,7 +104,7 @@ def row(examples: Path, skill: str, *, choice: str) -> dict[str, Any]:
 def main() -> None:
     args = sys.argv[1:]
     trials = int(args[args.index("--trials") + 1]) if "--trials" in args else 1
-    choices = ["rules", *[a for a in args if a in CHOICES]]
+    choices = ["rules", *[a for a in args if a in CHOICES or a.startswith("openai:")]]
     catalog = fetch_catalog()
     out: list[dict[str, Any]] = []
     for split, (examples, skills) in SPLITS.items():
@@ -115,6 +135,10 @@ def main() -> None:
                 },
                 "rounds_mean": round(statistics.mean(r["rounds"] for r in rows), 2),
                 "cost_per_skill": round(cost / len(rows), 4) if rows else 0,
+                "tokens_per_skill": {
+                    k: round(sum(u.get(k) or 0 for u in usage) / max(len(rows), 1))
+                    for k in ("input_tokens", "output_tokens", "cache_read_input_tokens")
+                },
             }
             print(json.dumps(summary), flush=True)
             for r in rows:

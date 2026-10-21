@@ -128,6 +128,8 @@ class Lane:
     def label(self) -> str:
         if self.provider == "claude-cli":
             return "claude -p (subscription)"
+        if self.provider == "codex-cli":
+            return "codex exec"
         return "OpenAI-compatible API" if self.client == "openai" else "Anthropic API"
 
 
@@ -174,11 +176,12 @@ def lane_for(
     """The compile driver's own client, as a lane: same endpoint, headers and auth.
 
     ``claude`` calls ``claude -p``, ``api`` the AnthropicApiDriver's client
-    with a Haiku id in the compile model's own form, and ``openai-api`` the
-    OpenAIApiDriver's client with the compile's model. Nothing falls back to
-    another provider's key or binary: a compile that chose GPT-5.5 must not
-    bill the user's Claude subscription, and rote-cloud's container has
-    neither. A driver with no client rote can call (``codex``) fails here.
+    with a Haiku id in the compile model's own form, ``openai-api`` the
+    OpenAIApiDriver's client with the compile's model, and ``codex`` the
+    CodexDriver's binary through ``codex exec --output-schema`` with its
+    model. Nothing falls back to another provider's key or binary: a compile
+    that chose GPT-5.5 must not bill the user's Claude subscription, and
+    rote-cloud's container has neither. Any other driver fails here.
     ``caller``, ``opt_out`` and ``error`` say who is asking, so a failure
     names the flag that turns that call off."""
     from rote.inference._runtime_helper import provider_availability
@@ -210,9 +213,20 @@ def lane_for(
             return Lane(
                 "api", openai.OpenAI(**driver._client_kwargs()), driver.model, client="openai"
             )
+    if name == "codex":
+        from rote.compiler.drivers.codex import CodexDriver
+        from rote.compiler.system1.codex_call import PROVIDER, CodexCli
+
+        if isinstance(driver, CodexDriver):
+            ok, reason = driver.is_available()
+            if not ok:
+                raise error(f"{caller}, and cannot use codex exec: {reason} (or pass {opt_out})")
+            return Lane(
+                PROVIDER, CodexCli(driver.codex_executable), driver.model or "", client="openai"
+            )
     raise error(
         f"{caller}, and the {name!r} driver has no client rote can send that call "
-        f"through: compile with --agent claude, api or openai-api, or pass {opt_out}"
+        f"through: compile with --agent claude, api, openai-api or codex, or pass {opt_out}"
     )
 
 
@@ -256,7 +270,7 @@ Call = Callable[..., tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]]
 
 
 def _structured_call() -> Call:
-    from rote.inference._runtime_helper import structured_call
+    from rote.compiler.system1.codex_call import structured_call
 
     return structured_call
 

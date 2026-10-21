@@ -364,8 +364,8 @@ class Structure:
 def lane_with(lane: Lane, choice: str) -> Lane:
     """``lane`` with the model ``choice`` names, in the lane's own id form.
 
-    An OpenAI-compatible lane keeps the compile's own model: Haiku and
-    Sonnet are not on that endpoint's wire format."""
+    An OpenAI-compatible or codex lane keeps the compile's own model: Haiku
+    and Sonnet are not on that wire format."""
     if lane.client == "openai":
         return lane
     model = MODELS[choice]
@@ -865,7 +865,7 @@ Call = Callable[..., tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]]
 
 
 def _structured_call() -> Call:
-    from rote.inference._runtime_helper import structured_call
+    from rote.compiler.system1.codex_call import structured_call
 
     return structured_call
 
@@ -879,6 +879,8 @@ def _client(lane: Lane) -> Any:
     Anthropic key the environment holds, whichever driver the compile chose."""
     if lane.provider == "claude-cli":
         return None
+    if lane.provider == "codex-cli":
+        return lane.sdk_client
     if lane.sdk_client is None:
         raise StructureUnavailable(
             "the structure pass has no client for its lane; build lanes with lane_for"
