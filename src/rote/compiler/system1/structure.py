@@ -337,8 +337,8 @@ every one, one of two ways:
 
 - change the skeleton so the disagreement no longer holds, or
 - keep your answer and, in `keeps`, give that section's index and a passage
-  copied exactly from under that heading that supports your answer over
-  the model's.
+  of at least four words copied exactly from the text under that heading
+  (not the heading itself) that supports your answer over the model's.
 
 Code checks both: a disagreement still standing needs a `keeps` entry whose
 passage is under that heading verbatim. Return the whole skeleton again, in
@@ -412,6 +412,8 @@ SECOND_OPINION_SCHEMA: dict[str, Any] = _obj(
         },
     }
 )
+#: The fewest words a keep's quote may have (provenance's citation floor).
+KEEP_QUOTE_MIN_WORDS = 4
 #: How many second-opinion answers: the first, and one more when a kept
 #: disagreement had no verbatim support or the answer broke a code check.
 SECOND_OPINION_ATTEMPTS = 2
@@ -1148,8 +1150,8 @@ def _second_opinion(
 
 
 def _supported_keeps(keeps: list[Any], skill: SkillParse) -> dict[int, str]:
-    """``{section: quote}`` for each keep whose quote is under its own heading
-    verbatim: the check a node's quote passes."""
+    """``{section: quote}`` for each keep whose quote is in its own step's text
+    verbatim (not its heading), at least :data:`KEEP_QUOTE_MIN_WORDS` words."""
     units = {u.index: u for u in skill.units}
     out: dict[int, str] = {}
     for k in keeps:
@@ -1157,7 +1159,9 @@ def _supported_keeps(keeps: list[Any], skill: SkillParse) -> dict[int, str]:
             continue
         u = units.get(k["section"])
         quote = str(k.get("quote") or "")
-        if u is not None and _appears(quote, f"{u.title}\n{u.text}"):
+        # The step's own words, not its heading, and enough of them to be a
+        # reason: the provenance rule's floor of four words.
+        if u is not None and len(quote.split()) >= KEEP_QUOTE_MIN_WORDS and _appears(quote, u.text):
             out[k["section"]] = quote
     return out
 

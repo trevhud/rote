@@ -138,6 +138,11 @@ def test_a_keep_with_a_verbatim_quote_from_its_own_heading_is_accepted(skill: An
         [{"section": 2, "quote": "a sentence the skill never says"}],
         # Verbatim, but from another heading: it does not speak to this step.
         [{"section": 2, "quote": "Send the digest to the finance team"}],
+        # The step's own heading is not a reason.
+        [{"section": 2, "quote": "Step 2: Summarize"}],
+        # Verbatim, but too short to say anything (the provenance floor is 4 words).
+        [{"section": 2, "quote": "summary"}],
+        [{"section": 2, "quote": "Write a three-line"}],
     ],
 )
 def test_a_keep_without_a_verbatim_quote_goes_back_once(skill: Any, bad: Any) -> None:
@@ -248,3 +253,45 @@ async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
         await Compiler(
             system1_decider="jev", run_generated_tests=False, tool_discovery="none"
         ).compile(skill, tmp_path / "out")
+
+
+def test_the_default_decider_makes_no_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--decider rules`, the built-in: the pass runs and no decision model is asked."""
+    from rote.compiler import system1
+    from rote.compiler.system1 import decision_model
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a decision model was asked with --decider rules")
+
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    monkeypatch.setattr(decision_model, "decide", never)
+    fake = FakeCall(good_answer())
+    monkeypatch.setattr(structure, "_structured_call", lambda: fake)
+    work = tmp_path / "w"
+    work.mkdir()
+    plan = system1.prepare(d, work, tools=TOOLS, structure_lane=Lane("claude-cli"), rubric=rubric)
+    assert plan.structure is not None and plan.structure.checked == [] and len(fake.prompts) == 1
+    assert "decider" not in json.loads((work / "system1" / "decisions.json").read_text())
+
+
+def test_a_keep_quote_comes_from_the_steps_text_not_its_heading() -> None:
+    """review6's case: a four-word heading quoted as the reason, and one word."""
+    from types import SimpleNamespace
+
+    unit = SimpleNamespace(
+        index=1, title="Step 1: Fetch the rows", text="Read every row of the sheet, oldest first."
+    )
+    skill = SimpleNamespace(units=[unit])
+
+    def ok(quote: str) -> bool:
+        return 1 in structure._supported_keeps([{"section": 1, "quote": quote}], skill)  # type: ignore[arg-type]
+
+    assert not ok("Step 1: Fetch the rows")
+    assert not ok("the")
+    assert ok("Read every row of the sheet")
