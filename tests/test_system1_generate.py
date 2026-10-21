@@ -1039,7 +1039,7 @@ def test_a_skeleton_output_schema_is_fixed_and_named_keys_are_required(tmp_path:
     base = _node(ctx, NodeKind.PURE_FUNCTION)
     fixed = {"type": "object", "properties": {"items": {"type": "array"}}, "required": ["items"]}
     node = base.model_copy(update={"output_schema": fixed})
-    assert ctx.observed_schema(node) == fixed
+    assert ctx.known_result_schema(node) == (fixed, "fixed by the skeleton")
     keyed = base.model_copy(update={"output": {"missing_limits_page": "Any"}})
     prompt = interface_request(ctx, keyed, "system", "m").prompt
     assert (
