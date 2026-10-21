@@ -1,5 +1,5 @@
 version: 1
-source_skill: examples/bdr-outreach/skill
+source_skill: ../../skill
 
 # Per-step agent-turn estimates for running the BDR skill as raw instructions.
 # "Agent turn" = one assistant message, usually one tool call.
@@ -175,15 +175,14 @@ steps:
     # Agent must use openpyxl or similar; formatting instructions in prose require
     # multiple tool calls (set fonts, set fills, set widths, freeze pane, save)
 
-totals:
-  main_campaign_path:
-    description: "target_research + taxonomy_lookup + lead_gen_loop (incl. per-contact iterations) + CRM + exclusions + personalization + handoff"
-    low: 75
-    high: 320
-  conference_path_only:
-    description: "conf_load_file + conf_pharma_filter + conf_exclusion_review_gate + conf_enrich_batch + conf_build_xlsx"
-    low: 11
-    high: 72
+# A run takes one path, so the whole-run total is the main campaign path:
+# target_research + taxonomy_lookup + lead_gen_loop (incl. per-contact
+# iterations) + CRM + exclusions + personalization + handoff. The
+# conference-only path (conf_load_file + conf_pharma_filter +
+# conf_exclusion_review_gate + conf_enrich_batch + conf_build_xlsx) is
+# 11-72 turns. Migrated from a per-path totals block the schema never
+# accepted, which made `rote eval` reject this run.
+totals: {low: 75, high: 320}
 
 notes: >-
   The per-contact fan-out nodes dominate both paths. vet_contact (30-80
