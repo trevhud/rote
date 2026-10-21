@@ -23,6 +23,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from rote.xdg import data_home
+
 
 @dataclass(frozen=True)
 class RegisteredApp:
@@ -37,8 +39,7 @@ def apps_path() -> Path:
     override = os.environ.get("ROTE_APPS_PATH")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "apps.json"
+    return data_home() / "rote" / "apps.json"
 
 
 def registered_apps() -> list[RegisteredApp]:

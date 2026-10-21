@@ -31,6 +31,7 @@ from typing import Any
 from rote.vendor_specs import google, graphql, openapi
 from rote.vendor_specs.google import UrlApi
 from rote.vendor_specs.model import ApiSpec
+from rote.xdg import cache_home
 
 DEFAULT_TTL_SECONDS = 24 * 3600
 _FETCH_TIMEOUT_SECONDS = 30
@@ -44,8 +45,7 @@ def default_root() -> Path:
     override = os.environ.get("ROTE_SPEC_CACHE_DIR")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".cache") / "rote" / "specs"
+    return cache_home() / "rote" / "specs"
 
 
 def http_get_json(url: str) -> Any:

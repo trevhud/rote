@@ -27,6 +27,7 @@ from pathlib import Path
 
 from rote.vendor_specs.fixtures import FixtureError, FixtureSet, validate
 from rote.vendor_specs.model import ApiSpec
+from rote.xdg import data_home
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _KEY_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -36,8 +37,7 @@ def default_root() -> Path:
     override = os.environ.get("ROTE_FIXTURE_DIR")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "fixtures"
+    return data_home() / "rote" / "fixtures"
 
 
 class FixtureStore:

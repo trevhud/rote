@@ -45,6 +45,7 @@ from rote.eval.priors import Priors
 from rote.extras import extra_for_missing_module, install_hint
 from rote.inference import build_subscription_env
 from rote.ir import NodeKind, Pipeline
+from rote.xdg import data_home
 
 if TYPE_CHECKING:
     from rote.mcp.parked import ParkWatchFactory
@@ -823,8 +824,7 @@ def default_corpus_path() -> Path:
     override = os.environ.get("ROTE_EVAL_CORPUS_PATH")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".local" / "share") / "rote" / "eval-corpus.jsonl"
+    return data_home() / "rote" / "eval-corpus.jsonl"
 
 
 def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | None = None) -> Path:
