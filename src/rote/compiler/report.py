@@ -184,7 +184,6 @@ def _open_questions(
     found: list[Assumption],
     impls: list[NodeImplementation],
     extra: Sequence[tuple[str, str]],
-    api_backend: bool = False,
 ) -> list[str]:
     """One ``###`` entry per distinct assumption, one per stub, one per extra."""
     distinct: dict[str, list[Assumption]] = {}
@@ -206,9 +205,7 @@ def _open_questions(
             "",
         ]
     for impl in impls:
-        # On the mcp backend a bound node's stub never runs; on the api
-        # backend it is the call.
-        if impl.status == "implemented" or (impl.mcp_bound and not api_backend):
+        if not impl.blocks_run:
             continue
         reason = impl.reason or "no reason given"
         lines += [
@@ -233,7 +230,7 @@ def render_compile_report(
     ``extras``: re-rendering an unchanged deliverable yields the same text.
     """
     extras = extras or ReportExtras()
-    impls = implementation_status(pipeline, root)
+    impls = implementation_status(pipeline, root, "api" if extras.api_backend else "mcp")
     found = assumptions(pipeline, root)
     preamble = ["", extras.preamble] if extras.preamble else []
     steps = ["", "## Suggested next steps", "", *(f"- {s}" for s in extras.next_steps)]
@@ -274,7 +271,7 @@ def render_compile_report(
         ),
         "## Open questions",
         "",
-        *_open_questions(found, impls, extras.questions, extras.api_backend),
+        *_open_questions(found, impls, extras.questions),
         *(steps if extras.next_steps else []),
     ]
     return "\n".join(parts).rstrip("\n") + "\n"

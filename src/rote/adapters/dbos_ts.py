@@ -98,6 +98,7 @@ from rote.adapters._common import (
     _to_pascal_case,
     fan_out_nodes,
     judge_override_readme,
+    mcp_backed_nodes,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
@@ -120,7 +121,6 @@ from rote.adapters._ts_common import (
     impl_input_type_block,
     judge_env_arg,
     llm_clients,
-    mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
     required_inputs_ts_guard,
@@ -693,11 +693,15 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
     )
 
     imports = module_imports(pipeline)
+    # An agent loop's tools are MCP tools, so it can hit a missing endpoint too.
+    reaches_mcp = mcp_backed or any(n.tools for n in pipeline.nodes_by_kind(NodeKind.AGENT_LOOP))
     if mcp_backed:
         imports += (
             "\nimport { isRoteMcpAuthNeeded, isRoteMcpConfigError, isRoteMcpInputRequired }"
             ' from "./extracted/_roteMcp";'
         )
+    elif reaches_mcp:
+        imports += '\nimport { isRoteMcpConfigError } from "./extracted/_roteMcp";'
 
     helper_blocks: list[str] = []
     if pipeline.nodes_by_kind(NodeKind.LLM_JUDGE):
@@ -781,12 +785,27 @@ def emit_main(pipeline: Pipeline, cfg: DbosTsAdapterConfig | None = None) -> str
 
         if (require.main === module) {{
             main().catch((err) => {{
+        __CONFIG_ERROR__
                 console.error(err);
                 process.exitCode = 1;
             }});
         }}
         """
     )
+    # A missing MCP endpoint is the user's to fix and its message says how,
+    # so it prints like a bad input: one `error:` line and exit status 2,
+    # which `rote run` relays as the whole failure. Every other error keeps
+    # its stack.
+    config_error = (
+        "        if (isRoteMcpConfigError(err)) {\n"
+        "            console.error(`error: ${err instanceof Error ? err.message : String(err)}`);\n"
+        "            process.exitCode = 2;\n"
+        "            return;\n"
+        "        }\n"
+        if reaches_mcp
+        else ""
+    )
+    main_block = main_block.replace("__CONFIG_ERROR__\n", config_error)
 
     sections = [header + imports]
     sections.extend(helper_blocks)

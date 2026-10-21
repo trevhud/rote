@@ -107,6 +107,7 @@ from rote.adapters._common import (
     _pipeline_hash,
     _to_camel_case,
     fan_out_nodes,
+    mcp_backed_nodes,
     safe_block_comment_line,
 )
 from rote.adapters._ts_common import (
@@ -129,7 +130,6 @@ from rote.adapters._ts_common import (
     impl_input_type_block,
     judge_env_arg,
     llm_clients,
-    mcp_backed_nodes,
     module_imports,
     payload_ts_literal,
     required_inputs_ts_guard,

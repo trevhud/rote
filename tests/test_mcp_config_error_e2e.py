@@ -13,8 +13,10 @@ Runs the emitted app as a subprocess against a real DBOS runtime on
 SQLite, exactly how users run it. Attempts are counted, not inferred
 from a message: the emitted MCP helper is wrapped so every endpoint
 resolution for the server appends a line, and each attempt of either
-node resolves it exactly once. The TypeScript runtimes have the same
-cases in their park e2e suites.
+node resolves it exactly once. The message already says what to set,
+so the app's last word is that one line (exit status 2), the shape
+``rote run`` relays as the whole failure. The TypeScript runtimes have
+the same cases in their park e2e suites.
 """
 
 from __future__ import annotations
@@ -90,7 +92,44 @@ def test_missing_endpoint_runs_the_step_once_and_names_the_variable(
         timeout=120,
         env=env,
     )
-    assert proc.returncode != 0
     assert resolutions.read_text(encoding="utf-8").splitlines() == ["vendor"], proc.stderr
-    assert "RoteMcpConfigError" in proc.stderr
-    assert "set ROTE_MCP_VENDOR_URL" in proc.stderr
+    # Configuration, so the app's last word is one `error:` line and exit
+    # status 2, the shape `rote run` relays as the whole failure.
+    assert proc.returncode == 2, proc.stderr
+    last = proc.stderr.strip().splitlines()[-1]
+    assert last.startswith("error: "), proc.stderr
+    assert "no endpoint for MCP server 'vendor': set ROTE_MCP_VENDOR_URL" in last
+
+
+#: A real compile of ops-report, its four fetches mcp-bound.
+OPS_COMPILED = Path("examples/ops-report/runs/2026-10-18-implements-pure-functions")
+
+
+def test_a_missing_mcp_endpoint_is_one_line_not_a_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real `rote run` of a real DBOS app with no endpoint for its MCP
+    servers. The message already says what to set, so it is the whole
+    failure: no traceback, and not the DBOS shutdown log after it either."""
+    for name in ("GMAIL", "GOOGLE_DRIVE"):
+        monkeypatch.delenv(f"ROTE_MCP_{name}_URL", raising=False)
+    from rote.adapters import get_adapter
+    from rote.cli import main as cli_main
+    from rote.ir import load_pipeline
+
+    compiled = Path(__file__).resolve().parent.parent / OPS_COMPILED
+    app = tmp_path / "app"
+    get_adapter("dbos", extracted_source_dir=compiled).emit(
+        load_pipeline(compiled / "pipeline.yaml"), app
+    )
+    signal = 'duty_manager_data_provided={"ok": true}'
+    assert (
+        cli_main(["run", str(app), "--input", '{"report_date": "2026-09-14"}', "--signal", signal])
+        == 1
+    )
+    err = capsys.readouterr().err
+    failure = err.split("rote run (dbos): failed: ", 1)[1]
+    assert failure.startswith("no endpoint for MCP server ")
+    assert "rote mcp add" in failure.splitlines()[0]
+    assert "Traceback" not in err
+    assert "RoteMcpConfigError" not in err

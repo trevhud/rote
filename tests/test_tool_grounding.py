@@ -550,6 +550,74 @@ def test_verification_runs_the_value_check_on_the_sample(tmp_path: Path) -> None
     assert len(bad) == 1 and "must be string, got int" in bad[0].message
 
 
+def test_verification_names_the_bindings_no_schema_checked(tmp_path: Path) -> None:
+    root = _root(tmp_path)
+    unchecked = verify_deliverable(
+        root, grounding=Grounding(sample=None, tools={}), run_tests=False, trust_skill=True
+    ).unchecked_tools
+    assert unchecked == {"gmail": ["search_threads"]}
+    checked = verify_deliverable(
+        root, grounding=Grounding(sample=None, tools=DECLARED), run_tests=False, trust_skill=True
+    ).unchecked_tools
+    assert checked == {}
+
+
+@pytest.mark.parametrize(
+    ("registered", "says", "not_said"),
+    [
+        (False, "gmail is not registered", "--tool-discovery all"),
+        (True, "Compile again with --tool-discovery all", "rote mcp add gmail"),
+    ],
+)
+def test_the_compile_summary_warns_when_tool_arguments_went_unchecked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    registered: bool,
+    says: str,
+    not_said: str,
+) -> None:
+    """In the summary, not only among the open questions: the parameter
+    names are a guess a real server refuses (ops-report sent `search_query`
+    where Gmail takes `query`), and the fix depends on why there was no
+    schema."""
+    from rote.cli import main as cli_main
+    from rote.compiler.verify import Verification
+    from rote.mcp.registry import McpRegistry, McpServerConfig, save_registry
+    from tests.test_cli import _install_mock_compiler
+
+    root = _root(tmp_path / "ir")
+    if registered:
+        save_registry(
+            McpRegistry(servers={"gmail": McpServerConfig(url="https://gmail.example/mcp")})
+        )
+    pipeline = _pipeline(root)
+    _install_mock_compiler(
+        monkeypatch,
+        root / "pipeline.yaml",
+        verification=Verification(pipeline=pipeline, unchecked_tools={"gmail": ["search_threads"]}),
+    )
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\n", encoding="utf-8")
+    argv = ["compile", str(skill), "--local", "--runtime", "dbos", "--no-eval"]
+    cli_main([*argv, "--out", str(tmp_path / "out")])
+    out = capsys.readouterr().out
+    summary = out.split("rote compile: ✓", 1)[1]
+    assert "WARNING: tool arguments NOT checked against a schema: gmail.search_threads." in summary
+    assert says in summary
+    assert not_said not in summary
+
+
+def test_the_summary_says_nothing_when_every_binding_was_checked() -> None:
+    from rote.cli import _unchecked_tool_lines
+
+    servers: list[dict[str, object]] = [{"server": "gmail", "auth": "not registered"}]
+    assert _unchecked_tool_lines({}, servers) == []
+    # A server this runtime never calls (python and temporal emit the impl).
+    assert _unchecked_tool_lines({"gmail": ["search_threads"]}, []) == []
+
+
 def test_a_bench_compile_runs_with_the_fixture_servers_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

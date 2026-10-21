@@ -81,6 +81,7 @@ from rote.adapters._common import (
     _seconds_literal,
     _to_pascal_case,
     judge_override_readme,
+    mcp_backed,
     safe_docstring_line,
 )
 from rote.adapters._py_common import (
@@ -452,11 +453,7 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
 
 def _is_mcp_backed(node: Node, cfg: DbosAdapterConfig) -> bool:
     """True when this node's step calls an MCP tool at run time."""
-    return (
-        node.kind is NodeKind.EXTERNAL_CALL
-        and node.mcp is not None
-        and cfg.external_backend == "mcp"
-    )
+    return mcp_backed(node, cfg.external_backend)
 
 
 def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
@@ -825,7 +822,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
         if node.kind is NodeKind.PURE_FUNCTION:
             step_parts.append(_emit_step_pure_or_external(node))
         elif node.kind is NodeKind.EXTERNAL_CALL:
-            if node.mcp is not None and cfg.external_backend == "mcp":
+            if _is_mcp_backed(node, cfg):
                 step_parts.append(_emit_step_mcp(node))
             else:
                 step_parts.append(_emit_step_pure_or_external(node))
@@ -865,6 +862,7 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
             if "--serve" not in sys.argv[1:]:
                 pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}
             __INPUT_CHECK__
+            __CONFIG_ERROR_INIT__
             launch()
             try:
                 if "--serve" in sys.argv[1:]:
@@ -873,16 +871,54 @@ def emit_main(pipeline: Pipeline, cfg: DbosAdapterConfig | None = None) -> str:
                 else:
                     handle = DBOS.start_workflow(run_pipeline, pipeline_input)
                     print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
-                    print(json.dumps(handle.get_result(), indent=2, default=str))
+                    __RESULT__
             finally:
                 DBOS.destroy()
+            __CONFIG_ERROR_EXIT__
         """
+    )
+    init, result, exit_ = _cli_result(pipeline, cfg)
+    main_block = (
+        main_block.replace("    __CONFIG_ERROR_INIT__\n", init)
+        .replace("            __RESULT__\n", result)
+        .replace("    __CONFIG_ERROR_EXIT__\n", exit_)
     )
 
     # Checked before launch(): a bad input should not start DBOS (or print
     # its startup log) only to fail inside the workflow.
     main_block = main_block.replace("    __INPUT_CHECK__\n", cli_input_check(pipeline, " " * 8))
     return header + "".join(step_parts) + workflow_block + main_block
+
+
+def _cli_result(pipeline: Pipeline, cfg: DbosAdapterConfig) -> tuple[str, str, str]:
+    """The one-shot CLI's result print, with configuration errors as one line.
+
+    ``(before launch, result print, after shutdown)``. A missing MCP
+    endpoint (``RoteMcpConfigError``) is the user's to fix and its message
+    says how, so it prints like a bad input: one ``error:`` line on stderr
+    and exit status 2, which ``rote run`` relays as the whole failure.
+    It prints after ``DBOS.destroy()``, because DBOS logs while it shuts
+    down and the line must be the last one. Every other exception keeps
+    its traceback. Matched by name, like :data:`_RETRY_UNLESS_CONFIG_ERROR`.
+    Emitted only when something in the pipeline can reach an MCP server.
+    """
+    show = "print(json.dumps({}, indent=2, default=str))\n"
+    if not (any(_is_mcp_backed(n, cfg) for n in pipeline.nodes) or _agent_loops_need_mcp(pipeline)):
+        return "", " " * 12 + show.format("handle.get_result()"), ""
+    return (
+        "    config_error: str | None = None\n",
+        "            try:\n"
+        "                result = handle.get_result()\n"
+        "            except Exception as exc:\n"
+        '                if type(exc).__name__ != "RoteMcpConfigError":\n'
+        "                    raise\n"
+        "                config_error = str(exc)\n"
+        "            else:\n"
+        "                " + show.format("result"),
+        "    if config_error is not None:\n"
+        '        print(f"error: {config_error}", file=sys.stderr)\n'
+        "        sys.exit(2)\n",
+    )
 
 
 # ───────── dbos-config.yaml + README emission ─────────
@@ -1090,6 +1126,13 @@ class DbosAdapter:
                     content=resolve_extracted_source(self.config.extracted_source_dir, module_name)
                     or emit_extracted_module(module_name, nodes),
                 )
+                backed = [
+                    _impl_path_parts(n.impl)[1]
+                    for n in nodes
+                    if n.impl is not None and _is_mcp_backed(n, self.config)
+                ]
+                if backed:
+                    writer.record_mcp_backed("extracted", f"{module_name}.py", functions=backed)
             written.update(write_helper_modules(writer, self.config.extracted_source_dir, helpers))
         if mcp_backed:
             # The connection helper is the *source text* of

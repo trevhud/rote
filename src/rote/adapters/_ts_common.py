@@ -1734,13 +1734,6 @@ function isUnauthorized(err: unknown): boolean {
 )
 
 
-def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
-    """The nodes that emit working MCP calls instead of stubs."""
-    if external_backend != "mcp":
-        return []
-    return [n for n in pipeline.nodes if n.mcp is not None]
-
-
 def mcp_args_ts_line(node: Node) -> str:
     """``const args = ...`` for an MCP-bound step (see ``mcp_tool_arguments``)."""
     sources = mcp_tool_arguments(node)

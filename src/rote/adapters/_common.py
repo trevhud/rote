@@ -15,7 +15,7 @@ import ast
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -267,6 +267,12 @@ def resolve_within(base: Path, *parts: str) -> Path:
 
 MANIFEST_NAME = ".rote-manifest.json"
 
+#: The manifest key listing, per emitted ``extracted/`` module, the
+#: functions no emitted code calls because their node's step calls its MCP
+#: tool instead (:func:`mcp_backed`). A stub there is not a stub that
+#: stops a run, so :func:`unimplemented_stubs` leaves it out.
+MCP_BACKED_KEY = "mcp_backed"
+
 
 class EmitWriter:
     """Hash-guarded file writer shared by every adapter's ``emit()``.
@@ -303,6 +309,8 @@ class EmitWriter:
         self._current: dict[str, str] = {}
         #: relative path → the ``.new`` sibling holding the fresh content
         self.preserved: dict[str, Path] = {}
+        #: relative path → functions there that run via MCP (MCP_BACKED_KEY)
+        self._mcp_backed: dict[str, list[str]] = {}
 
     def _load_previous(self) -> dict[str, str]:
         if not self._manifest_path.is_file():
@@ -377,6 +385,16 @@ class EmitWriter:
         self._current[rel] = new_hash
         return target
 
+    def record_mcp_backed(self, *parts: str, functions: Iterable[str]) -> None:
+        """Record that no emitted code calls ``functions`` in ``output_dir/<parts...>``.
+
+        Their nodes' steps call the MCP tool (:func:`mcp_backed`), so the
+        module keeps them for ``--backend api`` and a stub among them does
+        not stop a run. Written to the manifest by :meth:`finalize`.
+        """
+        rel = resolve_within(self.output_dir, *parts).relative_to(self._root).as_posix()
+        self._mcp_backed[rel] = sorted(set(functions))
+
     def finalize(self) -> None:
         """Persist the manifest. Call once, after all writes.
 
@@ -386,11 +404,31 @@ class EmitWriter:
         later emit produces them again.
         """
         files = {**self._previous, **self._current}
-        payload = {"version": 1, "files": dict(sorted(files.items()))}
+        payload: dict[str, Any] = {"version": 1, "files": dict(sorted(files.items()))}
+        if self._mcp_backed:
+            # Not carried forward: each emit decides it afresh from the IR.
+            payload[MCP_BACKED_KEY] = dict(sorted(self._mcp_backed.items()))
         self._manifest_path.write_text(
             json.dumps(payload, indent=2) + "\n",
             encoding="utf-8",
         )
+
+
+def mcp_backed(node: Node, external_backend: str) -> bool:
+    """Whether ``node``'s emitted step calls its MCP tool instead of its ``impl``.
+
+    The one definition, for every adapter, the emit manifest's
+    :data:`MCP_BACKED_KEY` and the compile's per-node accounting
+    (``rote.contracts.NodeImplementation.blocks_run``). On the default
+    ``mcp`` backend a bound node's function is never called, so a stub
+    there does not stop a run; on the ``api`` backend it is the call.
+    """
+    return node.mcp is not None and external_backend == "mcp"
+
+
+def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
+    """The nodes that emit working MCP calls instead of stubs."""
+    return [n for n in pipeline.nodes if mcp_backed(n, external_backend)]
 
 
 #: Carried in the error message of every stub function rote emits, Python
@@ -446,7 +484,7 @@ def _is_abstract(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _python_module_is_stub(text: str) -> bool:
+def _python_module_is_stub(text: str, mcp_backed: frozenset[str] = frozenset()) -> bool:
     """Whether a Python module still has a stub function anywhere in it.
 
     Two shapes count, at any depth (module functions and class methods
@@ -458,16 +496,28 @@ def _python_module_is_stub(text: str) -> bool:
       refused;
     * a function :func:`stub_raise` calls a stub, the one definition the
       compile's per-node accounting uses too.
+
+    Top-level functions named in ``mcp_backed`` are skipped: no emitted
+    code calls them (:data:`MCP_BACKED_KEY`).
     """
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return False
-    for node in ast.walk(tree):
+    pending: list[ast.AST] = [
+        stmt
+        for stmt in tree.body
+        if not (
+            isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef) and stmt.name in mcp_backed
+        )
+    ]
+    while pending:
+        node = pending.pop()
         if _raises_with_sentinel(node):
             return True
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and stub_raise(node):
             return True
+        pending.extend(ast.iter_child_nodes(node))
     return False
 
 
@@ -510,9 +560,9 @@ def _returns_value(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return False
 
 
-def _is_stub_module(path: Path, text: str) -> bool:
+def _is_stub_module(path: Path, text: str, mcp_backed: frozenset[str] = frozenset()) -> bool:
     if path.suffix == ".py":
-        return _python_module_is_stub(text)
+        return _python_module_is_stub(text, mcp_backed)
     return STUB_SENTINEL in strip_ts_comments(text)
 
 
@@ -525,7 +575,9 @@ def unimplemented_stubs(output_dir: str | Path) -> list[Path]:
     ``rote run``'s preflight). "Still a stub" is read off disk: a module
     drops off the list once none of its functions is still a stub, either
     a function raising with :data:`STUB_SENTINEL` or (Python) one whose
-    whole body is ``raise NotImplementedError``. A directory with no
+    whole body is ``raise NotImplementedError``. A function whose node
+    runs via its MCP binding is never called, so it does not count
+    (:data:`MCP_BACKED_KEY`). A directory with no
     manifest (not emitted by rote) has no known stubs; see
     :func:`stubs_tracked`.
     """
@@ -533,7 +585,9 @@ def unimplemented_stubs(output_dir: str | Path) -> list[Path]:
     manifest = root / MANIFEST_NAME
     if not manifest.is_file():
         return []
-    files = json.loads(manifest.read_text(encoding="utf-8")).get("files") or {}
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    files = data.get("files") or {}
+    backed = data.get(MCP_BACKED_KEY) or {}
     stubs: list[Path] = []
     for rel in files:
         parts = rel.split("/")
@@ -544,7 +598,7 @@ def unimplemented_stubs(output_dir: str | Path) -> list[Path]:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        if _is_stub_module(path, text):
+        if _is_stub_module(path, text, frozenset(backed.get(rel) or ())):
             stubs.append(path)
     return sorted(stubs)
 
