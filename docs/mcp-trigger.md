@@ -55,7 +55,7 @@ rote register ./my-skill-out \
 ```
 
 This upserts an entry in `~/.rote/registry.json` (override with
-`--registry`): tool name from `pipeline.name`, description from
+`--registry` or `ROTE_SERVE_REGISTRY_PATH`): tool name from `pipeline.name`, description from
 `pipeline.description`, `inputSchema` from the pipeline's input
 contract, plus the trigger config. Registering the same pipeline again
 updates the entry in place.

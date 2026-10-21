@@ -51,7 +51,6 @@ if TYPE_CHECKING:
 
 RESULT_FILENAME = "result.json"
 MCP_CONFIG_FILENAME = "mcp-config.json"
-DEFAULT_CORPUS_PATH = Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
 
 # IR transport values → Claude Code mcp-config `type` values. The CLI
 # spells Streamable HTTP as plain "http" (verified against the current
@@ -808,9 +807,20 @@ def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
     }
 
 
+def default_corpus_path() -> Path:
+    """Where ``rote eval --run`` appends its measurements.
+
+    ``ROTE_EVAL_CORPUS_PATH`` overrides ``~/.local/share/rote/eval-corpus.jsonl``.
+    """
+    override = os.environ.get("ROTE_EVAL_CORPUS_PATH")
+    if override:
+        return Path(override)
+    return Path.home() / ".local" / "share" / "rote" / "eval-corpus.jsonl"
+
+
 def append_corpus(result: EmpiricalResult, *, generated_at: str, path: Path | None = None) -> Path:
     """Append this measurement to the local calibration corpus (JSONL)."""
-    corpus_path = path or DEFAULT_CORPUS_PATH
+    corpus_path = path or default_corpus_path()
     corpus_path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "generated_at": generated_at,

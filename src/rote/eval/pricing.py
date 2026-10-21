@@ -29,6 +29,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import time
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -496,8 +497,12 @@ def build_catalog(
 
 
 def default_cache_dir() -> Path:
-    """Where every live price source caches its last fetch."""
-    return Path.home() / ".cache" / "rote"
+    """Where every live price source caches its last fetch.
+
+    ``ROTE_PRICING_CACHE_DIR`` overrides ``~/.cache/rote``.
+    """
+    override = os.environ.get("ROTE_PRICING_CACHE_DIR")
+    return Path(override) if override else Path.home() / ".cache" / "rote"
 
 
 def _default_cache_path() -> Path:
