@@ -334,6 +334,85 @@ async function unwrapFastmcpResult(
 }
 
 
+/** `raw` in the form two spellings of one endpoint share: lowercase
+ * scheme and host, default port dropped, no trailing slash, no fragment.
+ * Same rule as the Python helper's normalize_server_url. */
+function normalizeServerUrl(raw: string): string {
+    const u = new URL(raw.trim());
+    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\/+$/, "")}${u.search}`;
+}
+
+/** Whether a stored login URL names `url`. False when the stored one
+ * does not parse (`new URL` throws on a bad port or host). */
+function sameServerUrl(stored: string, url: string): boolean {
+    let normalized: string;
+    try {
+        normalized = normalizeServerUrl(stored);
+    } catch {
+        return false;
+    }
+    return normalized === normalizeServerUrl(url);
+}
+
+/**
+ * Why a read-only run must not call `server.tool` at `url`, or null.
+ * `rote run` sets ROTE_MCP_READ_ONLY=1 unless --allow-writes, and passes
+ * the servers the user registered read-only as a JSON object in
+ * ROTE_MCP_READ_ONLY_SERVERS, {name: registered url}. A tool may be
+ * called when the server marks it readOnlyHint, or when its server was
+ * registered read-only at the endpoint being called: ROTE_MCP_<SERVER>_URL
+ * can point the name elsewhere, and the declaration does not cover that.
+ * The same rule as the Python helper's write_refusal.
+ */
+async function writeRefusal(
+    client: Client,
+    server: string,
+    url: string,
+    tool: string,
+    readOnly: unknown,
+    declaredServers: unknown,
+): Promise<string | null> {
+    if (readOnly !== "1") return null;
+    const declared = JSON.parse(String(declaredServers || "{}")) as Record<string, string>;
+    const registered = declared[server];
+    if (registered !== undefined && sameServerUrl(registered, url)) return null;
+    let cursor: string | undefined;
+    do {
+        const page = await client.listTools(cursor ? { cursor } : undefined);
+        const spec = page.tools.find((t) => t.name === tool);
+        if (spec) {
+            if (spec.annotations?.readOnlyHint === true) return null;
+            break;
+        }
+        cursor = page.nextCursor;
+    } while (cursor);
+    const why =
+        registered !== undefined
+            ? `${server} is registered read-only at ${registered}, but this run calls it at ` +
+              `${url}, which the declaration does not cover`
+            : `${server} does not mark it readOnlyHint and is not registered read-only`;
+    return (
+        `this run is read-only, and ${server}.${tool} may write: ${why}. Pass ` +
+        `--allow-writes to let the run write, or register the server with "rote mcp ` +
+        `add ${server} <url> --read-only" if none of its tools write.`
+    );
+}
+
+/**
+ * An agent loop's MCP tools are not held to read-only calls yet, so a
+ * read-only run refuses to start one rather than let it write.
+ */
+function refuseAgentToolsWhenReadOnly(readOnly: unknown, allowed: string[]): void {
+    if (readOnly === "1" && allowed.length > 0) {
+        throw new RoteMcpConfigError(
+            `this run is read-only, and an agent loop's MCP tools (${allowed.join(", ")}) ` +
+                "cannot be held to read-only calls yet. Pass --allow-writes to run it.",
+        );
+    }
+}
+
+
 /** The input the server asked for, if `err` is the SDK reporting that a
  * call needs a human: either the client could not fulfil an embedded
  * `input_required` request (no handler, by design), or the server refused
@@ -411,6 +490,15 @@ export async function callMcpTool(
     args: Record<string, unknown>,
 ): Promise<JsonValue> {
     return withMcpSession(env, server, pipelineUrl, async (client) => {
+        const refusal = await writeRefusal(
+            client,
+            server,
+            resolveUrl(env, server, pipelineUrl),
+            tool,
+            env.ROTE_MCP_READ_ONLY,
+            env.ROTE_MCP_READ_ONLY_SERVERS,
+        );
+        if (refusal) throw new RoteMcpConfigError(refusal);
         const result = await callToolUnattended(client, server, tool, args);
         if (result.isError) {
             throw new Error(
@@ -507,6 +595,7 @@ export async function bindAgentTools(
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
+    refuseAgentToolsWhenReadOnly(env.ROTE_MCP_READ_ONLY, allowed);
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const failures: unknown[] = [];

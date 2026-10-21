@@ -101,8 +101,13 @@ def run_cloudflare(
     gate_order: list[str],
     timeout_seconds: float = 600.0,
     park_watch: ParkWatchFactory | None = None,
+    worker_vars: dict[str, str] | None = None,
 ) -> MeasuredRun:
     """Run an emitted Cloudflare Workflows app once under ``wrangler dev``.
+
+    ``worker_vars`` reach the Worker's ``env`` as ``wrangler dev --var``
+    (workerd does not see this process's environment); ``rote run``
+    passes its read-only gate this way.
 
     ``gate_order`` is the pipeline's HITL gate signal names in
     topological order; each inferred park delivers the next one's
@@ -122,7 +127,15 @@ def run_cloudflare(
     log_path = app_dir / "wrangler-dev.log"
     with log_path.open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(
-            ["npx", "wrangler", "dev", "--port", str(port), "--local"],
+            [
+                "npx",
+                "wrangler",
+                "dev",
+                "--port",
+                str(port),
+                "--local",
+                *(f for k, v in (worker_vars or {}).items() if v for f in ("--var", f"{k}:{v}")),
+            ],
             cwd=app_dir,
             stdout=log,
             stderr=subprocess.STDOUT,

@@ -478,6 +478,121 @@ def _node_card(ctx: Context, node: Any) -> list[str]:
     return lines
 
 
+#: JSON types a field can have, and the item types an array field can hold.
+FIELD_TYPES = ("object", "array", "string", "integer", "number", "boolean")
+
+#: One field of a node's return value. ``path`` places it: ``""`` is the
+#: value itself, ``a`` a top-level field, ``a.b`` a field of object ``a``,
+#: ``a[].b`` a field of each item of array ``a`` (``[].b`` for a value
+#: that is itself an array).
+FIELD_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string"},
+        "type": {"enum": list(FIELD_TYPES)},
+        "items": {"enum": ["", *FIELD_TYPES]},
+        "required": {"type": "boolean"},
+        "nullable": {"type": "boolean"},
+        "enum": {"type": "array", "items": {"type": "string"}},
+        "description": {"type": "string"},
+    },
+    "required": ["path", "type", "items", "required", "nullable", "enum", "description"],
+    "additionalProperties": False,
+}
+
+_NAME_RE = re.compile(r"^[^.\[\]]+$")
+
+
+def fields_to_schema(
+    fields: list[dict[str, Any]], *, nullable_ok: bool = True
+) -> tuple[dict[str, Any], list[str]]:
+    """The JSON Schema a field list describes, and what is wrong with the list.
+
+    Code, not the model, writes the schema, so it is always well formed:
+    the only possible faults are in the list itself (a field whose parent
+    is missing or is not an object, a path given twice, ``items`` on a
+    field that is not an array), and each is named for the re-ask.
+
+    A ``nullable`` field may hold null as well as its type
+    (``{"type": [kind, "null"]}``), so code that sets a not-found value to
+    None passes the prefix's check on the sample. ``nullable_ok=False``
+    (a judge's output) refuses it: the emitted Pydantic and Zod models read
+    nullability only from ``anyOf``, and a judge's optional field is
+    already ``required: false``.
+    """
+    problems: list[str] = []
+    root: dict[str, Any] = {"type": "object", "properties": {}}
+    by_path: dict[str, dict[str, Any]] = {"": root}
+    seen: set[str] = set()
+
+    def depth(f: dict[str, Any]) -> int:
+        path = str(f.get("path") or "")
+        return path.count(".") + path.count("[]") + (1 if path else 0)
+
+    for f in sorted(fields, key=depth):
+        path = str(f.get("path") or "")
+        kind = f.get("type")
+        items = f.get("items") or ""
+        if path in seen:
+            problems.append(f"field `{path}` is given twice")
+            continue
+        seen.add(path)
+        if kind not in FIELD_TYPES:
+            problems.append(
+                f"field `{path}` has type {kind!r}; use one of {', '.join(FIELD_TYPES)}"
+            )
+            continue
+        if items and kind != "array":
+            problems.append(f"field `{path}` sets items but has type {kind}, not array")
+        node: dict[str, Any] = {"type": kind}
+        if kind == "object":
+            node["properties"] = {}
+        if kind == "array":
+            node["items"] = {"type": items} if items else {}
+            if items == "object":
+                node["items"]["properties"] = {}
+        values = [str(v) for v in f.get("enum") or [] if str(v)]
+        if values:
+            if kind != "string":
+                problems.append(f"field `{path}` lists enum values but has type {kind}, not string")
+            else:
+                node["enum"] = values
+        description = str(f.get("description") or "").strip()
+        if description:
+            node["description"] = description
+        if f.get("nullable"):
+            if nullable_ok:
+                node["type"] = [kind, "null"]
+            else:
+                problems.append(
+                    f"field `{path}` is nullable, which a judge's output cannot be: "
+                    "set required to false instead"
+                )
+        if path == "":
+            root.clear()
+            root.update(node)
+            continue
+        parent_path, _, name = path.rpartition(".")
+        if not _NAME_RE.fullmatch(name):
+            problems.append(f"field `{path}`: a name may not contain `.`, `[` or `]`")
+            continue
+        if parent_path.endswith("[]"):
+            container = by_path.get(parent_path[:-2], {}).get("items")
+        else:
+            container = by_path.get(parent_path)
+        if not isinstance(container, dict) or "properties" not in container:
+            problems.append(
+                f"field `{path}` needs its parent `{parent_path or '(the value)'}` "
+                "listed as an object, or as an array of objects"
+            )
+            continue
+        container["properties"][name] = node
+        if f.get("required"):
+            container.setdefault("required", []).append(name)
+        by_path[path] = node
+    return root, problems
+
+
 #: The one answer shape every call shares. The response schema is part of
 #: the prompt-cache prefix (``--json-schema`` is a tool, and tools come
 #: first), so one shape for every call is what lets the calls after the
@@ -489,10 +604,12 @@ ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "description": {"type": "string"},
-        # JSON text, not an object: the API's structured outputs require
-        # every object in the response schema to close its properties
-        # (additionalProperties: false), and an output schema is open-ended.
-        "output_schema": {"type": "string"},
+        # A node's return value, as a flat list of fields that code turns
+        # into its JSON Schema (fields_to_schema). Not a schema itself: an
+        # output schema is open-ended, which strict structured outputs
+        # cannot lock, and asked for as JSON text the model closed a nested
+        # schema with one brace too many, through every re-ask.
+        "output_fields": {"type": "array", "items": FIELD_SCHEMA},
         "termination": {
             "type": "object",
             "properties": {
@@ -522,7 +639,7 @@ ANSWER_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "description",
-        "output_schema",
+        "output_fields",
         "termination",
         "module",
         "test",
@@ -535,8 +652,8 @@ ANSWER_SCHEMA: dict[str, Any] = {
 
 _ANSWER_FIELDS = (
     "Fill only the answer fields this task names. Leave every other field empty: "
-    '"" for text and output_schema, {"condition": "", "max_iterations": 0} for '
-    'termination, "anthropic" for client, and [] for edits.'
+    '"" for text, [] for output_fields and edits, {"condition": "", "max_iterations": 0} '
+    'for termination, and "anthropic" for client.'
 )
 
 
@@ -582,7 +699,7 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
         f'Task: the interface entry for `{node.id}` (GENERATE.md, "The interface").',
         "Answer fields: description"
         + (
-            ", output_schema (the JSON Schema, as JSON text)"
+            ", output_fields (the return value, one entry per field)"
             if _needs_output_schema(ctx, node)
             else ""
         )
@@ -657,8 +774,8 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
             problems.append("termination needs a condition and a max_iterations of at least 1")
     if not _needs_output_schema(ctx, node):
         return problems
-    if entry.get("output_schema_error"):
-        return [*problems, str(entry["output_schema_error"])]
+    if entry.get("output_fields_problems"):
+        return [*problems, *entry["output_fields_problems"]]
     schema = entry.get("output_schema")
     if not isinstance(schema, dict) or not schema:
         return [*problems, "output_schema is empty"]
@@ -692,12 +809,17 @@ def _interface_entry(payload: dict[str, Any], ctx: Context, node: Any) -> dict[s
     """The fields of an answer that belong in the interface, nothing else."""
     entry: dict[str, Any] = {"description": str(payload.get("description") or "").strip()}
     if _needs_output_schema(ctx, node):
-        raw = payload.get("output_schema")
-        try:
-            entry["output_schema"] = json.loads(raw) if isinstance(raw, str) and raw else {}
-        except ValueError as e:
+        fields = [f for f in payload.get("output_fields") or [] if isinstance(f, dict)]
+        entry["output_fields"] = fields
+        if not fields:
+            entry["output_fields_problems"] = ["output_fields is empty"]
             entry["output_schema"] = {}
-            entry["output_schema_error"] = f"output_schema is not valid JSON text: {e}"
+        else:
+            entry["output_schema"], found = fields_to_schema(
+                fields, nullable_ok=node.kind is not NodeKind.LLM_JUDGE
+            )
+            if found:
+                entry["output_fields_problems"] = found
     if _needs_termination(node):
         entry["termination"] = dict(payload.get("termination") or {})
     return entry

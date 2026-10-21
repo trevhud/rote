@@ -1127,6 +1127,14 @@ def _mcp_config_for(
             "missing; re-emit the pipeline"
         ) from None
 
+    if os.environ.get(_rote_mcp.READ_ONLY_ENV) == "1":
+        # A loop's tools reach MCP through the agent's own client, which
+        # nothing here can hold to read-only calls yet: refuse, never let
+        # a read-only run write.
+        raise _rote_mcp.RoteMcpConfigError(
+            f"this run is read-only, and an agent loop's MCP tools ({', '.join(tools)}) "
+            "cannot be held to read-only calls yet. Pass --allow-writes to run it."
+        )
     pins = dict(tool_servers or {})
     registry = _rote_mcp._registry_servers()
     servers: dict[str, Any] = {}

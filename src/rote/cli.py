@@ -2046,6 +2046,7 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
         issuer=issuer,
         scopes=args.scope or None,
         headers=headers or None,
+        read_only=True if args.read_only else None,
     )
     path = save_registry(registry)
     if args.auth is not None:
@@ -2054,6 +2055,8 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
         record_auth(args.name, args.url, args.auth, source="user")
     verb = "updated" if replacing else "added"
     print(f"rote mcp: {verb} {args.name!r} → {args.url} ({path})")
+    if args.read_only:
+        print("  read-only: every tool on it may be called by read-only runs")
     if issuer:
         print(f"  client {args.client_id!r} bound to authorization server {issuer}")
     if not headers and args.auth is None:
@@ -3406,6 +3409,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         p_outcome = run_pipeline(
             target,
             maybe_payload,
+            allow_writes=args.allow_writes,
             signals=signals or None,
             gate_order=gate_order or None,
             pipeline=pipeline,
@@ -3414,7 +3418,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
             interactive=sys.stdin.isatty() and sys.stderr.isatty(),
         )
         run = p_outcome.run
-        status = "succeeded" if run.succeeded else f"failed: {run.error}"
+        gate_note = "read-only MCP gate" if p_outcome.read_only else "writes allowed"
+        # A failure's message stays the whole line (an app's one-line error).
+        status = f"succeeded ({gate_note})" if run.succeeded else f"failed: {run.error}"
         print(f"rote run ({p_outcome.runtime}): {status}", file=sys.stderr)
         print(f"  {run.wall_seconds:.1f}s", file=sys.stderr)
         if run.judge_usage:
@@ -3439,6 +3445,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                         "kind": "pipeline",
                         "runtime": p_outcome.runtime,
                         "app_dir": str(p_outcome.app_dir),
+                        "read_only": p_outcome.read_only,
                         "wall_seconds": run.wall_seconds,
                         "output": run.output,
                         "error": run.error,
@@ -4650,7 +4657,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--allow-writes",
         action="store_true",
-        help="Skill runs: lift the read-only MCP gate — side effects included",
+        help=(
+            "Lift the read-only MCP gate, on a skill or a pipeline run: tools "
+            "that may write are called (side effects included). Without it, "
+            "only tools the server marks readOnlyHint, or every tool on a "
+            "server registered with `rote mcp add --read-only`, are called"
+        ),
     )
     run_p.add_argument(
         "--allow-stubs",
@@ -5016,6 +5028,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Whether the server requires auth. Omit to let `rote mcp login` find "
             "out; 'none' tells rote that runs connect unauthenticated and never park"
+        ),
+    )
+    mcp_add.add_argument(
+        "--read-only",
+        action="store_true",
+        help=(
+            "Declare that no tool on this server writes. Read-only runs (rote run "
+            "without --allow-writes, rote baseline) then call all of its tools, "
+            "whether or not the server marks them readOnlyHint"
         ),
     )
     mcp_add.set_defaults(func=_cmd_mcp_add)
