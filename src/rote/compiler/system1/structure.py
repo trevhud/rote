@@ -58,7 +58,7 @@ from rote.compiler.system1.parse import (
     to_number,
     walk,
 )
-from rote.compiler.system1.tiebreak import Lane, gateway_model_id
+from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
 from rote.compiler.tool_grounding import parameters
 from rote.tool_schema import checkable
 
@@ -98,7 +98,7 @@ _JSON_TYPES = frozenset({"string", "integer", "number", "boolean", "object", "ar
 _NO_SYSTEM = {"io": "none", "how": "none", "name": "", "server": "", "tool": ""}
 
 
-class StructureUnavailable(RuntimeError):
+class StructureUnavailable(Spent):
     """The structure pass was asked for and could not produce a valid skeleton."""
 
 
@@ -921,7 +921,8 @@ def decide(
             )
         except RuntimeError as e:
             raise StructureUnavailable(
-                f"the System-1 structure pass ({lane.model}) failed: {e}"
+                f"the System-1 structure pass ({lane.model}) failed: {e}",
+                result.usage + billed_rows(e),
             ) from e
         result.usage += [{"model": m, **u} for m, u in rows]
         result.rounds = round_ + 1
@@ -945,14 +946,19 @@ def decide(
         )
     result.answer = answer
     result.cost_usd = _cost(result.usage)
-    resolved_answer, result.resolved = resolve(answer, skill, skill_md, declared, sample)
+    try:
+        resolved_answer, result.resolved = resolve(answer, skill, skill_md, declared, sample)
+    except StructureUnavailable as e:
+        e.usage = result.usage + e.usage  # every round before it was paid for
+        raise
     plan_, ir_errors = _build_and_validate(
         resolved_answer, skill, declared, tools, sample, tool_checks=False
     )
     if ir_errors:
         raise StructureUnavailable(
             "the System-1 structure pass produced no valid skeleton after "
-            f"{result.rounds} round(s): " + "; ".join(ir_errors)
+            f"{result.rounds} round(s): " + "; ".join(ir_errors),
+            result.usage,
         )
     assert plan_ is not None
     plan_.review += [f"{STRUCTURE_NOTE_PREFIX}{r}" for r in result.resolved]
@@ -1600,7 +1606,9 @@ def redecide(
             max_tokens=MAX_TOKENS,
         )
     except RuntimeError as e:
-        raise StructureUnavailable(f"re-deciding MCP bindings ({lane.model}) failed: {e}") from e
+        raise StructureUnavailable(
+            f"re-deciding MCP bindings ({lane.model}) failed: {e}", billed_rows(e)
+        ) from e
     by_tool: dict[str, list[str]] = {}
     for server, tool in declared:
         by_tool.setdefault(tool, []).append(server)

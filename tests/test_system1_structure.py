@@ -1341,3 +1341,96 @@ def test_a_default_codex_compile_reaches_the_structure_pass(
             )
         )
     assert [(lane.provider, lane.model) for lane in lanes] == [("codex-cli", "gpt-5.5")]
+
+
+_SPENT_ROW = {
+    "model": "m",
+    "input_tokens": 7,
+    "output_tokens": 3,
+    "cache_write_tokens": 0,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.002,
+}
+
+
+class _FailsAfter(FakeCall):
+    """Answers in turn, then fails like a billed call (usage on the error)."""
+
+    def __call__(self, **kw: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+        if self.answers:
+            return super().__call__(**kw)
+        e = RuntimeError("claude -p failed for system1_structure: API Error: 400 bad")
+        e.usage_rows = [("m", {k: v for k, v in _SPENT_ROW.items() if k != "model"})]  # type: ignore[attr-defined]
+        raise e
+
+
+def test_a_failed_structure_pass_carries_every_rounds_usage(skill: Any) -> None:
+    """A failed compile is still a paid one: the error holds the first round
+    (answered, then sent back) and the billed failure that ended it."""
+    bad = good_answer()
+    bad["nodes"][0]["quote"] = "words that are nowhere in this skill"
+    fake = _FailsAfter(bad)
+    with pytest.raises(structure.StructureUnavailable) as e:
+        structure.decide(skill, SKILL, "rubric", Lane("claude-cli"), tools=TOOLS, call=fake)
+    first = {"model": "claude-haiku-5-5", "input_tokens": 1000, "output_tokens": 100}
+    first |= {"cache_write_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.01}
+    assert e.value.usage == [first, _SPENT_ROW]
+
+
+def test_a_failed_structure_pass_reports_its_spend_in_the_compile_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler, CompilerError
+    from rote.compiler.system1 import tiebreak
+
+    def fails(*args: Any, **kwargs: Any) -> Any:
+        raise structure.StructureUnavailable("the structure pass failed: x", [_SPENT_ROW] * 2)
+
+    monkeypatch.setattr(structure, "decide", fails)
+    monkeypatch.setattr(tiebreak, "lane_for", lambda driver, **kw: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    logs: list[str] = []
+    compiler = Compiler(
+        run_generated_tests=False, tool_discovery="none", on_event=lambda e: logs.append(e.message)
+    )
+    with pytest.raises(CompilerError) as e:
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    spent = "2 call(s), tokens in=14 out=6, $0.0040"
+    assert str(e.value) == f"the structure pass failed: x (spent before the failure: {spent})"
+    assert e.value.usage == [_SPENT_ROW] * 2  # type: ignore[attr-defined]
+    assert f"usage before the failure: system1 {spent}" in logs
+
+
+def test_a_failed_redecide_keeps_the_compile_and_counts_its_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The text is already paid for: the findings stand, nothing raises."""
+    from types import SimpleNamespace
+
+    from rote.compiler import Compiler
+
+    def fails(*args: Any, **kwargs: Any) -> Any:
+        raise structure.StructureUnavailable("re-deciding MCP bindings (m) failed: x", [_SPENT_ROW])
+
+    monkeypatch.setattr(structure, "redecide", fails)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    record = structure.Structure("m", "claude -p (subscription)")
+    skill = Path(__file__).parent.parent / "examples" / "ops-report" / "skill"
+    run_ = Compiler()._redecide(
+        _ClaudeSpy(),
+        skill,
+        tmp_path,
+        SimpleNamespace(structure=record),  # type: ignore[arg-type]
+        SimpleNamespace(tools=None, sample=None),  # type: ignore[arg-type]
+    )
+    assert run_ is not None
+    assert run_({"node": ["finding"]}) == [
+        "re-deciding MCP bindings failed, the findings stand: "
+        "re-deciding MCP bindings (m) failed: x"
+    ]
+    assert record.usage == [_SPENT_ROW]

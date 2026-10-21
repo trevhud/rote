@@ -627,6 +627,15 @@ class Compiler:
                     system1.TieBreakUnavailable,
                     system1.structure.StructureUnavailable,
                 ) as e:
+                    usage = getattr(e, "usage", None) or []
+                    spent = system1.tiebreak.spent_summary(usage)
+                    if spent:
+                        # A failed compile is still a paid one: say what System-1's
+                        # calls cost, on the progress feed and in the error.
+                        self._emit("log", f"usage before the failure: system1 {spent}")
+                        error = CompilerError(f"{e} (spent before the failure: {spent})")
+                        error.usage = usage  # type: ignore[attr-defined]
+                        raise error from e
                     raise CompilerError(str(e)) from e
                 st = s1_plan.structure
                 if st is not None:
@@ -980,15 +989,22 @@ class Compiler:
         skill_md = structure.skill_text(skill_dir)
 
         def run(findings: dict[str, list[str]]) -> list[str]:
-            changes, usage = structure.redecide(
-                work_dir,
-                findings,
-                skill,
-                skill_md,
-                lane,
-                tools=grounding.tools,
-                sample=grounding.sample,
-            )
+            try:
+                changes, usage = structure.redecide(
+                    work_dir,
+                    findings,
+                    skill,
+                    skill_md,
+                    lane,
+                    tools=grounding.tools,
+                    sample=grounding.sample,
+                )
+            except structure.StructureUnavailable as e:
+                # The text is already paid for: a failed re-decide leaves the
+                # findings standing for verification to report, and its calls
+                # still count.
+                record.usage += e.usage
+                return [f"re-deciding MCP bindings failed, the findings stand: {e}"]
             record.usage += usage
             record.redecided += changes
             return changes

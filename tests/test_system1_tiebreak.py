@@ -857,3 +857,17 @@ def test_a_failed_codex_exec_fails_the_tiebreak(tmp_path: Path) -> None:
     lane = tb.lane_for(_codex_driver(script))
     with pytest.raises(TieBreakUnavailable, match="codex exec for system1_tiebreak failed"):
         system1.prepare(_skill(tmp_path), work, tiebreak_lane=lane, rubric=RUBRIC)
+
+
+def test_a_failed_tiebreak_carries_every_attempts_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every attempt answered (and was paid for) but none covered the steps asked."""
+    wrong = _answer("llm_judge", step=UNSURE + 1)
+    _install(monkeypatch, _Stub(*[wrong] * tb.ATTEMPTS))
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(TieBreakUnavailable) as e:
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    assert len(e.value.usage) == tb.ATTEMPTS
+    assert all(row["model"] == CLI_ROW[0] for row in e.value.usage)

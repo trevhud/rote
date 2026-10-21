@@ -107,7 +107,37 @@ could go either way. Answer every unsure step, and only those.
 """
 
 
-class TieBreakUnavailable(RuntimeError):
+class Spent(RuntimeError):
+    """A System-1 failure that may come after paid calls: ``usage`` holds the
+    rows of every attempt and round that ran (``{"model", **buckets}``), so a
+    failed compile still reports what it cost."""
+
+    def __init__(self, message: str, usage: list[dict[str, Any]] | None = None) -> None:
+        super().__init__(message)
+        self.usage: list[dict[str, Any]] = list(usage or [])
+
+
+def billed_rows(error: BaseException) -> list[dict[str, Any]]:
+    """The usage rows a failed call carried (``usage_rows``), in decision form."""
+    return [{"model": m, **u} for m, u in getattr(error, "usage_rows", None) or []]
+
+
+def spent_summary(usage: list[dict[str, Any]]) -> str:
+    """One line for what ``usage`` cost: calls, tokens, dollars. Empty for none."""
+    if not usage:
+        return ""
+    tokens_in = sum(
+        (r.get(k) or 0)
+        for r in usage
+        for k in ("input_tokens", "cache_write_tokens", "cache_read_tokens")
+    )
+    tokens_out = sum(r.get("output_tokens") or 0 for r in usage)
+    cost = _cost(usage)
+    dollars = "cost unknown" if cost is None else f"${cost:.4f}"
+    return f"{len(usage)} call(s), tokens in={tokens_in} out={tokens_out}, {dollars}"
+
+
+class TieBreakUnavailable(Spent):
     """A tie-break was asked for and cannot run (no lane, or no usable answer)."""
 
 
@@ -366,7 +396,8 @@ def decide(
         except RuntimeError as e:
             raise TieBreakUnavailable(
                 f"the System-1 tie-break ({lane.model}, {lane.label}) failed: {e}. "
-                "Pass --tiebreak none to compile without it"
+                "Pass --tiebreak none to compile without it",
+                result.usage + billed_rows(e),
             ) from e
         result.usage += [{"model": m, **u} for m, u in rows]
         parsed = _parse(payload, asked, lane.model)
@@ -376,7 +407,8 @@ def decide(
             return result
     raise TieBreakUnavailable(
         f"the System-1 tie-break ({lane.model}) did not answer exactly the {len(asked)} steps it "
-        f"was asked about in {ATTEMPTS} tries. Pass --tiebreak none to compile without it"
+        f"was asked about in {ATTEMPTS} tries. Pass --tiebreak none to compile without it",
+        result.usage,
     )
 
 

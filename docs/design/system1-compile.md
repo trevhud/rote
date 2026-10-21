@@ -363,7 +363,16 @@ of `Retry-After`, so a 429 or 503 that carries one (`retry-after-ms` or
 `Retry-After`, seconds or an HTTP date) is waited out instead of the fixed
 backoff, capped at 30 s. `claude -p` retries API errors inside the CLI
 before it reports one, so on that lane the two retries stack; that is left
-as it is, since the CLI exposes no switch for it. `rote-cloud` constructs `Compiler` with the default, so
+as it is, since the CLI exposes no switch for it.
+
+A failed compile is still a paid one. When the structure pass or the
+tie-break finally fails, its error carries the usage of every attempt and
+every earlier round, including a failed call the provider billed (a
+truncated answer, a `claude -p` error envelope), and the compile error and
+progress feed say what it cost (`spent before the failure: 3 call(s),
+tokens in=... out=..., $...`). A failed binding re-decide during the text
+phase no longer ends the compile: its findings stand for verification to
+report, and its calls count in the structure record. `rote-cloud` constructs `Compiler` with the default, so
 cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
