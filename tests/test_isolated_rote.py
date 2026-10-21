@@ -25,6 +25,8 @@ from rote.eval.empirical import default_corpus_path
 from rote.eval.pricing import default_cache_dir
 from rote.isolation import STATE_PATHS, isolated_env
 from rote.serve.registry import default_registry_path
+from rote.vendor_specs.fixture_store import default_root as fixture_root
+from rote.vendor_specs.store import default_root as spec_cache_root
 
 REPO = Path(__file__).resolve().parent.parent
 WRAPPER = REPO / "scripts" / "isolated-rote"
@@ -236,6 +238,9 @@ def test_each_new_override_wins_and_the_default_is_unchanged(
     monkeypatch.setenv(env_var, str(tmp_path / "moved"))
     assert resolve() == tmp_path / "moved"
     monkeypatch.delenv(env_var)
+    # The XDG dirs move these defaults too; with them unset, the home path.
+    for xdg in ("XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME"):
+        monkeypatch.delenv(xdg, raising=False)
     assert resolve() == Path.home() / home_default
 
 
@@ -249,3 +254,41 @@ def test_rote_register_without_a_flag_writes_the_overridden_registry(
     assert main(["register", str(BDR)]) == 0
     registry = Registry.load(Path(os.environ["ROTE_SERVE_REGISTRY_PATH"]))
     assert [Path(e.pipeline_yaml) for e in registry.entries] == [BDR.resolve()]
+
+
+@pytest.mark.parametrize(
+    ("env_var", "resolve", "xdg_var", "under_xdg", "home_default"),
+    [
+        ("ROTE_PRICING_CACHE_DIR", default_cache_dir, "XDG_CACHE_HOME", "rote", ".cache"),
+        ("ROTE_SPEC_CACHE_DIR", spec_cache_root, "XDG_CACHE_HOME", "rote/specs", ".cache"),
+        ("ROTE_FIXTURE_DIR", fixture_root, "XDG_DATA_HOME", "rote/fixtures", ".local/share"),
+        (
+            "ROTE_EVAL_CORPUS_PATH",
+            default_corpus_path,
+            "XDG_DATA_HOME",
+            "rote/eval-corpus.jsonl",
+            ".local/share",
+        ),
+    ],
+)
+def test_home_defaults_follow_the_xdg_dirs(
+    env_var: str,
+    resolve: Callable[[], Path],
+    xdg_var: str,
+    under_xdg: str,
+    home_default: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no override, each default lands under its XDG dir, as the app
+    registry, token store and config already do, so a run that redirects
+    the XDG dirs leaves the real home untouched. The override still wins,
+    and an empty XDG variable counts as unset (the XDG spec)."""
+    monkeypatch.delenv(env_var, raising=False)
+    monkeypatch.setenv(xdg_var, str(tmp_path / "xdg"))
+    assert resolve() == tmp_path / "xdg" / under_xdg
+    monkeypatch.setenv(env_var, str(tmp_path / "moved"))
+    assert resolve() == tmp_path / "moved"
+    monkeypatch.delenv(env_var)
+    monkeypatch.setenv(xdg_var, "")
+    assert resolve() == Path.home() / home_default / under_xdg

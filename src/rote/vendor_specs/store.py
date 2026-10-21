@@ -42,7 +42,10 @@ class SpecUnavailable(RuntimeError):
 
 def default_root() -> Path:
     override = os.environ.get("ROTE_SPEC_CACHE_DIR")
-    return Path(override) if override else Path.home() / ".cache" / "rote" / "specs"
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "rote" / "specs"
 
 
 def http_get_json(url: str) -> Any:

@@ -699,7 +699,7 @@ Violations are errors that go back to the agent. Three rules:
 - **The spec comes from the vendor, never from memory.** Google: the
   Discovery directory (`https://discovery.googleapis.com/discovery/v1/apis`)
   names each API version's document. Specs are cached under
-  `ROTE_SPEC_CACHE_DIR` (default `~/.cache/rote/specs`) as
+  `ROTE_SPEC_CACHE_DIR` (default `$XDG_CACHE_HOME/rote/specs`, else `~/.cache/rote/specs`) as
   `<vendor>/<api>/<version>.json`, the `ApiSpec` model, which is also the
   shareable format. An expired cache is refetched; a failed refetch is
   `SpecUnavailable`, never a stale read.
@@ -1837,8 +1837,8 @@ about which input is the list.
 
 `rote.eval.pricing` fetches current models + official prices at eval
 time (models.dev primary, OpenRouter cross-check; 24h cache in
-`~/.cache/rote/pricing.json`, dir overridable with
-`ROTE_PRICING_CACHE_DIR`; loud `PricingError` when offline — never
+`$XDG_CACHE_HOME/rote/pricing.json`, else `~/.cache/rote/`, dir
+overridable with `ROTE_PRICING_CACHE_DIR`; loud `PricingError` when offline — never
 a baked-in table). Two things you will get wrong if you touch it:
 
 1. **"Most expensive = flagship" is false.** Previous-generation
