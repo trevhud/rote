@@ -1061,3 +1061,44 @@ def test_a_guessed_mcp_result_reaches_its_reader_untyped(tmp_path: Path) -> None
         "output_schema": {"type": "object", "properties": {"n": {"type": "integer"}}},
     }
     assert ctx.param_schema(*plain) != {}
+
+
+def test_a_known_mcp_result_keeps_its_reader_typed(tmp_path: Path) -> None:
+    """The guard's other half: a declared or fixed shape still types the reader."""
+    from dataclasses import replace
+
+    from rote.compiler.tool_grounding import ToolSchema
+
+    ctx, plan = _context(tmp_path, "ops-report")
+    mcp = next(n for n in ctx.pipeline.nodes if n.mcp is not None)
+    reader, param = next(
+        (n, p)
+        for n in ctx.pipeline.nodes
+        for p, ref in (n.inputs or {}).items()
+        if ref == f"{mcp.id}.output"
+    )
+    assert mcp.mcp is not None
+    listed = {
+        "type": "array",
+        "items": {"type": "object", "properties": {"id": {"type": "string"}}},
+    }
+    declared = ToolSchema(
+        mcp.mcp.server, mcp.mcp.tool, {"type": "object"}, "tools/list", True, listed
+    )
+    ctx.grounding = replace(ctx.grounding, tools={(mcp.mcp.server, mcp.mcp.tool): declared})
+    assert not ctx.unverified_tool_result(mcp.id)
+    assert ctx.param_schema(reader, param) == listed
+    assert ctx.judge_input_schema(reader)["properties"][param] == listed
+    # A shape the skeleton fixed types the reader too, with nothing declared.
+    ctx.grounding = replace(ctx.grounding, tools={})
+    fixed = {"type": "object", "properties": {"items": {"type": "array"}}}
+    ctx.pipeline = ctx.pipeline.model_copy(
+        update={
+            "nodes": [
+                n.model_copy(update={"output_schema": fixed}) if n.id == mcp.id else n
+                for n in ctx.pipeline.nodes
+            ]
+        }
+    )
+    assert not ctx.unverified_tool_result(mcp.id)
+    assert ctx.param_schema(reader, param) == fixed
