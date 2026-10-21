@@ -65,7 +65,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 #: Every provider.
 PROVIDERS: tuple[str, ...] = ("claude-cli", "api", "rote-cloud")
@@ -1094,10 +1094,33 @@ def structured_call(
 # ───────── agent loops ─────────
 
 
+class AgentMcp(NamedTuple):
+    """An agent loop's MCP wiring, as ``(server, tool)`` pairs.
+
+    Pairs, never ``mcp__server__tool`` strings: a server name may itself
+    contain ``__``, and splitting the id back apart then names the wrong
+    server and tool.
+    """
+
+    #: ``{server: mcp-config entry}`` for every server wired to the loop.
+    servers: dict[str, Any]
+    #: What the loop may call.
+    allowed: list[tuple[str, str]]
+    #: What a read-only run took away because it may write.
+    removed: list[tuple[str, str]]
+    #: ``{tool: why}`` for removed tools no wired server still offers.
+    withheld: dict[str, str]
+
+
+def _tool_id(server: str, tool: str) -> str:
+    """Claude Code's name for an MCP tool."""
+    return f"mcp__{server}__{tool}"
+
+
 def _mcp_config_for(
     tools: Sequence[str], tool_servers: Mapping[str, str] | None = None
-) -> tuple[dict[str, Any], list[str], dict[str, str]]:
-    """``(mcp-config servers, allowlisted tool ids, withheld tools)`` for an agent's tools.
+) -> AgentMcp:
+    """The servers, allowlist and read-only withholdings for an agent's tools.
 
     An ``agent_loop`` declares bare tool names (``zoominfo_search_contacts``)
     rather than a server binding — one loop may reach several servers, and
@@ -1118,7 +1141,7 @@ def _mcp_config_for(
     does server X live and how do I authenticate to it" per app.
     """
     if not tools:
-        return {}, [], {}
+        return AgentMcp({}, [], [], {})
     try:
         from extracted import _rote_mcp  # type: ignore[import-not-found]
     except ImportError:  # pragma: no cover — emitted together or not at all
@@ -1152,50 +1175,52 @@ def _mcp_config_for(
             config["headers"] = dict(headers)
         servers[name] = config
     allowed = [
-        f"mcp__{server}__{tool}"
+        (server, tool)
         for server in sorted(servers)
         for tool in sorted(tools)
         # Resolved: this server only. Unresolved: every wired server, since
         # a name no server provides simply never resolves anyway.
         if pins.get(tool, server) == server
     ]
-    withheld = _withhold_writes(_rote_mcp, servers, allowed)
-    return servers, allowed, withheld
+    removed, withheld = _withhold_writes(_rote_mcp, servers, allowed)
+    return AgentMcp(servers, allowed, removed, withheld)
 
 
 def _withhold_writes(
-    _rote_mcp: Any, servers: Mapping[str, Any], allowed: list[str]
-) -> dict[str, str]:
+    _rote_mcp: Any, servers: Mapping[str, Any], allowed: list[tuple[str, str]]
+) -> tuple[list[tuple[str, str]], dict[str, str]]:
     """In a read-only run, drop from ``allowed`` (in place) every tool that may write.
 
     The loop calls its tools through its own MCP client, so the run holds
     it to read-only calls by what it hands over: each server is listed and
     a tool passes only by the rule a pipeline step's own call meets
-    (``_rote_mcp.agent_tool_refusals``). Returns ``{tool: why}`` for the
-    withheld tools no wired server still offers. A loop left with no MCP
+    (``_rote_mcp.agent_tool_refusals``). Returns the removed pairs, and
+    ``{tool: why}`` for the removed tools no wired server still offers. A
+    loop left with no MCP
     tool at all is refused: it would run, but not as declared. ``_rote_mcp``
     is the emitted MCP helper the caller already imported.
     """
     if os.environ.get(_rote_mcp.READ_ONLY_ENV) != "1" or not allowed:
-        return {}
+        return [], {}
     import asyncio
 
+    removed: list[tuple[str, str]] = []
     reasons: dict[str, str] = {}
     for name in sorted(servers):
-        prefix = f"mcp__{name}__"
-        offered = [a.removeprefix(prefix) for a in allowed if a.startswith(prefix)]
+        offered = [tool for server, tool in allowed if server == name]
         refused = asyncio.run(_rote_mcp.agent_tool_refusals(name, None, offered))
         for tool, why in refused.items():
-            allowed.remove(prefix + tool)
+            allowed.remove((name, tool))
+            removed.append((name, tool))
             reasons.setdefault(tool, why)
-    kept = {a.split("__", 2)[2] for a in allowed}
+    kept = {tool for _server, tool in allowed}
     withheld = {tool: why for tool, why in reasons.items() if tool not in kept}
     if not allowed:
         raise _rote_mcp.RoteMcpConfigError(
             "this agent loop has no MCP tool left to call, so it does not start. "
             + " ".join(withheld.values())
         )
-    return withheld
+    return removed, withheld
 
 
 #: The Messages API's MCP connector beta. Without it ``mcp_servers`` is a
@@ -1355,7 +1380,7 @@ def _run_agent_via_cli(
     binary = shutil.which("claude")
     if binary is None:  # pragma: no cover — select_provider checks first
         raise RuntimeError("the `claude` CLI vanished between provider selection and the call")
-    servers, allowed, withheld = _mcp_config_for(tools, tool_servers)
+    servers, allowed, removed, withheld = _mcp_config_for(tools, tool_servers)
     if withheld:
         prompt = f"{prompt}\n\n{_withheld_note(withheld)}"
     command = [
@@ -1373,15 +1398,14 @@ def _run_agent_via_cli(
         str(max_iterations),
     ]
     if allowed:
-        command += ["--allowedTools", ",".join(allowed)]
+        command += ["--allowedTools", ",".join(_tool_id(*pair) for pair in allowed)]
         command += ["--mcp-config", json.dumps({"mcpServers": servers})]
-    if withheld:
+    if removed:
         # Not just left off the allowlist (in print mode an unlisted tool is
-        # still offered, and then refused): removed, so the loop never sees it.
-        command += [
-            "--disallowedTools",
-            ",".join(f"mcp__{s}__{t}" for s in sorted(servers) for t in sorted(withheld)),
-        ]
+        # still offered, and then refused): denied, so the loop never sees
+        # it. Every removed pair, including a tool another server still
+        # offers under the same name.
+        command += ["--disallowedTools", ",".join(_tool_id(*pair) for pair in removed)]
     if output_schema is not None:
         # The same forced structured output a judge uses: the CLI adds a
         # final tool whose arguments are validated against the schema and
@@ -1508,7 +1532,7 @@ def _run_agent_via_sdk(
                 strict=True if output_strict else None,
             )(submit)
         )
-    servers, allowed, withheld = _mcp_config_for(tools, tool_servers)
+    servers, allowed, _removed, withheld = _mcp_config_for(tools, tool_servers)
     if withheld:
         prompt = f"{prompt}\n\n{_withheld_note(withheld)}"
     # The connector exposes a server's tools through one mcp_toolset per
@@ -1516,8 +1540,7 @@ def _run_agent_via_sdk(
     # tools it declared (and, in a read-only run, the ones that cannot
     # write): every other tool on the server stays disabled.
     enabled: dict[str, list[str]] = {}
-    for tool_id in allowed:
-        _mcp, server, tool = tool_id.split("__", 2)
+    for server, tool in allowed:
         enabled.setdefault(server, []).append(tool)
     mcp_servers = [
         {"type": "url", "url": servers[name]["url"], "name": name} for name in sorted(enabled)

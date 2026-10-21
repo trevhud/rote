@@ -250,8 +250,8 @@ def _python(url: str, env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> d
     pins = {"lookup": "ro", "publish": "ro"}
     for key, tools in (("agent", ["lookup", "publish"]), ("agent_writes_only", ["publish"])):
         try:
-            _servers, allowed, withheld = inference._mcp_config_for(tools, pins)
-            out[key] = sorted(a.split("__", 2)[2] for a in allowed)
+            _servers, allowed, _removed, withheld = inference._mcp_config_for(tools, pins)
+            out[key] = sorted(tool for _server, tool in allowed)
             out[f"{key}_withheld"] = sorted(withheld)
         except helper.RoteMcpConfigError as e:
             assert "may write" in str(e)

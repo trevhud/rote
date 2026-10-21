@@ -32,6 +32,8 @@ def _tool(name: str, read_only: bool) -> Any:
 
 
 LISTED = [_tool("lookup", True), _tool("publish", False)]
+#: Servers that list something else; any other server lists LISTED.
+LISTED_BY = {"mirror": [_tool("publish", True)]}
 
 
 @pytest.fixture()
@@ -44,7 +46,7 @@ def server(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
         listings.append(server)
 
         async def list_tools() -> list[Any]:
-            return LISTED
+            return LISTED_BY.get(server, LISTED)
 
         yield types.SimpleNamespace(list_tools=list_tools)
 
@@ -69,8 +71,9 @@ def test_a_read_only_run_withholds_a_tool_that_may_write(
     server: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _read_only(monkeypatch)
-    servers, allowed, withheld = helper._mcp_config_for(["lookup", "publish"], PINS)
-    assert allowed == ["mcp__ro__lookup"]
+    servers, allowed, removed, withheld = helper._mcp_config_for(["lookup", "publish"], PINS)
+    assert allowed == [("ro", "lookup")]
+    assert removed == [("ro", "publish")]
     assert list(withheld) == ["publish"]
     assert "ro does not mark it readOnlyHint and is not registered read-only" in withheld["publish"]
     assert servers == {"ro": {"type": "http", "url": URL}}
@@ -80,24 +83,26 @@ def test_a_run_that_may_write_lists_nothing_and_withholds_nothing(
     server: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(mcp.READ_ONLY_ENV, raising=False)
-    _servers, allowed, withheld = helper._mcp_config_for(["lookup", "publish"], PINS)
-    assert (allowed, withheld) == (["mcp__ro__lookup", "mcp__ro__publish"], {})
+    _servers, allowed, removed, withheld = helper._mcp_config_for(["lookup", "publish"], PINS)
+    assert (allowed, removed, withheld) == ([("ro", "lookup"), ("ro", "publish")], [], {})
     assert server == []  # no tools/list round trip at all
 
 
 @pytest.mark.parametrize(
     ("declared", "kept"),
     [
-        ({"ro": URL + "/"}, ["mcp__ro__lookup", "mcp__ro__publish"]),  # this endpoint: trusted
-        ({"ro": "https://elsewhere.example/mcp"}, ["mcp__ro__lookup"]),  # another one: not
+        ({"ro": URL + "/"}, [("ro", "lookup"), ("ro", "publish")]),  # this endpoint: trusted
+        ({"ro": "https://elsewhere.example/mcp"}, [("ro", "lookup")]),  # another one: not
     ],
 )
 def test_a_read_only_registration_covers_its_own_endpoint_only(
-    server: list[str], monkeypatch: pytest.MonkeyPatch, declared: dict[str, str], kept: list[str]
+    server: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    declared: dict[str, str],
+    kept: list[tuple[str, str]],
 ) -> None:
     _read_only(monkeypatch, declared)
-    _servers, allowed, _withheld = helper._mcp_config_for(["lookup", "publish"], PINS)
-    assert allowed == kept
+    assert helper._mcp_config_for(["lookup", "publish"], PINS).allowed == kept
 
 
 def test_a_loop_left_with_no_tool_is_refused(
@@ -324,3 +329,95 @@ def test_the_emitted_ts_loop_passes_the_withheld_tools_on() -> None:
         src = (Path(out) / "src" / "extracted" / "loop.ts").read_text()
     assert "const tools: BoundTool[] = [...bound.tools];" in src
     assert "withheld: bound.withheld," in src
+
+
+# ───────── ids are built from (server, tool) pairs, never parsed ─────────
+
+
+def test_every_removed_id_is_denied_even_when_another_server_keeps_the_name(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`publish` may write on `ro` and is read-only on `mirror`: the loop keeps
+    mirror's and must be denied ro's, though the name is still allowed."""
+    _read_only(monkeypatch)
+    monkeypatch.setenv("ROTE_MCP_MIRROR_URL", "https://mirror.example/mcp")
+    monkeypatch.setattr(
+        mcp, "_registry_servers", lambda: {"ro": {"url": URL}, "mirror": {"url": "x"}}
+    )
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+    monkeypatch.setattr(helper, "select_provider", lambda *a, **k: "claude-cli")
+    helper.run_agent_loop(
+        node_id="research",
+        description="Research.",
+        task="{}",
+        model="claude-sonnet-5-5",
+        tools=["publish"],  # unpinned: offered on every wired server
+        max_iterations=3,
+    )
+    command = seen["command"]
+    assert command[command.index("--allowedTools") + 1] == "mcp__mirror__publish"
+    assert command[command.index("--disallowedTools") + 1] == "mcp__ro__publish"
+    # The name is still available, so nothing is reported withheld.
+    assert "not available to you" not in seen["input"]
+
+
+def test_a_server_name_with_a_double_underscore_binds_as_itself(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`mcp__my__srv__lookup` split on `__` reads as server `my`, tool
+    `srv__lookup`: the connector lane raised KeyError on it."""
+    _read_only(monkeypatch)
+    monkeypatch.setenv("ROTE_MCP_MY__SRV_URL", URL)
+    pins = {"lookup": "my__srv", "publish": "my__srv"}
+    wiring = helper._mcp_config_for(["lookup", "publish"], pins)
+    assert (wiring.allowed, wiring.removed) == ([("my__srv", "lookup")], [("my__srv", "publish")])
+    import anthropic
+
+    seen: dict[str, Any] = {}
+
+    class Client:
+        def __init__(self, **_kwargs: Any) -> None:
+            def tool_runner(**kwargs: Any) -> _Runner:
+                seen.update(kwargs)
+                return _Runner()
+
+            self.beta = types.SimpleNamespace(
+                messages=types.SimpleNamespace(tool_runner=tool_runner)
+            )
+
+    monkeypatch.setattr(anthropic, "Anthropic", Client)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    helper._run_agent_via_sdk(
+        node_id="research",
+        provider="api",
+        model="claude-sonnet-5-5",
+        base_url=None,
+        prompt="Research.",
+        local_tools={},
+        tools=["lookup", "publish"],
+        tool_servers=pins,
+        max_iterations=3,
+        timeout=30,
+    )
+    assert seen["mcp_servers"] == [{"type": "url", "url": URL, "name": "my__srv"}]
+    [toolset] = seen["tools"]
+    assert (toolset["mcp_server_name"], toolset["configs"]) == (
+        "my__srv",
+        {"lookup": {"enabled": True}},
+    )
+
+
+def test_each_server_is_asked_only_about_the_tools_it_is_offered_for(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`lookup` is pinned to ro; `publish` reaches ro and mirror. Mirror lists
+    no `lookup`, and must not be asked to judge it."""
+    _read_only(monkeypatch)
+    monkeypatch.setenv("ROTE_MCP_MIRROR_URL", "https://mirror.example/mcp")
+    monkeypatch.setattr(
+        mcp, "_registry_servers", lambda: {"ro": {"url": URL}, "mirror": {"url": "x"}}
+    )
+    wiring = helper._mcp_config_for(["lookup", "publish"], {"lookup": "ro"})
+    assert wiring.allowed == [("mirror", "publish"), ("ro", "lookup")]
+    assert wiring.removed == [("ro", "publish")]
+    assert wiring.withheld == {}
