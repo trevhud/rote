@@ -430,6 +430,8 @@ def test_per_item_container_becomes_a_loop_over_its_sub_steps(tmp_path: Path) ->
     assert not [n for n in outside for ref in n["inputs"].values() if ref.split(".")[0] in body]
     after = next(n for n in outside if n["source"]["section"].startswith("Step 8"))
     assert loop["id"] in after["inputs"]
+    # The loop's agent decides whether to call a sub-step: none is mandatory.
+    assert not [b for b in body if nodes[b].get("mandatory")]
     load_pipeline(tmp_path / "pipeline.yaml")
 
 

@@ -8,6 +8,7 @@ most optional fields.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -1162,3 +1163,44 @@ def test_a_bare_string_is_always_a_reference_and_says_how_to_write_a_literal() -
     # A reference still validates as one.
     node = _mcp_node({"q": "query"})
     assert node.mcp is not None and node.mcp.args == {"q": "query"}
+
+
+def _loop_with(sub: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": "loop",
+        "input": {"type": "In", "required": []},
+        "nodes": [
+            {
+                "id": "loop",
+                "kind": "agent_loop",
+                "description": "x",
+                "tools": ["search"],
+                "loop_body": ["sub"],
+            },
+            {"id": "sub", "description": "x", **sub},
+        ],
+        "edges": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("sub", "message"),
+    [
+        (
+            {"kind": "hitl_gate", "signal": "ok"},
+            "Node 'loop' loop_body has 'sub', a hitl_gate: a loop calls only pure_function, "
+            "external_call and llm_judge nodes per iteration",
+        ),
+        (
+            {"kind": "pure_function", "impl": "extracted/sub.py:sub", "mandatory": True},
+            "Node 'loop' loop_body has 'sub', marked mandatory: the loop's agent decides "
+            "whether to call it, so it cannot be mandatory",
+        ),
+    ],
+)
+def test_a_loop_body_holds_only_optional_callable_steps(sub: dict[str, Any], message: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        Pipeline.model_validate(_loop_with(sub))
+    Pipeline.model_validate(_loop_with({"kind": "pure_function", "impl": "extracted/sub.py:sub"}))

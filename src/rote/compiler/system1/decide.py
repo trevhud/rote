@@ -1014,7 +1014,10 @@ def plan(
                 node.element_source = src
                 node.inputs[src] = f"{src}.output.items"
                 node.decide("fan_out", True, 0.7, f"per-item wording {each!r} over {src}")
-            if node.kind not in ("agent_loop", "hitl_gate"):  # a gate is mandatory implicitly
+            if node.kind not in ("agent_loop", "hitl_gate") and loop is not None:
+                # The loop's agent decides whether to call it (invariant #4).
+                node.decide("mandatory", False, 0.9, f"runs when {loop.id} calls it")
+            elif node.kind not in ("agent_loop", "hitl_gate"):  # a gate is mandatory implicitly
                 optional = _OPTIONAL.search(f"{u.title}\n{u.text}")
                 if u.mandatory:
                     node.mandatory = True

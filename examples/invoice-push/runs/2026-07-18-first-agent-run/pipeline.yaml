@@ -258,7 +258,6 @@ nodes:
 
   - id: check_row_eligibility
     kind: pure_function
-    mandatory: true
     phase: "Processing"
     source:
       section: "7b — Check Status Eligibility"

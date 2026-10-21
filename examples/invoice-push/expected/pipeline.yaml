@@ -208,7 +208,6 @@ nodes:
       decision: RowDecision
       failure_detail: "str | null"
     impl: extracted/row_classifier.py:classify_invoice_row
-    mandatory: true
     fan_out: true
     constants:
       eligible_statuses:
@@ -233,7 +232,6 @@ nodes:
     retry:
       max: 1
       backoff: constant
-    mandatory: true
     constants:
       toast_timeout_seconds: 5
 
@@ -273,7 +271,6 @@ nodes:
     retry:
       max: 3
       backoff: exponential
-    mandatory: true
 
   # ── Report wave (parallel) ─────────────────────────────────────────────
 
