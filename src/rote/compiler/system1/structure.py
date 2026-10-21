@@ -361,7 +361,12 @@ class Structure:
 
 
 def lane_with(lane: Lane, choice: str) -> Lane:
-    """``lane`` with the model ``choice`` names, in the lane's own id form."""
+    """``lane`` with the model ``choice`` names, in the lane's own id form.
+
+    An OpenAI-compatible lane keeps the compile's own model: Haiku and
+    Sonnet are not on that endpoint's wire format."""
+    if lane.client == "openai":
+        return lane
     model = MODELS[choice]
     prefix, _, _ = lane.model.rpartition("/")
     return replace(lane, model=gateway_model_id(prefix, model) if prefix else model)
@@ -375,7 +380,7 @@ def lane_for(driver: Any, choice: str) -> Lane:
     return lane_with(
         tiebreak.lane_for(
             driver,
-            caller=f"the structure pass asks {MODELS[choice]} for the pipeline's skeleton",
+            caller="the structure pass asks a model for the pipeline's skeleton",
             opt_out="--structure rules",
             error=StructureUnavailable,
         ),
@@ -855,17 +860,19 @@ def _structured_call() -> Call:
 
 
 def _client(lane: Lane) -> Any:
-    """The lane's Anthropic client with an explicit timeout, or None for ``claude -p``.
+    """The lane's client with an explicit timeout, or None for ``claude -p``.
 
-    The SDK refuses a non-streaming request whose ``max_tokens`` could run
-    past ten minutes unless the client sets its own timeout."""
+    The Anthropic SDK refuses a non-streaming request whose ``max_tokens``
+    could run past ten minutes unless the client sets its own timeout. A
+    lane with no client is refused: building one here would bill whatever
+    Anthropic key the environment holds, whichever driver the compile chose."""
     if lane.provider == "claude-cli":
         return None
-    if lane.sdk_client is not None:
-        return lane.sdk_client.with_options(timeout=TIMEOUT_S)
-    import anthropic
-
-    return anthropic.Anthropic(timeout=TIMEOUT_S)
+    if lane.sdk_client is None:
+        raise StructureUnavailable(
+            "the structure pass has no client for its lane; build lanes with lane_for"
+        )
+    return lane.sdk_client.with_options(timeout=TIMEOUT_S)
 
 
 def decide(
@@ -892,7 +899,7 @@ def decide(
             answer, rows = call(
                 node_id=NODE_ID,
                 provider=lane.provider,
-                client="anthropic",
+                client=lane.client,
                 model=lane.model,
                 prompt=prompt,
                 output_schema=SCHEMA,
@@ -1572,7 +1579,7 @@ def redecide(
         answer, rows = call(
             node_id=NODE_ID,
             provider=lane.provider,
-            client="anthropic",
+            client=lane.client,
             model=lane.model,
             prompt=prompt,
             output_schema=REDECIDE_SCHEMA,

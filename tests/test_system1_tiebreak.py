@@ -331,17 +331,19 @@ class _Named:
         self.name = name
 
 
-def test_the_lane_follows_the_compile_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_lane_is_the_compile_drivers_own(monkeypatch: pytest.MonkeyPatch) -> None:
     from rote.inference import _runtime_helper as helper
 
     monkeypatch.setattr(helper.shutil, "which", lambda name: "/usr/local/bin/claude")
     assert tb.lane_for(_Named("claude")) == Lane("claude-cli")
 
-    # Any other driver: a key first, then the CLI.
-    monkeypatch.setattr(tb.shutil, "which", lambda name: "/usr/local/bin/claude")
-    assert tb.lane_for(_Named("codex")) == Lane("claude-cli")
+    # Another driver never borrows a key or the claude CLI it finds lying around.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert tb.lane_for(_Named("codex")) == Lane("api")
+    with pytest.raises(TieBreakUnavailable, match="'codex' driver has no client"):
+        tb.lane_for(_Named("codex"))
+    # A driver named like one rote knows but not that class has no client either.
+    with pytest.raises(TieBreakUnavailable, match="'openai-api' driver has no client"):
+        tb.lane_for(_Named("openai-api"))
 
 
 def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,8 +368,10 @@ def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_no_lane_at_all_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tb.shutil, "which", lambda name: None)
-    with pytest.raises(TieBreakUnavailable, match="--tiebreak none"):
+    from rote.inference import _runtime_helper as helper
+
+    monkeypatch.setattr(helper.shutil, "which", lambda name: None)
+    with pytest.raises(TieBreakUnavailable, match="or pass --tiebreak none$"):
         tb.lane_for(_Named("codex"))
     with pytest.raises(TieBreakUnavailable, match="cannot use claude -p"):
         tb.lane_for(_Named("claude"))
@@ -732,10 +736,52 @@ async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(tb.shutil, "which", lambda name: None)
     monkeypatch.setattr(decision_model, "decide", no_decider)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Codex())
-    with pytest.raises(CompilerError, match=r"under the 'codex' driver.*--tiebreak none"):
+    with pytest.raises(CompilerError, match=r"the 'codex' driver has no client.*--tiebreak none"):
         await Compiler(system1_decider="clef", system1_tiebreak="haiku").compile(
             _skill(tmp_path), tmp_path / "out"
         )
+
+
+def test_the_openai_api_driver_lends_its_own_client() -> None:
+    """GPT-5.5, GLM or Kimi through a gateway: the tie-break goes to the same
+    endpoint with the same headers and the compile's own model."""
+    pytest.importorskip("openai")
+    from tests._helpers import GATEWAY_HEADERS, GATEWAY_URL, openai_compile_driver
+
+    lane = tb.lane_for(openai_compile_driver())
+    assert (lane.provider, lane.client, lane.model) == ("api", "openai", "openai/gpt-5.5")
+    assert str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL
+    assert lane.sdk_client.default_headers["cf-aig-metadata"] == GATEWAY_HEADERS["cf-aig-metadata"]
+    assert lane.label == "OpenAI-compatible API"
+
+
+def test_an_openai_api_tiebreak_goes_only_to_the_compiles_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole call, real client to the wire: the request reaches the gateway
+    schema-locked, and nothing touches an Anthropic key, client or claude."""
+    pytest.importorskip("openai")
+    from tests._helpers import (
+        assert_sent_through_the_gateway,
+        openai_compile_driver,
+        openai_gateway,
+    )
+
+    requests = openai_gateway(monkeypatch, [_answer("llm_judge")])
+    work = tmp_path / "work"
+    work.mkdir()
+    lane = tb.lane_for(openai_compile_driver())
+    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=lane, rubric=RUBRIC)
+    assert_sent_through_the_gateway(requests)
+    assert plan.tiebreak is not None and plan.tiebreak.model == "openai/gpt-5.5"
+    assert plan.tiebreak.segments[UNSURE][0][1] == "llm_judge"
+
+
+def test_a_lane_without_a_client_is_refused(tmp_path: Path) -> None:
+    """A bare api lane would bill whatever Anthropic key the environment holds."""
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(TieBreakUnavailable, match="no client for its lane"):
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("api"), rubric=RUBRIC)

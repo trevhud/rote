@@ -1008,14 +1008,101 @@ def test_analyze_passes_its_structure_choice_to_the_compiler(
 
 
 def test_no_lane_for_the_structure_pass_names_its_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    from rote.compiler.system1 import tiebreak
-
     class _Codex:
         name = "codex"
 
-    monkeypatch.setattr(tiebreak.shutil, "which", lambda name: None)
+    # A key in the environment is no lane: codex did not choose Anthropic.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     with pytest.raises(structure.StructureUnavailable, match="or pass --structure rules$"):
         structure.lane_for(_Codex(), "haiku")
+
+
+def test_an_openai_api_compile_keeps_its_own_model_for_the_structure_pass() -> None:
+    pytest.importorskip("openai")
+    from tests._helpers import GATEWAY_URL, openai_compile_driver
+
+    for choice in structure.MODELS:
+        lane = structure.lane_for(openai_compile_driver("@cf/zai-org/glm-5.2"), choice)
+        assert (lane.client, lane.model) == ("openai", "@cf/zai-org/glm-5.2")
+        assert str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL
+
+
+def test_an_openai_api_structure_pass_goes_only_to_the_compiles_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real client to the wire: the skeleton request reaches the gateway,
+    schema-locked, with the timeout the pass needs, and nothing touches an
+    Anthropic key, client or claude."""
+    pytest.importorskip("openai")
+    from rote.compiler import system1
+    from tests._helpers import (
+        assert_sent_through_the_gateway,
+        openai_compile_driver,
+        openai_gateway,
+    )
+
+    requests = openai_gateway(monkeypatch, [good_answer()])
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "w"
+    work.mkdir()
+    lane = structure.lane_for(openai_compile_driver(), "haiku")
+    plan = system1.prepare(d, work, tools=TOOLS, structure_lane=lane, rubric=rubric)
+    assert_sent_through_the_gateway(requests)
+    assert plan.structure is not None and plan.structure.model == "openai/gpt-5.5"
+    assert plan.structure.lane == "OpenAI-compatible API"
+    assert [n.id for n in plan.nodes] == ["fetch_emails", "summarize_email", "render_digest"]
+
+
+def test_an_openai_api_compile_gives_both_passes_its_own_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through Compiler: the structure pass and the tie-break each get the
+    driver's gateway client, with an Anthropic key and claude in reach."""
+    pytest.importorskip("openai")
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import tiebreak
+    from tests._helpers import GATEWAY_URL, openai_compile_driver, openai_gateway
+
+    openai_gateway(monkeypatch, [])
+    lanes: list[Lane] = []
+
+    def asked(*args: Any, **kwargs: Any) -> Any:
+        lanes.append(next(a for a in args if isinstance(a, Lane)))
+        raise _Asked("asked")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    monkeypatch.setattr(tiebreak, "decide", asked)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: openai_compile_driver())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    for i, kwargs in enumerate([{}, {"system1_structure": "rules", "system1_tiebreak": "haiku"}]):
+        compiler = Compiler(run_generated_tests=False, tool_discovery="none", **kwargs)
+        with pytest.raises(_Asked):
+            asyncio.run(compiler.compile(skill, tmp_path / f"out{i}"))
+    assert [(lane.client, lane.model) for lane in lanes] == [("openai", "openai/gpt-5.5")] * 2
+    assert all(str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL for lane in lanes)
+
+
+def test_a_structure_lane_without_a_client_is_refused(tmp_path: Path) -> None:
+    """A bare api lane would bill whatever Anthropic key the environment holds."""
+    from rote.compiler import system1
+
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "w"
+    work.mkdir()
+    with pytest.raises(structure.StructureUnavailable, match="no client for its lane"):
+        system1.prepare(d, work, tools=TOOLS, structure_lane=Lane("api"), rubric=rubric)
 
 
 def test_prepare_with_a_structure_lane_writes_the_passs_skeleton(

@@ -872,15 +872,19 @@ def _call_openai(
     prompt: str,
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
+    sdk_client: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import openai
 
-    endpoint, token = _sdk_target(provider, "openai", base_url)
-    client = (
-        openai.OpenAI(base_url=endpoint)
-        if token is None
-        else openai.OpenAI(base_url=endpoint, api_key=token)
-    )
+    if sdk_client is not None:
+        client = sdk_client
+    else:
+        endpoint, token = _sdk_target(provider, "openai", base_url)
+        client = (
+            openai.OpenAI(base_url=endpoint)
+            if token is None
+            else openai.OpenAI(base_url=endpoint, api_key=token)
+        )
     try:
         response = client.chat.completions.create(
             model=model,
@@ -1047,9 +1051,10 @@ def structured_call(
     :func:`call_judge` is this plus provider selection and the usage log.
     Each usage row is ``(concrete model, the four token buckets)``, and a
     ``claude-cli`` row also carries the CLI's own ``cost_usd``.
-    ``sdk_client`` is an Anthropic client the caller already built (rote's
-    compiler passes its api driver's, so a call bills and routes exactly
-    like the compile); without it one is built for ``provider``.
+    ``sdk_client`` is a client the caller already built, Anthropic or OpenAI
+    to match ``client`` (rote's compiler passes its driver's, so a call bills
+    and routes exactly like the compile); without it one is built for
+    ``provider``.
     """
     sampling = dict(sampling or {})
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
@@ -1083,6 +1088,7 @@ def structured_call(
             prompt=prompt,
             output_schema=output_schema,
             sampling=sampling,
+            sdk_client=sdk_client,
         )
     else:
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")

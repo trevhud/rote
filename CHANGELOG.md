@@ -20,6 +20,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   0.58. `--structure rules` keeps the rules, with no call. With no lane the
   compile fails and names that flag. `rote analyze` now passes
   `--structure` through; it used to ignore it.
+- **System-1's model calls run on the compile driver's own client only.**
+  The structure pass and the tie-break use `claude -p` under the claude
+  driver, the api driver's client under `--agent api`, and now the
+  openai-api driver's client and model under `--agent openai-api`. They
+  used to fall back to an `ANTHROPIC_*` key or a `claude` on PATH, which
+  billed your Claude account for a compile sent to another provider and
+  failed in containers that have neither. Under codex, pass
+  `--structure rules`.
 
 ### Added
 

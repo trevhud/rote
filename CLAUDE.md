@@ -79,9 +79,15 @@ comes from keeping them clean.
   to two repairs. Keep the checks to evidence: a check that encodes a guess
   about meaning belongs in the prompt, and a word list never does. What
   still fails is resolved conservatively and listed as an Open question,
-  never shipped as decided. It bills through the same lane as the tie-break
-  (`structure.lane_for`), and with no lane the compile fails naming
-  `--structure rules`, the opt-out that keeps the rules above. Tests that run
+  never shipped as decided. It and the tie-break run on the compile
+  driver's own client and nothing else (`tiebreak.lane_for`): claude -p,
+  the api driver's Anthropic client, or the openai-api driver's OpenAI
+  client with the compile's model. Never add a fallback to an ambient
+  `ANTHROPIC_*` key or a `claude` on PATH: it billed a user's subscription
+  for a compile they sent to GPT-5.5, and rote-cloud's container has
+  neither, so every openai-api compile failed there. A lane with no client
+  is refused for the same reason. With no lane (codex) the compile fails
+  naming `--structure rules`, the opt-out that keeps the rules above. Tests that run
   a compile with a fake driver pass `system1_structure="rules"`, because the
   fake has no lane. Tune its prompt on the dev skills only; the holdout is
   for measuring.

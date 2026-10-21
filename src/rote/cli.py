@@ -4248,10 +4248,11 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             f"{DEFAULT_STRUCTURE}). A model answers in one schema-locked call, and rote "
             "checks every node against the skill's text, its tools' schemas and the "
             "sample input before using it, asking again up to twice. It costs about "
-            "$0.015 a compile on Haiku, billed like the tie-break: claude -p under the "
-            "claude driver, the api driver's own client under --agent api, otherwise an "
-            "Anthropic key or the claude CLI. 'rules' makes no call and decides the "
-            "skeleton step by step from the skill's text"
+            "$0.015 a compile on Haiku. It runs on the compile driver's own client: "
+            "claude -p under the claude driver, the api driver's client under --agent "
+            "api, and the openai-api driver's client and model under --agent openai-api. "
+            "Under codex it cannot run. 'rules' makes no call and decides the skeleton "
+            "step by step from the skill's text"
         ),
     )
     p.add_argument(
@@ -4262,9 +4263,9 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "Who decides the steps System-1 is still unsure of (default: the `tiebreak` "
             f"setting, else {DEFAULT_TIEBREAK}). 'haiku' asks Claude Haiku in one "
             "schema-locked call, "
-            "billed like the compile: claude -p on your subscription under the claude "
-            "driver, the api driver's own client under --agent api, otherwise an "
-            "Anthropic key or the claude CLI. 'none' makes no call: those steps take "
+            "on the compile driver's own client, like --structure: claude -p on your "
+            "subscription, the api driver's client, or the openai-api driver's client "
+            "and model. 'none' makes no call: those steps take "
             "a conservative default and are listed for review"
         ),
     )

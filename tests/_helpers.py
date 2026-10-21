@@ -14,6 +14,7 @@ import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from rote.adapters._common import strip_ts_comments
 from rote.ir import Node, Pipeline
@@ -272,3 +273,105 @@ def fill_system1_judges(work: Path) -> None:
     }
     (work / "system1" / "text.yaml").write_text(yaml.safe_dump(text))
     enforce(work, final=True)
+
+
+# ───────── System-1 calls on an OpenAI-compatible compile ─────────
+
+#: An openai-api compile behind a Cloudflare AI Gateway, as rote-cloud runs it.
+GATEWAY_URL = "https://gateway.example/v1/openai"
+GATEWAY_HEADERS = {"cf-aig-authorization": "Bearer gw-token", "cf-aig-metadata": '{"tenant":"t1"}'}
+#: An Anthropic key in the environment that no request may carry.
+STRAY_ANTHROPIC_KEY = "sk-ant-must-not-be-sent"
+
+
+def openai_gateway(monkeypatch: Any, answers: list[dict[str, Any]]) -> list[Any]:
+    """Serve every ``openai.OpenAI`` client from an in-process gateway that
+    answers ``answers`` in turn, and return the requests it saw.
+
+    Everything another provider could be billed through fails the test: an
+    Anthropic client, a ``claude`` lookup or subprocess. An Anthropic key
+    sits in the environment so a request carrying it is visible."""
+    import json
+    import shutil
+    import subprocess
+
+    import anthropic
+    import httpx
+    import openai
+
+    from rote.eval import pricing
+
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-1",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": json.dumps(answers.pop(0))},
+                    }
+                ],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            },
+        )
+
+    real = openai.OpenAI
+
+    def client(**kwargs: Any) -> Any:
+        return real(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(answer)))
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(f"an openai-api compile reached another provider: {args!r}")
+
+    real_which = shutil.which
+    monkeypatch.setattr(openai, "OpenAI", client)
+    monkeypatch.setattr(anthropic, "Anthropic", refuse)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", refuse)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: refuse(name) if "claude" in str(name) else real_which(name, *a, **k),
+    )
+    monkeypatch.setattr(subprocess, "run", refuse)
+
+    def offline(*args: Any, **kwargs: Any) -> Any:
+        raise pricing.PricingError("offline in tests")
+
+    monkeypatch.setattr(pricing, "fetch_catalog", offline)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", STRAY_ANTHROPIC_KEY)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", STRAY_ANTHROPIC_KEY)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    return seen
+
+
+def openai_compile_driver(model: str = "openai/gpt-5.5") -> Any:
+    from rote.compiler.drivers.openai_api import OpenAIApiDriver
+
+    return OpenAIApiDriver(model=model, base_url=GATEWAY_URL, default_headers=GATEWAY_HEADERS)
+
+
+def assert_sent_through_the_gateway(requests: list[Any], model: str = "openai/gpt-5.5") -> None:
+    """Each request went to the compile's gateway, with its headers and model,
+    schema-locked, and none carried the stray Anthropic key."""
+    import json
+
+    assert requests
+    for r in requests:
+        assert str(r.url) == f"{GATEWAY_URL}/chat/completions"
+        assert r.headers["cf-aig-authorization"] == GATEWAY_HEADERS["cf-aig-authorization"]
+        assert r.headers["cf-aig-metadata"] == GATEWAY_HEADERS["cf-aig-metadata"]
+        assert "x-api-key" not in r.headers
+        assert all(STRAY_ANTHROPIC_KEY not in v for v in r.headers.values())
+        body = json.loads(r.content)
+        assert body["model"] == model
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["strict"] is True

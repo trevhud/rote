@@ -26,9 +26,7 @@ The measured gain is in ``docs/compile-bench.md``.
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,17 +113,22 @@ class TieBreakUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class Lane:
-    """How the call is billed: ``claude-cli`` or ``api``, and the api driver's client."""
+    """How the call is billed: ``claude-cli`` or ``api``, and the compile driver's client."""
 
     provider: str
     sdk_client: Any = None
     #: The model id on this lane: ``MODEL``, or its gateway form when the
-    #: compile model is provider-prefixed (:func:`gateway_model_id`).
+    #: compile model is provider-prefixed (:func:`gateway_model_id`). On an
+    #: OpenAI-compatible lane, the compile's own model.
     model: str = MODEL
+    #: The wire format ``structured_call`` speaks: ``anthropic`` or ``openai``.
+    client: str = "anthropic"
 
     @property
     def label(self) -> str:
-        return "claude -p (subscription)" if self.provider == "claude-cli" else "Anthropic API"
+        if self.provider == "claude-cli":
+            return "claude -p (subscription)"
+        return "OpenAI-compatible API" if self.client == "openai" else "Anthropic API"
 
 
 @dataclass
@@ -164,12 +167,18 @@ def gateway_model_id(prefix: str, model: str) -> str:
 def lane_for(
     driver: Any,
     *,
-    caller: str = f"the System-1 tie-break asks {MODEL} about the steps the rules are unsure of",
+    caller: str = "the System-1 tie-break asks a model about the steps the rules are unsure of",
     opt_out: str = "--tiebreak none",
     error: type[RuntimeError] = TieBreakUnavailable,
 ) -> Lane:
-    """The billing lane the compile's own driver implies.
+    """The compile driver's own client, as a lane: same endpoint, headers and auth.
 
+    ``claude`` calls ``claude -p``, ``api`` the AnthropicApiDriver's client
+    with a Haiku id in the compile model's own form, and ``openai-api`` the
+    OpenAIApiDriver's client with the compile's model. Nothing falls back to
+    another provider's key or binary: a compile that chose GPT-5.5 must not
+    bill the user's Claude subscription, and rote-cloud's container has
+    neither. A driver with no client rote can call (``codex``) fails here.
     ``caller``, ``opt_out`` and ``error`` say who is asking, so a failure
     names the flag that turns that call off."""
     from rote.inference._runtime_helper import provider_availability
@@ -192,13 +201,18 @@ def lane_for(
                 anthropic.Anthropic(**driver._client_kwargs()),
                 gateway_model_id(prefix, MODEL) if prefix else MODEL,
             )
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
-        return Lane("api")
-    if shutil.which("claude") is not None:
-        return Lane("claude-cli")
+    if name == "openai-api":
+        import openai
+
+        from rote.compiler.drivers.openai_api import OpenAIApiDriver
+
+        if isinstance(driver, OpenAIApiDriver):
+            return Lane(
+                "api", openai.OpenAI(**driver._client_kwargs()), driver.model, client="openai"
+            )
     raise error(
-        f"{caller}, and nothing can serve it under the {name!r} driver: set "
-        f"ANTHROPIC_API_KEY, install Claude Code (`claude login`), or pass {opt_out}"
+        f"{caller}, and the {name!r} driver has no client rote can send that call "
+        f"through: compile with --agent claude, api or openai-api, or pass {opt_out}"
     )
 
 
@@ -254,7 +268,9 @@ def _one_line(text: str, limit: int = 160) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
-def _parse(payload: dict[str, Any], asked: list[int]) -> dict[int, list[Segment]] | None:
+def _parse(
+    payload: dict[str, Any], asked: list[int], model: str = MODEL
+) -> dict[int, list[Segment]] | None:
     """The answer as segments, or None unless it covers exactly the steps asked.
 
     Rule constraints are applied after (:func:`_constrain`)."""
@@ -270,7 +286,7 @@ def _parse(payload: dict[str, Any], asked: list[int]) -> dict[int, list[Segment]
                 role_of_kind(n["kind"]),
                 n["kind"],
                 CONFIDENCE,
-                f"tie-break by {MODEL}: {_one_line(n.get('reason', ''))}",
+                f"tie-break by {model}: {_one_line(n.get('reason', ''))}",
             )
             for n in nodes
         ]
@@ -314,6 +330,12 @@ def decide(
     result = TieBreak(lane.model, lane.label, asked)
     if not unsure:
         return result
+    if lane.provider != "claude-cli" and lane.sdk_client is None:
+        # structured_call would build a client from whatever Anthropic key the
+        # environment holds, whichever driver the compile chose.
+        raise TieBreakUnavailable(
+            "the tie-break has no client for its lane; build lanes with lane_for"
+        )
     prompt = prompt_for(skill, unsure, segments, verdicts, rubric_path.read_text("utf-8"))
     call = call or _structured_call()
     for _ in range(ATTEMPTS):
@@ -321,7 +343,7 @@ def decide(
             payload, rows = call(
                 node_id=NODE_ID,
                 provider=lane.provider,
-                client="anthropic",
+                client=lane.client,
                 model=lane.model,
                 prompt=prompt,
                 output_schema=SCHEMA,
@@ -329,17 +351,17 @@ def decide(
             )
         except RuntimeError as e:
             raise TieBreakUnavailable(
-                f"the System-1 tie-break ({MODEL}, {lane.label}) failed: {e}. "
+                f"the System-1 tie-break ({lane.model}, {lane.label}) failed: {e}. "
                 "Pass --tiebreak none to compile without it"
             ) from e
         result.usage += [{"model": m, **u} for m, u in rows]
-        parsed = _parse(payload, asked)
+        parsed = _parse(payload, asked, lane.model)
         if parsed is not None:
             result.segments = _constrain(skill, parsed, result, tools)
             result.cost_usd = _cost(result.usage)
             return result
     raise TieBreakUnavailable(
-        f"the System-1 tie-break ({MODEL}) did not answer exactly the {len(asked)} steps it "
+        f"the System-1 tie-break ({lane.model}) did not answer exactly the {len(asked)} steps it "
         f"was asked about in {ATTEMPTS} tries. Pass --tiebreak none to compile without it"
     )
 

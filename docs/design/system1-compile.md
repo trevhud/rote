@@ -326,10 +326,17 @@ question in compile-report.md. Later, a verification finding about a tool
 binding goes back to the structure pass (`redecide`) rather than to the
 text agent.
 
-It bills like the tie-break (below): `claude -p` under the claude driver,
-the api driver's own client under `--agent api`, else an Anthropic key or
-the claude CLI. With no lane the compile fails before the agent runs and names
-`--structure rules`. `rote-cloud` constructs `Compiler` with the default,
+Both this pass and the tie-break run on the compile driver's own client
+(`tiebreak.lane_for`), with its endpoint, headers, auth and metadata:
+`claude -p` under the claude driver, the api driver's Anthropic client with a
+Haiku id in the compile model's form under `--agent api`, and the openai-api
+driver's OpenAI-compatible client with the compile's own model (GPT-5.5, GLM,
+Kimi) under `--agent openai-api`, through an OpenAI-shaped `json_schema`
+call. Nothing falls back to another provider's key or binary. A fallback
+would bill the user's Claude subscription on a compile they sent to another
+provider, and rote-cloud's container has neither, so every such compile
+failed there. The codex driver has no client rote can call, so with no lane
+the compile fails before the agent runs and names `--structure rules`. `rote-cloud` constructs `Compiler` with the default,
 so cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
@@ -362,11 +369,9 @@ Its decisions are settled (confidence 0.7, the rule names the model and its
 reason) and are recorded under `tiebreak` in decisions.json with their usage
 and cost.
 
-The call bills the way the compile does: `claude -p` on the subscription
-under the claude driver, the api driver's own client (gateway base URL,
-headers and model-id prefix) under `--agent api`, otherwise an Anthropic
-key, then the CLI. With none of them the compile fails and names
-`--tiebreak none`. It goes through `structured_call` in
+The call runs on the compile driver's own client, exactly like the structure
+pass above (gateway base URL, headers and model-id prefix included). Under a
+driver with no client the compile fails and names `--tiebreak none`. It goes through `structured_call` in
 `rote.inference._runtime_helper`, the code emitted judges run: a forced
 tool call, no temperature, all four usage buckets.
 

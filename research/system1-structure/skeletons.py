@@ -17,6 +17,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import anthropic
+
 from rote.bench.score import score_pipeline
 from rote.compiler import system1
 from rote.compiler.system1 import structure
@@ -45,7 +47,11 @@ CHOICES = [*structure.MODELS, *(f"{m}-low" for m in structure.MODELS)]
 
 def row(examples: Path, skill: str, *, choice: str) -> dict[str, Any]:
     model = choice.removesuffix("-low")
-    lane = None if choice == "rules" else structure.lane_with(Lane("api"), model)
+    lane = (
+        None
+        if choice == "rules"
+        else structure.lane_with(Lane("api", anthropic.Anthropic()), model)
+    )
     start = time.monotonic()
     with tempfile.TemporaryDirectory() as t:
         try:
