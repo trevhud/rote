@@ -18,10 +18,13 @@ model's two thresholds were fitted on the dev skills only and then frozen
 before the one measurement on ``examples/holdout/``. Changing any of them
 invalidates that measurement. The numbers are in ``docs/compile-bench.md``.
 
-Clef runs on the user's own Cloudflare account (``CLOUDFLARE_ACCOUNT_ID``,
-``CLOUDFLARE_API_TOKEN``). Jev runs on Typesafe's own API when
-``TYPESAFE_API_KEY`` is set, else on the same Cloudflare account
-(:func:`route`). An explicit model with no credentials for it fails the
+Clef runs on Workers AI with ``ROTE_CLEF_ACCOUNT_ID`` and
+``ROTE_CLEF_API_TOKEN``, and Jev on Typesafe's own API with
+``TYPESAFE_API_KEY`` (:func:`route`). Never ``CLOUDFLARE_*``: those are the
+credentials ``rote deploy`` and ``rote mcp release`` use, and having them must
+not opt a compile into sending skill text to an account that gets billed for
+it (on a work machine, often the employer's). An explicit model with no
+credentials for it fails the
 compile: asking for a model and getting rules would report numbers for a
 decider that never ran. The built-in default (``auto``) instead takes the
 first of :data:`CHECKER_ORDER` that has credentials, and none is no check
@@ -143,8 +146,8 @@ def default_checker() -> tuple[str, str]:
             f"here ({via.via})"
         )
     return "rules", (
-        "no decision model ran (no credentials for one): set CLOUDFLARE_ACCOUNT_ID and "
-        f"CLOUDFLARE_API_TOKEN for Clef, or {TYPESAFE_KEY_ENV} for Jev"
+        f"no decision model ran (no credentials for one): set {CLEF_ACCOUNT_ENV} and "
+        f"{CLEF_TOKEN_ENV} for Clef, or {TYPESAFE_KEY_ENV} for Jev"
     )
 
 
@@ -248,9 +251,15 @@ class Route:
     cloudflare: bool
 
 
-def cloudflare_credentials() -> tuple[str, str] | None:
-    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
-    token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
+#: Clef's credentials: a Cloudflare account and an API token that can run
+#: Workers AI, set for rote's decision model alone.
+CLEF_ACCOUNT_ENV = "ROTE_CLEF_ACCOUNT_ID"
+CLEF_TOKEN_ENV = "ROTE_CLEF_API_TOKEN"
+
+
+def clef_credentials() -> tuple[str, str] | None:
+    account = os.environ.get(CLEF_ACCOUNT_ENV, "").strip()
+    token = os.environ.get(CLEF_TOKEN_ENV, "").strip()
     return (account, token) if account and token else None
 
 
@@ -259,11 +268,16 @@ def typesafe_key() -> str | None:
 
 
 def route(model: DecisionModel) -> Route:
-    """The model's calls: Jev on Typesafe's own API when its key is set,
-    else Workers AI on the user's Cloudflare account. No credentials for
-    the model fails, naming what to set."""
-    key = typesafe_key()
-    if model.name == JEV.name and key is not None:
+    """The model's calls: Clef on Workers AI, Jev on Typesafe's own API, each
+    with its own rote variables. No credentials for the model fails, naming
+    what to set."""
+    if model.name == JEV.name:
+        key = typesafe_key()
+        if key is None:
+            raise DeciderUnavailable(
+                f"--decider jev needs {TYPESAFE_KEY_ENV}, a key for Typesafe's API "
+                "(console.typesafe.ai)"
+            )
         return Route(
             TYPESAFE_URL,
             key,
@@ -275,16 +289,15 @@ def route(model: DecisionModel) -> Route:
             "Typesafe",
             cloudflare=False,
         )
-    cloudflare = cloudflare_credentials()
-    if cloudflare is not None:
-        account, token = cloudflare
-        return Route(model.url(account), token, model.body, "Workers AI", cloudflare=True)
-    typesafe = f"{TYPESAFE_KEY_ENV} (Typesafe's own API) or " if model.name == JEV.name else ""
-    raise DeciderUnavailable(
-        f"--decider {model.name} needs {typesafe}CLOUDFLARE_ACCOUNT_ID and "
-        "CLOUDFLARE_API_TOKEN for the Cloudflare account that runs Workers AI (use a "
-        "personal account, not an ambient work login)"
-    )
+    clef = clef_credentials()
+    if clef is None:
+        raise DeciderUnavailable(
+            f"--decider {model.name} needs {CLEF_ACCOUNT_ENV} and {CLEF_TOKEN_ENV}: a "
+            "Cloudflare account and an API token that can run Workers AI, set for rote's "
+            "decision model alone (CLOUDFLARE_* deploy credentials are never used for it)"
+        )
+    account, token = clef
+    return Route(model.url(account), token, model.body, "Workers AI", cloudflare=True)
 
 
 def _gateway_headers() -> dict[str, str]:
@@ -362,13 +375,11 @@ def _post(
     except urllib.error.HTTPError as e:
         detail = f"{via} answered HTTP {e.code}: {e.read()[:300]!r}"
         if e.code == 402 and cloudflare:
-            # Measured: Jev, a partner model, bills the account's AI Gateway
-            # Unified Billing credits, while Clef bills Workers AI itself, so
-            # one account can serve Clef and refuse Jev.
+            # Calls routed through an AI Gateway bill its Unified Billing
+            # credits; an empty balance answers 402.
             detail += (
-                ". The account's AI Gateway balance is empty: partner models such as "
-                "Jev bill Unified Billing credits, so add credits in the Cloudflare "
-                "dashboard (AI > AI Gateway) or use --decider clef"
+                ". The AI Gateway's balance is empty: add credits in the Cloudflare "
+                "dashboard (AI > AI Gateway), or unset CLOUDFLARE_AI_GATEWAY_ID"
             )
         if 400 <= e.code < 500 and e.code != 429:
             # A bad token, a missing model or a malformed body fails the same

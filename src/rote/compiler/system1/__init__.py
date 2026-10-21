@@ -350,6 +350,17 @@ def calls_cost_usd(work_dir: Path) -> float | None:
     return total
 
 
+def checker_of(work_dir: Path) -> str | None:
+    """The decision model that ran on this compile (``clef``, ``jev``, or
+    ``rules`` for none), from decisions.json; None when it records none."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if not path.is_file():
+        return None
+    checker = json.loads(path.read_text(encoding="utf-8")).get("checker") or {}
+    decider = checker.get("decider")
+    return decider if isinstance(decider, str) else None
+
+
 def _checker_why(work_dir: Path) -> str | None:
     """Why this decision model ran, or none did, from decisions.json."""
     path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME

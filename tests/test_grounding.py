@@ -1139,7 +1139,7 @@ def test_a_plain_compile_of_an_example_finds_its_sample(example: str) -> None:
     assert found.source == str(skill / "sample-input.json")
     # One copy: no second sample beside the skill for the bench to pass.
     assert not (skill.parent / "sample.json").exists()
-    args = argparse.Namespace(runtime="dbos", model=None, agent=None, compile_flag=[])
+    args = argparse.Namespace(runtime="dbos", model=None, agent=None, decider=None, compile_flag=[])
     assert "--sample-input" not in compile_argv(skill, Path("out"), args)
 
 

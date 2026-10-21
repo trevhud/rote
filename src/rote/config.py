@@ -148,9 +148,9 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         name="decider",
         env="ROTE_DECIDER",
         description=(
-            "the decision model that checks the structure pass: auto (Clef with Cloudflare "
-            "credentials, else Jev with TYPESAFE_API_KEY, else none), clef, jev, or rules "
-            "(no call); unset = auto"
+            "the decision model that checks the structure pass: auto (Clef with "
+            "ROTE_CLEF_ACCOUNT_ID and ROTE_CLEF_API_TOKEN, else Jev with TYPESAFE_API_KEY, "
+            "else none), clef, jev, or rules (no call); unset = auto"
         ),
         lazy_choices="decider",
     ),

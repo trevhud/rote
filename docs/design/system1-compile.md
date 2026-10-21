@@ -202,7 +202,8 @@ text) decides each step's kind and whether a person must act. It uses the
 when its ensemble kind confidence is at least 0.85 or its gate probability is
 at least 0.50. Otherwise the rules decide, and a disagreement is listed in
 Open questions. Mandatory and fan_out stay on rules. A missing credential
-fails the compile (`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`).
+fails the compile (`ROTE_CLEF_ACCOUNT_ID`, `ROTE_CLEF_API_TOKEN`; this
+section predates the rename from `CLOUDFLARE_*`).
 `CLOUDFLARE_AI_GATEWAY_ID` routes the calls through an AI Gateway, and
 `CLOUDFLARE_AI_GATEWAY_METADATA` (a JSON object) tags each logged call, which
 is how rote cloud bills one compile's Clef calls to its tenant. A
@@ -359,17 +360,36 @@ pass's reason for keeping the prerequisites check gateless.
 
 The built-in decider is `auto`, one rule for local and rote cloud compiles:
 the first of `decision_model.CHECKER_ORDER` that has credentials, best
-measured first. sk-check2 set it to Clef, then Jev. Clef needs
-`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` (Workers AI). Jev runs on
-Typesafe's own API with `TYPESAFE_API_KEY` (`POST
-https://api.typesafe.ai/v1/systemone`, Bearer key, pinned to `jev-1.14.0`,
-the version its thresholds were fitted on; its answer has no `result`
-wrapper and no AI Gateway header is sent), or on Workers AI with the
-Cloudflare variables. With neither, the compile runs unchecked and prints
-one line naming the variables that enable each. `--decider clef|jev` by
-name still fails before any spend without its credentials. decisions.json's
-`checker` entry and compile-report.md say which ran and why. A later bench
-changes the order in `CHECKER_ORDER` and nowhere else.
+measured first. sk-check2 set it to Clef, then Jev. Each model reads its
+own variables and nothing else:
+
+- Clef: `ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN`, a Cloudflare
+  account and an API token that can run Workers AI.
+- Jev: `TYPESAFE_API_KEY`, on Typesafe's own API (`POST
+  https://api.typesafe.ai/v1/systemone`, Bearer key, pinned to `jev-1.14.0`,
+  the version its thresholds were fitted on; its answer has no `result`
+  wrapper and no AI Gateway header is sent).
+
+Never `CLOUDFLARE_*`: those are what `rote deploy` and `rote mcp release`
+read, and having deploy credentials must not opt a compile into sending
+skill text to an account that is billed for it (on a work machine, often
+the employer's). With neither set, the compile runs unchecked and prints one
+line naming the variables that enable each. `--decider clef|jev` by name
+still fails before any spend without its credentials. decisions.json's
+`checker` entry and compile-report.md say which ran and why, and `rote
+bench` reports it per job (`chk`) and takes `--decider` to pin it, since
+`auto` varies with the machine. A later bench changes the order in
+`CHECKER_ORDER` and nowhere else.
+
+`auto` is one rule on both System-1 paths, so what it does depends on
+`--structure`. With the structure pass on (the default), the chosen model
+checks the pass and never overrides it. Under `--structure rules`, the same
+model is the step decider of the rules path: where it is confident it sets
+kinds and gates directly, as `--decider clef|jev` always did there. So a
+machine with Clef's variables gets Clef deciding the rules path's kinds,
+and one with neither gets the rules alone, which is what `--structure
+rules` ran before `auto`. To keep the rules path call-free with the
+variables set, pass `--decider rules`.
 
 Step-by-step rules misread skills whose structure lives in their intent: a
 per-item step inside a loop, an alternative entry point, a judge that weighs

@@ -49,6 +49,7 @@ options:
 | `--concurrency N` | Compiles in flight at once (default 1) |
 | `--budget USD` | Stop launching compiles once total `total_cost_usd` reaches this. Running ones finish, so the overshoot is at most `N - 1` compiles |
 | `--model`, `--agent` | Passed to `rote compile` |
+| `--decider D` | Passed to every `rote compile --decider`, to pin the decision model. Unset, each compile takes `auto`, which depends on the credentials where the bench runs; the `chk` column says which ran |
 | `--compile-flag F` | Passed to every `rote compile`, repeatable. Compiles run System-1 by default, so `--compile-flag=--no-system1` benches the full-rubric path. Older rows below that say `--system1` were measured when it was opt-in |
 | `--runtime` | The compile's `--runtime` (default `dbos`, the logged-out default) |
 | `--no-tsc` | Skip `npm install` + `tsc --noEmit` on the Cloudflare emit |

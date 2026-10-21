@@ -824,6 +824,7 @@ def test_a_bench_compile_grounds_in_the_skills_snapshot_with_nothing_registered(
         out=tmp_path,
         runtime="dbos",
         model=None,
+        decider=None,
         agent=None,
         compile_flag=[],
         no_tsc=True,

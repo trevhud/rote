@@ -242,8 +242,8 @@ async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
         async def run(self, **kwargs: Any) -> Any:
             raise AssertionError("the agent ran although the checker cannot")
 
-    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_API_TOKEN", raising=False)
     monkeypatch.setattr(structure, "decide", spent)
     monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Agent())
@@ -251,8 +251,7 @@ async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
     shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
     with pytest.raises(
         CompilerError,
-        match=r"^--decider jev needs TYPESAFE_API_KEY \(Typesafe's own API\) or "
-        r"CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+        match=r"^--decider jev needs TYPESAFE_API_KEY, a key for Typesafe's API",
     ):
         await Compiler(
             system1_decider="jev", run_generated_tests=False, tool_discovery="none"
@@ -308,8 +307,8 @@ from rote.compiler.system1 import decision_model as dm  # noqa: E402
 
 def _creds(monkeypatch: pytest.MonkeyPatch, cloudflare: bool, typesafe: bool) -> None:
     for var, on, value in (
-        ("CLOUDFLARE_ACCOUNT_ID", cloudflare, "acct"),
-        ("CLOUDFLARE_API_TOKEN", cloudflare, "cf-token"),
+        ("ROTE_CLEF_ACCOUNT_ID", cloudflare, "acct"),
+        ("ROTE_CLEF_API_TOKEN", cloudflare, "cf-token"),
         (dm.TYPESAFE_KEY_ENV, typesafe, "ts-key"),
     ):
         if on:
@@ -345,8 +344,8 @@ def test_no_credentials_is_no_check_and_names_what_enables_each(
     _creds(monkeypatch, False, False)
     assert dm.default_checker() == (
         "rules",
-        "no decision model ran (no credentials for one): set CLOUDFLARE_ACCOUNT_ID and "
-        "CLOUDFLARE_API_TOKEN for Clef, or TYPESAFE_API_KEY for Jev",
+        "no decision model ran (no credentials for one): set ROTE_CLEF_ACCOUNT_ID and "
+        "ROTE_CLEF_API_TOKEN for Clef, or TYPESAFE_API_KEY for Jev",
     )
 
 
@@ -364,12 +363,26 @@ def test_jev_goes_to_typesafes_own_api_with_its_key(monkeypatch: pytest.MonkeyPa
         "state": {"s": 1},
         "questions": {"q": 2},
     }
-    # Clef has no Typesafe route; Jev without the key uses Workers AI.
+    # Each model reads only its own variables.
     assert dm.route(dm.CLEF).via == "Workers AI"
     _creds(monkeypatch, True, False)
-    assert dm.route(dm.JEV).via == "Workers AI"
+    with pytest.raises(dm.DeciderUnavailable, match="^--decider jev needs TYPESAFE_API_KEY"):
+        dm.route(dm.JEV)
     _creds(monkeypatch, False, True)
-    with pytest.raises(dm.DeciderUnavailable, match="^--decider clef needs CLOUDFLARE"):
+    with pytest.raises(dm.DeciderUnavailable, match="^--decider clef needs ROTE_CLEF_ACCOUNT_ID"):
+        dm.route(dm.CLEF)
+
+
+def test_deploy_credentials_never_opt_a_compile_into_a_decision_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's rule: CLOUDFLARE_* (rote deploy, rote mcp release) is not
+    consent to send skill text to Workers AI."""
+    _creds(monkeypatch, False, False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "work-account")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "work-token")
+    assert dm.default_checker()[0] == "rules"
+    with pytest.raises(dm.DeciderUnavailable, match="CLOUDFLARE_\\* deploy credentials are never"):
         dm.route(dm.CLEF)
 
 

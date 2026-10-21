@@ -60,10 +60,10 @@ def _answers(kind: dict[str, float], human: float) -> dict[str, Any]:
 
 
 def _as_served(model: DecisionModel, response: dict[str, Any]) -> dict[str, Any]:
-    """The same answer as ``model``'s route returns it: the unified /ai/run
-    route (Jev) wraps the record once more."""
-    if model.selector is None:
-        return {"result": {"result": response["result"]}}
+    """The same answer as ``model``'s route returns it: Clef's Workers AI
+    route wraps it as ``result``; Typesafe's API (Jev) does not wrap it."""
+    if model.name == JEV.name:
+        return response["result"]
     return response
 
 
@@ -77,8 +77,9 @@ ZERO = dict.fromkeys(dm.KINDS["v0"], 0.0)
 
 @pytest.fixture
 def creds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
-    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "tok")
+    monkeypatch.setenv("ROTE_CLEF_ACCOUNT_ID", "acct123")
+    monkeypatch.setenv("ROTE_CLEF_API_TOKEN", "tok")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "tok")
     monkeypatch.setattr(dm.time, "sleep", lambda _s: None)
 
 
@@ -133,9 +134,9 @@ def test_the_request_is_the_pre_registered_one(
         assert first["url"] == f"{base}/@cf/cloudflare/clef"
         assert set(body) == {"model", "state", "questions"} and body["model"] == "clef"
     else:
-        # The unified route: model id in the body, the request under `input`.
-        assert first["url"] == base
-        assert set(body) == {"model", "input"} and body["model"] == "typesafe/jev-1.14.0"
+        # Typesafe's own API, pinned to the version the thresholds were fitted on.
+        assert first["url"] == "https://api.typesafe.ai/v1/systemone"
+        assert set(body) == {"model", "state", "questions"} and body["model"] == "jev-1.14.0"
     body = _request(body)
     assert set(body["state"]) == {"skill", "skill_description", "all_steps", "this_step"}
     assert body["state"]["all_steps"] == [
@@ -254,8 +255,8 @@ def test_confident_answers_win_and_unsure_ones_go_to_review(
 async def test_asking_for_a_model_without_credentials_fails_the_compile(
     model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_API_TOKEN", raising=False)
 
     def no_call(url: str, token: str, body: dict[str, Any], *_route: Any) -> dict[str, Any]:
         raise AssertionError("the model was called without credentials")
@@ -267,9 +268,11 @@ async def test_asking_for_a_model_without_credentials_fails_the_compile(
     )
     with pytest.raises(
         CompilerError,
-        match=f"--decider {model.name} needs "
-        + (r"TYPESAFE_API_KEY \(Typesafe's own API\) or " if model.name == "jev" else "")
-        + "CLOUDFLARE_ACCOUNT_ID and",
+        match=(
+            "^--decider jev needs TYPESAFE_API_KEY"
+            if model.name == "jev"
+            else "^--decider clef needs ROTE_CLEF_ACCOUNT_ID and ROTE_CLEF_API_TOKEN"
+        ),
     ):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
 
@@ -321,7 +324,7 @@ def test_an_empty_gateway_balance_says_so(monkeypatch: pytest.MonkeyPatch) -> No
         )  # type: ignore[arg-type]
 
     monkeypatch.setattr(dm.urllib.request, "urlopen", raise_402)
-    with pytest.raises(dm.DeciderRejected, match="HTTP 402.*Unified Billing credits"):
+    with pytest.raises(dm.DeciderRejected, match="HTTP 402.*AI Gateway's balance is empty"):
         dm._post("https://example.invalid", "t", {})
 
 
@@ -405,9 +408,7 @@ def test_no_gateway_settings_send_no_gateway_headers(monkeypatch: pytest.MonkeyP
         ("rote", '{"missing": null}', "string, number or boolean"),
     ],
 )
-@MODELS
 def test_bad_gateway_metadata_fails_before_any_call(
-    model: DecisionModel,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     creds: None,
@@ -415,7 +416,9 @@ def test_bad_gateway_metadata_fails_before_any_call(
     metadata: str,
     match: str,
 ) -> None:
-    """Untagged calls would bill the host with no compile to charge: refuse up front."""
+    """Untagged calls would bill the host with no compile to charge: refuse up front.
+    Clef's alone: Jev's calls go to Typesafe, never through an AI Gateway."""
+    model = CLEF
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", gateway)
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", metadata)
     calls = _stub(monkeypatch, {})

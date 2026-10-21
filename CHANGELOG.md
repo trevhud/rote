@@ -18,9 +18,12 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   never as an override; one the pass keeps is an Open question with both
   answers, and a kept one must quote at least four words of the step's own
   text. The built-in decider is now `auto`: Clef when
-  `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are set, else Jev on
+  `ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN` are set, else Jev on
   Typesafe's own API when `TYPESAFE_API_KEY` is set, else no check, with one
-  line saying which and why. `--decider rules` makes no check. The warning
+  line saying which and why. The decision models no longer read
+  `CLOUDFLARE_*`, so deploy credentials never opt a compile into inference;
+  set `ROTE_CLEF_*` instead. `rote bench` reports the checker per job and
+  takes `--decider` to pin it. `--decider rules` makes no check. The warning
   that `--decider` does nothing with the pass on is gone.
 
 - **The structure pass decides the pipeline's skeleton by default.** One

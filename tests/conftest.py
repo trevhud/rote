@@ -160,8 +160,8 @@ _INFERENCE_CREDENTIAL_VARS = (
     "ROTE_CLOUD_TOKEN",
     # The decision models: with these set, the default decider (auto) would
     # call Clef or Jev from any compile test.
-    "CLOUDFLARE_ACCOUNT_ID",
-    "CLOUDFLARE_API_TOKEN",
+    "ROTE_CLEF_ACCOUNT_ID",
+    "ROTE_CLEF_API_TOKEN",
     "TYPESAFE_API_KEY",
 )
 

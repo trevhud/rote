@@ -4314,11 +4314,11 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
         help=(
             "The decision model that checks the structure pass, or decides step kinds and "
             "gates under --structure rules (default: the `decider` setting, else auto). "
-            "'auto' takes Clef when CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are set "
+            "'auto' takes Clef when ROTE_CLEF_ACCOUNT_ID and ROTE_CLEF_API_TOKEN are set "
             "(Workers AI, about $0.005 a compile), else Jev when TYPESAFE_API_KEY is set "
-            "(Typesafe's API, about $0.001), else no check, and says which. 'clef' or 'jev' "
-            "by name fails before any spend without its credentials (Jev also runs on Workers "
-            "AI with the Cloudflare variables). 'rules' makes no call"
+            "(Typesafe's API, about $0.001), else no check, and says which. CLOUDFLARE_* "
+            "deploy credentials are never used for it. 'clef' or 'jev' by name fails "
+            "before any spend without its credentials. 'rules' makes no call"
         ),
     )
     p.add_argument(
