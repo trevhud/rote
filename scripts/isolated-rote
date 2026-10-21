@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Run the repo's rote with every per-user state path (app registry, MCP
+# registry and tokens, cloud credential, config, vendor specs/fixtures)
+# moved into a throwaway dir, so repo maintenance never touches the real
+# ones. The list of paths lives in src/rote/isolation.py.
+#
+#   scripts/isolated-rote emit examples/bdr-outreach/expected/pipeline.yaml \
+#     --runtime dbos --out examples/bdr-outreach/expected/runtimes/dbos
+#
+# ROTE_ISOLATED_STATE=<dir> keeps the state in <dir>. It hides your MCP
+# logins too, so a run that needs a real MCP server should use plain rote.
+set -euo pipefail
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+exec "$repo/.venv/bin/python" -m rote.isolation "$@"

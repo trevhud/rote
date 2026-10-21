@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from rote import isolation
 from rote.ir import Pipeline, load_pipeline
 from tests import _node_trees as node_trees
 
@@ -93,17 +94,14 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     token store, or app registry — several code paths (eval MCP wiring,
     emitted-helper resolution, the `rote mcp` commands, and `rote emit`
     recording the output dir) consult them by default."""
-    monkeypatch.setenv("ROTE_MCP_CONFIG", str(tmp_path / "mcp-config" / "mcp.json"))
-    monkeypatch.setenv("ROTE_MCP_TOKEN_DIR", str(tmp_path / "mcp-tokens"))
-    monkeypatch.setenv("ROTE_APPS_PATH", str(tmp_path / "rote-apps" / "apps.json"))
-    # Same rule for the rote-cloud login: a developer's real credential
-    # must never satisfy (or be clobbered by) a test's resolution chain.
-    monkeypatch.setenv("ROTE_CLOUD_CRED_PATH", str(tmp_path / "cloud-cred" / "cloud.json"))
-    # And for the layered config: a developer's ~/.config/rote/config.yaml
-    # (or a stray rote.yaml above the test cwd) must not change what any
-    # command resolves. Both paths point at files that don't exist.
-    monkeypatch.setenv("ROTE_CONFIG_PATH", str(tmp_path / "rote-config" / "config.yaml"))
-    monkeypatch.setenv("ROTE_PROJECT_CONFIG_PATH", str(tmp_path / "rote-config" / "rote.yaml"))
+    # Every per-user state path (rote.isolation.STATE_PATHS), including the
+    # rote-cloud credential, which a developer's real login must never
+    # satisfy or be clobbered by, and the layered config, which must not
+    # change what any command resolves. Each points under tmp_path.
+    for key, value in isolation.isolated_env(tmp_path, base={}).items():
+        monkeypatch.setenv(key, value)
+    for key in isolation.CLOUD_CREDENTIAL_ENV:
+        monkeypatch.delenv(key, raising=False)
     # `rote compile` now always constructs its JSONL progress sink (the
     # <out>/progress.jsonl sidecar), whose price enrichment does a live
     # catalog fetch. No unit test may touch the network for it — tests
@@ -122,9 +120,8 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     )
     # Vendor specs (--backend api) are fetched from the vendor. Tests use
     # the trimmed real documents in tests/fixtures/vendor_specs through an
-    # injected fetch, never the network, and never the developer's cache.
-    monkeypatch.setenv("ROTE_SPEC_CACHE_DIR", str(tmp_path / "vendor-specs"))
-    monkeypatch.setenv("ROTE_FIXTURE_DIR", str(tmp_path / "vendor-fixtures"))
+    # injected fetch, never the network, and never the developer's cache
+    # (ROTE_SPEC_CACHE_DIR above).
     monkeypatch.setattr("rote.vendor_specs.store.http_get_json", _offline_spec_fetch)
     # Nor install an app's vendor libraries (rote.vendor_specs.deps).
     monkeypatch.setattr("rote.vendor_specs.deps._run_uv", _no_package_install)
