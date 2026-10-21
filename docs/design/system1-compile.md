@@ -356,9 +356,10 @@ transient failure (HTTP 408, 409, 425, 429 or 5xx, an SDK connection or
 timeout error, a reset connection) up to three calls in all, waiting 2 s
 and then 8 s, on the same lane and model, and then raises the real error.
 No other model or provider is ever tried. The SDK clients also retry on
-their own, so System-1 calls them with `max_retries=0`: this retry is the
-nine requests before the compile fails. `rote-cloud` constructs `Compiler` with the default,
-so cloud compiles run it too.
+their own, so System-1 calls them with `max_retries=0`. This retry is then
+the only one, and a lane that keeps timing out costs three requests before
+the compile fails. `rote-cloud` constructs `Compiler` with the default, so
+cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
 
