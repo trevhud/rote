@@ -49,6 +49,13 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Fixed
 
+- **`--decider clef|jev` refuses a step it would read only part of.**
+  Workers AI truncates a text state past the model's window without an
+  error, so a long step got a verdict on text the model never saw. Clef's
+  window is its documented 65,536 tokens; Jev's is unpublished, so the
+  smaller of the two listed figures (32,768) is assumed. A step estimated
+  over 90% of it fails the compile before any call, naming
+  `--decider rules`, and a call whose input filled the window fails it after.
 - **Emitted Python apps list what their code imports.** The dbos app now
   emits a `requirements.txt` (it had none, and its README installed `dbos`
   alone), and both dbos and python add the vendor SDKs that `extracted/`
