@@ -3206,6 +3206,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 maybe_payload,
                 model=args.model or DEFAULT_MODEL,
                 allow_writes=args.allow_writes,
+                signals=parse_signal_args(args.signal),
                 max_turns=args.max_turns,
                 timeout_seconds=args.timeout or 1800.0,
             )
@@ -4486,8 +4487,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--input",
         default=None,
         help=(
-            "Input payload: an inline JSON object or a path to a JSON file. "
-            "Omit to have one derived from the skill and confirmed with you."
+            "Input payload: an inline JSON object, or a JSON file (PATH or "
+            "@PATH). Omit to have one derived from the skill and confirmed with you."
         ),
     )
     run_p.add_argument(
@@ -4501,8 +4502,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME=JSON",
         help=(
-            "Resume payload for a HITL gate (repeatable): inline JSON, or "
-            "NAME=@FILE to read it from a JSON file. Gates without one "
+            "Answer for a HITL gate (repeatable): inline JSON, or NAME=@FILE "
+            "to read it from a JSON file. A skill run is given the answers in "
+            "the order passed (a skill's gates have no names, so NAME is a "
+            "label). For a pipeline, gates without one "
             "are prompted for interactively before the run starts — payloads "
             "are delivered when the workflow parks."
         ),

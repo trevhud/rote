@@ -42,6 +42,7 @@ from rote.bench.fidelity_score import fidelity_summary, score_case, stable_refer
 from rote.bench.http_fixtures import HttpFixtureError, api_calls, api_side, load_http
 from rote.compiler.api_docs import api_view
 from rote.compiler.backend import read_backend
+from rote.eval.empirical import gate_answers_instructions
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs.store import SpecStore
 
@@ -254,11 +255,7 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
         answers = case.gate_instructions or "\n".join(
             f"{i + 1}. {json.dumps(g)}" for i, g in enumerate(case.gates)
         )
-        parts.append(
-            "When the skill needs a person's input or approval, do not wait and do "
-            "not ask: these are the answers you get, in the order the skill asks:\n"
-            f"{answers}"
-        )
+        parts.append(gate_answers_instructions(answers))
     if casefile.servers:
         parts.append(
             "Use the connected MCP tools for every external system the skill "
