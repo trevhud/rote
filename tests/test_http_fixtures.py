@@ -838,3 +838,22 @@ out = {
     assert "the fidelity bench blocks gmail.googleapis.com" in (out["blocked"] or ""), out
     assert out["loopback"] is None
     assert "blocks the IP address 2001:db8::1" in (out["ipv6"] or "")
+
+
+def test_a_docs_spec_is_faked_and_its_fixtures_are_marked_lower_trust(tmp_path: Path) -> None:
+    from rote.vendor_specs.docs import DocsSpecFile, to_api_spec
+    from tests.test_vendor_specs import SLACK_SPEC
+
+    spec = to_api_spec(DocsSpecFile.model_validate(SLACK_SPEC), "vendor_specs/slack.web.v1.json")
+    body = {"ok": True, "messages": [{"type": "message", "ts": "9.9", "text": "deal", "user": "U"}]}
+    response = {"when": {"channel": "C1"}, "body": body, "reads": "slack.read[0]"}
+    claimed = load_http({"slack/web/v1": {"operations": {"conversations.history": [response]}}})
+    with pytest.raises(FixtureError, match="trust: docs"):
+        FakeApi([(spec, claimed["slack/web/v1"])], tmp_path / "log.jsonl")
+    honest = load_http(
+        {"slack/web/v1": {"trust": "docs", "operations": {"conversations.history": [response]}}}
+    )
+    api = FakeApi([(spec, honest["slack/web/v1"])], tmp_path / "log.jsonl")
+    status, _, raw = api.answer("GET", "/slack.com/api/conversations.history?channel=C1", AUTH)
+    assert (status, json.loads(raw)) == (200, body)
+    assert api.answer("GET", "/slack.com/api/conversations.history", AUTH)[0] == 400

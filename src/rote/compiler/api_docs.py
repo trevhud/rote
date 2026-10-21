@@ -87,7 +87,9 @@ def brief() -> str:
         "static reader can follow: literal URLs or module constants, and params "
         "as a dict literal. Your tests run with the vendor libraries you import "
         "installed: stub their transport (httpx.MockTransport, googleapiclient's "
-        "HttpMock), never the library itself.\n"
+        "HttpMock), never the library itself. Where the vendor publishes no "
+        "machine-readable spec, rote asks you to write one from the pages you "
+        'fetched (implementation.md, "Specs written from the docs").\n'
         "6. An internal or undocumented API: if the skill or its references state "
         "the endpoint and shapes, implement from that text, quote it in "
         "`# skill:` citations, and write `# docs: skill` above the function. If "

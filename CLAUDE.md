@@ -658,6 +658,12 @@ Violations are errors that go back to the agent. Three rules:
   time, a host with no spec source yet, or a spec service that is down
   shows in the report as "not checked: <why>". An unreachable spec must
   never fail a paid compile.
+- **Where no spec exists, the agent writes one, from fetched pages.**
+  `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
+  becomes an `ApiSpec` with `source="docs"`, checked the same way and
+  labeled lower trust everywhere. Each of its sources must be a page
+  fetched in this compile. A host with no spec of either kind is a
+  `spec_missing` error on the api backend, never a silent "not checked".
 - **Tests never fetch a spec.** conftest replaces `http_get_json` and
   points `ROTE_SPEC_CACHE_DIR` at the test's tmp dir. Tests use the trimmed
   real documents in `tests/fixtures/vendor_specs/` through an injected fetch.
