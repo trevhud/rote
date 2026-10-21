@@ -1044,7 +1044,8 @@ class Compiler:
         yaml with the verbatim pydantic text (seen in real compiles:
         ``.ts`` module refs in ``impl:``, dict-typed input/output entries),
         then contract errors and red generated tests. Up to
-        :data:`MAX_VALIDATION_REPAIRS` rounds; after that the callback
+        :data:`MAX_VALIDATION_REPAIRS` rounds of each kind, counted apart (an
+        IR that a contract fix broke still goes back); after that the callback
         accepts the deliverable as-is, the orchestrator fails an invalid
         IR with its last error, and anything else is reported.
 
@@ -1053,9 +1054,13 @@ class Compiler:
         is the pipeline rote will actually ship.
         """
         attempts = 0
+        # Its own budget: an invalid IR is fatal once the agent stops, so a
+        # fix that breaks pipeline.yaml in the last contract round must
+        # still go back rather than end the paid run on a validation error.
+        invalid_attempts = 0
 
         def _repair(pipeline_yaml_path: Path) -> str | None:
-            nonlocal attempts
+            nonlocal attempts, invalid_attempts
             artifact_dir = pipeline_yaml_path.parent
             if before_verify is not None:
                 try:
@@ -1076,15 +1081,21 @@ class Compiler:
                 spec_store=spec_store,
             )
             instruction = verification.repair_instruction(artifact_dir)
-            if instruction is None or attempts >= MAX_VALIDATION_REPAIRS:
+            if instruction is None:
+                return None
+            invalid = verification.pipeline_error is not None
+            if (invalid_attempts if invalid else attempts) >= MAX_VALIDATION_REPAIRS:
                 return None
             if portable_judges and verification.pipeline_error is not None:
                 # System-1 restores pipeline.yaml's decisions after every stop
                 # and lays text.yaml over it, so an edit to pipeline.yaml alone
                 # is undone and the same error comes back.
                 instruction += SYSTEM1_REPAIR_NOTE
-            attempts += 1
-            if verification.pipeline_error is not None:
+            if invalid:
+                invalid_attempts += 1
+            else:
+                attempts += 1
+            if invalid:
                 what = "pipeline.yaml failed validation"
             else:
                 problems = len(verification.errors)
@@ -1096,7 +1107,8 @@ class Compiler:
                     f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
                     f"{', generated tests failing' if red else ''})"
                 )
-            self._emit("warning", f"{what}; asking the compiler to repair (attempt {attempts})")
+            attempt = invalid_attempts if invalid else attempts
+            self._emit("warning", f"{what}; asking the compiler to repair (attempt {attempt})")
             return instruction
 
         return _repair

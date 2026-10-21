@@ -1449,3 +1449,23 @@ def test_recorded_calls_stand_in_for_each_fanned_element(tmp_path: Path) -> None
         tools=_fan_tools(),
     )
     assert partial.steps["search"]["status"] == "no_recording"
+
+
+def test_an_ir_a_contract_fix_broke_still_goes_back_for_repair(tmp_path: Path) -> None:
+    """Contract rounds and IR-validation rounds are counted apart. A demo
+    compile spent both rounds on contract problems, its last fix broke
+    pipeline.yaml, and the paid run ended on a validation error the agent
+    never saw."""
+    from rote.compiler import MAX_VALIDATION_REPAIRS
+
+    root = _write(tmp_path, {"pipeline.yaml": _FAN_MCP_IR})  # no extracted/: contract errors
+    repair = Compiler(run_generated_tests=False)._deliverable_repairer(None, None)  # type: ignore[arg-type]
+    for _ in range(MAX_VALIDATION_REPAIRS):
+        instruction = repair(root / "pipeline.yaml")
+        assert instruction is not None and "fails IR validation" not in instruction
+    assert repair(root / "pipeline.yaml") is None  # the contract budget is spent
+    (root / "pipeline.yaml").write_text("not: [a pipeline\n", encoding="utf-8")
+    for _ in range(MAX_VALIDATION_REPAIRS):
+        instruction = repair(root / "pipeline.yaml")
+        assert instruction is not None and "fails IR validation" in instruction
+    assert repair(root / "pipeline.yaml") is None
