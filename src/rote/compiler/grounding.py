@@ -663,6 +663,9 @@ class Grounding:
     #: ``{server: why}`` for each registered server whose tools rote did
     #: not list: not named in the skill, or its ``tools/list`` failed.
     unlisted: dict[str, str] = field(default_factory=dict)
+    #: The skill's bundled tools/list snapshot, as read, whether or not a
+    #: live listing replaced it: kept to tell when it is stale.
+    bundled: dict[tuple[str, str], Any] = field(default_factory=dict)
 
 
 def unbindable_fields(sample: Sample) -> list[str]:

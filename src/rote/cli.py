@@ -1118,6 +1118,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             deliverable.unchecked_tools, mcp_servers, deliverable.unlisted_servers
         ):
             print(line, file=summary_stream)
+        for line in _tool_source_lines(deliverable):
+            print(f"  {line}", file=summary_stream)
 
     # ── Static contract check ── `impl: extracted/x.py:f` is a promise the
     # IR makes and nothing verified: emitted steps call `f(**payload)` and
@@ -1377,6 +1379,31 @@ def _provenance_lines(deliverable: Any, command: str) -> list[str]:
 _VERIFICATION_HEADING = "## rote verification"
 
 
+def _tool_source_lines(deliverable: Any) -> list[str]:
+    """What grounded each bound server's tool arguments, and a stale snapshot.
+
+    Shared by the compile summary and compile-report.md, so the two say the
+    same thing.
+    """
+    from rote.tool_schema import BUNDLED_TOOLS_FILENAME
+
+    lines: list[str] = []
+    sources = deliverable.tool_sources
+    if sources:
+        lines.append(
+            "tool schemas: " + ", ".join(f"{server} from {how}" for server, how in sources.items())
+        )
+    stale = deliverable.stale_bundled_tools
+    if stale:
+        lines.append(
+            f"WARNING: the skill's bundled {BUNDLED_TOOLS_FILENAME} is stale for "
+            f"{', '.join(stale)}: the live server's schema differs, and the live one was "
+            "used. Update the snapshot, or a compile without the server registered "
+            "grounds in the old schema."
+        )
+    return lines
+
+
 def _record_verification_in_report(
     compiled_dir: Path, deliverable: Any, tests_run: Any, args: argparse.Namespace
 ) -> None:
@@ -1420,6 +1447,7 @@ def _record_verification_in_report(
             lines.append(
                 f"- Deterministic prefix on the sample input: {deliverable.prefix.summary}."
             )
+        lines += [f"- {line[0].upper()}{line[1:]}." for line in _tool_source_lines(deliverable)]
     text = report.read_text(encoding="utf-8")
     at = text.find("\n" + _VERIFICATION_HEADING)
     if at >= 0:
@@ -3167,6 +3195,77 @@ def _judge_cost_text(rows: Sequence[Mapping[str, Any]]) -> str:
     return f"${total:.4f}"
 
 
+def _cmd_live_check(args: argparse.Namespace) -> int:
+    """``rote run <compile dir> --live-check --input ...`` (rote.vendor_specs.live)."""
+    from rote.compiler.backend import read_backend
+    from rote.vendor_specs.live import LiveCheckRefused, live_check
+
+    root = Path(args.path)
+    compiled = root / "compiled" if (root / "compiled" / "pipeline.yaml").is_file() else root
+    if not (compiled / "pipeline.yaml").is_file():
+        print(f"error: {root} holds no compiled pipeline.yaml", file=sys.stderr)
+        return 2
+    if read_backend(compiled) != "api":
+        print(
+            "error: --live-check checks the vendor calls of a `--backend api` compile, and "
+            f"{compiled} was not compiled for it (backend.json)",
+            file=sys.stderr,
+        )
+        return 2
+    if args.input is None:
+        print("error: --live-check needs --input (a JSON object or a file)", file=sys.stderr)
+        return 2
+    raw = Path(args.input).read_text(encoding="utf-8") if Path(args.input).is_file() else args.input
+    payload = json.loads(raw)
+
+    def confirm(plan: list[Any]) -> bool:
+        print(f"rote run: the live check will send {len(plan)} request(s):", file=sys.stderr)
+        for p in plan:
+            carries = f", with {p.credential}" if p.credential else ", with no credential"
+            print(f"  {p.method} {p.host}  {p.operation}{carries}", file=sys.stderr)
+        if args.yes:
+            return True
+        if not sys.stdin.isatty():
+            print("rote run: pass --yes to send them (no terminal to ask)", file=sys.stderr)
+            return False
+        return input("Send them? [y/N] ").strip().lower() in ("y", "yes")
+
+    try:
+        report = live_check(
+            compiled.resolve(),
+            payload,
+            confirm=confirm,
+            allow_hosts=frozenset(args.allow_host or ()),
+            allow_credentials=frozenset(args.allow_credential or ()),
+        )
+    except LiveCheckRefused as e:
+        print(f"rote run: live check refused: {e}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report.as_dict(), indent=2))
+    else:
+        for c in report.checked:
+            where = f"{c.method} {c.host}{c.path}"
+            print(f"{c.node_id}: {where} -> {c.status} ({c.operation or 'unknown operation'})")
+            for path in c.reads_missing:
+                print(f"  the code reads {path}; the live response does not have it")
+            for line in c.schema_drift:
+                print(f"  spec drift: {line}")
+            for path in c.spec_only:
+                print(f"  the spec has {path}; the live response did not return it")
+            for path in c.fixture_only:
+                print(f"  fixtures have {path}; the live response did not")
+            for path in c.live_only:
+                print(f"  live response has {path}; no stored fixture does")
+        for node, why in report.skipped.items():
+            print(f"{node}: not called ({why})")
+        for where, why in report.unchecked.items():
+            print(f"{where}: not live-checked ({why})")
+        for where, error in report.errors.items():
+            print(f"{where}: failed ({error})")
+    return 1 if report.drifted or report.errors else 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """One-off local execution of a skill or an emitted pipeline.
 
@@ -3176,6 +3275,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     cross-process). The run's output JSON goes to stdout so it pipes;
     status lines go to stderr.
     """
+    if args.live_check:
+        return _cmd_live_check(args)
     from rote.compiler.drivers.claude import DEFAULT_MODEL
     from rote.eval.empirical import EmpiricalError, measured_run_record
     from rote.ir import NodeKind
@@ -4540,6 +4641,37 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_p.add_argument(
+        "--allow-host",
+        action="append",
+        metavar="HOST",
+        help=(
+            "With --live-check: allow a host from the compile's own docs spec that no "
+            "fetched page it cites vouches for: one the compile did not fetch, or one on "
+            "a different registrable domain from its docs (docs.slack.dev does not vouch "
+            "for slack.com) (repeatable)"
+        ),
+    )
+    run_p.add_argument(
+        "--allow-credential",
+        action="append",
+        metavar="ENV",
+        help=(
+            "With --live-check and --allow-host: send the credential the compile's own "
+            "docs spec declares in this environment variable (repeatable; --yes never "
+            "covers it, and without it a docs-spec host is called with no credential)"
+        ),
+    )
+    run_p.add_argument(
+        "--live-check",
+        action="store_true",
+        help=(
+            "For a `--backend api` compile: send each entry vendor read once, for "
+            "real, built from the code without running it (GET/HEAD only), with "
+            "your credentials, and compare the responses' shape with the spec and "
+            "the stored fixtures (values are never kept)"
+        ),
+    )
+    run_p.add_argument(
         "--max-turns",
         type=int,
         default=60,
@@ -4554,7 +4686,10 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--yes",
         action="store_true",
-        help="Accept the derived input proposal without prompting (non-interactive runs)",
+        help=(
+            "Accept the derived input proposal without prompting (non-interactive runs); "
+            "with --live-check, send the printed requests without asking"
+        ),
     )
     run_p.add_argument(
         "--json",

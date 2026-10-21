@@ -66,7 +66,13 @@ from rote.compiler.provenance import (
     assumptions,
     provenance_findings,
 )
-from rote.compiler.tool_grounding import tool_findings, tool_questions, unchecked_tools
+from rote.compiler.tool_grounding import (
+    schema_sources,
+    stale_bundled,
+    tool_findings,
+    tool_questions,
+    unchecked_tools,
+)
 from rote.contracts import (
     ContractFinding,
     NodeImplementation,
@@ -681,6 +687,12 @@ class Verification:
     #: ``{server: why}`` for the registered servers rote did not list
     #: (:attr:`rote.compiler.grounding.Grounding.unlisted`).
     unlisted_servers: dict[str, str] = field(default_factory=dict)
+    #: ``{server: what grounded its bound tools}``
+    #: (:func:`rote.compiler.tool_grounding.schema_sources`).
+    tool_sources: dict[str, str] = field(default_factory=dict)
+    #: ``server.tool`` whose live schema differs from the skill's bundled
+    #: snapshot (:func:`rote.compiler.tool_grounding.stale_bundled`).
+    stale_bundled_tools: list[str] = field(default_factory=list)
 
     @property
     def errors(self) -> list[ContractFinding]:
@@ -950,6 +962,8 @@ def _verify(
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
     unchecked: dict[str, list[str]] = {}
+    tool_sources: dict[str, str] = {}
+    stale: list[str] = []
     if grounding is not None:
         # On the api backend no binding is called: its tool's arguments and
         # result shape are not the pipeline's contract, and a recorded tool
@@ -958,6 +972,8 @@ def _verify(
         findings += grounding_findings(called, skill_dir, grounding.sample)
         findings += tool_findings(called, grounding.tools)
         unchecked = unchecked_tools(called, grounding.tools)
+        tool_sources = schema_sources(called, grounding.tools)
+        stale = stale_bundled(called, grounding.tools, grounding.bundled)
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
             for node_id, text in tool_questions(called, grounding.tools)
@@ -1004,4 +1020,6 @@ def _verify(
         spec_checks=spec_checks,
         unchecked_tools=unchecked,
         unlisted_servers=dict(grounding.unlisted) if grounding is not None else {},
+        tool_sources=tool_sources,
+        stale_bundled_tools=stale,
     )

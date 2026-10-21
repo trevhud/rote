@@ -32,12 +32,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rote.contracts import ContractFinding
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec
+from rote.vendor_specs.model import ApiSpec, AuthSpec, Operation, ParamSpec
 
 DOCS_DIRNAME = "vendor_specs"
+
+#: Vendors whose own machine-readable spec rote reads: a docs spec may not
+#: claim one.
+PUBLISHED_VENDORS = frozenset({"google"})
 
 
 class _DocsParam(BaseModel):
@@ -72,6 +76,22 @@ class DocsSpecFile(BaseModel):
     version: str
     sources: list[str] = Field(min_length=1)
     operations: list[_DocsOperation] = Field(min_length=1)
+    #: The one credential the vendor's requests carry, as its docs describe:
+    #: ``{"env": "SLACK_BOT_TOKEN", "location": "header", "name": "Authorization"}``.
+    auth: AuthSpec | None = None
+
+    @field_validator("vendor")
+    @classmethod
+    def _not_a_published_vendor(cls, vendor: str) -> str:
+        # A docs spec stands in for a missing vendor spec. One that claims a
+        # vendor rote reads a published spec for is the agent standing in
+        # for the vendor (and, for Google, asking for the user's token).
+        if vendor.strip().lower() in PUBLISHED_VENDORS:
+            raise ValueError(
+                f"{vendor.strip()} publishes a spec rote reads; check requests against it, "
+                f"not a docs spec"
+            )
+        return vendor
 
 
 class DocsSpecError(ValueError):
@@ -137,6 +157,7 @@ def to_api_spec(raw: DocsSpecFile, where: str) -> ApiSpec:
         source_url=raw.sources[0],
         sources=list(raw.sources),
         operations=operations,
+        auth=raw.auth,
     )
 
 

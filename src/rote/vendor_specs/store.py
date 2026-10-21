@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from rote.vendor_specs import google
+from rote.vendor_specs.google import UrlApi
 from rote.vendor_specs.model import ApiSpec
 
 DEFAULT_TTL_SECONDS = 24 * 3600
@@ -99,6 +100,16 @@ class SpecStore:
         Raises :class:`SpecUnavailable` when the directory cannot be fetched.
         """
         return google.listed_versions(self._directory(), api)
+
+    def resolve_google_url(self, named: UrlApi) -> str | None:
+        """The version of ``named`` the directory lists: the first candidate it has.
+
+        The one rule turning a URL into a spec, for the request check and
+        the live check alike. Raises :class:`SpecUnavailable` when the
+        directory cannot be fetched.
+        """
+        listed = self.google_versions(named.api)
+        return next((v for v in named.versions if v in listed), None)
 
     def _fetch_google(self, api: str, version: str) -> ApiSpec | None:
         directory = self._directory()
