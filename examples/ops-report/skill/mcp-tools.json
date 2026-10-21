@@ -1,0 +1,53 @@
+{
+  "_note": "Each MCP server's tools/list, as data. rote compile grounds tool arguments in it for a server it cannot list live; a live tools/list wins. The compile bench's fixture servers serve exactly these tools.",
+  "servers": {
+    "google_drive": {
+      "tools": [
+        {
+          "name": "read_file_content",
+          "description": "Read a Google Drive file by id and return its content as text. A spreadsheet comes back as CSV of the named tab, or of its first tab when none is named.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "file_id": {
+                "type": "string",
+                "description": "The Drive file id"
+              },
+              "tab": {
+                "type": "string",
+                "description": "Spreadsheet tab name (optional)"
+              }
+            },
+            "required": [
+              "file_id"
+            ]
+          }
+        }
+      ]
+    },
+    "gmail": {
+      "tools": [
+        {
+          "name": "search_threads",
+          "description": "Search Gmail with a Gmail query string and return the matching threads, newest first, each with its id, subject, sender, date and a snippet of the latest message.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "A Gmail search query"
+              },
+              "max_results": {
+                "type": "integer",
+                "description": "Maximum threads to return"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

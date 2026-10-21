@@ -32,36 +32,18 @@ output_fields:
   dwell_alert_shippers: list of the shipper or brand names in the current dwell with an alert or warning
 
 servers:
+  # Each tool's description and input schema are the skill's own bundled
+  # tools/list snapshot, skill/mcp-tools.json, which a plain `rote compile`
+  # grounds its tool arguments in. Only what a fixture adds is here: the
+  # names a compile may call the server by, and whether a tool writes.
   google_drive:
     aliases: [gdrive, drive, googledrive, google-drive, google_drive_mcp, googledrivemcp]
     tools:
-      read_file_content:
-        description: >-
-          Read a Google Drive file by id and return its content as text.
-          A spreadsheet comes back as CSV of the named tab, or of its first
-          tab when none is named.
-        side_effect: false
-        parameters:
-          type: object
-          properties:
-            file_id: {type: string, description: The Drive file id}
-            tab: {type: string, description: Spreadsheet tab name (optional)}
-          required: [file_id]
+      read_file_content: {side_effect: false}
   gmail:
     aliases: [google_mail, googlemail, gmail_mcp, gmailmcp, mail]
     tools:
-      search_threads:
-        description: >-
-          Search Gmail with a Gmail query string and return the matching
-          threads, newest first, each with its id, subject, sender, date and
-          a snippet of the latest message.
-        side_effect: false
-        parameters:
-          type: object
-          properties:
-            query: {type: string, description: A Gmail search query}
-            max_results: {type: integer, description: Maximum threads to return}
-          required: [query]
+      search_threads: {side_effect: false}
 
 cases:
   - id: busy_day

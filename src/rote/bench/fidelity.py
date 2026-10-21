@@ -42,6 +42,7 @@ from rote.bench.fidelity_score import fidelity_summary, score_case, stable_refer
 from rote.bench.http_fixtures import HttpFixtureError, api_calls, api_side, load_http
 from rote.compiler.api_docs import api_view
 from rote.compiler.backend import read_backend
+from rote.eval.empirical import gate_answers_instructions
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs.store import SpecStore
 
@@ -106,9 +107,48 @@ def load_cases(example_dir: Path) -> CaseFile:
     return CaseFile(
         example_dir=example_dir,
         output_fields=dict(raw["output_fields"]),
-        servers=dict(raw.get("servers") or {}),
+        servers=_fixture_servers_spec(example_dir, raw.get("servers") or {}),
         cases=cases,
     )
+
+
+def _fixture_servers_spec(
+    example_dir: Path, declared: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """The fixture servers: each tool from the skill's bundled tools/list.
+
+    ``cases.yaml`` adds only what a fixture needs beyond the snapshot
+    (``aliases``, each tool's ``side_effect``), so the schemas a plain
+    compile grounds in and the ones the fixtures enforce are one copy.
+    The two must name the same servers and tools.
+    """
+    from rote.tool_schema import BUNDLED_TOOLS_FILENAME, load_bundled_tools
+
+    if not declared:
+        return {}
+    snapshot = load_bundled_tools(example_dir / "skill")
+    where = f"{example_dir / 'skill' / BUNDLED_TOOLS_FILENAME} and {CASES_FILENAME}"
+    if sorted(snapshot) != sorted(declared):
+        raise ValueError(
+            f"{where} name different servers: {sorted(snapshot)} vs {sorted(declared)}"
+        )
+    servers: dict[str, dict[str, Any]] = {}
+    for name, server in declared.items():
+        tools = server.get("tools") or {}
+        if sorted(tools) != sorted(snapshot[name]):
+            raise ValueError(f"{where} list different {name} tools")
+        servers[name] = {
+            "aliases": list(server.get("aliases") or []),
+            "tools": {
+                tool: {
+                    "description": snapshot[name][tool]["description"],
+                    "parameters": snapshot[name][tool]["inputSchema"],
+                    "side_effect": bool((tools[tool] or {}).get("side_effect", False)),
+                }
+                for tool in tools
+            },
+        }
+    return servers
 
 
 def _apply_patch(payload: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -254,11 +294,7 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
         answers = case.gate_instructions or "\n".join(
             f"{i + 1}. {json.dumps(g)}" for i, g in enumerate(case.gates)
         )
-        parts.append(
-            "When the skill needs a person's input or approval, do not wait and do "
-            "not ask: these are the answers you get, in the order the skill asks:\n"
-            f"{answers}"
-        )
+        parts.append(gate_answers_instructions(answers))
     if casefile.servers:
         parts.append(
             "Use the connected MCP tools for every external system the skill "
