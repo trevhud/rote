@@ -733,6 +733,27 @@ Violations are errors that go back to the agent. Three rules:
   the same brackets (`metadata[order_id]`). GitHub's `x-multi-segment`
   path parameters become `{+name}` (a file path keeps its slashes). The
   body's media type is checked too: Stripe takes form bodies, never JSON.
+- **GraphQL is checked by graphql-core against the vendor's schema**
+  (`rote.vendor_specs.graphql.REGISTRY`, endpoint -> SDL file or the
+  endpoint's own introspection), plus the variables sent (names, and a
+  literal value's type) and the response fields read against the
+  document's selection, inline and named fragments followed. Four traps:
+  - **Build with `assume_valid=True`.** GitHub's public schema fails
+    graphql-core's schema validation (a deprecated field implementing one
+    its interface does not deprecate), and `validate()` raises a
+    `TypeError` on such a schema. The request is still validated in full.
+  - **The operation is chosen as GraphQL's GetOperation does**: one
+    operation, or the one `operationName` names; several and no name is a
+    real request error; a computed `operationName` is not checked.
+  - **A document is read only from a name bound once.** A name rebound,
+    or bound under an `if`, could send either document (a mutation where
+    a query was read), so it is "built at run time", never guessed. The
+    same goes for a body dict.
+  - **A read below a custom scalar is not checked** (AniList's `Json`);
+    below a built-in scalar or an enum it is a finding.
+  A GraphQL read is a POST: the live check sends only a document whose one
+  operation is a query, to a declared endpoint. A GET to an endpoint is not
+  checked.
 - **Where no spec exists, the agent writes one, from fetched pages.**
   `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
   becomes an `ApiSpec` with `source="docs"`, checked the same way and

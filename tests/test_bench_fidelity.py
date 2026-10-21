@@ -662,3 +662,81 @@ def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:
     )
     assert _last_line(tb) == "KeyError: 'shipper_brand'"
     assert _last_line(None) is None
+
+
+# ───────── a write is identified by what the reference agrees on ─────────
+
+
+def _publish(**arguments: Any) -> dict[str, Any]:
+    return {
+        "server": "briefs",
+        "tool": "publish_brief",
+        "arguments": arguments,
+        "side_effect": True,
+    }
+
+
+def _prose_reference() -> dict[str, Any]:
+    """cf-limits-brief: every agent run published, each with its own markdown."""
+    return stable_reference(
+        [
+            _run(
+                {"x": 1},
+                [_publish(title="Brief 2026-10-21", markdown=f"draft {i}", reviewer="Dana Lee")],
+            )
+            for i in range(3)
+        ]
+    )
+
+
+def test_a_write_with_prose_arguments_is_keyed_on_the_ones_every_run_agreed_on() -> None:
+    ref = _prose_reference()
+    assert ref["write_fields"] == {"briefs.publish_brief": ["reviewer", "title"]}
+    assert ref["side_effects"] == [
+        'briefs.publish_brief({"reviewer": "dana lee", "title": "brief 2026-10-21"})'
+    ]
+    trace = {
+        "completed": True,
+        "objects": [],
+        "calls": [
+            _publish(title="Brief 2026-10-21", markdown="the pipeline's", reviewer="Dana Lee")
+        ],
+    }
+    assert score_case(ref, trace)["side_effects"] == 1.0
+
+
+def test_an_agreed_argument_still_decides_the_write() -> None:
+    trace = {
+        "completed": True,
+        "objects": [],
+        "calls": [_publish(title="Brief 2026-10-21", markdown="m", reviewer="Someone Else")],
+    }
+    assert score_case(_prose_reference(), trace)["side_effects"] == 0.0
+
+
+def test_a_write_no_argument_of_which_agrees_is_identified_by_its_tool() -> None:
+    ref = stable_reference([_run({"x": 1}, [_publish(markdown=f"draft {i}")]) for i in range(2)])
+    assert ref["write_fields"] == {"briefs.publish_brief": []}
+    same_tool = {"completed": True, "objects": [], "calls": [_publish(markdown="anything")]}
+    assert score_case(ref, same_tool)["side_effects"] == 1.0
+    other_tool = {
+        "completed": True,
+        "objects": [],
+        "calls": [{**_publish(markdown="x"), "tool": "delete_brief"}],
+    }
+    assert score_case(ref, other_tool)["side_effects"] == 0.0
+
+
+def test_a_run_that_wrote_nothing_makes_no_argument_agree() -> None:
+    """One run never published: the write is not stable, and neither are its arguments."""
+    ref = stable_reference([_run({"x": 1}, [_publish(title="t")]), _run({"x": 1}, [])])
+    assert ref["write_fields"] == {"briefs.publish_brief": []}
+    assert ref["side_effects"] is None and ref["side_effects_unordered"] == []
+
+
+def test_a_reference_without_write_fields_keys_on_every_argument() -> None:
+    """A reference recorded before write_fields existed scores as it did."""
+    ref = {k: v for k, v in _prose_reference().items() if k != "write_fields"}
+    write = _publish(title="Brief 2026-10-21", markdown="m", reviewer="Dana Lee")
+    trace = {"completed": True, "objects": [], "calls": [write]}
+    assert score_case(ref, trace)["side_effects_pipeline"] == [call_key(write)]

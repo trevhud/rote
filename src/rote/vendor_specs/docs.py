@@ -35,14 +35,20 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from rote.contracts import ContractFinding
-from rote.vendor_specs import openapi
+from rote.vendor_specs import graphql, openapi
 from rote.vendor_specs.model import ApiSpec, AuthSpec, Operation, ParamSpec
 
 DOCS_DIRNAME = "vendor_specs"
 
 #: Vendors whose own machine-readable spec rote reads: a docs spec may not
 #: claim one.
-PUBLISHED_VENDORS = frozenset({"google", *(s.vendor for s in openapi.REGISTRY.values())})
+PUBLISHED_VENDORS = frozenset(
+    {
+        "google",
+        *(s.vendor for s in openapi.REGISTRY.values()),
+        *(s.vendor for s in graphql.REGISTRY.values()),
+    }
+)
 
 
 class _DocsParam(BaseModel):

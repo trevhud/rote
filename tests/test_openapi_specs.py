@@ -410,7 +410,11 @@ PARTIAL = {("github", "attestations.py")}
 
 
 @pytest.mark.parametrize(
-    "module", sorted(CORRECT_CALLS.glob("*/*.py")), ids=lambda p: f"{p.parent.name}/{p.name}"
+    "module",
+    sorted(
+        p for d in ("clinicaltrials", "github", "stripe") for p in (CORRECT_CALLS / d).glob("*.py")
+    ),
+    ids=lambda p: f"{p.parent.name}/{p.name}",
 )
 def test_correct_real_world_calls_report_no_findings(
     tmp_path: Path, store: SpecStore, module: Path

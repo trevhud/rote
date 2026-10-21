@@ -28,7 +28,7 @@ from urllib.parse import unquote_plus
 
 from rote.contracts import ContractFinding
 from rote.ir import NodeKind, Pipeline
-from rote.vendor_specs import docs, google, openapi
+from rote.vendor_specs import docs, google, graphql, openapi
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
 from rote.vendor_specs.model import (
     ApiSpec,
@@ -60,6 +60,9 @@ class RequestCheck:
     findings: list[ContractFinding] = field(default_factory=list)
     #: The parts of a resolved request the spec could not check, and why.
     unchecked: list[str] = field(default_factory=list)
+    #: Whether the request changes vendor state: a non-GET/HEAD REST call, or
+    #: a GraphQL mutation or subscription. ``None`` when nothing resolved it.
+    writes: bool | None = None
 
 
 def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[RequestCheck]:
@@ -102,8 +105,8 @@ def check_deliverable(pipeline: Pipeline, root: Path, store: SpecStore) -> list[
 
 
 def spec_for_key(key: str, store: SpecStore, written: list[ApiSpec]) -> ApiSpec | None:
-    """The spec for ``<vendor>/<api>/<version>``: the vendor's own (OpenAPI,
-    Google Discovery) over a docs spec the compile wrote for the same key.
+    """The spec for ``<vendor>/<api>/<version>``: the vendor's own (GraphQL,
+    OpenAPI, Google Discovery) over a docs spec the compile wrote for the same key.
 
     The one precedence rule, for the request check, the live check and the
     bench's fake alike. Raises :class:`SpecUnavailable` when the vendor's
@@ -111,7 +114,9 @@ def spec_for_key(key: str, store: SpecStore, written: list[ApiSpec]) -> ApiSpec 
     """
     vendor, api, version = key.split("/")
     found: ApiSpec | None = None
-    if (published := openapi.by_key(key)) is not None:
+    if (endpoint := graphql.by_key(key)) is not None:
+        found = store.graphql(endpoint)
+    elif (published := openapi.by_key(key)) is not None:
         found = store.openapi(published)
     elif vendor == "google":
         found = store.google(api, version)
@@ -143,6 +148,15 @@ def _check(
                 "unresolved",
                 note="the URL has no host here (a client base_url, or built at run time)",
             )
+        endpoint = graphql.REGISTRY.get(split_query(site.url)[0].rstrip("/"))
+        if endpoint is not None:
+            if site.method != "POST":
+                return done(
+                    "unresolved",
+                    note=f"a {site.method or 'computed-method'} request to a GraphQL endpoint: "
+                    f"rote checks a GraphQL document sent as a POST body",
+                )
+            return _graphql(site, node_ids, rel, store, endpoint, done)
         named = google.api_for_url(site.url)
         if named is None:
             host = host_of(site.url)
@@ -231,6 +245,49 @@ def _check(
     return _against(site, node_ids, rel, spec, done)
 
 
+def _graphql(
+    site: CallSite,
+    node_ids: tuple[str, ...],
+    rel: str,
+    store: SpecStore,
+    endpoint: graphql.Source,
+    done: Callable[..., RequestCheck],
+) -> RequestCheck:
+    try:
+        spec = store.graphql(endpoint)
+    except SpecUnavailable as e:
+        return done("spec_unavailable", note=str(e))
+    label = f"{spec.key} (GraphQL schema)"
+    if site.graphql_query is None:
+        return done(
+            "unresolved",
+            spec=label,
+            note="the GraphQL document is built at run time; write it as a string literal",
+        )
+    result = graphql.check(
+        spec,
+        site.graphql_query,
+        site.graphql_variables,
+        site.graphql_variables_complete,
+        site.response_reads,
+        site.graphql_operation_name,
+    )
+    findings = [
+        _finding(node_ids[0], rel, site.line, k, f"line {site.line}: GraphQL: {text}")
+        for k, text in result.problems
+    ]
+    kind = result.operation
+    status: CheckStatus = "violations" if findings else "partial" if result.unchecked else "ok"
+    return done(
+        status,
+        operation=f"graphql {kind or '?'}",
+        spec=label,
+        findings=findings,
+        unchecked=result.unchecked,
+        writes=kind in ("mutation", "subscription") if kind else None,
+    )
+
+
 def _against(
     site: CallSite,
     node_ids: tuple[str, ...],
@@ -284,7 +341,14 @@ def _against(
         for kind, text in violations
     ]
     status: CheckStatus = "violations" if findings else "partial" if unchecked else "ok"
-    return done(status, operation=op.id, spec=label, findings=findings, unchecked=unchecked)
+    return done(
+        status,
+        operation=op.id,
+        spec=label,
+        findings=findings,
+        unchecked=unchecked,
+        writes=op.method not in ("GET", "HEAD"),
+    )
 
 
 def _operation(site: CallSite, spec: ApiSpec) -> tuple[Operation | None, dict[str, str]]:
