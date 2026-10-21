@@ -26,7 +26,12 @@ from rote.eval.baseline import (
     resolve_mcp_wiring,
     run_baseline_trial,
 )
-from rote.eval.empirical import MeasuredRun, run_pipeline_trial
+from rote.eval.empirical import (
+    MeasuredRun,
+    gate_answers_instructions,
+    run_pipeline_trial,
+    signal_answers,
+)
 from rote.extras import MissingExtraError, require_extra
 
 __all__ = [
@@ -201,7 +206,8 @@ def resolve_input(
             except json.JSONDecodeError as e:
                 raise TargetError(f"--input is not valid JSON: {e}") from e
         else:
-            input_path = Path(input_arg)
+            # `@FILE`, as --signal takes it, or a bare path.
+            input_path = Path(input_arg[1:] if input_arg.startswith("@") else input_arg)
             if not input_path.is_file():
                 raise TargetError(
                     f"--input is neither an inline JSON object nor a file: {input_path}"
@@ -345,6 +351,7 @@ def run_skill(
     *,
     model: str,
     allow_writes: bool = False,
+    signals: dict[str, Any] | None = None,
     max_turns: int = 60,
     timeout_seconds: float = 1800.0,
     executable: str = "claude",
@@ -354,7 +361,10 @@ def run_skill(
     Registry-wide MCP injection, read-only gate unless ``allow_writes``,
     subscription billing (API-key env vars scrubbed). The observed MCP
     traffic rides along — it's free and it tells the user what the run
-    actually touched.
+    actually touched. ``signals`` are the answers a person gives at the
+    skill's gates, in order: a skill has no gate names of its own, so a
+    name is only a label, and the run is told the answers up front the way
+    the compile bench's references are.
     """
     servers, mcp_tool_ids, skipped = resolve_mcp_wiring(allow_writes=allow_writes)
     run, observed, _lines = run_baseline_trial(
@@ -366,6 +376,9 @@ def run_skill(
         executable=executable,
         timeout_seconds=timeout_seconds,
         mcp_servers=servers or None,
+        extra_instructions=(
+            gate_answers_instructions(signal_answers(signals)) if signals else None
+        ),
     )
     return SkillRunOutcome(
         run=run,

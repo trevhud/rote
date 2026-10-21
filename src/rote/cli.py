@@ -1118,6 +1118,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             deliverable.unchecked_tools, mcp_servers, deliverable.unlisted_servers
         ):
             print(line, file=summary_stream)
+        for line in _tool_source_lines(deliverable):
+            print(f"  {line}", file=summary_stream)
 
     # ── Static contract check ── `impl: extracted/x.py:f` is a promise the
     # IR makes and nothing verified: emitted steps call `f(**payload)` and
@@ -1377,6 +1379,31 @@ def _provenance_lines(deliverable: Any, command: str) -> list[str]:
 _VERIFICATION_HEADING = "## rote verification"
 
 
+def _tool_source_lines(deliverable: Any) -> list[str]:
+    """What grounded each bound server's tool arguments, and a stale snapshot.
+
+    Shared by the compile summary and compile-report.md, so the two say the
+    same thing.
+    """
+    from rote.tool_schema import BUNDLED_TOOLS_FILENAME
+
+    lines: list[str] = []
+    sources = deliverable.tool_sources
+    if sources:
+        lines.append(
+            "tool schemas: " + ", ".join(f"{server} from {how}" for server, how in sources.items())
+        )
+    stale = deliverable.stale_bundled_tools
+    if stale:
+        lines.append(
+            f"WARNING: the skill's bundled {BUNDLED_TOOLS_FILENAME} is stale for "
+            f"{', '.join(stale)}: the live server's schema differs, and the live one was "
+            "used. Update the snapshot, or a compile without the server registered "
+            "grounds in the old schema."
+        )
+    return lines
+
+
 def _record_verification_in_report(
     compiled_dir: Path, deliverable: Any, tests_run: Any, args: argparse.Namespace
 ) -> None:
@@ -1420,6 +1447,7 @@ def _record_verification_in_report(
             lines.append(
                 f"- Deterministic prefix on the sample input: {deliverable.prefix.summary}."
             )
+        lines += [f"- {line[0].upper()}{line[1:]}." for line in _tool_source_lines(deliverable)]
     text = report.read_text(encoding="utf-8")
     at = text.find("\n" + _VERIFICATION_HEADING)
     if at >= 0:
@@ -3279,6 +3307,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 maybe_payload,
                 model=args.model or DEFAULT_MODEL,
                 allow_writes=args.allow_writes,
+                signals=parse_signal_args(args.signal),
                 max_turns=args.max_turns,
                 timeout_seconds=args.timeout or 1800.0,
             )
@@ -4559,8 +4588,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--input",
         default=None,
         help=(
-            "Input payload: an inline JSON object or a path to a JSON file. "
-            "Omit to have one derived from the skill and confirmed with you."
+            "Input payload: an inline JSON object, or a JSON file (PATH or "
+            "@PATH). Omit to have one derived from the skill and confirmed with you."
         ),
     )
     run_p.add_argument(
@@ -4574,8 +4603,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME=JSON",
         help=(
-            "Resume payload for a HITL gate (repeatable): inline JSON, or "
-            "NAME=@FILE to read it from a JSON file. Gates without one "
+            "Answer for a HITL gate (repeatable): inline JSON, or NAME=@FILE "
+            "to read it from a JSON file. A skill run is given the answers in "
+            "the order passed (a skill's gates have no names, so NAME is a "
+            "label). For a pipeline, gates without one "
             "are prompted for interactively before the run starts — payloads "
             "are delivered when the workflow parks."
         ),
