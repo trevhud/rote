@@ -137,3 +137,14 @@ def test_a_sourced_argument_is_fine(node: dict[str, Any]) -> None:
         mcp={"server": "mslearn", "tool": "microsoft_docs_search", "args": node["args"]},
     )
     assert tool_findings(pipeline, TOOLS) == []
+
+
+def test_a_bundled_snapshot_proves_no_tool_unknown() -> None:
+    """A skill's bundled tools/list snapshot may predate a tool the live server has."""
+    from dataclasses import replace
+
+    bundled = {k: replace(t, origin="bundled") for k, t in TOOLS.items()}
+    pipeline = _bound("deepwiki", "a_tool_added_since", repoName="repo")
+    assert tool_findings(pipeline, bundled) == []
+    # The same listing, live, does say the tool is not there.
+    assert [f.kind for f in tool_findings(pipeline, TOOLS)] == ["tool_unknown"]

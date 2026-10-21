@@ -614,11 +614,17 @@ def unbound_tool_findings(
         )
     return findings
 
+
 def listed_tools(tools: ToolSchemas) -> dict[str, set[str]]:
-    """``{server: tool names}`` for every server a live ``tools/list`` answered."""
+    """``{server: tool names}`` for every server a live ``tools/list`` answered.
+
+    Only a live listing says what a server offers now. A skill's bundled
+    snapshot is declared too, but it may be older than the server: a tool
+    added since would read as unknown, and ``tool_unknown`` is an error.
+    """
     listed: dict[str, set[str]] = {}
     for t in tools.values():
-        if t.declared:
+        if t.declared and t.origin == "live":
             listed.setdefault(t.server, set()).add(t.tool)
     return listed
 
