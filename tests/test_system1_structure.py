@@ -1058,3 +1058,17 @@ def test_an_mcp_calls_result_keys_are_never_the_models(skill: Any) -> None:
     plan, _, _ = run(skill, answer)
     doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
     assert doc["fetch_emails"]["output"] == "dict"
+
+
+def test_a_structure_note_gets_its_own_open_question_title(skill: Any, tmp_path: Path) -> None:
+    from rote.compiler.system1 import report_extras
+
+    unspecified = {"io": "write", "how": "unspecified", "name": "finance", "server": "", "tool": ""}
+    answer = good_answer()
+    answer["nodes"].append(node("send_digest", 3, "external_call", system=unspecified))
+    plan, _, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
+    work = tmp_path / "work"
+    work.mkdir()
+    titles = [title for title, _ in report_extras(work, plan).questions]
+    assert "Structure pass changed a decision: send_digest" in titles
+    assert not any(t.endswith(": pipeline") for t in titles)

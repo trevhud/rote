@@ -27,6 +27,7 @@ from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
 from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
 from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME, write
+from rote.compiler.system1.structure import STRUCTURE_NOTE_PREFIX
 from rote.compiler.system1.tiebreak import TIEBREAKS, Lane, TieBreakUnavailable
 
 __all__ = [
@@ -178,8 +179,17 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     is built before the work dir moves to the output."""
     questions: list[tuple[str, str]] = []
     for line in p.review:
-        node = line.split("`", 2)[1] if line.startswith("`") else "pipeline"
-        questions.append((f"System-1 decision below {REVIEW_BELOW} confidence: {node}", line))
+        # A structure-pass note names its node after the prefix: it records a
+        # decision the pass changed, not a low-confidence one.
+        changed = line.startswith(STRUCTURE_NOTE_PREFIX)
+        body = line.removeprefix(STRUCTURE_NOTE_PREFIX) if changed else line
+        node = body.split("`", 2)[1] if body.startswith("`") else "pipeline"
+        title = (
+            f"Structure pass changed a decision: {node}"
+            if changed
+            else f"System-1 decision below {REVIEW_BELOW} confidence: {node}"
+        )
+        questions.append((title, line))
     questions += [("Proposed by the agent, not applied", x) for x in check_proposals(work_dir)]
     questions += [
         ("The agent edited a decision; rote restored it", c) for c in all_changes(work_dir)

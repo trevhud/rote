@@ -61,6 +61,8 @@ from rote.compiler.system1.tiebreak import Lane, gateway_model_id
 from rote.compiler.tool_grounding import parameters
 from rote.tool_schema import checkable
 
+#: How a structure-pass note starts in ``Plan.review``; the report titles it by it.
+STRUCTURE_NOTE_PREFIX = "structure pass: "
 #: ``--structure`` choices, and the model behind each.
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5"}
 NODE_ID = "system1_structure"
@@ -864,7 +866,7 @@ def decide(
             f"{result.rounds} round(s): " + "; ".join(ir_errors)
         )
     assert plan_ is not None
-    plan_.review += [f"structure pass: {r}" for r in result.resolved]
+    plan_.review += [f"{STRUCTURE_NOTE_PREFIX}{r}" for r in result.resolved]
     return plan_, result
 
 
