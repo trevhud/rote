@@ -218,7 +218,8 @@ Per node:
 - fan_out_over: when the node runs once per element of a list another node
   returns (a judge per contact, a write per row), that node's id. Else "".
 - in_loop: when an agent_loop calls this node per iteration, the loop's id.
-- outputs: the keys of the node's result. Every result the skill asks the
+- outputs: the keys of the node's result. A node another fans out over
+  returns its list as `items`; do not name that list again. Every result the skill asks the
   run to produce (a list, a report, a field such as `missing_limits_page`)
   is returned by some node, under the skill's own name; a later node that
   needs it reads that node.
@@ -1254,10 +1255,17 @@ def to_plan(
             by_id[loop].loop_body.append(node.id)
         nodes.append(node)
         by_id[node.id] = node
+    run_outputs = {str(k) for k in answer.get("run_outputs") or []}
     for node in nodes:
         if "items" in node.output_keys and not node.lists_output:
             # Only a node a later one fans over returns the `items` list.
             node.output_keys = [k for k in node.output_keys if k != "items"]
+        if node.lists_output:
+            # Its list is `items`. A name the model gave that list ("paired_results")
+            # would be a second key the text agent cannot satisfy with the same
+            # list: a live compile re-asked between the two until it failed. Only
+            # a run output keeps its own key beside `items`.
+            node.output_keys = [k for k in node.output_keys if k in run_outputs]
     fields = {
         slug(str(f["name"])): _one_line(f.get("description", ""), 200)
         for f in answer.get("input_fields") or []

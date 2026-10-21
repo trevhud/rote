@@ -589,8 +589,15 @@ def test_a_nodes_named_outputs_reach_the_skeleton(skill: Any) -> None:
     plan, rec, _ = run(skill, answer)
     doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
     assert doc["render_digest"]["output"] == {"digest": "Any", "missing_limits_page": "Any"}
-    # A fan_out source keeps its `items` list beside the keys it names.
+    # A fan_out source returns its list as `items`; its other names are dropped,
+    # unless one is a run output.
+    assert doc["fetch_emails"]["output"] == {"items": "list"}
+    answer["run_outputs"] = ["threads"]
+    answer["nodes"][2]["outputs"] = ["digest", "threads"]
+    plan, _, _ = run(skill, answer)
+    doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
     assert doc["fetch_emails"]["output"] == {"items": "list", "threads": "Any"}
+    answer["run_outputs"] = []
     answer["nodes"][2]["outputs"] = ["Bad Key"]
     assert structure.check(answer, skill, SKILL, structure.declared_tools(skill, TOOLS)) == [
         "node render_digest: output keys ['Bad Key'] are not snake_case identifiers"
