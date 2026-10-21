@@ -186,6 +186,7 @@ def _call_record(g: Generation) -> dict[str, Any]:
     return {
         "model": g.model,
         "duration_ms": g.duration_ms,
+        "input_tokens": g.input_tokens,
         "output_tokens": g.output_tokens,
         "cache_read_tokens": g.cache_read_tokens,
         "cache_write_tokens": g.cache_write_tokens,

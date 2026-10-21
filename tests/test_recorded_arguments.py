@@ -215,9 +215,9 @@ async def test_a_compile_binds_from_its_baseline_recordings(
 
     monkeypatch.setattr(Compiler, "_tool_schemas", listed)
     out = tmp_path / "out"
-    await Compiler(run_generated_tests=False, system1_tiebreak="none").compile(
-        skill, out, probe_dir=probe
-    )
+    await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, out, probe_dir=probe)
     wiki = _bound(load_pipeline(out / "pipeline.yaml"), "read_wiki_structure")
     assert wiki.mcp.args == {"repoName": "arg_repoName"}
     assert wiki.inputs["arg_repoName"] == "pipeline.input.repo"

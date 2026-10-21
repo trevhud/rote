@@ -280,8 +280,12 @@ def _install_mock_compiler(
     *,
     driver_metadata: dict[str, object] | None = None,
     verification: object | None = None,
+    driver_model: str = "claude-sonnet-4-6",
 ) -> None:
     """Patch ``rote.cli.Compiler`` with a fake that writes the BDR IR.
+
+    ``driver_model`` is the model its "selected driver" runs, which live
+    progress is priced as, as the real Compiler sets it.
 
     Shared by the compile and analyze tests — the real agent loop never
     runs; the fake writes a copy of the BDR pipeline.yaml (known-valid,
@@ -312,6 +316,7 @@ def _install_mock_compiler(
                 BDR_PIPELINE_YAML.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
+            self.driver_model = driver_model
             on_event = self.on_event
             if callable(on_event):
                 on_event(
@@ -1599,7 +1604,8 @@ def _sink(tmp_path: Path, rates: object) -> object:
     sink = _JsonlProgressSink.__new__(_JsonlProgressSink)
     sink._path = tmp_path / "p.ndjson"  # type: ignore[attr-defined]
     sink._model_id = "claude-sonnet-4-6"  # type: ignore[attr-defined]
-    sink._prices = rates  # type: ignore[attr-defined]
+    sink._model_of = None  # type: ignore[attr-defined]
+    sink._rates = {"claude-sonnet-4-6": rates}  # type: ignore[attr-defined]
     sink._file = None  # type: ignore[attr-defined]
     return sink
 
@@ -1790,3 +1796,81 @@ def test_resolve_prices_survives_an_offline_catalog(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr("rote.eval.pricing.fetch_catalog", _down)
     assert _REAL_RESOLVE_PRICES("claude-sonnet-4-6") is None
+
+
+def _patch_pricing_by_model(
+    monkeypatch: pytest.MonkeyPatch, by_model: dict[str, tuple[float, float]]
+) -> list[str]:
+    """Rates per model id (input, output $/Mtok); returns the ids asked for."""
+    from rote.cli import _Rates
+
+    asked: list[str] = []
+
+    def resolve(model_id: str) -> _Rates | None:
+        asked.append(model_id)
+        if model_id not in by_model:
+            return None
+        i, o = by_model[model_id]
+        return _Rates(i, o, None, None)
+
+    monkeypatch.setattr("rote.cli._JsonlProgressSink._resolve_prices", staticmethod(resolve))
+    return asked
+
+
+def _compile_with_progress(tmp_path: Path) -> list[dict[str, object]]:
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\nname: t\n---\n")
+    progress = tmp_path / "progress.ndjson"
+    argv = ["compile", str(skill_dir), "--runtime", "dbos", "--out", str(tmp_path / "out")]
+    assert cli_main([*argv, "--no-eval", "--progress-file", str(progress)]) == 0
+    return _read_ndjson(progress)
+
+
+def test_live_progress_is_priced_as_the_model_the_driver_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No --model: the selected driver's own model, not a built-in default."""
+    _install_mock_compiler(monkeypatch, driver_model="claude-sonnet-5-5")
+    _patch_pricing_by_model(
+        monkeypatch, {"claude-sonnet-5-5": (2.0, 10.0), "claude-sonnet-4-6": (3.0, 15.0)}
+    )
+    [turn] = [o for o in _compile_with_progress(tmp_path) if o["type"] == "turn"]
+    # 1000 in, 500 out at $2 / $10 per Mtok.
+    assert turn["cost_usd"] == pytest.approx(0.007)
+
+
+def test_a_parallel_compiles_summary_is_priced_call_by_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text on Sonnet 5.5 and a call on Haiku: each at its own rates."""
+    calls = [
+        {"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 500},
+        {"model": "claude-haiku-5-5", "input_tokens": 2000, "output_tokens": 1000},
+    ]
+    meta = {"input_tokens": 3000, "output_tokens": 1500, "generations": calls}
+    _install_mock_compiler(monkeypatch, driver_metadata=meta)
+    _patch_pricing_by_model(
+        monkeypatch,
+        {
+            "claude-sonnet-5-5": (2.0, 10.0),
+            "claude-haiku-5-5": (1.0, 5.0),
+            "claude-sonnet-4-6": (3.0, 15.0),
+        },
+    )
+    summary = _compile_with_progress(tmp_path)[-1]
+    # 0.002 + 0.005 for Sonnet 5.5, 0.002 + 0.005 for Haiku.
+    assert summary["type"] == "summary" and summary["cost_usd"] == pytest.approx(0.014)
+
+
+def test_one_unpriceable_call_leaves_the_summary_cost_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = [
+        {"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 500},
+        {"model": "glm-unlisted", "input_tokens": 1000, "output_tokens": 500},
+    ]
+    _install_mock_compiler(monkeypatch, driver_metadata={"generations": calls})
+    _patch_pricing_by_model(monkeypatch, {"claude-sonnet-5-5": (2.0, 10.0)})
+    summary = _compile_with_progress(tmp_path)[-1]
+    assert summary["type"] == "summary" and "cost_usd" not in summary

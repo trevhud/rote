@@ -1,0 +1,11 @@
+name: Install the oldest Python emitted apps support
+description: >-
+  Install Python 3.10 with uv. rote needs 3.11, but its judge helper ships
+  verbatim into emitted Python apps, which run on 3.10.
+  tests/test_helper_on_oldest_python.py imports the helper there, and fails
+  (rather than skips) on CI when no 3.10 is installed. Needs uv on PATH.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: uv python install 3.10

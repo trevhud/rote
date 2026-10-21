@@ -930,20 +930,171 @@ def test_only_a_fanned_calls_reader_is_told_about_element_order(skill: Any) -> N
     assert "in the same order" in (by_id["render_digest"].intent or "")
 
 
-def test_the_default_compile_never_runs_the_structure_pass(
+class _Asked(Exception):
+    pass
+
+
+class _ClaudeSpy:
+    name = "claude"
+
+    async def run(self, **kwargs: object) -> object:
+        raise _Asked("the agent ran")
+
+
+def _compile_ops_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> str:
+    """What a compile with ``kwargs`` reached first: the structure pass or the agent."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import tiebreak
+
+    def asked(skill: Any, skill_md: str, rubric: str, lane: Lane, **kw: Any) -> Any:
+        raise _Asked(f"structure pass on {lane.model}")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    monkeypatch.setattr(tiebreak, "lane_for", lambda driver, **kw: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    compiler = Compiler(run_generated_tests=False, tool_discovery="none", **kwargs)
+    with pytest.raises(_Asked) as e:
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    return str(e.value)
+
+
+def test_the_default_compile_runs_the_structure_pass_on_haiku(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rote.compiler import Compiler, system1
+    assert _compile_ops_report(tmp_path, monkeypatch) == "structure pass on claude-haiku-5-5"
 
-    assert Compiler().system1_structure == "rules"
 
-    def boom(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("the structure pass ran without --structure")
+def test_structure_rules_is_the_opt_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reached = _compile_ops_report(tmp_path, monkeypatch, system1_structure="rules")
+    assert reached == "the agent ran"
 
-    monkeypatch.setattr(structure, "decide", boom)
+
+def test_analyze_passes_its_structure_choice_to_the_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote import cli
+
+    seen: list[str] = []
+
+    class _Seen(Exception):
+        pass
+
+    class _Compiler:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.append(kwargs["system1_structure"])
+            raise _Seen
+
+    monkeypatch.setattr(cli, "Compiler", _Compiler)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(SKILL)
+    with pytest.raises(_Seen):
+        cli.main(["analyze", str(skill), "--structure", "sonnet"])
+    assert seen == ["sonnet"]
+
+
+def test_no_lane_for_the_structure_pass_names_its_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Codex:
+        name = "codex"
+
+    # A key in the environment is no lane: codex did not choose Anthropic.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    with pytest.raises(structure.StructureUnavailable, match="or pass --structure rules$"):
+        structure.lane_for(_Codex(), "haiku")
+
+
+def test_an_openai_api_compile_keeps_its_own_model_for_the_structure_pass() -> None:
+    pytest.importorskip("openai")
+    from tests._helpers import GATEWAY_URL, openai_compile_driver
+
+    for choice in structure.MODELS:
+        lane = structure.lane_for(openai_compile_driver("@cf/zai-org/glm-5.2"), choice)
+        assert (lane.client, lane.model) == ("openai", "@cf/zai-org/glm-5.2")
+        assert str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL
+
+
+def test_an_openai_api_structure_pass_goes_only_to_the_compiles_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real client to the wire: the skeleton request reaches the gateway,
+    schema-locked, with the timeout the pass needs, and nothing touches an
+    Anthropic key, client or claude."""
+    pytest.importorskip("openai")
+    from rote.compiler import system1
+    from tests._helpers import (
+        assert_sent_through_the_gateway,
+        openai_compile_driver,
+        openai_gateway,
+    )
+
+    requests = openai_gateway(monkeypatch, [good_answer()])
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
     work = tmp_path / "w"
     work.mkdir()
-    system1.prepare(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", work)
+    lane = structure.lane_for(openai_compile_driver(), "haiku")
+    plan = system1.prepare(d, work, tools=TOOLS, structure_lane=lane, rubric=rubric)
+    # The pass's own answer cap reaches an OpenAI lane too.
+    assert_sent_through_the_gateway(requests, max_completion_tokens=structure.MAX_TOKENS)
+    assert plan.structure is not None and plan.structure.model == "openai/gpt-5.5"
+    assert plan.structure.lane == "OpenAI-compatible API"
+    assert [n.id for n in plan.nodes] == ["fetch_emails", "summarize_email", "render_digest"]
+
+
+def test_an_openai_api_compile_gives_both_passes_its_own_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through Compiler: the structure pass and the tie-break each get the
+    driver's gateway client, with an Anthropic key and claude in reach."""
+    pytest.importorskip("openai")
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import tiebreak
+    from tests._helpers import GATEWAY_URL, openai_compile_driver, openai_gateway
+
+    openai_gateway(monkeypatch, [])
+    lanes: list[Lane] = []
+
+    def asked(*args: Any, **kwargs: Any) -> Any:
+        lanes.append(next(a for a in args if isinstance(a, Lane)))
+        raise _Asked("asked")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    monkeypatch.setattr(tiebreak, "decide", asked)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: openai_compile_driver())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    for i, kwargs in enumerate([{}, {"system1_structure": "rules", "system1_tiebreak": "haiku"}]):
+        compiler = Compiler(run_generated_tests=False, tool_discovery="none", **kwargs)
+        with pytest.raises(_Asked):
+            asyncio.run(compiler.compile(skill, tmp_path / f"out{i}"))
+    assert [(lane.client, lane.model) for lane in lanes] == [("openai", "openai/gpt-5.5")] * 2
+    assert all(str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL for lane in lanes)
+
+
+def test_a_structure_lane_without_a_client_is_refused(tmp_path: Path) -> None:
+    """A bare api lane would bill whatever Anthropic key the environment holds."""
+    from rote.compiler import system1
+
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "w"
+    work.mkdir()
+    with pytest.raises(structure.StructureUnavailable, match="no client for its lane"):
+        system1.prepare(d, work, tools=TOOLS, structure_lane=Lane("api"), rubric=rubric)
 
 
 def test_prepare_with_a_structure_lane_writes_the_passs_skeleton(
@@ -1058,3 +1209,285 @@ def test_an_mcp_calls_result_keys_are_never_the_models(skill: Any) -> None:
     plan, _, _ = run(skill, answer)
     doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
     assert doc["fetch_emails"]["output"] == "dict"
+
+
+def test_a_structure_note_gets_its_own_open_question_title(skill: Any, tmp_path: Path) -> None:
+    from rote.compiler.system1 import report_extras
+
+    unspecified = {"io": "write", "how": "unspecified", "name": "finance", "server": "", "tool": ""}
+    answer = good_answer()
+    answer["nodes"].append(node("send_digest", 3, "external_call", system=unspecified))
+    plan, _, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
+    work = tmp_path / "work"
+    work.mkdir()
+    titles = [title for title, _ in report_extras(work, plan).questions]
+    assert "Structure pass changed a decision: send_digest" in titles
+    assert not any(t.endswith(": pipeline") for t in titles)
+
+
+def test_two_pure_functions_for_one_step_are_one_node(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = good_answer()
+    answer["nodes"][2]["quote"] = "Send the digest"
+    answer["nodes"].append(node("format_digest", 3, "pure_function", reads=["render_digest"]))
+    assert structure.check(answer, skill, SKILL, declared) == [
+        "node render_digest: only format_digest reads it, and both are pure_functions for "
+        "the same step: make them one node"
+    ]
+    # Another heading, a second reader, or a run output: not one step.
+    other = copy.deepcopy(answer)
+    other["nodes"][-1]["section"] = 2
+    other["nodes"][-1]["quote"] = "Write a three-line summary"
+    assert structure.check(other, skill, SKILL, declared) == []
+    kept = copy.deepcopy(answer)
+    kept["run_outputs"] = ["digest"]
+    kept["nodes"][2]["outputs"] = ["digest"]
+    kept["nodes"][-1]["outputs"] = ["digest"]
+    assert structure.check(kept, skill, SKILL, declared) == []
+
+
+def _split_pair(**second: Any) -> dict[str, Any]:
+    """``a`` is read by ``b`` under the same heading: the split the check merges."""
+    return {
+        "nodes": [
+            node("a", 3, "pure_function", outputs=["rows"]),
+            node("b", 3, "pure_function", reads=["a"], **second),
+        ],
+        "run_outputs": [],
+    }
+
+
+def test_the_split_check_merges_a_plain_pair() -> None:
+    assert structure._check_split_steps(_split_pair()) == [
+        "node a: only b reads it, and both are pure_functions for the same step: make them one node"
+    ]
+
+
+def test_a_merge_never_takes_an_input_from_a_loops_node() -> None:
+    answer = _split_pair()
+    answer["nodes"] += [
+        node("loop", 4, "agent_loop", mandatory=False),
+        node("c", 4, "pure_function", reads=["a"], in_loop="loop", mandatory=False),
+    ]
+    assert structure._check_split_steps(answer) == []
+
+
+def test_a_mandatory_step_is_never_folded_into_an_optional_one() -> None:
+    assert structure._check_split_steps(_split_pair(mandatory=False)) == []
+    optional_first = _split_pair()
+    optional_first["nodes"][0]["mandatory"] = False
+    assert structure._check_split_steps(optional_first) == []
+
+
+def test_the_loop_rule_defers_to_mandatory() -> None:
+    task = " ".join(structure._TASK.split())
+    assert "not top-level steps before or after it, unless the skill marks it MANDATORY" in task
+    assert "a step the skill marks MANDATORY never goes in_loop" in task
+
+
+def test_a_codex_structure_pass_runs_on_codex_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A default codex compile's skeleton comes from codex itself."""
+    from rote.compiler import system1
+    from rote.compiler.drivers.codex import CodexDriver
+    from tests._helpers import fake_codex, fake_codex_runs, refuse_anthropic
+
+    refuse_anthropic(monkeypatch)
+    script = fake_codex(tmp_path, [good_answer()])
+    lane = structure.lane_for(CodexDriver(model="gpt-5.5", codex_executable=str(script)), "haiku")
+    assert (lane.provider, lane.model) == ("codex-cli", "gpt-5.5")
+    d = tmp_path / "skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(SKILL)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "w"
+    work.mkdir()
+    plan = system1.prepare(d, work, tools=TOOLS, structure_lane=lane, rubric=rubric)
+    [run] = fake_codex_runs(script)
+    assert run["schema"] == structure.SCHEMA
+    assert plan.structure is not None and plan.structure.lane == "codex exec"
+    assert [n.id for n in plan.nodes] == ["fetch_emails", "summarize_email", "render_digest"]
+
+
+def test_a_default_codex_compile_reaches_the_structure_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression the flip would have shipped: every default codex compile failing."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.drivers.codex import CodexDriver
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [])
+    lanes: list[Lane] = []
+
+    def asked(skill: Any, skill_md: str, rubric: str, lane: Lane, **kw: Any) -> Any:
+        lanes.append(lane)
+        raise _Asked("asked")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    driver = CodexDriver(model="gpt-5.5", codex_executable=str(script))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    with pytest.raises(_Asked):
+        asyncio.run(
+            Compiler(run_generated_tests=False, tool_discovery="none").compile(
+                skill, tmp_path / "o"
+            )
+        )
+    assert [(lane.provider, lane.model) for lane in lanes] == [("codex-cli", "gpt-5.5")]
+
+
+_SPENT_ROW = {
+    "model": "m",
+    "input_tokens": 7,
+    "output_tokens": 3,
+    "cache_write_tokens": 0,
+    "cache_read_tokens": 0,
+    "cost_usd": 0.002,
+}
+
+
+class _FailsAfter(FakeCall):
+    """Answers in turn, then fails like a billed call (usage on the error)."""
+
+    def __call__(self, **kw: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+        if self.answers:
+            return super().__call__(**kw)
+        e = RuntimeError("claude -p failed for system1_structure: API Error: 400 bad")
+        e.usage_rows = [("m", {k: v for k, v in _SPENT_ROW.items() if k != "model"})]  # type: ignore[attr-defined]
+        raise e
+
+
+def test_a_failed_structure_pass_carries_every_rounds_usage(skill: Any) -> None:
+    """A failed compile is still a paid one: the error holds the first round
+    (answered, then sent back) and the billed failure that ended it."""
+    bad = good_answer()
+    bad["nodes"][0]["quote"] = "words that are nowhere in this skill"
+    fake = _FailsAfter(bad)
+    with pytest.raises(structure.StructureUnavailable) as e:
+        structure.decide(skill, SKILL, "rubric", Lane("claude-cli"), tools=TOOLS, call=fake)
+    first = {"model": "claude-haiku-5-5", "input_tokens": 1000, "output_tokens": 100}
+    first |= {"cache_write_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.01}
+    assert e.value.usage == [first, _SPENT_ROW]
+
+
+def test_a_failed_structure_pass_reports_its_spend_in_the_compile_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler, CompilerError
+    from rote.compiler.system1 import tiebreak
+
+    def fails(*args: Any, **kwargs: Any) -> Any:
+        raise structure.StructureUnavailable("the structure pass failed: x", [_SPENT_ROW] * 2)
+
+    monkeypatch.setattr(structure, "decide", fails)
+    monkeypatch.setattr(tiebreak, "lane_for", lambda driver, **kw: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    logs: list[str] = []
+    compiler = Compiler(
+        run_generated_tests=False, tool_discovery="none", on_event=lambda e: logs.append(e.message)
+    )
+    with pytest.raises(CompilerError) as e:
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    spent = "2 call(s), tokens in=14 out=6, $0.0040"
+    assert str(e.value) == f"the structure pass failed: x (spent before the failure: {spent})"
+    assert e.value.usage == [_SPENT_ROW] * 2  # type: ignore[attr-defined]
+    assert f"usage before the failure: system1 {spent}" in logs
+
+
+def test_a_failed_redecide_keeps_the_compile_and_counts_its_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The text is already paid for: the findings stand, nothing raises."""
+    from types import SimpleNamespace
+
+    from rote.compiler import Compiler
+
+    def fails(*args: Any, **kwargs: Any) -> Any:
+        raise structure.StructureUnavailable("re-deciding MCP bindings (m) failed: x", [_SPENT_ROW])
+
+    monkeypatch.setattr(structure, "redecide", fails)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    record = structure.Structure("m", "claude -p (subscription)")
+    skill = Path(__file__).parent.parent / "examples" / "ops-report" / "skill"
+    run_ = Compiler()._redecide(
+        _ClaudeSpy(),
+        skill,
+        tmp_path,
+        SimpleNamespace(structure=record),  # type: ignore[arg-type]
+        SimpleNamespace(tools=None, sample=None),  # type: ignore[arg-type]
+    )
+    assert run_ is not None
+    assert run_({"node": ["finding"]}) == [
+        "re-deciding MCP bindings failed, the findings stand: "
+        "re-deciding MCP bindings (m) failed: x"
+    ]
+    assert record.usage == [_SPENT_ROW]
+
+
+def test_the_report_names_the_structure_pass_and_its_cost(skill: Any, tmp_path: Path) -> None:
+    """compile-report.md said the structure was decided "with rules" and left
+    out the pass's cost when the pass decided it."""
+    from rote.compiler.system1 import report_extras
+
+    plan, rec, _ = run(skill, good_answer())
+    plan.structure = rec
+    work = tmp_path / "work"
+    work.mkdir()
+    extras = report_extras(work, plan)
+    assert extras.preamble.startswith(
+        "Compiled with System-1: rote decided the structure with a structure pass: "
+        "claude-haiku-5-5 via claude -p (subscription) read the whole skill and proposed "
+        "every node in 1 round(s), and code checked each one"
+    )
+    assert "with rules" not in extras.preamble
+    assert "Its model calls cost $0.0100 (claude-haiku-5-5, structure pass)" in extras.preamble
+    assert "skeleton.yaml" in extras.next_steps[-1]
+
+
+def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--tiebreak haiku resolved its lane (and could fail the compile) for a call
+    the structure pass makes sure never happens; --decider clef went unused silently."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import decision_model, tiebreak
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("resolved or called for a pass that does not run")
+
+    monkeypatch.setattr(tiebreak, "lane_for", never)
+    monkeypatch.setattr(decision_model, "decide", never)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    monkeypatch.setattr(structure, "decide", lambda *a, **k: (_ for _ in ()).throw(_Asked("pass")))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    logs: list[str] = []
+    compiler = Compiler(
+        run_generated_tests=False,
+        tool_discovery="none",
+        system1_decider="clef",
+        system1_tiebreak="haiku",
+        on_event=lambda e: logs.append(e.message),
+    )
+    with pytest.raises(_Asked, match="pass"):
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    assert (
+        "system1: --decider clef and --tiebreak haiku do not run while the structure pass "
+        "(haiku) decides the skeleton; pass --structure rules to use them"
+    ) in logs

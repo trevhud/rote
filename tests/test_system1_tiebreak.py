@@ -17,6 +17,9 @@ import pytest
 
 from rote import cli
 from rote.compiler import Compiler, CompilerError, system1
+
+# Imported at load: codex.py binds shutil.which on import, and tests here patch it.
+from rote.compiler.drivers.codex import CodexDriver
 from rote.compiler.system1 import tiebreak as tb
 from rote.compiler.system1.decide import REVIEW_BELOW, unit_segments, unsure_units
 from rote.compiler.system1.parse import parse_skill
@@ -331,17 +334,19 @@ class _Named:
         self.name = name
 
 
-def test_the_lane_follows_the_compile_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_lane_is_the_compile_drivers_own(monkeypatch: pytest.MonkeyPatch) -> None:
     from rote.inference import _runtime_helper as helper
 
     monkeypatch.setattr(helper.shutil, "which", lambda name: "/usr/local/bin/claude")
     assert tb.lane_for(_Named("claude")) == Lane("claude-cli")
 
-    # Any other driver: a key first, then the CLI.
-    monkeypatch.setattr(tb.shutil, "which", lambda name: "/usr/local/bin/claude")
-    assert tb.lane_for(_Named("codex")) == Lane("claude-cli")
+    # Another driver never borrows a key or the claude CLI it finds lying around.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    assert tb.lane_for(_Named("codex")) == Lane("api")
+    with pytest.raises(TieBreakUnavailable, match="'codex' driver has no client"):
+        tb.lane_for(_Named("codex"))  # named codex, but not the CodexDriver
+    # A driver named like one rote knows but not that class has no client either.
+    with pytest.raises(TieBreakUnavailable, match="'openai-api' driver has no client"):
+        tb.lane_for(_Named("openai-api"))
 
 
 def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -366,8 +371,10 @@ def test_the_api_driver_lends_its_own_client(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_no_lane_at_all_is_loud(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tb.shutil, "which", lambda name: None)
-    with pytest.raises(TieBreakUnavailable, match="--tiebreak none"):
+    from rote.inference import _runtime_helper as helper
+
+    monkeypatch.setattr(helper.shutil, "which", lambda name: None)
+    with pytest.raises(TieBreakUnavailable, match="or pass --tiebreak none$"):
         tb.lane_for(_Named("codex"))
     with pytest.raises(TieBreakUnavailable, match="cannot use claude -p"):
         tb.lane_for(_Named("claude"))
@@ -416,6 +423,8 @@ def test_the_sdk_lane_sends_a_schema_locked_call_with_the_lent_client() -> None:
     expected = structured_output_schema(tb.SCHEMA, node_id="system1_tiebreak")
     assert sent["output_config"] == {"format": {"type": "json_schema", "schema": expected}}
     assert "tools" not in sent and "tool_choice" not in sent and "temperature" not in sent
+    # No cap asked for: the API still needs one, and it is the helper's default.
+    assert sent["max_tokens"] == 4096
     assert rows == [
         (
             "claude-haiku-5-5",
@@ -477,7 +486,9 @@ async def test_the_compile_fails_loudly_without_a_lane(
 ) -> None:
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
     with pytest.raises(CompilerError, match="--tiebreak none"):
-        await Compiler(system1_tiebreak="haiku").compile(_skill(tmp_path), tmp_path / "out")
+        await Compiler(system1_tiebreak="haiku", system1_structure="rules").compile(
+            _skill(tmp_path), tmp_path / "out"
+        )
 
 
 @pytest.mark.asyncio
@@ -494,13 +505,15 @@ async def test_the_compile_logs_the_tiebreak_and_its_cost(
             raise _Stop
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Spy())
-    monkeypatch.setattr(tb, "lane_for", lambda driver: Lane("claude-cli"))
+    monkeypatch.setattr(tb, "lane_for", lambda driver, **kw: Lane("claude-cli"))
     _install(monkeypatch, _Stub(_answer("llm_judge")))
     logs: list[str] = []
     with pytest.raises(_Stop):
-        await Compiler(on_event=lambda e: logs.append(e.message), system1_tiebreak="haiku").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+        await Compiler(
+            on_event=lambda e: logs.append(e.message),
+            system1_tiebreak="haiku",
+            system1_structure="rules",
+        ).compile(_skill(tmp_path), tmp_path / "out")
     assert (
         "system1: tie-break asked claude-haiku-5-5 about 1 unsure step(s) via "
         "claude -p (subscription) ($0.0017)"
@@ -730,10 +743,133 @@ async def test_a_codex_only_machine_fails_before_any_spend_and_names_the_fix(
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(tb.shutil, "which", lambda name: None)
     monkeypatch.setattr(decision_model, "decide", no_decider)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Codex())
-    with pytest.raises(CompilerError, match=r"under the 'codex' driver.*--tiebreak none"):
-        await Compiler(system1_decider="clef", system1_tiebreak="haiku").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+    with pytest.raises(CompilerError, match=r"the 'codex' driver has no client.*--tiebreak none"):
+        await Compiler(
+            system1_decider="clef", system1_tiebreak="haiku", system1_structure="rules"
+        ).compile(_skill(tmp_path), tmp_path / "out")
+
+
+def test_the_openai_api_driver_lends_its_own_client() -> None:
+    """GPT-5.5, GLM or Kimi through a gateway: the tie-break goes to the same
+    endpoint with the same headers and the compile's own model."""
+    pytest.importorskip("openai")
+    from tests._helpers import GATEWAY_HEADERS, GATEWAY_URL, openai_compile_driver
+
+    lane = tb.lane_for(openai_compile_driver())
+    assert (lane.provider, lane.client, lane.model) == ("api", "openai", "openai/gpt-5.5")
+    assert str(lane.sdk_client.base_url).rstrip("/") == GATEWAY_URL
+    assert lane.sdk_client.default_headers["cf-aig-metadata"] == GATEWAY_HEADERS["cf-aig-metadata"]
+    assert lane.label == "OpenAI-compatible API"
+
+
+def test_an_openai_api_tiebreak_goes_only_to_the_compiles_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole call, real client to the wire: the request reaches the gateway
+    schema-locked, and nothing touches an Anthropic key, client or claude."""
+    pytest.importorskip("openai")
+    from tests._helpers import (
+        assert_sent_through_the_gateway,
+        openai_compile_driver,
+        openai_gateway,
+    )
+
+    requests = openai_gateway(monkeypatch, [_answer("llm_judge")])
+    work = tmp_path / "work"
+    work.mkdir()
+    lane = tb.lane_for(openai_compile_driver())
+    plan = system1.prepare(_skill(tmp_path), work, tiebreak_lane=lane, rubric=RUBRIC)
+    assert_sent_through_the_gateway(requests)
+    assert plan.tiebreak is not None and plan.tiebreak.model == "openai/gpt-5.5"
+    assert plan.tiebreak.segments[UNSURE][0][1] == "llm_judge"
+
+
+def test_a_lane_without_a_client_is_refused(tmp_path: Path) -> None:
+    """A bare api lane would bill whatever Anthropic key the environment holds."""
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(TieBreakUnavailable, match="no client for its lane"):
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("api"), rubric=RUBRIC)
+
+
+def _codex_driver(script: Path, model: str | None = "gpt-5.5") -> Any:
+    return CodexDriver(model=model, codex_executable=str(script))
+
+
+def test_the_codex_driver_lends_codex_exec(tmp_path: Path) -> None:
+    from rote.compiler.system1.lane_call import CodexCli
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [])
+    lane = tb.lane_for(_codex_driver(script))
+    assert lane == Lane("codex-cli", CodexCli(str(script)), "gpt-5.5", client="openai")
+    assert lane.label == "codex exec"
+    # No model configured: codex's own default, not a guessed id.
+    assert tb.lane_for(_codex_driver(script, model=None)).model == ""
+
+
+def test_a_codex_lane_without_the_cli_names_the_opt_out(tmp_path: Path) -> None:
+    with pytest.raises(TieBreakUnavailable, match="cannot use codex exec.*--tiebreak none"):
+        tb.lane_for(_codex_driver(tmp_path / "no-such-codex"))
+
+
+def test_a_codex_tiebreak_is_one_schema_locked_codex_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole call through a stand-in codex binary: the schema goes in as
+    --output-schema, the prompt on stdin, the run is read-only and leaves no
+    session, the LAST agent message is the answer, and Anthropic is never reached."""
+    from tests._helpers import fake_codex, fake_codex_runs, refuse_anthropic
+
+    refuse_anthropic(monkeypatch)
+    script = fake_codex(tmp_path, [_answer("llm_judge")])
+    work = tmp_path / "work"
+    work.mkdir()
+    plan = system1.prepare(
+        _skill(tmp_path), work, tiebreak_lane=tb.lane_for(_codex_driver(script)), rubric=RUBRIC
+    )
+    [run] = fake_codex_runs(script)
+    argv = run["argv"]
+    assert argv[0] == "exec" and argv[-1] == "-"
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    assert argv[argv.index("--model") + 1] == "gpt-5.5"
+    assert {"--ephemeral", "--skip-git-repo-check", "--json"} <= set(argv)
+    assert run["schema"] == tb.SCHEMA
+    assert "Tidy the notes for the file." in run["stdin"]
+    assert plan.tiebreak is not None and plan.tiebreak.segments[UNSURE][0][1] == "llm_judge"
+    assert plan.tiebreak.usage == [
+        {
+            "model": "gpt-5.5",
+            "input_tokens": 600,
+            "output_tokens": 50,
+            "cache_write_tokens": None,
+            "cache_read_tokens": 400,
+        }
+    ]
+
+
+def test_a_failed_codex_exec_fails_the_tiebreak(tmp_path: Path) -> None:
+    from tests._helpers import fake_codex
+
+    script = fake_codex(tmp_path, [_answer("llm_judge")], exit_code=1)
+    work = tmp_path / "work"
+    work.mkdir()
+    lane = tb.lane_for(_codex_driver(script))
+    with pytest.raises(TieBreakUnavailable, match="codex exec for system1_tiebreak failed"):
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=lane, rubric=RUBRIC)
+
+
+def test_a_failed_tiebreak_carries_every_attempts_usage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every attempt answered (and was paid for) but none covered the steps asked."""
+    wrong = _answer("llm_judge", step=UNSURE + 1)
+    _install(monkeypatch, _Stub(*[wrong] * tb.ATTEMPTS))
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(TieBreakUnavailable) as e:
+        system1.prepare(_skill(tmp_path), work, tiebreak_lane=Lane("claude-cli"), rubric=RUBRIC)
+    assert len(e.value.usage) == tb.ATTEMPTS
+    assert all(row["model"] == CLI_ROW[0] for row in e.value.usage)

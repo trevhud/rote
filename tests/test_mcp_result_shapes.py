@@ -243,7 +243,9 @@ async def test_the_compile_records_the_declared_schemas_beside_the_ir(
 
     monkeypatch.setattr(Compiler, "_tool_schemas", listed)
     out = tmp_path / "out"
-    await Compiler(run_generated_tests=False, system1_tiebreak="none").compile(skill, out)
+    await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, out)
     assert fake.requests
     assert declared_output_schemas(out) == _outputs()
 

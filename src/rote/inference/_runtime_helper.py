@@ -64,6 +64,8 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -344,9 +346,54 @@ def _durable_error(exc: Exception, *, node_id: str, provider: str, model: str) -
     """
     status = getattr(exc, "status_code", None)
     where = f" (HTTP {status})" if status is not None else ""
-    return RuntimeError(
+    error = RuntimeError(
         f"{type(exc).__name__}{where} calling {model} for {node_id} via {provider}: {exc}"
     )
+    wait = _retry_after_s(getattr(getattr(exc, "response", None), "headers", None))
+    if wait is not None:
+        # How long the server asked a retry to wait (a plain attribute, so
+        # it pickles); a caller that retries honors it.
+        error.retry_after_s = wait  # type: ignore[attr-defined]
+    return error
+
+
+def _retry_after_s(headers: Any) -> float | None:
+    """Seconds a response's ``retry-after-ms`` or ``Retry-After`` asks for.
+
+    ``Retry-After`` is either delta-seconds or an HTTP date (RFC 9110
+    10.2.3); ``retry-after-ms`` is the OpenAI and Anthropic SDKs' own
+    millisecond form. None when absent or unreadable."""
+    if headers is None:
+        return None
+    try:
+        ms = headers.get("retry-after-ms")
+        if ms is not None:
+            return max(0.0, float(ms) / 1000)
+        raw = headers.get("retry-after")
+        if raw is None:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            when = parsedate_to_datetime(raw)
+            # timezone.utc, not datetime.UTC (3.11+): this file is every
+            # emitted Python app's signatures/_rote_inference.py, and those
+            # apps run on 3.10 (tests/test_helper_on_oldest_python.py).
+            now = datetime.now(timezone.utc)  # noqa: UP017
+            return max(0.0, (when - now).total_seconds())
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _billed(error: RuntimeError, rows: list[tuple[str, dict[str, Any]]]) -> RuntimeError:
+    """``error`` carrying the usage of the response that failed.
+
+    A call can fail after the provider billed it: an answer truncated at
+    ``max_tokens``, a refusal, a ``claude -p`` envelope with ``is_error``.
+    The rows ride on the exception as ``usage_rows`` (a plain attribute, so
+    it pickles), and a caller that counts cost adds them."""
+    error.usage_rows = rows  # type: ignore[attr-defined]
+    return error
 
 
 # ───────── usage log ─────────
@@ -857,10 +904,17 @@ def _call_anthropic(
         )
     except anthropic.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
-    answer = structured_answer(response, node_id=node_id)
+    usage = _anthropic_usage(getattr(response, "usage", None))
+    try:
+        answer = structured_answer(response, node_id=node_id)
+    except RuntimeError as e:
+        raise _billed(e, [(model, usage)]) from None
     if not isinstance(answer, dict):
-        raise RuntimeError(f"structured output for {node_id} is not a JSON object")
-    return answer, _anthropic_usage(getattr(response, "usage", None))
+        raise _billed(
+            RuntimeError(f"structured output for {node_id} is not a JSON object"),
+            [(model, usage)],
+        )
+    return answer, usage
 
 
 def _call_openai(
@@ -872,19 +926,26 @@ def _call_openai(
     prompt: str,
     output_schema: dict[str, Any],
     sampling: dict[str, Any],
+    sdk_client: Any = None,
+    max_tokens: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     import openai
 
-    endpoint, token = _sdk_target(provider, "openai", base_url)
-    client = (
-        openai.OpenAI(base_url=endpoint)
-        if token is None
-        else openai.OpenAI(base_url=endpoint, api_key=token)
-    )
+    if sdk_client is not None:
+        client = sdk_client
+    else:
+        endpoint, token = _sdk_target(provider, "openai", base_url)
+        client = (
+            openai.OpenAI(base_url=endpoint)
+            if token is None
+            else openai.OpenAI(base_url=endpoint, api_key=token)
+        )
     try:
         response = client.chat.completions.create(
             model=model,
             **sampling,
+            # Sent as max_completion_tokens: reasoning models reject max_tokens.
+            **({} if max_tokens is None else {"max_completion_tokens": max_tokens}),
             response_format={
                 "type": "json_schema",
                 "json_schema": {"name": node_id, "schema": output_schema, "strict": True},
@@ -893,10 +954,17 @@ def _call_openai(
         )
     except openai.APIError as exc:
         raise _durable_error(exc, node_id=node_id, provider=provider, model=model) from None
+    usage = _openai_usage(getattr(response, "usage", None))
     content = response.choices[0].message.content
     if not content:
-        raise RuntimeError(f"OpenAI returned no content for {node_id}")
-    return json.loads(content), _openai_usage(getattr(response, "usage", None))
+        raise _billed(RuntimeError(f"OpenAI returned no content for {node_id}"), [(model, usage)])
+    try:
+        return json.loads(content), usage
+    except ValueError:
+        raise _billed(
+            RuntimeError(f"OpenAI returned non-JSON content for {node_id}: {content[:200]!r}"),
+            [(model, usage)],
+        ) from None
 
 
 # ───────── transport: claude -p subprocess ─────────
@@ -975,7 +1043,10 @@ def _call_claude_cli(
 
     if envelope.get("is_error"):
         reason = envelope.get("result") or envelope.get("terminal_reason") or "unknown error"
-        raise RuntimeError(f"claude -p failed for {node_id}: {str(reason)[:400]}")
+        raise _billed(
+            RuntimeError(f"claude -p failed for {node_id}: {str(reason)[:400]}"),
+            _cli_usage_rows(envelope, model),
+        )
 
     payload = envelope.get("structured_output")
     if payload is None:
@@ -985,14 +1056,21 @@ def _call_claude_cli(
         except ValueError:
             payload = None
     if not isinstance(payload, dict):
-        raise RuntimeError(
-            f"claude -p returned no structured output for {node_id}; "
-            f"got: {str(envelope.get('result'))[:200]}"
+        raise _billed(
+            RuntimeError(
+                f"claude -p returned no structured output for {node_id}; "
+                f"got: {str(envelope.get('result'))[:200]}"
+            ),
+            _cli_usage_rows(envelope, model),
         )
     return payload, _cli_usage_rows(envelope, model)
 
 
 # ───────── the one entry point emitted judges call ─────────
+
+
+#: An Anthropic call's answer cap when the caller sets none.
+_DEFAULT_MAX_TOKENS = 4096
 
 
 def call_judge(
@@ -1004,7 +1082,7 @@ def call_judge(
     output_schema: dict[str, Any],
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Run one schema-locked judge call and return its raw output dict.
 
@@ -1039,7 +1117,7 @@ def structured_call(
     output_schema: dict[str, Any],
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
-    max_tokens: int = 4096,
+    max_tokens: int | None = None,
     sdk_client: Any = None,
 ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """One schema-locked call on a provider already chosen: ``(payload, usage rows)``.
@@ -1047,9 +1125,14 @@ def structured_call(
     :func:`call_judge` is this plus provider selection and the usage log.
     Each usage row is ``(concrete model, the four token buckets)``, and a
     ``claude-cli`` row also carries the CLI's own ``cost_usd``.
-    ``sdk_client`` is an Anthropic client the caller already built (rote's
-    compiler passes its api driver's, so a call bills and routes exactly
-    like the compile); without it one is built for ``provider``.
+    ``sdk_client`` is a client the caller already built, Anthropic or OpenAI
+    to match ``client`` (rote's compiler passes its driver's, so a call bills
+    and routes exactly like the compile); without it one is built for
+    ``provider``.
+
+    ``max_tokens`` caps the answer. Unset, an Anthropic call gets
+    :data:`_DEFAULT_MAX_TOKENS` (the API requires one) and an OpenAI call
+    gets none, so the model's own limit applies.
     """
     sampling = dict(sampling or {})
     timeout = float(os.environ.get("ROTE_INFERENCE_TIMEOUT") or _DEFAULT_TIMEOUT_S)
@@ -1071,7 +1154,7 @@ def structured_call(
             prompt=prompt,
             output_schema=output_schema,
             sampling=sampling,
-            max_tokens=max_tokens,
+            max_tokens=_DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens,
             sdk_client=sdk_client,
         )
     elif client == "openai":
@@ -1083,6 +1166,8 @@ def structured_call(
             prompt=prompt,
             output_schema=output_schema,
             sampling=sampling,
+            sdk_client=sdk_client,
+            max_tokens=max_tokens,
         )
     else:
         raise RuntimeError(f"unsupported LLM client {client!r} for {node_id}")

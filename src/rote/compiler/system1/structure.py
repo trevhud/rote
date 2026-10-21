@@ -38,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from rote.compiler.system1 import tiebreak
 from rote.compiler.system1.decide import (
     ARG_INPUT_PREFIX,
     REVIEW_BELOW,
@@ -57,12 +58,17 @@ from rote.compiler.system1.parse import (
     to_number,
     walk,
 )
-from rote.compiler.system1.tiebreak import Lane, gateway_model_id
+from rote.compiler.system1.tiebreak import Lane, Spent, billed_rows, gateway_model_id
 from rote.compiler.tool_grounding import parameters
 from rote.tool_schema import checkable
 
+#: How a structure-pass note starts in ``Plan.review``; the report titles it by it.
+STRUCTURE_NOTE_PREFIX = "structure pass: "
 #: ``--structure`` choices, and the model behind each.
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5"}
+#: The default compile's choice. Haiku matched Sonnet's skeletons at a
+#: fourteenth of the cost; ``rules`` (no call) is the opt-out.
+DEFAULT = "haiku"
 NODE_ID = "system1_structure"
 #: Repair rounds after the first answer, each one call.
 REPAIR_ROUNDS = 2
@@ -92,7 +98,7 @@ _JSON_TYPES = frozenset({"string", "integer", "number", "boolean", "object", "ar
 _NO_SYSTEM = {"io": "none", "how": "none", "name": "", "server": "", "tool": ""}
 
 
-class StructureUnavailable(RuntimeError):
+class StructureUnavailable(Spent):
     """The structure pass was asked for and could not produce a valid skeleton."""
 
 
@@ -205,15 +211,31 @@ Per node:
   unless the step both calls a system and works on the result (then the
   call, then the work), or the RUBRIC requires a split. Several checks or
   rules applied to the same data in one step are one node. Text that is only
-  advice, context or a list of tools becomes no node.
+  advice, context or a list of tools becomes no node. When the skill routes
+  between entry points (which steps each kind of request starts at), every
+  step stays in the pipeline, except a step the skill gives as an
+  alternative to another step (a different way in that replaces it): that
+  alternative becomes no node. Also one node, not
+  several: a sub-heading that describes what a step produces (a report's
+  tabs, a table's columns) is part of that step; consecutive actions on one
+  screen that together do one thing (open a menu, click an item, wait for
+  its confirmation) are one call; a step the skill does per item inside a
+  loop is in_loop of that loop, never a top-level node; and when the skill
+  calls a step an autonomous or iterative loop, what that loop does
+  (searches, lookups, enrichment, vetting, backfill) is the agent_loop's
+  tools or in_loop nodes, not top-level steps before or after it, unless
+  the skill marks it MANDATORY (see mandatory below).
 - kind: one of the five kinds in the RUBRIC. A call to an outside system is a
   bare external_call; filtering, matching or reshaping its result is its own
   pure_function (fixed logic) or llm_judge (judgment). A person approving,
   choosing or providing something is a hitl_gate. Exploratory tool use with a
   stop condition is an agent_loop.
 - intent: one sentence, what the node does and why, in the skill's terms.
-- reads: the earlier nodes whose results it needs ("pipeline.input" for the
-  run's input). Read what the step actually uses, not just the node before.
+- reads: only the earlier nodes whose results the step's own text uses
+  ("pipeline.input" for the run's input). A step that works on the input's
+  own fields reads pipeline.input, even when it comes after another step:
+  reading a node it does not need makes it wait on that node, and fail
+  with it.
 - fan_out_over: when the node runs once per element of a list another node
   returns (a call per query, a write per row), that node's id. Else "".
   Judge at the skill's granularity: an llm_judge whose step decides over a
@@ -340,10 +362,31 @@ class Structure:
 
 
 def lane_with(lane: Lane, choice: str) -> Lane:
-    """``lane`` with the model ``choice`` names, in the lane's own id form."""
+    """``lane`` with the model ``choice`` names, in the lane's own id form.
+
+    An OpenAI-compatible or codex lane keeps the compile's own model: Haiku
+    and Sonnet are not on that wire format."""
+    if lane.client == "openai":
+        return lane
     model = MODELS[choice]
     prefix, _, _ = lane.model.rpartition("/")
     return replace(lane, model=gateway_model_id(prefix, model) if prefix else model)
+
+
+def lane_for(driver: Any, choice: str) -> Lane:
+    """The compile driver's billing lane, serving ``choice``'s model.
+
+    A compile that cannot reach the model fails before the agent runs, and
+    the error names ``--structure rules``, the opt-out."""
+    return lane_with(
+        tiebreak.lane_for(
+            driver,
+            caller="the structure pass asks a model for the pipeline's skeleton",
+            opt_out="--structure rules",
+            error=StructureUnavailable,
+        ),
+        choice,
+    )
 
 
 # ── the prompt ────────────────────────────────────────────────────────────
@@ -561,6 +604,53 @@ def check(
     if sample is not None and sample.gates:
         out += _check_gates(answer, sample)
     out += _check_run_outputs(answer)
+    out += _check_split_steps(answer)
+    return out
+
+
+def _check_split_steps(answer: dict[str, Any]) -> list[str]:
+    """Two pure_functions that are one step split in two.
+
+    The first cites the same heading as the second, the second is the only
+    node that reads it, and neither is a run output. Code that only one
+    other piece of code under the same heading consumes is that piece's own
+    work: splitting it adds a node, a module and a test, and a seam where
+    the data shape can disagree. Decided from the data flow, not wording.
+
+    Readers are counted over every node, in-loop ones included, so a merge
+    never takes away an input a loop's node needs. Two nodes merge only when
+    both are mandatory or neither is: folding a mandatory check into an
+    optional step would lose its guarantee (invariant #4), and the other way
+    round would make optional work required. Mandatory is the default for a
+    step the skill does not make conditional, so skipping every mandatory
+    pair would turn the check off."""
+    every = answer.get("nodes") or []
+    readers: dict[str, list[str]] = {}
+    for n in every:
+        for r in n.get("reads") or []:
+            readers.setdefault(str(r), []).append(str(n.get("id")))
+    by_id = {str(n.get("id")): n for n in every if not n.get("in_loop")}
+    run_outputs = {str(k) for k in answer.get("run_outputs") or []}
+    out = []
+    for nid, first in by_id.items():
+        users = readers.get(nid, [])
+        if first.get("kind") != "pure_function" or len(users) != 1:
+            continue
+        second = by_id.get(users[0])
+        if second is None or second.get("kind") != "pure_function":
+            continue
+        if first.get("section") != second.get("section") or first.get("fan_out_over"):
+            continue
+        if bool(first.get("mandatory")) != bool(second.get("mandatory")):
+            continue
+        if second.get("fan_out_over") == nid:
+            continue  # a list builder for a fan is its own step
+        if run_outputs & {str(k) for k in first.get("outputs") or []}:
+            continue
+        out.append(
+            f"node {nid}: only {users[0]} reads it, and both are pure_functions for the same "
+            "step: make them one node"
+        )
     return out
 
 
@@ -775,23 +865,27 @@ Call = Callable[..., tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]]
 
 
 def _structured_call() -> Call:
-    from rote.inference._runtime_helper import structured_call
+    from rote.compiler.system1.lane_call import structured_call
 
     return structured_call
 
 
 def _client(lane: Lane) -> Any:
-    """The lane's Anthropic client with an explicit timeout, or None for ``claude -p``.
+    """The lane's client with an explicit timeout, or None for ``claude -p``.
 
-    The SDK refuses a non-streaming request whose ``max_tokens`` could run
-    past ten minutes unless the client sets its own timeout."""
+    The Anthropic SDK refuses a non-streaming request whose ``max_tokens``
+    could run past ten minutes unless the client sets its own timeout. A
+    lane with no client is refused: building one here would bill whatever
+    Anthropic key the environment holds, whichever driver the compile chose."""
     if lane.provider == "claude-cli":
         return None
-    if lane.sdk_client is not None:
-        return lane.sdk_client.with_options(timeout=TIMEOUT_S)
-    import anthropic
-
-    return anthropic.Anthropic(timeout=TIMEOUT_S)
+    if lane.provider == "codex-cli":
+        return lane.sdk_client
+    if lane.sdk_client is None:
+        raise StructureUnavailable(
+            "the structure pass has no client for its lane; build lanes with lane_for"
+        )
+    return lane.sdk_client.with_options(timeout=TIMEOUT_S)
 
 
 def decide(
@@ -818,7 +912,7 @@ def decide(
             answer, rows = call(
                 node_id=NODE_ID,
                 provider=lane.provider,
-                client="anthropic",
+                client=lane.client,
                 model=lane.model,
                 prompt=prompt,
                 output_schema=SCHEMA,
@@ -827,7 +921,8 @@ def decide(
             )
         except RuntimeError as e:
             raise StructureUnavailable(
-                f"the System-1 structure pass ({lane.model}) failed: {e}"
+                f"the System-1 structure pass ({lane.model}) failed: {e}",
+                result.usage + billed_rows(e),
             ) from e
         result.usage += [{"model": m, **u} for m, u in rows]
         result.rounds = round_ + 1
@@ -851,17 +946,22 @@ def decide(
         )
     result.answer = answer
     result.cost_usd = _cost(result.usage)
-    resolved_answer, result.resolved = resolve(answer, skill, skill_md, declared, sample)
+    try:
+        resolved_answer, result.resolved = resolve(answer, skill, skill_md, declared, sample)
+    except StructureUnavailable as e:
+        e.usage = result.usage + e.usage  # every round before it was paid for
+        raise
     plan_, ir_errors = _build_and_validate(
         resolved_answer, skill, declared, tools, sample, tool_checks=False
     )
     if ir_errors:
         raise StructureUnavailable(
             "the System-1 structure pass produced no valid skeleton after "
-            f"{result.rounds} round(s): " + "; ".join(ir_errors)
+            f"{result.rounds} round(s): " + "; ".join(ir_errors),
+            result.usage,
         )
     assert plan_ is not None
-    plan_.review += [f"structure pass: {r}" for r in result.resolved]
+    plan_.review += [f"{STRUCTURE_NOTE_PREFIX}{r}" for r in result.resolved]
     return plan_, result
 
 
@@ -1498,7 +1598,7 @@ def redecide(
         answer, rows = call(
             node_id=NODE_ID,
             provider=lane.provider,
-            client="anthropic",
+            client=lane.client,
             model=lane.model,
             prompt=prompt,
             output_schema=REDECIDE_SCHEMA,
@@ -1506,7 +1606,9 @@ def redecide(
             max_tokens=MAX_TOKENS,
         )
     except RuntimeError as e:
-        raise StructureUnavailable(f"re-deciding MCP bindings ({lane.model}) failed: {e}") from e
+        raise StructureUnavailable(
+            f"re-deciding MCP bindings ({lane.model}) failed: {e}", billed_rows(e)
+        ) from e
     by_tool: dict[str, list[str]] = {}
     for server, tool in declared:
         by_tool.setdefault(tool, []).append(server)

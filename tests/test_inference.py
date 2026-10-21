@@ -441,7 +441,7 @@ def test_cli_transport_surfaces_the_envelopes_error(monkeypatch: pytest.MonkeyPa
             returncode=0,
         ),
     )
-    with pytest.raises(RuntimeError, match="model not found"):
+    with pytest.raises(RuntimeError, match="model not found") as excinfo:
         helper.call_judge(
             node_id="grade_essay",
             client="anthropic",
@@ -449,6 +449,9 @@ def test_cli_transport_surfaces_the_envelopes_error(monkeypatch: pytest.MonkeyPa
             prompt="Grade it.",
             output_schema={"type": "object", "properties": {}},
         )
+    # The failed call was still billed: its usage rides on the error.
+    [(_, usage)] = excinfo.value.usage_rows  # type: ignore[attr-defined]
+    assert (usage["input_tokens"], usage["output_tokens"]) == (740, 638)
 
 
 def test_cli_transport_falls_back_to_the_result_string(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -604,6 +607,11 @@ def test_an_incomplete_judge_answer_is_a_durable_error_never_data(
         "so it is not a complete answer"
     )
     assert str(pickle.loads(pickle.dumps(excinfo.value))) == message
+    # A truncated or refused answer was billed: its usage rides on the error,
+    # across a durable step too.
+    for error in (excinfo.value, pickle.loads(pickle.dumps(excinfo.value))):
+        [(_, usage)] = error.usage_rows
+        assert (usage["input_tokens"], usage["output_tokens"]) == (10, 5)
 
 
 def test_a_judge_answer_that_is_not_an_object_is_an_error(judge_stub: str) -> None:

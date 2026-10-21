@@ -54,8 +54,8 @@ comes from keeping them clean.
 - **Runs under:** a pluggable driver layer (see Layer 2)
 - **System-1 is the default compile path.** Before the agent runs,
   [`src/rote/compiler/system1/`](src/rote/compiler/system1/) decides
-  the whole structure with rules (kinds, data flow, fan_out, mandatory,
-  gates, constants), and the agent gets the smaller
+  the whole structure (kinds, data flow, fan_out, mandatory, gates,
+  constants), and the agent gets the smaller
   `skills/rote-compile/SYSTEM1.md` rubric and writes only text. rote
   restores every decision after each agent stop. The full rubric above
   runs under `--no-system1` and for `--update`. `Compiler(system1=None)`
@@ -71,6 +71,33 @@ comes from keeping them clean.
   compile's own lane via `structured_call` in the inference helper. Don't
   give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
+- **The skeleton comes from the structure pass by default**
+  (`system1/structure.py`; the layered `structure` setting, `--structure`
+  > `ROTE_STRUCTURE` > `rote.yaml` > user config > `haiku`, flag rejected
+  in cloud mode like `--tiebreak`): one schema-locked Haiku
+  call reads the whole skill and returns every node, and code checks each
+  one against hard evidence only (declared tool schemas, verbatim quotes and
+  constants, sample keys, the IR's loop rules), sending failures back for up
+  to two repairs. Keep the checks to evidence: a check that encodes a guess
+  about meaning belongs in the prompt, and a word list never does. What
+  still fails is resolved conservatively and listed as an Open question,
+  never shipped as decided. It and the tie-break run on the compile
+  driver's own client and nothing else (`tiebreak.lane_for`): claude -p,
+  the api driver's Anthropic client, the openai-api driver's OpenAI client
+  with the compile's model, or `codex exec --output-schema`
+  (`system1/lane_call.py`, strict `json_schema` on the Responses API). Never add a fallback to an ambient
+  `ANTHROPIC_*` key or a `claude` on PATH: it billed a user's subscription
+  for a compile they sent to GPT-5.5, and rote-cloud's container has
+  neither, so every openai-api compile failed there. A lane with no client
+  is refused for the same reason. Every call goes through
+  `lane_call.structured_call`, which retries a transient failure (408, 429,
+  5xx, a dropped connection) up to three calls on the same lane and model
+  and then raises the real error; keep it a retry, never a switch to
+  another model or provider. Any other driver fails naming
+  `--structure rules`, the opt-out that keeps the rules above. Tests that run
+  a compile with a fake driver pass `system1_structure="rules"`, because the
+  fake has no lane. Tune its prompt on the dev skills only; the holdout is
+  for measuring.
 - **System-1's text is written in parallel** when the driver has
   `generate()` (`claude`, `api`): one schema-locked call per node's
   interface entry, then one per `pure_function` (module + tests) and per

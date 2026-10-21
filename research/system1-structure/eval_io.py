@@ -21,6 +21,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import yaml
 
 from rote.compiler.system1 import structure
@@ -87,7 +88,7 @@ def main() -> None:
     args = sys.argv[1:]
     model = args[0]
     os.environ["ROTE_EFFORT_SYSTEM1_STRUCTURE"] = "low" if "--low" in args else ""
-    lane = structure.lane_with(Lane("api"), model)
+    lane = structure.lane_with(Lane("api", anthropic.Anthropic()), model)
     cases = yaml.safe_load((REPO / "research" / "system1-io" / "eval.yaml").read_text())["cases"]
     with ThreadPoolExecutor(max_workers=8) as pool:
         rows = list(pool.map(lambda c: one(c, lane), cases))
