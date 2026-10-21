@@ -966,11 +966,15 @@ def resolve(
             notes.append(f"`{nid}`: a {kind} cannot run inside a loop; it runs after it")
             n["in_loop"] = ""
         if n.get("in_loop") and n.get("mandatory"):
-            # Mandatory wins: it runs unconditionally, outside the loop, on what
-            # it can read there (invariant #4). Never dropped silently.
+            # Mandatory wins (invariant #4): it runs unconditionally, outside the
+            # loop, on what it can read there. But it then runs once, not per
+            # item, and the loop's work does not read it, so the guard holds
+            # nothing. The note says so; resolve notes reach Open questions.
             notes.append(
-                f"`{nid}`: the skill makes it mandatory, so it runs outside loop "
-                f"{n['in_loop']!r}, where nothing can skip it"
+                f"`{nid}`: the skill makes it mandatory, but it ran per item inside loop "
+                f"{n['in_loop']!r}. It now runs once outside the loop, and the loop does "
+                "not read its result, so the work it guarded is unguarded until the step "
+                "is fanned out over the items or the loop reads its result"
             )
             n["in_loop"] = ""
             inside = {m["id"] for m in nodes if m.get("in_loop")}

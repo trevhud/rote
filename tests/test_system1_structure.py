@@ -1026,10 +1026,24 @@ def test_a_loop_calls_only_optional_callable_nodes(skill: Any) -> None:
     assert by_id["approve_each"]["in_loop"] == ""
     # Mandatory is never dropped: the step leaves the loop instead, and the change is listed.
     assert by_id["score_each"]["mandatory"] is True and by_id["score_each"]["in_loop"] == ""
+    # The note says the real state: the guard runs, but guards nothing yet.
     assert (
-        "`score_each`: the skill makes it mandatory, so it runs outside loop 'research', "
-        "where nothing can skip it"
+        "`score_each`: the skill makes it mandatory, but it ran per item inside loop "
+        "'research'. It now runs once outside the loop, and the loop does not read its "
+        "result, so the work it guarded is unguarded until the step is fanned out over "
+        "the items or the loop reads its result"
     ) in notes
+    # It no longer reads loop-body nodes, which have no result outside the loop.
+    answer["nodes"].insert(
+        2, node("probe_each", 3, "pure_function", in_loop="research", mandatory=False)
+    )
+    answer["nodes"][-1]["reads"] = ["research", "probe_each"]
+    fixed, notes = structure.resolve(answer, skill, SKILL, declared)
+    by_id = {n["id"]: n for n in fixed["nodes"]}
+    assert by_id["score_each"]["reads"] == ["research"]
+    # The notes reach the plan's review lines, which the report lists as Open questions.
+    plan, rec, _ = run(skill, *[answer] * (structure.REPAIR_ROUNDS + 1))
+    assert any("the work it guarded is unguarded" in r for r in plan.review)
 
 
 def test_an_mcp_calls_result_keys_are_never_the_models(skill: Any) -> None:
