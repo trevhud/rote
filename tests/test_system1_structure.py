@@ -974,15 +974,6 @@ def test_structure_rules_is_the_opt_out(tmp_path: Path, monkeypatch: pytest.Monk
     assert reached == "the agent ran"
 
 
-@pytest.mark.parametrize("argv", [["compile", "skill", "--out", "out"], ["analyze", "skill"]])
-def test_the_cli_defaults_to_the_structure_pass_on_haiku(argv: list[str]) -> None:
-    from rote.cli import _build_parser
-
-    parser = _build_parser()
-    assert parser.parse_args(argv).structure == "haiku"
-    assert parser.parse_args([*argv, "--structure", "rules"]).structure == "rules"
-
-
 def test_analyze_passes_its_structure_choice_to_the_compiler(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1252,3 +1243,42 @@ def test_two_pure_functions_for_one_step_are_one_node(skill: Any) -> None:
     kept["nodes"][2]["outputs"] = ["digest"]
     kept["nodes"][-1]["outputs"] = ["digest"]
     assert structure.check(kept, skill, SKILL, declared) == []
+
+
+def _split_pair(**second: Any) -> dict[str, Any]:
+    """``a`` is read by ``b`` under the same heading: the split the check merges."""
+    return {
+        "nodes": [
+            node("a", 3, "pure_function", outputs=["rows"]),
+            node("b", 3, "pure_function", reads=["a"], **second),
+        ],
+        "run_outputs": [],
+    }
+
+
+def test_the_split_check_merges_a_plain_pair() -> None:
+    assert structure._check_split_steps(_split_pair()) == [
+        "node a: only b reads it, and both are pure_functions for the same step: make them one node"
+    ]
+
+
+def test_a_merge_never_takes_an_input_from_a_loops_node() -> None:
+    answer = _split_pair()
+    answer["nodes"] += [
+        node("loop", 4, "agent_loop", mandatory=False),
+        node("c", 4, "pure_function", reads=["a"], in_loop="loop", mandatory=False),
+    ]
+    assert structure._check_split_steps(answer) == []
+
+
+def test_a_mandatory_step_is_never_folded_into_an_optional_one() -> None:
+    assert structure._check_split_steps(_split_pair(mandatory=False)) == []
+    optional_first = _split_pair()
+    optional_first["nodes"][0]["mandatory"] = False
+    assert structure._check_split_steps(optional_first) == []
+
+
+def test_the_loop_rule_defers_to_mandatory() -> None:
+    task = " ".join(structure._TASK.split())
+    assert "not top-level steps before or after it, unless the skill marks it MANDATORY" in task
+    assert "a step the skill marks MANDATORY never goes in_loop" in task

@@ -17,7 +17,9 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   schemas and the sample input, asking again up to twice. About $0.015 and
   70 s a compile, billed like the compile. On the held-out skills it scores
   kind accuracy 0.88 against the rules' 0.49 and edge F1 0.78 against
-  0.58. `--structure rules` keeps the rules, with no call. With no lane the
+  0.58. `--structure rules` (or `structure: rules`, `ROTE_STRUCTURE`) keeps
+  the rules, with no call. In cloud mode the flag is rejected, like
+  `--tiebreak`. With no lane the
   compile fails and names that flag. `rote analyze` now passes
   `--structure` through; it used to ignore it.
 - **System-1's model calls run on the compile driver's own client only.**

@@ -75,6 +75,12 @@ def _tiebreak_choices() -> tuple[str, ...]:
     return TIEBREAKS
 
 
+def _structure_choices() -> tuple[str, ...]:
+    from rote.compiler.system1.structure import MODELS
+
+    return ("rules", *MODELS)
+
+
 @dataclass(frozen=True)
 class ConfigKey:
     """One configurable default: its name, env override, and validity."""
@@ -83,7 +89,8 @@ class ConfigKey:
     env: str
     description: str
     choices: tuple[str, ...] | None = None
-    # "runtime" | "agent" | "inference" | "effort" | "decider" | "tiebreak" — resolved on demand
+    # "runtime" | "agent" | "inference" | "effort" | "decider" | "tiebreak" | "structure",
+    # resolved on demand
     lazy_choices: str | None = None
 
     def valid_choices(self) -> tuple[str, ...] | None:
@@ -99,6 +106,8 @@ class ConfigKey:
             return _decider_choices()
         if self.lazy_choices == "tiebreak":
             return _tiebreak_choices()
+        if self.lazy_choices == "structure":
+            return _structure_choices()
         return self.choices
 
 
@@ -152,6 +161,16 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
             "billed like the compile) or none; unset = none"
         ),
         lazy_choices="tiebreak",
+    ),
+    ConfigKey(
+        name="structure",
+        env="ROTE_STRUCTURE",
+        description=(
+            "who decides the pipeline's skeleton: haiku or sonnet (one call on the "
+            "compile driver's own client, checked against the skill) or rules (no "
+            "call); unset = haiku"
+        ),
+        lazy_choices="structure",
     ),
     ConfigKey(
         name="inference",

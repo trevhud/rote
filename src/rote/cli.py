@@ -649,6 +649,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
         decider_rv = rote_config.resolve("decider", args.decider, layers=layers)
         tiebreak_rv = rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
+        structure_rv = rote_config.resolve("structure", args.structure, layers=layers)
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -687,7 +688,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     args.effort = effort_rv.value
     try:
         args.decider = _local_decider(args, decider_rv, "compile")
-        args.tiebreak = _local_tiebreak(args, tiebreak_rv)
+        args.tiebreak = _local_system1_choice(args, tiebreak_rv, "--tiebreak", DEFAULT_TIEBREAK)
+        args.structure = _local_system1_choice(args, structure_rv, "--structure", DEFAULT_STRUCTURE)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -1553,6 +1555,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-system1", args.system1 is False),
         ("--decider", args.decider is not None),
         ("--tiebreak", args.tiebreak is not None),
+        ("--structure", args.structure is not None),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2760,8 +2763,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         decider = _local_decider(
             args, rote_config.resolve("decider", args.decider, layers=layers), "analyze"
         )
-        tiebreak = _local_tiebreak(
-            args, rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
+        tiebreak = _local_system1_choice(
+            args,
+            rote_config.resolve("tiebreak", args.tiebreak, layers=layers),
+            "--tiebreak",
+            DEFAULT_TIEBREAK,
+        )
+        structure = _local_system1_choice(
+            args,
+            rote_config.resolve("structure", args.structure, layers=layers),
+            "--structure",
+            DEFAULT_STRUCTURE,
         )
     except (rote_config.ConfigError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -2787,7 +2799,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         system1=args.system1,
         system1_decider=decider,
         system1_tiebreak=tiebreak,
-        system1_structure=args.structure,
+        system1_structure=structure,
         max_parallel=args.max_parallel,
     )
 
@@ -3752,6 +3764,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             resolved["tiebreak"].source,
         ),
+        "structure": (
+            resolved["structure"].value or DEFAULT_STRUCTURE,
+            resolved["structure"].source,
+        ),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3771,6 +3787,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             # Concrete like runtime: unset means rules, which is what runs.
             "decider": resolved["decider"].value or "rules",
             "tiebreak": resolved["tiebreak"].value or DEFAULT_TIEBREAK,
+            "structure": resolved["structure"].value or DEFAULT_STRUCTURE,
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -4193,16 +4210,18 @@ def _runs_system1(args: argparse.Namespace) -> bool:
     return bool(args.system1) if args.system1 is not None else not getattr(args, "update", False)
 
 
-def _local_tiebreak(args: argparse.Namespace, resolved: Resolved) -> str:
-    """The tie-break a local compile (or analyze) uses: the layered ``tiebreak``
-    setting, else :data:`DEFAULT_TIEBREAK` (``none``). A ``--tiebreak`` flag on
-    a compile that does not run System-1 is a usage error, like ``--decider``.
-    A configured value is a standing preference and needs no note: on that
-    path nothing would ask."""
+def _local_system1_choice(
+    args: argparse.Namespace, resolved: Resolved, flag: str, default: str
+) -> str:
+    """What a local compile (or analyze) uses for a System-1 call setting
+    (``--tiebreak``, ``--structure``): the layered setting, else ``default``.
+    The flag on a compile that does not run System-1 is a usage error, like
+    ``--decider``. A configured value is a standing preference and needs no
+    note: on that path nothing would ask."""
     if resolved.source == "flag" and not _runs_system1(args):
         why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
-        raise ValueError(f"--tiebreak applies to System-1 compiles, and {why} does not run one")
-    return resolved.value or DEFAULT_TIEBREAK
+        raise ValueError(f"{flag} applies to System-1 compiles, and {why} does not run one")
+    return resolved.value or default
 
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
@@ -4242,17 +4261,18 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--structure",
         choices=["rules", *STRUCTURE_MODELS],
-        default=DEFAULT_STRUCTURE,
+        default=None,
         help=(
-            f"Who reads the whole skill and decides the pipeline's skeleton (default: "
-            f"{DEFAULT_STRUCTURE}). A model answers in one schema-locked call, and rote "
-            "checks every node against the skill's text, its tools' schemas and the "
-            "sample input before using it, asking again up to twice. It costs about "
-            "$0.015 a compile on Haiku. It runs on the compile driver's own client: "
-            "claude -p under the claude driver, the api driver's client under --agent "
-            "api, and the openai-api driver's client and model under --agent openai-api. "
-            "Under codex it cannot run. 'rules' makes no call and decides the skeleton "
-            "step by step from the skill's text"
+            "Who reads the whole skill and decides the pipeline's skeleton (default: "
+            f"the `structure` setting, else {DEFAULT_STRUCTURE}). A model answers in "
+            "one schema-locked call, and rote checks every node against the skill's "
+            "text, its tools' schemas and the sample input before using it, asking "
+            "again up to twice. It costs about $0.015 a compile on Haiku. It runs on "
+            "the compile driver's own client: claude -p under the claude driver, the "
+            "api driver's client under --agent api, and the openai-api driver's "
+            "client and model under --agent openai-api. Under codex it cannot run. "
+            "'rules' makes no call and decides the skeleton step by step from the "
+            "skill's text"
         ),
     )
     p.add_argument(

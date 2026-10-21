@@ -291,6 +291,11 @@ setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
 
 ## The structure pass (`--structure haiku`, the default)
 
+The choice is a layered setting like the decider and the tie-break:
+`--structure` > `ROTE_STRUCTURE` > project `rote.yaml` > user config >
+`haiku`. `rules` makes no call. In cloud mode the flag is rejected, since
+the server decides how its compiles run.
+
 Step-by-step rules misread skills whose structure lives in their intent: a
 per-item step inside a loop, an alternative entry point, a judge that weighs
 a whole list. The structure pass reads the whole skill instead. One
@@ -320,7 +325,7 @@ back what fails, up to two repair rounds:
 
 What still fails after the repairs is resolved conservatively and never
 shipped as decided: an unquoted node is dropped, a call with an unbound
-required argument becomes an output, a mandatory step leaves the loop with a
+required argument becomes a pure_function that makes no call, with a note, a mandatory step leaves the loop with a
 note that the work it guarded is now unguarded. Every such change is an Open
 question in compile-report.md. Later, a verification finding about a tool
 binding goes back to the structure pass (`redecide`) rather than to the

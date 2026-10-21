@@ -223,7 +223,8 @@ Per node:
   loop is in_loop of that loop, never a top-level node; and when the skill
   calls a step an autonomous or iterative loop, what that loop does
   (searches, lookups, enrichment, vetting, backfill) is the agent_loop's
-  tools or in_loop nodes, not top-level steps before or after it.
+  tools or in_loop nodes, not top-level steps before or after it, unless
+  the skill marks it MANDATORY (see mandatory below).
 - kind: one of the five kinds in the RUBRIC. A call to an outside system is a
   bare external_call; filtering, matching or reshaping its result is its own
   pure_function (fixed logic) or llm_judge (judgment). A person approving,
@@ -614,13 +615,21 @@ def _check_split_steps(answer: dict[str, Any]) -> list[str]:
     node that reads it, and neither is a run output. Code that only one
     other piece of code under the same heading consumes is that piece's own
     work: splitting it adds a node, a module and a test, and a seam where
-    the data shape can disagree. Decided from the data flow, not wording."""
-    nodes = [n for n in answer.get("nodes") or [] if not n.get("in_loop")]
-    by_id = {str(n.get("id")): n for n in nodes}
+    the data shape can disagree. Decided from the data flow, not wording.
+
+    Readers are counted over every node, in-loop ones included, so a merge
+    never takes away an input a loop's node needs. Two nodes merge only when
+    both are mandatory or neither is: folding a mandatory check into an
+    optional step would lose its guarantee (invariant #4), and the other way
+    round would make optional work required. Mandatory is the default for a
+    step the skill does not make conditional, so skipping every mandatory
+    pair would turn the check off."""
+    every = answer.get("nodes") or []
     readers: dict[str, list[str]] = {}
-    for n in nodes:
+    for n in every:
         for r in n.get("reads") or []:
             readers.setdefault(str(r), []).append(str(n.get("id")))
+    by_id = {str(n.get("id")): n for n in every if not n.get("in_loop")}
     run_outputs = {str(k) for k in answer.get("run_outputs") or []}
     out = []
     for nid, first in by_id.items():
@@ -631,6 +640,8 @@ def _check_split_steps(answer: dict[str, Any]) -> list[str]:
         if second is None or second.get("kind") != "pure_function":
             continue
         if first.get("section") != second.get("section") or first.get("fan_out_over"):
+            continue
+        if bool(first.get("mandatory")) != bool(second.get("mandatory")):
             continue
         if second.get("fan_out_over") == nid:
             continue  # a list builder for a fan is its own step

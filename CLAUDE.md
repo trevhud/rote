@@ -72,7 +72,9 @@ comes from keeping them clean.
   give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
 - **The skeleton comes from the structure pass by default**
-  (`--structure haiku`, `system1/structure.py`): one schema-locked Haiku
+  (`system1/structure.py`; the layered `structure` setting, `--structure`
+  > `ROTE_STRUCTURE` > `rote.yaml` > user config > `haiku`, flag rejected
+  in cloud mode like `--tiebreak`): one schema-locked Haiku
   call reads the whole skill and returns every node, and code checks each
   one against hard evidence only (declared tool schemas, verbatim quotes and
   constants, sample keys, the IR's loop rules), sending failures back for up
