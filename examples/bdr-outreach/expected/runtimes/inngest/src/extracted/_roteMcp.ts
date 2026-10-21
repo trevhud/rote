@@ -166,8 +166,9 @@ interface RegistryEntry {
 
 function registryServers(): Record<string, RegistryEntry> {
     const override = process.env.ROTE_MCP_CONFIG;
-    const base = process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config");
-    const file = override ?? path.join(base, "rote", "mcp.json");
+    // `||`, not `??`: an empty variable is unset, as in the Python helper.
+    const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+    const file = override || path.join(base, "rote", "mcp.json");
     if (!fs.existsSync(file)) return {};
     const data = JSON.parse(fs.readFileSync(file, "utf-8")) as {
         servers?: Record<string, RegistryEntry>;
@@ -178,7 +179,7 @@ function registryServers(): Record<string, RegistryEntry> {
 function tokenDir(): string {
     const override = process.env.ROTE_MCP_TOKEN_DIR;
     if (override) return override;
-    const base = process.env.XDG_DATA_HOME ?? path.join(os.homedir(), ".local", "share");
+    const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
     return path.join(base, "rote", "mcp-tokens");
 }
 

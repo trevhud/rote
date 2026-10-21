@@ -198,7 +198,8 @@ jobs:
             tests/test_mcp_ts_server_e2e.py \
             tests/test_mcp_era_matrix_e2e.py \
             tests/test_mcp_park_cf_e2e.py \
-            tests/test_mcp_park_inngest_e2e.py
+            tests/test_mcp_park_inngest_e2e.py \
+            tests/test_xdg_paths.py
 
   dbos-ts-e2e:
     # Split from ts-e2e because these two also need Docker: the DBOS

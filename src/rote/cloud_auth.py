@@ -45,6 +45,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from rote import __version__
+from rote.xdg import data_home
 
 #: The hosted platform. ``rote login --url`` targets a dev instance.
 DEFAULT_CLOUD_URL = "https://app.roteskills.com"
@@ -81,9 +82,7 @@ def credential_path() -> Path:
     override = os.environ.get("ROTE_CLOUD_CRED_PATH")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "rote" / "cloud.json"
+    return data_home() / "rote" / "cloud.json"
 
 
 def load_credential() -> CloudCredential | None:

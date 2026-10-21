@@ -38,6 +38,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from rote.xdg import cache_home
+
 MODELS_DEV_URL = "https://models.dev/api.json"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 
@@ -506,8 +508,7 @@ def default_cache_dir() -> Path:
     override = os.environ.get("ROTE_PRICING_CACHE_DIR")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    return (Path(xdg) if xdg else Path.home() / ".cache") / "rote"
+    return cache_home() / "rote"
 
 
 def _default_cache_path() -> Path:

@@ -34,6 +34,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rote.xdg import config_home
+
 REGISTRY_ENV_VAR = "ROTE_MCP_CONFIG"
 
 
@@ -42,9 +44,7 @@ def registry_path() -> Path:
     override = os.environ.get(REGISTRY_ENV_VAR)
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "rote" / "mcp.json"
+    return config_home() / "rote" / "mcp.json"
 
 
 #: The registry is shared by every rote version on the machine (a cached
