@@ -248,12 +248,12 @@ def test_dbos_emits_the_helper_verbatim(tmp_path: Path) -> None:
     emitted = (tmp_path / "extracted" / "_rote_mcp.py").read_text(encoding="utf-8")
     source = Path(_runtime_helper.__file__).read_text(encoding="utf-8")
     assert emitted == source
-    # The emitted README names the fastmcp range the helper was verified
-    # against, not a bare `pip install fastmcp` that could resolve to a
+    # The emitted requirements name the fastmcp range the helper was
+    # verified against, not a bare `fastmcp` that could resolve to a
     # generation the helper cannot run on.
-    readme = (tmp_path / "README.md").read_text(encoding="utf-8")
-    assert f"pip install '{_runtime_helper.FASTMCP_REQUIREMENT}'" in readme
-    assert "pip install fastmcp\n" not in readme
+    requirements = (tmp_path / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    assert _runtime_helper.FASTMCP_REQUIREMENT in requirements
+    assert "fastmcp" not in requirements
 
 
 def test_helper_fastmcp_requirement_matches_the_package_extras() -> None:

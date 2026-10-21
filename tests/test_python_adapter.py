@@ -20,11 +20,11 @@ from pathlib import Path
 import pytest
 
 from rote.adapters import get_adapter
+from rote.adapters._py_common import requirements_txt
 from rote.adapters.python import (
     PythonAdapter,
     PythonAdapterConfig,
     emit_main,
-    emit_requirements,
 )
 from rote.ir import Node, NodeKind, Pipeline
 from tests._helpers import mini_pipeline, payload_dict_keys
@@ -365,16 +365,18 @@ def test_node_without_inputs_gets_empty_payload() -> None:
 
 
 def test_requirements_lists_only_needed_sdks(emit_result: dict[str, Path]) -> None:
-    """One anthropic judge → pydantic + anthropic, nothing else."""
+    """One anthropic judge and an agent loop: pydantic + anthropic, and fastmcp
+    because the loop's MCP helper ships in extracted/ (the old file omitted it,
+    so an app installed from it died on its first MCP call)."""
     lines = [
         line
         for line in emit_result["requirements"].read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
-    assert lines == ["pydantic>=2.7", "anthropic>=1.15"]
+    assert lines == ["pydantic>=2.7", "anthropic>=1.15", "fastmcp>=4.1.1,<5"]
 
 
-def test_requirements_includes_openai_when_needed() -> None:
+def test_requirements_includes_openai_when_needed(tmp_path: Path) -> None:
     judge = Node(
         id="grade_essay",
         kind=NodeKind.LLM_JUDGE,
@@ -395,14 +397,14 @@ def test_requirements_includes_openai_when_needed() -> None:
             "client": "openai",
         },
     )
-    reqs = emit_requirements(mini_pipeline(judge))
+    reqs = requirements_txt(mini_pipeline(judge), tmp_path, generated_by="t")
     assert "openai>=" in reqs
     assert "anthropic" not in reqs
 
 
-def test_requirements_empty_with_comment_when_no_judges() -> None:
+def test_requirements_empty_with_comment_when_no_judges(tmp_path: Path) -> None:
     node = Node(id="only", kind=NodeKind.PURE_FUNCTION, description="x", impl="x.py:y")
-    reqs = emit_requirements(mini_pipeline(node))
+    reqs = requirements_txt(mini_pipeline(node), tmp_path, generated_by="t")
     assert reqs.strip(), "the no-judge requirements file still carries an explanation"
     assert all(line.startswith("#") for line in reqs.splitlines() if line)
 

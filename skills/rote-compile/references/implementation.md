@@ -222,9 +222,11 @@ this compile targets `--backend api`. Now you are expected to write
    plausible-looking value, NEVER default to a dummy that would send a
    request with fake auth.
 4. **Minimal dependencies.** Prefer the vendor's official Python SDK
-   when one exists and is current; otherwise plain `httpx`. Every
-   third-party dependency you introduce must be listed in the module
-   docstring so the adapter's requirements emission can pick it up.
+   when one exists and is current; otherwise plain `httpx`. rote reads
+   your imports to build the app's `requirements.txt` and to install
+   what verification runs against, from a fixed map of vendor packages.
+   An import outside that map fails verification, so import the SDK
+   or `httpx`, nothing else third party.
 5. **Honest error surfaces.** No silent fallbacks, no bare excepts, no
    returning empty results on failure. A 4xx/5xx should raise with the
    response body attached — errors are how the durable runtime knows

@@ -10,7 +10,7 @@
     "extracted/report.py": "5e2092f143c1a7e4182e0298fd5d454d83cb84822019c800a250579acc658bd9",
     "extracted/taxonomy.py": "b69d4ce23403f89ffc7dec921ed0ac7a375a851ad45bdb425d3fde277c632c59",
     "extracted/zoominfo.py": "fa1c524a3c98440dde9fb4c8861e2400b9d9919221f9cc21d48917e0f8ca74b5",
-    "requirements.txt": "7a557419e908b8685e9f5de692725d4b92390aa97840635b80e3b4ee8170e28c",
+    "requirements.txt": "5424752144348ce2a60beecf4c74fd419f4965b42842b21621e0ed714071a2dd",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
     "signatures/_rote_inference.py": "5c5c46de5d9ed60bb1e4cf16eeb2308e58104b9072838bd6f9db97e8a3fc9e3f",
     "signatures/personalize_email.py": "e6f6a9d698e015900e628a2bf1d917461b69d587840112cc9cd2b54828736300",

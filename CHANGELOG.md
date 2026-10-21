@@ -24,6 +24,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   the compile fails and says so. `rote bench`'s `cost$` now includes
   System-1's decision calls.
 
+### Fixed
+
+- **Emitted Python apps list what their code imports.** The dbos app now
+  emits a `requirements.txt` (it had none, and its README installed `dbos`
+  alone), and both dbos and python add the vendor SDKs that `extracted/`
+  imports, from the same import map verification installs from. An import
+  rote cannot name is a comment naming the file, never a guessed package.
+  The python app's file also lists `fastmcp` when the MCP helper ships;
+  it used to omit it.
+
 ### Changed
 
 - **System-1 writes its text as parallel calls.** With the `claude` and `api`
