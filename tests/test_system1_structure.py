@@ -1072,3 +1072,24 @@ def test_a_structure_note_gets_its_own_open_question_title(skill: Any, tmp_path:
     titles = [title for title, _ in report_extras(work, plan).questions]
     assert "Structure pass changed a decision: send_digest" in titles
     assert not any(t.endswith(": pipeline") for t in titles)
+
+
+def test_two_pure_functions_for_one_step_are_one_node(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = good_answer()
+    answer["nodes"][2]["quote"] = "Send the digest"
+    answer["nodes"].append(node("format_digest", 3, "pure_function", reads=["render_digest"]))
+    assert structure.check(answer, skill, SKILL, declared) == [
+        "node render_digest: only format_digest reads it, and both are pure_functions for "
+        "the same step: make them one node"
+    ]
+    # Another heading, a second reader, or a run output: not one step.
+    other = copy.deepcopy(answer)
+    other["nodes"][-1]["section"] = 2
+    other["nodes"][-1]["quote"] = "Write a three-line summary"
+    assert structure.check(other, skill, SKILL, declared) == []
+    kept = copy.deepcopy(answer)
+    kept["run_outputs"] = ["digest"]
+    kept["nodes"][2]["outputs"] = ["digest"]
+    kept["nodes"][-1]["outputs"] = ["digest"]
+    assert structure.check(kept, skill, SKILL, declared) == []

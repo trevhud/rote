@@ -207,7 +207,12 @@ Per node:
   unless the step both calls a system and works on the result (then the
   call, then the work), or the RUBRIC requires a split. Several checks or
   rules applied to the same data in one step are one node. Text that is only
-  advice, context or a list of tools becomes no node.
+  advice, context or a list of tools becomes no node. Also one node, not
+  several: a sub-heading that describes what a step produces (a report's
+  tabs, a table's columns) is part of that step; consecutive actions on one
+  screen that together do one thing (open a menu, click an item, wait for
+  its confirmation) are one call; and a step the skill does per item inside
+  a loop is in_loop of that loop, never a top-level node.
 - kind: one of the five kinds in the RUBRIC. A call to an outside system is a
   bare external_call; filtering, matching or reshaping its result is its own
   pure_function (fixed logic) or llm_judge (judgment). A person approving,
@@ -566,6 +571,43 @@ def check(
     if sample is not None and sample.gates:
         out += _check_gates(answer, sample)
     out += _check_run_outputs(answer)
+    out += _check_split_steps(answer)
+    return out
+
+
+def _check_split_steps(answer: dict[str, Any]) -> list[str]:
+    """Two pure_functions that are one step split in two.
+
+    The first cites the same heading as the second, the second is the only
+    node that reads it, and neither is a run output. Code that only one
+    other piece of code under the same heading consumes is that piece's own
+    work: splitting it adds a node, a module and a test, and a seam where
+    the data shape can disagree. Decided from the data flow, not wording."""
+    nodes = [n for n in answer.get("nodes") or [] if not n.get("in_loop")]
+    by_id = {str(n.get("id")): n for n in nodes}
+    readers: dict[str, list[str]] = {}
+    for n in nodes:
+        for r in n.get("reads") or []:
+            readers.setdefault(str(r), []).append(str(n.get("id")))
+    run_outputs = {str(k) for k in answer.get("run_outputs") or []}
+    out = []
+    for nid, first in by_id.items():
+        users = readers.get(nid, [])
+        if first.get("kind") != "pure_function" or len(users) != 1:
+            continue
+        second = by_id.get(users[0])
+        if second is None or second.get("kind") != "pure_function":
+            continue
+        if first.get("section") != second.get("section") or first.get("fan_out_over"):
+            continue
+        if second.get("fan_out_over") == nid:
+            continue  # a list builder for a fan is its own step
+        if run_outputs & {str(k) for k in first.get("outputs") or []}:
+            continue
+        out.append(
+            f"node {nid}: only {users[0]} reads it, and both are pure_functions for the same "
+            "step: make them one node"
+        )
     return out
 
 
