@@ -363,6 +363,12 @@ class Context:
         the interface describes (one run's value).
         """
         ref = parse_input_ref(node.inputs[param])
+        if ref.node_id is not None and self.unverified_tool_result(ref.node_id):
+            # The interface only guessed this MCP result's shape. A judge's
+            # typed input would refuse every other shape: a live ops-report
+            # judge was typed to {threads: [...]} and failed on the bare list
+            # Gmail's search returns, on every run. Untyped, it takes either.
+            return {}
         schema = self.input_schema() if ref.node_id is None else self.output_schema(ref.node_id)
         if ref.node_id is not None and ref.field is None and self.node(ref.node_id).fan_out:
             schema = {"type": "array", "items": schema}
