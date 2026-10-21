@@ -184,6 +184,23 @@ answers it. Before that, a module after the gate (expense-audit's
   wrapping it, or JSON text, and to test each. A recorded baseline result
   replaces the guess with a schema inferred from it.
 
+## The return value is a field list, not schema text
+
+The interface used to ask for each `output_schema` as JSON text, because
+strict structured outputs cannot lock an open-ended schema. That was the
+second most common compile failure on 2026-10-20: Sonnet 4.6 closed a
+nested schema with one `}` too many and repeated it through every re-ask
+(ops-report, the MCP demo). The answer is now `output_fields`, a flat list
+of fields (`path`, `type`, `items`, `required`, `enum`, `description`)
+that the answer schema locks completely, and `fields_to_schema` writes the
+JSON Schema in code. Paths use `.` for an object's field and `[]` for an
+array's items, and `""` is a value that is not an object. A fault in the
+list (a missing parent, a path given twice) is named for the re-ask.
+
+Measured at 4667d211, API lane, 2 compiles each: expense-audit 0.955 and
+0.992, ops-report 0.936 and 0.917, all verified, $0.37 to $0.47 each. None
+of the 36 interface entries needed a re-ask.
+
 ## Cost and caching
 
 Every call shares one system prompt, byte for byte: `GENERATE.md`, the
@@ -194,8 +211,9 @@ rule tables and the skill. Two things make the prompt cache serve it:
   schemas share nothing. Measured: seven pieces with their own schema each
   wrote about 9k cache tokens and read none. `ANSWER_SCHEMA` has every
   field required, a call fills the fields its task names, and code checks
-  it did. `output_schema` travels as JSON text, because the API's
-  structured outputs require every object to close its properties.
+  it did. A return value travels as a field list that code turns into a
+  schema, because the API's structured outputs require every object to
+  close its properties.
 - **The first call runs alone** until it finishes or 4 s pass, since a
   cache entry is readable only once its request's response has started.
 
