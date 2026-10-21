@@ -81,26 +81,6 @@ def isolated_env(state_dir: Path) -> dict[str, str]:
     return env
 
 
-#: The sample input an example ships beside its skill (examples/<name>/).
-SAMPLE_INPUT_FILENAME = "sample.json"
-
-
-def sample_input(examples: Path, skill: str) -> Path | None:
-    """The example's sample run, which every compile is grounded in.
-
-    ``sample.json`` is the ``{"input", "signals"}`` envelope: the skill's
-    input and the answer a person gives at each gate. It has the same keys
-    as the fidelity cases and none of their values (different people, ids
-    and amounts; pinned by a test), the analog of the sample a real user
-    supplies: the keys are the contract, the values are test data. It sits
-    beside the skill, not in it, so the bench passes it with
-    ``--sample-input``. ``input.json``, ``expected/`` and ``fidelity/``
-    stay out of the compile, since the cases are built from them.
-    """
-    path = examples / skill / SAMPLE_INPUT_FILENAME
-    return path if path.is_file() else None
-
-
 #: The per-job MCP registry the compile reads, beside the job's output.
 TOOL_REGISTRY_RELPATH = "bench-tool-servers/mcp.json"
 
@@ -150,9 +130,14 @@ def tool_servers(example: Path, job_dir: Path, env: dict[str, str]) -> Iterator[
         yield {**env, "ROTE_MCP_CONFIG": str(registry)}
 
 
-def compile_argv(
-    skill_copy: Path, out_dir: Path, args: argparse.Namespace, sample: Path | None = None
-) -> list[str]:
+def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> list[str]:
+    """The plain ``rote compile`` a user runs, on the job's copy of the skill.
+
+    No ``--sample-input``: an example bundles its sample run in the skill
+    dir (``skill/sample-input.json``), so the copy carries it and the
+    compile finds it the way it finds a user's
+    (:data:`rote.compiler.grounding.SAMPLE_INPUT_NAMES`).
+    """
     argv = [
         sys.executable,
         "-m",
@@ -170,8 +155,6 @@ def compile_argv(
     ]
     if args.model:
         argv += ["--model", args.model]
-    if sample is not None:
-        argv += ["--sample-input", str(sample)]
     if args.agent:
         argv += ["--agent", args.agent]
     argv += args.compile_flag
@@ -239,7 +222,7 @@ async def _run_job(
         job.out_dir.mkdir(parents=True)
         skill_copy = job.out_dir / "skill-src" / job.skill
         shutil.copytree(skill_dir, skill_copy)
-        argv = compile_argv(skill_copy, job.out_dir, args, sample_input(args.examples, job.skill))
+        argv = compile_argv(skill_copy, job.out_dir, args)
         print(f"rote bench: {job.label}: compiling -> {job.out_dir}", file=sys.stderr)
         started = time.monotonic()
         with (

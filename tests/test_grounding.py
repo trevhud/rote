@@ -1124,20 +1124,31 @@ def test_each_module_imports_first_in_a_fresh_interpreter(module: str) -> None:
 # ───────── the bench ─────────
 
 
-def test_the_bench_grounds_each_compile_in_the_examples_sample() -> None:
+@pytest.mark.parametrize("example", ["expense-audit", "ops-report"])
+def test_a_plain_compile_of_an_example_finds_its_sample(example: str) -> None:
+    """`rote compile examples/<name>/skill` with no flags is grounded in the
+    example's sample run, and the bench compiles exactly that: one file,
+    inside the skill dir, read by the same lookup a user's skill gets."""
     import argparse
 
-    from rote.bench.runner import compile_argv, sample_input
+    from rote.bench.runner import compile_argv
 
+    skill = REPO / "examples" / example / "skill"
+    found = find_sample(skill)
+    assert found is not None
+    assert found.source == str(skill / "sample-input.json")
+    # One copy: no second sample beside the skill for the bench to pass.
+    assert not (skill.parent / "sample.json").exists()
     args = argparse.Namespace(runtime="dbos", model=None, agent=None, compile_flag=[])
-    sample = sample_input(REPO / "examples", "expense-audit")
-    # sample.json, never input.json: the fidelity cases are built from input.json.
-    assert sample == EXPENSE / "sample.json"
-    argv = compile_argv(Path("skill"), Path("out"), args, sample)
-    assert argv[argv.index("--sample-input") + 1] == str(EXPENSE / "sample.json")
-    # invoice-push ships no sample, so its compile is not given one.
-    assert sample_input(REPO / "examples", "invoice-push") is None
-    assert "--sample-input" not in compile_argv(Path("skill"), Path("out"), args, None)
+    assert "--sample-input" not in compile_argv(skill, Path("out"), args)
+
+
+def test_every_example_with_fidelity_cases_bundles_a_sample() -> None:
+    """A fidelity case run on a compile that invented its input contract
+    fails every case, so an example the bench scores must ship a sample."""
+    for cases in sorted((REPO / "examples").glob("**/fidelity/cases.yaml")):
+        skill = cases.parent.parent / "skill"
+        assert find_sample(skill) is not None, f"{skill} has fidelity cases and no sample"
 
 
 def _leaves(value: object) -> set[object]:
@@ -1185,7 +1196,7 @@ _SHARED_VOCABULARY = {
 def test_the_bench_sample_shares_the_cases_keys_and_none_of_their_values(example: str) -> None:
     from rote.bench.fidelity import load_cases
 
-    sample = load_sample(REPO / "examples" / example / "sample.json")
+    sample = load_sample(REPO / "examples" / example / "skill" / "sample-input.json")
     casefile = load_cases(REPO / "examples" / example)
     cases = casefile.cases
     case_values: set[object] = set()
@@ -1295,7 +1306,7 @@ def test_system1_takes_its_input_schema_and_gate_keys_from_the_sample(tmp_path: 
     from rote.compiler import system1
     from rote.ir import NodeKind
 
-    sample = load_sample(EXPENSE / "sample.json")
+    sample = load_sample(EXPENSE / "skill" / "sample-input.json")
     (tmp_path / "with").mkdir()
     (tmp_path / "without").mkdir()
     system1.prepare(EXPENSE / "skill", tmp_path / "with", sample=sample)

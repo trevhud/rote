@@ -31,7 +31,10 @@ that is 100% arithmetic.
 ```
 examples/ops-report/
 ├── README.md              # this file
-├── skill/SKILL.md         # input: the source skill
+├── skill/
+│   ├── SKILL.md           # input: the source skill
+│   └── sample-input.json  # the sample run `rote compile` grounds its contracts in
+├── fidelity/              # the bench's fidelity cases and recorded skill runs
 └── expected/pipeline.yaml # the compiled IR (regression baseline)
 ```
 
