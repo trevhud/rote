@@ -1267,6 +1267,10 @@ async function writeRefusal(
         }
         cursor = page.nextCursor;
     } while (cursor);
+    return mayWrite(server, url, tool, registered);
+}
+
+function mayWrite(server: string, url: string, tool: string, registered: string | undefined) {
     const why =
         registered !== undefined
             ? `${server} is registered read-only at ${registered}, but this run calls it at ` +
@@ -1280,14 +1284,34 @@ async function writeRefusal(
 }
 
 /**
- * An agent loop's MCP tools are not held to read-only calls yet, so a
- * read-only run refuses to start one rather than let it write.
+ * Why a read-only run withholds a listed tool from an agent loop, or null.
+ * The loop calls its tools through the agent's own runner, so the run
+ * holds it to read-only calls by what it hands over, by writeRefusal's
+ * rule: the server marks the tool readOnlyHint, or was registered
+ * read-only at the endpoint being called. The same rule as the Python
+ * helper's agent_tool_refusals.
  */
-function refuseAgentToolsWhenReadOnly(readOnly: unknown, allowed: string[]): void {
-    if (readOnly === "1" && allowed.length > 0) {
+function agentToolRefusal(
+    server: string,
+    url: string,
+    spec: { name: string; readOnlyHint?: boolean },
+    readOnly: unknown,
+    declaredServers: unknown,
+): string | null {
+    if (readOnly !== "1") return null;
+    const declared = JSON.parse(String(declaredServers || "{}")) as Record<string, string>;
+    const registered = declared[server];
+    if (registered !== undefined && sameServerUrl(registered, url)) return null;
+    if (spec.readOnlyHint === true) return null;
+    return mayWrite(server, url, spec.name, registered);
+}
+
+/** A read-only loop left with none of its MCP tools does not start. */
+function refuseWhenEveryToolWithheld(bound: number, withheld: Map<string, string>): void {
+    if (bound === 0 && withheld.size > 0) {
         throw new RoteMcpConfigError(
-            `this run is read-only, and an agent loop's MCP tools (${allowed.join(", ")}) ` +
-                "cannot be held to read-only calls yet. Pass --allow-writes to run it.",
+            "this agent loop has no MCP tool left to call, so it does not start. " +
+                [...withheld.values()].join(" "),
         );
     }
 }
@@ -1660,6 +1684,8 @@ export interface McpToolSpec {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+    /** The server's annotation: true only when it marks the tool read-only. */
+    readOnlyHint?: boolean;
 }
 
 /**
@@ -1683,6 +1709,7 @@ export async function listMcpTools(
                 type: "object",
                 properties: {},
             }) as Record<string, unknown>,
+            readOnlyHint: tool.annotations?.readOnlyHint === true,
         }));
     });
 }
@@ -1738,9 +1765,9 @@ export async function bindAgentTools(
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
-    refuseAgentToolsWhenReadOnly(process.env.ROTE_MCP_READ_ONLY, allowed);
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
+    const withheld = new Map<string, string>();
     const failures: unknown[] = [];
 
     for (const server of agentServerNames(declaredServers)) {
@@ -1762,6 +1789,17 @@ export async function bindAgentTools(
             // first-wins fallback — there is nothing better to go on.
             const pinned = toolServers[spec.name];
             if (pinned !== undefined && pinned !== server) continue;
+            const refusal = agentToolRefusal(
+                server,
+                resolveUrl(server, url),
+                spec,
+                process.env.ROTE_MCP_READ_ONLY,
+                process.env.ROTE_MCP_READ_ONLY_SERVERS,
+            );
+            if (refusal !== null) {
+                withheld.set(spec.name, refusal);
+                continue;
+            }
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,
@@ -1771,7 +1809,8 @@ export async function bindAgentTools(
         }
     }
 
-    const missing = allowed.filter((name) => !bound.has(name));
+    refuseWhenEveryToolWithheld(bound.size, withheld);
+    const missing = allowed.filter((name) => !bound.has(name) && !withheld.has(name));
     if (missing.length > 0) {
         const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
         if (authFailure) throw authFailure;
@@ -2191,6 +2230,8 @@ export interface McpToolSpec {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+    /** The server's annotation: true only when it marks the tool read-only. */
+    readOnlyHint?: boolean;
 }
 
 /**
@@ -2215,6 +2256,7 @@ export async function listMcpTools(
                 type: "object",
                 properties: {},
             }) as Record<string, unknown>,
+            readOnlyHint: tool.annotations?.readOnlyHint === true,
         }));
     });
 }
@@ -2263,9 +2305,9 @@ export async function bindAgentTools(
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
 ): Promise<BoundMcpTool[]> {
-    refuseAgentToolsWhenReadOnly(env.ROTE_MCP_READ_ONLY, allowed);
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
+    const withheld = new Map<string, string>();
     const failures: unknown[] = [];
 
     for (const server of agentServerNames(env, declaredServers)) {
@@ -2283,6 +2325,17 @@ export async function bindAgentTools(
             // Node helper's twin for why first-wins is not good enough.
             const pinned = toolServers[spec.name];
             if (pinned !== undefined && pinned !== server) continue;
+            const refusal = agentToolRefusal(
+                server,
+                resolveUrl(env, server, url),
+                spec,
+                env.ROTE_MCP_READ_ONLY,
+                env.ROTE_MCP_READ_ONLY_SERVERS,
+            );
+            if (refusal !== null) {
+                withheld.set(spec.name, refusal);
+                continue;
+            }
             bound.set(spec.name, {
                 name: spec.name,
                 description: spec.description,
@@ -2292,7 +2345,8 @@ export async function bindAgentTools(
         }
     }
 
-    const missing = allowed.filter((name) => !bound.has(name));
+    refuseWhenEveryToolWithheld(bound.size, withheld);
+    const missing = allowed.filter((name) => !bound.has(name) && !withheld.has(name));
     if (missing.length > 0) {
         const authFailure = failures.find((err) => isRoteMcpAuthNeeded(err));
         if (authFailure) throw authFailure;
@@ -2437,6 +2491,8 @@ export interface McpToolSpec {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+    /** The server's annotation: true only when it marks the tool read-only. */
+    readOnlyHint?: boolean;
 }
 
 /** ROTE_MCP_SIG authenticates tenant + pipeline; run_id is attribution. */

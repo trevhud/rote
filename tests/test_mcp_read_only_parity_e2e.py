@@ -5,8 +5,10 @@ Python, Node and Workers helpers then call a tool only when the server
 marks it ``readOnlyHint`` or the user registered the server read-only
 (``ROTE_MCP_READ_ONLY_SERVERS``), the same rule a skill run's tool
 allowlist applies, and refuse anything else before it is called. Each
-helper calls the same real server here, and an agent loop's tool binding
-refuses to start in a read-only run.
+helper calls the same real server here. An agent loop calls its tools
+through its own runner, so its binding is filtered by the same rule: it is
+handed only the tools that pass, and a loop none of whose tools pass does
+not start.
 
 Slow: a real fastmcp HTTP server, npm install, tsc, esbuild and node.
 """
@@ -59,8 +61,9 @@ mcp.run(transport="http", host="127.0.0.1", port=int(sys.argv[1]))
 """
 
 #: Each case: (environment, the outcome of lookup, of publish). An outcome
-#: is the tool's value or "refused" (the read-only refusal), and the
-#: agent-loop binding is "refused" whenever the run is read-only.
+#: is the tool's value or "refused" (the read-only refusal). ``agent`` is
+#: what a loop declaring both tools is handed, and ``agent_writes_only``
+#: what a loop declaring only publish gets: its tools, or "refused".
 #: ``__URL__`` is replaced by the server's real endpoint. A declaration for
 #: another endpoint under the same name covers nothing: the name can be
 #: pointed anywhere with ROTE_MCP_<SERVER>_URL, the trust is in the URL.
@@ -77,14 +80,30 @@ CASES: dict[str, dict[str, str]] = {
     },
 }
 EXPECTED = {
-    "writes_allowed": {"lookup": {"found": "x"}, "publish": {"published": "x"}, "agent": "bound"},
-    "read_only": {"lookup": {"found": "x"}, "publish": "refused", "agent": "refused"},
+    "writes_allowed": {
+        "lookup": {"found": "x"},
+        "publish": {"published": "x"},
+        "agent": ["lookup", "publish"],
+        "agent_writes_only": ["publish"],
+    },
+    "read_only": {
+        "lookup": {"found": "x"},
+        "publish": "refused",
+        "agent": ["lookup"],
+        "agent_writes_only": "refused",
+    },
     "server_declared": {
         "lookup": {"found": "x"},
         "publish": {"published": "x"},
-        "agent": "refused",
+        "agent": ["lookup", "publish"],
+        "agent_writes_only": ["publish"],
     },
-    "declared_elsewhere": {"lookup": {"found": "x"}, "publish": "refused", "agent": "refused"},
+    "declared_elsewhere": {
+        "lookup": {"found": "x"},
+        "publish": "refused",
+        "agent": ["lookup"],
+        "agent_writes_only": "refused",
+    },
 }
 
 
@@ -103,12 +122,17 @@ _TS_BODY = """\
             out[tool] = "refused";
         }
     }
-    try {
-        await bind();
-        out.agent = "bound";
-    } catch (err) {
-        if (!isRoteMcpConfigError(err)) throw err;
-        out.agent = "refused";
+    for (const [key, tools] of [
+        ["agent", ["lookup", "publish"]],
+        ["agent_writes_only", ["publish"]],
+    ] as const) {
+        try {
+            out[key] = (await bind([...tools])).map((t) => t.name).sort();
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!isRoteMcpConfigError(err) || !message.includes("may write")) throw err;
+            out[key] = "refused";
+        }
     }
     console.log(JSON.stringify(out));
 """
@@ -121,7 +145,8 @@ async function main(): Promise<void> {
     const url = process.argv[2];
     const call = (tool: string) =>
         callMcpTool("ro", url, tool, tool === "lookup" ? { q: "x" } : { text: "x" });
-    const bind = () => bindAgentTools(["lookup"], ["ro"], { ro: url }, { lookup: "ro" });
+    const bind = (tools: string[]) =>
+        bindAgentTools(tools, ["ro"], { ro: url }, { lookup: "ro", publish: "ro" });
 """
     + _TS_BODY
     + "}\n\nmain();\n"
@@ -147,8 +172,8 @@ async function main(): Promise<void> {
     } as unknown as Parameters<typeof callMcpTool>[0];
     const call = (tool: string) =>
         callMcpTool(env, "ro", url, tool, tool === "lookup" ? { q: "x" } : { text: "x" });
-    const bind = () =>
-        bindAgentTools(env, ["lookup"], ["ro"], { ro: url }, { lookup: "ro" });
+    const bind = (tools: string[]) =>
+        bindAgentTools(env, tools, ["ro"], { ro: url }, { lookup: "ro", publish: "ro" });
 """
     + _TS_BODY
     + "}\n\nmain();\n"
@@ -214,11 +239,14 @@ def _python(url: str, env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> d
     # which imports the MCP helper as the emitted extracted._rote_mcp.
     sys.modules.setdefault("extracted", type(sys)("extracted"))
     sys.modules["extracted._rote_mcp"] = helper
-    try:
-        inference._mcp_config_for(["lookup"], {"lookup": "ro"})
-        out["agent"] = "bound"
-    except helper.RoteMcpConfigError:
-        out["agent"] = "refused"
+    pins = {"lookup": "ro", "publish": "ro"}
+    for key, tools in (("agent", ["lookup", "publish"]), ("agent_writes_only", ["publish"])):
+        try:
+            _servers, allowed, _withheld = inference._mcp_config_for(tools, pins)
+            out[key] = sorted(a.split("__", 2)[2] for a in allowed)
+        except helper.RoteMcpConfigError as e:
+            assert "may write" in str(e)
+            out[key] = "refused"
     return out
 
 

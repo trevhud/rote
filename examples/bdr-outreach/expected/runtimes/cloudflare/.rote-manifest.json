@@ -5,7 +5,7 @@
     "README.md": "93168a30a0dafca306569c71251701ba5a0baa8cabd21371eacc2a22c4c01f9a",
     "manifest.json": "470525f11ef70ad8986c144d30fdc5cd5007436342ec039c9e4efcd1cde5f837",
     "package.json": "143f4a6d370cc336492e72c9fde004f5d4d94887fb1b6658d7bb278c5f0f0842",
-    "src/extracted/_roteMcp.ts": "8191aae2f216a8b01a0f40791057efe6457a39dabc2c6b7a2b9ef4d932de7ebe",
+    "src/extracted/_roteMcp.ts": "88a1572d078260323fd63426acfe8d30fdd2207052b8a516e2f37030751f3b34",
     "src/extracted/create_sales_template.ts": "3e80ba60e0533e967cecc13e37166d63bcbea1d2c3dd97ae2449df6971478047",
     "src/extracted/enrich_contact_batch.ts": "1bd6cf4522a3ec1970185863a0d0ca7d5a8d144b6cfbaaf3387e89bd6e7539d5",
     "src/extracted/exclusion_check_dnc.ts": "929795b75b11568568638c10f9b2db0cf25d4b134a53555d18d490c8f142f995",
