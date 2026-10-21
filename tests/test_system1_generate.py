@@ -1030,3 +1030,34 @@ async def test_repair_sends_a_binding_finding_to_the_structure_pass(tmp_path: Pa
     verification, rounds = await writer.repair(lambda _: next(verdicts))
     assert calls == [{mcp_node: ["missing required argument(s): query"]}]
     assert verification.ok and rounds == 1
+
+
+def test_a_guessed_mcp_result_reaches_its_reader_untyped(tmp_path: Path) -> None:
+    """A judge typed to the interface's guess failed every live run on the real shape."""
+    ctx, _ = _context(tmp_path, "ops-report")
+    mcp = next(n for n in ctx.pipeline.nodes if n.mcp is not None)
+    reader, param = next(
+        (n, p)
+        for n in ctx.pipeline.nodes
+        for p, ref in (n.inputs or {}).items()
+        if ref == f"{mcp.id}.output"
+    )
+    ctx.interface[mcp.id] = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"threads": {"type": "array"}}},
+    }
+    assert ctx.unverified_tool_result(mcp.id)
+    assert ctx.param_schema(reader, param) == {}
+    assert ctx.judge_input_schema(reader)["properties"][param] == {}
+    # A non-MCP producer's interface still types its reader.
+    plain = next(
+        (n, p)
+        for n in ctx.pipeline.nodes
+        for p, ref in (n.inputs or {}).items()
+        if (src := ref.split(".", 1)[0]) != "pipeline" and ctx.node(src).mcp is None
+    )
+    ctx.interface[plain[0].inputs[plain[1]].split(".", 1)[0]] = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"n": {"type": "integer"}}},
+    }
+    assert ctx.param_schema(*plain) != {}
