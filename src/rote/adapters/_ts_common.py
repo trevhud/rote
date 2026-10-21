@@ -256,6 +256,93 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 """
 
 
+#: The evidence check for a judge whose skill step asks it to quote its
+#: evidence: the TypeScript twin of rote.inference._runtime_helper's
+#: quote_problems / quote_retry_note, with the same pattern and messages.
+#: tests/test_judge_evidence.py runs both on one table of cases.
+QUOTE_HELPER_TS = """\
+const QUOTE_RE = /"([^"\\n]{4,}?)"|\u201c([^\u201d\\n]{4,}?)\u201d/g;
+
+function strings(value: unknown): string[] {
+    if (value === null || value === undefined) return [];
+    if (Array.isArray(value)) return value.flatMap(strings);
+    if (typeof value === "object") return Object.values(value as object).flatMap(strings);
+    return [String(value)];
+}
+
+function squash(text: string): string {
+    return text.split(/\\s+/).filter((w) => w.length > 0).join(" ");
+}
+
+export function quoteProblems(text: unknown, inputs: unknown): string[] {
+    const spans = [...String(text ?? "").matchAll(QUOTE_RE)].map((m) => m[1] ?? m[2]);
+    if (spans.length === 0) {
+        return [
+            "it quotes nothing from its inputs: quote the evidence it rests on in " +
+                "double quotes, exactly as the inputs write it",
+        ];
+    }
+    const haystack = strings(inputs).map(squash).join("\\n");
+    return spans
+        .filter((span) => !haystack.includes(squash(span)))
+        .map((span) => `the quote ${JSON.stringify(span)} is not in its inputs`);
+}
+
+export function quoteRetryNote(problems: string[]): string {
+    return (
+        "\\n\\nYour previous answer failed the evidence check: " +
+        problems.join("; ") +
+        ". Answer again, quoting only text that appears in the inputs above, exactly."
+    );
+}
+"""
+
+
+def _with_evidence_check(
+    module: str, *, node_id: str, fn_name: str, pascal: str, field: str
+) -> str:
+    """``module`` with its judge call re-asked once when its quotes are not in its inputs.
+
+    The vendor call becomes ``<fn>Once(rawInput, env, prompt)``; the
+    exported ``<fn>`` interpolates the prompt, calls it, checks
+    ``field`` with :data:`QUOTE_HELPER_TS`, re-asks once naming the failing
+    quotes, and throws if they fail again. One wrapper for every vendor."""
+    interpolated = "interpolate(PROMPT, input as Record<string, unknown>)"
+    head = f"export async function {fn_name}(\n    rawInput: unknown,\n"
+    if module.count(head) != 1 or interpolated not in module:
+        raise ValueError(f"judge {node_id}: cannot add the evidence check to its module")
+    module = module.replace(
+        head, f"async function {fn_name}Once(\n    rawInput: unknown,\n    prompt: string,\n"
+    ).replace(interpolated, "prompt")
+    error = (
+        f"judge {node_id}: its quoted evidence is not in its inputs after a re-ask: "
+        '${again.join("; ")}'
+    )
+    wrapper = [
+        "",
+        QUOTE_HELPER_TS.rstrip("\n"),
+        "",
+        f"export async function {fn_name}(",
+        "    rawInput: unknown,",
+        f"    env: Parameters<typeof {fn_name}Once>[2],",
+        f"): Promise<{pascal}Output> {{",
+        f"    const input = {pascal}Input.parse(rawInput);",
+        f"    const prompt = {interpolated};",
+        f"    const field = {json.dumps(field)};",
+        f"    const first = await {fn_name}Once(rawInput, prompt, env);",
+        "    const problems = quoteProblems((first as Record<string, unknown>)[field], input);",
+        "    if (problems.length === 0) return first;",
+        "    const retry = prompt + quoteRetryNote(problems);",
+        f"    const second = await {fn_name}Once(rawInput, retry, env);",
+        "    const again = quoteProblems((second as Record<string, unknown>)[field], input);",
+        "    if (again.length === 0) return second;",
+        f"    throw new Error(`{error}`);",
+        "}",
+        "",
+    ]
+    return module.rstrip("\n") + "\n" + "\n".join(wrapper)
+
+
 def emit_signature_anthropic(
     *,
     node_id: str,
@@ -952,7 +1039,7 @@ def emit_ts_signature_module(
         model = spec.model or workers_ai_default_model
     else:  # pragma: no cover — LLMSignature validates the client field
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
-    return emitter(
+    module = emitter(
         node_id=node.id,
         fn_name=_to_camel_case(node.id),
         pascal=_to_pascal_case(node.id),
@@ -965,6 +1052,15 @@ def emit_ts_signature_module(
         base_url=spec.base_url,
         temperature=spec.temperature,
         generated_by=generated_by,
+    )
+    if spec.evidence_field is None:
+        return module
+    return _with_evidence_check(
+        module,
+        node_id=node.id,
+        fn_name=_to_camel_case(node.id),
+        pascal=_to_pascal_case(node.id),
+        field=spec.evidence_field,
     )
 
 

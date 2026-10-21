@@ -277,6 +277,35 @@ class LLMSignature(BaseModel):
         le=2.0,
         description="Sampling temperature; None = vendor default.",
     )
+    evidence_field: str | None = Field(
+        default=None,
+        description=(
+            "An output field (a string) whose quoted spans must each appear "
+            "verbatim in the judge's inputs, for a step whose skill text asks "
+            "the judge to quote its evidence. The emitted judge checks every "
+            "quote, re-asks once naming the ones it could not find, then raises. "
+            "None = no check."
+        ),
+    )
+
+    @field_validator("evidence_field")
+    @classmethod
+    def _validate_evidence_field(cls, v: str | None) -> str | None:
+        """Spliced into emitted source as a key name: an identifier only."""
+        if v is not None and not _IDENTIFIER_RE.fullmatch(v):
+            raise ValueError(f"evidence_field {v!r} must be an identifier")
+        return v
+
+    @model_validator(mode="after")
+    def _evidence_field_is_a_string_output(self) -> LLMSignature:
+        if self.evidence_field is None:
+            return self
+        prop = (self.output_schema.get("properties") or {}).get(self.evidence_field)
+        if not isinstance(prop, dict) or prop.get("type") != "string":
+            raise ValueError(
+                f"evidence_field {self.evidence_field!r} must be a string property of output_schema"
+            )
+        return self
 
     @field_validator("client")
     @classmethod

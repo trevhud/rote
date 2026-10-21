@@ -1050,6 +1050,14 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
     sampling_arg = (
         "            sampling=_sampling_kwargs(),\n" if spec.temperature is not None else ""
     )
+    # The step asks the judge to quote its evidence: the helper checks each
+    # quote against these inputs, re-asks once, then raises.
+    evidence_arg = (
+        f"            evidence_field={json.dumps(spec.evidence_field)},\n"
+        "            inputs=inputs.model_dump(by_alias=True),\n"
+        if spec.evidence_field is not None
+        else ""
+    )
     return (
         f"class {pascal}:\n"
         f'    """Typed LLM judge for {node.id} ({kind} structured output)."""\n'
@@ -1067,6 +1075,7 @@ def _emit_forward(node: Node, pascal: str, spec: LLMSignature) -> str:
         f"            prompt=_interpolate(PROMPT, inputs.model_dump(by_alias=True)),\n"
         f"            output_schema=OUTPUT_JSON_SCHEMA,\n"
         f"{sampling_arg}"
+        f"{evidence_arg}"
         f"        )\n"
         f"        return {pascal}Output.model_validate(payload)\n"
     )
