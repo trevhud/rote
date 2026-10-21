@@ -215,7 +215,12 @@ Per node:
 - reads: the earlier nodes whose results it needs ("pipeline.input" for the
   run's input). Read what the step actually uses, not just the node before.
 - fan_out_over: when the node runs once per element of a list another node
-  returns (a judge per contact, a write per row), that node's id. Else "".
+  returns (a call per query, a write per row), that node's id. Else "".
+  Judge at the skill's granularity: an llm_judge whose step decides over a
+  set of items the run holds together (rate each product, score each lead)
+  is ONE judge over the whole list, returning one result per item, so it
+  weighs them as the skill's agent does. It fans out only when the skill
+  says to handle each item separately or on its own.
 - in_loop: when an agent_loop calls this node per iteration, the loop's id.
 - outputs: the keys of the node's result. A node another fans out over
   returns its list as `items`; do not name that list again. Every result the skill asks the
