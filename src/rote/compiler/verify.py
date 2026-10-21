@@ -920,7 +920,12 @@ def _verify(
     except Exception as e:  # noqa: BLE001 (any load failure is the agent's to fix)
         return Verification(pipeline=None, pipeline_error=str(e))
     api_backend = emit_target is not None and emit_target.external_backend == "api"
-    implementations = implementation_status(pipeline, root, "api" if api_backend else "mcp")
+    implementations = implementation_status(
+        pipeline,
+        root,
+        emit_target.runtime if emit_target is not None else "dbos",
+        "api" if api_backend else "mcp",
+    )
     findings = (
         check_contracts(pipeline, root)
         + _deliverable_findings(

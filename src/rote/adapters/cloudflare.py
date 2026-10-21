@@ -483,7 +483,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
     class_name = workflow_class_name(pipeline)
     pipeline_h = _pipeline_hash(pipeline)
     waves = _execution_waves(pipeline)
-    mcp_backed = bool(mcp_backed_nodes(pipeline, cfg.external_backend))
+    mcp_backed = bool(mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend))
     # Anything that can park on an auth failure needs the helpers and the
     # NonRetryableError import — an agent loop's tools are MCP tools.
     parks_on_auth = mcp_backed or any(n.tools for n in pipeline.nodes_by_kind(NodeKind.AGENT_LOOP))
@@ -595,7 +595,11 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
             env_field_lines.append("    ROTE_MCP_SIG: string;")
     else:
         for server in sorted(
-            {n.mcp.server for n in mcp_backed_nodes(pipeline, cfg.external_backend) if n.mcp}
+            {
+                n.mcp.server
+                for n in mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend)
+                if n.mcp
+            }
         ):
             upper = server.upper()
             env_field_lines.append(
@@ -606,7 +610,7 @@ def emit_workflow(pipeline: Pipeline, cfg: CloudflareAdapterConfig | None = None
             env_field_lines.append(f"    ROTE_MCP_{upper}_CLIENT_SECRET?: string;")
             env_field_lines.append(f"    ROTE_MCP_{upper}_TOKEN_ENDPOINT: string;")
             env_field_lines.append(f"    ROTE_MCP_{upper}_URL?: string;")
-        if mcp_backed_nodes(pipeline, cfg.external_backend):
+        if mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend):
             env_field_lines.append(
                 "    // Rotated-token cache: npx wrangler kv namespace create rote-mcp-tokens"
             )
@@ -925,7 +929,9 @@ def emit_wrangler(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     # `npx wrangler kv namespace create rote-mcp-tokens` and paste its id.
     # Binding mode has no token cache to provision — the platform's
     # ROTE_MCP service binding owns credentials.
-    if cfg.mcp_client != "binding" and mcp_backed_nodes(pipeline, cfg.external_backend):
+    if cfg.mcp_client != "binding" and mcp_backed_nodes(
+        pipeline, "cloudflare", cfg.external_backend
+    ):
         obj["kv_namespaces"] = [
             {
                 "binding": "ROTE_MCP_TOKENS",
@@ -1044,7 +1050,7 @@ def emit_dev_vars_example(pipeline: Pipeline, cfg: CloudflareAdapterConfig | Non
         mcp_servers = sorted(
             {
                 n.mcp.server
-                for n in mcp_backed_nodes(pipeline, resolved_cfg.external_backend)
+                for n in mcp_backed_nodes(pipeline, "cloudflare", resolved_cfg.external_backend)
                 if n.mcp
             }
         )
@@ -1094,7 +1100,7 @@ def emit_readme(pipeline: Pipeline, cfg: CloudflareAdapterConfig) -> str:
     mcp_servers = sorted(
         {
             n.mcp.server
-            for n in mcp_backed_nodes(pipeline, cfg.external_backend)
+            for n in mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend)
             if n.mcp is not None
         }
     )
@@ -1343,7 +1349,7 @@ class CloudflareAdapter:
         cast from the function keeps it correct when the judge's
         overrides change — and it needs no import from workflow.ts.
         """
-        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, cfg.external_backend)}
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend)}
 
         def env_arg(sub: Node) -> str | None:
             if sub.kind is not NodeKind.LLM_JUDGE and sub.id not in mcp_ids:
@@ -1397,7 +1403,7 @@ class CloudflareAdapter:
         )
         written["index"] = writer.write("src", "index.ts", content=emit_index(pipeline, cfg))
 
-        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, cfg.external_backend)}
+        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, "cloudflare", cfg.external_backend)}
         agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:

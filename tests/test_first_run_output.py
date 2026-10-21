@@ -413,26 +413,39 @@ def test_edited_module_with_a_stub_left_is_still_a_stub(tmp_path: Path) -> None:
     assert drive in unimplemented_stubs(app)
 
 
-@pytest.mark.parametrize(("backend", "stubs"), [("mcp", []), ("api", ["drive.py", "gmail.py"])])
+@pytest.mark.parametrize(
+    ("runtime", "backend", "stubs"),
+    [
+        ("dbos", "mcp", []),
+        ("dbos", "api", ["drive.py", "gmail.py"]),
+        # No MCP client: the step calls the module whatever the backend.
+        ("python", "mcp", ["drive.py", "gmail.py"]),
+        ("temporal", "mcp", ["drive.py", "gmail.py"]),
+    ],
+)
 def test_run_and_compile_agree_on_which_mcp_bound_stubs_stop_a_run(
-    backend: str, stubs: list[str], tmp_path: Path
+    runtime: str, backend: str, stubs: list[str], tmp_path: Path
 ) -> None:
     """ops-report's fetch modules are `--backend api` stubs. On the default
     backend their steps call the MCP tool and never the function, so
     neither the compile nor `rote run` may call them blocking; on the api
-    backend both must. One answer, read from the IR and from the disk."""
+    backend, and on python and temporal (no MCP client, the step calls the
+    module), both must. One answer, read from the IR and from the disk."""
     from rote.contracts import implementation_status
 
     pipeline = load_pipeline(OPS_COMPILED / "pipeline.yaml")
-    app = tmp_path / "app"
-    get_adapter("dbos", extracted_source_dir=OPS_COMPILED, external_backend=backend).emit(
-        pipeline, app
-    )
-    on_disk = sorted(p.name for p in unimplemented_stubs(app))
-    assert on_disk == stubs
-    impls = implementation_status(pipeline, OPS_COMPILED, backend)
+    impls = implementation_status(pipeline, OPS_COMPILED, runtime, backend)
     blocking = sorted({i.impl.split(":")[0].rsplit("/", 1)[1] for i in impls if i.blocks_run})
-    assert blocking == on_disk
+    assert blocking == stubs
+    # The python adapter refuses ops-report's gate, so only the compile's
+    # side exists there; every other runtime is read back off the disk too.
+    if runtime != "python":
+        app = tmp_path / "app"
+        options: dict[str, Any] = {"extracted_source_dir": OPS_COMPILED}
+        if runtime == "dbos":
+            options["external_backend"] = backend
+        get_adapter(runtime, **options).emit(pipeline, app)
+        assert sorted(p.name for p in unimplemented_stubs(app)) == stubs
     # Non-degenerate: the stubs are there either way, only their verdict moves.
     assert {i.node_id for i in impls if i.status == "stub"} == {
         n.id for n in pipeline.nodes if n.mcp is not None

@@ -2381,7 +2381,7 @@ def _mcp_requirements(
     gates anything — callers render recommendations, and park-on-auth
     remains the runtime backstop.
     """
-    from rote.compiler.backend import bindings_called
+    from rote.adapters._common import bindings_called
     from rote.mcp import auth_status, load_registry, read_token_file
     from rote.mcp.learned import learned_auth
 

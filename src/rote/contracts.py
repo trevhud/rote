@@ -562,7 +562,8 @@ class NodeImplementation:
     reason: str | None = None
     #: The node's step calls its MCP tool instead of this function
     #: (:func:`rote.adapters._common.mcp_backed`), so a stub here does not
-    #: stop a run. False on the ``api`` backend, where the function is the call.
+    #: stop a run. False on the ``api`` backend and on python and temporal,
+    #: where the function is the call.
     mcp_backed: bool = False
 
     @property
@@ -608,12 +609,16 @@ def stub_reason(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str |
 
 
 def implementation_status(
-    pipeline: Pipeline, artifact_dir: Path | str, external_backend: str = "mcp"
+    pipeline: Pipeline,
+    artifact_dir: Path | str,
+    runtime: str = "dbos",
+    external_backend: str = "mcp",
 ) -> list[NodeImplementation]:
     """One entry per ``pure_function`` / ``external_call`` node with an ``impl``.
 
-    ``external_backend`` is the emit's (``mcp``, the default, or ``api``):
-    it decides which bound nodes run via their MCP tool.
+    ``runtime`` and ``external_backend`` are the emit's (the CLI defaults
+    are dbos and mcp): together they decide which bound nodes run via
+    their MCP tool (:func:`rote.adapters._common.mcp_backed`).
 
     Read by AST, like everything in this module: the modules are never
     imported. This is the per-node answer to "will the compiled pipeline
@@ -656,7 +661,7 @@ def implementation_status(
                 impl=node.impl,
                 status=status,
                 reason=reason,
-                mcp_backed=mcp_backed(node, external_backend),
+                mcp_backed=mcp_backed(node, runtime, external_backend),
             )
         )
     return statuses

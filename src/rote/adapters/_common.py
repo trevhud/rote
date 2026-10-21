@@ -414,21 +414,32 @@ class EmitWriter:
         )
 
 
-def mcp_backed(node: Node, external_backend: str) -> bool:
+#: Runtimes with no MCP client: every external_call runs its ``impl:``
+#: whatever the backend (see :func:`refuse_mcp_only_nodes`).
+IMPL_ONLY_RUNTIMES = frozenset({"python", "temporal"})
+
+
+def bindings_called(runtime: str, external_backend: str) -> bool:
+    """Whether emitted code for ``runtime`` calls a node's ``mcp:`` binding."""
+    return external_backend == "mcp" and runtime not in IMPL_ONLY_RUNTIMES
+
+
+def mcp_backed(node: Node, runtime: str, external_backend: str) -> bool:
     """Whether ``node``'s emitted step calls its MCP tool instead of its ``impl``.
 
     The one definition, for every adapter, the emit manifest's
     :data:`MCP_BACKED_KEY` and the compile's per-node accounting
-    (``rote.contracts.NodeImplementation.blocks_run``). On the default
-    ``mcp`` backend a bound node's function is never called, so a stub
-    there does not stop a run; on the ``api`` backend it is the call.
+    (``rote.contracts.NodeImplementation.blocks_run``). A bound node's
+    function is never called where the runtime emits the MCP call on the
+    ``mcp`` backend, so a stub there does not stop a run. On the ``api``
+    backend, and on python and temporal (no MCP client), it is the call.
     """
-    return node.mcp is not None and external_backend == "mcp"
+    return node.mcp is not None and bindings_called(runtime, external_backend)
 
 
-def mcp_backed_nodes(pipeline: Pipeline, external_backend: str) -> list[Node]:
+def mcp_backed_nodes(pipeline: Pipeline, runtime: str, external_backend: str) -> list[Node]:
     """The nodes that emit working MCP calls instead of stubs."""
-    return [n for n in pipeline.nodes if mcp_backed(n, external_backend)]
+    return [n for n in pipeline.nodes if mcp_backed(n, runtime, external_backend)]
 
 
 #: Carried in the error message of every stub function rote emits, Python

@@ -453,7 +453,7 @@ def _emit_hitl_wait(node: Node, pipeline: Pipeline) -> str:
 
 def _is_mcp_backed(node: Node, cfg: DbosAdapterConfig) -> bool:
     """True when this node's step calls an MCP tool at run time."""
-    return mcp_backed(node, cfg.external_backend)
+    return mcp_backed(node, "dbos", cfg.external_backend)
 
 
 def _emit_workflow_body(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:

@@ -943,7 +943,7 @@ def emit_readme(pipeline: Pipeline, cfg: InngestAdapterConfig) -> str:
     mcp_servers = sorted(
         {
             n.mcp.server
-            for n in mcp_backed_nodes(pipeline, cfg.external_backend)
+            for n in mcp_backed_nodes(pipeline, "inngest", cfg.external_backend)
             if n.mcp is not None
         }
     )
@@ -1156,7 +1156,7 @@ class InngestAdapter:
             default_model=self.config.anthropic_default_model,
             generated_by=_GENERATED_BY,
             mcp_backed_ids=frozenset(
-                n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)
+                n.id for n in mcp_backed_nodes(pipeline, "inngest", self.config.external_backend)
             ),
         )
 
@@ -1178,7 +1178,9 @@ class InngestAdapter:
             "src", "index.ts", content=emit_index(pipeline, self.config)
         )
 
-        mcp_ids = {n.id for n in mcp_backed_nodes(pipeline, self.config.external_backend)}
+        mcp_ids = {
+            n.id for n in mcp_backed_nodes(pipeline, "inngest", self.config.external_backend)
+        }
         agent_loops = pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)
         for node in pipeline.nodes:
             if node.kind is NodeKind.HITL_GATE:

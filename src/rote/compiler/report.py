@@ -64,6 +64,9 @@ class ReportExtras:
     #: ``--backend api``: every external_call runs its own module, so its
     #: stubs are open questions and its docs citations get a section.
     api_backend: bool = False
+    #: The runtime the compile emits for: python and temporal call a bound
+    #: node's module, so its stub is an open question there too.
+    runtime: str = "dbos"
     #: The agent's web lookups in this compile (``--backend api``).
     web_research: api_docs.WebResearch | None = None
     #: Every vendor request, checked against its vendor's spec (``--backend api``).
@@ -230,7 +233,9 @@ def render_compile_report(
     ``extras``: re-rendering an unchanged deliverable yields the same text.
     """
     extras = extras or ReportExtras()
-    impls = implementation_status(pipeline, root, "api" if extras.api_backend else "mcp")
+    impls = implementation_status(
+        pipeline, root, extras.runtime, "api" if extras.api_backend else "mcp"
+    )
     found = assumptions(pipeline, root)
     preamble = ["", extras.preamble] if extras.preamble else []
     steps = ["", "## Suggested next steps", "", *(f"- {s}" for s in extras.next_steps)]
