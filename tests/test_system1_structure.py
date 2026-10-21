@@ -997,3 +997,22 @@ def test_a_builders_fixed_schema_is_never_rewritten(skill: Any) -> None:
     want = "integer" if first == "max_results" else "string"
     assert builder.output_schema is not None
     assert builder.output_schema["properties"]["items"]["items"] == {"type": want}
+
+
+def test_a_loop_calls_only_optional_callable_nodes(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    answer = good_answer()
+    answer["nodes"].insert(
+        1, node("research", 2, "agent_loop", mandatory=False, reads=["fetch_emails"])
+    )
+    answer["nodes"].append(node("approve_each", 3, "hitl_gate", in_loop="research"))
+    answer["nodes"].append(node("score_each", 3, "pure_function", in_loop="research"))
+    found = structure.check(answer, skill, SKILL, declared)
+    assert (
+        "node approve_each: a loop calls only pure_function, external_call and llm_judge "
+        "nodes; a hitl_gate cannot be in_loop"
+    ) in found
+    assert "node score_each: a node in_loop runs when its loop calls it: not mandatory" in found
+    fixed, notes = structure.resolve(answer, skill, SKILL, declared)
+    by_id = {n["id"]: n for n in fixed["nodes"]}
+    assert by_id["approve_each"]["in_loop"] == "" and by_id["score_each"]["mandatory"] is False

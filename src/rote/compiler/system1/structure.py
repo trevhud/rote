@@ -224,7 +224,8 @@ Per node:
   is returned by some node, under the skill's own name; a later node that
   needs it reads that node.
 - mandatory: true unless the skill makes the step conditional or optional.
-  Always false for an agent_loop.
+  Always false for an agent_loop and for a node an agent_loop calls
+  (in_loop), which runs only when the loop's agent calls it.
 - system: for an external_call, what it reaches. io is read or write. how is
   declared_tool (name the DECLARED TOOLS server and tool exactly), url (an
   API at a URL or HTTP path the skill gives), web_ui (operating a web app in
@@ -481,6 +482,13 @@ def check(
         loop = n.get("in_loop") or ""
         if loop and (loop not in seen or seen[loop].get("kind") != "agent_loop"):
             out.append(f"{where}: in_loop {loop!r} is not an earlier agent_loop")
+        if loop and kind not in ("pure_function", "external_call", "llm_judge"):
+            out.append(
+                f"{where}: a loop calls only pure_function, external_call and llm_judge "
+                f"nodes; a {kind} cannot be in_loop"
+            )
+        if loop and n.get("mandatory"):
+            out.append(f"{where}: a node in_loop runs when its loop calls it: not mandatory")
         bad_keys = [k for k in n.get("outputs") or [] if not _IDENTIFIER.match(str(k))]
         if bad_keys:
             out.append(f"{where}: output keys {bad_keys} are not snake_case identifiers")
@@ -942,6 +950,11 @@ def resolve(
         loop = n.get("in_loop") or ""
         if loop and not any(m["id"] == loop and m["kind"] == "agent_loop" for m in nodes):
             n["in_loop"] = ""
+        if n.get("in_loop") and kind not in ("pure_function", "external_call", "llm_judge"):
+            notes.append(f"`{nid}`: a {kind} cannot run inside a loop; it runs after it")
+            n["in_loop"] = ""
+        if n.get("in_loop"):
+            n["mandatory"] = False
         if kind == "agent_loop":
             n["mandatory"] = False
         if kind == "external_call":
