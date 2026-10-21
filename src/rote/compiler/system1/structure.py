@@ -1169,6 +1169,10 @@ def mcp_args(
     return out
 
 
+def system_of(n: Mapping[str, Any]) -> dict[str, Any]:
+    return dict(n.get("system") or {})
+
+
 def to_plan(
     answer: dict[str, Any],
     skill: SkillParse,
@@ -1189,7 +1193,14 @@ def to_plan(
         kind = n["kind"]
         node = NodePlan(n["id"], kind, role_of_kind(kind), u)
         node.intent = _one_line(n.get("intent", ""), 400) or None
-        if kind != "hitl_gate":
+        # An MCP call's result is the tool's, whatever the model names it: a
+        # live ops-report compile named a Gmail search's result `threads`,
+        # the judge reading it was typed to that, and every run failed on
+        # the bare list the tool returns. Its shape comes from data instead
+        # (outputSchema, a recorded run), as on the rules path.
+        if kind != "hitl_gate" and not (
+            kind == "external_call" and system_of(n).get("how") == "declared_tool"
+        ):
             node.output_keys = [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
         node.decide("kind", kind, conf, rule)
         node.inputs = {"request": "pipeline.input"}

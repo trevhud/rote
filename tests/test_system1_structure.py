@@ -592,11 +592,15 @@ def test_a_nodes_named_outputs_reach_the_skeleton(skill: Any) -> None:
     # A fan_out source returns its list as `items`; its other names are dropped,
     # unless one is a run output.
     assert doc["fetch_emails"]["output"] == {"items": "list"}
-    answer["run_outputs"] = ["threads"]
-    answer["nodes"][2]["outputs"] = ["digest", "threads"]
+    # A run output on a list-building pure_function keeps its key beside `items`.
+    answer["run_outputs"] = ["digest", "labels"]
+    answer["nodes"][0] = node("build_labels", 1, "pure_function", outputs=["labels"])
+    answer["nodes"][1]["reads"] = ["build_labels"]
+    answer["nodes"][1]["fan_out_over"] = "build_labels"
+    answer["nodes"][2]["outputs"] = ["digest", "labels"]
     plan, _, _ = run(skill, answer)
     doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
-    assert doc["fetch_emails"]["output"] == {"items": "list", "threads": "Any"}
+    assert doc["build_labels"]["output"] == {"items": "list", "labels": "Any"}
     answer["run_outputs"] = []
     answer["nodes"][2]["outputs"] = ["Bad Key"]
     assert structure.check(answer, skill, SKILL, structure.declared_tools(skill, TOOLS)) == [
@@ -1026,3 +1030,17 @@ def test_a_loop_calls_only_optional_callable_nodes(skill: Any) -> None:
         "`score_each`: the skill makes it mandatory, so it runs outside loop 'research', "
         "where nothing can skip it"
     ) in notes
+
+
+def test_an_mcp_calls_result_keys_are_never_the_models(skill: Any) -> None:
+    answer = good_answer()
+    answer["nodes"][0]["outputs"] = ["threads"]
+    plan, _, _ = run(skill, answer)
+    doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
+    # A fan source keeps its `items` list; nothing names the tool's own result.
+    assert doc["fetch_emails"]["output"] == {"items": "list"}
+    answer["nodes"][1]["fan_out_over"] = ""
+    answer["nodes"][1]["reads"] = ["fetch_emails"]
+    plan, _, _ = run(skill, answer)
+    doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
+    assert doc["fetch_emails"]["output"] == "dict"
