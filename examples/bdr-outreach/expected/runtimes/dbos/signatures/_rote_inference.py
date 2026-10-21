@@ -64,7 +64,7 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -376,7 +376,11 @@ def _retry_after_s(headers: Any) -> float | None:
             return max(0.0, float(raw))
         except ValueError:
             when = parsedate_to_datetime(raw)
-            return max(0.0, (when - datetime.now(UTC)).total_seconds())
+            # timezone.utc, not datetime.UTC (3.11+): this file is every
+            # emitted Python app's signatures/_rote_inference.py, and those
+            # apps run on 3.10 (tests/test_helper_on_oldest_python.py).
+            now = datetime.now(timezone.utc)  # noqa: UP017
+            return max(0.0, (when - now).total_seconds())
     except (TypeError, ValueError, AttributeError):
         return None
 
