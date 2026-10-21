@@ -25,8 +25,11 @@ cd "$REPO_ROOT"
 # ───── Pinned third-party data, exempt only while unmodified ─────
 # The Public Suffix List lists "stord.no", a Norwegian municipality, among
 # its ICANN suffixes; it is not the employer name the scan guards against.
-# The file is skipped only while its sha256 equals rote.vendor_specs.psl.SHA256,
-# so any edit or refresh of it falls back into the scan.
+# The file is skipped by every check below, not only the name check. That
+# is safe because of the hash pin: it is skipped only while its sha256
+# equals rote.vendor_specs.psl.SHA256, the upstream file exactly, so
+# nothing of ours can be in it. Any edit or refresh changes the hash and
+# puts the whole file back into every check.
 PSL_PATH="src/rote/vendor_specs/public_suffix_list.dat"
 PSL_SHA256="9b4827a9e428a0192a9ea0a6b7804a4cc653d5f39a03456d3b17447b86d78de9"
 sha256_of() {
@@ -37,10 +40,12 @@ sha256_of() {
     fi
 }
 RG_EXEMPT=()
-GREP_EXEMPT=()
+# grep's --exclude matches a basename anywhere, so the fallback drops
+# matches by this exact path instead.
+GREP_SKIP=""
 if [[ -f "$PSL_PATH" && "$(sha256_of "$PSL_PATH")" == "$PSL_SHA256" ]]; then
     RG_EXEMPT=(--glob "!$PSL_PATH")
-    GREP_EXEMPT=(--exclude="$(basename "$PSL_PATH")")
+    GREP_SKIP="./$PSL_PATH:"
 fi
 
 # Use ripgrep if available (much faster + respects .gitignore), fall back
@@ -70,8 +75,14 @@ else
             --exclude-dir='*.egg-info' \
             --exclude-dir=launch \
             --exclude='sanity-check.sh' \
-            "${GREP_EXEMPT[@]}" \
-            "$pattern" . 2>/dev/null || true
+            "$pattern" . 2>/dev/null | skip_exempt || true
+    }
+    skip_exempt() {
+        if [[ -n "$GREP_SKIP" ]]; then
+            grep -vF -- "$GREP_SKIP" || true
+        else
+            cat
+        fi
     }
 fi
 
