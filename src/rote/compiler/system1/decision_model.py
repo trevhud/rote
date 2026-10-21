@@ -65,6 +65,10 @@ class DecisionModel:
     kind_threshold: float
     #: The "a person must act" probability at or above which a step is a gate.
     human_threshold: float
+    #: The most input tokens a call takes. Workers AI truncates a longer text
+    #: state to fit, without an error, so a state that might not fit is
+    #: refused instead (:func:`decide`).
+    context_tokens: int
 
     def url(self, account: str) -> str:
         base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run"
@@ -86,6 +90,9 @@ CLEF = DecisionModel(
     kind_threshold=0.85,
     # Every held-out gate was above 0.8, every other step below 0.2.
     human_threshold=0.50,
+    # Documented: "65,536 tokens" context, and a longer text state "is
+    # truncated to fit" (developers.cloudflare.com/workers-ai/models/clef/).
+    context_tokens=65_536,
 )
 
 JEV = DecisionModel(
@@ -99,6 +106,11 @@ JEV = DecisionModel(
     kind_threshold=0.85,
     # The best dev gate F1 (4 of 4 gates, 1 false), the higher value of a tie.
     human_threshold=0.60,
+    # ASSUMPTION: Cloudflare publishes no model page for Jev. Third-party
+    # listings disagree (cloudprice.net/models/typesafe-ai-jev-1-14: 32K;
+    # requesty.ai/models/typesafe/jev-1.14.0: 64K), so the smaller one, which
+    # refuses a state that might be truncated rather than risking it.
+    context_tokens=32_768,
 )
 
 #: Every model decider, by ``--decider`` value.
@@ -321,16 +333,54 @@ MAX_PARALLEL = 16
 VARIANTS = ("v0", "v1", "v2")
 
 
+#: Characters per token assumed when sizing a state before sending it: low,
+#: so the estimate errs toward refusing a state that might not fit. Prose runs
+#: near 4, but markdown tables, base64, hashes and code tokenize far denser
+#: (review6, on o200k: 2.5 counted only 0.62 of a table's real tokens), and
+#: a step can be mostly a table. 1.5 still allows about 88k characters a step
+#: on Clef and 44k on Jev.
+_CHARS_PER_TOKEN = 1.5
+
+
+def _check_fits(model: DecisionModel, states: list[dict[str, Any]]) -> None:
+    """Refuse a state the model would truncate: Workers AI does so without an
+    error, and the verdict would then be on part of the step."""
+    longest = max((len(json.dumps(s)) for s in states), default=0)
+    estimate = int(longest / _CHARS_PER_TOKEN)
+    if estimate > model.context_tokens * 0.9:
+        raise DeciderUnavailable(
+            f"{model.label} reads at most {model.context_tokens} tokens and truncates a longer "
+            f"state without an error; this skill's longest step state is about {estimate} "
+            "tokens. Use --decider rules for this skill"
+        )
+
+
 def decide(model: DecisionModel, skill: SkillParse) -> Verdicts:
-    """The model's ensembled kind and gate probability for every step unit."""
+    """The model's ensembled kind and gate probability for every step unit.
+
+    A state the model would truncate is refused before any call, and a call
+    whose input reached the window is refused after it: both would be a
+    verdict on text the model never saw."""
     from concurrent.futures import ThreadPoolExecutor
 
     account, token = credentials(model)
     _gateway_headers()  # a bad gateway setting fails here, not six retries later
+    states = {u.index: state_for(skill, u) for u in skill.units}
+    _check_fits(model, list(states.values()))
     jobs = [(u, variant) for u in skill.units for variant in VARIANTS]
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
         results = list(
-            pool.map(lambda j: ask(model, account, token, state_for(skill, j[0]), j[1]), jobs)
+            pool.map(lambda j: ask(model, account, token, states[j[0].index], j[1]), jobs)
+        )
+    filled = [
+        r
+        for r in results
+        if (r.get("usage") or {}).get("input_tokens", 0) >= model.context_tokens * 0.98
+    ]
+    if filled:
+        raise DeciderUnavailable(
+            f"{model.label} read {filled[0]['usage']['input_tokens']} tokens, its whole window: "
+            "the state was likely truncated. Use --decider rules for this skill"
         )
     by_unit: dict[int, list[dict[str, Any]]] = {}
     for (u, _), res in zip(jobs, results, strict=True):
