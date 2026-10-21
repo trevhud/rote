@@ -64,13 +64,25 @@ def _is_tilde(node: ast.expr) -> bool:
     return isinstance(node, ast.Constant) and str(node.value).startswith("~")
 
 
+#: rote.xdg's resolvers: a default under one of them is under the home dir
+#: unless the XDG variable moves it, so a caller needs an override like any
+#: other home-dir default. rote/xdg.py itself is the base and holds none.
+_XDG_RESOLVERS = {"config_home", "data_home", "cache_home"}
+_XDG_MODULE = "xdg.py"
+
+
 def _touches_home(node: ast.AST) -> bool:
-    """``Path.home()``, ``os.path.expanduser("~...")`` or ``Path("~...").expanduser()``.
+    """``Path.home()``, ``os.path.expanduser("~...")``, ``Path("~...").expanduser()``,
+    or a ``rote.xdg`` resolver.
 
     ``expanduser`` on a path the user passed in is fine; only a literal
     ``~`` names a default under the home dir.
     """
     for n in ast.walk(node):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+            if n.func.id in _XDG_RESOLVERS:
+                return True
+            continue
         if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
             continue
         if (
@@ -97,6 +109,8 @@ def _home_paths_without_an_override() -> list[str]:
     src = REPO / "src" / "rote"
     for path in sorted(src.rglob("*.py")):
         rel = str(path.relative_to(src))
+        if rel == _XDG_MODULE:
+            continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         constants = {
             target.id

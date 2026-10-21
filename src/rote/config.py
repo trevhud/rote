@@ -31,6 +31,8 @@ from pathlib import Path
 
 import yaml
 
+from rote.xdg import config_home
+
 
 class ConfigError(RuntimeError):
     """A config file or ROTE_* env var carries an unusable value."""
@@ -166,9 +168,7 @@ def user_config_path() -> Path:
     override = os.environ.get("ROTE_CONFIG_PATH")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "rote" / "config.yaml"
+    return config_home() / "rote" / "config.yaml"
 
 
 def project_config_path(cwd: Path | None = None) -> Path | None:

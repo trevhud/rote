@@ -59,6 +59,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, SupportsFloat
 
 from rote.mcp._runtime_helper import _with_bound_issuer, stored_for_url
+from rote.xdg import data_home
 
 if TYPE_CHECKING:
     from rote.mcp.registry import McpServerConfig
@@ -79,9 +80,7 @@ def token_dir() -> Path:
     override = os.environ.get(TOKEN_DIR_ENV_VAR)
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "rote" / "mcp-tokens"
+    return data_home() / "rote" / "mcp-tokens"
 
 
 def token_file(server: str, directory: Path | None = None) -> Path:
