@@ -42,6 +42,7 @@ from rote.eval.empirical import (
     MeasuredRun,
     _wait_for_workflow_id,
     failure_excerpt,
+    usage_error,
 )
 from rote.extras import install_hint, is_installed
 from rote.mcp.parked import (
@@ -290,7 +291,8 @@ def run_dbos_ts(
             return MeasuredRun(
                 wall_seconds=wall,
                 output=None,
-                error=f"app exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
+                error=usage_error(stderr)
+                or f"app exited {proc.returncode}:\n{failure_excerpt(stderr, stdout)}",
             )
         output = _parse_trailing_json(stdout)
         if output is None:

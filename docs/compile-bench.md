@@ -71,13 +71,17 @@ interpreter as the bench. Two things are forced, not configurable:
 - **No answer key.** The skill is copied to `<run>/<skill>/r<k>/skill-src/`
   first, so the compiler agent cannot step from the skill dir into
   `expected/`.
-- **The example's MCP servers.** When `fidelity/cases.yaml` declares
-  fixture servers, they run for the length of the compile, with no
-  responses, registered in a registry of the job's own
-  (`<job>/bench-tool-servers/mcp.json`). The compile reads their
-  `tools/list` to ground its tool arguments the way a compile against
-  registered real servers does, so it sees exactly the schemas the
-  fixtures enforce when the pipeline runs.
+- **The example's MCP tools.** An example whose fidelity cases use
+  fixture MCP servers bundles each server's `tools/list` in the skill dir,
+  at `skill/mcp-tools.json`. A plain compile with nothing registered
+  grounds its tool arguments in it (a live `tools/list` of a registered
+  server wins), and the fixture servers serve exactly those tools:
+  `fidelity/cases.yaml` adds only what a fixture needs beyond the
+  snapshot, the server's `aliases` and each tool's `side_effect`, and the
+  bench refuses to start when the two name different servers or tools.
+  So the bench registers nothing for the compile, as on a first run, and
+  the schemas the compile reads are the ones the fixtures enforce when
+  the pipeline runs.
 - **The example's sample run.** An example with fidelity cases bundles
   its sample run in the skill dir, at `skill/sample-input.json`, so the
   bench's copy carries it and the compile finds it exactly as a plain

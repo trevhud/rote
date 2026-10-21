@@ -153,6 +153,17 @@ def test_resolve_input_rejects_non_object() -> None:
         resolve_input("[1, 2]", skill_dir=None, assume_yes=False)
 
 
+def test_resolve_input_reads_an_at_file_like_signal(tmp_path: Path) -> None:
+    payload = tmp_path / "in.json"
+    payload.write_text('{"report_date": "2026-09-14"}', encoding="utf-8")
+    assert resolve_input(f"@{payload}", skill_dir=None, assume_yes=False) == {
+        "report_date": "2026-09-14"
+    }
+    assert resolve_input(str(payload), skill_dir=None, assume_yes=False) == {
+        "report_date": "2026-09-14"
+    }
+
+
 def test_resolve_input_no_input_no_skill_errors() -> None:
     with pytest.raises(TargetError, match="no source skill to derive"):
         resolve_input(None, skill_dir=None, assume_yes=False)
@@ -179,6 +190,22 @@ def test_parse_signal_args_requires_name_and_json() -> None:
         parse_signal_args(["no-equals-sign"])
     with pytest.raises(TargetError, match="not valid JSON"):
         parse_signal_args(["approve={broken"])
+
+
+def test_parse_signal_args_reads_an_at_file(tmp_path: Path) -> None:
+    """``NAME=@FILE`` is the file's JSON, the help text's documented form."""
+    payload = tmp_path / "manual.json"
+    payload.write_text('{"sorter": [{"site": "MTN6", "volume": 22800}]}', encoding="utf-8")
+    signals = parse_signal_args([f"manual_data=@{payload}", 'approve={"ok": true}'])
+    assert signals == {
+        "manual_data": {"sorter": [{"site": "MTN6", "volume": 22800}]},
+        "approve": {"ok": True},
+    }
+    with pytest.raises(TargetError, match=r"manual_data: cannot read .*missing\.json"):
+        parse_signal_args([f"manual_data=@{tmp_path / 'missing.json'}"])
+    (tmp_path / "bad.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(TargetError, match=r"bad\.json is not valid JSON"):
+        parse_signal_args([f"manual_data=@{tmp_path / 'bad.json'}"])
 
 
 def test_resolve_gate_signals_all_provided() -> None:
@@ -238,6 +265,38 @@ def test_run_skill_applies_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert outcome.servers_wired == ("srv",)
     assert outcome.servers_skipped == {"other": "unreachable"}
     assert outcome.run.output == {"ok": True}
+
+
+def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`rote run <skill> --signal` reaches the agent's prompt, in the order
+    given, @FILE included: without it a gated skill stops at its first gate."""
+    from rote.cli import main as cli_main
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: s\n---\nAsk the lead to approve.\n")
+    answer = tmp_path / "approval.json"
+    answer.write_text('{"approved": true, "reviewer": "Priya"}', encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def fake_trial(skill_dir: Any, payload: Any, **kwargs: Any) -> tuple[Any, list[Any], list[str]]:
+        captured.update(kwargs)
+        return MeasuredRun(wall_seconds=1.0, output={"ok": True}), [], []
+
+    monkeypatch.setattr("rote.runners.resolve_mcp_wiring", lambda **_: ({}, [], {}))
+    monkeypatch.setattr("rote.runners.run_baseline_trial", fake_trial)
+    argv = ["run", str(skill), "--input", "{}", "--signal", f"approval=@{answer}"]
+    assert cli_main([*argv, "--signal", 'second={"n": 2}']) == 0
+    text = captured["extra_instructions"]
+    assert "do not wait and do not ask" in text
+    assert '1. approval: {"approved": true, "reviewer": "Priya"}' in text
+    assert '2. second: {"n": 2}' in text
+    # Without --signal the prompt carries no answers at all.
+    captured.clear()
+    assert cli_main(["run", str(skill), "--input", "{}"]) == 0
+    assert captured["extra_instructions"] is None
 
 
 def test_run_pipeline_rejects_unorchestrated_runtimes(tmp_path: Path) -> None:

@@ -198,13 +198,18 @@ this compile targets `--backend api`. Now you are expected to write
 
    **The vendor's spec is checked in code.** Where the vendor publishes a
    machine-readable spec (every Google API publishes a Discovery
-   document), rote reads each request your module makes (`httpx` /
-   `requests` calls, and Google's client library `build(...)` chains) and
-   checks it against the spec: method and path, every parameter's name,
-   type and enum, the required parameters, the request body's fields, and
-   every field your code reads off the response. A violation comes back
-   to you like a failing test. Keep requests readable without running
-   them: a literal URL or a module constant, and `params` as a dict.
+   document; Stripe, GitHub and ClinicalTrials.gov publish OpenAPI),
+   rote reads each request your module makes (`httpx` / `requests`
+   calls, and Google's client library `build(...)` chains) and checks it
+   against the spec: method and path, every parameter's name, type and
+   enum, the required parameters, the request body's media type (JSON,
+   form or multipart) and fields, and every field your code reads off
+   the response. A violation comes back to you like a failing test. Send
+   parameters the way the spec declares them: a `deepObject` parameter
+   goes in brackets (Stripe's `expand[]`, `created[gte]`, and form body
+   keys such as `metadata[order_id]`). Keep requests readable without
+   running them: a literal URL or a module constant, and `params`,
+   `json` or `data` as a dict.
 
    **Specs written from the docs.** When the vendor publishes no spec rote
    can read (rote says so: `spec_missing`), write one from the pages you
@@ -214,6 +219,7 @@ this compile targets `--backend api`. Now you are expected to write
    ```json
    {"vendor": "slack", "api": "web", "version": "v1",
     "sources": ["<every page you used, each fetched in this compile>"],
+    "auth": {"env": "SLACK_BOT_TOKEN", "location": "header", "name": "Authorization"},
     "operations": [{"id": "conversations.history", "method": "GET",
       "url_template": "https://slack.com/api/conversations.history",
       "params": {"channel": {"location": "query", "type": "string", "required": true},
@@ -228,7 +234,11 @@ this compile targets `--backend api`. Now you are expected to write
    page with the fields your code reads. rote checks your requests
    against this file exactly as it checks a vendor's own spec, and reports
    it as lower trust. Never add a field to the example that the page does
-   not show.
+   not show. `auth` names the one credential the requests carry, as the
+   docs describe it: the environment variable your code reads, and the
+   header or query parameter it goes in. Read no other environment
+   variable into a request: the live check refuses any other, and sends
+   even this one only when the user names it on the command line.
 
    **Internal or undocumented APIs.** A company's own service often has no
    public reference. If the skill or its references state the endpoint,

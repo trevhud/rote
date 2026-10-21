@@ -232,6 +232,26 @@ class MeasuredRun:
 # ───────── Skill (before) trials ─────────
 
 
+def gate_answers_instructions(answers: str) -> str:
+    """The prompt text that hands a skill run the answers a person gives at
+    its gates, so the run does not stop to ask (``answers``: one per line,
+    in the order the skill asks). One wording for ``rote run <skill>
+    --signal`` and the compile bench's fidelity references."""
+    return (
+        "When the skill needs a person's input or approval, do not wait and do "
+        "not ask: these are the answers you get, in the order the skill asks:\n"
+        f"{answers}"
+    )
+
+
+def signal_answers(signals: dict[str, Any]) -> str:
+    """``--signal`` payloads as numbered answers, in the order given."""
+    return "\n".join(
+        f"{i}. {name}: {json.dumps(payload)}"
+        for i, (name, payload) in enumerate(signals.items(), 1)
+    )
+
+
 def _skill_prompt(
     skill_dir: Path,
     input_payload: dict[str, Any],

@@ -520,8 +520,14 @@ the input a baseline ran on) is reduced to a schema by
 CONTRACT`. Verification then checks it, and `rote.compiler.prefix` runs
 the pipeline's pure functions (and MCP nodes a baseline recorded, matched
 on exact arguments) on the sample in the generated-test sandbox. A
-`KeyError` there goes back to the agent with the file and line. Things to
-preserve:
+`KeyError` there goes back to the agent with the file and line. MCP tool
+arguments are grounded the same way, in each tool's own input schema:
+a live `tools/list` of the registered servers the skill names, else the
+skill's bundled snapshot (`mcp-tools.json` in the skill dir,
+`rote.tool_schema.load_bundled_tools`). Live always wins per server; a
+live schema that differs from the snapshot for a bound tool is reported
+as a stale snapshot, and the summary and compile-report.md name what
+grounded each server. Things to preserve:
 
 - **The prefix runner is a dumb interpreter.** `_prefix_runner.py` is
   stdlib-only and copied into the sandbox scratch dir. The semantics
@@ -636,6 +642,44 @@ Things that will bite if you touch it:
   stamped with the spec revision on save, re-validated on load. Only
   authored data goes there: a live check compares shapes and never keeps
   what it read.
+- **`rote run --live-check` never runs the deliverable's code.** A live
+  run of generated code holds the user's real credentials, and no patch
+  over its HTTP clients can promise it only reads: review6's reproducers
+  wrote through an unextracted urllib call, a helper module, a host alias
+  and http.client while the intercept guarded the checked call. So
+  `rote.vendor_specs.live` builds each entry read itself from the static
+  extraction (the spec-resolved operation, the URL template, the
+  parameters and headers as `Expr` templates filled from the node's inputs
+  and the user's environment, Google calls as the client library would send
+  them with the application-default token) and sends only GET/HEAD through
+  one urllib client with redirects off. A read it cannot build exactly is
+  "not live-checked", never sent. A docs operation named like a write is
+  refused whatever its method. Three more rules, from review6's exfil
+  reproducer (an agent-written docs param plus `os.environ["AWS_SECRET_..."]`
+  sent the secret): trust comes from the vendor or the user, never the
+  agent. A credential is attached only from a vendor-published spec
+  (Google's OAuth token, which the check supplies itself, gated on the
+  spec's provenance, `source="google-discovery"` from rote's store, and a
+  googleapis.com host, never on the agent-writable `vendor`; a docs spec
+  claiming a vendor rote reads a spec for is refused at compile time); a docs spec's
+  `auth` is the agent's choice of secret, so it is withheld unless the
+  user passes both `--allow-host <host>` and `--allow-credential <ENV>`
+  (`--yes` never covers either), and any other `{$env:...}` refuses the
+  whole check. A docs-spec host is called at all only when it equals, or
+  shares the registrable domain of (`rote.vendor_specs.psl`: the bundled,
+  pinned Public Suffix List with its private section, so `a.github.io` and
+  `b.github.io` are two owners; docs on another registrable domain, such
+  as docs.slack.dev for slack.com, need `--allow-host`), a cited page in
+  `web-research.json`
+  (rote's own record, written by the Compiler over any file the agent
+  wrote), or `--allow-host` names it; "every cited page was fetched"
+  vouches for nothing. Every request is built first and the plan is
+  confirmed (`--yes`, or a TTY answer; neither exits 2 having sent
+  nothing). The report holds the operation's path
+  template and schema paths (a map's keys and any non-field-like live key
+  are `{key}`), and an error is its exception type and HTTP status, never
+  its text (a URL in it carries query credentials). For a docs spec, extra
+  live fields are not drift; for a vendor's own spec they are.
 - **Vendor libraries are installed per requirement set** into
   `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
@@ -663,6 +707,32 @@ Violations are errors that go back to the agent. Three rules:
   time, a host with no spec source yet, or a spec service that is down
   shows in the report as "not checked: <why>". An unreachable spec must
   never fail a paid compile.
+- **OpenAPI comes from a curated registry of vendor-published documents**
+  (`rote.vendor_specs.openapi.REGISTRY`, host -> URL), never from a
+  community directory: APIs.guru's Slack entry is an archived 2021 spec.
+  A vendor's own spec outranks a docs spec the compile wrote for the same
+  host (`check.spec_for_key`, the one precedence rule for the check, the
+  live check and the bench), and a docs spec naming a registered vendor is
+  refused outright (`docs.PUBLISHED_VENDORS`). Add a vendor by fetching and parsing its
+  document first, and register every host its `servers` name at any level
+  (Stripe uploads at files.stripe.com, GitHub at uploads.github.com).
+- **A false error is worse than a missed one**, because the agent rewrites
+  correct code to satisfy it. So a part of a request the spec does not
+  describe is `partial` ("no violations; not checked: <what>"), never
+  "ok" and never a finding: a field under an object that lists no
+  fields, `additionalProperties: true`, an `anyOf` branch that is open, a
+  `$ref` rote cannot follow, a body or response with no JSON schema. An
+  object that lists its fields is closed (the vendors leave
+  `additionalProperties` out), and a field is missing only when no branch
+  of an `anyOf` / `oneOf` has it. The correct-call corpus
+  (`tests/fixtures/vendor_specs/correct_calls/`) must stay at zero
+  findings; add a vendor's real calls there with its fixture.
+- **Send parameters in the spec's own style.** Stripe's 282 `expand` and
+  63 `created` parameters are `style: deepObject`: `expand[]=...`,
+  `created[gte]=...` (the spec has no bare `expand=`), and its form bodies use
+  the same brackets (`metadata[order_id]`). GitHub's `x-multi-segment`
+  path parameters become `{+name}` (a file path keeps its slashes). The
+  body's media type is checked too: Stripe takes form bodies, never JSON.
 - **Where no spec exists, the agent writes one, from fetched pages.**
   `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
   becomes an `ApiSpec` with `source="docs"`, checked the same way and

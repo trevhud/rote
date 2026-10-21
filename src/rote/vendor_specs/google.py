@@ -21,7 +21,14 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from rote.vendor_specs.model import ApiSpec, Operation, ParamSpec, ParamType, host_of
+from rote.vendor_specs.model import (
+    ApiSpec,
+    Operation,
+    ParamSpec,
+    ParamType,
+    host_of,
+    path_segments,
+)
 
 DIRECTORY_URL = "https://discovery.googleapis.com/discovery/v1/apis"
 
@@ -65,7 +72,7 @@ def api_for_url(url: str) -> UrlApi | None:
     host = host_of(url)
     if host is None or not host.endswith(".googleapis.com"):
         return None
-    segments = [s for s in re.sub(r"^[a-z]+://[^/]+", "", url).split("?")[0].split("/") if s]
+    segments = path_segments(url)
     sub = host.removesuffix(".googleapis.com")
     shared = sub in ("www", "content")
     if shared:

@@ -381,6 +381,29 @@ def _emit_pipeline_body(pipeline: Pipeline) -> str:
     return "\n".join(lines)
 
 
+def _cli_run(pipeline: Pipeline) -> str:
+    """The script's pipeline call, with a missing MCP endpoint as one line.
+
+    ``RoteMcpConfigError`` is the user's to fix and its message says how,
+    so it prints like a bad input: one ``error:`` line on stderr and exit
+    status 2, which ``rote run`` relays as the whole failure. Only an
+    agent loop with tools reaches MCP here (the python runtime emits no
+    bound steps), so the check is emitted only then. Matched by name, as
+    the DBOS adapter does.
+    """
+    call = "    result = run_pipeline(pipeline_input)\n"
+    if not any(n.tools for n in pipeline.nodes_by_kind(NodeKind.AGENT_LOOP)):
+        return call
+    return (
+        "    try:\n"
+        "    " + call + "    except Exception as exc:\n"
+        '        if type(exc).__name__ != "RoteMcpConfigError":\n'
+        "            raise\n"
+        '        print(f"error: {exc}", file=sys.stderr)\n'
+        "        sys.exit(2)\n"
+    )
+
+
 def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str:
     """Render the main.py source for a pipeline.
 
@@ -502,7 +525,7 @@ def emit_main(pipeline: Pipeline, cfg: PythonAdapterConfig | None = None) -> str
         "    # pipeline in-process, print the result.\n"
         "    pipeline_input = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}\n"
         f"{cli_input_check(pipeline, '    ')}"
-        "    result = run_pipeline(pipeline_input)\n"
+        f"{_cli_run(pipeline)}"
         "    print(json.dumps(result, indent=2, default=str))\n"
     )
 

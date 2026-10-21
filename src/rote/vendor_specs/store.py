@@ -28,7 +28,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rote.vendor_specs import google
+from rote.vendor_specs import google, openapi
+from rote.vendor_specs.google import UrlApi
 from rote.vendor_specs.model import ApiSpec
 
 DEFAULT_TTL_SECONDS = 24 * 3600
@@ -45,13 +46,28 @@ def default_root() -> Path:
 
 
 def http_get_json(url: str) -> Any:
-    """GET ``url`` and parse JSON. The one network call in this package."""
+    """GET ``url`` and parse it: JSON, or YAML (OpenAPI is often published as
+    YAML). The one network call in this package."""
     request = urllib.request.Request(url, headers={"User-Agent": "rote-vendor-specs"})
     try:
         with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
-            return json.loads(response.read().decode("utf-8"))
+            text = response.read().decode("utf-8")
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise SpecUnavailable(f"could not fetch {url}: {e}") from e
+    return parse_document(text, url)
+
+
+def parse_document(text: str, url: str) -> Any:
+    """A spec document's text as data: JSON, else YAML."""
+    import yaml
+
+    try:
+        return json.loads(text)
+    except ValueError:
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise SpecUnavailable(f"{url} is neither JSON nor YAML: {e}") from e
 
 
 class SpecStore:
@@ -99,6 +115,43 @@ class SpecStore:
         Raises :class:`SpecUnavailable` when the directory cannot be fetched.
         """
         return google.listed_versions(self._directory(), api)
+
+    def resolve_google_url(self, named: UrlApi) -> str | None:
+        """The version of ``named`` the directory lists: the first candidate it has.
+
+        The one rule turning a URL into a spec, for the request check and
+        the live check alike. Raises :class:`SpecUnavailable` when the
+        directory cannot be fetched.
+        """
+        listed = self.google_versions(named.api)
+        return next((v for v in named.versions if v in listed), None)
+
+    def openapi(self, source: openapi.Source) -> ApiSpec:
+        """The vendor's OpenAPI document for ``source``, fetched and cached like Discovery's."""
+        key = f"{source.vendor}/{source.api}/{source.version}"
+        memo = self._memo.get(key)
+        if isinstance(memo, SpecUnavailable):
+            raise memo
+        if memo is not None:
+            return memo
+        try:
+            raw = self._read_fresh(self.root / f"{key}.json")
+            fresh = not isinstance(raw, dict) or raw.get("source_url") != source.url
+            doc = self._get(source.url) if fresh else raw["document"]
+            spec = openapi.from_openapi(doc, source)
+            if fresh:
+                # Only a document rote can read is cached: a malformed one
+                # is fetched again next time, not served for the TTL.
+                self._write(key, {"source_url": source.url, "document": doc})
+        except openapi.OpenApiError as e:
+            error = SpecUnavailable(str(e))
+            self._memo[key] = error
+            raise error from e
+        except SpecUnavailable as e:
+            self._memo[key] = e
+            raise
+        self._memo[key] = spec
+        return spec
 
     def _fetch_google(self, api: str, version: str) -> ApiSpec | None:
         directory = self._directory()

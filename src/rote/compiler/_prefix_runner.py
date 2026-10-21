@@ -245,15 +245,36 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 continue
             if step["kind"] == "mcp":
                 # The arguments are reported either way: rote checks them
-                # against the tool's schema, recorded call or not.
-                arguments = _mcp_arguments(step, payload)
-                output = _mcp_result(step, arguments)
-                if output is _MISSING:
-                    report[node_id] = {"status": "no_recording", "arguments": arguments}
-                    unrecorded[node_id] = step.get("probe_shapes") or ["list", "text"]
+                # against the tool's schema, recorded call or not. A fan_out
+                # node makes one call per element of its list, so it reports
+                # a list of calls and its result is a list.
+                fan = step.get("fan_param")
+                if fan is None:
+                    payloads = [payload]
+                else:
+                    items = payload.get(fan)
+                    if not isinstance(items, list):
+                        raise BindingError(
+                            f"fan_out over `{fan}` expected a list, got {type(items).__name__}"
+                        )
+                    payloads = [{**payload, fan: item} for item in items]
+                calls = [_mcp_arguments(step, p) for p in payloads]
+                outputs = [_mcp_result(step, a) for a in calls]
+                reported: dict[str, Any] = (
+                    {"arguments": calls, "fan": True}
+                    if fan is not None
+                    else {"arguments": calls[0]}
+                )
+                if any(o is _MISSING for o in outputs):
+                    report[node_id] = {"status": "no_recording", **reported}
+                    unrecorded[node_id] = (
+                        ["list"]
+                        if fan is not None
+                        else (step.get("probe_shapes") or ["list", "text"])
+                    )
                     continue
-                results[node_id] = output
-                report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}
+                results[node_id] = outputs if fan is not None else outputs[0]
+                report[node_id] = {"status": "ok", "recorded": True, **reported}
                 continue
             module = importlib.import_module(step["module"])
             fn = getattr(module, step["symbol"])

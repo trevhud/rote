@@ -83,6 +83,10 @@ class ToolSchema:
     #: The result's JSON Schema, when the server declares one (MCP
     #: ``outputSchema``). ``None`` means the shape is unknown.
     output_schema: dict[str, Any] | None = None
+    #: How rote got it: ``live`` (a ``tools/list`` now), ``bundled`` (the
+    #: skill's :data:`rote.tool_schema.BUNDLED_TOOLS_FILENAME` snapshot) or
+    #: ``recorded`` (inferred from a baseline's calls).
+    origin: Literal["live", "bundled", "recorded"] = "live"
 
 
 ToolSchemas = dict[tuple[str, str], ToolSchema]
@@ -250,9 +254,87 @@ def recorded(observations: tuple[Any, ...]) -> ToolSchemas:
             s.input_schema,
             f"{s.samples} recorded call(s) in a baseline run",
             False,
+            origin="recorded",
         )
         for s in infer_tool_schemas(list(observations))
     }
+
+
+def bundled(skill_dir: Path) -> ToolSchemas:
+    """The skill's bundled tools/list snapshot (:func:`rote.tool_schema.load_bundled_tools`).
+
+    A declaration, like a live listing, written down by the skill's author:
+    it grounds a server rote cannot list (not registered, needs a login),
+    and a live listing of the same server replaces it (:func:`prefer_live`).
+    """
+    from rote.tool_schema import BUNDLED_TOOLS_FILENAME, load_bundled_tools
+
+    path = skill_dir / BUNDLED_TOOLS_FILENAME
+    return {
+        (server, tool): ToolSchema(
+            server,
+            tool,
+            spec["inputSchema"],
+            f"the skill's bundled tools/list ({path.name})",
+            True,
+            origin="bundled",
+        )
+        for server, tools in load_bundled_tools(skill_dir).items()
+        for tool, spec in tools.items()
+    }
+
+
+def prefer_live(live: ToolSchemas, snapshot: ToolSchemas) -> ToolSchemas:
+    """Declared schemas: a server listed live is read only from that listing.
+
+    Per server, not per tool: a tool the live server no longer lists is
+    gone, not something the snapshot still vouches for.
+    """
+    listed = {server for server, _ in live}
+    return {**{k: v for k, v in snapshot.items() if k[0] not in listed}, **live}
+
+
+def stale_bundled(pipeline: Pipeline, tools: ToolSchemas, snapshot: ToolSchemas) -> list[str]:
+    """``server.tool`` for each bound tool whose live schema differs from the snapshot.
+
+    The live one grounded the compile; the snapshot is out of date, and
+    anyone compiling without the server registered gets the old schema.
+    """
+    stale: set[str] = set()
+    for node in pipeline.nodes:
+        if node.mcp is None:
+            continue
+        key = (node.mcp.server, node.mcp.tool)
+        used, kept = tools.get(key), snapshot.get(key)
+        if (
+            used is not None
+            and kept is not None
+            and used.origin == "live"
+            and used.input_schema != kept.input_schema
+        ):
+            stale.add(f"{key[0]}.{key[1]}")
+    return sorted(stale)
+
+
+#: How the summary and the report name each origin.
+ORIGIN_LABELS = {
+    "live": "a live tools/list",
+    "bundled": "the skill's bundled snapshot",
+    "recorded": "a baseline's recorded calls",
+}
+
+
+def schema_sources(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, str]:
+    """``{server: what grounded its bound tools}`` for every server the pipeline binds."""
+    origins: dict[str, set[str]] = {}
+    for node in pipeline.nodes:
+        if node.mcp is None:
+            continue
+        schema = tools.get((node.mcp.server, node.mcp.tool))
+        origins.setdefault(node.mcp.server, set()).add(
+            ORIGIN_LABELS[schema.origin] if schema is not None else "no schema"
+        )
+    return {server: " and ".join(sorted(found)) for server, found in sorted(origins.items())}
 
 
 def merge(declared: ToolSchemas, inferred: ToolSchemas) -> ToolSchemas:
@@ -427,6 +509,20 @@ def tool_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFindin
             )
         )
     return findings
+
+
+def unchecked_tools(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, list[str]]:
+    """``{server: [tool, ...]}`` for every binding no schema was available for.
+
+    Their arguments are the agent's guess at the tool's parameter names,
+    which a real server refuses when the guess is wrong, so the compile's
+    summary names them (:func:`tool_questions` has the per-node detail).
+    """
+    unchecked: dict[str, set[str]] = {}
+    for node in pipeline.nodes:
+        if node.mcp is not None and (node.mcp.server, node.mcp.tool) not in tools:
+            unchecked.setdefault(node.mcp.server, set()).add(node.mcp.tool)
+    return {server: sorted(names) for server, names in sorted(unchecked.items())}
 
 
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
