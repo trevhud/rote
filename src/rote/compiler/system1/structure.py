@@ -211,8 +211,11 @@ Per node:
   several: a sub-heading that describes what a step produces (a report's
   tabs, a table's columns) is part of that step; consecutive actions on one
   screen that together do one thing (open a menu, click an item, wait for
-  its confirmation) are one call; and a step the skill does per item inside
-  a loop is in_loop of that loop, never a top-level node.
+  its confirmation) are one call; a step the skill does per item inside a
+  loop is in_loop of that loop, never a top-level node; and when the skill
+  calls a step an autonomous or iterative loop, what that loop does
+  (searches, lookups, enrichment, vetting, backfill) is the agent_loop's
+  tools or in_loop nodes, not top-level steps before or after it.
 - kind: one of the five kinds in the RUBRIC. A call to an outside system is a
   bare external_call; filtering, matching or reshaping its result is its own
   pure_function (fixed logic) or llm_judge (judgment). A person approving,
