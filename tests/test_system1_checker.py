@@ -42,7 +42,8 @@ def test_a_confident_kind_the_skeleton_lacks_is_a_disagreement(skill: Any) -> No
     lines = checker.disagreements(
         _verdicts(section_2=("pure_function", 0.95, 0.0)), skill.units, good_answer()
     )
-    assert lines == [
+    assert [(d.section, d.about) for d in lines] == [(2, "kind")]
+    assert [d.text for d in lines] == [
         "section 2 'Step 2: Summarize' (`summarize_email`): Clef reads this step's main work "
         "as pure_function (confidence 0.95); the skeleton gives it llm_judge"
     ]
@@ -70,7 +71,8 @@ def test_a_missing_or_extra_approval_point_is_a_disagreement(skill: Any) -> None
     missing = checker.disagreements(
         _verdicts(section_3=("pure_function", 0.9, 0.7)), skill.units, good_answer()
     )
-    assert missing == [
+    assert [d.about for d in missing] == ["no_gate"]
+    assert [d.text for d in missing] == [
         "section 3 'Step 3: Deliver' (`render_digest`): Clef says a person must act or answer "
         "here before the steps after it run (probability 0.70); the skeleton has no hitl_gate "
         "for it"
@@ -80,7 +82,8 @@ def test_a_missing_or_extra_approval_point_is_a_disagreement(skill: Any) -> None
     extra = checker.disagreements(
         _verdicts(section_3=("pure_function", 0.9, 0.2)), skill.units, gated
     )
-    assert extra == [
+    assert [d.about for d in extra] == ["extra_gate"]
+    assert [d.text for d in extra] == [
         "section 3 'Step 3: Deliver' (`render_digest`, `approve`): Clef says no person has to "
         "act here (probability a person must: 0.20); the skeleton pauses for one"
     ]
@@ -88,7 +91,7 @@ def test_a_missing_or_extra_approval_point_is_a_disagreement(skill: Any) -> None
     title = checker.disagreements(
         _verdicts(section_0=("pure_function", 0.5, 0.9)), skill.units, good_answer()
     )
-    assert title and "section 0" in title[0] and "no hitl_gate" in title[0]
+    assert [(d.section, d.about) for d in title] == [(0, "no_gate")]
 
 
 def _decide(skill: Any, fake: FakeCall, opinion: Any) -> tuple[Any, Any]:
@@ -97,51 +100,87 @@ def _decide(skill: Any, fake: FakeCall, opinion: Any) -> tuple[Any, Any]:
     )
 
 
-def test_a_disagreement_goes_back_to_the_pass_and_its_change_is_taken(skill: Any) -> None:
-    changed = good_answer()
-    changed["nodes"][2]["why"] = "the model was right"
-    seen: list[dict[str, Any]] = []
+D2 = checker.Disagreement(
+    2, "kind", "section 2 'Step 2: Summarize': Clef reads it as pure_function"
+)
+#: A passage under heading 2 of SKILL, verbatim.
+UNDER_2 = "Write a three-line summary of each email"
 
-    def opinion(answer: dict[str, Any]) -> list[str]:
-        seen.append(answer)
-        return ["X disagrees"] if len(seen) == 1 else []
 
-    fake = FakeCall(good_answer(), changed)
-    plan, rec = _decide(skill, fake, opinion)
+def _reply(keeps: list[dict[str, Any]] | None = None, **change: Any) -> dict[str, Any]:
+    answer = good_answer()
+    answer["nodes"][1].update(change)
+    return {**answer, "keeps": keeps or []}
+
+
+def test_a_changed_node_settles_the_disagreement(skill: Any) -> None:
+    def opinion(answer: dict[str, Any]) -> list[Any]:
+        return [D2] if answer["nodes"][1]["kind"] == "llm_judge" else []
+
+    fake = FakeCall(good_answer(), _reply(kind="pure_function", fan_out_over=""))
+    _, rec = _decide(skill, fake, opinion)
+    assert len(fake.prompts) == 2 and "section 2: " in fake.prompts[1]
+    assert rec.changed == [D2.text] and rec.kept == []
+
+
+def test_a_keep_with_a_verbatim_quote_from_its_own_heading_is_accepted(skill: Any) -> None:
+    fake = FakeCall(good_answer(), _reply([{"section": 2, "quote": UNDER_2}]))
+    plan, rec = _decide(skill, fake, lambda answer: [D2])
     assert len(fake.prompts) == 2
-    assert "=== SECOND OPINION ===\n- X disagrees" in fake.prompts[1]
-    assert rec.checked == ["X disagrees"] and rec.kept == [] and rec.rounds == 2
-    assert not any(r.startswith(checker.CHECKER_NOTE_PREFIX) for r in plan.review)
-    assert rec.answer["nodes"][2]["why"] == "the model was right"
+    assert rec.kept == [f'{D2.text}; the pass kept its answer, citing: "{UNDER_2}"']
+    assert f"{checker.CHECKER_NOTE_PREFIX}{rec.kept[0]}" in plan.review
 
 
-def test_a_disagreement_the_pass_keeps_is_an_open_question(skill: Any, tmp_path: Path) -> None:
-    from rote.compiler.system1 import report_extras
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [],  # no reason at all
+        [{"section": 2, "quote": "a sentence the skill never says"}],
+        # Verbatim, but from another heading: it does not speak to this step.
+        [{"section": 2, "quote": "Send the digest to the finance team"}],
+    ],
+)
+def test_a_keep_without_a_verbatim_quote_goes_back_once(skill: Any, bad: Any) -> None:
+    fake = FakeCall(good_answer(), _reply(bad), _reply([{"section": 2, "quote": UNDER_2}]))
+    _, rec = _decide(skill, fake, lambda answer: [D2])
+    assert len(fake.prompts) == 3
+    assert "=== WHAT FAILED IN THAT ANSWER ===" in fake.prompts[2]
+    assert "no passage copied exactly from under that heading" in fake.prompts[2]
+    assert rec.kept == [f'{D2.text}; the pass kept its answer, citing: "{UNDER_2}"']
 
-    fake = FakeCall(good_answer(), good_answer())
-    plan, rec = _decide(skill, fake, lambda answer: ["section 2 'Step 2: Summarize': X"])
-    assert rec.kept == ["section 2 'Step 2: Summarize': X"]
-    assert f"{checker.CHECKER_NOTE_PREFIX}section 2 'Step 2: Summarize': X" in plan.review
-    plan.structure = rec
-    work = tmp_path / "work"
-    work.mkdir()
-    titles = [t for t, _ in report_extras(work, plan).questions]
-    assert "A decision model disagrees: section 2 'Step 2: Summarize'" in titles
+
+def test_a_keep_still_unsupported_after_the_resend_says_so(skill: Any) -> None:
+    fake = FakeCall(good_answer(), _reply(), _reply())
+    _, rec = _decide(skill, fake, lambda answer: [D2])
+    assert len(fake.prompts) == 3
+    assert rec.kept == [f"{D2.text}; the pass kept its answer without a passage that supports it"]
 
 
 def test_a_reply_that_breaks_a_code_check_is_not_taken(skill: Any) -> None:
-    broken = good_answer()
+    broken = _reply()
     broken["nodes"][0]["quote"] = "words nowhere in the skill"
-    fake = FakeCall(good_answer(), broken)
-    _, rec = _decide(skill, fake, lambda answer: ["X"])
+    fake = FakeCall(good_answer(), broken, copy.deepcopy(broken))
+    _, rec = _decide(skill, fake, lambda answer: [D2])
     assert rec.answer["nodes"][0]["quote"] == good_answer()["nodes"][0]["quote"]
-    assert rec.kept == ["X"] and rec.contradictions[-1]
+    assert rec.kept == [f"{D2.text}; the pass's reply broke a code check, so it was not taken"]
 
 
 def test_no_disagreement_costs_no_round(skill: Any) -> None:
     fake = FakeCall(good_answer())
     _, rec = _decide(skill, fake, lambda answer: [])
     assert len(fake.prompts) == 1 and rec.rounds == 1 and rec.checked == []
+
+
+def test_a_kept_disagreement_is_an_open_question(skill: Any, tmp_path: Path) -> None:
+    from rote.compiler.system1 import report_extras
+
+    fake = FakeCall(good_answer(), _reply([{"section": 2, "quote": UNDER_2}]))
+    plan, rec = _decide(skill, fake, lambda answer: [D2])
+    plan.structure = rec
+    work = tmp_path / "work"
+    work.mkdir()
+    titles = [t for t, _ in report_extras(work, plan).questions]
+    assert "A decision model disagrees: section 2 'Step 2: Summarize'" in titles
 
 
 def test_prepare_runs_the_decider_as_the_checker_and_records_its_cost(
@@ -162,18 +201,50 @@ def test_prepare_runs_the_decider_as_the_checker_and_records_its_cost(
         return _verdicts(section_2=("pure_function", 0.95, 0.0))
 
     monkeypatch.setattr(decision_model, "decide", decide)
-    monkeypatch.setattr(
-        structure, "_structured_call", lambda: FakeCall(good_answer(), good_answer())
-    )
+    fake = FakeCall(good_answer(), _reply([{"section": 2, "quote": UNDER_2}]))
+    monkeypatch.setattr(structure, "_structured_call", lambda: fake)
     work = tmp_path / "w"
     work.mkdir()
     plan = system1.prepare(
         d, work, "clef", tools=TOOLS, structure_lane=Lane("claude-cli"), rubric=rubric
     )
-    # Every SKILL.md heading, as the structure pass numbers them.
     assert asked == [[u.title for u in structure.section_units(d)]]
     assert plan.structure is not None and plan.structure.checked and plan.structure.kept
     doc = json.loads((work / "system1" / "decisions.json").read_text())
     assert doc["decider"]["name"] == "clef" and doc["structure"]["kept"]
     # FakeCall's two $0.01 rounds and the one heading's $0.001 verdict.
     assert calls_cost_usd(work) == pytest.approx(0.02 + 0.001)
+
+
+@pytest.mark.asyncio
+async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--decider jev with no Cloudflare account: loud, and before the pass runs."""
+    import shutil
+
+    from rote.compiler import Compiler, CompilerError
+
+    def spent(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the structure pass ran although the checker cannot")
+
+    class _Agent:
+        name = "claude"
+
+        async def run(self, **kwargs: Any) -> Any:
+            raise AssertionError("the agent ran although the checker cannot")
+
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.setattr(structure, "decide", spent)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _Agent())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    with pytest.raises(
+        CompilerError,
+        match=r"^--decider jev needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+    ):
+        await Compiler(
+            system1_decider="jev", run_generated_tests=False, tool_discovery="none"
+        ).compile(skill, tmp_path / "out")

@@ -39,7 +39,7 @@ from typing import Any
 import yaml
 
 from rote.compiler.system1 import tiebreak
-from rote.compiler.system1.checker import CHECKER_NOTE_PREFIX
+from rote.compiler.system1.checker import CHECKER_NOTE_PREFIX, Disagreement
 from rote.compiler.system1.decide import (
     ARG_INPUT_PREFIX,
     REVIEW_BELOW,
@@ -332,11 +332,17 @@ in the same format, with every contradiction fixed. Change nothing else.
 _SECOND_OPINION = """\
 Your skeleton below passed every code check. A decision model then read
 each SKILL.md step on its own and, where it is confident, disagrees with
-the skeleton as listed after it. It is a second opinion, not evidence: it
-did not see the rest of the skill. Change a node where the skill's text
-supports the model; keep it where the text supports you, and say why in
-that node's `why`. Return the whole skeleton again, in the same format.
-Change nothing else.
+the skeleton as listed after it, each with its section's index. Settle
+every one, one of two ways:
+
+- change the skeleton so the disagreement no longer holds, or
+- keep your answer and, in `keeps`, give that section's index and a passage
+  copied exactly from under that heading that supports your answer over
+  the model's.
+
+Code checks both: a disagreement still standing needs a `keeps` entry whose
+passage is under that heading verbatim. Return the whole skeleton again, in
+the same format, plus `keeps`. Change nothing else.
 
 === YOUR SKELETON ===
 {previous}
@@ -368,6 +374,8 @@ class Structure:
     #: still standing after its second-opinion round (``checker``).
     checked: list[str] = field(default_factory=list)
     kept: list[str] = field(default_factory=list)
+    #: Disagreements the pass settled by changing the skeleton.
+    changed: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -378,10 +386,35 @@ class Structure:
             "resolved": self.resolved,
             "redecided": self.redecided,
             "checked": self.checked,
+            "changed": self.changed,
             "kept": self.kept,
             "cost_usd": None if self.cost_usd is None else round(self.cost_usd, 6),
             "usage": self.usage,
         }
+
+
+#: The second-opinion round's answer: the skeleton, plus a quoted reason for
+#: each disagreement it keeps.
+SECOND_OPINION_SCHEMA: dict[str, Any] = _obj(
+    {
+        **SCHEMA["properties"],
+        "keeps": {
+            "type": "array",
+            "items": _obj(
+                {
+                    "section": {"type": "integer", "description": "the disagreement's section"},
+                    "quote": _str(
+                        description="words copied exactly from under that heading that "
+                        "support the skeleton's answer over the decision model's"
+                    ),
+                }
+            ),
+        },
+    }
+)
+#: How many second-opinion answers: the first, and one more when a kept
+#: disagreement had no verbatim support or the answer broke a code check.
+SECOND_OPINION_ATTEMPTS = 2
 
 
 def lane_with(lane: Lane, choice: str) -> Lane:
@@ -919,7 +952,7 @@ def decide(
     tools: Mapping[tuple[str, str], Any] | None = None,
     sample: Any = None,
     call: Call | None = None,
-    checker: Callable[[dict[str, Any]], list[str]] | None = None,
+    checker: Callable[[dict[str, Any]], list[Disagreement]] | None = None,
 ) -> tuple[Plan, Structure]:
     """Ask for the skeleton, check it, repair it, and build the plan.
 
@@ -1013,7 +1046,7 @@ def decide(
 
 def _second_opinion(
     answer: dict[str, Any],
-    checker: Callable[[dict[str, Any]], list[str]],
+    checker: Callable[[dict[str, Any]], list[Disagreement]],
     call: Call,
     client: Any,
     lane: Lane,
@@ -1025,46 +1058,108 @@ def _second_opinion(
     sample: Any,
     result: Structure,
 ) -> dict[str, Any]:
-    """One round on the decision model's disagreements; the answer to keep."""
-    result.checked = checker(answer)
-    if not result.checked:
+    """The decision model's disagreements, settled; the answer to keep.
+
+    Each must end changed (the checker no longer raises it) or kept with a
+    passage quoted verbatim from under its own heading, checked like a node's
+    quote. An answer that misses either, or breaks a code check, goes back
+    once with what failed. A reply that still breaks a code check is not
+    taken; a disagreement still standing without support is kept and says so.
+    """
+    first = checker(answer)
+    result.checked = [d.text for d in first]
+    if not first:
         return answer
     prompt = (
         base
         + "\n\n"
         + _SECOND_OPINION.format(
             previous=json.dumps(answer, indent=1),
-            disagreements="\n".join(f"- {d}" for d in result.checked),
+            disagreements="\n".join(f"- section {d.section}: {d.text}" for d in first),
         )
     )
-    try:
-        reply, rows = call(
-            node_id=NODE_ID,
-            provider=lane.provider,
-            client=lane.client,
-            model=lane.model,
-            prompt=prompt,
-            output_schema=SCHEMA,
-            sdk_client=client,
-            max_tokens=MAX_TOKENS,
+    taken: tuple[dict[str, Any], list[Disagreement], dict[int, str]] | None = None
+    for attempt in range(SECOND_OPINION_ATTEMPTS):
+        try:
+            reply, rows = call(
+                node_id=NODE_ID,
+                provider=lane.provider,
+                client=lane.client,
+                model=lane.model,
+                prompt=prompt,
+                output_schema=SECOND_OPINION_SCHEMA,
+                sdk_client=client,
+                max_tokens=MAX_TOKENS,
+            )
+        except RuntimeError as e:
+            raise StructureUnavailable(
+                f"the System-1 structure pass ({lane.model}) failed on the second opinion: {e}",
+                result.usage + billed_rows(e),
+            ) from e
+        result.usage += [{"model": m, **u} for m, u in rows]
+        result.rounds += 1
+        keeps = reply.pop("keeps", None) or []
+        broken = check(reply, skill, skill_md, declared, sample)
+        if not broken:
+            broken = _build_and_validate(reply, skill, declared, tools, sample)[1]
+        standing: list[Disagreement] = []
+        supported: dict[int, str] = {}
+        if not broken:
+            standing = checker(reply)
+            supported = _supported_keeps(keeps, skill)
+            taken = (reply, standing, supported)
+        unsupported = [
+            f"section {d.section}: this still stands ({d.text}), and `keeps` has no passage "
+            "copied exactly from under that heading that supports your answer"
+            for d in standing
+            if d.section not in supported
+        ]
+        found = [*broken, *unsupported]
+        result.contradictions.append(found)
+        if not found or attempt == SECOND_OPINION_ATTEMPTS - 1:
+            break
+        prompt = (
+            base
+            + "\n\n"
+            + _SECOND_OPINION.format(
+                previous=json.dumps({**reply, "keeps": keeps}, indent=1),
+                disagreements="\n".join(f"- section {d.section}: {d.text}" for d in first),
+            )
+            + "\n=== WHAT FAILED IN THAT ANSWER ===\n"
+            + "\n".join(f"- {c}" for c in found)
+            + "\n"
         )
-    except RuntimeError as e:
-        raise StructureUnavailable(
-            f"the System-1 structure pass ({lane.model}) failed on the second opinion: {e}",
-            result.usage + billed_rows(e),
-        ) from e
-    result.usage += [{"model": m, **u} for m, u in rows]
-    result.rounds += 1
-    found = check(reply, skill, skill_md, declared, sample)
-    if not found:
-        found = _build_and_validate(reply, skill, declared, tools, sample)[1]
-    result.contradictions.append(found)
-    if found:
+    if taken is None:
         # A second opinion must not cost a skeleton that passed every check.
-        result.kept = [*result.checked]
+        result.kept = [
+            f"{d.text}; the pass's reply broke a code check, so it was not taken" for d in first
+        ]
         return answer
-    result.kept = checker(reply)
+    reply, standing, supported = taken
+    still = {d.key for d in standing}
+    result.changed = [d.text for d in first if d.key not in still]
+    result.kept = [
+        f"{d.text}; the pass kept its answer, citing: {json.dumps(supported[d.section])}"
+        if d.section in supported
+        else f"{d.text}; the pass kept its answer without a passage that supports it"
+        for d in standing
+    ]
     return reply
+
+
+def _supported_keeps(keeps: list[Any], skill: SkillParse) -> dict[int, str]:
+    """``{section: quote}`` for each keep whose quote is under its own heading
+    verbatim: the check a node's quote passes."""
+    units = {u.index: u for u in skill.units}
+    out: dict[int, str] = {}
+    for k in keeps:
+        if not isinstance(k, dict) or not isinstance(k.get("section"), int):
+            continue
+        u = units.get(k["section"])
+        quote = str(k.get("quote") or "")
+        if u is not None and _appears(quote, f"{u.title}\n{u.text}"):
+            out[k["section"]] = quote
+    return out
 
 
 def _build_and_validate(

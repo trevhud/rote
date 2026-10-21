@@ -23,6 +23,7 @@ heading, so the kind check asks whether the model's kind is among them.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from rote.compiler.system1.decision_model import Verdicts
@@ -33,7 +34,26 @@ CHECKER_NOTE_PREFIX = "decision model disagrees: "
 GATE = "hitl_gate"
 
 
-def disagreements(verdicts: Verdicts, units: list[Unit], answer: Mapping[str, Any]) -> list[str]:
+@dataclass(frozen=True)
+class Disagreement:
+    """One confident verdict the skeleton contradicts, on one heading."""
+
+    #: The heading's index in SECTIONS (the structure pass's numbering).
+    section: int
+    #: What it is about: ``kind``, ``no_gate`` or ``extra_gate``. With the
+    #: section, it names the same disagreement across answers, whose node
+    #: ids may differ.
+    about: str
+    text: str
+
+    @property
+    def key(self) -> tuple[int, str]:
+        return (self.section, self.about)
+
+
+def disagreements(
+    verdicts: Verdicts, units: list[Unit], answer: Mapping[str, Any]
+) -> list[Disagreement]:
     """Where ``verdicts`` (one per heading, by unit index) are confident and
     ``answer`` (the structure pass's skeleton) says otherwise, one line each."""
     model = verdicts.model
@@ -42,7 +62,7 @@ def disagreements(verdicts: Verdicts, units: list[Unit], answer: Mapping[str, An
         section = node.get("section")
         if isinstance(section, int):
             by_section.setdefault(section, []).append(node)
-    out: list[str] = []
+    out: list[Disagreement] = []
     for unit in units:
         verdict = verdicts.by_unit.get(unit.index)
         if verdict is None:
@@ -58,21 +78,33 @@ def disagreements(verdicts: Verdicts, units: list[Unit], answer: Mapping[str, An
             and verdict.kind not in kinds
         ):
             out.append(
-                f"{where}: {model.label} reads this step's main work as {verdict.kind} "
-                f"(confidence {verdict.kind_confidence:.2f}); the skeleton gives it "
-                f"{' and '.join(kinds)}"
+                Disagreement(
+                    unit.index,
+                    "kind",
+                    f"{where}: {model.label} reads this step's main work as {verdict.kind} "
+                    f"(confidence {verdict.kind_confidence:.2f}); the skeleton gives it "
+                    f"{' and '.join(kinds)}",
+                )
             )
         has_gate = any(n.get("kind") == GATE for n in nodes)
         person = verdict.human >= model.human_threshold
         if person and not has_gate:
             out.append(
-                f"{where}: {model.label} says a person must act or answer here before the "
-                f"steps after it run (probability {verdict.human:.2f}); the skeleton has no "
-                "hitl_gate for it"
+                Disagreement(
+                    unit.index,
+                    "no_gate",
+                    f"{where}: {model.label} says a person must act or answer here before the "
+                    f"steps after it run (probability {verdict.human:.2f}); the skeleton has no "
+                    "hitl_gate for it",
+                )
             )
         elif has_gate and not person:
             out.append(
-                f"{where}: {model.label} says no person has to act here (probability a "
-                f"person must: {verdict.human:.2f}); the skeleton pauses for one"
+                Disagreement(
+                    unit.index,
+                    "extra_gate",
+                    f"{where}: {model.label} says no person has to act here (probability a "
+                    f"person must: {verdict.human:.2f}); the skeleton pauses for one",
+                )
             )
     return out

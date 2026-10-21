@@ -136,7 +136,11 @@ class FakeCall:
 
     def __call__(self, **kw: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
         self.prompts.append(kw["prompt"])
-        assert kw["output_schema"] in (structure.SCHEMA, structure.REDECIDE_SCHEMA)
+        assert kw["output_schema"] in (
+            structure.SCHEMA,
+            structure.REDECIDE_SCHEMA,
+            structure.SECOND_OPINION_SCHEMA,
+        )
         assert kw["max_tokens"] == structure.MAX_TOKENS
         usage = {"input_tokens": 1000, "output_tokens": 100}
         usage |= {"cache_write_tokens": 0, "cache_read_tokens": 0, "cost_usd": 0.01}

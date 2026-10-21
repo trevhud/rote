@@ -124,6 +124,7 @@ def row(
         "first_round_contradictions": len(st.contradictions[0]) if st else 0,
         "checked": len(st.checked) if st else 0,
         "kept": len(st.kept) if st else 0,
+        "changed": len(st.changed) if st else 0,
         "unresolved": len(st.resolved) if st else 0,
         "seconds": round(elapsed, 1),
         "usage": st.usage if st else [],
