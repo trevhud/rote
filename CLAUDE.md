@@ -520,8 +520,14 @@ the input a baseline ran on) is reduced to a schema by
 CONTRACT`. Verification then checks it, and `rote.compiler.prefix` runs
 the pipeline's pure functions (and MCP nodes a baseline recorded, matched
 on exact arguments) on the sample in the generated-test sandbox. A
-`KeyError` there goes back to the agent with the file and line. Things to
-preserve:
+`KeyError` there goes back to the agent with the file and line. MCP tool
+arguments are grounded the same way, in each tool's own input schema:
+a live `tools/list` of the registered servers the skill names, else the
+skill's bundled snapshot (`mcp-tools.json` in the skill dir,
+`rote.tool_schema.load_bundled_tools`). Live always wins per server; a
+live schema that differs from the snapshot for a bound tool is reported
+as a stale snapshot, and the summary and compile-report.md name what
+grounded each server. Things to preserve:
 
 - **The prefix runner is a dumb interpreter.** `_prefix_runner.py` is
   stdlib-only and copied into the sandbox scratch dir. The semantics

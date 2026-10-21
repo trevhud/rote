@@ -505,13 +505,21 @@ def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
 
     example = tmp_path / "example"
     (example / "fidelity").mkdir(parents=True)
-    tool = {
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        }
+    (example / "skill").mkdir()
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
     }
+    # The tool's schema is the skill's bundled tools/list; cases.yaml adds
+    # only what a fixture needs beyond it.
+    (example / "skill" / "mcp-tools.json").write_text(
+        json.dumps(
+            {"servers": {"gmail": {"tools": [{"name": "search_threads", "inputSchema": schema}]}}}
+        ),
+        encoding="utf-8",
+    )
+    tool = {"side_effect": False}
     (example / "fidelity" / "cases.yaml").write_text(
         yaml.safe_dump(
             {

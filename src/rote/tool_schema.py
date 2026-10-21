@@ -139,3 +139,61 @@ def argument_problem(
         if want is not None and not is_json_type(value, want):
             return f"argument {key!r} must be {want}, got {type(value).__name__}"
     return None
+
+
+# ───────── a skill's bundled tools/list snapshot ─────────
+
+#: The file a skill may bundle beside its SKILL.md: each MCP server's
+#: ``tools/list`` result, as data. The compile grounds tool arguments in it
+#: for any server it could not list live, the way it finds a bundled
+#: ``sample-input.json``; the compile bench's fixture servers serve exactly
+#: these tools.
+BUNDLED_TOOLS_FILENAME = "mcp-tools.json"
+
+
+class BundledToolsError(ValueError):
+    """A skill's ``mcp-tools.json`` is not a tools/list snapshot."""
+
+
+def load_bundled_tools(skill_dir: Any) -> dict[str, dict[str, dict[str, Any]]]:
+    """``{server: {tool: {"description": str, "inputSchema": dict}}}`` from the skill.
+
+    The file is ``{"servers": {server: {"tools": [tool, ...]}}}``, each tool
+    the shape MCP's ``tools/list`` returns (``name``, ``description``,
+    ``inputSchema``). Empty when the skill bundles none. A file that is
+    there but malformed is an error, never skipped: the skill's author put
+    it there to be read.
+    """
+    import json
+    from pathlib import Path
+
+    path = Path(skill_dir) / BUNDLED_TOOLS_FILENAME
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise BundledToolsError(f"{path}: not valid JSON: {e}") from e
+    servers = raw.get("servers") if isinstance(raw, dict) else None
+    if not isinstance(servers, dict):
+        raise BundledToolsError(f'{path}: expected {{"servers": {{name: {{"tools": [...]}}}}}}')
+    found: dict[str, dict[str, dict[str, Any]]] = {}
+    for server, entry in servers.items():
+        tools = entry.get("tools") if isinstance(entry, dict) else None
+        if not isinstance(tools, list):
+            raise BundledToolsError(f'{path}: server {server!r} has no "tools" list')
+        found[str(server)] = {}
+        for tool in tools:
+            if (
+                not isinstance(tool, dict)
+                or not isinstance(tool.get("name"), str)
+                or not isinstance(tool.get("inputSchema"), dict)
+            ):
+                raise BundledToolsError(
+                    f"{path}: each of {server!r}'s tools needs a name and an inputSchema object"
+                )
+            found[str(server)][tool["name"]] = {
+                "description": str(tool.get("description") or ""),
+                "inputSchema": tool["inputSchema"],
+            }
+    return found
