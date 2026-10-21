@@ -240,7 +240,7 @@ def test_login_moves_to_the_next_published_port_when_the_first_is_taken(
     with first_free_callback_port() as free:
         doc = asyncio.run(login("vendor", _config(fx)))
     assert doc["client_info"]["client_id"] == fx.cimd_url
-    # Exactly the port it bound: the only published one free.
+    # Exactly the port it bound: the first free one, past a taken one.
     assert {e["redirect_uri"] for e in fx.events("authorize")} == {
         f"http://{CALLBACK_HOST}:{free}/callback"
     }

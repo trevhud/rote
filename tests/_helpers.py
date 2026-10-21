@@ -459,9 +459,12 @@ def first_free_callback_port() -> Iterator[int]:
     the way the code under test binds them, leaves the others to whoever holds
     them, and frees one that has a taken port before it, plus a later one when
     it can, so "the first free port" has a rival to beat. Whatever the runner
-    was doing, the first free port is then known. Skips when no published
-    port after the first can be freed.
+    was doing, the first free port is then known. When no published port
+    after the first can be freed it skips, except under CI, where it fails:
+    a skip there would hide the test on every run.
     """
+    import os
+
     import pytest
 
     from rote.mcp.auth import CALLBACK_PORTS, bind_callback_sockets
@@ -470,7 +473,10 @@ def first_free_callback_port() -> Iterator[int]:
     try:
         free = [p for p in CALLBACK_PORTS[1:] if held[p] is not None][:2]
         if not free:
-            pytest.skip(f"no published callback port after the first is free: {CALLBACK_PORTS}")
+            why = f"no published callback port after the first is free: {CALLBACK_PORTS}"
+            if os.environ.get("CI"):
+                pytest.fail(why)
+            pytest.skip(why)
         for port in free:
             for sock in held.pop(port) or []:
                 sock.close()
