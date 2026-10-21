@@ -33,7 +33,7 @@ def _tool(name: str, read_only: bool) -> Any:
 
 LISTED = [_tool("lookup", True), _tool("publish", False)]
 #: Servers that list something else; any other server lists LISTED.
-LISTED_BY = {"mirror": [_tool("publish", True)]}
+LISTED_BY = {"mirror": [_tool("publish", True)], "a__b": [_tool("publish", True)]}
 
 
 @pytest.fixture()
@@ -420,4 +420,20 @@ def test_each_server_is_asked_only_about_the_tools_it_is_offered_for(
     wiring = helper._mcp_config_for(["lookup", "publish"], {"lookup": "ro"})
     assert wiring.allowed == [("mirror", "publish"), ("ro", "lookup")]
     assert wiring.removed == [("ro", "publish")]
+    assert wiring.withheld == {}
+
+
+def test_a_tool_kept_on_a_server_named_with_a_double_underscore_is_not_withheld(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`publish` may write on `a` and is read-only on `a__b`. Splitting
+    `mcp__a__b__publish` on `__` reads its tool as `b__publish`, so the kept
+    `publish` was reported withheld and its name put in the loop's note."""
+    _read_only(monkeypatch)
+    monkeypatch.setenv("ROTE_MCP_A_URL", "https://a.example/mcp")
+    monkeypatch.setenv("ROTE_MCP_A__B_URL", "https://ab.example/mcp")
+    monkeypatch.setattr(mcp, "_registry_servers", lambda: {"a": {"url": "x"}, "a__b": {"url": "y"}})
+    wiring = helper._mcp_config_for(["publish"], None)
+    assert wiring.allowed == [("a__b", "publish")]
+    assert wiring.removed == [("a", "publish")]
     assert wiring.withheld == {}

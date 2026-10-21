@@ -29,7 +29,7 @@ from rote.mcp import (
     write_token_file,
 )
 from rote.mcp.tokens import ServerTokenKV
-from tests._helpers import occupied_ports
+from tests._helpers import first_free_callback_port, occupied_ports
 
 # ───────── Registry ─────────
 
@@ -994,10 +994,10 @@ def test_selecting_a_callback_port_binds_it_and_skips_taken_ones() -> None:
     between selection and the callback server starting."""
     from rote.mcp import auth
 
-    with occupied_ports(*auth.CALLBACK_PORTS[:2]):
+    with first_free_callback_port() as free:
         port, sockets = auth.select_callback_port()
         try:
-            assert port == auth.CALLBACK_PORTS[2]
+            assert port == free  # past at least one taken port, to the first free one
             assert {sock.getsockname()[1] for sock in sockets} == {port}
             assert auth.bind_callback_sockets(port) is None  # held by us
         finally:

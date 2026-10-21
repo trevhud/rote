@@ -51,7 +51,7 @@ from rote.mcp.auth import (  # noqa: E402
     registration_of,
 )
 from rote.mcp.learned import learned_auth  # noqa: E402
-from tests._helpers import occupied_ports  # noqa: E402
+from tests._helpers import first_free_callback_port, occupied_ports  # noqa: E402
 from tests._oauth_fixture import (  # noqa: E402
     CIMD_DOCUMENT,
     OAuthFixture,
@@ -237,11 +237,12 @@ def test_a_callback_port_outside_the_published_set_does_not_offer_cimd(
 def test_login_moves_to_the_next_published_port_when_the_first_is_taken(
     fx: OAuthFixture,
 ) -> None:
-    with occupied_ports(CALLBACK_PORTS[0]):
+    with first_free_callback_port() as free:
         doc = asyncio.run(login("vendor", _config(fx)))
     assert doc["client_info"]["client_id"] == fx.cimd_url
+    # Exactly the port it bound: the first free one, past a taken one.
     assert {e["redirect_uri"] for e in fx.events("authorize")} == {
-        f"http://{CALLBACK_HOST}:{CALLBACK_PORTS[1]}/callback"
+        f"http://{CALLBACK_HOST}:{free}/callback"
     }
 
 
