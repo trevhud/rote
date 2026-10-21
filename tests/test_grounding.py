@@ -1337,3 +1337,115 @@ def test_system1_takes_its_input_schema_and_gate_keys_from_the_sample(tmp_path: 
     # Without a sample, the wording decides, and the sample's check would fail.
     system1.prepare(EXPENSE / "skill", tmp_path / "without")
     assert "gate_payload_not_sample" in _grounding_kinds(_pipeline(tmp_path / "without"), sample)
+
+
+_FAN_MCP_IR = """\
+name: brief
+input:
+  type: Products
+  required: [names]
+nodes:
+  - id: build
+    kind: pure_function
+    description: one search query per product
+    impl: extracted/brief.py:build
+    inputs:
+      names: pipeline.input.names
+  - id: search
+    kind: external_call
+    description: search the docs once per query
+    impl: extracted/brief.py:search
+    fan_out: true
+    mcp: {server: docs, tool: search_docs, args: {query: query}}
+    inputs:
+      query: build.output
+  - id: count
+    kind: pure_function
+    description: count the results
+    impl: extracted/brief.py:count
+    inputs:
+      results: search.output
+edges:
+  - {from: build, to: search, fan_out: true}
+  - {from: search, to: count}
+entry_nodes: [build]
+exit_nodes: [count]
+"""
+
+_FAN_MCP_MODULE = """\
+def build(names):
+    return [f"{n} limits" for n in names] if names != ["bad"] else [1, "x"]
+
+
+def search(query):
+    raise NotImplementedError("mcp")
+
+
+def count(results):
+    return {"n": len(results)}
+"""
+
+
+def _fan_tools() -> dict[tuple[str, str], object]:
+    from rote.compiler.tool_grounding import ToolSchema
+
+    schema = {
+        "type": "object",
+        "properties": {"query": {"type": "string"}},
+        "required": ["query"],
+    }
+    return {("docs", "search_docs"): ToolSchema("docs", "search_docs", schema, "tools/list", True)}
+
+
+def test_a_fanned_mcp_node_is_checked_one_call_per_element(tmp_path: Path) -> None:
+    """The emitted code calls the tool once per element, so the prefix checks
+    each element's arguments: the whole list is not a `query` (the demo's
+    compile failed `must be string, got list` on correct code)."""
+    root = _write(tmp_path, {"pipeline.yaml": _FAN_MCP_IR, "extracted/brief.py": _FAN_MCP_MODULE})
+    pipeline = _pipeline(root)
+    impls = implementation_status(pipeline, root)
+    sample = _sample({"names": ["R2", "Durable Objects"]})
+    run = run_prefix(pipeline, root, sample, impls, trust_skill=True, tools=_fan_tools())
+    assert [f for f in run.findings if f.kind == "tool_arguments_invalid"] == []
+    assert run.steps["search"]["arguments"] == [
+        {"query": "R2 limits"},
+        {"query": "Durable Objects limits"},
+    ]
+    # A real per-element mistake is still caught, and names the element.
+    bad = run_prefix(
+        pipeline, root, _sample({"names": ["bad"]}), impls, trust_skill=True, tools=_fan_tools()
+    )
+    [finding] = [f for f in bad.findings if f.kind == "tool_arguments_invalid"]
+    assert "search[0] would call docs.search_docs with {'query': 1}" in finding.message
+
+
+def test_recorded_calls_stand_in_for_each_fanned_element(tmp_path: Path) -> None:
+    root = _write(tmp_path, {"pipeline.yaml": _FAN_MCP_IR, "extracted/brief.py": _FAN_MCP_MODULE})
+    pipeline = _pipeline(root)
+    observed = tuple(
+        ObservedToolCall("docs", "search_docs", {"query": q}, [{"type": "text", "text": "[1]"}])
+        for q in ("R2 limits", "Durable Objects limits")
+    )
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"names": ["R2", "Durable Objects"]}),
+        implementation_status(pipeline, root),
+        observations=observed,
+        trust_skill=True,
+        tools=_fan_tools(),
+    )
+    assert run.steps["search"]["status"] == "ok"
+    # The consumer ran on the per-element results, as on every runtime.
+    assert run.steps["count"]["status"] == "ok"
+    # With one element unrecorded the node is unrecorded, never half-faked.
+    partial = run_prefix(
+        pipeline,
+        root,
+        _sample({"names": ["R2", "D1"]}),
+        implementation_status(pipeline, root),
+        observations=observed,
+        trust_skill=True,
+        tools=_fan_tools(),
+    )
+    assert partial.steps["search"]["status"] == "no_recording"
