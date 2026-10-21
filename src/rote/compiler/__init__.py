@@ -688,67 +688,82 @@ class Compiler:
                     compiler_skill_dir, Path(rubric_dir_str)
                 )
 
-            instructions: list[str] = []
-            if extra_instructions:
-                instructions.append(extra_instructions)
-            research: api_docs.WebResearch | None = None
-            specs: SpecStore | None = None
-            if self.api_backend:
-                instructions.append(api_docs.brief())
-                research = api_docs.WebResearch()
-                specs = SpecStore()
-            if plan is not None:
-                instructions.append(self._materialize_update_context(work_dir, output_dir, plan))
-            if probe_dir is not None:
-                probe_instructions = self._materialize_probe_context(work_dir, probe_dir)
-                if probe_instructions is not None:
-                    self._emit(
-                        "log", "probe artifacts found — feeding observed traffic to the agent"
-                    )
-                    instructions.append(probe_instructions)
-            ctx_dir = materialize(work_dir, sample) if sample is not None else None
             if sample is not None:
                 self._emit("log", f"input contract grounded in a sample input: {sample.source}")
-            brief = contract_brief(sample, skill_dir, ctx_dir)
-            if brief:
-                instructions.append(brief)
-            if grounding.tools:
-                schemas = tool_grounding.materialize(work_dir / GROUNDING_DIRNAME, grounding.tools)
-                instructions.append(tool_grounding.brief(grounding.tools, skill_md_text, schemas))
-            run_kwargs: dict[str, Any] = {}
-            if instructions:
-                run_kwargs["extra_instructions"] = "\n\n".join(instructions)
-            # Repair pass: a deliverable that fails verification (an invalid
-            # pipeline.yaml, a module that cannot take its payload or parse
-            # on 3.11, red generated tests) is bounced back into the SAME
-            # agent conversation with the verbatim problems instead of
-            # shipping the paid run broken. Only drivers whose run()
-            # declares the ``repair`` parameter can resume a conversation
-            # (the in-process drivers, and claude via `--resume`).
+            # A --backend api compile keeps the session: its external_call
+            # modules are researched vendor calls, written with web tools the
+            # parallel calls do not have.
+            parallel = (
+                s1_plan is not None
+                and not self.api_backend
+                and callable(getattr(driver, "generate", None))
+            )
+            research: api_docs.WebResearch | None = None
+            specs: SpecStore | None = None
             base_dir = output_dir if plan is not None else None
-            if "repair" in inspect.signature(driver.run).parameters:
-                settle_round = (
-                    None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
-                )
-                run_kwargs["repair"] = self._deliverable_repairer(
-                    base_dir,
-                    skill_dir,
-                    before_verify=settle_round,
-                    grounding=grounding,
-                    portable_judges=s1_plan is not None,
-                    web_research=research,
-                    spec_store=specs,
-                )
+            run_kwargs: dict[str, Any] = {}
+            if not parallel:
+                # The session's briefs, context files and repairer. The
+                # parallel pieces need none of them: they read the sample, the
+                # tool schemas and the recorded calls from `grounding`
+                # (generate.Context) and `extra_instructions` as their hosting
+                # contract, and generate's own verify loop repairs them.
+                instructions: list[str] = []
+                if extra_instructions:
+                    instructions.append(extra_instructions)
+                if self.api_backend:
+                    instructions.append(api_docs.brief())
+                    research = api_docs.WebResearch()
+                    specs = SpecStore()
+                if plan is not None:
+                    instructions.append(
+                        self._materialize_update_context(work_dir, output_dir, plan)
+                    )
+                if probe_dir is not None:
+                    probe_instructions = self._materialize_probe_context(work_dir, probe_dir)
+                    if probe_instructions is not None:
+                        self._emit(
+                            "log", "probe artifacts found — feeding observed traffic to the agent"
+                        )
+                        instructions.append(probe_instructions)
+                ctx_dir = materialize(work_dir, sample) if sample is not None else None
+                brief = contract_brief(sample, skill_dir, ctx_dir)
+                if brief:
+                    instructions.append(brief)
+                if grounding.tools:
+                    schemas = tool_grounding.materialize(
+                        work_dir / GROUNDING_DIRNAME, grounding.tools
+                    )
+                    instructions.append(
+                        tool_grounding.brief(grounding.tools, skill_md_text, schemas)
+                    )
+                if instructions:
+                    run_kwargs["extra_instructions"] = "\n\n".join(instructions)
+                # Repair pass: a deliverable that fails verification (an
+                # invalid pipeline.yaml, a module that cannot take its payload
+                # or parse on 3.11, red generated tests) is bounced back into
+                # the SAME agent conversation with the verbatim problems
+                # instead of shipping the paid run broken. Only drivers whose
+                # run() declares the ``repair`` parameter can resume a
+                # conversation (the in-process drivers, and claude via
+                # `--resume`).
+                if "repair" in inspect.signature(driver.run).parameters:
+                    settle_round = (
+                        None if s1_plan is None else functools.partial(system1.settle, p=s1_plan)
+                    )
+                    run_kwargs["repair"] = self._deliverable_repairer(
+                        base_dir,
+                        skill_dir,
+                        before_verify=settle_round,
+                        grounding=grounding,
+                        portable_judges=s1_plan is not None,
+                        web_research=research,
+                        spec_store=specs,
+                    )
 
             try:
-                # A --backend api compile keeps the session: its external_call
-                # modules are researched vendor calls, written with web tools
-                # the parallel calls do not have.
-                if (
-                    s1_plan is not None
-                    and not self.api_backend
-                    and callable(getattr(driver, "generate", None))
-                ):
+                if parallel:
+                    assert s1_plan is not None
                     result = await self._generate_text(
                         cast("Generator", driver),
                         skill_dir=skill_dir,
@@ -782,6 +797,7 @@ class Compiler:
             if s1_plan is not None:
                 try:
                     system1.settle(result.work_dir, s1_plan, final=True)
+                    system1.record_structure(result.work_dir, s1_plan)
                     s1_extras = system1.report_extras(result.work_dir, s1_plan)
                 except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
                     kept = self._keep_rejected_work(result.work_dir, output_dir)
@@ -930,11 +946,19 @@ class Compiler:
 
             # Re-point the result's path to the moved location for the
             # caller's benefit.
+            # System-1's own calls (decider, tie-break, structure pass) are
+            # outside the driver's usage; the CLI adds them to the compile's
+            # cost so the figure bench and agents read is the whole spend.
+            metadata = (
+                result.metadata
+                if s1_plan is None
+                else {**result.metadata, "system1_cost_usd": system1.calls_cost_usd(output_dir)}
+            )
             return CompilationResult(
                 pipeline=pipeline,
                 output_dir=output_dir,
                 driver_name=result.driver_name,
-                driver_metadata=result.metadata,
+                driver_metadata=metadata,
                 verification=verification,
             )
 

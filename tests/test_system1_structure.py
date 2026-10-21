@@ -1491,3 +1491,29 @@ def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
         "system1: --decider clef and --tiebreak haiku do not run while the structure pass "
         "(haiku) decides the skeleton; pass --structure rules to use them"
     ) in logs
+
+
+def test_system1s_calls_cost_counts_the_structure_pass_and_its_redecides(
+    skill: Any, tmp_path: Path
+) -> None:
+    """decisions.json was written before the text phase: a re-decide's calls
+    must reach it, and the structure entry counts in System-1's cost."""
+    from rote.compiler import system1
+    from rote.compiler.system1 import calls_cost_usd, record_structure
+    from rote.compiler.system1.skeleton import BRIEF_DIRNAME, DECISIONS_FILENAME
+
+    plan, rec, _ = run(skill, good_answer())
+    plan.structure = rec
+    work = tmp_path / "w"
+    work.mkdir()
+    system1.write(plan, work)
+    path = work / BRIEF_DIRNAME / DECISIONS_FILENAME
+    doc = json.loads(path.read_text())
+    doc["structure"] = rec.as_dict()
+    doc["tiebreak"] = {"cost_usd": 0.001}
+    path.write_text(json.dumps(doc))
+    assert calls_cost_usd(work) == pytest.approx(0.011)
+    rec.usage.append({"model": "m", "input_tokens": 5, "output_tokens": 5, "cost_usd": 0.02})
+    record_structure(work, plan)
+    assert calls_cost_usd(work) == pytest.approx(0.031)
+    assert json.loads(path.read_text())["structure"]["usage"][-1]["cost_usd"] == 0.02

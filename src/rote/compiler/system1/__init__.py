@@ -265,6 +265,42 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     )
 
 
+def record_structure(work_dir: Path, p: Plan) -> None:
+    """Rewrite decisions.json's structure entry from the final record.
+
+    prepare() writes it before the text phase; a binding re-decide adds
+    calls after that, which the entry must count too."""
+    st = p.structure
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if st is None or not path.is_file():
+        return
+    st.cost_usd = tiebreak._cost(st.usage) if st.usage else st.cost_usd
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["structure"] = st.as_dict()
+    path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+
+
+def calls_cost_usd(work_dir: Path) -> float | None:
+    """What System-1's own model calls cost, from decisions.json.
+
+    The decider (Clef or Jev), the tie-break and the structure pass are paid
+    calls outside the text phase. ``0.0`` when none ran, ``None`` when one
+    ran and could not be priced: an unknown amount is not a small one."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if not path.is_file():
+        return 0.0
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    total = 0.0
+    for call in (doc.get("decider"), doc.get("tiebreak"), doc.get("structure")):
+        if call is None:
+            continue
+        cost = call.get("cost_usd")
+        if not isinstance(cost, int | float) or isinstance(cost, bool):
+            return None
+        total += float(cost)
+    return total
+
+
 def _calls_made(
     work_dir: Path,
 ) -> tuple[decision_model.DecisionModel | None, int, dict[str, float | None]]:

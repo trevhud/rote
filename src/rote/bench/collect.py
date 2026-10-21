@@ -60,24 +60,15 @@ def read_compile_metrics(compiled: Path | None) -> dict[str, Any]:
 def decisions_cost_usd(compiled: Path | None) -> float | None:
     """What System-1's own model calls cost, from ``system1/decisions.json``.
 
-    The decider (Clef or Jev) and the tie-break are paid calls outside the
-    agent run, so the driver's ``total_cost_usd`` does not include them.
+    The decider (Clef or Jev), the tie-break and the structure pass are
+    paid calls outside the agent run, so the driver's ``total_cost_usd``
+    does not include them.
     ``0.0`` when the compile made none (rules, no tie-break, or the
     full-rubric path), ``None`` when one was made and could not be priced.
     """
-    path = None if compiled is None else compiled / "system1" / "decisions.json"
-    if path is None or not path.is_file():
-        return 0.0
-    doc = json.loads(path.read_text(encoding="utf-8"))
-    total = 0.0
-    for call in (doc.get("decider"), doc.get("tiebreak")):
-        if call is None:
-            continue
-        cost = call.get("cost_usd")
-        if not isinstance(cost, (int, float)) or isinstance(cost, bool):
-            return None
-        total += float(cost)
-    return total
+    from rote.compiler.system1 import calls_cost_usd
+
+    return 0.0 if compiled is None else calls_cost_usd(compiled)
 
 
 def phase_durations(progress_jsonl: Path) -> dict[str, Any]:

@@ -1121,3 +1121,215 @@ def test_a_known_mcp_result_keeps_its_reader_typed(tmp_path: Path) -> None:
     )
     assert not ctx.unverified_tool_result(mcp.id)
     assert ctx.param_schema(reader, param) == fixed
+
+
+@pytest.mark.asyncio
+async def test_the_parallel_path_builds_none_of_the_sessions_briefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pieces read grounding through generate.Context and are repaired by
+    generate's own loop: the session's briefs, context files and repairer were
+    built and thrown away, which hid what actually runs."""
+    import rote.compiler as compiler_module
+
+    def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the parallel path built a session-only piece")
+
+    monkeypatch.setattr(compiler_module, "contract_brief", never)
+    monkeypatch.setattr(compiler_module, "materialize", never)
+    monkeypatch.setattr(compiler_module.tool_grounding, "brief", never)
+    monkeypatch.setattr(Compiler, "_deliverable_repairer", never)
+    monkeypatch.setattr(Compiler, "_materialize_probe_context", never)
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    skeleton = tmp_path / "skeleton"
+    skeleton.mkdir()
+    nodes = {
+        n.id: n
+        for n in load_pipeline(
+            (system1.prepare(skill, skeleton), skeleton / "pipeline.yaml")[1]
+        ).nodes
+    }
+    fake = FakeGenerator(nodes)
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
+    monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
+    result = await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, tmp_path / "out", probe_dir=tmp_path)
+    assert fake.requests and result.verification is not None and result.verification.ok
+
+
+def test_a_failed_call_is_recorded_with_its_model_for_pricing() -> None:
+    from rote.compiler.drivers import DriverError
+
+    ledger = generate.Ledger()
+    ledger.add_failure("interface:x", DriverError("boom", metadata={"input_tokens": 9}), "m-1")
+    meta = ledger.metadata(wall_ms=1, repair_rounds=0)
+    assert meta["failed_calls"] == [{"label": "interface:x", "model": "m-1", "input_tokens": 9}]
+    assert meta["input_tokens"] == 9
+
+
+@pytest.mark.asyncio
+async def test_a_system1_compile_reports_system1s_spend_in_its_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI adds it to the compile's cost; the structure entry is refreshed first."""
+    refreshed: list[Path] = []
+    monkeypatch.setattr(system1, "record_structure", lambda work, p: refreshed.append(work))
+    monkeypatch.setattr(system1, "calls_cost_usd", lambda d: 0.123)
+    skill = tmp_path / "skill"
+    shutil.copytree(EXAMPLES / "expense-audit" / "skill", skill)
+    skeleton = tmp_path / "skeleton"
+    skeleton.mkdir()
+    nodes = {
+        n.id: n
+        for n in load_pipeline(
+            (system1.prepare(skill, skeleton), skeleton / "pipeline.yaml")[1]
+        ).nodes
+    }
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: FakeGenerator(nodes))
+    monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
+    result = await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, tmp_path / "out")
+    assert result.driver_metadata["system1_cost_usd"] == 0.123
+    assert len(refreshed) == 1
+
+
+# ───────── findings no piece names: route by node, or cost no call ─────────
+
+
+def _ops_writer(tmp_path: Path) -> tuple[Any, Any, FakeGenerator]:
+    from rote.compiler.system1.generate import Settings, TextWriter
+
+    ctx, _ = _context(tmp_path, "ops-report")
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    ctx.interface = {n.id: {"description": "d"} for n in generate.interface_targets(ctx)}
+    return ctx, TextWriter(fake, ctx, "", Settings(prime_seconds=0.0), None), fake
+
+
+def _external(ctx: Any) -> Any:
+    return next(n for n in ctx.pipeline.nodes if n.kind is NodeKind.EXTERNAL_CALL)
+
+
+def test_a_validation_error_goes_to_the_node_it_names_by_place_or_id(tmp_path: Path) -> None:
+    from rote.compiler.verify import Verification
+
+    ctx, _, _ = _ops_writer(tmp_path)
+    ids = generate._yaml_node_ids(ctx.work_dir / "pipeline.yaml")
+    ext, pure = _external(ctx), _node(ctx, NodeKind.PURE_FUNCTION)
+    writable = [n.id for n in ctx.pipeline.nodes if n.kind is NodeKind.PURE_FUNCTION]
+    entries = [n.id for n in generate.interface_targets(ctx)]
+    by_place = Verification(
+        pipeline=None,
+        pipeline_error=f"1 validation error for Pipeline\nnodes.{ids.index(ext.id)}.description",
+    )
+    per, loose = attribute(by_place, writable, entries, ids)
+    assert list(per) == [ext.id] and loose == []
+    by_id = Verification(pipeline=None, pipeline_error=f"node {pure.id!r}: output is not JSON")
+    per, loose = attribute(by_id, writable, entries, ids)
+    assert list(per) == [pure.id] and loose == []
+    nobody = Verification(pipeline=None, pipeline_error="edges: a cycle")
+    per, loose = attribute(nobody, writable, entries, ids)
+    assert per == {} and loose == ["pipeline.yaml: edges: a cycle"]
+
+
+def test_a_finding_on_rotes_own_file_is_never_sent_to_a_model(tmp_path: Path) -> None:
+    """An external_call stub and rule_tables.py are rote's code: an interface
+    entry cannot fix them, even though the stub's file carries the node's id."""
+    from rote.compiler.verify import Verification
+
+    ctx, _, _ = _ops_writer(tmp_path)
+    ext = _external(ctx)
+    entries = [n.id for n in generate.interface_targets(ctx)]
+    findings = [
+        ContractFinding("(provenance)", "uncited_outcome", "error", "x", f"extracted/{ext.id}.py"),
+        ContractFinding(
+            "(provenance)", "uncited_outcome", "error", "y", "extracted/rule_tables.py"
+        ),
+    ]
+    per, loose = attribute(Verification(pipeline=None, findings=findings), [], entries, [])
+    assert per == {} and len(loose) == 2
+    own = [ContractFinding(ext.id, "incomplete_signature_spec", "error", "no description", None)]
+    per, _ = attribute(Verification(pipeline=None, findings=own), [], entries, [])
+    assert per == {ext.id: ["no description"]}
+
+
+@pytest.mark.asyncio
+async def test_the_repair_loop_re_asks_an_interface_entry_a_validation_error_names(
+    tmp_path: Path,
+) -> None:
+    from rote.compiler.verify import Verification
+
+    ctx, writer, fake = _ops_writer(tmp_path)
+    ext = _external(ctx)
+    ids = generate._yaml_node_ids(ctx.work_dir / "pipeline.yaml")
+    error = f"1 validation error for Pipeline\nnodes.{ids.index(ext.id)}.output_schema: bad"
+    verdicts = iter(
+        [Verification(pipeline=None, pipeline_error=error), Verification(pipeline=None)]
+    )
+    verification, rounds = await writer.repair(lambda _: next(verdicts))
+    assert verification.ok and rounds == 1
+    [request] = fake.requests
+    assert request.label == f"interface:{ext.id}" and error in request.prompt
+    assert json.loads((ctx.work_dir / "system1" / "interface.json").read_text())[ext.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "verification_kwargs",
+    [
+        # pytest itself died: no test file is named.
+        {"tests": "no-file"},
+        # rote's own stub file.
+        {"stub": True},
+    ],
+)
+async def test_an_unrepairable_finding_costs_no_call(
+    verification_kwargs: dict[str, Any], tmp_path: Path
+) -> None:
+    from rote.compiler.verify import Verification
+
+    ctx, writer, fake = _ops_writer(tmp_path)
+
+    class Tests:
+        status = "failed"
+        summary = "1 error"
+        output = "INTERNALERROR> sandbox refused the interpreter"
+
+    if "tests" in verification_kwargs:
+        verdict = Verification(pipeline=None, tests=Tests())  # type: ignore[arg-type]
+    else:
+        stub = ContractFinding(
+            "(provenance)", "uncited_outcome", "error", "x", f"extracted/{_external(ctx).id}.py"
+        )
+        verdict = Verification(pipeline=None, findings=[stub])
+    verification, rounds = await writer.repair(lambda _: verdict)
+    assert not verification.ok and rounds == 0 and fake.requests == []
+
+
+def _validation(error: str) -> Any:
+    from rote.compiler.verify import Verification
+
+    return Verification(pipeline=None, pipeline_error=error)
+
+
+def test_a_node_only_read_in_a_validation_error_gets_no_repair() -> None:
+    """review6's real shape: `fetch` is referenced, `summarize` is at fault."""
+    error = (
+        "1 validation error for Pipeline\n  Value error, node summarize reads "
+        "fetch.output.rows [type=value_error, input_value={'nodes': [...]}, "
+        "input_type=dict]"
+    )
+    per, _ = attribute(_validation(error), ["summarize", "fetch"], [], [])
+    assert list(per) == ["summarize"]
+
+
+def test_pydantics_type_tail_names_no_node() -> None:
+    """A node id `type` must not match `[type=value_error, ...]`."""
+    error = (
+        "1 validation error for Pipeline\n  Value error, summarize: bad output "
+        "[type=value_error, input_value={'nodes': [{'id': 'type'}]}, input_type=dict]"
+    )
+    per, _ = attribute(_validation(error), ["summarize", "type"], [], [])
+    assert list(per) == ["summarize"]

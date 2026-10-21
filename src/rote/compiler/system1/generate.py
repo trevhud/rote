@@ -11,10 +11,11 @@ split by what each piece depends on:
    a model: the direct-API stub of every ``external_call``, each judge's
    input schema, each function's ``def`` line, the merge into
    ``system1/text.yaml``.
-2. **The interface, one call.** Every node's return value as a JSON Schema,
-   plus descriptions and any loop's stop condition. It is the only call
-   that sees the whole pipeline, and its answer fixes the contract every
-   other call writes against, so two pieces cannot disagree on a field.
+2. **The interface, one call per node, all at once.** Each node's return
+   value as a JSON Schema, its description and any loop's stop condition.
+   Every interface call sees the whole pipeline's outline, and a node
+   describes only what it produces, which fixes the contract the pieces
+   write against, so two pieces cannot disagree on a field.
 3. **The pieces, all at once.** One call per ``pure_function`` (module and
    tests) and per ``llm_judge`` (its prompt), under a concurrency bound.
    Each answer is checked by code the moment it arrives (it parses on
@@ -22,8 +23,11 @@ split by what each piece depends on:
    names the module defines, a prompt's variables resolve) and re-asked
    alone if not.
 4. **Verification and targeted repair.** The existing checks run on the
-   merged deliverable. Each finding is attributed to the node whose files
-   it names, and only those nodes are re-asked, in parallel.
+   merged deliverable. Each finding is attributed to the node it names (by
+   its files, its id, or its place in pipeline.yaml), and only those nodes
+   are re-asked, in parallel: a piece, or an interface entry for a node
+   with no piece. A finding no model can fix (rote's own file, a test run
+   that died) is reported and costs no call.
 
 Every call shares one system prompt, byte for byte: ``GENERATE.md`` and
 the skill's text. The interface call goes first, so its prefix is in the
@@ -142,8 +146,10 @@ class Ledger:
     def add(self, label: str, generation: Generation) -> None:
         self.calls.append((label, generation))
 
-    def add_failure(self, label: str, error: DriverError) -> None:
-        self.failed.append((label, dict(error.metadata or {})))
+    def add_failure(self, label: str, error: DriverError, model: str) -> None:
+        """A call that failed, with the usage the error carried and the model
+        it was sent to, so the compile's cost can price it."""
+        self.failed.append((label, {"model": model, **dict(error.metadata or {})}))
 
     def metadata(self, wall_ms: int, repair_rounds: int) -> dict[str, Any]:
         """Driver metadata for the whole compile (the keys a DriverResult carries)."""
@@ -179,6 +185,7 @@ class Ledger:
                 "their usage is not counted"
             )
         out["generations"] = [{"label": label, **_call_record(g)} for label, g in self.calls]
+        out["failed_calls"] = [{"label": label, **m} for label, m in self.failed]
         return out
 
 
@@ -1257,34 +1264,75 @@ def binding_findings(verification: Any, writable: Iterable[str]) -> dict[str, li
     return out
 
 
-def attribute(verification: Any, writable: Iterable[str]) -> tuple[dict[str, list[str]], list[str]]:
+#: Pydantic's per-error tail: ``[type=value_error, input_value={...},
+#: input_type=dict]``. Its input_value may hold brackets, so it ends at
+#: ``input_type=<name>]``.
+_PYDANTIC_TAIL = re.compile(r"\s*\[type=.*?input_type=\w+\]", re.DOTALL)
+
+
+def attribute(
+    verification: Any,
+    writable: Iterable[str],
+    entries: Iterable[str] = (),
+    yaml_ids: list[str] | None = None,
+) -> tuple[dict[str, list[str]], list[str]]:
     """``({node id: problems}, unattributed)`` for a :class:`Verification`.
 
     A finding names its node, or the file it is in (provenance findings
     carry only a path). A failing test names its file, and every test file
-    here is ``tests/test_<node id>.py``.
+    here is ``tests/test_<node id>.py``. A node in ``writable`` has a piece;
+    a node in ``entries`` has only an interface entry (an external_call or
+    agent_loop, whose text in the IR is its description, output schema and
+    stop condition), and gets the findings that name it as their node.
+
+    pipeline.yaml is assembled from the pieces' text, so a validation error
+    goes to every node it names: by id, or by its place in the file
+    (``nodes.<i>``, read against ``yaml_ids``). The ids are the IR's own, a
+    closed set. A finding on a file that is not a piece's own (rote's
+    external_call stubs, ``rule_tables.py``) is rote's code, and a test
+    failure that names no node's file means pytest itself failed: no model
+    answer fixes either, so they stay unattributed and cost no call.
     """
     nodes = set(writable)
+    owned = nodes | set(entries)
     per: dict[str, list[str]] = {}
     loose: list[str] = []
 
-    def put(node_id: str | None, text: str) -> None:
-        if node_id in nodes:
+    def put(node_id: str | None, text: str, by_path: bool = False) -> None:
+        if node_id in nodes or (node_id in owned and not by_path):
             per.setdefault(node_id, []).append(text)
         else:
             loose.append(text)
 
     if verification.pipeline_error is not None:
-        loose.append(f"pipeline.yaml: {verification.pipeline_error}")
+        error = str(verification.pipeline_error)
+        on_disk = yaml_ids or []
+        named = {
+            on_disk[int(i)] for i in re.findall(r"\bnodes\.(\d+)\b", error) if int(i) < len(on_disk)
+        }
+        # Pydantic's "[type=..., input_value=..., input_type=...]" tail quotes
+        # the input, not the node at fault, and `<id>.output...` is a node
+        # being read: neither names the node to repair (each would be a paid
+        # call that may rewrite a node that was fine).
+        bare = _PYDANTIC_TAIL.sub("", error)
+        named |= {
+            i for i in owned if re.search(rf"(?<![\w.]){re.escape(i)}(?!\w)(?!\.output\b)", bare)
+        }
+        text = f"pipeline.yaml: {error}"
+        if not named & owned:
+            loose.append(text)
+        for node_id in sorted(named & owned):
+            put(node_id, text)
     for f in [*verification.errors, *verification.review_gaps]:
         node_id = f.node_id
-        if node_id == PROVENANCE_NODE or node_id not in nodes:
+        by_path = False
+        if node_id == PROVENANCE_NODE or node_id not in owned:
             m = re.search(
                 r"(?:extracted|tests)/(?:test_)?([A-Za-z_][A-Za-z0-9_]*)\.py", str(f.path)
             )
-            node_id = m.group(1) if m else node_id
+            node_id, by_path = (m.group(1), True) if m else (node_id, False)
         where = f" ({f.path})" if f.path else ""
-        put(node_id, f"{f.message}{where}")
+        put(node_id, f"{f.message}{where}", by_path)
     tests = verification.tests
     if tests is not None and tests.status == "failed":
         output = tests.output or ""
@@ -1298,6 +1346,17 @@ def attribute(verification: Any, writable: Iterable[str]) -> tuple[dict[str, lis
                 "its tests fail. pytest output (all files):\n" + output[-_TEST_OUTPUT_CHARS:],
             )
     return per, loose
+
+
+def _yaml_node_ids(path: Path) -> list[str]:
+    """pipeline.yaml's node ids in file order, for a validation error's
+    ``nodes.<i>``. A file that does not parse names no node."""
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    return [str(n.get("id")) for n in nodes or [] if isinstance(n, dict)]
 
 
 def unresolved_findings(unresolved: dict[str, list[str]]) -> list[ContractFinding]:
@@ -1389,7 +1448,7 @@ class TextWriter:
                     self.ledger.cancelled.append(request.label)
                     raise
                 except DriverError as e:
-                    self.ledger.add_failure(request.label, e)
+                    self.ledger.add_failure(request.label, e, request.model)
                     if attempt == CALL_ATTEMPTS:
                         raise
                     self._emit("warning", f"generate: {request.label} failed ({e}); asking again")
@@ -1405,8 +1464,17 @@ class TextWriter:
         )
         return g.payload
 
-    async def _interface_entry(self, node: Any) -> dict[str, Any]:
+    async def _interface_entry(self, node: Any, repair: list[str] | None = None) -> dict[str, Any]:
+        """One node's interface entry; with ``repair``, re-asked from its
+        current entry with what verification found."""
         request = interface_request(self.ctx, node, self.system, self.settings.models.interface)
+        if repair:
+            current = self.ctx.interface.get(node.id) or {}
+            request = replace(
+                request,
+                prompt=f"{request.prompt}\n\n{_repair_text(current, repair)}",
+                model=self.settings.models.repair,
+            )
         entry = _interface_entry(await self._call(request), self.ctx, node)
         for attempt in range(MAX_CHECK_RETRIES + 1):
             problems = interface_problems(self.ctx, node, entry)
@@ -1421,6 +1489,23 @@ class TextWriter:
             retry = replace(request, prompt=f"{request.prompt}\n\n{_repair_text(entry, problems)}")
             entry = _interface_entry(await self._call(retry), self.ctx, node)
         return entry
+
+    async def repair_interface(self, problems: dict[str, list[str]]) -> None:
+        """Re-ask the interface entries verification's findings name. An entry
+        whose repair still fails its own checks keeps the one it had."""
+
+        async def one(node_id: str, found: list[str]) -> None:
+            try:
+                self.ctx.interface[node_id] = await self._interface_entry(
+                    self.ctx.node(node_id), found
+                )
+            except GenerationFailed as e:
+                self._emit("warning", f"generate: interface:{node_id} repair kept: {e}")
+
+        await _all(one(n, found) for n, found in sorted(problems.items()))
+        (self.ctx.work_dir / BRIEF_DIRNAME / INTERFACE_FILENAME).write_text(
+            _json(self.ctx.interface), encoding="utf-8"
+        )
 
     async def interface(self) -> None:
         targets = interface_targets(self.ctx)
@@ -1553,7 +1638,15 @@ class TextWriter:
         verification = self.verified(verify)
         rounds = 0
         while rounds < MAX_REPAIR_ROUNDS:
-            per, loose = attribute(verification, writable)
+            owners, loose = attribute(
+                verification,
+                writable,
+                [n.id for n in interface_targets(self.ctx)],
+                _yaml_node_ids(self.ctx.work_dir / "pipeline.yaml"),
+            )
+            pieces = set(writable)
+            per = {n: found for n, found in owners.items() if n in pieces}
+            entries = {n: found for n, found in owners.items() if n not in pieces}
             if loose and not verification.ok:
                 self._emit(
                     "warning",
@@ -1572,15 +1665,19 @@ class TextWriter:
                     rounds += 1
                     verification = self.verified(verify)
                     continue
-            if not per:
+            if not per and not entries:
                 break
             rounds += 1
-            for node_id, problems in sorted(per.items()):
+            for node_id, problems in sorted({**entries, **per}.items()):
                 self._emit(
                     "warning",
                     f"generate: repair round {rounds}: {node_id}: "
                     + " | ".join(p[:300] for p in problems),
                 )
+            if entries:
+                # First, so the pieces repaired this round write against the
+                # entries they read.
+                await self.repair_interface(entries)
             await _all(self._piece(self.ctx.node(n), problems) for n, problems in per.items())
             self.merge()
             verification = self.verified(verify)

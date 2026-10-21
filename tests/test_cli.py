@@ -1874,3 +1874,39 @@ def test_one_unpriceable_call_leaves_the_summary_cost_out(
     _patch_pricing_by_model(monkeypatch, {"claude-sonnet-5-5": (2.0, 10.0)})
     summary = _compile_with_progress(tmp_path)[-1]
     assert summary["type"] == "summary" and "cost_usd" not in summary
+
+
+def test_the_summary_cost_is_every_model_call_the_compile_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Answered calls, a failed call that was billed, and System-1's own calls
+    (decider, tie-break, structure pass): the figure bench and agents read."""
+    calls = [{"model": "claude-sonnet-5-5", "input_tokens": 1000, "output_tokens": 500}]
+    failed = [{"label": "x", "model": "claude-haiku-5-5", "input_tokens": 2000, "output_tokens": 0}]
+    meta = {"generations": calls, "failed_calls": failed, "system1_cost_usd": 0.03}
+    _install_mock_compiler(monkeypatch, driver_metadata=meta)
+    _patch_pricing_by_model(
+        monkeypatch, {"claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (1.0, 5.0)}
+    )
+    summary = _compile_with_progress(tmp_path)[-1]
+    # 0.007 answered (Sonnet 5.5) + 0.002 failed (Haiku input) + 0.03 System-1.
+    assert summary["cost_usd"] == pytest.approx(0.039)
+    assert summary["system1_cost_usd"] == 0.03
+
+
+def test_a_reported_runtime_cost_still_adds_system1s_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    meta = {"cost_usd": 1.25, "system1_cost_usd": 0.015, "input_tokens": 1, "output_tokens": 1}
+    _install_mock_compiler(monkeypatch, driver_metadata=meta)
+    summary = _compile_with_progress(tmp_path)[-1]
+    assert summary["cost_usd"] == pytest.approx(1.265)
+
+
+def test_an_unpriced_system1_call_leaves_the_compile_cost_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    meta = {"cost_usd": 1.25, "system1_cost_usd": None, "input_tokens": 1, "output_tokens": 1}
+    _install_mock_compiler(monkeypatch, driver_metadata=meta)
+    summary = _compile_with_progress(tmp_path)[-1]
+    assert "cost_usd" not in summary and summary["system1_cost_usd"] is None
