@@ -365,6 +365,34 @@ def brief(tools: ToolSchemas, skill_text: str, path: Path) -> str:
     )
 
 
+# ───────── declared output schemas, kept beside the deliverable ─────────
+
+#: The declared output schemas of a compile's tools, written by rote (never
+#: the agent) beside the IR: what ``rote compile`` reads after the agent ran.
+DECLARED_FILENAME = "tool-schemas.json"
+
+
+def write_declared(output_dir: Path, tools: ToolSchemas) -> None:
+    """Record every declared tool's outputSchema; replaces any file the work dir carried."""
+    rows = [
+        {"server": t.server, "tool": t.tool, "output_schema": t.output_schema}
+        for t in sorted(tools.values(), key=lambda t: (t.server, t.tool))
+        if t.declared
+    ]
+    (output_dir / DECLARED_FILENAME).write_text(json.dumps(rows, indent=1) + "\n", "utf-8")
+
+
+def declared_output_schemas(compiled_dir: Path) -> dict[tuple[str, str], dict[str, Any] | None]:
+    """``{(server, tool): outputSchema}`` from :func:`write_declared`; empty when absent."""
+    path = compiled_dir / DECLARED_FILENAME
+    if not path.is_file():
+        return {}
+    return {
+        (row["server"], row["tool"]): row.get("output_schema")
+        for row in json.loads(path.read_text(encoding="utf-8"))
+    }
+
+
 # ───────── checks ─────────
 
 _UNKNOWN = object()

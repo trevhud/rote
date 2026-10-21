@@ -1,0 +1,106 @@
+{
+ "declared": [
+  {
+   "server": "deepwiki",
+   "tool": "read_wiki_structure",
+   "input_schema": {
+    "properties": {
+     "repoName": {
+      "description": "GitHub repository in owner/repo format (e.g. \"facebook/react\").",
+      "type": "string"
+     }
+    },
+    "required": [
+     "repoName"
+    ],
+    "type": "object"
+   },
+   "output_schema": {
+    "properties": {
+     "result": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "type": "object",
+    "x-fastmcp-wrap-result": true
+   }
+  },
+  {
+   "server": "mslearn",
+   "tool": "microsoft_docs_search",
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "query": {
+      "description": "a query or topic about Microsoft/Azure products, services, platforms, developer tools, frameworks, or APIs",
+      "type": "string",
+      "default": null
+     }
+    }
+   },
+   "output_schema": {
+    "type": "object",
+    "properties": {
+     "results": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "title": {
+         "type": "string"
+        },
+        "content": {
+         "type": [
+          "string",
+          "null"
+         ]
+        },
+        "contentUrl": {
+         "type": "string"
+        },
+        "content_omitted": {
+         "type": "boolean"
+        },
+        "extensionData": {
+         "type": [
+          "object",
+          "null"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ ],
+ "observations": [
+  {
+   "server": "mslearn",
+   "tool": "microsoft_docs_search",
+   "input": {
+    "query": "Azure Functions durable orchestration"
+   },
+   "result": "{\"results\": [{\"title\": \"Bindings for Durable Functions in Azure Functions (programming-language-javascript)\", \"content\": \"# Bindings for Durable Functions in Azure Functions (programming-language-javasc\", \"contentUrl\": \"https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger\"}, {\"title\": \"Durable orchestrations (durable-functions)\", \"content\": \"# Durable orchestrations (durable-functions)\\nA durable orchestration uses an *or\", \"contentUrl\": \"https://learn.microsoft.com/azure/durable-task/common/durable-task-orchestrations\"}]}",
+   "is_error": false
+  },
+  {
+   "server": "deepwiki",
+   "tool": "read_wiki_structure",
+   "input": {
+    "repoName": "Azure/azure-functions-durable-python"
+   },
+   "result": "{\"result\": \"Available pages for Azure/azure-functions-durable-python:\\n\\n- 1 Overview\\n- 2 Getting Started\\n- 3 Writing Orchestrations\\n  - 3.1 Orchestration Context\\n  - 3.2 Tasks and Activities\\n  - 3.3 Actions and Wo\"}",
+   "is_error": false
+  }
+ ]
+}

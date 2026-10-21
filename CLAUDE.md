@@ -668,6 +668,24 @@ Violations are errors that go back to the agent. Three rules:
   points `ROTE_SPEC_CACHE_DIR` at the test's tmp dir. Tests use the trimmed
   real documents in `tests/fixtures/vendor_specs/` through an injected fetch.
 
+### A tool result has one shape: what the step receives
+
+Four places read an MCP result: the emitted helper at run time, and at
+compile time the baseline's schema inference (`rote.probe`), the prefix
+run's recorded stubs (`rote.compiler.prefix`) and System-1's interface
+(`Context.known_result_schema`). All four go through
+`_runtime_helper.returned_value` / `returned_schema`, so a fastmcp tool
+that returns a string (wrapped on the wire as `{"result": ...}` under an
+`x-fastmcp-wrap-result` output schema, DeepWiki's shape) is a string
+everywhere. A recording is decoded before its schema is inferred; without
+that, every text-recorded result was typed `string`. When nothing is
+recorded, the outputSchema the server declares is the shape, never a
+guess from the skill's words: a guessed `url` where Microsoft Learn says
+`contentUrl` made every live run raise. The compile writes the declared
+schemas to `compiled/tool-schemas.json` itself, after the agent's work
+dir is moved, because the post-compile enrichment and cross-check run in
+the CLI and must not read an agent-written file.
+
 ### An mcp-bound node is a BARE tool call — post-processing must split
 
 The default backend emits an mcp-bound step as exactly "call the tool,
