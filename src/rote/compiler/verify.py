@@ -511,6 +511,64 @@ class EmitTarget:
             )
 
 
+def unused_input_questions(
+    pipeline: Pipeline, root: Path, implementations: list[NodeImplementation]
+) -> list[ContractQuestion]:
+    """Each implemented pure_function input bound to another node that its code never uses.
+
+    A data-flow edge the step does not need is not harmless: the step waits
+    on that node, and fails when it fails. A real expense-audit compile made
+    its duplicate and late checks read the currency conversion, which the
+    skill stops on an unknown currency, so neither check ran. Whether the
+    edge is needed is decided by the code, not by the skill's wording: a
+    parameter the function body never names. Listed for review, never a
+    failure, since the edge may still order the steps on purpose."""
+    implemented = {i.node_id for i in implementations if i.status == "implemented"}
+    in_loops = {sub for n in pipeline.nodes for sub in (n.loop_body or [])}
+    trees: dict[Path, ast.Module | None] = {}
+    out: list[ContractQuestion] = []
+    for node in pipeline.nodes:
+        if node.kind is not NodeKind.PURE_FUNCTION or node.id not in implemented:
+            continue
+        if node.impl is None or node.id in in_loops:
+            continue
+        rel, _, symbol = node.impl.partition(":")
+        path = root / rel
+        if path not in trees:
+            try:
+                trees[path] = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                trees[path] = None
+        tree = trees[path]
+        fn = next(
+            (
+                s
+                for s in (tree.body if tree is not None else [])
+                if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name == symbol
+            ),
+            None,
+        )
+        if fn is None or fn.args.kwarg is not None:
+            continue
+        used = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+        if used & {"locals", "vars"}:
+            continue
+        params = {a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]}
+        for param, ref in (node.inputs or {}).items():
+            source = ref.split(".", 1)[0]
+            if source == "pipeline" or param not in params or param in used:
+                continue
+            out.append(
+                ContractQuestion(
+                    node.id,
+                    f"{node.id} reads {ref} as `{param}`, but its code never uses it: the "
+                    f"step waits on {source}, and fails when {source} fails. Remove the "
+                    "input if the step does not need it",
+                )
+            )
+    return out
+
+
 def judge_spec_findings(pipeline: Pipeline) -> list[ContractFinding]:
     """Every llm_judge whose ``signature_spec`` is missing or still the skeleton's.
 
@@ -1031,6 +1089,7 @@ def _verify(
                 tools=grounding.tools,
             )
             findings += prefix.findings
+    questions += unused_input_questions(pipeline, root, implementations)
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not

@@ -594,3 +594,51 @@ def test_an_update_checks_the_sidecar_it_would_ship(tmp_path: Path) -> None:
     (work / "eval.yaml").write_text(_INVALID_SIDECARS["per-path totals"], encoding="utf-8")
     [finding] = verify_deliverable(work, base_dir=previous).errors
     assert finding.kind == SIDECAR_INVALID
+
+
+_UNUSED_IR = """\
+name: unused
+input: {type: In, required: [lines]}
+nodes:
+  - id: convert
+    kind: pure_function
+    description: convert lines
+    impl: extracted/steps.py:convert
+    inputs: {lines: pipeline.input.lines}
+  - id: duplicates
+    kind: pure_function
+    description: find duplicates
+    impl: extracted/steps.py:duplicates
+    inputs: {lines: pipeline.input.lines, convert: convert.output}
+edges:
+  - {from: convert, to: duplicates}
+entry_nodes: [convert]
+exit_nodes: [duplicates]
+"""
+
+
+def _unused_root(tmp_path: Path, body: str) -> Path:
+    (tmp_path / "extracted").mkdir(parents=True)
+    (tmp_path / "pipeline.yaml").write_text(_UNUSED_IR)
+    (tmp_path / "extracted" / "steps.py").write_text(
+        "def convert(lines):\n    return {'n': len(lines)}\n\n\n"
+        f"def duplicates(lines, convert):\n    {body}\n"
+    )
+    return tmp_path
+
+
+def test_an_input_the_code_never_uses_is_listed_for_review(tmp_path: Path) -> None:
+    """expense-audit: duplicate checks that read the currency conversion never ran."""
+    v = verify_deliverable(
+        _unused_root(tmp_path / "a", "return {'ids': sorted(set(lines))}"), run_tests=False
+    )
+    [q] = [q for q in v.questions if q.node_id == "duplicates"]
+    assert q.text == (
+        "duplicates reads convert.output as `convert`, but its code never uses it: the step "
+        "waits on convert, and fails when convert fails. Remove the input if the step does "
+        "not need it"
+    )
+    used = verify_deliverable(
+        _unused_root(tmp_path / "b", "return {'ids': lines, 'n': convert['n']}"), run_tests=False
+    )
+    assert not [q for q in used.questions if q.node_id == "duplicates"]
