@@ -52,6 +52,8 @@ from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.compiler.provenance import PROVENANCE_NODE
 from rote.compiler.system1 import DECIDERS, TIEBREAKS
+from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
+from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
@@ -2785,6 +2787,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         system1=args.system1,
         system1_decider=decider,
         system1_tiebreak=tiebreak,
+        system1_structure=args.structure,
         max_parallel=args.max_parallel,
     )
 
@@ -4238,9 +4241,18 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--structure",
-        choices=["rules", "haiku", "sonnet"],
-        default="rules",
-        help=argparse.SUPPRESS,  # PROTOTYPE: the whole-skill structure pass
+        choices=["rules", *STRUCTURE_MODELS],
+        default=DEFAULT_STRUCTURE,
+        help=(
+            f"Who reads the whole skill and decides the pipeline's skeleton (default: "
+            f"{DEFAULT_STRUCTURE}). A model answers in one schema-locked call, and rote "
+            "checks every node against the skill's text, its tools' schemas and the "
+            "sample input before using it, asking again up to twice. It costs about "
+            "$0.015 a compile on Haiku, billed like the tie-break: claude -p under the "
+            "claude driver, the api driver's own client under --agent api, otherwise an "
+            "Anthropic key or the claude CLI. 'rules' makes no call and decides the "
+            "skeleton step by step from the skill's text"
+        ),
     )
     p.add_argument(
         "--tiebreak",

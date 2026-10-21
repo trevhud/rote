@@ -61,6 +61,7 @@ from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
+from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
 from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
@@ -254,7 +255,7 @@ class Compiler:
         system1: bool | None = None,
         system1_decider: str = "rules",
         system1_tiebreak: str = DEFAULT_TIEBREAK,
-        system1_structure: str = "rules",
+        system1_structure: str = DEFAULT_STRUCTURE,
         tool_discovery: tool_grounding.Discovery = "named",
         max_parallel: int = DEFAULT_MAX_PARALLEL,
     ) -> None:
@@ -613,9 +614,7 @@ class Compiler:
                         observations=grounding.observations,
                         tiebreak_lane=lane,
                         structure_lane=(
-                            system1.structure.lane_with(
-                                system1.tiebreak.lane_for(driver), self.system1_structure
-                            )
+                            system1.structure.lane_for(driver, self.system1_structure)
                             if self.system1_structure != "rules"
                             else None
                         ),
@@ -976,7 +975,7 @@ class Compiler:
         from rote.compiler.system1 import structure
         from rote.compiler.system1.parse import parse_skill
 
-        lane = structure.lane_with(system1.tiebreak.lane_for(driver), self.system1_structure)
+        lane = structure.lane_for(driver, self.system1_structure)
         skill = _replace(parse_skill(skill_dir), units=structure.section_units(skill_dir))
         skill_md = structure.skill_text(skill_dir)
 

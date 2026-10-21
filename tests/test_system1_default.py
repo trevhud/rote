@@ -66,6 +66,8 @@ async def _rubric_for(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: spy)
     logs: list[str] = []
     kwargs.setdefault("system1_tiebreak", "none")
+    # The fake driver has no lane for the structure pass either.
+    kwargs.setdefault("system1_structure", "rules")
     compiler = Compiler(on_event=lambda e: logs.append(e.message), **kwargs)
     with pytest.raises(_Stop):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
@@ -260,9 +262,12 @@ async def test_the_compiler_checks_judge_specs_on_the_system1_path_only(
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Writes())
     with contextlib.suppress(CompilerError):
-        await Compiler(system1=system1, run_generated_tests=False, system1_tiebreak="none").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+        await Compiler(
+            system1=system1,
+            run_generated_tests=False,
+            system1_tiebreak="none",
+            system1_structure="rules",
+        ).compile(_skill(tmp_path), tmp_path / "out")
     assert seen and set(seen) == {flagged}
 
 
@@ -602,7 +607,9 @@ def test_a_system1_validation_repair_points_at_text_yaml(tmp_path: Path) -> None
 
     system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
     (work / "pipeline.yaml").write_text("not: [a pipeline\n")
-    compiler = Compiler(run_generated_tests=False, system1_tiebreak="none")
+    compiler = Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    )
     repair = compiler._deliverable_repairer(
         None,
         EXAMPLES / "deal-monitor" / "skill",

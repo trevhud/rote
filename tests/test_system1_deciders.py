@@ -253,7 +253,9 @@ async def test_asking_for_a_model_without_credentials_fails_the_compile(
 
     monkeypatch.setattr(dm, "_post", no_call)
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _NeverRuns())
-    compiler = Compiler(system1_decider=model.name, system1_tiebreak="none")
+    compiler = Compiler(
+        system1_decider=model.name, system1_tiebreak="none", system1_structure="rules"
+    )
     with pytest.raises(
         CompilerError, match=f"--decider {model.name} needs CLOUDFLARE_ACCOUNT_ID and"
     ):

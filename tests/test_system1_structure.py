@@ -930,20 +930,92 @@ def test_only_a_fanned_calls_reader_is_told_about_element_order(skill: Any) -> N
     assert "in the same order" in (by_id["render_digest"].intent or "")
 
 
-def test_the_default_compile_never_runs_the_structure_pass(
+class _Asked(Exception):
+    pass
+
+
+class _ClaudeSpy:
+    name = "claude"
+
+    async def run(self, **kwargs: object) -> object:
+        raise _Asked("the agent ran")
+
+
+def _compile_ops_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **kwargs: Any) -> str:
+    """What a compile with ``kwargs`` reached first: the structure pass or the agent."""
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler
+    from rote.compiler.system1 import tiebreak
+
+    def asked(skill: Any, skill_md: str, rubric: str, lane: Lane, **kw: Any) -> Any:
+        raise _Asked(f"structure pass on {lane.model}")
+
+    monkeypatch.setattr(structure, "decide", asked)
+    monkeypatch.setattr(tiebreak, "lane_for", lambda driver, **kw: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    compiler = Compiler(run_generated_tests=False, tool_discovery="none", **kwargs)
+    with pytest.raises(_Asked) as e:
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    return str(e.value)
+
+
+def test_the_default_compile_runs_the_structure_pass_on_haiku(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from rote.compiler import Compiler, system1
+    assert _compile_ops_report(tmp_path, monkeypatch) == "structure pass on claude-haiku-5-5"
 
-    assert Compiler().system1_structure == "rules"
 
-    def boom(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("the structure pass ran without --structure")
+def test_structure_rules_is_the_opt_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reached = _compile_ops_report(tmp_path, monkeypatch, system1_structure="rules")
+    assert reached == "the agent ran"
 
-    monkeypatch.setattr(structure, "decide", boom)
-    work = tmp_path / "w"
-    work.mkdir()
-    system1.prepare(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", work)
+
+@pytest.mark.parametrize("argv", [["compile", "skill", "--out", "out"], ["analyze", "skill"]])
+def test_the_cli_defaults_to_the_structure_pass_on_haiku(argv: list[str]) -> None:
+    from rote.cli import _build_parser
+
+    parser = _build_parser()
+    assert parser.parse_args(argv).structure == "haiku"
+    assert parser.parse_args([*argv, "--structure", "rules"]).structure == "rules"
+
+
+def test_analyze_passes_its_structure_choice_to_the_compiler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote import cli
+
+    seen: list[str] = []
+
+    class _Seen(Exception):
+        pass
+
+    class _Compiler:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.append(kwargs["system1_structure"])
+            raise _Seen
+
+    monkeypatch.setattr(cli, "Compiler", _Compiler)
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(SKILL)
+    with pytest.raises(_Seen):
+        cli.main(["analyze", str(skill), "--structure", "sonnet"])
+    assert seen == ["sonnet"]
+
+
+def test_no_lane_for_the_structure_pass_names_its_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    from rote.compiler.system1 import tiebreak
+
+    class _Codex:
+        name = "codex"
+
+    monkeypatch.setattr(tiebreak.shutil, "which", lambda name: None)
+    with pytest.raises(structure.StructureUnavailable, match="or pass --structure rules$"):
+        structure.lane_for(_Codex(), "haiku")
 
 
 def test_prepare_with_a_structure_lane_writes_the_passs_skeleton(

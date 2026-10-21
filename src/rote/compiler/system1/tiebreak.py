@@ -161,15 +161,24 @@ def gateway_model_id(prefix: str, model: str) -> str:
     return f"{prefix}/" + re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
 
 
-def lane_for(driver: Any) -> Lane:
-    """The billing lane the compile's own driver implies."""
+def lane_for(
+    driver: Any,
+    *,
+    caller: str = f"the System-1 tie-break asks {MODEL} about the steps the rules are unsure of",
+    opt_out: str = "--tiebreak none",
+    error: type[RuntimeError] = TieBreakUnavailable,
+) -> Lane:
+    """The billing lane the compile's own driver implies.
+
+    ``caller``, ``opt_out`` and ``error`` say who is asking, so a failure
+    names the flag that turns that call off."""
     from rote.inference._runtime_helper import provider_availability
 
     name = getattr(driver, "name", None)
     if name == "claude":
         ok, reason = provider_availability("claude-cli", "anthropic")
         if not ok:
-            raise TieBreakUnavailable(f"the tie-break cannot use claude -p: {reason}")
+            raise error(f"{caller}, and cannot use claude -p: {reason} (or pass {opt_out})")
         return Lane("claude-cli")
     if name == "api":
         import anthropic
@@ -187,10 +196,9 @@ def lane_for(driver: Any) -> Lane:
         return Lane("api")
     if shutil.which("claude") is not None:
         return Lane("claude-cli")
-    raise TieBreakUnavailable(
-        f"the System-1 tie-break asks {MODEL} about the steps the rules are unsure of, "
-        f"and nothing can serve it under the {name!r} driver: set ANTHROPIC_API_KEY, "
-        "install Claude Code (`claude login`), or pass --tiebreak none"
+    raise error(
+        f"{caller}, and nothing can serve it under the {name!r} driver: set "
+        f"ANTHROPIC_API_KEY, install Claude Code (`claude login`), or pass {opt_out}"
     )
 
 

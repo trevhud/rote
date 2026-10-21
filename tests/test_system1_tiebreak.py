@@ -494,13 +494,15 @@ async def test_the_compile_logs_the_tiebreak_and_its_cost(
             raise _Stop
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Spy())
-    monkeypatch.setattr(tb, "lane_for", lambda driver: Lane("claude-cli"))
+    monkeypatch.setattr(tb, "lane_for", lambda driver, **kw: Lane("claude-cli"))
     _install(monkeypatch, _Stub(_answer("llm_judge")))
     logs: list[str] = []
     with pytest.raises(_Stop):
-        await Compiler(on_event=lambda e: logs.append(e.message), system1_tiebreak="haiku").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+        await Compiler(
+            on_event=lambda e: logs.append(e.message),
+            system1_tiebreak="haiku",
+            system1_structure="rules",
+        ).compile(_skill(tmp_path), tmp_path / "out")
     assert (
         "system1: tie-break asked claude-haiku-5-5 about 1 unsure step(s) via "
         "claude -p (subscription) ($0.0017)"

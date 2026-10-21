@@ -256,7 +256,7 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: agent)
     out = tmp_path / "out"
     result = await Compiler(
-        system1=True, system1_tiebreak="none", run_generated_tests=False
+        system1=True, system1_tiebreak="none", system1_structure="rules", run_generated_tests=False
     ).compile(skill, out)
 
     assert agent.rubric is not None and agent.rubric.name.startswith("rote-system1-rubric-")
@@ -273,7 +273,7 @@ async def test_compile_system1_runs_text_agent_under_the_small_rubric(
 @pytest.mark.asyncio
 async def test_system1_refuses_update(tmp_path: Path) -> None:
     with pytest.raises(Exception, match="System-1 does not support --update"):
-        await Compiler(system1=True, system1_tiebreak="none").compile(
+        await Compiler(system1=True, system1_tiebreak="none", system1_structure="rules").compile(
             EXAMPLES / "expense-audit" / "skill", tmp_path, update=True
         )
 
@@ -294,7 +294,9 @@ def test_repair_rounds_verify_the_enforced_pipeline(tmp_path: Path) -> None:
     doc = yaml.safe_load((work / "pipeline.yaml").read_text())
     doc["nodes"][0]["fan_out"] = True  # an agent edit the repair round must not see
     (work / "pipeline.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
-    compiler = Compiler(system1=True, system1_tiebreak="none", run_generated_tests=False)
+    compiler = Compiler(
+        system1=True, system1_tiebreak="none", system1_structure="rules", run_generated_tests=False
+    )
     repair = compiler._deliverable_repairer(
         None, EXAMPLES / "expense-audit" / "skill", before_verify=enforce
     )

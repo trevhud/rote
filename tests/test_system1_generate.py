@@ -516,6 +516,7 @@ async def test_compile_with_a_generating_driver_writes_text_in_parallel(
     result = await Compiler(
         run_generated_tests=False,
         system1_tiebreak="none",
+        system1_structure="rules",
         max_parallel=2,
         on_event=lambda e: events.append(e.message),
     ).compile(skill, tmp_path / "out")
@@ -586,6 +587,7 @@ async def test_a_backend_api_compile_keeps_the_researching_session(
         await Compiler(
             run_generated_tests=False,
             system1_tiebreak="none",
+            system1_structure="rules",
             emit_target=EmitTarget("dbos", "api"),
         ).compile(skill, tmp_path / "out")
     assert Session.ran and fake.requests == []
@@ -753,9 +755,9 @@ async def test_the_compile_verdict_fails_on_a_piece_that_never_passed(
     fake.scripted[node.id] = [_bad(node, ctx) for _ in range(50)]
     monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
-    result = await Compiler(run_generated_tests=False, system1_tiebreak="none").compile(
-        skill, tmp_path / "out"
-    )
+    result = await Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    ).compile(skill, tmp_path / "out")
     assert result.verification is not None and not result.verification.ok
     kinds = {(f.node_id, f.kind) for f in result.verification.errors}
     assert (node.id, "generation_check_failed") in kinds

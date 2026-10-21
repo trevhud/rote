@@ -9,6 +9,18 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **The structure pass decides the pipeline's skeleton by default.** One
+  schema-locked `claude-haiku-5-5` call reads the whole skill and returns
+  every node, and rote checks each one against the skill's text, its tools'
+  schemas and the sample input, asking again up to twice. About $0.015 and
+  70 s a compile, billed like the compile. On the held-out skills it scores
+  kind accuracy 0.88 against the rules' 0.49 and edge F1 0.78 against
+  0.58. `--structure rules` keeps the rules, with no call. With no lane the
+  compile fails and names that flag. `rote analyze` now passes
+  `--structure` through; it used to ignore it.
+
 ### Added
 
 - **`--tiebreak haiku` (opt-in): Claude Haiku decides only the steps

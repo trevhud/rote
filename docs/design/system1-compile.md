@@ -56,6 +56,12 @@ the per-item loop moved which nodes pair up.
 
 ## What decides what
 
+By default the structure pass decides the skeleton (next section), and the
+rules in this table decide it only under `--structure rules`. The rules still
+run on every compile: they parse the skill's sections, tables and tools, and
+the structure pass's answer is checked against what they found.
+
+
 | decision | rule | confidence |
 |---|---|---|
 | which steps exist | leaf procedural sections. Meta sections (trigger phrases, routing, tool tables, limits) are skipped. A heading that names no action under a step ("Tab 1: Invoice Detail") is part of that step. An enumerated list splits a step only when most items carry a step signal, so a checklist ("Browser-automation plugin", "User is logged in") stays one step | n/a |
@@ -282,6 +288,66 @@ machine. The held-out numbers argue for a model decider as the default, so
 that is a decision for the user, not this change. The decider is a layered
 setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
 `--decider`), and `rote init` asks for it.
+
+## The structure pass (`--structure haiku`, the default)
+
+Step-by-step rules misread skills whose structure lives in their intent: a
+per-item step inside a loop, an alternative entry point, a judge that weighs
+a whole list. The structure pass reads the whole skill instead. One
+schema-locked call to `claude-haiku-5-5` (`src/rote/compiler/system1/structure.py`)
+gets SKILL.md, node-kinds.md, the declared tools with their schemas, and the
+sample input. It returns every node in execution order: the section and a
+verbatim quote it implements, its kind, what it reads, what it fans out
+over, its outputs, whether it is mandatory, the system an external call
+reaches and where each tool argument comes from, its constants, its gate
+and its loop.
+
+The model decides; code checks the answer against hard evidence and sends
+back what fails, up to two repair rounds:
+
+- a declared tool exists in tools/list or an explicit "(X MCP - `tool`)"
+  annotation, its arguments are properties of its schema, and every
+  required parameter is bound;
+- a quote is in its section verbatim, and so is every constant;
+- an input field is a key of the sample input, and the sample's gates are
+  matched by signal name;
+- a URL, web UI or public API is named in the node's own section;
+- a fanned element comes from a list a pure_function builds, and an
+  upstream field is in its source's declared outputs;
+- a loop holds only optional pure_function, external_call or llm_judge
+  nodes, and a MANDATORY step never goes inside one;
+- every result the skill says the run produces reaches the run's result.
+
+What still fails after the repairs is resolved conservatively and never
+shipped as decided: an unquoted node is dropped, a call with an unbound
+required argument becomes an output, a mandatory step leaves the loop with a
+note that the work it guarded is now unguarded. Every such change is an Open
+question in compile-report.md. Later, a verification finding about a tool
+binding goes back to the structure pass (`redecide`) rather than to the
+text agent.
+
+It bills like the tie-break (below): `claude -p` under the claude driver,
+the api driver's own client under `--agent api`, else an Anthropic key or
+the claude CLI. With no lane the compile fails before the agent runs and names
+`--structure rules`. `rote-cloud` constructs `Compiler` with the default,
+so cloud compiles run it too.
+
+Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
+
+| split | by | kind | kind mix | edge F1 | $/skill | s/skill |
+|---|---|---|---|---|---|---|
+| dev | rules | 0.594 | 0.787 | 0.637 | 0 | 0.1 |
+| dev | haiku | 0.630 | 0.720 | 0.594 | 0.015 | 76 |
+| holdout | rules | 0.494 | 0.707 | 0.580 | 0 | 0.03 |
+| holdout | haiku | 0.879 | 0.778 | 0.775 | 0.014 | 70 |
+
+The rules were fitted on the dev skills, so dev is where they look best; on
+the held-out skills the structure pass is ahead on every score. Sonnet 5.5
+scored no better and cost about 14 times as much. In full compiles with
+fidelity checks, ops-report scored 0.918 against the rules' 0.898 and
+expense-audit 0.921 against 0.903 to 0.921. The cost is time: about 70
+seconds a compile, up to 160 on BDR, which needs all three calls. BDR is
+also still the weakest skill (22 to 23 nodes against 15 expected).
 
 ## The Haiku tie-break (`--tiebreak haiku`, opt-in)
 

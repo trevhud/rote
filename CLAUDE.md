@@ -54,8 +54,8 @@ comes from keeping them clean.
 - **Runs under:** a pluggable driver layer (see Layer 2)
 - **System-1 is the default compile path.** Before the agent runs,
   [`src/rote/compiler/system1/`](src/rote/compiler/system1/) decides
-  the whole structure with rules (kinds, data flow, fan_out, mandatory,
-  gates, constants), and the agent gets the smaller
+  the whole structure (kinds, data flow, fan_out, mandatory, gates,
+  constants), and the agent gets the smaller
   `skills/rote-compile/SYSTEM1.md` rubric and writes only text. rote
   restores every decision after each agent stop. The full rubric above
   runs under `--no-system1` and for `--update`. `Compiler(system1=None)`
@@ -71,6 +71,20 @@ comes from keeping them clean.
   compile's own lane via `structured_call` in the inference helper. Don't
   give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
+- **The skeleton comes from the structure pass by default**
+  (`--structure haiku`, `system1/structure.py`): one schema-locked Haiku
+  call reads the whole skill and returns every node, and code checks each
+  one against hard evidence only (declared tool schemas, verbatim quotes and
+  constants, sample keys, the IR's loop rules), sending failures back for up
+  to two repairs. Keep the checks to evidence: a check that encodes a guess
+  about meaning belongs in the prompt, and a word list never does. What
+  still fails is resolved conservatively and listed as an Open question,
+  never shipped as decided. It bills through the same lane as the tie-break
+  (`structure.lane_for`), and with no lane the compile fails naming
+  `--structure rules`, the opt-out that keeps the rules above. Tests that run
+  a compile with a fake driver pass `system1_structure="rules"`, because the
+  fake has no lane. Tune its prompt on the dev skills only; the holdout is
+  for measuring.
 - **System-1's text is written in parallel** when the driver has
   `generate()` (`claude`, `api`): one schema-locked call per node's
   interface entry, then one per `pure_function` (module + tests) and per

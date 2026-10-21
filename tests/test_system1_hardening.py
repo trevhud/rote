@@ -84,7 +84,9 @@ async def test_compile_reports_an_unsafe_skill_as_a_compile_error(
     skill = _skill(tmp_path, "## Step 1: Total\n\nTotal every line.\n", refs={"a b.md": "x"})
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Proposer())
     with pytest.raises(CompilerError, match="reference file name"):
-        await Compiler(system1=True, system1_tiebreak="none").compile(skill, tmp_path / "out")
+        await Compiler(system1=True, system1_tiebreak="none", system1_structure="rules").compile(
+            skill, tmp_path / "out"
+        )
 
 
 def test_generated_comments_cannot_end_their_line(tmp_path: Path) -> None:
@@ -269,7 +271,7 @@ async def test_a_proposal_is_reported_and_never_applied(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Proposer())
     out = tmp_path / "out"
     result = await Compiler(
-        system1=True, system1_tiebreak="none", run_generated_tests=False
+        system1=True, system1_tiebreak="none", system1_structure="rules", run_generated_tests=False
     ).compile(skill, out)
     first = result.pipeline.nodes[0]
     assert first.kind.value == "pure_function"
@@ -331,9 +333,12 @@ async def test_a_failure_while_settling_keeps_the_paid_work(
     monkeypatch.setattr(system1, "settle", boom)
     out = tmp_path / "out"
     with pytest.raises(CompilerError, match="settle exploded"):
-        await Compiler(system1=True, system1_tiebreak="none", run_generated_tests=False).compile(
-            skill, out
-        )
+        await Compiler(
+            system1=True,
+            system1_tiebreak="none",
+            system1_structure="rules",
+            run_generated_tests=False,
+        ).compile(skill, out)
     kept = tmp_path / "out.rejected"
     assert (kept / "pipeline.yaml").is_file()
     assert (kept / "system1" / "proposals.yaml").is_file()
@@ -348,7 +353,7 @@ def test_a_failure_before_a_repair_verification_does_not_escape(tmp_path: Path) 
         raise RuntimeError("enforce exploded")
 
     repair = Compiler(
-        system1=True, system1_tiebreak="none", run_generated_tests=False
+        system1=True, system1_tiebreak="none", system1_structure="rules", run_generated_tests=False
     )._deliverable_repairer(None, REPO / "examples" / "expense-audit" / "skill", before_verify=boom)
     repair(work / "pipeline.yaml")  # verification still runs; nothing raises
 

@@ -38,6 +38,7 @@ from typing import Any
 
 import yaml
 
+from rote.compiler.system1 import tiebreak
 from rote.compiler.system1.decide import (
     ARG_INPUT_PREFIX,
     REVIEW_BELOW,
@@ -65,6 +66,9 @@ from rote.tool_schema import checkable
 STRUCTURE_NOTE_PREFIX = "structure pass: "
 #: ``--structure`` choices, and the model behind each.
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5"}
+#: The default compile's choice. Haiku matched Sonnet's skeletons at a
+#: fourteenth of the cost; ``rules`` (no call) is the opt-out.
+DEFAULT = "haiku"
 NODE_ID = "system1_structure"
 #: Repair rounds after the first answer, each one call.
 REPAIR_ROUNDS = 2
@@ -361,6 +365,22 @@ def lane_with(lane: Lane, choice: str) -> Lane:
     model = MODELS[choice]
     prefix, _, _ = lane.model.rpartition("/")
     return replace(lane, model=gateway_model_id(prefix, model) if prefix else model)
+
+
+def lane_for(driver: Any, choice: str) -> Lane:
+    """The compile driver's billing lane, serving ``choice``'s model.
+
+    A compile that cannot reach the model fails before the agent runs, and
+    the error names ``--structure rules``, the opt-out."""
+    return lane_with(
+        tiebreak.lane_for(
+            driver,
+            caller=f"the structure pass asks {MODELS[choice]} for the pipeline's skeleton",
+            opt_out="--structure rules",
+            error=StructureUnavailable,
+        ),
+        choice,
+    )
 
 
 # ── the prompt ────────────────────────────────────────────────────────────
