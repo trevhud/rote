@@ -1,10 +1,11 @@
 """Registrable domains, by the Public Suffix List (ICANN and private sections).
 
 The list is bundled, pinned, and never downloaded at run time:
-``public_suffix_list.dat.gz`` is the file at publicsuffix/list commit
-:data:`COMMIT`, compressed, whose text hashes to :data:`SHA256`
-(``tests/test_psl.py`` checks both). Update it by fetching that file at a
-newer commit and changing the two constants.
+``public_suffix_list.dat`` is the file at publicsuffix/list commit
+:data:`COMMIT`, unmodified, hashing to :data:`SHA256` (``tests/test_psl.py``
+checks it, and ``scripts/sanity-check.sh`` exempts the file from its name
+scan only while the hash matches). Update it by fetching that file at a
+newer commit and changing both constants and the script's hash.
 
 The private section matters here: ``a.github.io`` and ``b.github.io`` are
 different owners, and so are two ``herokuapp.com`` apps.
@@ -14,20 +15,18 @@ https://publicsuffix.org/list/ (the algorithm is under "Formal Algorithm")
 
 from __future__ import annotations
 
-import gzip
 from functools import cache
 from importlib import resources
 
 #: publicsuffix/list commit the bundled file was taken from (2026-10-20).
 COMMIT = "5dd321ffe02039e2431382a095cf80e27ff5eb94"
 SHA256 = "9b4827a9e428a0192a9ea0a6b7804a4cc653d5f39a03456d3b17447b86d78de9"
-_FILE = "public_suffix_list.dat.gz"
+_FILE = "public_suffix_list.dat"
 
 
 def list_text() -> str:
     """The bundled list, as published."""
-    raw = resources.files("rote.vendor_specs").joinpath(_FILE).read_bytes()
-    return gzip.decompress(raw).decode("utf-8")
+    return resources.files("rote.vendor_specs").joinpath(_FILE).read_text(encoding="utf-8")
 
 
 @cache

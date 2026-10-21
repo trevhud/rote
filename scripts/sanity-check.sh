@@ -22,6 +22,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# ───── Pinned third-party data, exempt only while unmodified ─────
+# The Public Suffix List lists "stord.no", a Norwegian municipality, among
+# its ICANN suffixes; it is not the employer name the scan guards against.
+# The file is skipped only while its sha256 equals rote.vendor_specs.psl.SHA256,
+# so any edit or refresh of it falls back into the scan.
+PSL_PATH="src/rote/vendor_specs/public_suffix_list.dat"
+PSL_SHA256="9b4827a9e428a0192a9ea0a6b7804a4cc653d5f39a03456d3b17447b86d78de9"
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+RG_EXEMPT=()
+GREP_EXEMPT=()
+if [[ -f "$PSL_PATH" && "$(sha256_of "$PSL_PATH")" == "$PSL_SHA256" ]]; then
+    RG_EXEMPT=(--glob "!$PSL_PATH")
+    GREP_EXEMPT=(--exclude="$(basename "$PSL_PATH")")
+fi
+
 # Use ripgrep if available (much faster + respects .gitignore), fall back
 # to a grep invocation that excludes the obvious cruft dirs.
 if command -v rg >/dev/null 2>&1; then
@@ -35,6 +56,7 @@ if command -v rg >/dev/null 2>&1; then
             --glob '!*.egg-info' \
             --glob '!launch' \
             --glob '!scripts/sanity-check.sh' \
+            "${RG_EXEMPT[@]}" \
             "$@" \
             "$pattern" . || true
     }
@@ -48,6 +70,7 @@ else
             --exclude-dir='*.egg-info' \
             --exclude-dir=launch \
             --exclude='sanity-check.sh' \
+            "${GREP_EXEMPT[@]}" \
             "$pattern" . 2>/dev/null || true
     }
 fi

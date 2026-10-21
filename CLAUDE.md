@@ -662,7 +662,9 @@ Things that will bite if you touch it:
   whole check. A docs-spec host is called at all only when it equals, or
   shares the registrable domain of (`rote.vendor_specs.psl`: the bundled,
   pinned Public Suffix List with its private section, so `a.github.io` and
-  `b.github.io` are two owners), a cited page in `web-research.json`
+  `b.github.io` are two owners; docs on another registrable domain, such
+  as docs.slack.dev for slack.com, need `--allow-host`), a cited page in
+  `web-research.json`
   (rote's own record, written by the Compiler over any file the agent
   wrote), or `--allow-host` names it; "every cited page was fetched"
   vouches for nothing. Every request is built first and the plan is

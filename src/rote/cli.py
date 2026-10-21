@@ -4550,8 +4550,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="HOST",
         help=(
-            "With --live-check: allow a host from the compile's own docs spec whose "
-            "cited pages the compile did not fetch (repeatable)"
+            "With --live-check: allow a host from the compile's own docs spec that no "
+            "fetched page it cites vouches for: one the compile did not fetch, or one on "
+            "a different registrable domain from its docs (docs.slack.dev does not vouch "
+            "for slack.com) (repeatable)"
         ),
     )
     run_p.add_argument(

@@ -60,3 +60,13 @@ def test_registrable_domain(host: str, domain: str) -> None:
 def test_two_github_pages_sites_do_not_share_a_domain() -> None:
     assert registrable_domain("a.github.io") != registrable_domain("b.github.io")
     assert public_suffix("a.github.io") == "github.io"
+
+
+def test_the_sanity_scan_exempts_exactly_this_list_by_its_hash() -> None:
+    """scripts/sanity-check.sh skips the list only while it is unmodified; the
+    pinned hash there must be this one, so a refresh updates both."""
+    from pathlib import Path
+
+    script = (Path(__file__).parent.parent / "scripts" / "sanity-check.sh").read_text()
+    assert f'PSL_SHA256="{psl.SHA256}"' in script
+    assert 'PSL_PATH="src/rote/vendor_specs/public_suffix_list.dat"' in script
