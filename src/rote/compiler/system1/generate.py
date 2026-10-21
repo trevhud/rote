@@ -492,23 +492,33 @@ FIELD_SCHEMA: dict[str, Any] = {
         "type": {"enum": list(FIELD_TYPES)},
         "items": {"enum": ["", *FIELD_TYPES]},
         "required": {"type": "boolean"},
+        "nullable": {"type": "boolean"},
         "enum": {"type": "array", "items": {"type": "string"}},
         "description": {"type": "string"},
     },
-    "required": ["path", "type", "items", "required", "enum", "description"],
+    "required": ["path", "type", "items", "required", "nullable", "enum", "description"],
     "additionalProperties": False,
 }
 
 _NAME_RE = re.compile(r"^[^.\[\]]+$")
 
 
-def fields_to_schema(fields: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+def fields_to_schema(
+    fields: list[dict[str, Any]], *, nullable_ok: bool = True
+) -> tuple[dict[str, Any], list[str]]:
     """The JSON Schema a field list describes, and what is wrong with the list.
 
     Code, not the model, writes the schema, so it is always well formed:
     the only possible faults are in the list itself (a field whose parent
     is missing or is not an object, a path given twice, ``items`` on a
     field that is not an array), and each is named for the re-ask.
+
+    A ``nullable`` field may hold null as well as its type
+    (``{"type": [kind, "null"]}``), so code that sets a not-found value to
+    None passes the prefix's check on the sample. ``nullable_ok=False``
+    (a judge's output) refuses it: the emitted Pydantic and Zod models read
+    nullability only from ``anyOf``, and a judge's optional field is
+    already ``required: false``.
     """
     problems: list[str] = []
     root: dict[str, Any] = {"type": "object", "properties": {}}
@@ -550,6 +560,14 @@ def fields_to_schema(fields: list[dict[str, Any]]) -> tuple[dict[str, Any], list
         description = str(f.get("description") or "").strip()
         if description:
             node["description"] = description
+        if f.get("nullable"):
+            if nullable_ok:
+                node["type"] = [kind, "null"]
+            else:
+                problems.append(
+                    f"field `{path}` is nullable, which a judge's output cannot be: "
+                    "set required to false instead"
+                )
         if path == "":
             root.clear()
             root.update(node)
@@ -797,7 +815,9 @@ def _interface_entry(payload: dict[str, Any], ctx: Context, node: Any) -> dict[s
             entry["output_fields_problems"] = ["output_fields is empty"]
             entry["output_schema"] = {}
         else:
-            entry["output_schema"], found = fields_to_schema(fields)
+            entry["output_schema"], found = fields_to_schema(
+                fields, nullable_ok=node.kind is not NodeKind.LLM_JUDGE
+            )
             if found:
                 entry["output_fields_problems"] = found
     if _needs_termination(node):

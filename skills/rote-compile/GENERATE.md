@@ -42,6 +42,9 @@ Asked for a node's interface entry, you answer:
   - `items`: for an array, the type of each item (`object` when its items
     have fields), else `""`.
   - `required`: true when the node always returns the field.
+  - `nullable`: true when the field can hold null (a "not found" owner,
+    an empty date). A judge's output fields are never nullable: leave
+    one out (`required: false`) instead.
   - `enum`: for a string that takes only fixed values (a severity, a
     route), those values. Otherwise `[]`.
   - `description`: a few words on what the field holds.

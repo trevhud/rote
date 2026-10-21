@@ -55,6 +55,7 @@ def _field(path: str, kind: str, items: str = "", required: bool = True, **extra
         "type": kind,
         "items": items,
         "required": required,
+        "nullable": extra.get("nullable", False),
         "enum": extra.get("enum", []),
         "description": extra.get("description", ""),
     }
@@ -915,3 +916,53 @@ def test_a_faulty_field_list_names_each_fault() -> None:
     assert "`d.x` needs its parent `d`" in joined
     assert "`a.y` needs its parent `a`" in joined
     assert "`e[0]`: a name may not contain" in joined
+
+
+def test_nullable_fields_accept_null_nested_and_as_array_items() -> None:
+    """Code that sets a not-found value to None is correct; its schema must say so,
+    or the prefix's check on the sample turns it into a repair."""
+    from rote.compiler.grounding import schema_mismatches
+
+    schema, problems = generate.fields_to_schema(
+        [
+            _field("owner", "object", nullable=True),
+            _field("owner.email", "string", nullable=True),
+            _field("dates", "array", "string"),
+            _field("rows", "array", "object"),
+            _field("rows[].closed_at", "string", required=False, nullable=True),
+        ]
+    )
+    assert problems == []
+    assert schema["properties"]["owner"]["type"] == ["object", "null"]
+    assert schema["properties"]["owner"]["properties"]["email"]["type"] == ["string", "null"]
+    item = schema["properties"]["rows"]["items"]["properties"]["closed_at"]
+    assert item["type"] == ["string", "null"]
+    value = {
+        "owner": {"email": None},
+        "dates": [],
+        "rows": [{"closed_at": None}, {"closed_at": "2026-10-01"}],
+    }
+    assert schema_mismatches(schema, value) == []
+    assert schema_mismatches(schema, {**value, "owner": None}) == []
+    # Not nullable: null is still a mismatch the prefix reports.
+    assert schema_mismatches(schema, {**value, "dates": None})
+
+
+def test_a_judges_output_refuses_nullable(tmp_path: Path) -> None:
+    from rote.compiler.system1.generate import _interface_entry
+
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    judge = _node(ctx, NodeKind.LLM_JUDGE)
+    entry = _interface_entry(
+        {"description": "x", "output_fields": [_field("tier", "string", nullable=True)]},
+        ctx,
+        judge,
+    )
+    assert any("judge's output cannot be" in p for p in interface_problems(ctx, judge, entry))
+    pure = _node(ctx, NodeKind.PURE_FUNCTION)
+    entry = _interface_entry(
+        {"description": "x", "output_fields": [_field("total", "number", nullable=True)]},
+        ctx,
+        pure,
+    )
+    assert entry["output_schema"]["properties"]["total"]["type"] == ["number", "null"]
