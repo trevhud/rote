@@ -545,6 +545,76 @@ def sent_arguments(node: Node) -> dict[str, Any]:
     }
 
 
+def _skill_text(skill_dir: Path) -> str:
+    """SKILL.md and every reference file under the skill."""
+    parts = [(skill_dir / "SKILL.md").read_text(encoding="utf-8")]
+    refs = skill_dir / "references"
+    if refs.is_dir():
+        parts += [ref.read_text(encoding="utf-8") for ref in sorted(refs.rglob("*.md"))]
+    return "\n".join(parts)
+
+
+#: A name that can only be an identifier: it has ``_`` or ``-``, or a capital
+#: inside it (``read_wiki_structure``, ``docs-search``, ``getPage``).
+_IDENTIFIER_SHAPED = re.compile(r"[_-]|[a-z][A-Z]")
+
+
+def _names_tool(tool: str, text: str) -> bool:
+    """Does ``text`` name ``tool`` as an identifier, not as an ordinary word?
+
+    An identifier-shaped name counts wherever it appears whole. A plain word
+    (``search``, ``fetch``, ``get``) counts only as a code span, because
+    "search the archive folder and fetch the latest copy" is prose."""
+    name = re.escape(tool)
+    if _IDENTIFIER_SHAPED.search(tool):
+        return re.search(rf"(?<![\w-]){name}(?![\w-])", text) is not None
+    return re.search(rf"`{name}(?:\([^`]*\))?`", text) is not None
+
+
+def unbound_tool_findings(
+    pipeline: Pipeline, skill_dir: Path | None, tools: ToolSchemas
+) -> list[ContractFinding]:
+    """Every declared tool the skill names that no node calls.
+
+    A tool is declared when a server's tools/list (or a recorded call)
+    exposes it. The skill's own tables are not a source: the parser's
+    registry also reads rule-table codes (``ground_transport``) as tools.
+    When the skill
+    names one by its exact name and no ``mcp:`` binding or agent loop uses
+    it, the step that calls it was compiled into something else: a real
+    natural-language MCP skill compiled to a pipeline with no binding at
+    all, and nothing failed.
+    """
+    if skill_dir is None or not (skill_dir / "SKILL.md").is_file():
+        return []
+    declared: dict[str, set[str]] = {}
+    for server, tool in tools:
+        declared.setdefault(tool, set()).add(server)
+    bound = {n.mcp.tool for n in pipeline.nodes if n.mcp is not None}
+    bound |= {t for n in pipeline.nodes for t in n.tools or []}
+    text = _skill_text(skill_dir)
+    findings: list[ContractFinding] = []
+    for tool in sorted(declared):
+        if tool in bound or not _names_tool(tool, text):
+            continue
+        servers = sorted(declared[tool])
+        findings.append(
+            ContractFinding(
+                node_id="(pipeline)",
+                kind="declared_tool_unbound",
+                severity="error",
+                message=(
+                    f"the skill names the tool `{tool}` ({', '.join(servers)}), but no node "
+                    f"calls it. Bind the step that uses it: an external_call with "
+                    f"`mcp: {{server: {servers[0]}, tool: {tool}}}`, or list it in an "
+                    f"agent_loop's `tools`"
+                ),
+                path="pipeline.yaml",
+            )
+        )
+    return findings
+
+
 def tool_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFinding]:
     """Every mcp binding's arguments against its tool's declared, checkable schema."""
     findings: list[ContractFinding] = []

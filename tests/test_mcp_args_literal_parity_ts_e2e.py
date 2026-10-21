@@ -10,6 +10,7 @@ Slow: npm install and the real dev servers (wrangler, inngest-cli).
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -75,3 +76,46 @@ def test_ts_runtimes_send_literals_byte_identical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     check_ts_runtime(runtime, echo_server, token_endpoint, tmp_path, monkeypatch)
+
+
+def test_a_read_only_cloudflare_run_gets_its_gate_through_wrangler_vars(
+    echo_server: str,  # noqa: F811
+    token_endpoint: str,  # noqa: F811
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """workerd does not see the process environment, so `rote run` passes
+    the read-only gate as `wrangler dev --var`. The echo tool sets no
+    readOnlyHint: refused until its server is declared read-only."""
+    from rote.runners.cloudflare import run_cloudflare
+
+    env = mcp_env(echo_server, token_endpoint, tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    app = tmp_path / "cloudflare"
+    get_adapter("cloudflare").emit(PIPELINE, app)
+    (app / ".dev.vars").write_text(as_dev_vars(env), encoding="utf-8")
+    # The declaration names the endpoint the Worker resolves the server to.
+    servers = {n.mcp.server: echo_server for n in PIPELINE.nodes if n.mcp is not None}
+    refused = run_cloudflare(
+        app,
+        PAYLOAD,
+        signals={},
+        gate_order=[],
+        timeout_seconds=180,
+        worker_vars={"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "{}"},
+    )
+    assert refused.error is not None and "may write" in refused.error, refused.error
+    allowed = run_cloudflare(
+        app,
+        PAYLOAD,
+        signals={},
+        gate_order=[],
+        timeout_seconds=180,
+        worker_vars={
+            "ROTE_MCP_READ_ONLY": "1",
+            "ROTE_MCP_READ_ONLY_SERVERS": json.dumps(servers),
+        },
+    )
+    assert allowed.error is None, allowed.error
+    assert allowed.output == EXPECTED

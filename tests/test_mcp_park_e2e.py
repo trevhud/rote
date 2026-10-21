@@ -318,6 +318,9 @@ def _rote_run_args(app_dir: Path) -> list[str]:
         json.dumps({"contact_id": "lead-7"}),
         "--timeout",
         "120",
+        # The vendor's tool sets no readOnlyHint; this is about parking,
+        # not the read-only gate (test_mcp_read_only_parity_e2e.py).
+        "--allow-writes",
     ]
 
 

@@ -30,6 +30,10 @@ What it does, mirroring the rote CLI's behavior exactly:
 - **Configuration errors fail fast**: no resolvable endpoint raises
   :class:`RoteMcpConfigError`, which the emitted steps exclude from their
   retry budget. It does not park either: no login supplies an endpoint.
+- **Read-only runs**: under ``ROTE_MCP_READ_ONLY=1`` (set by ``rote run``
+  unless ``--allow-writes``) a tool that may write is refused before it
+  is called (:func:`tool_is_read_only`, the same predicate a skill run's
+  allowlist uses), as a :class:`RoteMcpConfigError`.
 """
 
 from __future__ import annotations
@@ -196,6 +200,65 @@ class RoteMcpConfigError(RuntimeError):
     Single-argument, so default exception pickling round-trips it (DBOS
     serializes step errors).
     """
+
+
+#: Set to ``1`` by ``rote run`` unless ``--allow-writes``: refuse any MCP
+#: tool that may write. ``ROTE_MCP_READ_ONLY_SERVERS`` is a JSON object of
+#: the servers the user registered with ``rote mcp add --read-only``,
+#: ``{name: registered url}``: the trust is in that endpoint, not the name.
+READ_ONLY_ENV = "ROTE_MCP_READ_ONLY"
+READ_ONLY_SERVERS_ENV = "ROTE_MCP_READ_ONLY_SERVERS"
+
+
+def tool_is_read_only(tool: Any, server_read_only: bool = False) -> bool:
+    """Whether ``tool`` (a ``tools/list`` entry) is safe to call unattended.
+
+    The one side-effect predicate, for a skill run's allowlist
+    (``rote.mcp.live_tools.read_only_tools``) and a pipeline run's calls
+    alike, so a side-by-side comparison gates both sides the same way:
+    the user declared the whole server read-only (many real servers set
+    no annotations at all), or the server marks the tool ``readOnlyHint``.
+    A tool with no annotations, or a false or absent hint, may write.
+    """
+    if server_read_only:
+        return True
+    annotations = getattr(tool, "annotations", None)
+    return annotations is not None and getattr(annotations, "read_only_hint", None) is True
+
+
+def declared_read_only_at(registered_url: str | None, resolved_url: str) -> bool:
+    """Whether a ``--read-only`` declaration covers the endpoint being called.
+
+    The user vouched for the endpoint they registered. ``ROTE_MCP_<SERVER>_URL``
+    can point the same name elsewhere, and that endpoint's tools are not
+    covered by the declaration.
+    """
+    return registered_url is not None and normalize_server_url(
+        registered_url
+    ) == normalize_server_url(resolved_url)
+
+
+def write_refusal(server: str, url: str, tool: str, listed: Sequence[Any]) -> str | None:
+    """Why a read-only run must not call ``server.tool`` at ``url``, or ``None``."""
+    if os.environ.get(READ_ONLY_ENV) != "1":
+        return None
+    declared = json.loads(os.environ.get(READ_ONLY_SERVERS_ENV) or "{}")
+    registered = declared.get(server)
+    spec = next((t for t in listed if getattr(t, "name", None) == tool), None)
+    if tool_is_read_only(spec, declared_read_only_at(registered, url)):
+        return None
+    if registered is not None:
+        why = (
+            f"{server} is registered read-only at {registered}, but this run calls it at "
+            f"{url}, which the declaration does not cover"
+        )
+    else:
+        why = f"{server} does not mark it readOnlyHint and is not registered read-only"
+    return (
+        f"this run is read-only, and {server}.{tool} may write: {why}. Pass "
+        f'--allow-writes to let the run write, or register the server with "rote mcp '
+        f'add {server} <url> --read-only" if none of its tools write.'
+    )
 
 
 def resolve_url(server: str, pipeline_url: str | None) -> str:
@@ -752,7 +815,11 @@ async def call_mcp_tool(
             # cache, gives _result_payload the wrap flag, and moves a
             # listing failure ahead of the call instead of after the tool
             # has already run its side effects.
-            schemas = {t.name: t.output_schema for t in await client.list_tools()}
+            listed = await client.list_tools()
+            refusal = write_refusal(server, url, tool, listed)
+            if refusal is not None:
+                raise RoteMcpConfigError(refusal)
+            schemas = {t.name: t.output_schema for t in listed}
             result = await client.call_tool(tool, arguments)
             return _result_payload(result, schemas.get(tool))
     except Exception as exc:

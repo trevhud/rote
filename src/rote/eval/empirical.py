@@ -32,7 +32,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
@@ -76,15 +76,19 @@ USAGE_ERROR_PREFIX = "error: "
 
 
 def usage_error(output: str) -> str | None:
-    """An emitted app's own usage error (a bad input), without its prefix.
+    """An emitted app's own one-line error (a bad input, a missing MCP
+    endpoint, a write refused by a read-only run), without its prefix.
 
-    The app prints it as its last line and exits 2. It already says what
-    to fix, so it replaces the whole failure message: the runtime's log
-    lines above it are noise, and temporal (in-process) reports the same
-    error as one line too.
+    The app prints it on its own line and exits 2. It already says what to
+    fix, so it replaces the whole failure message: the runtime's log lines
+    are noise, and temporal (in-process) reports the same error as one
+    line too. It is the last such line, not the last line: a DBOS child
+    workflow still finishing when the app shuts down logs after it.
     """
-    last = output.strip().rsplit("\n", 1)[-1]
-    return last[len(USAGE_ERROR_PREFIX) :] if last.startswith(USAGE_ERROR_PREFIX) else None
+    for line in reversed(output.strip().splitlines()):
+        if line.startswith(USAGE_ERROR_PREFIX):
+            return line[len(USAGE_ERROR_PREFIX) :]
+    return None
 
 
 def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_CHARS) -> str:
@@ -244,12 +248,15 @@ def gate_answers_instructions(answers: str) -> str:
     )
 
 
-def signal_answers(signals: dict[str, Any]) -> str:
-    """``--signal`` payloads as numbered answers, in the order given."""
-    return "\n".join(
-        f"{i}. {name}: {json.dumps(payload)}"
-        for i, (name, payload) in enumerate(signals.items(), 1)
-    )
+def signal_answers(payloads: Sequence[Any]) -> str:
+    """Gate answers as a numbered list, in the order the skill asks.
+
+    One rendering for ``rote run <skill> --signal`` and the compile bench's
+    fidelity references, so the two prompts a side-by-side demo compares
+    are byte-identical. A ``--signal`` name is only a label for the order:
+    a skill's gates have no names, so it is not sent.
+    """
+    return "\n".join(f"{i}. {json.dumps(payload)}" for i, payload in enumerate(payloads, 1))
 
 
 def _skill_prompt(

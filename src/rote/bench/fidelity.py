@@ -42,7 +42,7 @@ from rote.bench.fidelity_score import fidelity_summary, score_case, stable_refer
 from rote.bench.http_fixtures import HttpFixtureError, api_calls, api_side, load_http
 from rote.compiler.api_docs import api_view
 from rote.compiler.backend import read_backend
-from rote.eval.empirical import gate_answers_instructions
+from rote.eval.empirical import gate_answers_instructions, signal_answers
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs.store import SpecStore
 
@@ -291,9 +291,7 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
         "did not derive."
     ]
     if case.gates:
-        answers = case.gate_instructions or "\n".join(
-            f"{i + 1}. {json.dumps(g)}" for i, g in enumerate(case.gates)
-        )
+        answers = case.gate_instructions or signal_answers(case.gates)
         parts.append(gate_answers_instructions(answers))
     if casefile.servers:
         parts.append(
