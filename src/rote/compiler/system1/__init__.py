@@ -72,6 +72,7 @@ def prepare(
     rubric: Path | None = None,
     observations: Iterable[Any] = (),
     structure_lane: Lane | None = None,
+    decider_reads_skill: bool = False,
 ) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
@@ -84,6 +85,8 @@ def prepare(
     ``rules`` makes no call at all. ``clef`` and ``jev`` ask that decision
     model (no generated text) about each step's kind and gate, and use its
     answers where it is confident (:mod:`rote.compiler.system1.decision_model`).
+    ``decider_reads_skill`` gives each of its calls the whole skill's text
+    beside the step (research arms ``clef-full`` / ``jev-full``).
 
     With ``tiebreak_lane``, the steps still unsure after that go to Haiku in
     one call, with ``rubric`` (node-kinds.md) as its guide, and its node
@@ -114,7 +117,8 @@ def prepare(
         path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         return p
     model = decision_model.MODELS.get(decider)
-    verdicts = decision_model.decide(model, skill) if model is not None else None
+    context = structure.skill_text(skill_dir) if decider_reads_skill else None
+    verdicts = decision_model.decide(model, skill, context) if model is not None else None
     segments = unit_segments(skill, verdicts)
     tb = None
     if tiebreak_lane is not None:

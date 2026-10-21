@@ -419,3 +419,60 @@ def test_five_scalar_entries_are_accepted(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", json.dumps(meta))
     assert json.loads(_sent_headers(monkeypatch)["cf-aig-metadata"]) == meta
+
+
+def _every_step(answer: dict[str, Any], skill: Any) -> dict[str, Any]:
+    return {u.title: answer for u in skill.units}
+
+
+@MODELS
+def test_with_the_skill_as_context_every_call_reads_it(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = parse_skill(_skill(tmp_path))
+    calls = _stub(
+        monkeypatch, _every_step(_answers({**ZERO, "pure_function": 0.9}, 0.0), skill), model
+    )
+    dm.decide(model, skill, context="THE WHOLE SKILL")
+    assert calls and all(
+        _request(c["body"])["state"]["skill_text"] == "THE WHOLE SKILL" for c in calls
+    )
+    calls.clear()
+    dm.decide(model, skill)
+    assert calls and all("skill_text" not in _request(c["body"])["state"] for c in calls)
+
+
+@MODELS
+def test_a_skill_the_model_would_truncate_is_refused_before_any_call(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    """Workers AI truncates a long text state without an error."""
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = parse_skill(_skill(tmp_path))
+    calls = _stub(
+        monkeypatch, _every_step(_answers({**ZERO, "pure_function": 0.9}, 0.0), skill), model
+    )
+    too_long = "x" * int(model.context_tokens * 2.5)
+    with pytest.raises(dm.DeciderUnavailable, match="truncates a longer state"):
+        dm.decide(model, skill, context=too_long)
+    assert calls == []
+    fits = "x" * int(model.context_tokens * 2.5 * 0.5)
+    dm.decide(model, skill, context=fits)
+    assert calls
+
+
+@MODELS
+def test_a_call_that_filled_the_window_is_refused(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = parse_skill(_skill(tmp_path))
+    full = _answers({**ZERO, "pure_function": 0.9}, 0.0)
+    full["result"]["usage"]["input_tokens"] = model.context_tokens
+    _stub(monkeypatch, _every_step(full, skill), model)
+    with pytest.raises(dm.DeciderUnavailable, match="likely truncated"):
+        dm.decide(model, skill, context="short")

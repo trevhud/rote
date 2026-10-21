@@ -65,6 +65,9 @@ class DecisionModel:
     kind_threshold: float
     #: The "a person must act" probability at or above which a step is a gate.
     human_threshold: float
+    #: The most input tokens a call takes. Past it the text state is
+    #: truncated without an error, so a longer state is refused here.
+    context_tokens: int = 32_768
 
     def url(self, account: str) -> str:
         base = f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/run"
@@ -86,6 +89,9 @@ CLEF = DecisionModel(
     kind_threshold=0.85,
     # Every held-out gate was above 0.8, every other step below 0.2.
     human_threshold=0.50,
+    # developers.cloudflare.com/workers-ai/models/clef/: "65,536 tokens";
+    # a longer text state "is truncated to fit".
+    context_tokens=65_536,
 )
 
 JEV = DecisionModel(
@@ -99,6 +105,9 @@ JEV = DecisionModel(
     kind_threshold=0.85,
     # The best dev gate F1 (4 of 4 gates, 1 false), the higher value of a tie.
     human_threshold=0.60,
+    # Cloudflare publishes no page for it; listings say 32K or 64K. The
+    # smaller one, so a skill that might be truncated is refused.
+    context_tokens=32_768,
 )
 
 #: Every model decider, by ``--decider`` value.
@@ -163,13 +172,34 @@ class Verdicts:
         return sum(v.cost_usd for v in self.by_unit.values())
 
 
-def state_for(skill: SkillParse, u: Unit) -> dict[str, Any]:
-    return {
+def state_for(skill: SkillParse, u: Unit, context: str | None = None) -> dict[str, Any]:
+    """What the model reads about one step. ``context`` (the whole skill's
+    text) is added beside it when given."""
+    state: dict[str, Any] = {
         "skill": skill.name,
         "skill_description": skill.description,
         "all_steps": [x.title for x in skill.units],
         "this_step": {"section": u.section, "title": u.title, "text": u.text},
     }
+    if context is not None:
+        state["skill_text"] = context
+    return state
+
+
+#: Characters per token assumed when sizing a state before sending it: low,
+#: so the estimate errs toward refusing a state that might not fit.
+_CHARS_PER_TOKEN = 2.5
+
+
+def _check_fits(model: DecisionModel, states: list[dict[str, Any]]) -> None:
+    """Refuse a state the model would truncate: it does so without an error."""
+    longest = max((len(json.dumps(s)) for s in states), default=0)
+    estimate = int(longest / _CHARS_PER_TOKEN)
+    if estimate > model.context_tokens * 0.9:
+        raise DeciderUnavailable(
+            f"{model.label} reads at most {model.context_tokens} tokens and truncates a longer "
+            f"state without an error; this skill's state is about {estimate} tokens"
+        )
 
 
 def questions_for(variant: str) -> dict[str, Any]:
@@ -321,16 +351,33 @@ MAX_PARALLEL = 16
 VARIANTS = ("v0", "v1", "v2")
 
 
-def decide(model: DecisionModel, skill: SkillParse) -> Verdicts:
-    """The model's ensembled kind and gate probability for every step unit."""
+def decide(model: DecisionModel, skill: SkillParse, context: str | None = None) -> Verdicts:
+    """The model's ensembled kind and gate probability for every step unit.
+
+    ``context`` gives every call the whole skill's text beside its step
+    (research: ``clef-full`` / ``jev-full``). A state the model would
+    truncate is refused before any call, and a call whose input reached the
+    window is refused after it."""
     from concurrent.futures import ThreadPoolExecutor
 
     account, token = credentials(model)
     _gateway_headers()  # a bad gateway setting fails here, not six retries later
+    states = {u.index: state_for(skill, u, context) for u in skill.units}
+    _check_fits(model, list(states.values()))
     jobs = [(u, variant) for u in skill.units for variant in VARIANTS]
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
         results = list(
-            pool.map(lambda j: ask(model, account, token, state_for(skill, j[0]), j[1]), jobs)
+            pool.map(lambda j: ask(model, account, token, states[j[0].index], j[1]), jobs)
+        )
+    full = [
+        r
+        for r in results
+        if (r.get("usage") or {}).get("input_tokens", 0) >= model.context_tokens * 0.98
+    ]
+    if full:
+        raise DeciderUnavailable(
+            f"{model.label} read {full[0]['usage']['input_tokens']} tokens, its whole window: "
+            "the state was likely truncated"
         )
     by_unit: dict[int, list[dict[str, Any]]] = {}
     for (u, _), res in zip(jobs, results, strict=True):

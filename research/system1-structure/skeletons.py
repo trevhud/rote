@@ -50,7 +50,9 @@ SPLITS = {
 #: ``--`` choices: a structure model, optionally at low effort ("haiku-low"),
 #: or a decision model deciding the rules path's kinds and gates.
 DECIDERS = ("clef", "jev")
-CHOICES = [*structure.MODELS, *(f"{m}-low" for m in structure.MODELS), *DECIDERS]
+#: The same decision models with the whole skill's text beside each step.
+FULL = tuple(f"{d}-full" for d in DECIDERS)
+CHOICES = [*structure.MODELS, *(f"{m}-low" for m in structure.MODELS), *DECIDERS, *FULL]
 
 
 def openai_lane(model: str) -> Lane:
@@ -76,7 +78,7 @@ def row(
 ) -> dict[str, Any]:
     skill, trial = job
     model = choice.removesuffix("-low")
-    if choice in ("rules", *DECIDERS):
+    if choice in ("rules", *DECIDERS, *FULL):
         lane = None
     elif choice.startswith("openai:"):
         lane = openai_lane(choice.removeprefix("openai:"))
@@ -88,7 +90,8 @@ def row(
             plan = system1.prepare(
                 examples / skill / "skill",
                 Path(t),
-                decider=choice if choice in DECIDERS else "rules",
+                decider=(choice.removesuffix("-full") if choice in (*DECIDERS, *FULL) else "rules"),
+                decider_reads_skill=choice in FULL,
                 structure_lane=lane,
                 rubric=RUBRIC,
             )
