@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from rote.compiler import Compiler
 from rote.compiler.drivers import CompilerDriver, DriverResult
@@ -203,25 +202,40 @@ def test_the_prefix_checks_the_values_it_would_send(tmp_path: Path) -> None:
 # ───────── discovery, against the bench's real fixture servers ─────────
 
 
-def test_discovery_reads_the_fixture_servers_own_tools_list(
+def test_the_fixture_servers_serve_exactly_the_skills_bundled_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One schema: what the compile reads is what the fixtures enforce."""
+    """One schema: what a plain compile grounds in (skill/mcp-tools.json) is
+    what the fixtures enforce, read back over a real tools/list."""
     pytest.importorskip("fastmcp")
-    from rote.bench.runner import tool_servers
+    from rote.bench.fidelity import Case, fixture_servers, load_cases
+    from rote.compiler.tool_grounding import bundled
 
-    with tool_servers(OPS, tmp_path, {}) as env:
-        monkeypatch.setenv("ROTE_MCP_CONFIG", env["ROTE_MCP_CONFIG"])
+    casefile = load_cases(OPS)
+    silent = Case(id="c", description="", input={}, gates=[], gate_instructions=None, fixtures={})
+    with fixture_servers(casefile, silent, tmp_path) as (urls, _log):
+        registry = tmp_path / "mcp.json"
+        registry.write_text(
+            json.dumps({"version": 1, "servers": {n: {"url": u} for n, u in urls.items()}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ROTE_MCP_CONFIG", str(registry))
         found = asyncio.run(discover(["gmail", "google_drive"]))
-    cases = yaml.safe_load((OPS / "fidelity" / "cases.yaml").read_text())
-    for server, spec in cases["servers"].items():
-        for tool, defn in spec["tools"].items():
-            schema = found[(server, tool)]
-            assert schema.declared
-            assert schema.input_schema["properties"] == defn["parameters"]["properties"]
-            assert schema.input_schema.get("required") == defn["parameters"].get("required")
-            # The fixtures declare no result shape: the prefix must probe both.
-            assert schema.output_schema is None
+    snapshot = bundled(OPS / "skill")
+    assert (
+        sorted(found)
+        == sorted(snapshot)
+        == [
+            ("gmail", "search_threads"),
+            ("google_drive", "read_file_content"),
+        ]
+    )
+    for key, schema in found.items():
+        assert schema.declared and schema.origin == "live"
+        assert schema.input_schema["properties"] == snapshot[key].input_schema["properties"]
+        assert schema.input_schema.get("required") == snapshot[key].input_schema.get("required")
+        # The fixtures declare no result shape: the prefix must probe both.
+        assert schema.output_schema is None
 
 
 def test_discovery_keeps_a_declared_output_schema(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,18 +398,6 @@ def test_the_skills_tool_table_names_a_server() -> None:
 
     contact = servers_to_contact(_EVERYDAY, "No mention in prose.", tool_table_servers={"notion"})
     assert contact == {"notion": "the skill's tool table names 'notion'"}
-
-
-def test_the_bench_gives_each_job_its_own_registry(tmp_path: Path) -> None:
-    from rote.bench.runner import tool_servers
-
-    with tool_servers(REPO / "examples" / "invoice-push", tmp_path, {"A": "1"}) as env:
-        assert env == {"A": "1"}  # no fixture servers, nothing registered
-    pytest.importorskip("fastmcp")
-    with tool_servers(OPS, tmp_path, {"A": "1"}) as env:
-        registry = json.loads(Path(env["ROTE_MCP_CONFIG"]).read_text())
-        assert Path(env["ROTE_MCP_CONFIG"]).is_relative_to(tmp_path)
-        assert sorted(registry["servers"]) == ["gmail", "google_drive"]
 
 
 # ───────── the compiler and the CLI ─────────
@@ -671,12 +673,13 @@ def test_the_summary_says_nothing_when_every_binding_was_checked() -> None:
     assert _unchecked_tool_lines({"gmail": ["search_threads"]}, []) == []
 
 
-def test_a_bench_compile_runs_with_the_fixture_servers_registered(
+def test_a_bench_compile_grounds_in_the_skills_snapshot_with_nothing_registered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The compile subprocess sees a registry naming live fixture servers."""
-    pytest.importorskip("fastmcp")
+    """The bench compiles what a user's first compile does: no registry, and
+    the snapshot travels with the job's copy of the skill."""
     import argparse
+    from collections import defaultdict
 
     from rote.bench import runner
 
@@ -687,16 +690,12 @@ def test_a_bench_compile_runs_with_the_fixture_servers_registered(
             return 0
 
     async def _exec(*argv: str, env: dict[str, str], **kwargs: object) -> _Proc:
-        registry = json.loads(Path(env["ROTE_MCP_CONFIG"]).read_text())
-        seen["servers"] = sorted(registry["servers"])
-        monkeypatch.setenv("ROTE_MCP_CONFIG", env["ROTE_MCP_CONFIG"])
-        seen["found"] = sorted(await discover(["gmail", "google_drive"]))
+        seen["registry"] = env.get("ROTE_MCP_CONFIG")
+        seen["snapshot"] = (Path(argv[argv.index("compile") + 1]) / "mcp-tools.json").is_file()
         return _Proc()
 
     monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", _exec)
     monkeypatch.setattr(runner, "collect_job", lambda *a, **k: {"run": {}})
-    from collections import defaultdict
-
     monkeypatch.setattr(runner, "headline", lambda result: defaultdict(lambda: None))
     args = argparse.Namespace(
         examples=REPO / "examples",
@@ -710,8 +709,7 @@ def test_a_bench_compile_runs_with_the_fixture_servers_registered(
     )
     job = runner.Job("ops-report", 1, tmp_path / "ops-report" / "r1")
     asyncio.run(runner._run_job(job, args, {}, asyncio.Semaphore(1), runner._Budget(None)))
-    assert seen["servers"] == ["gmail", "google_drive"]
-    assert ("gmail", "search_threads") in seen["found"]  # type: ignore[operator]
+    assert seen == {"registry": None, "snapshot": True}
 
 
 # ───────── server-supplied text is data ─────────
@@ -821,10 +819,10 @@ def test_a_plain_local_ref_is_resolved_and_checked(tmp_path: Path) -> None:
 
 def test_the_fixtures_still_refuse_what_they_refused_on_the_committed_schemas() -> None:
     """The committed fixture schemas are flat, so nothing about them changed."""
+    from rote.bench.fidelity import load_cases
     from rote.bench.fixture_mcp import _schema_error
 
-    cases = yaml.safe_load((OPS / "fidelity" / "cases.yaml").read_text())
-    search = cases["servers"]["gmail"]["tools"]["search_threads"]["parameters"]
+    search = load_cases(OPS).servers["gmail"]["tools"]["search_threads"]["parameters"]
     assert "missing required argument(s): query" in str(
         _schema_error(search, {"search_query": "x"})
     )

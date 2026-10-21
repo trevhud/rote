@@ -579,9 +579,17 @@ class Compiler:
             from rote.eval.baseline import load_observations
 
             observations = tuple(load_observations(probe_dir)) if probe_dir else ()
-            tools, unlisted = await self._tool_schemas(observations, skill_dir)
+            try:
+                snapshot = tool_grounding.bundled(skill_dir)
+            except ValueError as e:
+                raise CompilerError(str(e)) from e
+            tools, unlisted = await self._tool_schemas(observations, skill_dir, snapshot)
             grounding = Grounding(
-                sample=sample, observations=observations, tools=tools, unlisted=unlisted
+                sample=sample,
+                observations=observations,
+                tools=tools,
+                unlisted=unlisted,
+                bundled=snapshot,
             )
             s1_plan: system1.Plan | None = None
             if use_system1:
@@ -922,7 +930,10 @@ class Compiler:
         )
 
     async def _tool_schemas(
-        self, observations: tuple[Any, ...], skill_dir: Path
+        self,
+        observations: tuple[Any, ...],
+        skill_dir: Path,
+        snapshot: tool_grounding.ToolSchemas | None = None,
     ) -> tuple[tool_grounding.ToolSchemas, dict[str, str]]:
         """Every MCP tool's input schema rote can get, before the agent runs.
 
@@ -935,7 +946,9 @@ class Compiler:
         skill names: a third-party skill must not trigger authenticated
         requests to the user's other servers), then schemas inferred from a
         baseline's recorded calls for any tool nothing declared. A server
-        that cannot be listed is logged and skipped.
+        that cannot be listed is logged and skipped. The skill's bundled
+        tools/list ``snapshot`` grounds every server not listed live: a
+        live listing always wins (:func:`tool_grounding.prefer_live`).
         """
         from rote.mcp import load_registry
 
@@ -964,6 +977,14 @@ class Compiler:
                 self._emit("log", f"tool schemas: skipped server {server!r}: {reason}")
 
             declared = await tool_grounding.discover(contact, on_skip=_skip)
+        if snapshot:
+            servers = sorted({s for s, _ in snapshot} - {s for s, _ in declared})
+            if servers:
+                self._emit(
+                    "log",
+                    f"tool schemas: {', '.join(servers)} from the skill's bundled tools/list",
+                )
+            declared = tool_grounding.prefer_live(declared, snapshot)
         tools = tool_grounding.merge(declared, tool_grounding.recorded(observations))
         if tools:
             servers = sorted({s for s, _ in tools})
