@@ -425,6 +425,16 @@ per vendor API version (`google/gmail/v1`), in the shareable format of
    `reads: <server>.<tool>[i]` makes an API read and the skill's tool read
    the same read.
 
+Fixture sets can also live in the fixture store
+(`rote.vendor_specs.fixture_store`, `ROTE_FIXTURE_DIR`, default
+`~/.local/share/rote/fixtures`), one JSON file per set at
+`<vendor>/<api>/<version>/<name>.json`, which is the layout a shared store
+will hold. `rote bench --examples examples --skills ops-report
+--save-fixtures` validates every case's sets against the live specs and
+saves them as `<example>.<case>`, stamped with the spec revision they fit.
+A case uses a stored set with `http: {google/gmail/v1: {from_store: <name>}}`,
+and loading one re-validates it against the current spec.
+
 ### What fidelity does and does not measure
 
 Read the number with these limits in mind:

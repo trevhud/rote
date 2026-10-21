@@ -660,6 +660,9 @@ class Grounding:
     #: each MCP tool's input schema, declared by its server or inferred from
     #: recorded calls.
     tools: dict[tuple[str, str], Any] = field(default_factory=dict)
+    #: ``{server: why}`` for each registered server whose tools rote did
+    #: not list: not named in the skill, or its ``tools/list`` failed.
+    unlisted: dict[str, str] = field(default_factory=dict)
 
 
 def unbindable_fields(sample: Sample) -> list[str]:

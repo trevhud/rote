@@ -579,10 +579,9 @@ class Compiler:
             from rote.eval.baseline import load_observations
 
             observations = tuple(load_observations(probe_dir)) if probe_dir else ()
+            tools, unlisted = await self._tool_schemas(observations, skill_dir)
             grounding = Grounding(
-                sample=sample,
-                observations=observations,
-                tools=await self._tool_schemas(observations, skill_dir),
+                sample=sample, observations=observations, tools=tools, unlisted=unlisted
             )
             s1_plan: system1.Plan | None = None
             if use_system1:
@@ -825,6 +824,7 @@ class Compiler:
                 mode,
                 questions=[*mode.questions, *contract_questions],
                 api_backend=self.api_backend,
+                runtime=self.emit_target.runtime if self.emit_target is not None else "dbos",
                 web_research=research,
                 spec_checks=verification.spec_checks,
             )
@@ -924,8 +924,12 @@ class Compiler:
 
     async def _tool_schemas(
         self, observations: tuple[Any, ...], skill_dir: Path
-    ) -> tool_grounding.ToolSchemas:
+    ) -> tuple[tool_grounding.ToolSchemas, dict[str, str]]:
         """Every MCP tool's input schema rote can get, before the agent runs.
+
+        Returns the schemas and ``{server: why}`` for each registered server
+        it did not list (:attr:`Grounding.unlisted`), so the compile summary
+        can say what to fix.
 
         Declared schemas from a live ``tools/list`` on the registered
         servers ``tool_discovery`` allows (by default only the ones the
@@ -945,6 +949,9 @@ class Compiler:
         for server, why in contact.items():
             self._emit("log", f"tool schemas: listing {server!r} (the skill says: {why!r})")
         left = [s for s in registered if s not in contact]
+        unlisted = {
+            s: f"the skill does not name it (--tool-discovery {self.tool_discovery})" for s in left
+        }
         if left:
             self._emit(
                 "log",
@@ -954,6 +961,7 @@ class Compiler:
         if contact:
 
             def _skip(server: str, reason: str) -> None:
+                unlisted[server] = reason
                 self._emit("log", f"tool schemas: skipped server {server!r}: {reason}")
 
             declared = await tool_grounding.discover(contact, on_skip=_skip)
@@ -964,7 +972,7 @@ class Compiler:
                 "log",
                 f"tool arguments grounded in {len(tools)} tool schema(s) from {', '.join(servers)}",
             )
-        return tools
+        return tools, unlisted
 
     def _emit_verification(self, verification: Verification) -> None:
         """One log line for the per-node implementation tally, one warning per problem."""

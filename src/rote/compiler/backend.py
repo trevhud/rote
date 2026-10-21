@@ -19,10 +19,6 @@ BACKENDS: tuple[Backend, ...] = ("mcp", "api")
 
 BACKEND_FILENAME = "backend.json"
 
-#: Runtimes with no MCP client: every external_call runs its ``impl:``
-#: whatever the backend (see ``rote.adapters._common.refuse_mcp_only_nodes``).
-IMPL_ONLY_RUNTIMES = frozenset({"python", "temporal"})
-
 
 class BackendRecordError(ValueError):
     """``backend.json`` exists but does not say a known backend."""
@@ -53,18 +49,11 @@ def read_backend(compiled_dir: Path) -> Backend | None:
     return cast(Backend, value)
 
 
-def bindings_called(runtime: str, backend: str) -> bool:
-    """Whether emitted code for ``runtime`` calls a node's ``mcp:`` binding."""
-    return backend == "mcp" and runtime not in IMPL_ONLY_RUNTIMES
-
-
 __all__ = [
     "BACKENDS",
     "BACKEND_FILENAME",
-    "IMPL_ONLY_RUNTIMES",
     "Backend",
     "BackendRecordError",
-    "bindings_called",
     "read_backend",
     "write_backend",
 ]

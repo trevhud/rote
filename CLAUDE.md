@@ -631,6 +631,11 @@ Things that will bite if you touch it:
 - **`reads: <server>.<tool>[i]` is what makes API and MCP reads
   comparable.** Without it an API read keys by operation and counts as
   unexpected against the skill's reference.
+- **Fixture sets are stored keyed by `<vendor>/<api>/<version>/<name>.json`**
+  (`rote.vendor_specs.fixture_store`, `ROTE_FIXTURE_DIR`), validated and
+  stamped with the spec revision on save, re-validated on load. Only
+  authored data goes there: a live check compares shapes and never keeps
+  what it read.
 - **Vendor libraries are installed per requirement set** into
   `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped

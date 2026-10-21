@@ -457,6 +457,20 @@ def tool_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFindin
     return findings
 
 
+def unchecked_tools(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, list[str]]:
+    """``{server: [tool, ...]}`` for every binding no schema was available for.
+
+    Their arguments are the agent's guess at the tool's parameter names,
+    which a real server refuses when the guess is wrong, so the compile's
+    summary names them (:func:`tool_questions` has the per-node detail).
+    """
+    unchecked: dict[str, set[str]] = {}
+    for node in pipeline.nodes:
+        if node.mcp is not None and (node.mcp.server, node.mcp.tool) not in tools:
+            unchecked.setdefault(node.mcp.server, set()).add(node.mcp.tool)
+    return {server: sorted(names) for server, names in sorted(unchecked.items())}
+
+
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
     """``(node id, text)`` for every binding whose arguments nothing could check."""
     questions: list[tuple[str, str]] = []

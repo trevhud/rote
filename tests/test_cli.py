@@ -279,6 +279,7 @@ def _install_mock_compiler(
     pipeline_yaml: Path | None = None,
     *,
     driver_metadata: dict[str, object] | None = None,
+    verification: object | None = None,
 ) -> None:
     """Patch ``rote.cli.Compiler`` with a fake that writes the BDR IR.
 
@@ -336,6 +337,7 @@ def _install_mock_compiler(
                     if driver_metadata is not None
                     else {"num_turns": 7, "input_tokens": 1000, "output_tokens": 500}
                 ),
+                verification=verification,  # type: ignore[arg-type]
             )
 
     monkeypatch.setattr("rote.cli.Compiler", _MockCompiler)
