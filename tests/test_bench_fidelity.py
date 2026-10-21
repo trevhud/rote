@@ -802,3 +802,22 @@ def test_a_value_not_in_the_pipelines_output_or_writes_is_missing(
 ) -> None:
     trace = {"completed": True, "objects": [{"brief_id": "b-1"}], "calls": calls}
     assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        {"matched": False},
+        {"matched": True, "invalid_arguments": "missing required argument(s): markdown"},
+    ],
+)
+def test_a_refused_write_earns_no_output(refusal: dict[str, Any]) -> None:
+    """A write a real server would reject produced nothing."""
+    trace = {
+        "completed": True,
+        "objects": [{"brief_id": "b-1"}],
+        "calls": [{**_publish(title="t", reviewer="Dana Lee"), **refusal}],
+    }
+    assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]
+    accepted = {**trace, "calls": [{**_publish(title="t", reviewer="Dana Lee"), "matched": True}]}
+    assert score_case(_reviewer_reference(), accepted)["fields_missing"] == []

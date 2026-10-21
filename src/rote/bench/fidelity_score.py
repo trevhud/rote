@@ -460,8 +460,13 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     # from: a reviewer known only from the gate's answer that the pipeline
     # sends on in its publish call carried the value through. The gate's
     # received payload itself stays out (crediting it would reward being
-    # told the answer); only the pipeline's own writes count.
-    written = [c.get("arguments") or {} for c in calls if c.get("side_effect")]
+    # told the answer); only the pipeline's own writes count, and only ones
+    # the server accepted: a write a real server would refuse produced nothing.
+    written = [
+        c.get("arguments") or {}
+        for c in calls
+        if c.get("side_effect") and c.get("matched") is not False and not c.get("invalid_arguments")
+    ]
     index = index_trace([*trace.get("objects", []), *written])
     reproduced = {p: field_reproduced(p, v, index) for p, v in fields.items()}
     outputs = round(sum(reproduced.values()) / len(fields), 4) if fields else None
