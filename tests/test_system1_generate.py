@@ -1030,3 +1030,20 @@ async def test_repair_sends_a_binding_finding_to_the_structure_pass(tmp_path: Pa
     verification, rounds = await writer.repair(lambda _: next(verdicts))
     assert calls == [{mcp_node: ["missing required argument(s): query"]}]
     assert verification.ok and rounds == 1
+
+
+def test_a_skeleton_output_schema_is_fixed_and_named_keys_are_required(tmp_path: Path) -> None:
+    from rote.compiler.system1.generate import interface_request
+
+    ctx, _ = _context(tmp_path, "ops-report")
+    base = _node(ctx, NodeKind.PURE_FUNCTION)
+    fixed = {"type": "object", "properties": {"items": {"type": "array"}}, "required": ["items"]}
+    node = base.model_copy(update={"output_schema": fixed})
+    assert ctx.observed_schema(node) == fixed
+    keyed = base.model_copy(update={"output": {"missing_limits_page": "Any"}})
+    prompt = interface_request(ctx, keyed, "system", "m").prompt
+    assert (
+        "Its output MUST have these keys, named by the skeleton: `missing_limits_page`." in prompt
+    )
+    plain = interface_request(ctx, base, "system", "m").prompt
+    assert "named by the skeleton" not in plain
