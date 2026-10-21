@@ -29,7 +29,8 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `codex exec --output-schema` under `--agent codex`. They used to fall
   back to an `ANTHROPIC_*` key or a `claude` on PATH, which billed your
   Claude account for a compile sent to another provider and failed in
-  containers that have neither.
+  containers that have neither. A transient failure (a timeout, a rate
+  limit, a 5xx) is retried on the same lane up to three calls in all.
 
 ### Added
 

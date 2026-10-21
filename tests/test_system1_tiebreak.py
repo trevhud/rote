@@ -797,7 +797,7 @@ def _codex_driver(script: Path, model: str | None = "gpt-5.5") -> Any:
 
 
 def test_the_codex_driver_lends_codex_exec(tmp_path: Path) -> None:
-    from rote.compiler.system1.codex_call import CodexCli
+    from rote.compiler.system1.lane_call import CodexCli
     from tests._helpers import fake_codex
 
     script = fake_codex(tmp_path, [])

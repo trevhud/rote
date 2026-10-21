@@ -85,11 +85,15 @@ comes from keeping them clean.
   driver's own client and nothing else (`tiebreak.lane_for`): claude -p,
   the api driver's Anthropic client, the openai-api driver's OpenAI client
   with the compile's model, or `codex exec --output-schema`
-  (`system1/codex_call.py`, strict `json_schema` on the Responses API). Never add a fallback to an ambient
+  (`system1/lane_call.py`, strict `json_schema` on the Responses API). Never add a fallback to an ambient
   `ANTHROPIC_*` key or a `claude` on PATH: it billed a user's subscription
   for a compile they sent to GPT-5.5, and rote-cloud's container has
   neither, so every openai-api compile failed there. A lane with no client
-  is refused for the same reason. Any other driver fails naming
+  is refused for the same reason. Every call goes through
+  `lane_call.structured_call`, which retries a transient failure (408, 429,
+  5xx, a dropped connection) up to three calls on the same lane and model
+  and then raises the real error; keep it a retry, never a switch to
+  another model or provider. Any other driver fails naming
   `--structure rules`, the opt-out that keeps the rules above. Tests that run
   a compile with a fake driver pass `system1_structure="rules"`, because the
   fake has no lane. Tune its prompt on the dev skills only; the holdout is

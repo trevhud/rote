@@ -338,7 +338,7 @@ Haiku id in the compile model's form under `--agent api`, and the openai-api
 driver's OpenAI-compatible client with the compile's own model (GPT-5.5, GLM,
 Kimi) under `--agent openai-api`, through an OpenAI-shaped `json_schema`
 call, and `codex exec --output-schema` with the codex driver's model under
-`--agent codex` (`system1/codex_call.py`). codex sends that schema as the
+`--agent codex` (`system1/lane_call.py`). codex sends that schema as the
 Responses API's strict `json_schema` format, so it is as schema-locked as
 the other lanes. It has no token cap and carries about 25k tokens of codex's
 own system prompt per call (measured, 7 s for a one-step tie-break). The run
@@ -349,7 +349,15 @@ would bill the user's Claude subscription on a compile they sent to another
 provider, and rote-cloud's container has neither, so every such compile
 failed there. Any other driver fails before the agent runs and names
 `--structure rules`. An OpenAI-lane call sends the pass's answer cap as
-`max_completion_tokens`; emitted judges still send none. `rote-cloud` constructs `Compiler` with the default,
+`max_completion_tokens`; emitted judges still send none.
+
+Every call goes through `lane_call.structured_call`, which retries a
+transient failure (HTTP 408, 409, 425, 429 or 5xx, an SDK connection or
+timeout error, a reset connection) up to three calls in all, waiting 2 s
+and then 8 s, on the same lane and model, and then raises the real error.
+No other model or provider is ever tried. The SDK clients also retry on
+their own (two retries each), so a lane that keeps timing out costs up to
+nine requests before the compile fails. `rote-cloud` constructs `Compiler` with the default,
 so cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
@@ -372,7 +380,7 @@ could not run because that gateway had no Unified Billing balance):
 
 Quality is about Haiku's, at twice the time and roughly ten times the
 cost. BDR failed: Workers AI answered HTTP 408 (request timeout) on its
-first call.
+first call, which is what the retry below is for.
 
 The rules were fitted on the dev skills, so dev is where they look best; on
 the held-out skills the structure pass is ahead on every score. Sonnet 5.5

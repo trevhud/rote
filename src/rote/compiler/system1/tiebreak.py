@@ -215,7 +215,7 @@ def lane_for(
             )
     if name == "codex":
         from rote.compiler.drivers.codex import CodexDriver
-        from rote.compiler.system1.codex_call import PROVIDER, CodexCli
+        from rote.compiler.system1.lane_call import PROVIDER, CodexCli
 
         if isinstance(driver, CodexDriver):
             ok, reason = driver.is_available()
@@ -270,7 +270,7 @@ Call = Callable[..., tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]]
 
 
 def _structured_call() -> Call:
-    from rote.compiler.system1.codex_call import structured_call
+    from rote.compiler.system1.lane_call import structured_call
 
     return structured_call
 

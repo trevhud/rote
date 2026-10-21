@@ -1,4 +1,14 @@
-"""System-1's schema-locked call under the codex driver: ``codex exec --output-schema``.
+"""System-1's one call site: the codex transport, and a bounded retry on every lane.
+
+Every structure-pass and tie-break call goes through :func:`structured_call`.
+A ``codex-cli`` lane runs ``codex exec --output-schema`` here; every other
+lane goes to the inference helper. A transient failure (a timeout, a rate
+limit, a 5xx, a dropped connection) is retried :data:`ATTEMPTS` times in all
+with backoff, on the same lane and model, and then the real error is raised.
+That is a retry, not a fallback: no other model or provider is ever tried.
+Found on GLM 5.2, where Workers AI answered BDR's structure call with a 408.
+
+The codex transport:
 
 The codex driver has no SDK client to lend, but ``codex exec`` sends an
 ``--output-schema`` file as the Responses API's ``text.format`` with
@@ -19,11 +29,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+#: Calls in all for one answer, and the wait before each retry (seconds).
+ATTEMPTS = 3
+BACKOFF_S = (2.0, 8.0)
+#: An HTTP status a retry can cure: request timeout, conflict, too early,
+#: rate limit, and any server error (529 is Anthropic's overloaded).
+_TRANSIENT_STATUS = re.compile(r"(?:HTTP |API Error: |status[ :]+)(408|409|425|429|5\d\d)\b")
+#: Transport failures with no status: the SDKs' connection and timeout
+#: errors (by class name, as the helper reports them) and a reset socket.
+_TRANSIENT_TRANSPORT = re.compile(
+    r"\b(APIConnectionError|APITimeoutError|ECONNRESET|Connection reset|connection reset)\b"
+)
+#: Waits between attempts; tests replace it.
+_sleep = time.sleep
 
 #: Lane provider name for this transport.
 PROVIDER = "codex-cli"
@@ -142,8 +168,29 @@ def call(
     return payload, [(model or "codex", usage_row(usage))]
 
 
+def transient(error: BaseException) -> bool:
+    """Whether a failed call is worth the same call again: a retryable HTTP
+    status or a dropped connection, as the lane reported it."""
+    text = str(error)
+    return bool(_TRANSIENT_STATUS.search(text) or _TRANSIENT_TRANSPORT.search(text))
+
+
 def structured_call(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
-    """``structured_call`` for every System-1 lane: codex here, the rest in the helper."""
+    """``structured_call`` for every System-1 lane, retried on a transient failure."""
+    for attempt in range(ATTEMPTS):
+        try:
+            return _once(**kwargs)
+        except RuntimeError as e:
+            if attempt == ATTEMPTS - 1 or not transient(e):
+                if attempt:
+                    raise RuntimeError(f"{e} (after {attempt + 1} attempts)") from e
+                raise
+            _sleep(BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)])
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _once(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
+    """One call: codex here, the rest in the helper."""
     if kwargs.get("provider") == PROVIDER:
         return call(
             node_id=kwargs["node_id"],
