@@ -78,10 +78,12 @@ _MOCK_MCP = textwrap.dedent(
     """
     import sys
     from fastmcp import FastMCP
+    from mcp.types import ToolAnnotations
 
     mcp = FastMCP("research-tools")
 
-    @mcp.tool
+    # Marked read-only, so a read-only run hands it over; fetch_page is not.
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def web_search(query: str) -> dict:
         \"\"\"Search the public web for a query.\"\"\"
         return {"query": query, "hits": ["https://example.com/a"]}
@@ -463,3 +465,40 @@ def test_resolved_tool_binds_from_its_own_server_not_whichever_answers_first(
         )
     assert refused.returncode != 0, "a pinned tool was bound from the wrong server"
     assert "agent tools not provided by any reachable MCP server: web_search" in refused.stderr
+
+
+@pytest.mark.skipif(not _node_available(), reason="requires node + npm")
+def test_a_read_only_run_hands_the_loop_only_read_only_tools_and_says_so(
+    mcp_server: str, messages_stub: str, tmp_path: Path
+) -> None:
+    """The loop gets web_search (readOnlyHint) and not fetch_page, and its
+    instructions name fetch_page, so it reports that part as not done
+    instead of claiming it (a real claude -p loop claimed a publish)."""
+    app_dir = tmp_path / "app"
+    get_adapter("dbos-ts").emit(_pipeline(), app_dir)
+    (app_dir / "src" / "driver.ts").write_text(DRIVER_TS, encoding="utf-8")
+    node_trees.install(app_dir)
+    build = subprocess.run(["npx", "tsc"], cwd=app_dir, capture_output=True, text=True, timeout=300)
+    assert build.returncode == 0, f"tsc failed:\n{build.stdout}\n{build.stderr}"
+    proc = subprocess.run(
+        ["node", "dist/driver.js"],
+        cwd=app_dir,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env={
+            **os.environ,
+            "ROTE_MCP_SERVERS": "research_tools",
+            "ROTE_MCP_RESEARCH_TOOLS_URL": mcp_server,
+            "ROTE_MCP_TOKEN_DIR": str(tmp_path / "tokens"),
+            "ROTE_MCP_READ_ONLY": "1",
+            "ROTE_MCP_READ_ONLY_SERVERS": "{}",
+            "ANTHROPIC_API_KEY": "local-stub-key",
+            "ROTE_BASE_URL_RESEARCH_LOOP": messages_stub,
+        },
+    )
+    assert proc.returncode == 0, f"driver failed:\n{proc.stdout}\n{proc.stderr}"
+    first_turn = _MessagesStub.requests[0]
+    assert {tool["name"] for tool in first_turn["tools"]} == {"web_search"}
+    prompt = json.dumps(first_turn["messages"][0]["content"])
+    assert "not available to you because they may write: fetch_page" in prompt
