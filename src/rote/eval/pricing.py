@@ -499,10 +499,15 @@ def build_catalog(
 def default_cache_dir() -> Path:
     """Where every live price source caches its last fetch.
 
-    ``ROTE_PRICING_CACHE_DIR`` overrides ``~/.cache/rote``.
+    ``ROTE_PRICING_CACHE_DIR`` > ``$XDG_CACHE_HOME/rote`` > ``~/.cache/rote``,
+    the same order the registries and token store follow for their XDG
+    dirs. An empty ``XDG_CACHE_HOME`` counts as unset, as the XDG spec says.
     """
     override = os.environ.get("ROTE_PRICING_CACHE_DIR")
-    return Path(override) if override else Path.home() / ".cache" / "rote"
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".cache") / "rote"
 
 
 def _default_cache_path() -> Path:
