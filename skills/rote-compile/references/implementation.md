@@ -214,6 +214,7 @@ this compile targets `--backend api`. Now you are expected to write
    ```json
    {"vendor": "slack", "api": "web", "version": "v1",
     "sources": ["<every page you used, each fetched in this compile>"],
+    "auth": {"env": "SLACK_BOT_TOKEN", "location": "header", "name": "Authorization"},
     "operations": [{"id": "conversations.history", "method": "GET",
       "url_template": "https://slack.com/api/conversations.history",
       "params": {"channel": {"location": "query", "type": "string", "required": true},
@@ -228,7 +229,11 @@ this compile targets `--backend api`. Now you are expected to write
    page with the fields your code reads. rote checks your requests
    against this file exactly as it checks a vendor's own spec, and reports
    it as lower trust. Never add a field to the example that the page does
-   not show.
+   not show. `auth` names the one credential the requests carry, as the
+   docs describe it: the environment variable your code reads, and the
+   header or query parameter it goes in. Read no other environment
+   variable into a request: the live check refuses any other, and sends
+   even this one only when the user names it on the command line.
 
    **Internal or undocumented APIs.** A company's own service often has no
    public reference. If the skill or its references state the endpoint,

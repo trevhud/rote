@@ -808,6 +808,12 @@ class Compiler:
                 # Beside the IR, never in it: a later `rote emit` must not
                 # silently swap the researched vendor calls for MCP calls.
                 write_backend(output_dir, self.emit_target.external_backend)
+            if self.emit_target is not None and self.emit_target.external_backend == "api":
+                # rote's own record of the pages fetched, written after the
+                # agent is done and over any file the agent wrote by that name
+                # (an empty record when the lane reported nothing): the live
+                # check vouches for a docs spec's host only from it.
+                api_docs.write_research(output_dir, research or api_docs.WebResearch())
 
             # The report is rendered, not written by the agent: everything
             # in it is already in pipeline.yaml and the extracted code (see

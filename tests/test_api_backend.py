@@ -640,6 +640,11 @@ async def test_the_system1_path_briefs_researches_and_holds_vendor_calls_to_docs
     assert uncited == (set() if cite else {n.id for n in external})
     report = (out / "compile-report.md").read_text()
     assert "## Vendor API docs" in report
+    # rote's own record of what the compile fetched, for the live check's
+    # docs-host trust (the agent's WebFetch event above).
+    from rote.compiler.api_docs import read_fetched
+
+    assert read_fetched(out) == {api_docs.normalize_url(DOCS)}
 
 
 def test_the_api_backend_grants_web_tools_whatever_the_compile_path(
