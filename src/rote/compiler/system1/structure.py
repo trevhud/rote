@@ -228,8 +228,12 @@ Per node:
   is returned by some node, under the skill's own name; a later node that
   needs it reads that node.
 - mandatory: true unless the skill makes the step conditional or optional.
-  Always false for an agent_loop and for a node an agent_loop calls
-  (in_loop), which runs only when the loop's agent calls it.
+  Always false for an agent_loop. A loop's agent decides what it calls, so
+  nothing in_loop is guaranteed to run: a step the skill marks MANDATORY
+  never goes in_loop. Put a mandatory per-item step outside the loop, as a
+  node that fans out over the items, or one whose result the guarded work
+  reads (the push reads the eligibility check's result). A node in_loop is
+  never mandatory.
 - system: for an external_call, what it reaches. io is read or write. how is
   declared_tool (name the DECLARED TOOLS server and tool exactly), url (an
   API at a URL or HTTP path the skill gives), web_ui (operating a web app in
@@ -492,7 +496,11 @@ def check(
                 f"nodes; a {kind} cannot be in_loop"
             )
         if loop and n.get("mandatory"):
-            out.append(f"{where}: a node in_loop runs when its loop calls it: not mandatory")
+            out.append(
+                f"{where}: it is mandatory, but a loop's agent decides whether to call what "
+                f"runs in_loop {loop!r}, so it could be skipped. Take it out of the loop: fan "
+                "it out over the items, or make it a node whose result the work it guards reads"
+            )
         bad_keys = [k for k in n.get("outputs") or [] if not _IDENTIFIER.match(str(k))]
         if bad_keys:
             out.append(f"{where}: output keys {bad_keys} are not snake_case identifiers")
@@ -957,8 +965,16 @@ def resolve(
         if n.get("in_loop") and kind not in ("pure_function", "external_call", "llm_judge"):
             notes.append(f"`{nid}`: a {kind} cannot run inside a loop; it runs after it")
             n["in_loop"] = ""
-        if n.get("in_loop"):
-            n["mandatory"] = False
+        if n.get("in_loop") and n.get("mandatory"):
+            # Mandatory wins: it runs unconditionally, outside the loop, on what
+            # it can read there (invariant #4). Never dropped silently.
+            notes.append(
+                f"`{nid}`: the skill makes it mandatory, so it runs outside loop "
+                f"{n['in_loop']!r}, where nothing can skip it"
+            )
+            n["in_loop"] = ""
+            inside = {m["id"] for m in nodes if m.get("in_loop")}
+            n["reads"] = [r for r in n["reads"] if r not in inside]
         if kind == "agent_loop":
             n["mandatory"] = False
         if kind == "external_call":

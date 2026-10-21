@@ -1012,7 +1012,17 @@ def test_a_loop_calls_only_optional_callable_nodes(skill: Any) -> None:
         "node approve_each: a loop calls only pure_function, external_call and llm_judge "
         "nodes; a hitl_gate cannot be in_loop"
     ) in found
-    assert "node score_each: a node in_loop runs when its loop calls it: not mandatory" in found
+    assert (
+        "node score_each: it is mandatory, but a loop's agent decides whether to call what runs "
+        "in_loop 'research', so it could be skipped. Take it out of the loop: fan it out over "
+        "the items, or make it a node whose result the work it guards reads"
+    ) in found
     fixed, notes = structure.resolve(answer, skill, SKILL, declared)
     by_id = {n["id"]: n for n in fixed["nodes"]}
-    assert by_id["approve_each"]["in_loop"] == "" and by_id["score_each"]["mandatory"] is False
+    assert by_id["approve_each"]["in_loop"] == ""
+    # Mandatory is never dropped: the step leaves the loop instead, and the change is listed.
+    assert by_id["score_each"]["mandatory"] is True and by_id["score_each"]["in_loop"] == ""
+    assert (
+        "`score_each`: the skill makes it mandatory, so it runs outside loop 'research', "
+        "where nothing can skip it"
+    ) in notes
