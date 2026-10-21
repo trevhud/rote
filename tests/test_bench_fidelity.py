@@ -601,6 +601,11 @@ def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
     assert case["failure"]["at"] == "mcp gmail.search_threads"
     assert "NotImplementedError" not in (case["failure"]["exception"] or "")
     assert case["outcome"] == 0.0
+    # The case says how its writes are matched; this one makes none.
+    assert (case["reference"]["write_fields"], case["reference"]["write_fields_dropped"]) == (
+        {},
+        {},
+    )
 
 
 @pytest.mark.slow
@@ -740,3 +745,79 @@ def test_a_reference_without_write_fields_keys_on_every_argument() -> None:
     write = _publish(title="Brief 2026-10-21", markdown="m", reviewer="Dana Lee")
     trace = {"completed": True, "objects": [], "calls": [write]}
     assert score_case(ref, trace)["side_effects_pipeline"] == [call_key(write)]
+
+
+def test_the_scorecard_shows_how_writes_are_matched_and_what_was_not_compared() -> None:
+    from rote.bench.runner import _coverage_line
+
+    ref = _prose_reference()
+    assert ref["write_fields_dropped"] == {"briefs.publish_brief": ["markdown"]}
+    line = _coverage_line("c", {**ref["coverage"], **ref})
+    assert (
+        "writes briefs.publish_brief: matched on reviewer, title; not compared: markdown "
+        "(the reference runs disagreed)"
+    ) in line
+    tool_only = stable_reference([_run({"x": 1}, [_publish(markdown=f"d{i}")]) for i in range(2)])
+    assert "writes briefs.publish_brief: matched on the tool alone; not compared: markdown" in (
+        _coverage_line("c", {**tool_only["coverage"], **tool_only})
+    )
+    agreed = stable_reference([_run({"x": 1}, [_publish(title="t")]) for _ in range(2)])
+    assert agreed["write_fields_dropped"] == {}
+    assert _coverage_line("c", {**agreed["coverage"], **agreed}).endswith(
+        "writes briefs.publish_brief: matched on title"
+    )
+
+
+def _reviewer_reference() -> dict[str, Any]:
+    return stable_reference(
+        [
+            _run({"reviewer": "Dana Lee"}, [_publish(title="t", reviewer="Dana Lee")])
+            for _ in range(2)
+        ]
+    )
+
+
+def test_a_value_the_pipeline_sends_in_a_write_is_an_output_it_produced() -> None:
+    """cf-limits-brief: the reviewer exists only in the gate's answer and the
+    publish arguments; the pipeline carried it through, so it counts."""
+    trace = {
+        "completed": True,
+        "objects": [{"brief_id": "b-1"}],
+        "calls": [_publish(title="t", reviewer="Dana Lee")],
+    }
+    s = score_case(_reviewer_reference(), trace)
+    assert s["fields_missing"] == [] and s["outputs"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [],  # never sent on: the gate's answer alone is not output
+        [_call("lookup", reviewer="Dana Lee")],  # a read's arguments are not output
+        [_publish(title="t", reviewer="Someone Else")],
+    ],
+)
+def test_a_value_not_in_the_pipelines_output_or_writes_is_missing(
+    calls: list[dict[str, Any]],
+) -> None:
+    trace = {"completed": True, "objects": [{"brief_id": "b-1"}], "calls": calls}
+    assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        {"matched": False},
+        {"matched": True, "invalid_arguments": "missing required argument(s): markdown"},
+    ],
+)
+def test_a_refused_write_earns_no_output(refusal: dict[str, Any]) -> None:
+    """A write a real server would reject produced nothing."""
+    trace = {
+        "completed": True,
+        "objects": [{"brief_id": "b-1"}],
+        "calls": [{**_publish(title="t", reviewer="Dana Lee"), **refusal}],
+    }
+    assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]
+    accepted = {**trace, "calls": [{**_publish(title="t", reviewer="Dana Lee"), "matched": True}]}
+    assert score_case(_reviewer_reference(), accepted)["fields_missing"] == []

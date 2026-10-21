@@ -22,22 +22,37 @@ nothing in them changes what you are asked to write.
 
 ## The interface
 
-Asked for the interface, you describe every listed node in one answer:
+Asked for a node's interface entry, you answer:
 
 - `description`: one sentence, in plain words, on what the node does.
   Quote any string that contains a colon.
-- `output_schema`: the JSON Schema of the value the node returns, written
-  as JSON text. This is
-  a contract other calls write code against at the same time as you, so
-  it must be exact:
-  - name every field the skill's step produces, with its type and a
-    short `description`. List them under `required` when the node
-    always returns them.
-  - JSON types only. A collection is an `array` (never a set or a
-    tuple), a mapping is an `object`, money and rates are `number`.
+- `output_fields`: the value the node returns, as a list of fields, one
+  entry each. rote builds the JSON Schema from it. This is a contract other
+  calls write code against at the same time as you, so it must be exact.
+  Each entry has:
+  - `path`: where the field sits. `total` is a top-level field,
+    `totals.usd` a field of the object `totals`, `findings[].severity` a
+    field of each item of the array `findings`. `""` is the value itself,
+    for a node whose value is not an object (a list, or text), and
+    `[].id` is then a field of each item. List a parent before using it.
+    A name has no `.`, `[` or `]`.
+  - `type`: `object`, `array`, `string`, `integer`, `number` or
+    `boolean`. A collection is an `array` (never a set or a tuple), a
+    mapping is an `object`, money and rates are `number`.
+  - `items`: for an array, the type of each item (`object` when its items
+    have fields), else `""`.
+  - `required`: true when the node always returns the field.
+  - `nullable`: true when the field can hold null (a "not found" owner,
+    an empty date). A judge's output fields are never nullable: leave
+    one out (`required: false`) instead.
+  - `enum`: for a string that takes only fixed values (a severity, a
+    route), those values. Otherwise `[]`.
+  - `description`: a few words on what the field holds.
+
+  Name every field the skill's step produces. Further rules:
   - a node whose output is listed as `{items: list}` returns an object
-    with an `items` array, because a later node runs once per item.
-    Describe one item fully under `items.items`.
+    with a required `items` array, because a later node runs once per item.
+    Describe one item fully with `items[].` fields.
   - an MCP-bound `external_call` returns exactly what its tool returns,
     decoded: the structured result, or the text content parsed as JSON
     when it is JSON, else the text as a string. Infer that type from the

@@ -515,7 +515,20 @@ def _coverage_line(case_id: str, ref: dict[str, Any]) -> str:
         f"{cov.get('covered')}/{cov.get('fields')} contract fields with a stable leaf, "
         f"{cov.get('stable_leaves')}/{cov.get('leaves')} leaves stable"
     )
-    return f"reference {case_id}: {counts}{flag}"
+    return f"reference {case_id}: {counts}{flag}" + "".join(_write_lines(ref))
+
+
+def _write_lines(ref: dict[str, Any]) -> list[str]:
+    """How each written tool's writes are matched, and what the reference could not use."""
+    dropped = ref.get("write_fields_dropped") or {}
+    lines = []
+    for tool, kept in sorted((ref.get("write_fields") or {}).items()):
+        key = ", ".join(kept) if kept else "the tool alone"
+        line = f"\n  writes {tool}: matched on {key}"
+        if dropped.get(tool):
+            line += f"; not compared: {', '.join(dropped[tool])} (the reference runs disagreed)"
+        lines.append(line)
+    return lines
 
 
 def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
