@@ -766,3 +766,39 @@ def test_the_scorecard_shows_how_writes_are_matched_and_what_was_not_compared() 
     assert _coverage_line("c", {**agreed["coverage"], **agreed}).endswith(
         "writes briefs.publish_brief: matched on title"
     )
+
+
+def _reviewer_reference() -> dict[str, Any]:
+    return stable_reference(
+        [
+            _run({"reviewer": "Dana Lee"}, [_publish(title="t", reviewer="Dana Lee")])
+            for _ in range(2)
+        ]
+    )
+
+
+def test_a_value_the_pipeline_sends_in_a_write_is_an_output_it_produced() -> None:
+    """cf-limits-brief: the reviewer exists only in the gate's answer and the
+    publish arguments; the pipeline carried it through, so it counts."""
+    trace = {
+        "completed": True,
+        "objects": [{"brief_id": "b-1"}],
+        "calls": [_publish(title="t", reviewer="Dana Lee")],
+    }
+    s = score_case(_reviewer_reference(), trace)
+    assert s["fields_missing"] == [] and s["outputs"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [],  # never sent on: the gate's answer alone is not output
+        [_call("lookup", reviewer="Dana Lee")],  # a read's arguments are not output
+        [_publish(title="t", reviewer="Someone Else")],
+    ],
+)
+def test_a_value_not_in_the_pipelines_output_or_writes_is_missing(
+    calls: list[dict[str, Any]],
+) -> None:
+    trace = {"completed": True, "objects": [{"brief_id": "b-1"}], "calls": calls}
+    assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]

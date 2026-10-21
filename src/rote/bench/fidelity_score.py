@@ -455,7 +455,14 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     # skill stopped first). Absence cannot be found by value, and the
     # outcome component already scores the stop, so it is not an output.
     fields = {p: v for p, v in reference["fields"].items() if p != "outcome" and v is not None}
-    index = index_trace(trace.get("objects", []))
+    calls = trace.get("calls", [])
+    # What the pipeline wrote is output it produced, wherever the value came
+    # from: a reviewer known only from the gate's answer that the pipeline
+    # sends on in its publish call carried the value through. The gate's
+    # received payload itself stays out (crediting it would reward being
+    # told the answer); only the pipeline's own writes count.
+    written = [c.get("arguments") or {} for c in calls if c.get("side_effect")]
+    index = index_trace([*trace.get("objects", []), *written])
     reproduced = {p: field_reproduced(p, v, index) for p, v in fields.items()}
     outputs = round(sum(reproduced.values()) / len(fields), 4) if fields else None
 
@@ -463,7 +470,6 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     run_outcome = "completed" if trace.get("completed") else "stopped"
     outcome = None if ref_outcome is None else float(ref_outcome == run_outcome)
 
-    calls = trace.get("calls", [])
     pipe_reads = {call_key(c) for c in calls if not c.get("side_effect")}
     ref_reads = set(reference["reads"])
     seen = set(reference["seen_calls"])
