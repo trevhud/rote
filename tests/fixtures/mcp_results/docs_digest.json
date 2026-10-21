@@ -81,6 +81,63 @@
      }
     }
    }
+  },
+  {
+   "server": "cloudflare_docs",
+   "tool": "search_cloudflare_documentation",
+   "input_schema": {
+    "type": "object",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+     "query": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ]
+   },
+   "output_schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {
+     "results": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "similarity": {
+         "type": "number",
+         "description": "Similarity score from AI Search"
+        },
+        "url": {
+         "type": "string",
+         "description": "Developer documentation URL"
+        },
+        "title": {
+         "type": "string",
+         "description": "Documentation page title"
+        },
+        "text": {
+         "type": "string",
+         "description": "Matching documentation chunk text"
+        }
+       },
+       "required": [
+        "similarity",
+        "url",
+        "title",
+        "text"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "required": [
+     "results"
+    ],
+    "additionalProperties": false
+   }
   }
  ],
  "observations": [

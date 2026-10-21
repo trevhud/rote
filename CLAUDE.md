@@ -682,7 +682,7 @@ that, every text-recorded result was typed `string`. When nothing is
 recorded, the outputSchema the server declares is the shape, never a
 guess from the skill's words: a guessed `url` where Microsoft Learn says
 `contentUrl` made every live run raise. The compile writes the declared
-schemas to `compiled/tool-schemas.json` itself, after the agent's work
+schemas to `compiled/declared-tools.json` itself, after the agent's work
 dir is moved, because the post-compile enrichment and cross-check run in
 the CLI and must not read an agent-written file.
 

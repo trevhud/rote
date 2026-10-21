@@ -296,6 +296,48 @@ def parameters(schema: ToolSchema) -> tuple[list[Parameter], int]:
     return kept, withheld
 
 
+#: How deep a result shape is spelled out for the agent.
+_MAX_SHAPE_DEPTH = 3
+
+
+def result_shape(schema: ToolSchema) -> str | None:
+    """What the step receives from this tool, as prompt-safe text, if declared.
+
+    The declared outputSchema as the runtime helper hands it over
+    (:func:`rote.mcp._runtime_helper.returned_schema`), reduced like the
+    parameters: plain property names and JSON type names only. A skill
+    often describes the text a person sees ("`<result>` blocks with a
+    `<url>`"); the step gets the structured value, and code written to the
+    prose fails on it.
+    """
+    from rote.mcp._runtime_helper import returned_schema
+
+    if not schema.declared:
+        return None
+    returned = returned_schema(schema.output_schema)
+    return _shape(returned, 0) if returned else None
+
+
+def _shape(schema: Any, depth: int) -> str:
+    if not isinstance(schema, dict):
+        return "any"
+    raw = schema.get("type")
+    kinds = [raw] if isinstance(raw, str) else raw if isinstance(raw, list) else []
+    kinds = [k for k in kinds if k in _JSON_TYPE_NAMES]
+    props = schema.get("properties")
+    if isinstance(props, dict) and props and depth < _MAX_SHAPE_DEPTH:
+        fields = [
+            f"`{name}`: {_shape(prop, depth + 1)}"
+            for name, prop in list(props.items())[:_MAX_PARAMS]
+            if isinstance(name, str) and _NAME_RE.fullmatch(name)
+        ]
+        return "object {" + ", ".join(fields) + "}"
+    items = schema.get("items")
+    if "array" in kinds and isinstance(items, dict) and depth < _MAX_SHAPE_DEPTH:
+        return f"array of {_shape(items, depth + 1)}"
+    return "|".join(kinds) or "any"
+
+
 def _safe_tool(schema: ToolSchema) -> bool:
     return bool(_TOOL_RE.fullmatch(schema.server) and _TOOL_RE.fullmatch(schema.tool))
 
@@ -328,6 +370,7 @@ def materialize(ctx_dir: Path, tools: ToolSchemas) -> Path:
             "withheld_parameters": withheld,
             "checkable": checkable(schema.input_schema) is not None,
             "declared": schema.declared,
+            "step_receives": result_shape(schema),
         }
     path = ctx_dir / TOOL_SCHEMAS_FILENAME
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
@@ -349,6 +392,7 @@ def brief(tools: ToolSchemas, skill_text: str, path: Path) -> str:
     lines = [
         f"- `{t.server}` / `{t.tool}`: {_signature(t)}"
         + ("" if t.declared else " (inferred from recorded calls, not declared)")
+        + (f". The step receives {shape}" if (shape := result_shape(t)) else "")
         for t in sorted(named, key=lambda t: (t.server, t.tool))
     ]
     servers = ", ".join(f"`{s}`" for s in sorted({t.server for t in usable}))
@@ -361,7 +405,10 @@ def brief(tools: ToolSchemas, skill_text: str, path: Path) -> str:
         "tool's arguments, or, with `mcp.args`, exactly the keys `mcp.args` names: "
         "those keys must be the tool's own parameter names, every required one "
         "present, none the tool does not declare. When a node's inputs are named "
-        "differently, map them with `mcp.args` (`{query: search_text}`).\n" + "\n".join(lines)
+        "differently, map them with `mcp.args` (`{query: search_text}`). Where a "
+        "tool lists what the step receives, that structured value is what code "
+        "reading the node's output gets, whatever text the skill describes the "
+        "result as.\n" + "\n".join(lines)
     )
 
 
@@ -369,7 +416,7 @@ def brief(tools: ToolSchemas, skill_text: str, path: Path) -> str:
 
 #: The declared output schemas of a compile's tools, written by rote (never
 #: the agent) beside the IR: what ``rote compile`` reads after the agent ran.
-DECLARED_FILENAME = "tool-schemas.json"
+DECLARED_FILENAME = "declared-tools.json"
 
 
 def write_declared(output_dir: Path, tools: ToolSchemas) -> None:
