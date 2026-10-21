@@ -642,6 +642,44 @@ Things that will bite if you touch it:
   stamped with the spec revision on save, re-validated on load. Only
   authored data goes there: a live check compares shapes and never keeps
   what it read.
+- **`rote run --live-check` never runs the deliverable's code.** A live
+  run of generated code holds the user's real credentials, and no patch
+  over its HTTP clients can promise it only reads: review6's reproducers
+  wrote through an unextracted urllib call, a helper module, a host alias
+  and http.client while the intercept guarded the checked call. So
+  `rote.vendor_specs.live` builds each entry read itself from the static
+  extraction (the spec-resolved operation, the URL template, the
+  parameters and headers as `Expr` templates filled from the node's inputs
+  and the user's environment, Google calls as the client library would send
+  them with the application-default token) and sends only GET/HEAD through
+  one urllib client with redirects off. A read it cannot build exactly is
+  "not live-checked", never sent. A docs operation named like a write is
+  refused whatever its method. Three more rules, from review6's exfil
+  reproducer (an agent-written docs param plus `os.environ["AWS_SECRET_..."]`
+  sent the secret): trust comes from the vendor or the user, never the
+  agent. A credential is attached only from a vendor-published spec
+  (Google's OAuth token, which the check supplies itself, gated on the
+  spec's provenance, `source="google-discovery"` from rote's store, and a
+  googleapis.com host, never on the agent-writable `vendor`; a docs spec
+  claiming a vendor rote reads a spec for is refused at compile time); a docs spec's
+  `auth` is the agent's choice of secret, so it is withheld unless the
+  user passes both `--allow-host <host>` and `--allow-credential <ENV>`
+  (`--yes` never covers either), and any other `{$env:...}` refuses the
+  whole check. A docs-spec host is called at all only when it equals, or
+  shares the registrable domain of (`rote.vendor_specs.psl`: the bundled,
+  pinned Public Suffix List with its private section, so `a.github.io` and
+  `b.github.io` are two owners; docs on another registrable domain, such
+  as docs.slack.dev for slack.com, need `--allow-host`), a cited page in
+  `web-research.json`
+  (rote's own record, written by the Compiler over any file the agent
+  wrote), or `--allow-host` names it; "every cited page was fetched"
+  vouches for nothing. Every request is built first and the plan is
+  confirmed (`--yes`, or a TTY answer; neither exits 2 having sent
+  nothing). The report holds the operation's path
+  template and schema paths (a map's keys and any non-field-like live key
+  are `{key}`), and an error is its exception type and HTTP status, never
+  its text (a URL in it carries query credentials). For a docs spec, extra
+  live fields are not drift; for a vendor's own spec they are.
 - **Vendor libraries are installed per requirement set** into
   `<spec cache>/../bench-deps/<hash>` with `uv pip install --target`, from
   a curated import-to-distribution map (`DISTRIBUTIONS`). An unmapped
