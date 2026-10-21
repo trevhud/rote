@@ -98,6 +98,11 @@ comes from keeping them clean.
   a compile with a fake driver pass `system1_structure="rules"`, because the
   fake has no lane. Tune its prompt on the dev skills only; the holdout is
   for measuring.
+- **The decider double-checks the structure pass, never overrides it**
+  (`system1/checker.py`). Its confident disagreements go back to the pass as
+  one more repair round; what the pass keeps is an Open question. Keep it a
+  second opinion: an override would let a one-step reader beat the model
+  that read the whole skill.
 - **System-1's text is written in parallel** when the driver has
   `generate()` (`claude`, `api`): one schema-locked call per node's
   interface entry, then one per `pure_function` (module + tests) and per
