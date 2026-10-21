@@ -49,7 +49,11 @@ def test_fresh_emission_reproduces_the_committed_snapshot(
     emitted = _files(tmp_path)
     committed = _files(EXPECTED / "runtimes" / runtime)
 
+    # The app registry records every emitted dir for park-on-auth release; a
+    # committed snapshot is not an app, so the command keeps it out of the
+    # user's real ~/.local/share/rote/apps.json.
     regenerate = (
+        'ROTE_APPS_PATH="$(mktemp -d)/apps.json" '
         f"rote emit examples/bdr-outreach/expected/pipeline.yaml --runtime {runtime} "
         f"--out examples/bdr-outreach/expected/runtimes/{runtime}"
     )
