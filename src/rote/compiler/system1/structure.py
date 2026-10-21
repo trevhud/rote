@@ -207,7 +207,11 @@ Per node:
   unless the step both calls a system and works on the result (then the
   call, then the work), or the RUBRIC requires a split. Several checks or
   rules applied to the same data in one step are one node. Text that is only
-  advice, context or a list of tools becomes no node. Also one node, not
+  advice, context or a list of tools becomes no node. When the skill routes
+  between entry points (which steps each kind of request starts at), every
+  step stays in the pipeline, except a step the skill gives as an
+  alternative to another step (a different way in that replaces it): that
+  alternative becomes no node. Also one node, not
   several: a sub-heading that describes what a step produces (a report's
   tabs, a table's columns) is part of that step; consecutive actions on one
   screen that together do one thing (open a menu, click an item, wait for
