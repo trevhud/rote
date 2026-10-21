@@ -6,6 +6,10 @@ lane goes to the inference helper. A transient failure (a timeout, a rate
 limit, a 5xx, a dropped connection) is retried :data:`ATTEMPTS` times in all
 with backoff, on the same lane and model, and then the real error is raised.
 That is a retry, not a fallback: no other model or provider is ever tried.
+The SDK clients' own retries are off for these calls, so this one is the
+only one, and a server's ``Retry-After`` replaces the fixed wait (capped).
+``claude -p`` retries API errors inside the CLI first; that stacks, and the
+CLI has no switch for it.
 Found on GLM 5.2, where Workers AI answered BDR's structure call with a 408.
 
 The codex transport:
@@ -40,6 +44,9 @@ from typing import Any
 #: Calls in all for one answer, and the wait before each retry (seconds).
 ATTEMPTS = 3
 BACKOFF_S = (2.0, 8.0)
+#: The longest server-asked wait (``Retry-After``) this honors. The SDK
+#: clients' own retries, which honored it, are off for System-1's calls.
+MAX_RETRY_AFTER_S = 30.0
 #: The HTTP statuses a retry can cure: request timeout, conflict, too early,
 #: rate limit, and any server error (529 is Anthropic's overloaded).
 _STATUS = r"(?:408|409|425|429|5\d\d)\b"
@@ -202,7 +209,12 @@ def structured_call(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[str, dict
                 if error is e:
                     raise
                 raise error from e
-            _sleep(BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)])
+            asked = getattr(e, "retry_after_s", None)
+            _sleep(
+                min(float(asked), MAX_RETRY_AFTER_S)
+                if asked is not None
+                else BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
+            )
     raise AssertionError("unreachable")  # pragma: no cover
 
 

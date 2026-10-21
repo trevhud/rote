@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -177,3 +178,45 @@ def test_a_billed_failed_attempt_is_counted(
     with pytest.raises(RuntimeError) as e:
         _call(monkeypatch, _Billed("claude -p failed for n: model not found"))  # type: ignore[arg-type]
     assert len(e.value.usage_rows) == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("headers", "waited"),
+    [
+        ({"retry-after": "5"}, 5.0),
+        ({"retry-after-ms": "1500"}, 1.5),
+        ({"retry-after": "120"}, lane_call.MAX_RETRY_AFTER_S),
+        ({}, 2.0),
+    ],
+)
+def test_a_servers_retry_after_replaces_the_fixed_wait(
+    headers: dict[str, str], waited: float, monkeypatch: pytest.MonkeyPatch, waits: list[float]
+) -> None:
+    """With the SDK's own retries off, its Retry-After handling is ours to keep:
+    honored on a 429 or 503, capped, and the fixed backoff when there is none."""
+    pytest.importorskip("openai")
+    from rote.compiler.system1 import tiebreak
+    from tests._helpers import openai_compile_driver, openai_gateway
+
+    requests = openai_gateway(monkeypatch, [(429, headers), {"ok": True}])
+    lane = tiebreak.lane_for(openai_compile_driver())
+    payload, _ = lane_call.structured_call(
+        node_id="system1_structure",
+        provider=lane.provider,
+        client=lane.client,
+        model=lane.model,
+        prompt="p",
+        output_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        sdk_client=lane.sdk_client,
+    )
+    assert payload == {"ok": True} and len(requests) == 2 and waits == [waited]
+
+
+def test_retry_after_reads_an_http_date() -> None:
+    from datetime import datetime, timedelta
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(UTC) + timedelta(seconds=20), usegmt=True)
+    assert 18 <= (helper._retry_after_s({"retry-after": when}) or 0) <= 20
+    assert helper._retry_after_s({"retry-after": "soon"}) is None
+    assert helper._retry_after_s(None) is None

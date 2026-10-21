@@ -64,6 +64,8 @@ import re
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -344,9 +346,39 @@ def _durable_error(exc: Exception, *, node_id: str, provider: str, model: str) -
     """
     status = getattr(exc, "status_code", None)
     where = f" (HTTP {status})" if status is not None else ""
-    return RuntimeError(
+    error = RuntimeError(
         f"{type(exc).__name__}{where} calling {model} for {node_id} via {provider}: {exc}"
     )
+    wait = _retry_after_s(getattr(getattr(exc, "response", None), "headers", None))
+    if wait is not None:
+        # How long the server asked a retry to wait (a plain attribute, so
+        # it pickles); a caller that retries honors it.
+        error.retry_after_s = wait  # type: ignore[attr-defined]
+    return error
+
+
+def _retry_after_s(headers: Any) -> float | None:
+    """Seconds a response's ``retry-after-ms`` or ``Retry-After`` asks for.
+
+    ``Retry-After`` is either delta-seconds or an HTTP date (RFC 9110
+    10.2.3); ``retry-after-ms`` is the OpenAI and Anthropic SDKs' own
+    millisecond form. None when absent or unreadable."""
+    if headers is None:
+        return None
+    try:
+        ms = headers.get("retry-after-ms")
+        if ms is not None:
+            return max(0.0, float(ms) / 1000)
+        raw = headers.get("retry-after")
+        if raw is None:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            when = parsedate_to_datetime(raw)
+            return max(0.0, (when - datetime.now(UTC)).total_seconds())
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _billed(error: RuntimeError, rows: list[tuple[str, dict[str, Any]]]) -> RuntimeError:

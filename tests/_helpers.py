@@ -323,8 +323,9 @@ def refuse_anthropic(monkeypatch: Any) -> None:
 
 def openai_gateway(monkeypatch: Any, answers: list[Any]) -> list[Any]:
     """Serve every ``openai.OpenAI`` client from an in-process gateway that
-    answers ``answers`` in turn (a dict as the model's JSON, an int as that
-    HTTP error status), and return the requests it saw. Anthropic
+    answers ``answers`` in turn (a dict as the model's JSON, an int or a
+    ``(status, headers)`` pair as that HTTP error), and return the requests
+    it saw. Anthropic
     is refused (:func:`refuse_anthropic`)."""
     import json
 
@@ -336,8 +337,12 @@ def openai_gateway(monkeypatch: Any, answers: list[Any]) -> list[Any]:
     def answer(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         body = json.loads(request.content)
-        if isinstance(answers[0], int):  # an HTTP error status, answered once
-            return httpx.Response(answers.pop(0), json={"error": {"message": "gateway says no"}})
+        if isinstance(answers[0], (int, tuple)):  # an HTTP error, as status or (status, headers)
+            status, headers = (
+                (answers.pop(0), {}) if isinstance(answers[0], int) else answers.pop(0)
+            )
+            error = {"error": {"message": "gateway says no"}}
+            return httpx.Response(status, headers=headers, json=error)
         return httpx.Response(
             200,
             json={

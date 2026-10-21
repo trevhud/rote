@@ -358,7 +358,12 @@ and then 8 s, on the same lane and model, and then raises the real error.
 No other model or provider is ever tried. The SDK clients also retry on
 their own, so System-1 calls them with `max_retries=0`. This retry is then
 the only one, and a lane that keeps timing out costs three requests before
-the compile fails. `rote-cloud` constructs `Compiler` with the default, so
+the compile fails. Turning the SDK retries off also dropped their handling
+of `Retry-After`, so a 429 or 503 that carries one (`retry-after-ms` or
+`Retry-After`, seconds or an HTTP date) is waited out instead of the fixed
+backoff, capped at 30 s. `claude -p` retries API errors inside the CLI
+before it reports one, so on that lane the two retries stack; that is left
+as it is, since the CLI exposes no switch for it. `rote-cloud` constructs `Compiler` with the default, so
 cloud compiles run it too.
 
 Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
