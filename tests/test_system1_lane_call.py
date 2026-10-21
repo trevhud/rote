@@ -104,3 +104,30 @@ def test_a_codex_lane_is_retried_too(
     monkeypatch.setattr(lane_call, "call", flaky_codex)
     out = _call(monkeypatch, _Flaky(), provider=lane_call.PROVIDER, sdk_client=lane_call.CodexCli())
     assert out == ANSWER and len(attempts) == 2 and waits == [2.0]
+
+
+def test_the_drivers_client_does_not_retry_under_ours(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, waits: list[float]
+) -> None:
+    """A gateway that keeps timing out gets 3 requests, not 3 x the SDK's 3,
+    and each still goes to the driver's own endpoint."""
+    pytest.importorskip("openai")
+    from rote.compiler.system1 import tiebreak
+    from tests._helpers import GATEWAY_URL, openai_compile_driver, openai_gateway
+
+    requests = openai_gateway(monkeypatch, [408] * 10)
+    lane = tiebreak.lane_for(openai_compile_driver())
+    with pytest.raises(RuntimeError, match=r"HTTP 408.*\(after 3 attempts\)"):
+        lane_call.structured_call(
+            node_id="system1_structure",
+            provider=lane.provider,
+            client=lane.client,
+            model=lane.model,
+            prompt="p",
+            output_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            sdk_client=lane.sdk_client,
+        )
+    assert len(requests) == 3 and waits == [2.0, 8.0]
+    assert all(str(r.url) == f"{GATEWAY_URL}/chat/completions" for r in requests)
+    # The lane keeps the driver's client as it was; only System-1's calls opt out.
+    assert lane.sdk_client.max_retries == 2

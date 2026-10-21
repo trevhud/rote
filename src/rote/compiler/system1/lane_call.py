@@ -201,4 +201,9 @@ def _once(**kwargs: Any) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]
         )
     from rote.inference._runtime_helper import structured_call as helper_call
 
+    client = kwargs.get("sdk_client")
+    if client is not None:
+        # The SDK's own retries would stack under ours (3 x 3 requests);
+        # this retry is the only one, still on the driver's own client.
+        kwargs = {**kwargs, "sdk_client": client.with_options(max_retries=0)}
     return helper_call(**kwargs)
