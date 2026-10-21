@@ -60,6 +60,9 @@ dependencies = [
     # failures back for repair. Without pytest that silently did nothing for
     # every user who installed rote-cli without the dev extra.
     "pytest>=9.0,<10",
+    # --backend api checks a GraphQL request against the vendor's schema
+    # (rote.vendor_specs.graphql). Pure Python.
+    "graphql-core>=3.3,<4",
 ]
 
 [project.optional-dependencies]

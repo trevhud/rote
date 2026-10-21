@@ -42,3 +42,19 @@ every value kept is the vendor's own:
 docs say to make them, against those operations. Every one must report
 zero findings (`tests/test_openapi_specs.py`); the wrong-call tests are
 one-line edits of them.
+
+`anilist.graphql` is AniList's GraphQL schema as its own endpoint
+(https://graphql.anilist.co) describes it by introspection, printed as SDL
+by graphql-core, fetched 2026-10-20.
+
+`github.graphql` is GitHub's public GraphQL schema
+(https://docs.github.com/public/fpt/schema.docs.graphql), fetched
+2026-10-20, with its descriptions dropped (1.56 MB to 630 KB). Its
+introspection without descriptions is identical to the original's, except
+that four ordering input types (the gist and pull request orders and
+their field enums) and the four `orderBy` arguments that take them are
+removed: their names contain a string `scripts/sanity-check.sh` refuses.
+Nothing in the tests uses them.
+
+`correct_calls/github_graphql` and `correct_calls/anilist` are GraphQL
+requests written the way each vendor's docs say (`tests/test_graphql_specs.py`).

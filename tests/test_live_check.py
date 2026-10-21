@@ -1228,3 +1228,108 @@ def test_the_live_sender_names_itself(tmp_path: Path, api: tuple[_Api, str]) -> 
     _send(LiveRequest("GET", f"{base}/v1/items", {}))
     _send(LiveRequest("GET", f"{base}/v1/items", {"User-Agent": "the-codes-own"}))
     assert [h["User-Agent"] for h in state.headers] == ["rote-live-check", "the-codes-own"]
+
+
+# ───────── GraphQL: a POST, only for a single query operation ─────────
+
+
+def test_a_read_of_the_error_envelope_is_not_a_missing_read(tmp_path: Path) -> None:
+    """Code that checks `errors` (GraphQL) or `error` (Slack) is error
+    handling: a successful live response leaves them out. Found on the first
+    live GraphQL check (AniList)."""
+    from rote.vendor_specs.docs import DocsSpecFile, to_api_spec
+    from rote.vendor_specs.live import _compare
+
+    spec = to_api_spec(
+        DocsSpecFile.model_validate(
+            {
+                "vendor": "v",
+                "api": "a",
+                "version": "v1",
+                "sources": ["skill"],
+                "operations": [
+                    {
+                        "id": "list",
+                        "method": "GET",
+                        "url_template": "https://v.example/list",
+                        "response_example": {"items": [{"id": 1}], "error": "x"},
+                    }
+                ],
+            }
+        ),
+        "vendor_specs/v.a.v1.json",
+    )
+    reads = {"list": {"error", "errors", "items[].name"}}
+    check = _compare(
+        "n",
+        spec,
+        spec.operations[0],
+        200,
+        "application/json",
+        json.dumps({"items": [{"id": 1}]}).encode(),
+        FixtureStore(tmp_path / "f"),
+        reads,
+    )
+    assert check.reads_missing == ["items[].name"]
+
+
+def test_a_graphql_query_is_sent_with_its_variables_typed(tmp_path: Path) -> None:
+    from tests.test_graphql_specs import MODULE, PIPELINE, anilist_store
+
+    root = tmp_path / "d"
+    (root / "extracted").mkdir(parents=True)
+    (root / "pipeline.yaml").write_text(PIPELINE, encoding="utf-8")
+    (root / "extracted" / "anilist.py").write_text(textwrap.dedent(MODULE), encoding="utf-8")
+    write_backend(root, "api")
+    sent: list[LiveRequest] = []
+
+    def capture(request: LiveRequest) -> Any:
+        sent.append(request)
+        return 200, "application/json", json.dumps({"data": {"Page": {"media": []}}}).encode()
+
+    specs = anilist_store(tmp_path)
+    report = live_check(
+        root,
+        {"season": "FALL", "year": 2026},
+        specs,
+        FixtureStore(tmp_path / "fx"),
+        env={},
+        send=capture,
+        confirm=_yes,
+    )
+    [request] = sent
+    assert (request.method, request.url) == ("POST", "https://graphql.anilist.co")
+    body = json.loads(request.graphql or b"")
+    assert body["variables"] == {"season": "FALL", "year": 2026, "perPage": 5}
+    assert [c.operation for c in report.checked] == ["graphql"] and not report.unchecked
+
+
+@pytest.mark.parametrize(
+    ("document", "is_query"),
+    [
+        ("query { Page { media { id } } }", True),
+        ("fragment F on Media { id } query { Page { media { ...F } } }", True),
+        # review6's I4: each of these passed the old text sniff as a read.
+        ("mutation{ SaveMediaListEntry(mediaId: 1) { id } }", False),
+        ("mutation ($id: Int) { DeleteMediaListEntry(id: $id) { deleted } }", False),
+        ("fragment F on Media { id } mutation { SaveMediaListEntry(mediaId: 1) { id } }", False),
+        ("query A { Page { pageInfo { total } } } mutation B { x }", False),
+        ("not graphql at all {", False),
+        # A byte-order mark is GraphQL whitespace: still a mutation.
+        ("\ufeffmutation{ SaveMediaListEntry(mediaId: 1) { id } }", False),
+        ("\ufeffquery { Page { media { id } } }", True),
+    ],
+)
+def test_only_a_single_query_operation_is_ever_posted(document: str, is_query: bool) -> None:
+    from rote.vendor_specs.live import _is_graphql_query, _send
+
+    request = LiveRequest(
+        "POST", "http://127.0.0.1:9/graphql", {}, graphql=json.dumps({"query": document}).encode()
+    )
+    assert _is_graphql_query(request) is is_query
+    if not is_query:
+        with pytest.raises(LiveCheckRefused, match="refusing to send POST"):
+            _send(request)
+    # A POST without a GraphQL body is never sent.
+    with pytest.raises(LiveCheckRefused):
+        _send(LiveRequest("POST", "http://127.0.0.1:9/x", {}))

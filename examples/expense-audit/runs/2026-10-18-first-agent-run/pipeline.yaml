@@ -1,6 +1,6 @@
 name: expense-audit
 version: "0.1.0"
-source_skill: ../../src/examples/expense-audit/skill
+source_skill: ../../skill
 description: |
   Month-end audit of employee expense reports. Converts every line to USD
   at finance-published month-end rates, runs mandatory duplicate and
