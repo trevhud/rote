@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import anthropic
 import yaml
 
 from rote.compiler import system1
@@ -42,7 +43,7 @@ def truth(example: Path) -> list[str]:
 
 
 def main() -> None:
-    lane = structure.lane_with(Lane("api"), sys.argv[1])
+    lane = structure.lane_with(Lane("api", anthropic.Anthropic()), sys.argv[1])
     usage: list[dict[str, Any]] = []
     totals = {"rules": [0, 0, 0], "model": [0, 0, 0]}  # hit, expected, predicted
     for ex in SKILLS:

@@ -66,6 +66,8 @@ async def _rubric_for(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: spy)
     logs: list[str] = []
     kwargs.setdefault("system1_tiebreak", "none")
+    # The fake driver has no lane for the structure pass either.
+    kwargs.setdefault("system1_structure", "rules")
     compiler = Compiler(on_event=lambda e: logs.append(e.message), **kwargs)
     with pytest.raises(_Stop):
         await compiler.compile(_skill(tmp_path), tmp_path / "out")
@@ -260,9 +262,12 @@ async def test_the_compiler_checks_judge_specs_on_the_system1_path_only(
 
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Writes())
     with contextlib.suppress(CompilerError):
-        await Compiler(system1=system1, run_generated_tests=False, system1_tiebreak="none").compile(
-            _skill(tmp_path), tmp_path / "out"
-        )
+        await Compiler(
+            system1=system1,
+            run_generated_tests=False,
+            system1_tiebreak="none",
+            system1_structure="rules",
+        ).compile(_skill(tmp_path), tmp_path / "out")
     assert seen and set(seen) == {flagged}
 
 
@@ -602,7 +607,9 @@ def test_a_system1_validation_repair_points_at_text_yaml(tmp_path: Path) -> None
 
     system1.prepare(EXAMPLES / "deal-monitor" / "skill", work)
     (work / "pipeline.yaml").write_text("not: [a pipeline\n")
-    compiler = Compiler(run_generated_tests=False, system1_tiebreak="none")
+    compiler = Compiler(
+        run_generated_tests=False, system1_tiebreak="none", system1_structure="rules"
+    )
     repair = compiler._deliverable_repairer(
         None,
         EXAMPLES / "deal-monitor" / "skill",
@@ -717,3 +724,69 @@ def test_input_type_compatibility(decided: Any, agent: Any, fits: bool) -> None:
     from rote.compiler.system1.enforce import _compatible
 
     assert _compatible(decided, agent) is fits
+
+
+@pytest.mark.parametrize("command", ["compile", "analyze"])
+def test_the_structure_pass_is_a_layered_setting(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """flag > ROTE_STRUCTURE > project rote.yaml > user config > haiku."""
+    seen = _compiler_kwargs(monkeypatch)
+    user = tmp_path / "user.yaml"
+    project = tmp_path / "rote.yaml"
+    monkeypatch.setenv("ROTE_CONFIG_PATH", str(user))
+    monkeypatch.setenv("ROTE_PROJECT_CONFIG_PATH", str(project))
+    skill = str(_skill(tmp_path))
+    argv = _compile_argv(tmp_path / "c") if command == "compile" else ["analyze", skill]
+
+    def structure(*flags: str) -> str:
+        with pytest.raises(_Stop):
+            cli.main([*argv, *flags])
+        return str(seen[-1]["system1_structure"])
+
+    assert structure() == "haiku"
+    user.write_text("structure: rules\n")
+    assert structure() == "rules"
+    project.write_text("structure: sonnet\n")
+    assert structure() == "sonnet"
+    monkeypatch.setenv("ROTE_STRUCTURE", "rules")
+    assert structure() == "rules"
+    assert structure("--structure", "haiku") == "haiku"
+
+
+def test_a_structure_flag_on_a_compile_without_system1_is_a_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen = _compiler_kwargs(monkeypatch)
+    assert cli.main(_compile_argv(tmp_path, "--no-system1", "--structure", "rules")) == 2
+    assert seen == []
+    # A configured value is a standing preference, not an error.
+    monkeypatch.setenv("ROTE_STRUCTURE", "rules")
+    with pytest.raises(_Stop):
+        cli.main(_compile_argv(tmp_path / "b", "--no-system1"))
+
+
+def test_cloud_mode_rejects_a_structure_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server decides how its compiles run: a flag would be silently ignored."""
+    assert cli._reject_local_only_cloud_flags(_parsed(["compile", "s"])) is None
+    assert cli._reject_local_only_cloud_flags(
+        _parsed(["compile", "s", "--structure", "rules"])
+    ) == ("rote compile: --structure runs locally — add --local to use it")
+    monkeypatch.setenv("ROTE_STRUCTURE", "rules")
+    assert cli._reject_local_only_cloud_flags(_parsed(["compile", "s"])) is None
+
+
+def test_rote_config_reports_the_structure_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    assert cli.main(["config", "--json"]) == 0
+    setting = json.loads(capsys.readouterr().out)["settings"]["structure"]
+    assert setting == {"value": "haiku", "source": "built-in default"}
+    monkeypatch.setenv("ROTE_STRUCTURE", "rules")
+    assert cli.main(["config", "--json"]) == 0
+    setting = json.loads(capsys.readouterr().out)["settings"]["structure"]
+    assert setting == {"value": "rules", "source": "env ROTE_STRUCTURE"}
+    monkeypatch.setenv("ROTE_STRUCTURE", "gpt")
+    assert cli.main(["config", "--json"]) == 2

@@ -56,6 +56,12 @@ the per-item loop moved which nodes pair up.
 
 ## What decides what
 
+By default the structure pass decides the skeleton (next section), and the
+rules in this table decide it only under `--structure rules`. The rules still
+run on every compile: they parse the skill's sections, tables and tools, and
+the structure pass's answer is checked against what they found.
+
+
 | decision | rule | confidence |
 |---|---|---|
 | which steps exist | leaf procedural sections. Meta sections (trigger phrases, routing, tool tables, limits) are skipped. A heading that names no action under a step ("Tab 1: Invoice Detail") is part of that step. An enumerated list splits a step only when most items carry a step signal, so a checklist ("Browser-automation plugin", "User is logged in") stays one step | n/a |
@@ -283,6 +289,128 @@ that is a decision for the user, not this change. The decider is a layered
 setting (`decider:` in `rote.yaml` or the user config, `ROTE_DECIDER`,
 `--decider`), and `rote init` asks for it.
 
+## The structure pass (`--structure haiku`, the default)
+
+The choice is a layered setting like the decider and the tie-break:
+`--structure` > `ROTE_STRUCTURE` > project `rote.yaml` > user config >
+`haiku`. `rules` makes no call. In cloud mode the flag is rejected, since
+the server decides how its compiles run.
+
+The pass decides every kind and gate, so while it runs a step decider
+(`--decider clef|jev`) and the tie-break are not asked. The compile says so
+in a warning and resolves no lane for them; `--structure rules` brings them
+back. compile-report.md names the pass, its model and lane, its rounds and
+its cost.
+
+Step-by-step rules misread skills whose structure lives in their intent: a
+per-item step inside a loop, an alternative entry point, a judge that weighs
+a whole list. The structure pass reads the whole skill instead. One
+schema-locked call to `claude-haiku-5-5` (`src/rote/compiler/system1/structure.py`)
+gets SKILL.md, node-kinds.md, the declared tools with their schemas, and the
+sample input. It returns every node in execution order: the section and a
+verbatim quote it implements, its kind, what it reads, what it fans out
+over, its outputs, whether it is mandatory, the system an external call
+reaches and where each tool argument comes from, its constants, its gate
+and its loop.
+
+The model decides; code checks the answer against hard evidence and sends
+back what fails, up to two repair rounds:
+
+- a declared tool exists in tools/list or an explicit "(X MCP - `tool`)"
+  annotation, its arguments are properties of its schema, and every
+  required parameter is bound;
+- a quote is in its section verbatim, and so is every constant;
+- an input field is a key of the sample input, and the sample's gates are
+  matched by signal name;
+- a URL, web UI or public API is named in the node's own section;
+- a fanned element comes from a list a pure_function builds, and an
+  upstream field is in its source's declared outputs;
+- a loop holds only optional pure_function, external_call or llm_judge
+  nodes, and a MANDATORY step never goes inside one;
+- every result the skill says the run produces reaches the run's result.
+
+What still fails after the repairs is resolved conservatively and never
+shipped as decided: an unquoted node is dropped, a call with an unbound
+required argument becomes a pure_function that makes no call, with a note, a mandatory step leaves the loop with a
+note that the work it guarded is now unguarded. Every such change is an Open
+question in compile-report.md. Later, a verification finding about a tool
+binding goes back to the structure pass (`redecide`) rather than to the
+text agent.
+
+Both this pass and the tie-break run on the compile driver's own client
+(`tiebreak.lane_for`), with its endpoint, headers, auth and metadata:
+`claude -p` under the claude driver, the api driver's Anthropic client with a
+Haiku id in the compile model's form under `--agent api`, and the openai-api
+driver's OpenAI-compatible client with the compile's own model (GPT-5.5, GLM,
+Kimi) under `--agent openai-api`, through an OpenAI-shaped `json_schema`
+call, and `codex exec --output-schema` with the codex driver's model under
+`--agent codex` (`system1/lane_call.py`). codex sends that schema as the
+Responses API's strict `json_schema` format, so it is as schema-locked as
+the other lanes. It has no token cap and carries about 25k tokens of codex's
+own system prompt per call (measured, 7 s for a one-step tie-break). The run
+is read-only, ephemeral and in a scratch directory, and only the last agent
+message is the answer, because codex applies the schema to every message of
+the turn. Nothing falls back to another provider's key or binary. A fallback
+would bill the user's Claude subscription on a compile they sent to another
+provider, and rote-cloud's container has neither, so every such compile
+failed there. Any other driver fails before the agent runs and names
+`--structure rules`. An OpenAI-lane call sends the pass's answer cap as
+`max_completion_tokens`; emitted judges still send none.
+
+Every call goes through `lane_call.structured_call`, which retries a
+transient failure (HTTP 408, 409, 425, 429 or 5xx, an SDK connection or
+timeout error, a reset connection) up to three calls in all, waiting 2 s
+and then 8 s, on the same lane and model, and then raises the real error.
+No other model or provider is ever tried. The SDK clients also retry on
+their own, so System-1 calls them with `max_retries=0`. This retry is then
+the only one, and a lane that keeps timing out costs three requests before
+the compile fails. Turning the SDK retries off also dropped their handling
+of `Retry-After`, so a 429 or 503 that carries one (`retry-after-ms` or
+`Retry-After`, seconds or an HTTP date) is waited out instead of the fixed
+backoff, capped at 30 s. `claude -p` retries API errors inside the CLI
+before it reports one, so on that lane the two retries stack; that is left
+as it is, since the CLI exposes no switch for it.
+
+A failed compile is still a paid one. When the structure pass or the
+tie-break finally fails, its error carries the usage of every attempt and
+every earlier round, including a failed call the provider billed (a
+truncated answer, a `claude -p` error envelope), and the compile error and
+progress feed say what it cost (`spent before the failure: 3 call(s),
+tokens in=... out=..., $...`). A failed binding re-decide during the text
+phase no longer ends the compile: its findings stand for verification to
+report, and its calls count in the structure record. `rote-cloud` constructs `Compiler` with the default, so
+cloud compiles run it too.
+
+Measured on 2026-10-21 (skeletons only, 2 trials, `research/system1-structure/skeletons.py`):
+
+| split | by | kind | kind mix | edge F1 | $/skill | s/skill |
+|---|---|---|---|---|---|---|
+| dev | rules | 0.594 | 0.787 | 0.637 | 0 | 0.1 |
+| dev | haiku | 0.630 | 0.720 | 0.594 | 0.015 | 76 |
+| holdout | rules | 0.494 | 0.707 | 0.580 | 0 | 0.03 |
+| holdout | haiku | 0.879 | 0.778 | 0.775 | 0.014 | 70 |
+
+On an openai-api compile the pass runs on the compile's own model. GLM 5.2
+on Workers AI (1 trial, 2026-10-21, through the personal account; GPT-5.5
+could not run because that gateway had no Unified Billing balance):
+
+| split | kind | kind mix | edge F1 | s/skill | output tokens/skill |
+|---|---|---|---|---|---|
+| dev (4 of 5) | 0.700 | 0.800 | 0.727 | 158 | 27.6k |
+| holdout | 0.831 | 0.774 | 0.822 | 183 | 32.3k |
+
+Quality is about Haiku's, at twice the time and roughly ten times the
+cost. BDR failed: Workers AI answered HTTP 408 (request timeout) on its
+first call, which is what the retry above is for.
+
+The rules were fitted on the dev skills, so dev is where they look best; on
+the held-out skills the structure pass is ahead on every score. Sonnet 5.5
+scored no better and cost about 14 times as much. In full compiles with
+fidelity checks, ops-report scored 0.918 against the rules' 0.898 and
+expense-audit 0.921 against 0.903 to 0.921. The cost is time: about 70
+seconds a compile, up to 160 on BDR, which needs all three calls. BDR is
+also still the weakest skill (22 to 23 nodes against 15 expected).
+
 ## The Haiku tie-break (`--tiebreak haiku`, opt-in)
 
 After the decider, a step whose kind decision is still below
@@ -296,11 +424,9 @@ Its decisions are settled (confidence 0.7, the rule names the model and its
 reason) and are recorded under `tiebreak` in decisions.json with their usage
 and cost.
 
-The call bills the way the compile does: `claude -p` on the subscription
-under the claude driver, the api driver's own client (gateway base URL,
-headers and model-id prefix) under `--agent api`, otherwise an Anthropic
-key, then the CLI. With none of them the compile fails and names
-`--tiebreak none`. It goes through `structured_call` in
+The call runs on the compile driver's own client, exactly like the structure
+pass above (gateway base URL, headers and model-id prefix included). Under a
+driver with no client the compile fails and names `--tiebreak none`. It goes through `structured_call` in
 `rote.inference._runtime_helper`, the code emitted judges run: a forced
 tool call, no temperature, all four usage buckets.
 

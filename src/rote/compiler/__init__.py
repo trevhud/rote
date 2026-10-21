@@ -61,6 +61,7 @@ from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
+from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
 from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
@@ -254,7 +255,7 @@ class Compiler:
         system1: bool | None = None,
         system1_decider: str = "rules",
         system1_tiebreak: str = DEFAULT_TIEBREAK,
-        system1_structure: str = "rules",
+        system1_structure: str = DEFAULT_STRUCTURE,
         tool_discovery: tool_grounding.Discovery = "named",
         max_parallel: int = DEFAULT_MAX_PARALLEL,
     ) -> None:
@@ -347,6 +348,10 @@ class Compiler:
         if max_parallel < 1:
             raise CompilerError(f"--max-parallel must be at least 1, got {max_parallel}")
         self.max_parallel = max_parallel
+        #: The model the selected driver runs, once :meth:`compile` has chosen
+        #: it (None before, or for a driver that names none): what live
+        #: progress is priced as.
+        self.driver_model: str | None = None
         if system1_structure not in ("rules", *STRUCTURE_MODELS):
             raise CompilerError(f"unknown --structure {system1_structure!r}")
         self.system1_structure = system1_structure
@@ -567,6 +572,7 @@ class Compiler:
                 )
 
         driver = self.select_driver()
+        self.driver_model = getattr(driver, "model", None)
         self._emit("log", f"driver selected: {driver.name}")
 
         with (
@@ -598,10 +604,30 @@ class Compiler:
             )
             s1_plan: system1.Plan | None = None
             if use_system1:
+                structure_runs = self.system1_structure != "rules"
+                unused = [
+                    flag
+                    for flag, on in (
+                        (f"--decider {self.system1_decider}", self.system1_decider != "rules"),
+                        ("--tiebreak haiku", self.system1_tiebreak == "haiku"),
+                    )
+                    if on
+                ]
+                if structure_runs and unused:
+                    # The structure pass decides every kind and gate, so a step
+                    # decider and the tie-break never run: say so, never ignore
+                    # them silently, and resolve no lane for a call never made.
+                    self._emit(
+                        "warning",
+                        f"system1: {' and '.join(unused)} "
+                        f"{'does' if len(unused) == 1 else 'do'} not run while the structure "
+                        f"pass ({self.system1_structure}) decides the skeleton; pass "
+                        "--structure rules to use them",
+                    )
                 try:
                     lane = (
                         system1.tiebreak.lane_for(driver)
-                        if self.system1_tiebreak == "haiku"
+                        if self.system1_tiebreak == "haiku" and not structure_runs
                         else None
                     )
                     s1_plan = system1.prepare(
@@ -613,9 +639,7 @@ class Compiler:
                         observations=grounding.observations,
                         tiebreak_lane=lane,
                         structure_lane=(
-                            system1.structure.lane_with(
-                                system1.tiebreak.lane_for(driver), self.system1_structure
-                            )
+                            system1.structure.lane_for(driver, self.system1_structure)
                             if self.system1_structure != "rules"
                             else None
                         ),
@@ -628,6 +652,15 @@ class Compiler:
                     system1.TieBreakUnavailable,
                     system1.structure.StructureUnavailable,
                 ) as e:
+                    usage = getattr(e, "usage", None) or []
+                    spent = system1.tiebreak.spent_summary(usage)
+                    if spent:
+                        # A failed compile is still a paid one: say what System-1's
+                        # calls cost, on the progress feed and in the error.
+                        self._emit("log", f"usage before the failure: system1 {spent}")
+                        error = CompilerError(f"{e} (spent before the failure: {spent})")
+                        error.usage = usage  # type: ignore[attr-defined]
+                        raise error from e
                     raise CompilerError(str(e)) from e
                 st = s1_plan.structure
                 if st is not None:
@@ -976,20 +1009,27 @@ class Compiler:
         from rote.compiler.system1 import structure
         from rote.compiler.system1.parse import parse_skill
 
-        lane = structure.lane_with(system1.tiebreak.lane_for(driver), self.system1_structure)
+        lane = structure.lane_for(driver, self.system1_structure)
         skill = _replace(parse_skill(skill_dir), units=structure.section_units(skill_dir))
         skill_md = structure.skill_text(skill_dir)
 
         def run(findings: dict[str, list[str]]) -> list[str]:
-            changes, usage = structure.redecide(
-                work_dir,
-                findings,
-                skill,
-                skill_md,
-                lane,
-                tools=grounding.tools,
-                sample=grounding.sample,
-            )
+            try:
+                changes, usage = structure.redecide(
+                    work_dir,
+                    findings,
+                    skill,
+                    skill_md,
+                    lane,
+                    tools=grounding.tools,
+                    sample=grounding.sample,
+                )
+            except structure.StructureUnavailable as e:
+                # The text is already paid for: a failed re-decide leaves the
+                # findings standing for verification to report, and its calls
+                # still count.
+                record.usage += e.usage
+                return [f"re-deciding MCP bindings failed, the findings stand: {e}"]
             record.usage += usage
             record.redecided += changes
             return changes

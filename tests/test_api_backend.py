@@ -628,6 +628,7 @@ async def test_the_system1_path_briefs_researches_and_holds_vendor_calls_to_docs
         tool_discovery="none",
         # The fake driver has no inference lane for the Haiku tie-break.
         system1_tiebreak="none",
+        system1_structure="rules",
     ).compile(skill, out)
 
     assert agent.rubric is not None and agent.rubric.name.startswith("rote-system1-rubric-")

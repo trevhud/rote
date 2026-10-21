@@ -75,6 +75,8 @@ jobs:
 
       - uses: ./.github/actions/bubblewrap
 
+      - uses: ./.github/actions/oldest-python
+
       - name: Pytest (fast suite)
         run: pytest tests/
 

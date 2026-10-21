@@ -52,6 +52,8 @@ from rote.compiler.drivers import DRIVERS, available_drivers
 from rote.compiler.events import CompilationEvent
 from rote.compiler.provenance import PROVENANCE_NODE
 from rote.compiler.system1 import DECIDERS, TIEBREAKS
+from rote.compiler.system1.structure import DEFAULT as DEFAULT_STRUCTURE
+from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
@@ -413,10 +415,20 @@ class _JsonlProgressSink:
     ``cost_usd`` and the run continues.
     """
 
-    def __init__(self, path: Path, model_id: str) -> None:
+    def __init__(
+        self,
+        path: Path,
+        model_id: str | None,
+        model_of: Callable[[], str | None] | None = None,
+    ) -> None:
+        """``model_id`` is what a token-carrying event is priced as until
+        ``model_of`` (the model the selected driver actually runs, asked at
+        each event) names one. A compile that ran several models prices its
+        summary per call instead (:meth:`write_summary`)."""
         self._path = path
         self._model_id = model_id
-        self._prices = self._resolve_prices(model_id)
+        self._model_of = model_of
+        self._rates: dict[str, _Rates | None] = {}
         self._file: Any = None
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -455,7 +467,19 @@ class _JsonlProgressSink:
             cache_write_per_mtok=rates[3],
         )
 
-    def _cost_usd(self, tokens: dict[str, int]) -> float | None:
+    def _model(self) -> str | None:
+        ran = self._model_of() if self._model_of is not None else None
+        return ran or self._model_id
+
+    def _prices_for(self, model_id: str | None) -> _Rates | None:
+        """Rates for ``model_id``, fetched once per model."""
+        if model_id is None:
+            return None
+        if model_id not in self._rates:
+            self._rates[model_id] = self._resolve_prices(model_id)
+        return self._rates[model_id]
+
+    def _cost_usd(self, tokens: dict[str, int], model_id: str | None = None) -> float | None:
         """Price the four token buckets, or return ``None`` honestly.
 
         A ``claude -p`` run is prompt-cached, so ``cache_write`` and
@@ -470,7 +494,7 @@ class _JsonlProgressSink:
         magnitude. No figure beats a wrong figure, and the claude lane
         reports its own whole-query ``total_cost_usd`` estimate.
         """
-        rates = self._prices
+        rates = self._prices_for(model_id or self._model())
         if rates is None or tokens.get("output") is None:
             return None
         cache_write = tokens.get("cache_write", 0)
@@ -509,7 +533,24 @@ class _JsonlProgressSink:
             # A progress-file bug must never sink a paid run.
             pass
 
-    def write_summary(self, summary: dict[str, Any], reported_cost: float | None = None) -> None:
+    def _call_cost(self, call: dict[str, Any]) -> float | None:
+        """One recorded call priced at its own model's rates, or None."""
+        if call.get("output_tokens") is None:
+            return None
+        tokens = {
+            "input": int(call.get("input_tokens") or 0),
+            "output": int(call["output_tokens"]),
+            "cache_write": int(call.get("cache_write_tokens") or 0),
+            "cache_read": int(call.get("cache_read_tokens") or 0),
+        }
+        return self._cost_usd(tokens, call.get("model"))
+
+    def write_summary(
+        self,
+        summary: dict[str, Any],
+        reported_cost: float | None = None,
+        calls: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
         Prices the run's ``total_tokens`` into a ``cost_usd`` field the
@@ -519,10 +560,19 @@ class _JsonlProgressSink:
         (e.g. from ``claude -p``), not authoritative billing data. It wins
         when present because it includes the per-model usage split that
         this single-model catalog estimate cannot represent.
+
+        ``calls`` are a parallel compile's per-call records, each with its
+        own ``model``: priced one by one at that model's rates, since its
+        calls run different models (Sonnet 5.5 text, Haiku structure). One
+        unpriceable call leaves the cost out rather than understating it.
         """
         try:
             if reported_cost is not None:
                 summary = {**summary, "cost_usd": reported_cost}
+            elif calls:
+                priced = [self._call_cost(c) for c in calls]
+                if all(x is not None for x in priced):
+                    summary = {**summary, "cost_usd": round(sum(x or 0.0 for x in priced), 6)}
             else:
                 total = summary.get("total_tokens")
                 if isinstance(total, dict):
@@ -647,6 +697,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         effort_rv = rote_config.resolve("effort", args.effort, layers=layers)
         decider_rv = rote_config.resolve("decider", args.decider, layers=layers)
         tiebreak_rv = rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
+        structure_rv = rote_config.resolve("structure", args.structure, layers=layers)
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -685,7 +736,8 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     args.effort = effort_rv.value
     try:
         args.decider = _local_decider(args, decider_rv, "compile")
-        args.tiebreak = _local_tiebreak(args, tiebreak_rv)
+        args.tiebreak = _local_system1_choice(args, tiebreak_rv, "--tiebreak", DEFAULT_TIEBREAK)
+        args.structure = _local_system1_choice(args, structure_rv, "--structure", DEFAULT_STRUCTURE)
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
@@ -853,15 +905,15 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # body is self-guarded (and emit_safely wraps the whole callback
     # anyway).
     printer = _compile_progress_printer()
-    # Price against the model the run actually uses: the --model override
-    # when given, else the compiler's default (the subscription path's
-    # Sonnet). Both subprocess and api drivers share this default.
-    from rote.compiler.drivers.claude import DEFAULT_MODEL as _COMPILER_DEFAULT_MODEL
-
+    # Price against the model the run actually uses: the selected driver's
+    # own model once the Compiler has chosen it (`compiler` is bound below,
+    # before any event fires), else the --model override. A parallel
+    # compile's summary is priced per call (write_summary's `calls`).
     progress_path = Path(args.progress_file) if args.progress_file else out_dir / "progress.jsonl"
     progress_sink: _JsonlProgressSink | None = _JsonlProgressSink(
         progress_path,
-        model_id=args.model or _COMPILER_DEFAULT_MODEL,
+        model_id=args.model,
+        model_of=lambda: getattr(compiler, "driver_model", None),
     )
     print(f"rote compile: watch progress with: tail -f {progress_path}", file=sys.stderr)
 
@@ -1349,6 +1401,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "usage_complete": meta.get("usage_complete", True),
             },
             reported_cost=meta.get("cost_usd"),
+            calls=meta.get("generations"),
         )
         progress_sink.close()
     return exit_code
@@ -1551,6 +1604,7 @@ def _reject_local_only_cloud_flags(args: argparse.Namespace) -> str | None:
         ("--no-system1", args.system1 is False),
         ("--decider", args.decider is not None),
         ("--tiebreak", args.tiebreak is not None),
+        ("--structure", args.structure is not None),
     ):
         if is_set:
             return f"rote compile: {flag} runs locally — add --local to use it"
@@ -2758,8 +2812,17 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         decider = _local_decider(
             args, rote_config.resolve("decider", args.decider, layers=layers), "analyze"
         )
-        tiebreak = _local_tiebreak(
-            args, rote_config.resolve("tiebreak", args.tiebreak, layers=layers)
+        tiebreak = _local_system1_choice(
+            args,
+            rote_config.resolve("tiebreak", args.tiebreak, layers=layers),
+            "--tiebreak",
+            DEFAULT_TIEBREAK,
+        )
+        structure = _local_system1_choice(
+            args,
+            rote_config.resolve("structure", args.structure, layers=layers),
+            "--structure",
+            DEFAULT_STRUCTURE,
         )
     except (rote_config.ConfigError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
@@ -2785,6 +2848,7 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         system1=args.system1,
         system1_decider=decider,
         system1_tiebreak=tiebreak,
+        system1_structure=structure,
         max_parallel=args.max_parallel,
     )
 
@@ -3749,6 +3813,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             resolved["tiebreak"].source,
         ),
+        "structure": (
+            resolved["structure"].value or DEFAULT_STRUCTURE,
+            resolved["structure"].source,
+        ),
         "inference": (
             resolved["inference"].value or "auto-detect",
             resolved["inference"].source,
@@ -3768,6 +3836,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             # Concrete like runtime: unset means rules, which is what runs.
             "decider": resolved["decider"].value or "rules",
             "tiebreak": resolved["tiebreak"].value or DEFAULT_TIEBREAK,
+            "structure": resolved["structure"].value or DEFAULT_STRUCTURE,
             "inference": resolved["inference"].value,
         }
         payload = {
@@ -4190,16 +4259,18 @@ def _runs_system1(args: argparse.Namespace) -> bool:
     return bool(args.system1) if args.system1 is not None else not getattr(args, "update", False)
 
 
-def _local_tiebreak(args: argparse.Namespace, resolved: Resolved) -> str:
-    """The tie-break a local compile (or analyze) uses: the layered ``tiebreak``
-    setting, else :data:`DEFAULT_TIEBREAK` (``none``). A ``--tiebreak`` flag on
-    a compile that does not run System-1 is a usage error, like ``--decider``.
-    A configured value is a standing preference and needs no note: on that
-    path nothing would ask."""
+def _local_system1_choice(
+    args: argparse.Namespace, resolved: Resolved, flag: str, default: str
+) -> str:
+    """What a local compile (or analyze) uses for a System-1 call setting
+    (``--tiebreak``, ``--structure``): the layered setting, else ``default``.
+    The flag on a compile that does not run System-1 is a usage error, like
+    ``--decider``. A configured value is a standing preference and needs no
+    note: on that path nothing would ask."""
     if resolved.source == "flag" and not _runs_system1(args):
         why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
-        raise ValueError(f"--tiebreak applies to System-1 compiles, and {why} does not run one")
-    return resolved.value or DEFAULT_TIEBREAK
+        raise ValueError(f"{flag} applies to System-1 compiles, and {why} does not run one")
+    return resolved.value or default
 
 
 def _add_system1_flags(p: argparse.ArgumentParser) -> None:
@@ -4238,9 +4309,21 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--structure",
-        choices=["rules", "haiku", "sonnet"],
-        default="rules",
-        help=argparse.SUPPRESS,  # PROTOTYPE: the whole-skill structure pass
+        choices=["rules", *STRUCTURE_MODELS],
+        default=None,
+        help=(
+            "Who reads the whole skill and decides the pipeline's skeleton (default: "
+            f"the `structure` setting, else {DEFAULT_STRUCTURE}). A model answers in "
+            "one schema-locked call, and rote checks every node against the skill's "
+            "text, its tools' schemas and the sample input before using it, asking "
+            "again up to twice. It costs about $0.015 a compile on Haiku. It runs on "
+            "the compile driver's own client: claude -p under the claude driver, the "
+            "api driver's client under --agent api, and the openai-api driver's "
+            "client and model under --agent openai-api, and codex exec --output-schema "
+            "under codex. "
+            "'rules' makes no call and decides the skeleton step by step from the "
+            "skill's text"
+        ),
     )
     p.add_argument(
         "--tiebreak",
@@ -4250,9 +4333,9 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "Who decides the steps System-1 is still unsure of (default: the `tiebreak` "
             f"setting, else {DEFAULT_TIEBREAK}). 'haiku' asks Claude Haiku in one "
             "schema-locked call, "
-            "billed like the compile: claude -p on your subscription under the claude "
-            "driver, the api driver's own client under --agent api, otherwise an "
-            "Anthropic key or the claude CLI. 'none' makes no call: those steps take "
+            "on the compile driver's own client, like --structure: claude -p on your "
+            "subscription, the api driver's client, the openai-api driver's client "
+            "and model, or codex exec. 'none' makes no call: those steps take "
             "a conservative default and are listed for review"
         ),
     )
