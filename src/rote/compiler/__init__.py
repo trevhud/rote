@@ -797,6 +797,7 @@ class Compiler:
             if s1_plan is not None:
                 try:
                     system1.settle(result.work_dir, s1_plan, final=True)
+                    system1.record_structure(result.work_dir, s1_plan)
                     s1_extras = system1.report_extras(result.work_dir, s1_plan)
                 except Exception as e:  # noqa: BLE001 (keep the paid run, report why)
                     kept = self._keep_rejected_work(result.work_dir, output_dir)
@@ -945,11 +946,19 @@ class Compiler:
 
             # Re-point the result's path to the moved location for the
             # caller's benefit.
+            # System-1's own calls (decider, tie-break, structure pass) are
+            # outside the driver's usage; the CLI adds them to the compile's
+            # cost so the figure bench and agents read is the whole spend.
+            metadata = (
+                result.metadata
+                if s1_plan is None
+                else {**result.metadata, "system1_cost_usd": system1.calls_cost_usd(output_dir)}
+            )
             return CompilationResult(
                 pipeline=pipeline,
                 output_dir=output_dir,
                 driver_name=result.driver_name,
-                driver_metadata=result.metadata,
+                driver_metadata=metadata,
                 verification=verification,
             )
 

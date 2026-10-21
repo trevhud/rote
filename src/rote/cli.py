@@ -534,7 +534,11 @@ class _JsonlProgressSink:
             pass
 
     def _call_cost(self, call: dict[str, Any]) -> float | None:
-        """One recorded call priced at its own model's rates, or None."""
+        """One recorded call's cost: its own (the runtime's) when it has one,
+        else its tokens at its model's rates, else None."""
+        own = call.get("cost_usd")
+        if isinstance(own, int | float) and not isinstance(own, bool):
+            return float(own)
         if call.get("output_tokens") is None:
             return None
         tokens = {
@@ -550,6 +554,7 @@ class _JsonlProgressSink:
         summary: dict[str, Any],
         reported_cost: float | None = None,
         calls: list[dict[str, Any]] | None = None,
+        system1_cost: float | None = 0.0,
     ) -> None:
         """Write the final ``type: "summary"`` digest as the last line.
 
@@ -565,20 +570,26 @@ class _JsonlProgressSink:
         own ``model``: priced one by one at that model's rates, since its
         calls run different models (Sonnet 5.5 text, Haiku structure). One
         unpriceable call leaves the cost out rather than understating it.
+
+        ``system1_cost`` is what System-1's own calls cost (decider,
+        tie-break, structure pass; ``None`` when one could not be priced).
+        It is added in, so ``cost_usd`` is every model call the compile made.
         """
         try:
+            agent: float | None = None
             if reported_cost is not None:
-                summary = {**summary, "cost_usd": reported_cost}
+                agent = reported_cost
             elif calls:
                 priced = [self._call_cost(c) for c in calls]
                 if all(x is not None for x in priced):
-                    summary = {**summary, "cost_usd": round(sum(x or 0.0 for x in priced), 6)}
+                    agent = sum(x or 0.0 for x in priced)
             else:
                 total = summary.get("total_tokens")
                 if isinstance(total, dict):
-                    cost = self._cost_usd(total)
-                    if cost is not None:
-                        summary = {**summary, "cost_usd": cost}
+                    agent = self._cost_usd(total)
+            summary = {**summary, "system1_cost_usd": system1_cost}
+            if agent is not None and system1_cost is not None:
+                summary["cost_usd"] = round(agent + system1_cost, 6)
             self._write(summary)
         except Exception:
             pass
@@ -1401,7 +1412,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 "usage_complete": meta.get("usage_complete", True),
             },
             reported_cost=meta.get("cost_usd"),
-            calls=meta.get("generations"),
+            # Failed calls were billed too: a parallel compile's cost is
+            # every call it sent, answered or not.
+            calls=[*(meta.get("generations") or []), *(meta.get("failed_calls") or [])],
+            system1_cost=meta.get("system1_cost_usd", 0.0),
         )
         progress_sink.close()
     return exit_code
