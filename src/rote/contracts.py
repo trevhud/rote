@@ -560,9 +560,18 @@ class NodeImplementation:
     impl: str
     status: ImplStatus
     reason: str | None = None
-    #: The default backend calls the MCP tool instead of this function, so
-    #: a stub here does not stop a run.
-    mcp_bound: bool = False
+    #: The node's step calls its MCP tool instead of this function
+    #: (:func:`rote.adapters._common.mcp_backed`), so a stub here does not
+    #: stop a run. False on the ``api`` backend and on python and temporal,
+    #: where the function is the call.
+    mcp_backed: bool = False
+
+    @property
+    def blocks_run(self) -> bool:
+        """Whether the emitted app fails on this node: its function is called
+        and is not implemented. ``rote run``'s preflight reads the same
+        answer off the emitted directory (``unimplemented_stubs``)."""
+        return self.status != "implemented" and not self.mcp_backed
 
     def as_dict(self) -> dict[str, str | bool | None]:
         return {
@@ -571,7 +580,7 @@ class NodeImplementation:
             "impl": self.impl,
             "status": self.status,
             "reason": self.reason,
-            "mcp_bound": self.mcp_bound,
+            "mcp_backed": self.mcp_backed,
         }
 
 
@@ -599,8 +608,17 @@ def stub_reason(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[bool, str |
     return True, " ".join(text.split()) or None
 
 
-def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[NodeImplementation]:
+def implementation_status(
+    pipeline: Pipeline,
+    artifact_dir: Path | str,
+    runtime: str = "dbos",
+    external_backend: str = "mcp",
+) -> list[NodeImplementation]:
     """One entry per ``pure_function`` / ``external_call`` node with an ``impl``.
+
+    ``runtime`` and ``external_backend`` are the emit's (the CLI defaults
+    are dbos and mcp): together they decide which bound nodes run via
+    their MCP tool (:func:`rote.adapters._common.mcp_backed`).
 
     Read by AST, like everything in this module: the modules are never
     imported. This is the per-node answer to "will the compiled pipeline
@@ -608,6 +626,8 @@ def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[
     NotImplementedError somewhere" check cannot give once a module mixes
     real functions with stubs.
     """
+    from rote.adapters._common import mcp_backed
+
     root = Path(artifact_dir)
     trees: dict[Path, ast.Module | None] = {}
     statuses: list[NodeImplementation] = []
@@ -641,7 +661,7 @@ def implementation_status(pipeline: Pipeline, artifact_dir: Path | str) -> list[
                 impl=node.impl,
                 status=status,
                 reason=reason,
-                mcp_bound=node.mcp is not None,
+                mcp_backed=mcp_backed(node, runtime, external_backend),
             )
         )
     return statuses

@@ -28,6 +28,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC = REPO_ROOT / "src" / "rote"
 OPS_PIPELINE = REPO_ROOT / "examples" / "ops-report" / "expected" / "pipeline.yaml"
 BDR_PIPELINE = REPO_ROOT / "examples" / "bdr-outreach" / "expected" / "pipeline.yaml"
+#: A real compile of ops-report: every pure_function implemented, and the
+#: four fetches mcp-bound, with the agent's `--backend api` stubs beside them.
+OPS_COMPILED = (
+    REPO_ROOT / "examples" / "ops-report" / "runs" / "2026-10-18-implements-pure-functions"
+)
 
 
 # ───────── 3. install hints name the right distribution ─────────
@@ -406,6 +411,80 @@ def test_edited_module_with_a_stub_left_is_still_a_stub(tmp_path: Path) -> None:
     drive = app.resolve() / "extracted" / "google_drive.py"
     drive.write_text(drive.read_text(encoding="utf-8").replace("STUB", "TODO"), encoding="utf-8")
     assert drive in unimplemented_stubs(app)
+
+
+@pytest.mark.parametrize(
+    ("runtime", "backend", "stubs"),
+    [
+        ("dbos", "mcp", []),
+        ("dbos", "api", ["drive.py", "gmail.py"]),
+        # No MCP client: the step calls the module whatever the backend.
+        ("python", "mcp", ["drive.py", "gmail.py"]),
+        ("temporal", "mcp", ["drive.py", "gmail.py"]),
+    ],
+)
+def test_run_and_compile_agree_on_which_mcp_bound_stubs_stop_a_run(
+    runtime: str, backend: str, stubs: list[str], tmp_path: Path
+) -> None:
+    """ops-report's fetch modules are `--backend api` stubs. On the default
+    backend their steps call the MCP tool and never the function, so
+    neither the compile nor `rote run` may call them blocking; on the api
+    backend, and on python and temporal (no MCP client, the step calls the
+    module), both must. One answer, read from the IR and from the disk."""
+    from rote.contracts import implementation_status
+
+    pipeline = load_pipeline(OPS_COMPILED / "pipeline.yaml")
+    impls = implementation_status(pipeline, OPS_COMPILED, runtime, backend)
+    blocking = sorted({i.impl.split(":")[0].rsplit("/", 1)[1] for i in impls if i.blocks_run})
+    assert blocking == stubs
+    # The python adapter refuses ops-report's gate, so only the compile's
+    # side exists there; every other runtime is read back off the disk too.
+    if runtime != "python":
+        app = tmp_path / "app"
+        options: dict[str, Any] = {"extracted_source_dir": OPS_COMPILED}
+        if runtime == "dbos":
+            options["external_backend"] = backend
+        get_adapter(runtime, **options).emit(pipeline, app)
+        assert sorted(p.name for p in unimplemented_stubs(app)) == stubs
+    # Non-degenerate: the stubs are there either way, only their verdict moves.
+    assert {i.node_id for i in impls if i.status == "stub"} == {
+        n.id for n in pipeline.nodes if n.mcp is not None
+    }
+
+
+def test_run_gets_past_the_stub_check_on_an_mcp_backed_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from rote.eval.empirical import MeasuredRun
+
+    app = tmp_path / "app"
+    _emit(OPS_COMPILED / "pipeline.yaml", "dbos", app)
+    ran: list[Path] = []
+
+    def trial(target: Any, *a: Any, **k: Any) -> MeasuredRun:
+        ran.append(target)
+        return MeasuredRun(wall_seconds=0.1, output={"ok": True})
+
+    monkeypatch.setattr("rote.runners.run_pipeline_trial", trial)
+    signal = 'duty_manager_data_provided={"ok": true}'
+    assert cli_main(["run", str(app), "--input", "{}", "--signal", signal]) == 0
+    assert ran, capsys.readouterr().err
+
+
+def test_a_stub_beside_an_mcp_backed_function_still_counts(tmp_path: Path) -> None:
+    """Only the functions the manifest names as MCP-backed are exempt: a
+    second stub in the same module is still called by nothing rote knows
+    of, so it keeps the module listed."""
+    app = tmp_path / "app"
+    _emit(OPS_COMPILED / "pipeline.yaml", "dbos", app)
+    gmail = app.resolve() / "extracted" / "gmail.py"
+    assert gmail not in unimplemented_stubs(app)
+    gmail.write_text(
+        gmail.read_text(encoding="utf-8")
+        + "\n\ndef fetch_thread(**payload):\n    raise NotImplementedError('fill me in')\n",
+        encoding="utf-8",
+    )
+    assert gmail in unimplemented_stubs(app)
 
 
 def test_typescript_stub_left_after_editing_another_is_still_a_stub(tmp_path: Path) -> None:
