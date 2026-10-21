@@ -7,8 +7,10 @@
 #   scripts/isolated-rote emit examples/bdr-outreach/expected/pipeline.yaml \
 #     --runtime dbos --out examples/bdr-outreach/expected/runtimes/dbos
 #
-# ROTE_ISOLATED_STATE=<dir> keeps the state in <dir>. It hides your MCP
-# logins too, so a run that needs a real MCP server should use plain rote.
+# ROTE_ISOLATED_STATE=<dir> keeps the state in <dir>. ROTE_PYTHON=<python>
+# picks the interpreter that has rote installed (default: the repo's
+# .venv). It hides your MCP logins too, so a run that needs a real MCP
+# server should use plain rote.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-exec "$repo/.venv/bin/python" -m rote.isolation "$@"
+exec "${ROTE_PYTHON:-$repo/.venv/bin/python}" -m rote.isolation "$@"

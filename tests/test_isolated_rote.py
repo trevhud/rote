@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from rote.isolation import STATE_PATHS, isolated_env
@@ -56,8 +57,14 @@ def test_isolated_env_moves_every_path_and_drops_a_cloud_login(tmp_path: Path) -
 
 
 def _wrapper(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """The wrapper, on the interpreter running this suite: CI's newest-deps
+    job installs rote without a repo .venv."""
     return subprocess.run(
-        [str(WRAPPER), *args], env=env, capture_output=True, text=True, timeout=120
+        [str(WRAPPER), *args],
+        env={**env, "ROTE_PYTHON": sys.executable},
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
 
@@ -94,7 +101,10 @@ def test_without_a_named_state_dir_the_temp_state_is_deleted(tmp_path: Path) -> 
 
 def test_the_wrapper_passes_rotes_exit_status(tmp_path: Path) -> None:
     args = ("emit", str(tmp_path / "missing.yaml"), "--out", str(tmp_path / "out"))
-    plain = subprocess.run([str(REPO / ".venv" / "bin" / "rote"), *args], capture_output=True)
+    plain = subprocess.run(
+        [sys.executable, "-c", "import sys; from rote.cli import main; sys.exit(main())", *args],
+        capture_output=True,
+    )
     run = _wrapper(*args, env={**os.environ, "TMPDIR": str(tmp_path)})
     assert plain.returncode not in (0, None)
     assert run.returncode == plain.returncode
