@@ -446,3 +446,36 @@ def assert_sent_through_the_gateway(
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
         assert body.get("max_completion_tokens") == max_completion_tokens
+
+
+@contextmanager
+def first_free_callback_port() -> Iterator[int]:
+    """Make the first free published callback port one after a taken one; yield it.
+
+    A test that occupies some ports and expects the next one cannot know the
+    next one is free: the ports sit in Linux's ephemeral range, and on a CI
+    runner another process held one (`33421 == 33420`, the login correctly
+    took the port after it). So the test takes every port it can bind itself,
+    the way the code under test binds them, leaves the others to whoever holds
+    them, and frees one that has a taken port before it, plus a later one when
+    it can, so "the first free port" has a rival to beat. Whatever the runner
+    was doing, the first free port is then known. Skips when no published
+    port after the first can be freed.
+    """
+    import pytest
+
+    from rote.mcp.auth import CALLBACK_PORTS, bind_callback_sockets
+
+    held = {port: bind_callback_sockets(port) for port in CALLBACK_PORTS}
+    try:
+        free = [p for p in CALLBACK_PORTS[1:] if held[p] is not None][:2]
+        if not free:
+            pytest.skip(f"no published callback port after the first is free: {CALLBACK_PORTS}")
+        for port in free:
+            for sock in held.pop(port) or []:
+                sock.close()
+        yield free[0]
+    finally:
+        for sockets in held.values():
+            for sock in sockets or []:
+                sock.close()
