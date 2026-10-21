@@ -79,6 +79,7 @@ from rote.contracts import (
     check_contracts,
     implementation_status,
 )
+from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
@@ -368,6 +369,41 @@ def _tested_symbols(artifact_dir: Path) -> set[str]:
         except OSError:
             continue
     return names
+
+
+#: The finding kind for an ``eval.yaml`` that fails its schema. ``rote
+#: compile`` skips the scorecard on it rather than raising after the run.
+SIDECAR_INVALID = "eval_sidecar_invalid"
+
+
+def sidecar_findings(artifact_dir: Path) -> list[ContractFinding]:
+    """The agent's ``eval.yaml``, checked against the schema ``rote eval`` loads.
+
+    The sidecar is optional, but one that does not validate is not: the
+    scorecard ``rote compile`` builds after the run would raise on it,
+    killing the compile after the agent was paid, and every later
+    ``rote eval`` of the output would fail the same way. Found on two
+    committed runs (a per-path ``totals`` block, per-step ``notes``).
+    """
+    path = artifact_dir / EVAL_SIDECAR_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        load_eval_estimates(path)
+    except Exception as e:  # noqa: BLE001 (YAML or schema: the agent's to fix either way)
+        return [
+            ContractFinding(
+                node_id=EVAL_SIDECAR_FILENAME,
+                kind=SIDECAR_INVALID,
+                severity="error",
+                message=(
+                    f"{path} does not match the eval sidecar schema "
+                    f"(references/eval-estimates.md): {e}"
+                ),
+                path=str(path),
+            )
+        ]
+    return []
 
 
 def _deliverable_findings(
@@ -895,8 +931,9 @@ def _verify_or_raise(
                 if (source / sub).is_dir():
                     shutil.copytree(source / sub, overlay / sub, dirs_exist_ok=True)
         for source in (Path(base_dir), Path(artifact_dir)):
-            if (source / REPORT_FILENAME).is_file():
-                shutil.copy2(source / REPORT_FILENAME, overlay / REPORT_FILENAME)
+            for name in (REPORT_FILENAME, EVAL_SIDECAR_FILENAME):
+                if (source / name).is_file():
+                    shutil.copy2(source / name, overlay / name)
         produced = Path(artifact_dir) / "pipeline.yaml"
         if produced.is_file():
             shutil.copy2(produced, overlay / "pipeline.yaml")
@@ -950,6 +987,7 @@ def _verify(
         + provenance_findings(pipeline, root, skill_dir, strict=strict_provenance)
         + emit_findings(pipeline, root, emit_target)
         + (judge_spec_findings(pipeline) if portable_judges else [])
+        + sidecar_findings(root)
     )
     # Schema before code before tests: the vendor's own spec decides whether
     # a request is valid, ahead of any test the agent wrote for it.

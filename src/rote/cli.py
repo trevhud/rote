@@ -1056,7 +1056,23 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     # ── Scorecard (auxiliary: a price-fetch outage must not sink a
     # just-completed, real-money compilation run) ──
     scorecard_path: Path | None = None
-    if not args.no_eval:
+    # An eval.yaml still invalid after the repair rounds is a verification
+    # error, reported with the others below. Building the scorecard would
+    # raise on it after the paid run, so skip it and say why.
+    from rote.compiler.verify import SIDECAR_INVALID
+    from rote.eval.sidecar import EVAL_SIDECAR_FILENAME
+
+    sidecar_invalid = deliverable is not None and any(
+        f.kind == SIDECAR_INVALID for f in deliverable.errors
+    )
+    if sidecar_invalid and not args.no_eval:
+        print(
+            f"rote compile: warning: skipped scorecard ({EVAL_SIDECAR_FILENAME} fails "
+            f"its schema; see the verification errors). Generate it once fixed with: "
+            f"rote eval {out_dir}",
+            file=sys.stderr,
+        )
+    elif not args.no_eval:
         from rote.eval import build_scorecard_for
         from rote.eval.pricing import PricingError
 
