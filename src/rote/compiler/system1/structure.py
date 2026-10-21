@@ -212,8 +212,11 @@ Per node:
   choosing or providing something is a hitl_gate. Exploratory tool use with a
   stop condition is an agent_loop.
 - intent: one sentence, what the node does and why, in the skill's terms.
-- reads: the earlier nodes whose results it needs ("pipeline.input" for the
-  run's input). Read what the step actually uses, not just the node before.
+- reads: only the earlier nodes whose results the step's own text uses
+  ("pipeline.input" for the run's input). A step that works on the input's
+  own fields reads pipeline.input, even when it comes after another step:
+  reading a node it does not need makes it wait on that node, and fail
+  with it.
 - fan_out_over: when the node runs once per element of a list another node
   returns (a call per query, a write per row), that node's id. Else "".
   Judge at the skill's granularity: an llm_judge whose step decides over a
