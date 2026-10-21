@@ -615,12 +615,88 @@ def unbound_tool_findings(
     return findings
 
 
+def listed_tools(tools: ToolSchemas) -> dict[str, set[str]]:
+    """``{server: tool names}`` for every server a live ``tools/list`` answered.
+
+    Only a live listing says what a server offers now. A skill's bundled
+    snapshot is declared too, but it may be older than the server: a tool
+    added since would read as unknown, and ``tool_unknown`` is an error.
+    """
+    listed: dict[str, set[str]] = {}
+    for t in tools.values():
+        if t.declared and t.origin == "live":
+            listed.setdefault(t.server, set()).add(t.tool)
+    return listed
+
+
+def _unknown_tool(node_id: str, server: str, tool: str, offered: set[str]) -> ContractFinding:
+    return ContractFinding(
+        node_id=node_id,
+        kind="tool_unknown",
+        severity="error",
+        message=(
+            f"{node_id} calls {server}.{tool}, but {server}'s tools/list has no tool "
+            f"{tool!r}; it offers {', '.join(f'`{t}`' for t in sorted(offered))}. Bind the "
+            f"tool the step uses, by its listed name"
+        ),
+        path="pipeline.yaml",
+    )
+
+
+def _unsourced_arguments(node: Node) -> list[ContractFinding]:
+    """``mcp.args`` entries naming a payload key the node's inputs never fill.
+
+    Every runtime builds the argument from that payload key, so a key no
+    input supplies sends the tool nothing for it, whatever its schema says.
+    """
+    from rote.adapters._common import mcp_tool_arguments
+
+    payload = set(node.inputs or {})
+    missing = [
+        (arg, key)
+        for arg, origin, key in mcp_tool_arguments(node) or []
+        if origin == "payload" and key not in payload
+    ]
+    if not missing:
+        return []
+    assert node.mcp is not None
+    names = ", ".join(f"`{arg}` <- `{key}`" for arg, key in missing)
+    return [
+        ContractFinding(
+            node_id=node.id,
+            kind="tool_arguments_unsourced",
+            severity="error",
+            message=(
+                f"{node.id} calls {node.mcp.server}.{node.mcp.tool} with {names}, but the node's "
+                f"inputs ({', '.join(f'`{k}`' for k in sorted(payload)) or 'none'}) carry no such "
+                f"key, so the tool gets nothing for it. Add the input that supplies it, or map "
+                f"the argument to one the node has"
+            ),
+            path="pipeline.yaml",
+        )
+    ]
+
+
 def tool_findings(pipeline: Pipeline, tools: ToolSchemas) -> list[ContractFinding]:
-    """Every mcp binding's arguments against its tool's declared, checkable schema."""
+    """Every MCP tool a node calls against its server's live ``tools/list``.
+
+    A bound tool its server does not list is an error (a server that could
+    not be listed proves nothing, so it is never one), and so are arguments
+    the tool's declared, checkable schema refuses.
+    """
     findings: list[ContractFinding] = []
+    listed = listed_tools(tools)
     for node in pipeline.nodes:
+        for tool, server in sorted((node.tool_servers or {}).items()):
+            if server in listed and tool not in listed[server]:
+                findings.append(_unknown_tool(node.id, server, tool, listed[server]))
         if node.mcp is None:
             continue
+        offered = listed.get(node.mcp.server)
+        if offered is not None and node.mcp.tool not in offered:
+            findings.append(_unknown_tool(node.id, node.mcp.server, node.mcp.tool, offered))
+            continue
+        findings += _unsourced_arguments(node)
         schema = tools.get((node.mcp.server, node.mcp.tool))
         if schema is None or not schema.declared:
             continue
@@ -673,9 +749,12 @@ def unchecked_tools(pipeline: Pipeline, tools: ToolSchemas) -> dict[str, list[st
 def tool_questions(pipeline: Pipeline, tools: ToolSchemas) -> list[tuple[str, str]]:
     """``(node id, text)`` for every binding whose arguments nothing could check."""
     questions: list[tuple[str, str]] = []
+    listed = listed_tools(tools)
     for node in pipeline.nodes:
         if node.mcp is None:
             continue
+        if node.mcp.server in listed and node.mcp.tool not in listed[node.mcp.server]:
+            continue  # tool_unknown, an error (tool_findings)
         schema = tools.get((node.mcp.server, node.mcp.tool))
         names = ", ".join(f"`{k}`" for k in sent_arguments(node)) or "no arguments"
         call = f"{node.mcp.server}.{node.mcp.tool}"

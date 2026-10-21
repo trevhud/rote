@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from rote.compiler.report import ReportExtras
-from rote.compiler.system1 import decision_model, tiebreak
+from rote.compiler.system1 import decision_model, evidence, tiebreak
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan, unit_segments, unsure_units
 from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
@@ -68,12 +68,15 @@ def prepare(
     tools: Mapping[tuple[str, str], Any] | None = None,
     tiebreak_lane: Lane | None = None,
     rubric: Path | None = None,
+    observations: Iterable[Any] = (),
 ) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
     ``sample`` (a :class:`rote.compiler.grounding.Sample`) decides the input
     schema and gate payload keys, ahead of the skill's wording. ``tools``
-    (grounding's tool schemas, keyed ``(server, tool)``) names MCP arguments.
+    (grounding's tool schemas, keyed ``(server, tool)``) names MCP arguments,
+    and ``observations`` (a baseline's recorded calls) binds the ones a
+    recorded value traces to (:mod:`rote.compiler.system1.evidence`).
 
     ``rules`` makes no call at all. ``clef`` and ``jev`` ask that decision
     model (no generated text) about each step's kind and gate, and use its
@@ -99,6 +102,7 @@ def prepare(
         )
         segments = {**segments, **tb.segments}
     p = plan(skill, verdicts, tools, segments)
+    evidence.bind_recorded_arguments(p, observations, getattr(sample, "payload", None))
     p.sample = sample
     p.tiebreak = tb
     write(p, work_dir)
