@@ -158,6 +158,62 @@ class CompilerDriver(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class GenerationRequest:
+    """One schema-locked generation: a single model call, no tools, no files.
+
+    ``system`` is the prefix every call of a compile shares, byte for byte,
+    so the prompt cache serves it after the first call. ``prompt`` is what
+    this call alone asks for. The answer is constrained to ``schema`` at
+    decoding time (``claude -p --json-schema`` on the subscription lane,
+    ``output_config.format`` structured outputs on the API lane), never
+    parsed out of prose.
+    """
+
+    system: str
+    prompt: str
+    schema: dict[str, Any]
+    model: str
+    #: Names the call in events and errors (a node id, ``interface``).
+    label: str
+
+
+@dataclass(frozen=True)
+class Generation:
+    """The answer to a :class:`GenerationRequest`, with what it cost.
+
+    All four usage buckets are kept: a prompt-cached call reports almost
+    nothing in ``input_tokens``, so dropping the cache buckets makes a
+    paid call look free (CLAUDE.md, "A prompt-cached run reports almost
+    nothing in input_tokens").
+    """
+
+    payload: dict[str, Any]
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_write_tokens: int
+    cache_read_tokens: int
+    #: The lane's own estimate (``total_cost_usd`` from ``claude -p``).
+    #: ``None`` when the lane reports none, never a guess.
+    cost_usd: float | None
+    duration_ms: int
+
+
+class Generator(Protocol):
+    """A driver that can also answer one :class:`GenerationRequest`.
+
+    System-1 compiles with such a driver write their text as many small
+    calls at once (:mod:`rote.compiler.system1.generate`) instead of one
+    agent session. A failed call raises :class:`DriverError` with the
+    usage it reported in ``metadata``.
+    """
+
+    name: str
+
+    async def generate(self, request: GenerationRequest) -> Generation: ...
+
+
 # ───────── Driver registry ─────────
 
 
@@ -268,6 +324,9 @@ __all__ = [
     "DriverError",
     "DriverResult",
     "CompilerDriver",
+    "Generation",
+    "GenerationRequest",
+    "Generator",
     "DRIVERS",
     "AUTO_DETECT_ORDER",
     "get_driver",

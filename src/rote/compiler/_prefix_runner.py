@@ -239,6 +239,10 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 value = _resolve(binding, sample, results)
                 if value is not _MISSING:
                     payload[binding[0]] = value
+            if step["kind"] == "gate":
+                results[node_id] = step["payload"]
+                report[node_id] = {"status": "ok", "given": True, "output": step["payload"]}
+                continue
             if step["kind"] == "mcp":
                 # The arguments are reported either way: rote checks them
                 # against the tool's schema, recorded call or not.
@@ -269,7 +273,9 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
                 report[node_id] = {"status": "not_json", "message": where}
                 continue
             results[node_id] = output
-            report[node_id] = {"status": "ok"}
+            # The result goes back to rote, which checks it against the
+            # node's declared output_schema (rote.compiler.prefix).
+            report[node_id] = {"status": "ok", "output": output}
         except BindingError as e:
             report[node_id] = {"status": "binding_error", "message": str(e)}
         except NotImplementedError as e:

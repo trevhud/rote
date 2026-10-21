@@ -71,6 +71,14 @@ comes from keeping them clean.
   compile's own lane via `structured_call` in the inference helper. Don't
   give it its own client or a temperature. See
   [`docs/design/system1-compile.md`](docs/design/system1-compile.md).
+- **System-1's text is written in parallel** when the driver has
+  `generate()` (`claude`, `api`): one schema-locked call per node's
+  interface entry, then one per `pure_function` (module + tests) and per
+  judge (prompt), all at once under `--max-parallel`, each checked by code
+  and re-asked alone ([`src/rote/compiler/system1/generate.py`](src/rote/compiler/system1/generate.py),
+  rubric `skills/rote-compile/GENERATE.md`). `codex` and `openai-api` keep
+  the single SYSTEM1.md session. See
+  [`docs/design/parallel-generation.md`](docs/design/parallel-generation.md).
 
 **When you edit this layer:** you are changing how the agent
 behaves. Changes are testable by running `rote compile` end-to-end
@@ -1043,6 +1051,40 @@ Traps if you touch this:
   failed durable step isn't always the process that raised it — the
   same failure mode as the vendor-SDK gotcha below. Plain
   `RuntimeError` carrying type / status / model / node / provider.
+
+### `--json-schema` is a tool, and tools lead the prompt-cache prefix
+
+The parallel System-1 path makes many `claude -p --json-schema` calls that
+share one system prompt (GENERATE.md plus the skill). The schema becomes
+the forced StructuredOutput tool, and the cache prefix is tools, then
+system, then messages, so two calls with different schemas share nothing:
+measured, seven pieces with their own schemas each wrote ~9k cache tokens
+and read none. Two rules keep the prefix shared, and both are pinned in
+`tests/test_system1_generate.py`:
+
+- **Every call uses `ANSWER_SCHEMA`**, one shape with every field required.
+  A call fills the fields its task names and code checks it did. Don't
+  give a piece its own schema to "lock it tighter": that re-buys the
+  prefix on every call.
+- **The first call runs alone** until it finishes or `prime_seconds`
+  pass, because a cache entry is readable only once its request's
+  response has started. Calls started together all write it.
+
+Related: Haiku 5.5 thinks at length even at effort low (3k to 17k thinking
+tokens per piece), so it was slower than Sonnet 5.5 per piece and once
+ended a call with `structured_output_retry_exhausted`. A failed call is
+asked again once (`CALL_ATTEMPTS`), and a piece that still fails leaves
+its module unwritten for verification to report, never the compile dead.
+
+### An MCP result no recording shows: its consumers accept every shape
+
+The interface infers an MCP-bound node's result from the skill's words,
+and the guess can be wrong in the one way that fails every run: an
+object with a `threads` key for a Gmail tool that returns the list
+(ops-report scored 0.50 on that). `Context.unverified_tool_result` marks
+such a node, and every consumer's card says to accept the list, an
+object wrapping it, or JSON text, and to test each. A recorded baseline
+result replaces the guess with an inferred schema.
 
 ### `claude -p` gets schema-locked output, and costs 37k tokens if you let it
 

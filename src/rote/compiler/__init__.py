@@ -34,7 +34,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rote.compiler import api_docs, system1, tool_grounding
 from rote.compiler.backend import BACKENDS, write_backend
@@ -42,6 +42,7 @@ from rote.compiler.drivers import (
     CompilerDriver,
     DriverError,
     DriverResult,
+    Generator,
     auto_detect,
     available_drivers,
     get_driver,
@@ -58,7 +59,8 @@ from rote.compiler.grounding import (
 )
 from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
-from rote.compiler.system1 import TIEBREAKS
+from rote.compiler.system1 import TIEBREAKS, generate
+from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
@@ -142,7 +144,7 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
     ):
         metadata["session_id"] = session_id
     source = result.metadata.get("usage_source")
-    if source in ("stream", "usage", "modelUsage"):
+    if source in ("stream", "usage", "modelUsage", "generations"):
         metadata["usage_source"] = source
     complete = result.metadata.get("usage_complete")
     if isinstance(complete, bool):
@@ -252,6 +254,7 @@ class Compiler:
         system1_decider: str = "rules",
         system1_tiebreak: str = DEFAULT_TIEBREAK,
         tool_discovery: tool_grounding.Discovery = "named",
+        max_parallel: int = DEFAULT_MAX_PARALLEL,
     ) -> None:
         """
         Parameters
@@ -319,6 +322,10 @@ class Compiler:
             the decider go to Haiku in one schema-locked call, billed the way
             the compile's driver bills (:mod:`rote.compiler.system1.tiebreak`).
             ``"none"`` (the default): no call.
+        max_parallel
+            ``--max-parallel``: the most model calls in flight at once when
+            System-1 writes its text as parallel calls (drivers with
+            ``generate``; :mod:`rote.compiler.system1.generate`).
         """
         self.agent = agent
         self._explicit_compiler_skill_dir = compiler_skill_dir
@@ -335,6 +342,9 @@ class Compiler:
         if system1_tiebreak not in TIEBREAKS:
             raise CompilerError(f"unknown --tiebreak {system1_tiebreak!r}; choose from {TIEBREAKS}")
         self.system1_tiebreak = system1_tiebreak
+        if max_parallel < 1:
+            raise CompilerError(f"--max-parallel must be at least 1, got {max_parallel}")
+        self.max_parallel = max_parallel
 
     @property
     def api_backend(self) -> bool:
@@ -669,15 +679,32 @@ class Compiler:
                 )
 
             try:
-                result = await driver.run(
-                    skill_dir=skill_dir,
-                    compiler_skill_dir=compiler_skill_dir,
-                    work_dir=work_dir,
-                    # An api-backend compile records the agent's web lookups
-                    # off the tool events, for the report's docs section.
-                    on_event=self.on_event if research is None else research.tee(self.on_event),
-                    **run_kwargs,
-                )
+                # A --backend api compile keeps the session: its external_call
+                # modules are researched vendor calls, written with web tools
+                # the parallel calls do not have.
+                if (
+                    s1_plan is not None
+                    and not self.api_backend
+                    and callable(getattr(driver, "generate", None))
+                ):
+                    result = await self._generate_text(
+                        cast("Generator", driver),
+                        skill_dir=skill_dir,
+                        work_dir=work_dir,
+                        s1_plan=s1_plan,
+                        grounding=grounding,
+                        extra_instructions=extra_instructions,
+                    )
+                else:
+                    result = await driver.run(
+                        skill_dir=skill_dir,
+                        compiler_skill_dir=compiler_skill_dir,
+                        work_dir=work_dir,
+                        # An api-backend compile records the agent's web lookups
+                        # off the tool events, for the report's docs section.
+                        on_event=self.on_event if research is None else research.tee(self.on_event),
+                        **run_kwargs,
+                    )
             except DriverError as e:
                 detail = f"\n\n{e.details}" if getattr(e, "details", None) else ""
                 spent = ""
@@ -744,6 +771,17 @@ class Compiler:
                 web_research=research,
                 spec_store=specs,
             )
+            unresolved = result.metadata.get("unresolved")
+            if isinstance(unresolved, dict) and unresolved:
+                # A parallel-path piece that never passed its own checks
+                # (rote.compiler.system1.generate) is an error, not a pass.
+                verification = dataclasses.replace(
+                    verification,
+                    findings=[
+                        *verification.findings,
+                        *generate.unresolved_findings(unresolved),
+                    ],
+                )
             self._emit_verification(verification)
             # The sample was reference material for the agent, not output.
             remove_materialized(Path(result.pipeline_yaml_path).parent)
@@ -829,6 +867,59 @@ class Compiler:
                 driver_metadata=result.metadata,
                 verification=verification,
             )
+
+    async def _generate_text(
+        self,
+        driver: Generator,
+        *,
+        skill_dir: Path,
+        work_dir: Path,
+        s1_plan: system1.Plan,
+        grounding: Grounding,
+        extra_instructions: str | None,
+    ) -> DriverResult:
+        """System-1's text as parallel schema-locked calls (:mod:`.system1.generate`).
+
+        Verification between repair rounds is the same check the
+        single-session path runs at each stop, on the settled work dir.
+        """
+
+        def verify(artifact_dir: Path) -> Verification:
+            system1.settle(artifact_dir, s1_plan)
+            return verify_deliverable(
+                artifact_dir,
+                run_tests=self.run_generated_tests,
+                trust_skill=self.trust_skill,
+                skill_dir=skill_dir,
+                emit_target=self.emit_target,
+                strict_provenance=self.strict_provenance,
+                grounding=grounding,
+                portable_judges=True,
+            )
+
+        settings = generate.Settings(
+            models=generate.Models.every(self.model) if self.model else generate.DEFAULT_MODELS,
+            max_parallel=self.max_parallel,
+        )
+        self._emit(
+            "log",
+            f"system1: writing the text as parallel calls (at most {settings.max_parallel} "
+            f"at once; interface {settings.models.interface}, modules {settings.models.module})",
+        )
+        return await generate.write_text(
+            driver,
+            work_dir=work_dir,
+            skill_dir=skill_dir,
+            compiler_skill_dir=self.compiler_skill_dir,
+            plan=s1_plan,
+            grounding=grounding,
+            verify=verify,
+            settings=settings,
+            extra_instructions=extra_instructions,
+            on_event=self.on_event,
+            run_tests=self.run_generated_tests,
+            trust_skill=self.trust_skill,
+        )
 
     async def _tool_schemas(
         self, observations: tuple[Any, ...], skill_dir: Path

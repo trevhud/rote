@@ -21,6 +21,7 @@ from rote.inference._runtime_helper import (
     build_subscription_env,
     provider_availability,
     select_provider,
+    structured_answer,
     structured_output_schema,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     "build_subscription_env",
     "provider_availability",
     "select_provider",
+    "structured_answer",
     "structured_output_schema",
 ]
