@@ -2,8 +2,9 @@
 
 rote keeps per-user state outside the project: the app registry that
 ``rote emit`` appends to and ``rote mcp login`` walks, the MCP registry and
-token store, the rote-cloud credential, layered config, and the vendor spec
-cache and fixture store. Each one has a ``ROTE_*`` override. Repo
+token store, the rote-cloud credential, layered config, the vendor spec
+cache and fixture store, the ``rote register`` trigger registry, the
+``rote eval --run`` corpus, and the price caches. Each one has a ``ROTE_*`` override. Repo
 maintenance (regenerating the examples/ snapshots), the bench harness and
 the test suite all need a rote that neither reads nor writes the real ones,
 so the list of overrides lives here, once.
@@ -34,6 +35,9 @@ STATE_PATHS: dict[str, str] = {
     "ROTE_MCP_TOKEN_DIR": "mcp-tokens",
     "ROTE_SPEC_CACHE_DIR": "vendor-specs",
     "ROTE_FIXTURE_DIR": "vendor-fixtures",
+    "ROTE_SERVE_REGISTRY_PATH": "serve/registry.json",
+    "ROTE_EVAL_CORPUS_PATH": "eval/eval-corpus.jsonl",
+    "ROTE_PRICING_CACHE_DIR": "pricing-cache",
 }
 
 #: A rote-cloud login passed in the environment outranks the moved

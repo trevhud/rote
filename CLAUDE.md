@@ -1728,7 +1728,8 @@ about which input is the list.
 
 `rote.eval.pricing` fetches current models + official prices at eval
 time (models.dev primary, OpenRouter cross-check; 24h cache in
-`~/.cache/rote/pricing.json`; loud `PricingError` when offline — never
+`~/.cache/rote/pricing.json`, dir overridable with
+`ROTE_PRICING_CACHE_DIR`; loud `PricingError` when offline — never
 a baked-in table). Two things you will get wrong if you touch it:
 
 1. **"Most expensive = flagship" is false.** Previous-generation
@@ -2611,7 +2612,8 @@ Don't waste time debugging stubs. These are intentional.
   `claude -p` for the skill, the emitted python/DBOS app for the
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
-  measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
+  measurements appended to `~/.local/share/rote/eval-corpus.jsonl`,
+  or `ROTE_EVAL_CORPUS_PATH`)
 - 1228 tests (1201 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,

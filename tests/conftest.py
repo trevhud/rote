@@ -115,9 +115,6 @@ def _isolated_mcp_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     # And the api driver prices its own run (cost_usd in its metadata): no
     # test may reach the live catalog or read the developer's cached copy.
     monkeypatch.setattr("rote.eval.pricing._get_json", _offline_price_fetch)
-    monkeypatch.setattr(
-        "rote.eval.pricing._default_cache_path", lambda: tmp_path / "pricing-cache.json"
-    )
     # Vendor specs (--backend api) are fetched from the vendor. Tests use
     # the trimmed real documents in tests/fixtures/vendor_specs through an
     # injected fetch, never the network, and never the developer's cache

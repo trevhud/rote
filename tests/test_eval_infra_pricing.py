@@ -242,14 +242,11 @@ def test_per_run_dollars_follow_the_published_rates() -> None:
 
 
 @pytest.fixture()
-def offline_prices(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def offline_prices(monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.test_eval_cli import FAKE_CATALOG
 
     monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda **kwargs: FAKE_CATALOG)
     monkeypatch.setattr("rote.eval.infra_pricing.get_text", lambda url, timeout: MDX)
-    monkeypatch.setattr(
-        "rote.eval.infra_pricing._default_cache_path", lambda: tmp_path / "cf-cache.json"
-    )
 
 
 def _compile_out(tmp_path: Path, runtimes: list[str]) -> Path:

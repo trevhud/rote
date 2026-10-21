@@ -14,6 +14,7 @@ layer's ``work_dir/pipeline.yaml`` contract.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -56,8 +57,12 @@ def redact_url_password(value: str) -> str:
 
 
 def default_registry_path() -> Path:
-    """The registry location used when ``--registry`` is not given."""
-    return Path.home() / ".rote" / "registry.json"
+    """The registry location used when ``--registry`` is not given.
+
+    ``ROTE_SERVE_REGISTRY_PATH`` overrides ``~/.rote/registry.json``.
+    """
+    override = os.environ.get("ROTE_SERVE_REGISTRY_PATH")
+    return Path(override) if override else Path.home() / ".rote" / "registry.json"
 
 
 class TemporalTrigger(BaseModel):
