@@ -1469,3 +1469,67 @@ def test_an_ir_a_contract_fix_broke_still_goes_back_for_repair(tmp_path: Path) -
         instruction = repair(root / "pipeline.yaml")
         assert instruction is not None and "fails IR validation" in instruction
     assert repair(root / "pipeline.yaml") is None
+
+
+_FAN_MCP_MODULE_3 = """\
+def build(names):
+    # Element 2 of 3 is the one a real server would refuse.
+    return ["R2 limits", 2, "D1 limits"]
+
+
+def search(query):
+    raise NotImplementedError("mcp")
+
+
+def count(results):
+    # One result per element, as a list: element 0's own result is a list
+    # of one, so binding it instead of the list makes this raise.
+    if len(results) != 2:
+        raise ValueError(f"expected 2 results, got {len(results)}")
+    return {"n": len(results)}
+"""
+
+
+def test_every_fanned_call_is_checked_not_just_the_first(tmp_path: Path) -> None:
+    root = _write(tmp_path, {"pipeline.yaml": _FAN_MCP_IR, "extracted/brief.py": _FAN_MCP_MODULE_3})
+    pipeline = _pipeline(root)
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"names": ["R2", "Queues", "D1"]}),
+        implementation_status(pipeline, root),
+        trust_skill=True,
+        tools=_fan_tools(),
+    )
+    [finding] = [f for f in run.findings if f.kind == "tool_arguments_invalid"]
+    assert "search[1] would call docs.search_docs with {'query': 2}" in finding.message
+
+
+def test_recorded_fanned_results_bind_as_the_list_not_element_zero(tmp_path: Path) -> None:
+    root = _write(tmp_path, {"pipeline.yaml": _FAN_MCP_IR, "extracted/brief.py": _FAN_MCP_MODULE_3})
+    (root / "extracted" / "brief.py").write_text(
+        _FAN_MCP_MODULE_3.replace(
+            '["R2 limits", 2, "D1 limits"]', '[f"{n} limits" for n in names]'
+        ),
+        encoding="utf-8",
+    )
+    pipeline = _pipeline(root)
+    observed = (
+        ObservedToolCall(
+            "docs", "search_docs", {"query": "R2 limits"}, [{"type": "text", "text": '["a"]'}]
+        ),
+        ObservedToolCall(
+            "docs", "search_docs", {"query": "D1 limits"}, [{"type": "text", "text": '["b", "c"]'}]
+        ),
+    )
+    run = run_prefix(
+        pipeline,
+        root,
+        _sample({"names": ["R2", "D1"]}),
+        implementation_status(pipeline, root),
+        observations=observed,
+        trust_skill=True,
+        tools=_fan_tools(),
+    )
+    assert run.steps["search"]["status"] == "ok"
+    assert run.steps["count"]["status"] == "ok", run.steps["count"]
