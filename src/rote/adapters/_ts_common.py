@@ -261,7 +261,17 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
 #: quote_problems / quote_retry_note, with the same pattern and messages.
 #: tests/test_judge_evidence.py runs both on one table of cases.
 QUOTE_HELPER_TS = """\
-const QUOTE_RE = /"([^"\\n]{4,}?)"|\u201c([^\u201d\\n]{4,}?)\u201d/g;
+const QUOTE_RE =
+    /"([^"\\n]{4,}?)"|\u201c([^\u201d\\n]{4,}?)\u201d|\u2018([^\u2019\\n]{4,}?)\u2019|(?<![\\w'])'([^'\\n]{4,}?)'(?![\\w'])/g;
+const QUOTE_ENDS = " .,;:!?";
+
+function trimEnds(span: string): string {
+    let start = 0;
+    let end = span.length;
+    while (start < end && QUOTE_ENDS.includes(span[start])) start++;
+    while (end > start && QUOTE_ENDS.includes(span[end - 1])) end--;
+    return span.slice(start, end);
+}
 
 function strings(value: unknown): string[] {
     if (value === null || value === undefined) return [];
@@ -283,7 +293,9 @@ function squash(text: string): string {
 }
 
 export function quoteProblems(text: unknown, inputs: unknown): string[] {
-    const spans = [...String(text ?? "").matchAll(QUOTE_RE)].map((m) => m[1] ?? m[2]);
+    const spans = [...String(text ?? "").matchAll(QUOTE_RE)]
+        .map((m) => trimEnds(m[1] ?? m[2] ?? m[3] ?? m[4]))
+        .filter((span) => span.length >= 4);
     if (spans.length === 0) {
         return [
             "it quotes nothing from its inputs: quote the evidence it rests on in " +

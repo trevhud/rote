@@ -39,6 +39,15 @@ CASES: list[tuple[str, list[str]]] = [
     ('low: "read 5,000 messages per second"', []),
     # Whitespace differs on both sides: the answer's double space, the input's line break.
     ('low: "read 5,000  messages per second"', []),
+    # End punctuation the quote carries, which the inputs place elsewhere.
+    ('low: "billed at $0.40 / million operations,"', []),
+    # Curly and straight single quotes, but never an apostrophe.
+    ("low: \u2018billed at $0.40 / million operations\u2019", []),
+    ("low: 'billed at $0.40 / million operations'", []),
+    (
+        "it's 'not in the inputs at all' and can't be",
+        ['the quote "not in the inputs at all" is not in its inputs'],
+    ),
     # A link's text stands for the link; emphasis marks are not words.
     ('high: "queries on the Workers Free plan will fail"', []),
     ('high: "queries on the [Workers Free plan](/workers/pricing/) will fail"', []),

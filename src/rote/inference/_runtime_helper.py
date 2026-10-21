@@ -996,11 +996,18 @@ def _call_claude_cli(
 
 
 #: A quoted span in a judge's answer: between straight or curly double
-#: quotes, at least four characters. The TypeScript twin is
+#: quotes, curly single quotes, or straight single quotes that are not an
+#: apostrophe (no letter on the outer side), at least four characters. The TypeScript twin is
 #: ``quoteProblems`` in rote.adapters._ts_common.QUOTE_HELPER_TS, with the
 #: same pattern and messages: a judge checks its evidence the same way on
 #: every runtime.
-_QUOTE_RE = re.compile(r'"([^"\n]{4,}?)"|\u201c([^\u201d\n]{4,}?)\u201d')
+_QUOTE_RE = re.compile(
+    r'"([^"\n]{4,}?)"|\u201c([^\u201d\n]{4,}?)\u201d|\u2018([^\u2019\n]{4,}?)\u2019'
+    r"|(?<![\w'])'([^'\n]{4,}?)'(?![\w'])"
+)
+#: Punctuation a quote may carry at its ends that the inputs place elsewhere
+#: ("...midnight UTC," quoting "...midnight UTC. Stored data...").
+_QUOTE_ENDS = " .,;:!?"
 
 
 def _strings(value: Any) -> list[str]:
@@ -1037,7 +1044,13 @@ def quote_problems(text: Any, inputs: Any) -> list[str]:
     whitespace), and there must be at least one. A quote the inputs do not
     contain is the judge's own knowledge presented as evidence (a live
     judge "quoted" a plan rule no search result said)."""
-    spans = [a or b for a, b in _QUOTE_RE.findall(str(text or ""))]
+    spans = [
+        span.strip(_QUOTE_ENDS)
+        for groups in _QUOTE_RE.findall(str(text or ""))
+        for span in groups
+        if span
+    ]
+    spans = [s for s in spans if len(s) >= 4]
     if not spans:
         return [
             "it quotes nothing from its inputs: quote the evidence it rests on in "
