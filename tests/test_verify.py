@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rote.compiler.verify import run_generated_tests, verify_deliverable
+from rote.compiler.verify import SIDECAR_INVALID, run_generated_tests, verify_deliverable
 
 PIPELINE = """\
 name: two-steps
@@ -524,3 +524,73 @@ def test_a_loop_bound_to_its_own_body_is_sent_back_for_repair(tmp_path: Path) ->
     assert "fails IR validation" in instruction
     assert "'email_template_loop' input 'personalized_emails'" in instruction
     assert "own loop_body" in instruction
+
+
+# ───────── The eval.yaml sidecar must load the way rote eval loads it ─────────
+
+_SIDECAR = """\
+version: 1
+steps:
+  - description: "Count the open rows"
+    node_id: count_open
+    estimated_turns: {low: 1, high: 2}
+"""
+
+#: The two shapes found in committed runs: a totals block per path, and
+#: per-step notes. Neither ever matched the schema.
+_INVALID_SIDECARS = {
+    "per-path totals": _SIDECAR
+    + "totals:\n  main_path: {low: 1, high: 2}\n  side_path: {low: 1, high: 1}\n",
+    "per-step notes": _SIDECAR + "    notes: the agent reads one file\n",
+    "not yaml": "steps: [unclosed\n",
+}
+
+
+def _healthy(root: Path, files: dict[str, str]) -> Path:
+    return _deliverable(
+        root,
+        {
+            "extracted/logic.py": REAL,
+            "extracted/vendor.py": VENDOR_STUB,
+            "tests/test_logic.py": GOOD_TEST,
+            **files,
+        },
+    )
+
+
+@pytest.mark.parametrize("sidecar", list(_INVALID_SIDECARS.values()), ids=list(_INVALID_SIDECARS))
+def test_an_invalid_eval_sidecar_is_sent_back_for_repair(tmp_path: Path, sidecar: str) -> None:
+    root = _healthy(tmp_path, {"eval.yaml": sidecar})
+    v = verify_deliverable(root)
+    assert not v.ok
+    [finding] = v.errors
+    assert (finding.node_id, finding.kind) == ("eval.yaml", SIDECAR_INVALID)
+    instruction = v.repair_instruction(root)
+    assert instruction is not None
+    assert f"- eval.yaml: {root / 'eval.yaml'} does not match the eval sidecar schema" in (
+        instruction
+    )
+
+
+def test_a_valid_eval_sidecar_or_none_needs_no_repair(tmp_path: Path) -> None:
+    with_sidecar = _healthy(
+        tmp_path / "with", {"eval.yaml": _SIDECAR + "totals: {low: 1, high: 2}\n"}
+    )
+    without = _healthy(tmp_path / "without", {})
+    for root in (with_sidecar, without):
+        v = verify_deliverable(root)
+        assert v.ok, v.errors
+        assert v.repair_instruction(root) is None
+
+
+def test_an_update_checks_the_sidecar_it_would_ship(tmp_path: Path) -> None:
+    """The work dir's rewrite wins over the previous output's sidecar."""
+    previous = _healthy(tmp_path / "previous", {"eval.yaml": _SIDECAR})
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "pipeline.yaml").write_text(PIPELINE, encoding="utf-8")
+    assert verify_deliverable(work, base_dir=previous).ok
+
+    (work / "eval.yaml").write_text(_INVALID_SIDECARS["per-path totals"], encoding="utf-8")
+    [finding] = verify_deliverable(work, base_dir=previous).errors
+    assert finding.kind == SIDECAR_INVALID

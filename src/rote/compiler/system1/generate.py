@@ -292,22 +292,37 @@ class Context:
             return infer_schema([payload])
         return {"type": "object", "properties": {k: {} for k in keys}}
 
-    def observed_schema(self, node: Any) -> dict[str, Any] | None:
-        """An MCP node's result schema from a baseline's recorded results, if any."""
+    def known_result_schema(self, node: Any) -> tuple[dict[str, Any], str] | None:
+        """An MCP node's result schema and where it is from, when data says it.
+
+        A baseline's recorded results first (they show the values a real
+        call returned), then the outputSchema the server declares. Both
+        describe what the step receives: a recorded result is decoded from
+        its text, and fastmcp's ``{"result": ...}`` wrapper is removed by
+        the same rule the emitted runtime helper applies.
+        """
         if node.mcp is None:
             return None
-        results = [
-            o.result
-            for o in self.grounding.observations
-            if getattr(o, "server", None) == node.mcp.server
-            and getattr(o, "tool", None) == node.mcp.tool
-            and getattr(o, "result", None) is not None
-        ]
-        if not results:
-            return None
-        from rote.probe import infer_schema
+        from rote.mcp._runtime_helper import returned_schema
+        from rote.probe import infer_schema, parse_tool_result
 
-        return infer_schema(results)
+        key = (node.mcp.server, node.mcp.tool)
+        declared = self.grounding.tools.get(key)
+        output_schema = getattr(declared, "output_schema", None)
+        results = [
+            value
+            for o in self.grounding.observations
+            if (getattr(o, "server", None), getattr(o, "tool", None)) == key
+            and not getattr(o, "is_error", False)
+            and (value := parse_tool_result(getattr(o, "result", None), output_schema)) is not None
+        ]
+        if results:
+            return infer_schema(results), "observed in a recorded run"
+        if getattr(declared, "declared", False):
+            schema = returned_schema(output_schema)
+            if schema:
+                return schema, "declared by the server's tools/list"
+        return None
 
     def unverified_tool_result(self, node_id: str) -> bool:
         """An MCP call's result whose shape nothing observed or declared.
@@ -318,15 +333,15 @@ class Context:
         plausible shape instead of trusting the guess.
         """
         node = self.node(node_id)
-        return node.mcp is not None and self.observed_schema(node) is None
+        return node.mcp is not None and self.known_result_schema(node) is None
 
     def output_schema(self, node_id: str) -> dict[str, Any]:
         node = self.node(node_id)
         if node.kind is NodeKind.HITL_GATE:
             return self.gate_schema(node)
-        observed = self.observed_schema(node)
-        if observed is not None:
-            return observed
+        known = self.known_result_schema(node)
+        if known is not None:
+            return known[0]
         return dict((self.interface.get(node_id) or {}).get("output_schema") or {})
 
     def param_schema(self, node: Any, param: str) -> dict[str, Any]:
@@ -535,7 +550,7 @@ def _needs_termination(node: Any) -> bool:
 
 
 def _needs_output_schema(ctx: Context, node: Any) -> bool:
-    return ctx.observed_schema(node) is None
+    return ctx.known_result_schema(node) is None
 
 
 def _pipeline_outline(ctx: Context) -> list[str]:
@@ -601,9 +616,9 @@ def interface_request(ctx: Context, node: Any, system: str, model: str) -> Gener
                 else ""
             )
         )
-    if not _needs_output_schema(ctx, node):
-        observed = _json(ctx.output_schema(node.id))
-        lines.append(f"Its output schema is fixed (observed in a recorded run): {observed}")
+    known = ctx.known_result_schema(node)
+    if known is not None:
+        lines.append(f"Its output schema is fixed ({known[1]}): {_json(known[0])}")
     if isinstance(node.output, dict) and "items" in node.output:
         lines.append(
             "Its output MUST be an object with an `items` array: a later node runs once per item."

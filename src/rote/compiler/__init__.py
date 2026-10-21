@@ -812,6 +812,7 @@ class Compiler:
                 self._move_work_dir_to_output(result.work_dir, output_dir)
 
             _write_compile_metrics(result, output_dir)
+            tool_grounding.write_declared(output_dir, grounding.tools)
             if self.emit_target is not None and self.emit_target.external_backend in BACKENDS:
                 # Beside the IR, never in it: a later `rote emit` must not
                 # silently swap the researched vendor calls for MCP calls.
