@@ -821,3 +821,84 @@ def test_a_refused_write_earns_no_output(refusal: dict[str, Any]) -> None:
     assert score_case(_reviewer_reference(), trace)["fields_missing"] == ["reviewer"]
     accepted = {**trace, "calls": [{**_publish(title="t", reviewer="Dana Lee"), "matched": True}]}
     assert score_case(_reviewer_reference(), accepted)["fields_missing"] == []
+
+
+def _answered(tool: str, response: Any, **arguments: Any) -> dict[str, Any]:
+    return {**_call(tool, **arguments), "response": response}
+
+
+def _ran(*calls: dict[str, Any]) -> dict[str, Any]:
+    return {"completed": True, "objects": [], "calls": list(calls)}
+
+
+def test_a_live_answer_that_changed_is_drift_not_a_lost_read() -> None:
+    """A live server reindexed between the reference and the run: the
+    pipeline sent the reference's exact request and got a new answer. It
+    read faithfully; the change is reported as drift, not scored."""
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+        ]
+    )
+    s = score_case(ref, _ran(_answered("search", "bbb", query="workers kv limits")))
+    assert s["reads"] == 1.0
+    assert s["reads_missing"] == []
+    assert s["reads_unexpected"] == []
+    request = call_key(_call("search", query="Workers KV limits"))
+    assert s["response_drift"] == [
+        {"read": request, "reference_responses": ["aaa"], "pipeline_response": "bbb"}
+    ]
+
+
+def test_a_different_request_is_still_a_lost_read_and_no_drift() -> None:
+    """The negative half: drift excuses a changed answer, never a changed
+    request. Asking for something else is infidelity whatever comes back."""
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+        ]
+    )
+    s = score_case(ref, _ran(_answered("search", "bbb", query="KV")))
+    assert s["reads"] == 0.0
+    assert s["response_drift"] == []
+    same = score_case(ref, _ran(_answered("search", "aaa", query="Workers KV limits")))
+    assert (same["reads"], same["response_drift"]) == (1.0, [])
+
+
+def test_a_request_every_reference_run_made_is_a_read_even_when_its_answer_moved() -> None:
+    """The reference itself can straddle a reindex: the same request got two
+    answers across its runs. The agent still made that request every time."""
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [_answered("search", "aaa", query="D1 limits")]),
+            _run({"x": 1}, [_answered("search", "ccc", query="D1 limits")]),
+        ]
+    )
+    s = score_case(ref, _ran(_answered("search", "ccc", query="D1 limits")))
+    assert s["reads"] == 1.0
+    assert s["response_drift"] == []
+    drifted = score_case(ref, _ran(_answered("search", "ddd", query="D1 limits")))
+    assert drifted["reads"] == 1.0
+    assert drifted["response_drift"] == [
+        {
+            "read": call_key(_call("search", query="D1 limits")),
+            "reference_responses": ["aaa", "ccc"],
+            "pipeline_response": "ddd",
+        }
+    ]
+
+
+def test_the_bench_prints_each_drifted_read_with_both_answers() -> None:
+    from rote.bench.runner import coverage_lines
+
+    request = call_key(_call("search", query="D1 limits"))
+    coverage = {"covered": 1, "fields": 1, "stable_leaves": 1, "leaves": 1}
+    drift = {"read": request, "reference_responses": ["aaa"], "pipeline_response": "bbb"}
+    lines = coverage_lines(
+        {"cases": {"base": {"reference": {"coverage": coverage}, "response_drift": [drift]}}}
+    )
+    assert any(
+        f"drift {request}: the reference got aaa, this run got bbb" in line for line in lines
+    ), lines

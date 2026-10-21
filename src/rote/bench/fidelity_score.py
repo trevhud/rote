@@ -238,8 +238,58 @@ def call_key(call: dict[str, Any]) -> str:
     """
     if not call.get("side_effect") and call.get("response") is not None:
         return f"{call['server']}.{call['tool']}->response[{call['response']}]"
+    return request_key(call)
+
+
+def request_key(call: dict[str, Any]) -> str:
+    """What a call asked for: server, tool and normalized arguments.
+
+    The part of a read the pipeline controls. Its answer is the server's:
+    a live server that reindexed answers the same request differently.
+    """
     args = {k: normalize(v) if _is_scalar(v) else v for k, v in call["arguments"].items()}
     return f"{call['server']}.{call['tool']}({json.dumps(args, sort_keys=True)})"
+
+
+def _answers(calls: Iterable[dict[str, Any]]) -> list[Any]:
+    """The distinct responses that answered these calls, in a stable order."""
+    return sorted({c["response"] for c in calls if c.get("response") is not None}, key=str)
+
+
+def read_units(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The reads every run made, each with the requests and answers behind it.
+
+    A read every run made is one of two things. The same data (by
+    :func:`call_key`), however each run worded the request: a fixture
+    answering two spellings with one response. Or the same request, however
+    the server answered it: a live server that reindexed between runs. Each
+    unit is ``{"key", "requests", "responses"}``; ``key`` is the call key
+    for the first kind and the request key for the second.
+    """
+    reads = [[c for c in r.get("calls", []) if not c.get("side_effect")] for r in runs]
+    if not reads:
+        return []
+    by_data = set.intersection(*({call_key(c) for c in calls} for calls in reads))
+    by_request = set.intersection(*({request_key(c) for c in calls} for calls in reads))
+    every = [c for calls in reads for c in calls]
+    units = [
+        {
+            "key": key,
+            "requests": sorted({request_key(c) for c in every if call_key(c) == key}),
+            "responses": _answers(c for c in every if call_key(c) == key),
+        }
+        for key in sorted(by_data)
+    ]
+    covered = {q for u in units for q in u["requests"]}
+    units += [
+        {
+            "key": q,
+            "requests": [q],
+            "responses": _answers(c for c in every if request_key(c) == q),
+        }
+        for q in sorted(by_request - covered)
+    ]
+    return units
 
 
 def _arg_value(value: Any) -> Any:
@@ -415,7 +465,7 @@ def stable_reference(
             if bool(c.get("side_effect")) == side_effect
         ]
 
-    read_sets = [set(keys(r, False)) for r in counted]
+    units = read_units(counted)
     effect_seqs = [keys(r, True) for r in counted]
     ordered = len({tuple(s) for s in effect_seqs}) == 1
     effect_sets = [set(s) for s in effect_seqs]
@@ -426,12 +476,16 @@ def stable_reference(
         "coverage": coverage,
         "fields": stable,
         "unstable_fields": unstable,
-        "reads": sorted(set.intersection(*read_sets)) if read_sets else [],
+        "reads": [u["key"] for u in units],
+        "read_units": units,
         "side_effects": effect_seqs[0] if counted and ordered else None,
         "side_effects_unordered": sorted(set.intersection(*effect_sets)) if effect_sets else [],
         "write_fields": effect_fields,
         "write_fields_dropped": {t: a["dropped"] for t, a in written.items() if a["dropped"]},
         "seen_calls": sorted({call_key(c) for r in ok for c in r.get("calls", [])}),
+        "seen_requests": sorted(
+            {request_key(c) for r in ok for c in r.get("calls", []) if not c.get("side_effect")}
+        ),
     }
 
 
@@ -475,12 +529,44 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     run_outcome = "completed" if trace.get("completed") else "stopped"
     outcome = None if ref_outcome is None else float(ref_outcome == run_outcome)
 
-    pipe_reads = {call_key(c) for c in calls if not c.get("side_effect")}
-    ref_reads = set(reference["reads"])
+    # A read is scored on what the pipeline controls: the data it got, or
+    # failing that the request it sent. A matching request whose answer is
+    # not one the reference got is the server changing (a live index
+    # rebuilt), reported as drift and never charged to the pipeline.
+    pipe_calls = [c for c in calls if not c.get("side_effect")]
+    pipe_reads = {call_key(c) for c in pipe_calls}
+    pipe_requests = {request_key(c): c for c in pipe_calls}
+    units = reference.get("read_units") or [
+        {"key": k, "requests": [], "responses": []} for k in reference["reads"]
+    ]
     seen = set(reference["seen_calls"])
-    if ref_reads or pipe_reads:
-        recall = len(ref_reads & pipe_reads) / len(ref_reads) if ref_reads else 1.0
-        precision = len(pipe_reads & seen) / len(pipe_reads) if pipe_reads else 0.0
+    seen_requests = set(reference.get("seen_requests") or [])
+    missing: list[str] = []
+    drift: list[dict[str, Any]] = []
+    for unit in units:
+        if unit["key"] in pipe_reads:
+            continue
+        sent = next((pipe_requests[q] for q in unit["requests"] if q in pipe_requests), None)
+        if sent is None:
+            missing.append(unit["key"])
+        elif sent.get("response") is not None and sent["response"] not in unit["responses"]:
+            drift.append(
+                {
+                    "read": request_key(sent),
+                    "reference_responses": unit["responses"],
+                    "pipeline_response": sent["response"],
+                }
+            )
+    unexpected = sorted(
+        {
+            call_key(c)
+            for c in pipe_calls
+            if call_key(c) not in seen and request_key(c) not in seen_requests
+        }
+    )
+    if units or pipe_calls:
+        recall = (len(units) - len(missing)) / len(units) if units else 1.0
+        precision = (len(pipe_reads) - len(unexpected)) / len(pipe_reads) if pipe_reads else 0.0
         reads = round((recall + precision) / 2, 4)
     else:
         reads = None
@@ -514,8 +600,9 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
         **components,
         "fields_checked": len(fields),
         "fields_missing": sorted(p for p, ok in reproduced.items() if not ok),
-        "reads_missing": sorted(ref_reads - pipe_reads),
-        "reads_unexpected": sorted(pipe_reads - seen),
+        "reads_missing": sorted(missing),
+        "reads_unexpected": unexpected,
+        "response_drift": sorted(drift, key=lambda d: d["read"]),
         "side_effects_pipeline": pipe_effects,
     }
 

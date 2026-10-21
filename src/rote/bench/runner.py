@@ -531,10 +531,25 @@ def _write_lines(ref: dict[str, Any]) -> list[str]:
     return lines
 
 
-def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
-    """Per-case coverage lines for a ``pipeline_fidelity`` report."""
+def _drift_lines(case: dict[str, Any]) -> list[str]:
+    """Reads the pipeline asked for exactly as the reference did, answered differently.
+
+    Not scored: the request is the pipeline's, the answer is the server's. A
+    live server reindexing between the reference and the run is not
+    infidelity, but a reader should know the data moved.
+    """
     return [
-        _coverage_line(cid, c["reference"])
+        f"\n  drift {d['read']}: the reference got "
+        f"{', '.join(str(r) for r in d['reference_responses']) or 'no answer'}, "
+        f"this run got {d['pipeline_response']}"
+        for d in case.get("response_drift") or []
+    ]
+
+
+def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
+    """Per-case coverage lines for a ``pipeline_fidelity`` report, with any drift."""
+    return [
+        _coverage_line(cid, c["reference"]) + "".join(_drift_lines(c))
         for cid, c in (fidelity.get("cases") or {}).items()
         if "reference" in c
     ]
