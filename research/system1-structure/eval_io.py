@@ -26,6 +26,7 @@ import yaml
 from rote.compiler.system1 import structure
 from rote.compiler.system1.parse import parse_skill
 from rote.compiler.system1.tiebreak import Lane
+from rote.compiler.tool_grounding import ToolSchema
 from rote.eval.empirical import judge_usage_cost_usd
 from rote.eval.pricing import fetch_catalog
 
@@ -38,14 +39,9 @@ CONTEXT = (
 )
 
 
-class _Schema:
-    """A declared tool with no known parameters (the eval set names tools only)."""
-
-    input_schema: dict[str, Any] = {}
-
-
 def one(case: dict[str, Any], lane: Lane) -> dict[str, Any]:
-    tools = {tuple(t): _Schema() for t in case.get("tools") or []}
+    # Declared tools with no known parameters: the eval set names tools only.
+    tools = {(s, t): ToolSchema(s, t, {}, "eval set", True) for s, t in case.get("tools") or []}
     with tempfile.TemporaryDirectory() as t:
         skill_dir = Path(t) / "skill"
         skill_dir.mkdir()
