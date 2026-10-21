@@ -238,17 +238,30 @@ def call_key(call: dict[str, Any]) -> str:
     """
     if not call.get("side_effect") and call.get("response") is not None:
         return f"{call['server']}.{call['tool']}->response[{call['response']}]"
-    return request_key(call)
+    args = {k: normalize(v) if _is_scalar(v) else v for k, v in call["arguments"].items()}
+    return f"{call['server']}.{call['tool']}({json.dumps(args, sort_keys=True)})"
 
 
 def request_key(call: dict[str, Any]) -> str:
-    """What a call asked for: server, tool and normalized arguments.
+    """What a call asked for, exactly: server, tool and the arguments as sent.
 
-    The part of a read the pipeline controls. Its answer is the server's:
-    a live server that reindexed answers the same request differently.
+    The part of a read the pipeline controls. Only surrounding whitespace on
+    a string is ignored, never :func:`normalize`'s case folding or number
+    parsing: a server that answered ``"INV-0042"`` and ``"inv-0042"``
+    differently may be telling them apart, so only an identical request can
+    claim the answer changed underneath it.
     """
-    args = {k: normalize(v) if _is_scalar(v) else v for k, v in call["arguments"].items()}
+    args = {k: v.strip() if isinstance(v, str) else v for k, v in call["arguments"].items()}
     return f"{call['server']}.{call['tool']}({json.dumps(args, sort_keys=True)})"
+
+
+def _live(call: dict[str, Any]) -> bool:
+    """A call a live server answered. Its log says so; a fixture's never does.
+
+    A fixture answers a request from a fixed table, so its answer cannot
+    drift: a different one is a different request or a refused one.
+    """
+    return call.get("live") is True
 
 
 def _answers(calls: Iterable[dict[str, Any]]) -> list[Any]:
@@ -535,7 +548,6 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     # rebuilt), reported as drift and never charged to the pipeline.
     pipe_calls = [c for c in calls if not c.get("side_effect")]
     pipe_reads = {call_key(c) for c in pipe_calls}
-    pipe_requests = {request_key(c): c for c in pipe_calls}
     units = reference.get("read_units") or [
         {"key": k, "requests": [], "responses": []} for k in reference["reads"]
     ]
@@ -546,22 +558,27 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     for unit in units:
         if unit["key"] in pipe_reads:
             continue
-        sent = next((pipe_requests[q] for q in unit["requests"] if q in pipe_requests), None)
-        if sent is None:
+        sent = [c for c in pipe_calls if request_key(c) in unit["requests"]]
+        if any(c.get("response") is not None and c["response"] in unit["responses"] for c in sent):
+            continue  # the exact request, answered with data the reference got
+        # The exact request, answered live with data the reference never got:
+        # the server changed. A failed read (no answer) is still a lost read.
+        moved = next((c for c in sent if _live(c) and c.get("response") is not None), None)
+        if moved is None:
             missing.append(unit["key"])
-        elif sent.get("response") is not None and sent["response"] not in unit["responses"]:
-            drift.append(
-                {
-                    "read": request_key(sent),
-                    "reference_responses": unit["responses"],
-                    "pipeline_response": sent["response"],
-                }
-            )
+            continue
+        drift.append(
+            {
+                "read": request_key(moved),
+                "reference_responses": unit["responses"],
+                "pipeline_response": moved["response"],
+            }
+        )
     unexpected = sorted(
         {
             call_key(c)
             for c in pipe_calls
-            if call_key(c) not in seen and request_key(c) not in seen_requests
+            if call_key(c) not in seen and not (_live(c) and request_key(c) in seen_requests)
         }
     )
     if units or pipe_calls:

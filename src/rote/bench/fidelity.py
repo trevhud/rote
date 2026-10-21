@@ -384,6 +384,9 @@ def _portable_call(call: dict[str, Any]) -> dict[str, Any]:
         "matched",
         "response",
         "invalid_arguments",
+        # Set by a recording proxy in front of a live server (never by a
+        # fixture): only a live answer can drift (fidelity_score._live).
+        "live",
     )
     return {k: call.get(k) for k in keys}
 

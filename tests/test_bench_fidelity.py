@@ -23,6 +23,7 @@ from rote.bench.fidelity_score import (
     index_trace,
     layout_path,
     normalize,
+    request_key,
     score_case,
     stable_reference,
 )
@@ -824,7 +825,13 @@ def test_a_refused_write_earns_no_output(refusal: dict[str, Any]) -> None:
 
 
 def _answered(tool: str, response: Any, **arguments: Any) -> dict[str, Any]:
+    """A read a fixture answered with ``response`` (its index, or None if refused)."""
     return {**_call(tool, **arguments), "response": response}
+
+
+def _live(tool: str, response: Any, **arguments: Any) -> dict[str, Any]:
+    """A read a live server answered, as a recording proxy logs it."""
+    return {**_answered(tool, response, **arguments), "live": True}
 
 
 def _ran(*calls: dict[str, Any]) -> dict[str, Any]:
@@ -837,15 +844,15 @@ def test_a_live_answer_that_changed_is_drift_not_a_lost_read() -> None:
     read faithfully; the change is reported as drift, not scored."""
     ref = stable_reference(
         [
-            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
-            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_live("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_live("search", "aaa", query="Workers KV limits")]),
         ]
     )
-    s = score_case(ref, _ran(_answered("search", "bbb", query="workers kv limits")))
+    s = score_case(ref, _ran(_live("search", "bbb", query="Workers KV limits ")))
     assert s["reads"] == 1.0
     assert s["reads_missing"] == []
     assert s["reads_unexpected"] == []
-    request = call_key(_call("search", query="Workers KV limits"))
+    request = request_key(_call("search", query="Workers KV limits"))
     assert s["response_drift"] == [
         {"read": request, "reference_responses": ["aaa"], "pipeline_response": "bbb"}
     ]
@@ -856,14 +863,14 @@ def test_a_different_request_is_still_a_lost_read_and_no_drift() -> None:
     request. Asking for something else is infidelity whatever comes back."""
     ref = stable_reference(
         [
-            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
-            _run({"x": 1}, [_answered("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_live("search", "aaa", query="Workers KV limits")]),
+            _run({"x": 1}, [_live("search", "aaa", query="Workers KV limits")]),
         ]
     )
-    s = score_case(ref, _ran(_answered("search", "bbb", query="KV")))
+    s = score_case(ref, _ran(_live("search", "bbb", query="KV")))
     assert s["reads"] == 0.0
     assert s["response_drift"] == []
-    same = score_case(ref, _ran(_answered("search", "aaa", query="Workers KV limits")))
+    same = score_case(ref, _ran(_live("search", "aaa", query="Workers KV limits")))
     assert (same["reads"], same["response_drift"]) == (1.0, [])
 
 
@@ -872,18 +879,18 @@ def test_a_request_every_reference_run_made_is_a_read_even_when_its_answer_moved
     answers across its runs. The agent still made that request every time."""
     ref = stable_reference(
         [
-            _run({"x": 1}, [_answered("search", "aaa", query="D1 limits")]),
-            _run({"x": 1}, [_answered("search", "ccc", query="D1 limits")]),
+            _run({"x": 1}, [_live("search", "aaa", query="D1 limits")]),
+            _run({"x": 1}, [_live("search", "ccc", query="D1 limits")]),
         ]
     )
-    s = score_case(ref, _ran(_answered("search", "ccc", query="D1 limits")))
+    s = score_case(ref, _ran(_live("search", "ccc", query="D1 limits")))
     assert s["reads"] == 1.0
     assert s["response_drift"] == []
-    drifted = score_case(ref, _ran(_answered("search", "ddd", query="D1 limits")))
+    drifted = score_case(ref, _ran(_live("search", "ddd", query="D1 limits")))
     assert drifted["reads"] == 1.0
     assert drifted["response_drift"] == [
         {
-            "read": call_key(_call("search", query="D1 limits")),
+            "read": request_key(_call("search", query="D1 limits")),
             "reference_responses": ["aaa", "ccc"],
             "pipeline_response": "ddd",
         }
@@ -893,7 +900,7 @@ def test_a_request_every_reference_run_made_is_a_read_even_when_its_answer_moved
 def test_the_bench_prints_each_drifted_read_with_both_answers() -> None:
     from rote.bench.runner import coverage_lines
 
-    request = call_key(_call("search", query="D1 limits"))
+    request = request_key(_call("search", query="D1 limits"))
     coverage = {"covered": 1, "fields": 1, "stable_leaves": 1, "leaves": 1}
     drift = {"read": request, "reference_responses": ["aaa"], "pipeline_response": "bbb"}
     lines = coverage_lines(
@@ -902,3 +909,53 @@ def test_the_bench_prints_each_drifted_read_with_both_answers() -> None:
     assert any(
         f"drift {request}: the reference got aaa, this run got bbb" in line for line in lines
     ), lines
+
+
+def _kv_reference() -> dict[str, Any]:
+    return stable_reference(
+        [
+            _run({"x": 1}, [_live("lookup", "aaa", invoice="INV-0042")]),
+            _run({"x": 1}, [_live("lookup", "aaa", invoice="INV-0042")]),
+        ]
+    )
+
+
+def test_a_failed_read_of_the_right_request_is_a_lost_read() -> None:
+    """Sending the reference's exact request and getting no answer (refused,
+    errored) is not drift: the pipeline read nothing."""
+    s = score_case(_kv_reference(), _ran(_live("lookup", None, invoice="INV-0042")))
+    assert s["reads_missing"] == [call_key(_live("lookup", "aaa", invoice="INV-0042"))]
+    assert s["response_drift"] == []
+    assert s["reads"] < 1.0
+
+
+def test_drift_needs_the_exact_request_not_the_normalized_one() -> None:
+    """normalize() folds case and parses numbers, so "inv-0042" and "INV-0042"
+    are one value to it. A server can tell them apart, so a different answer
+    to the folded spelling is a lost read, not drift."""
+    for spelling in ("inv-0042", "INV-42"):
+        s = score_case(_kv_reference(), _ran(_live("lookup", "bbb", invoice=spelling)))
+        assert s["response_drift"] == [], spelling
+        assert s["reads_missing"] == [call_key(_live("lookup", "aaa", invoice="INV-0042"))]
+    numeric = stable_reference(
+        [
+            _run({"x": 1}, [_live("page", "aaa", n="0042")]),
+            _run({"x": 1}, [_live("page", "aaa", n="0042")]),
+        ]
+    )
+    s = score_case(numeric, _ran(_live("page", "bbb", n=42)))
+    assert (s["response_drift"], s["reads_missing"] != []) == ([], True)
+
+
+def test_a_fixture_answer_cannot_drift() -> None:
+    """A fixture answers from a fixed table. The exact request with another
+    answer than the reference's is a different read, scored as lost."""
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [_answered("search", 0, query="dock")]),
+            _run({"x": 1}, [_answered("search", 0, query="dock")]),
+        ]
+    )
+    s = score_case(ref, _ran(_answered("search", 1, query="dock")))
+    assert s["response_drift"] == []
+    assert s["reads"] == 0.0
