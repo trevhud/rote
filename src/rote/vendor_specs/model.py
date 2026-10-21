@@ -1,6 +1,6 @@
 """One vendor API version, normalized from whatever machine-readable spec the vendor publishes.
 
-Every source format (Google Discovery today; OpenAPI and GraphQL SDL to
+Every source format (Google Discovery and OpenAPI today; GraphQL SDL to
 follow) converts into this model, and everything downstream (the request
 check, the HTTP fixtures, the live shape diff) reads only this model. It is
 also the unit a shared store keys and holds: one ``ApiSpec`` per
@@ -36,6 +36,19 @@ class ParamSpec(BaseModel):
     repeated: bool = False
     enum: tuple[str, ...] | None = None
     format: str | None = None
+    #: OpenAPI ``style: deepObject``: sent as ``name[key]=...`` (an object
+    #: member) or ``name[]=...`` (an array item), as Stripe's are.
+    deep_object: bool = False
+    #: A deepObject parameter whose schema also allows a plain value, so the
+    #: bare ``name=...`` is valid too (Stripe's ``created``: a timestamp, or
+    #: ``created[gte]=...``).
+    bare: bool = True
+    #: A deepObject parameter's object members, by key; ``None`` when the
+    #: object is open (any key) or the parameter takes no object.
+    members: dict[str, ParamSpec] | None = None
+    #: A deepObject parameter's array item (``name[]`` / ``name[0]``), or
+    #: ``None`` when it takes no array.
+    items: ParamSpec | None = None
 
 
 class Operation(BaseModel):
@@ -60,6 +73,9 @@ class Operation(BaseModel):
     upload_url_templates: tuple[str, ...] = ()
     params: dict[str, ParamSpec] = Field(default_factory=dict)
     request_schema: dict[str, Any] | None = None
+    #: The body media types the operation accepts (OpenAPI ``requestBody``
+    #: content), empty where the source does not say (Discovery: JSON).
+    request_media_types: tuple[str, ...] = ()
     response_schema: dict[str, Any] | None = None
     #: The response is always a file's bytes, not JSON (Drive's export).
     media_download: bool = False
@@ -109,6 +125,8 @@ class ApiSpec(BaseModel):
     revision: str
     source: Literal["google-discovery", "openapi", "graphql-sdl", "docs"]
     source_url: str
+    #: A GraphQL API's schema, as SDL (``source="graphql-sdl"``).
+    graphql_schema: str | None = None
     #: Every page a ``docs`` spec was written from (``source="docs"``).
     sources: list[str] = Field(default_factory=list)
     #: Parameters every operation accepts (Discovery's top-level
@@ -143,9 +161,27 @@ class ApiSpec(BaseModel):
 _SCHEME_HOST = re.compile(r"^[a-z]+://[^/]+")
 
 
+def split_query(url: str) -> tuple[str, str | None]:
+    """``url`` as (everything before the query string, the query string or ``None``).
+
+    The query starts at the first ``?`` outside a ``{...}`` placeholder:
+    the extractor writes a piece it cannot read as ``{?}``, which is not
+    a query string.
+    """
+    depth = 0
+    for i, ch in enumerate(url):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth = max(depth - 1, 0)
+        elif ch == "?" and depth == 0:
+            return url[:i], url[i + 1 :]
+    return url, None
+
+
 def path_segments(url: str) -> list[str]:
     """The path of ``url`` as segments, scheme, host, query and empty parts dropped."""
-    path = _SCHEME_HOST.sub("", url).split("?", 1)[0]
+    path = split_query(_SCHEME_HOST.sub("", url))[0]
     return [s for s in path.split("/") if s]
 
 
@@ -158,6 +194,7 @@ __all__ = [
     "FORMAT_VERSION",
     "AuthSpec",
     "path_segments",
+    "split_query",
     "ApiSpec",
     "Operation",
     "ParamSpec",

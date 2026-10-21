@@ -28,7 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rote.vendor_specs import google
+from rote.vendor_specs import google, graphql, openapi
 from rote.vendor_specs.google import UrlApi
 from rote.vendor_specs.model import ApiSpec
 
@@ -46,13 +46,54 @@ def default_root() -> Path:
 
 
 def http_get_json(url: str) -> Any:
-    """GET ``url`` and parse JSON. The one network call in this package."""
+    """GET ``url`` and parse it: JSON, or YAML (OpenAPI is often published as
+    YAML). The one network call in this package."""
     request = urllib.request.Request(url, headers={"User-Agent": "rote-vendor-specs"})
+    try:
+        with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
+            text = response.read().decode("utf-8")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise SpecUnavailable(f"could not fetch {url}: {e}") from e
+    return parse_document(text, url)
+
+
+def http_get_text(url: str) -> str:
+    """GET ``url`` as text (a GraphQL SDL file)."""
+    request = urllib.request.Request(url, headers={"User-Agent": "rote-vendor-specs"})
+    try:
+        with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
+            return str(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise SpecUnavailable(f"could not fetch {url}: {e}") from e
+
+
+def http_introspect(endpoint: str) -> Any:
+    """POST the introspection query to a GraphQL endpoint (a read)."""
+    body = json.dumps({"query": graphql.INTROSPECTION_QUERY}).encode()
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"User-Agent": "rote-vendor-specs", "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
         with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
             return json.loads(response.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError) as e:
-        raise SpecUnavailable(f"could not fetch {url}: {e}") from e
+        raise SpecUnavailable(f"could not introspect {endpoint}: {e}") from e
+
+
+def parse_document(text: str, url: str) -> Any:
+    """A spec document's text as data: JSON, else YAML."""
+    import yaml
+
+    try:
+        return json.loads(text)
+    except ValueError:
+        try:
+            return yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise SpecUnavailable(f"{url} is neither JSON nor YAML: {e}") from e
 
 
 class SpecStore:
@@ -63,10 +104,14 @@ class SpecStore:
         root: Path | None = None,
         fetch: Callable[[str], Any] | None = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        fetch_text: Callable[[str], str] | None = None,
+        introspect: Callable[[str], Any] | None = None,
     ) -> None:
         self.root = root or default_root()
         # Resolved at call time so a test's patch of http_get_json lands.
         self._fetch = fetch
+        self._fetch_text = fetch_text
+        self._introspect = introspect
         self.ttl_seconds = ttl_seconds
         self._memo: dict[str, ApiSpec | SpecUnavailable] = {}
 
@@ -110,6 +155,65 @@ class SpecStore:
         """
         listed = self.google_versions(named.api)
         return next((v for v in named.versions if v in listed), None)
+
+    def openapi(self, source: openapi.Source) -> ApiSpec:
+        """The vendor's OpenAPI document for ``source``, fetched and cached like Discovery's."""
+        key = f"{source.vendor}/{source.api}/{source.version}"
+        memo = self._memo.get(key)
+        if isinstance(memo, SpecUnavailable):
+            raise memo
+        if memo is not None:
+            return memo
+        try:
+            raw = self._read_fresh(self.root / f"{key}.json")
+            fresh = not isinstance(raw, dict) or raw.get("source_url") != source.url
+            doc = self._get(source.url) if fresh else raw["document"]
+            spec = openapi.from_openapi(doc, source)
+            if fresh:
+                # Only a document rote can read is cached: a malformed one
+                # is fetched again next time, not served for the TTL.
+                self._write(key, {"source_url": source.url, "document": doc})
+        except openapi.OpenApiError as e:
+            error = SpecUnavailable(str(e))
+            self._memo[key] = error
+            raise error from e
+        except SpecUnavailable as e:
+            self._memo[key] = e
+            raise
+        self._memo[key] = spec
+        return spec
+
+    def graphql(self, source: graphql.Source) -> ApiSpec:
+        """The vendor's GraphQL schema: its SDL file, or its endpoint introspected."""
+        key = f"{source.vendor}/{source.api}/{source.version}"
+        memo = self._memo.get(key)
+        if isinstance(memo, SpecUnavailable):
+            raise memo
+        if memo is not None:
+            return memo
+        where = source.sdl_url or source.endpoint
+        try:
+            raw = self._read_fresh(self.root / f"{key}.json")
+            fresh = not isinstance(raw, dict) or raw.get("source_url") != where
+            if not fresh:
+                doc: Any = raw["document"]
+            elif source.sdl_url:
+                doc = (self._fetch_text or http_get_text)(source.sdl_url)
+            else:
+                doc = (self._introspect or http_introspect)(source.endpoint)
+            spec = graphql.to_api_spec(graphql.sdl_from(doc), source)
+            if fresh:
+                # Only a schema that builds is cached.
+                self._write(key, {"source_url": where, "document": doc})
+        except SpecUnavailable as e:
+            self._memo[key] = e
+            raise
+        except Exception as e:  # noqa: BLE001 (graphql-core raises its own types for a bad schema)
+            error = SpecUnavailable(f"{where} is not a GraphQL schema rote can build: {e}")
+            self._memo[key] = error
+            raise error from e
+        self._memo[key] = spec
+        return spec
 
     def _fetch_google(self, api: str, version: str) -> ApiSpec | None:
         directory = self._directory()

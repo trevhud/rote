@@ -48,11 +48,16 @@ from typing import Any
 
 from rote.compiler import api_docs
 from rote.ir import NodeKind, Pipeline, load_pipeline, parse_input_ref
-from rote.vendor_specs import docs, google
-from rote.vendor_specs.check import best_operation, check_deliverable
+from rote.vendor_specs import docs, google, graphql, openapi
+from rote.vendor_specs.check import (
+    best_operation,
+    check_deliverable,
+    schema_branches,
+    spec_for_key,
+)
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
 from rote.vendor_specs.fixture_store import FixtureStore
-from rote.vendor_specs.model import ApiSpec, Operation, host_of, path_segments
+from rote.vendor_specs.model import ApiSpec, Operation, host_of, path_segments, split_query
 from rote.vendor_specs.psl import registrable_domain
 from rote.vendor_specs.store import SpecStore
 
@@ -94,7 +99,8 @@ class ResponseCheck:
     reads_missing: list[str] = field(default_factory=list)
     #: Field paths the live response had that the schema lacks, and wrong types.
     schema_drift: list[str] = field(default_factory=list)
-    #: Field paths the schema has that the live response did not return.
+    #: Docs specs only: field paths the spec claims that the live response
+    #: did not return.
     spec_only: list[str] = field(default_factory=list)
     #: Field paths the stored fixtures have that the live response did not.
     fixture_only: list[str] = field(default_factory=list)
@@ -164,6 +170,10 @@ class LiveRequest:
     method: str
     url: str
     headers: dict[str, str]
+    #: A GraphQL read's JSON body (``{"query": ..., "variables": ...}``): the
+    #: only request sent as a POST, and only a document whose one operation
+    #: is a query.
+    graphql: bytes | None = None
 
 
 class _Unbuildable(Exception):
@@ -216,7 +226,9 @@ def live_check(
     unsafe = [
         f"{c.path}:{c.line} ({c.operation or c.note or 'unresolved'})"
         for c in checks
-        if c.status != "ok" or c.operation is None
+        # partial: every part the spec describes passed; what it does not
+        # describe (a field under an open object) stays unchecked.
+        if c.status not in ("ok", "partial") or c.operation is None
     ]
     if unsafe:
         raise LiveCheckRefused(
@@ -224,15 +236,22 @@ def live_check(
             f"check before a live call: {'; '.join(unsafe)}"
         )
     written = [s for _, s in docs.load(compiled_dir)]
-    ops = {
-        op.id: (spec, op) for spec in _specs_of(checks, specs, written) for op in spec.operations
+    known = _specs_of(checks, specs, written)
+    ops = {op.id: (spec, op) for spec in known for op in spec.operations}
+    # A GraphQL request is the endpoint's one operation, whatever its document.
+    ops |= {
+        c.operation: (spec, spec.operations[0])
+        for c in checks
+        if c.operation and c.operation.startswith("graphql ")
+        for spec in known
+        if spec.key == (c.spec or "").split(" ")[0]
     }
     writes = [
         c
         for c in checks
         if c.operation
         and (
-            ops[c.operation][1].method not in _READ_METHODS
+            c.writes is not False
             or (ops[c.operation][0].source == "docs" and _WRITE_NAMES.search(c.operation))
         )
     ]
@@ -284,7 +303,8 @@ def live_check(
     if planned and not confirm([p for p, *_ in planned]):
         raise LiveCheckRefused("the live calls were not confirmed; nothing was sent")
     for plan, request, spec, op, code_reads in planned:
-        assert request.method in _READ_METHODS  # the one invariant everything rests on
+        # The one invariant everything rests on: a read, or a GraphQL query.
+        assert request.method in _READ_METHODS or _is_graphql_query(request)
         try:
             status, content_type, body = send(request)
         except Exception as e:  # noqa: BLE001 (any failure is reported, never its text)
@@ -361,6 +381,8 @@ def _build(
         if not _from_discovery(spec):
             raise _Unbuildable("a Google client call whose spec is not Google's own Discovery")
         return _build_google(site, spec, op, kwargs, env), "Google OAuth token"
+    if spec.source == "graphql-sdl":
+        return _build_graphql(site, spec, kwargs, env)
     if site.auth_kwarg:
         raise _Unbuildable("the call authenticates with an auth= object the check cannot rebuild")
     if site.headers is None:
@@ -429,6 +451,32 @@ def _check_credentials(
             )
         used |= names
     return next(iter(used), None)
+
+
+def _build_graphql(
+    site: CallSite, spec: ApiSpec, kwargs: dict[str, Any], env: dict[str, str]
+) -> tuple[LiveRequest, str | None]:
+    """A GraphQL read: POST to the declared endpoint, a single query operation
+    only, carrying no credential the spec does not declare."""
+    query = site.graphql_query
+    if query is None or graphql.operation_type(query) != "query":
+        raise _Unbuildable("the GraphQL document is not exactly one query operation")
+    if not site.graphql_variables_complete:
+        raise _Unbuildable("the GraphQL variables are spread from a dict the check cannot see")
+    if site.headers is None or site.auth_kwarg:
+        raise _Unbuildable("the call passes headers or auth the check cannot rebuild")
+    variables = {
+        name: _resolve(value, kwargs, env) for name, value in (site.graphql_variables or {}).items()
+    }
+    endpoint = spec.operations[0].url_template
+    used = _check_credentials(endpoint, dict(site.graphql_variables or {}), site.headers, spec)
+    headers = {name: str(_resolve(value, kwargs, env)) for name, value in site.headers.items()}
+    _refuse_method_override(headers)
+    body = json.dumps({"query": query, "variables": variables}).encode()
+    request = LiveRequest(
+        "POST", endpoint, {**headers, "Content-Type": "application/json"}, graphql=body
+    )
+    return request, used
 
 
 def _build_google(
@@ -509,7 +557,7 @@ def _resolve(value: object, kwargs: dict[str, Any], env: dict[str, str]) -> Any:
         whole = _TEMPLATE_PART.fullmatch(value.template)
         if whole is not None and not whole.group(1):
             # Exactly one reference: the value itself, its type kept (an
-            # integer parameter from the input stays an integer).
+            # integer parameter or a GraphQL Int variable stays an integer).
             found = _lookup(kwargs, whole.group(2))
             if found is None or not _scalar_or_list(found):
                 raise _Unbuildable("a value is computed at run time")
@@ -574,15 +622,33 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a 3xx is returned as the response, never followed
 
 
+def _is_graphql_query(request: LiveRequest) -> bool:
+    """A POST carrying a GraphQL document whose one operation is a query."""
+    if request.method != "POST" or request.graphql is None:
+        return False
+    try:
+        document = json.loads(request.graphql)
+    except json.JSONDecodeError:
+        return False
+    query = document.get("query") if isinstance(document, dict) else None
+    return isinstance(query, str) and graphql.operation_type(query) == "query"
+
+
 def _send(request: LiveRequest) -> tuple[int, str, bytes]:
-    """The one HTTP client the live check uses: GET or HEAD, no redirects, bounded."""
-    if request.method not in _READ_METHODS:
+    """The one HTTP client the live check uses: GET or HEAD, or a GraphQL query; no
+    redirects, bounded."""
+    if request.method not in _READ_METHODS and not _is_graphql_query(request):
         raise LiveCheckRefused(f"refusing to send {request.method}")
     opener = urllib.request.build_opener(_NoRedirect)
     # urllib's own "Python-urllib/3.x" is refused by Cloudflare-fronted APIs
     # (AniList: 403, error 1010). The code's own User-Agent, if any, wins.
     headers = {"User-Agent": "rote-live-check", **request.headers}
-    req = urllib.request.Request(request.url, method=request.method, headers=headers)
+    req = urllib.request.Request(
+        request.url,
+        method=request.method,
+        headers=headers,
+        data=request.graphql if request.method == "POST" else None,
+    )
     try:
         with opener.open(req, timeout=LIVE_TIMEOUT_SECONDS) as response:  # noqa: S310
             return (
@@ -604,13 +670,7 @@ def _specs_of(checks: list[Any], specs: SpecStore, written: list[ApiSpec]) -> li
     out: dict[str, ApiSpec] = {}
     for c in checks:
         key = (c.spec or "").split(" ")[0]
-        if not key:
-            continue
-        vendor, api, version = key.split("/")
-        found = next((s for s in written if s.key == key), None)
-        if found is None and vendor == "google":
-            found = specs.google(api, version)
-        if found is not None:
+        if key and (found := spec_for_key(key, specs, written)) is not None:
             out[key] = found
     return list(out.values())
 
@@ -620,7 +680,13 @@ def _spec_for_url(url: str, specs: SpecStore, written: list[ApiSpec]) -> ApiSpec
     if named is not None:
         version = specs.resolve_google_url(named)
         return specs.google(named.api, version) if version is not None else None
+    endpoint = graphql.REGISTRY.get(split_query(url)[0].rstrip("/"))
+    if endpoint is not None:
+        return specs.graphql(endpoint)
     host = host_of(url)
+    published = openapi.REGISTRY.get(host or "")
+    if published is not None:
+        return specs.openapi(published)
     return next(
         (s for s in written if any(host_of(o.url_template) == host for o in s.operations)), None
     )
@@ -662,6 +728,12 @@ def _schema_paths(
     return out
 
 
+#: Top-level keys that hold a failure (GraphQL's ``errors``, Slack's
+#: ``error``): a successful live response leaves them out, and code that
+#: checks them is error handling, not a read that would break.
+_ERROR_ENVELOPE = frozenset({"error", "errors"})
+
+
 def _compare(
     node_id: str,
     spec: ApiSpec,
@@ -690,12 +762,20 @@ def _compare(
         return check
     check.schema_drift = _drift(spec, op.response_schema, body)
     live = _paths(spec, op.response_schema, body)
-    check.reads_missing = sorted(p for p in (reads or {}).get(op.id, set()) if p not in live)
+    check.reads_missing = sorted(
+        p
+        for p in (reads or {}).get(op.id, set())
+        if p not in live and p.split(".", 1)[0].split("[", 1)[0] not in _ERROR_ENVELOPE
+    )
     if spec.source == "docs":
-        # A docs spec lists what the code needs, from an example: only a field
-        # it claims and the live API lacks is a finding.
+        # A docs spec is a claim written from an example: extra live fields
+        # are expected, and a field it claims that the live API lacks is the
+        # finding. A vendor's own spec is the reverse: its optional fields are
+        # routinely absent, and a live field outside it is drift.
         check.schema_drift = [d for d in check.schema_drift if "returned live" not in d]
-    check.spec_only = sorted(p for p in _schema_paths(spec, op.response_schema) if p not in live)
+        check.spec_only = sorted(
+            p for p in _schema_paths(spec, op.response_schema) if p not in live
+        )
     stored: set[str] = set()
     for _, name in fixtures.list(spec.key):
         for response in fixtures.load(spec.key, name).operations.get(op.id, []):
@@ -726,7 +806,15 @@ def _drift(spec: ApiSpec, schema: dict[str, Any] | None, value: Any, at: str = "
     node = spec.resolve(schema)
     if node is None:
         return []
+    if any(k in node for k in ("anyOf", "oneOf", "allOf")):
+        # Drift from the branch the value fits best: none if one fits.
+        branches, open_ = schema_branches(spec, node)
+        if open_ or not branches:
+            return []
+        return min((_drift(spec, b, value, at) for b in branches), key=len)
     kind = node.get("type")
+    if value is None and (node.get("nullable") or (isinstance(kind, list) and "null" in kind)):
+        return []
     if isinstance(kind, str) and kind in _TYPES and not isinstance(value, _TYPES[kind]):
         int64 = (
             kind == "string"

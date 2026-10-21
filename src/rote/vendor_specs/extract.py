@@ -79,6 +79,18 @@ class CallSite:
     #: Whether every parameter the call sends is known (no ``**kwargs``).
     params_complete: bool = True
     body_keys: tuple[str, ...] = ()
+    #: How an ``http`` request sends its body: ``json=`` is ``json``, a
+    #: ``data=`` dict is ``form``, ``files=`` makes it ``multipart``;
+    #: ``None`` when it sends none rote can read.
+    body_media: Literal["json", "form", "multipart"] | None = None
+    #: A GraphQL request (``json={"query": ..., "variables": {...}}``): the
+    #: document, when it is a literal or a constant bound to one.
+    graphql_query: str | None = None
+    graphql_variables: dict[str, object] | None = None
+    graphql_variables_complete: bool = True
+    #: The request's ``operationName``: ``None`` when it sends none, else a
+    #: literal or :data:`UNKNOWN`.
+    graphql_operation_name: object = None
     #: Response field paths the code reads: ``("threads", "[]", "id")``.
     response_reads: list[tuple[tuple[str, ...], int]] = field(default_factory=list)
     #: Request headers (``http``): name -> literal or :class:`Expr`; ``None``
@@ -103,14 +115,31 @@ def extract(source: str) -> list[CallSite]:
     factories = _build_factories(tree, module_names)
     dict_helpers = _dict_helpers(tree, module_consts)
     module_literals = _literal_consts(tree.body)
+    module_strings = _literal_strings(tree)
     for scope in [tree, *[n for n in ast.walk(tree) if isinstance(n, _FUNCS)]]:
         consts = module_consts if scope is tree else _string_consts(scope.body, module_consts)
+        if scope is tree:
+            strings = module_strings
+        else:
+            # A name the function binds is its own, wherever it binds it.
+            local = _binding_counts(scope)
+            strings = {
+                **{k: v for k, v in module_strings.items() if k not in local},
+                **_literal_strings(scope),
+            }
         name = scope.name if isinstance(scope, _FUNCS) else None
         literal_consts = (
             module_literals if scope is tree else _literal_consts(scope.body, module_literals)
         )
         sites += _Scope(
-            scope, name, consts, module_names, factories, dict_helpers, literal_consts
+            scope,
+            name,
+            consts,
+            module_names,
+            factories,
+            dict_helpers,
+            literal_consts,
+            strings,
         ).sites()
     sites.sort(key=lambda s: s.line)
     return sites
@@ -306,6 +335,60 @@ def _value(
     return Expr(template) if template is not None else UNKNOWN
 
 
+def _literal_strings(scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+    """Names bound to a plain string literal (no formatting) in ``scope``,
+    and bound nowhere else in it.
+
+    A name bound twice, or bound under an ``if``, is not one document: the
+    request could send either (a mutation where a query was read), so it
+    is not resolved at all.
+    """
+    counts = _binding_counts(scope)
+    out: dict[str, str] = {}
+    for stmt in scope.body:
+        target = value = None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            target, value = stmt.target, stmt.value
+        if (
+            isinstance(target, ast.Name)
+            and counts.get(target.id) == 1
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            out[target.id] = value.value
+    return out
+
+
+def _binding_counts(scope: ast.AST) -> dict[str, int]:
+    """How many times each name is bound in ``scope``, nested blocks included
+    and nested functions not (``global`` in one counts as a binding)."""
+    counts: dict[str, int] = {}
+
+    def bound(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
+    for node in _Scope._own_nodes(scope):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            bound(node.id)
+        elif isinstance(node, ast.alias):
+            bound((node.asname or node.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound(node.name)
+    if isinstance(scope, _FUNCS):
+        a = scope.args
+        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg]:
+            if arg is not None:
+                bound(arg.arg)
+    if isinstance(scope, ast.Module):
+        for fn in ast.walk(scope):
+            if isinstance(fn, ast.Global):
+                for name in fn.names:
+                    bound(name)
+    return counts
+
+
 def _string_consts(body: list[ast.stmt], base: dict[str, str] | None = None) -> dict[str, str]:
     """Names bound to a static string in ``body``, on top of ``base``.
 
@@ -390,6 +473,7 @@ class _Scope:
         factories: dict[str, tuple[int, int]],
         dict_helpers: dict[str, tuple[ast.Dict, dict[str, str]]] | None = None,
         literal_consts: dict[str, object] | None = None,
+        literal_strings: dict[str, str] | None = None,
     ) -> None:
         self.dict_helpers = dict_helpers or {}
         self.literal_consts = literal_consts or {}
@@ -402,6 +486,16 @@ class _Scope:
         self.clients = self._bound(self._is_client_factory)
         self.services = self._services()
         self.dicts = self._dict_vars()
+        once = {name for name, n in _binding_counts(scope).items() if n == 1}
+        # Only a dict bound once: rebound, the request could send either.
+        self.dict_nodes = {
+            t.id: n.value
+            for n in self.nodes
+            if isinstance(n, ast.Assign) and isinstance(n.value, ast.Dict)
+            for t in n.targets
+            if isinstance(t, ast.Name) and t.id in once
+        }
+        self.literal_strings = literal_strings or {}
 
     @staticmethod
     def _own_nodes(scope: ast.AST) -> list[ast.AST]:
@@ -631,6 +725,22 @@ class _Scope:
         params, complete = self._kw_dict(kwargs.get("params"))
         body, _ = self._kw_dict(kwargs.get("json"))
         headers, headers_known = self._kw_dict(kwargs.get("headers"))
+        media: Literal["json", "form", "multipart"] | None = (
+            "json" if kwargs.get("json") is not None else None
+        )
+        if media is None:
+            # data= as a dict is form-encoded; a string or bytes could be
+            # anything already encoded, so it says nothing about the media.
+            form, _ = self._kw_dict(kwargs.get("data"))
+            files, _ = self._kw_dict(kwargs.get("files"))
+            if "files" in kwargs:
+                media, body = "multipart", {**form, **files}
+            elif kwargs.get("data") is not None and (
+                isinstance(kwargs["data"], ast.Dict)
+                or (isinstance(kwargs["data"], ast.Name) and kwargs["data"].id in self.dicts)
+            ):
+                media, body = "form", form
+        query, variables, variables_complete, operation_name = self._graphql(kwargs.get("json"))
         return CallSite(
             line=call.lineno,
             function=self.name,
@@ -642,7 +752,50 @@ class _Scope:
             body_keys=tuple(body),
             headers=headers if headers_known else None,
             auth_kwarg="auth" in kwargs,
+            body_media=media,
+            graphql_query=query,
+            graphql_variables=variables,
+            graphql_variables_complete=variables_complete,
+            graphql_operation_name=operation_name,
         )
+
+    def _graphql(
+        self, body: ast.expr | None
+    ) -> tuple[str | None, dict[str, object] | None, bool, object]:
+        """``(document, variables, complete, operationName)`` of a GraphQL JSON
+        body, if it is one.
+
+        Only a literal document (or a name bound to one) counts: an f-string
+        would put ``{name}`` holes into GraphQL's own braces.
+        """
+        if isinstance(body, ast.Name):
+            body = self.dict_nodes.get(body.id)
+        if not isinstance(body, ast.Dict):
+            return None, None, True, None
+        items = {
+            k.value: v
+            for k, v in zip(body.keys, body.values, strict=True)
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
+        query_node = items.get("query")
+        if query_node is None:
+            return None, None, True, None
+        query = self._literal_string(query_node)
+        variables, complete = self._kw_dict(items.get("variables"))
+        name_node = items.get("operationName")
+        operation_name = (
+            None if name_node is None else (self._literal_string(name_node) or _literal(name_node))
+        )
+        if operation_name is not None and not isinstance(operation_name, str):
+            operation_name = UNKNOWN
+        return query, (variables if "variables" in items else {}), complete, operation_name
+
+    def _literal_string(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return self.literal_strings.get(node.id)
+        return None
 
     def _google(self, call: ast.Call) -> CallSite | None:
         """``svc.a().b().method(**params)``: the chain ends on a known service name."""

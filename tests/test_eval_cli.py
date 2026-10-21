@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -120,7 +121,6 @@ def test_eval_run_mode_appends_measured_section(
 
     monkeypatch.setattr("rote.eval.empirical.run_skill_trial", fake_skill_trial)
     monkeypatch.setattr("rote.eval.empirical.run_pipeline_trial", fake_pipeline_trial)
-    monkeypatch.setattr("rote.eval.empirical.DEFAULT_CORPUS_PATH", tmp_path / "corpus.jsonl")
 
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
@@ -147,7 +147,8 @@ def test_eval_run_mode_appends_measured_section(
     out = capsys.readouterr().out
     assert "## Measured (2 trials per side)" in out
     assert "list-price notional" in out
-    corpus = (tmp_path / "corpus.jsonl").read_text(encoding="utf-8").splitlines()
+    # conftest points ROTE_EVAL_CORPUS_PATH into tmp_path.
+    corpus = Path(os.environ["ROTE_EVAL_CORPUS_PATH"]).read_text(encoding="utf-8").splitlines()
     assert len(corpus) == 1
 
 

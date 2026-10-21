@@ -50,8 +50,8 @@ def test_fresh_emission_reproduces_the_committed_snapshot(
     committed = _files(EXPECTED / "runtimes" / runtime)
 
     regenerate = (
-        f"rote emit examples/bdr-outreach/expected/pipeline.yaml --runtime {runtime} "
-        f"--out examples/bdr-outreach/expected/runtimes/{runtime}"
+        "scripts/isolated-rote emit examples/bdr-outreach/expected/pipeline.yaml "
+        f"--runtime {runtime} --out examples/bdr-outreach/expected/runtimes/{runtime}"
     )
     assert sorted(emitted) == sorted(committed), f"file set differs; regenerate: {regenerate}"
     stale = sorted(rel for rel in emitted if emitted[rel] != committed[rel])
