@@ -48,8 +48,13 @@ from typing import Any
 
 from rote.compiler import api_docs
 from rote.ir import NodeKind, Pipeline, load_pipeline, parse_input_ref
-from rote.vendor_specs import docs, google
-from rote.vendor_specs.check import best_operation, check_deliverable
+from rote.vendor_specs import docs, google, openapi
+from rote.vendor_specs.check import (
+    best_operation,
+    check_deliverable,
+    schema_branches,
+    spec_for_key,
+)
 from rote.vendor_specs.extract import UNKNOWN, CallSite, Expr, extract
 from rote.vendor_specs.fixture_store import FixtureStore
 from rote.vendor_specs.model import ApiSpec, Operation, host_of, path_segments
@@ -94,7 +99,8 @@ class ResponseCheck:
     reads_missing: list[str] = field(default_factory=list)
     #: Field paths the live response had that the schema lacks, and wrong types.
     schema_drift: list[str] = field(default_factory=list)
-    #: Field paths the schema has that the live response did not return.
+    #: Docs specs only: field paths the spec claims that the live response
+    #: did not return.
     spec_only: list[str] = field(default_factory=list)
     #: Field paths the stored fixtures have that the live response did not.
     fixture_only: list[str] = field(default_factory=list)
@@ -216,7 +222,9 @@ def live_check(
     unsafe = [
         f"{c.path}:{c.line} ({c.operation or c.note or 'unresolved'})"
         for c in checks
-        if c.status != "ok" or c.operation is None
+        # partial: every part the spec describes passed; what it does not
+        # describe (a field under an open object) stays unchecked.
+        if c.status not in ("ok", "partial") or c.operation is None
     ]
     if unsafe:
         raise LiveCheckRefused(
@@ -604,13 +612,7 @@ def _specs_of(checks: list[Any], specs: SpecStore, written: list[ApiSpec]) -> li
     out: dict[str, ApiSpec] = {}
     for c in checks:
         key = (c.spec or "").split(" ")[0]
-        if not key:
-            continue
-        vendor, api, version = key.split("/")
-        found = next((s for s in written if s.key == key), None)
-        if found is None and vendor == "google":
-            found = specs.google(api, version)
-        if found is not None:
+        if key and (found := spec_for_key(key, specs, written)) is not None:
             out[key] = found
     return list(out.values())
 
@@ -621,6 +623,9 @@ def _spec_for_url(url: str, specs: SpecStore, written: list[ApiSpec]) -> ApiSpec
         version = specs.resolve_google_url(named)
         return specs.google(named.api, version) if version is not None else None
     host = host_of(url)
+    published = openapi.REGISTRY.get(host or "")
+    if published is not None:
+        return specs.openapi(published)
     return next(
         (s for s in written if any(host_of(o.url_template) == host for o in s.operations)), None
     )
@@ -692,10 +697,14 @@ def _compare(
     live = _paths(spec, op.response_schema, body)
     check.reads_missing = sorted(p for p in (reads or {}).get(op.id, set()) if p not in live)
     if spec.source == "docs":
-        # A docs spec lists what the code needs, from an example: only a field
-        # it claims and the live API lacks is a finding.
+        # A docs spec is a claim written from an example: extra live fields
+        # are expected, and a field it claims that the live API lacks is the
+        # finding. A vendor's own spec is the reverse: its optional fields are
+        # routinely absent, and a live field outside it is drift.
         check.schema_drift = [d for d in check.schema_drift if "returned live" not in d]
-    check.spec_only = sorted(p for p in _schema_paths(spec, op.response_schema) if p not in live)
+        check.spec_only = sorted(
+            p for p in _schema_paths(spec, op.response_schema) if p not in live
+        )
     stored: set[str] = set()
     for _, name in fixtures.list(spec.key):
         for response in fixtures.load(spec.key, name).operations.get(op.id, []):
@@ -726,7 +735,15 @@ def _drift(spec: ApiSpec, schema: dict[str, Any] | None, value: Any, at: str = "
     node = spec.resolve(schema)
     if node is None:
         return []
+    if any(k in node for k in ("anyOf", "oneOf", "allOf")):
+        # Drift from the branch the value fits best: none if one fits.
+        branches, open_ = schema_branches(spec, node)
+        if open_ or not branches:
+            return []
+        return min((_drift(spec, b, value, at) for b in branches), key=len)
     kind = node.get("type")
+    if value is None and (node.get("nullable") or (isinstance(kind, list) and "null" in kind)):
+        return []
     if isinstance(kind, str) and kind in _TYPES and not isinstance(value, _TYPES[kind]):
         int64 = (
             kind == "string"

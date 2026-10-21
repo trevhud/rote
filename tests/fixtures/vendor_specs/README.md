@@ -19,3 +19,26 @@ value is the vendor's own:
 
 The directory fixture lists the APIs above plus `admin reports_v1`, so the
 Admin URL resolution has a version to choose against.
+
+Three vendors' own OpenAPI documents, fetched 2026-10-20 and trimmed to
+the paths below and the components they reach. Prose and vendor
+extensions rote never reads (`description`, `summary`, `example(s)`,
+`externalDocs`, `x-*` except GitHub's `x-multi-segment`) are dropped;
+every value kept is the vendor's own:
+
+- `clinicaltrials_v2.openapi.json`: ClinicalTrials.gov
+  (https://clinicaltrials.gov/api/oas/v2, info.version 2.0.5):
+  `/studies`, `/studies/{nctId}`, `/version`, `/stats/size`.
+- `stripe_v1.openapi.json`: Stripe (github.com/stripe/openapi,
+  `openapi/spec3.json`): customers (list, search, retrieve, delete),
+  charges, payment_intents, refunds, checkout sessions, subscriptions,
+  files (at files.stripe.com).
+- `github_rest.openapi.json`: GitHub REST (github/rest-api-description,
+  `api.github.com.json`): issues and comments, issue search, repos,
+  contents, git refs, commits, users, pulls, check runs, workflow
+  dispatch, release assets (at uploads.github.com), org attestations.
+
+`correct_calls/<vendor>/*.py` are requests written the way each vendor's
+docs say to make them, against those operations. Every one must report
+zero findings (`tests/test_openapi_specs.py`); the wrong-call tests are
+one-line edits of them.

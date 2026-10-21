@@ -198,13 +198,18 @@ this compile targets `--backend api`. Now you are expected to write
 
    **The vendor's spec is checked in code.** Where the vendor publishes a
    machine-readable spec (every Google API publishes a Discovery
-   document), rote reads each request your module makes (`httpx` /
-   `requests` calls, and Google's client library `build(...)` chains) and
-   checks it against the spec: method and path, every parameter's name,
-   type and enum, the required parameters, the request body's fields, and
-   every field your code reads off the response. A violation comes back
-   to you like a failing test. Keep requests readable without running
-   them: a literal URL or a module constant, and `params` as a dict.
+   document; Stripe, GitHub and ClinicalTrials.gov publish OpenAPI),
+   rote reads each request your module makes (`httpx` / `requests`
+   calls, and Google's client library `build(...)` chains) and checks it
+   against the spec: method and path, every parameter's name, type and
+   enum, the required parameters, the request body's media type (JSON,
+   form or multipart) and fields, and every field your code reads off
+   the response. A violation comes back to you like a failing test. Send
+   parameters the way the spec declares them: a `deepObject` parameter
+   goes in brackets (Stripe's `expand[]`, `created[gte]`, and form body
+   keys such as `metadata[order_id]`). Keep requests readable without
+   running them: a literal URL or a module constant, and `params`,
+   `json` or `data` as a dict.
 
    **Specs written from the docs.** When the vendor publishes no spec rote
    can read (rote says so: `spec_missing`), write one from the pages you

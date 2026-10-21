@@ -707,6 +707,32 @@ Violations are errors that go back to the agent. Three rules:
   time, a host with no spec source yet, or a spec service that is down
   shows in the report as "not checked: <why>". An unreachable spec must
   never fail a paid compile.
+- **OpenAPI comes from a curated registry of vendor-published documents**
+  (`rote.vendor_specs.openapi.REGISTRY`, host -> URL), never from a
+  community directory: APIs.guru's Slack entry is an archived 2021 spec.
+  A vendor's own spec outranks a docs spec the compile wrote for the same
+  host (`check.spec_for_key`, the one precedence rule for the check, the
+  live check and the bench), and a docs spec naming a registered vendor is
+  refused outright (`docs.PUBLISHED_VENDORS`). Add a vendor by fetching and parsing its
+  document first, and register every host its `servers` name at any level
+  (Stripe uploads at files.stripe.com, GitHub at uploads.github.com).
+- **A false error is worse than a missed one**, because the agent rewrites
+  correct code to satisfy it. So a part of a request the spec does not
+  describe is `partial` ("no violations; not checked: <what>"), never
+  "ok" and never a finding: a field under an object that lists no
+  fields, `additionalProperties: true`, an `anyOf` branch that is open, a
+  `$ref` rote cannot follow, a body or response with no JSON schema. An
+  object that lists its fields is closed (the vendors leave
+  `additionalProperties` out), and a field is missing only when no branch
+  of an `anyOf` / `oneOf` has it. The correct-call corpus
+  (`tests/fixtures/vendor_specs/correct_calls/`) must stay at zero
+  findings; add a vendor's real calls there with its fixture.
+- **Send parameters in the spec's own style.** Stripe's 282 `expand` and
+  63 `created` parameters are `style: deepObject`: `expand[]=...`,
+  `created[gte]=...` (the spec has no bare `expand=`), and its form bodies use
+  the same brackets (`metadata[order_id]`). GitHub's `x-multi-segment`
+  path parameters become `{+name}` (a file path keeps its slashes). The
+  body's media type is checked too: Stripe takes form bodies, never JSON.
 - **Where no spec exists, the agent writes one, from fetched pages.**
   `vendor_specs/<vendor>.<api>.<version>.json` (`rote.vendor_specs.docs`)
   becomes an `ApiSpec` with `source="docs"`, checked the same way and
