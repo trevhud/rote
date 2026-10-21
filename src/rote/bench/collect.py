@@ -57,6 +57,12 @@ def read_compile_metrics(compiled: Path | None) -> dict[str, Any]:
     return dict(meta) if isinstance(meta, dict) else {}
 
 
+def _checker(compiled: Path | None) -> str | None:
+    from rote.compiler.system1 import checker_of
+
+    return None if compiled is None else checker_of(compiled)
+
+
 def decisions_cost_usd(compiled: Path | None) -> float | None:
     """What System-1's own model calls cost, from ``system1/decisions.json``.
 
@@ -314,6 +320,9 @@ def collect_job(
         # count (assistant turns) as iterations.
         "turns": metrics.get("num_turns", metrics.get("iterations")),
         "repair_rounds": metrics.get("repair_rounds"),
+        # Which decision model ran, so a row says what its numbers measured:
+        # the default (auto) depends on the credentials where the bench ran.
+        "checker": _checker(compiled),
         # The whole compile: the agent run plus System-1's decision calls. A
         # decision call that could not be priced (decisions_cost_usd null) is
         # left out, so the budget still counts the agent run.

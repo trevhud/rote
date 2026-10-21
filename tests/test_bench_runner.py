@@ -55,3 +55,50 @@ def test_dirs_without_a_skill_or_an_expected_ir_are_skipped(tmp_path: Path) -> N
 def test_an_empty_examples_dir_is_an_error(tmp_path: Path) -> None:
     with pytest.raises(SystemExit, match="no <name>/skill"):
         discover_skills(tmp_path)
+
+
+def test_bench_can_pin_the_checker_and_reports_which_ran(tmp_path: Path) -> None:
+    """The default decider (auto) depends on the machine's credentials, so
+    a bench row says which ran, and `--decider` pins it."""
+    import json
+
+    from rote.bench.collect import _checker
+    from rote.bench.runner import _parser, compile_argv
+
+    pinned = compile_argv(
+        tmp_path / "s", tmp_path / "o", _parser().parse_args(["--decider", "jev"])
+    )
+    assert pinned[pinned.index("--decider") + 1] == "jev"
+    assert "--decider" not in compile_argv(tmp_path / "s", tmp_path / "o", _parser().parse_args([]))
+
+    compiled = tmp_path / "compiled"
+    (compiled / "system1").mkdir(parents=True)
+    (compiled / "system1" / "decisions.json").write_text(
+        json.dumps({"checker": {"decider": "clef", "why": "the default"}})
+    )
+    assert _checker(compiled) == "clef"
+    assert _checker(tmp_path / "none") is None
+
+
+def test_a_bench_job_records_its_checker(tmp_path: Path) -> None:
+    import json
+    import shutil
+
+    from rote.bench.collect import collect_job
+
+    repo = Path(__file__).resolve().parents[1] / "examples" / "ops-report"
+    compiled = tmp_path / "out" / "compiled"
+    (compiled / "system1").mkdir(parents=True)
+    shutil.copy(repo / "expected" / "pipeline.yaml", compiled / "pipeline.yaml")
+    (compiled / "system1" / "decisions.json").write_text(
+        json.dumps({"checker": {"decider": "jev", "why": "the default"}})
+    )
+    job = collect_job(
+        tmp_path / "out",
+        repo / "skill",
+        repo / "expected" / "pipeline.yaml",
+        exit_code=0,
+        wall_seconds=1.0,
+        tsc=False,
+    )
+    assert job["run"]["checker"] == "jev"

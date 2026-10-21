@@ -219,6 +219,9 @@ def test_prepare_runs_the_decider_as_the_checker_and_records_its_cost(
     assert doc["decider"]["name"] == "clef" and doc["structure"]["kept"]
     # FakeCall's two $0.01 rounds and the one heading's $0.001 verdict.
     assert calls_cost_usd(work) == pytest.approx(0.02 + 0.001)
+    assert "the Clef decision model (--decider clef) double-checked each step" in (
+        system1.report_extras(work, plan).preamble
+    )
 
 
 @pytest.mark.asyncio
@@ -239,8 +242,8 @@ async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
         async def run(self, **kwargs: Any) -> Any:
             raise AssertionError("the agent ran although the checker cannot")
 
-    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
-    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("ROTE_CLEF_API_TOKEN", raising=False)
     monkeypatch.setattr(structure, "decide", spent)
     monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _Agent())
@@ -248,7 +251,7 @@ async def test_a_checker_with_no_credentials_fails_the_compile_before_any_spend(
     shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
     with pytest.raises(
         CompilerError,
-        match=r"^--decider jev needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+        match=r"^--decider jev needs TYPESAFE_API_KEY, a key for Typesafe's API",
     ):
         await Compiler(
             system1_decider="jev", run_generated_tests=False, tool_discovery="none"
@@ -295,3 +298,185 @@ def test_a_keep_quote_comes_from_the_steps_text_not_its_heading() -> None:
     assert not ok("Step 1: Fetch the rows")
     assert not ok("the")
     assert ok("Read every row of the sheet")
+
+
+# ───────── the default checker: the best measured one with credentials ─────────
+
+from rote.compiler.system1 import decision_model as dm  # noqa: E402
+
+
+def _creds(monkeypatch: pytest.MonkeyPatch, cloudflare: bool, typesafe: bool) -> None:
+    for var, on, value in (
+        ("ROTE_CLEF_ACCOUNT_ID", cloudflare, "acct"),
+        ("ROTE_CLEF_API_TOKEN", cloudflare, "cf-token"),
+        (dm.TYPESAFE_KEY_ENV, typesafe, "ts-key"),
+    ):
+        if on:
+            monkeypatch.setenv(var, value)
+        else:
+            monkeypatch.delenv(var, raising=False)
+
+
+def test_the_order_is_clef_then_jev() -> None:
+    """Set by sk-check2: Clef made the one right change, Jev none."""
+    assert [m.name for m in dm.CHECKER_ORDER] == ["clef", "jev"]
+
+
+@pytest.mark.parametrize(
+    ("cloudflare", "typesafe", "decider", "via"),
+    [
+        (True, True, "clef", "Workers AI"),
+        (True, False, "clef", "Workers AI"),
+        (False, True, "jev", "Typesafe"),
+    ],
+)
+def test_the_default_takes_the_first_model_with_credentials(
+    cloudflare: bool, typesafe: bool, decider: str, via: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _creds(monkeypatch, cloudflare, typesafe)
+    chosen, why = dm.default_checker()
+    assert chosen == decider and why.endswith(f"with credentials here ({via})")
+
+
+def test_no_credentials_is_no_check_and_names_what_enables_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _creds(monkeypatch, False, False)
+    assert dm.default_checker() == (
+        "rules",
+        "no decision model ran (no credentials for one): set ROTE_CLEF_ACCOUNT_ID and "
+        "ROTE_CLEF_API_TOKEN for Clef, or TYPESAFE_API_KEY for Jev",
+    )
+
+
+def test_jev_goes_to_typesafes_own_api_with_its_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    _creds(monkeypatch, True, True)
+    ts = dm.route(dm.JEV)
+    assert (ts.url, ts.token, ts.via, ts.cloudflare) == (
+        "https://api.typesafe.ai/v1/systemone",
+        "ts-key",
+        "Typesafe",
+        False,
+    )
+    assert ts.body({"s": 1}, {"q": 2}) == {
+        "model": "jev-1.14.0",
+        "state": {"s": 1},
+        "questions": {"q": 2},
+    }
+    # Each model reads only its own variables.
+    assert dm.route(dm.CLEF).via == "Workers AI"
+    _creds(monkeypatch, True, False)
+    with pytest.raises(dm.DeciderUnavailable, match="^--decider jev needs TYPESAFE_API_KEY"):
+        dm.route(dm.JEV)
+    _creds(monkeypatch, False, True)
+    with pytest.raises(dm.DeciderUnavailable, match="^--decider clef needs ROTE_CLEF_ACCOUNT_ID"):
+        dm.route(dm.CLEF)
+
+
+def test_deploy_credentials_never_opt_a_compile_into_a_decision_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user's rule: CLOUDFLARE_* (rote deploy, rote mcp release) is not
+    consent to send skill text to Workers AI."""
+    _creds(monkeypatch, False, False)
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "work-account")
+    monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "work-token")
+    assert dm.default_checker()[0] == "rules"
+    with pytest.raises(dm.DeciderUnavailable, match="CLOUDFLARE_\\* deploy credentials are never"):
+        dm.route(dm.CLEF)
+
+
+def test_a_typesafe_call_sends_no_cloudflare_headers_and_reads_its_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Typesafe's answer has no `result` wrapper, and an AI Gateway setting
+    must not ride along to another provider."""
+    import io
+    import urllib.request
+
+    seen: list[Any] = []
+    answer = {
+        "model": "jev-1.14.0",
+        "answers": {"human": {"type": "noul", "noul": 0.2}},
+        "usage": {"input_tokens": 10, "output_tokens": 0},
+    }
+
+    def urlopen(req: Any, timeout: float) -> Any:
+        seen.append(req)
+        return io.BytesIO(json.dumps(answer).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "gw")
+    _creds(monkeypatch, False, True)
+    got = dm.ask(dm.JEV, dm.route(dm.JEV), {"x": 1}, "v0")
+    assert got == answer
+    [req] = seen
+    assert req.full_url == "https://api.typesafe.ai/v1/systemone"
+    assert req.get_header("Authorization") == "Bearer ts-key"
+    assert not any(h.lower().startswith("cf-aig") for h in req.headers)
+
+
+@pytest.mark.parametrize(
+    ("cloudflare", "typesafe", "decider", "level"),
+    [(True, False, "clef", "log"), (False, True, "jev", "log"), (False, False, "rules", "warning")],
+)
+def test_the_compile_resolves_auto_and_says_which_and_why(
+    cloudflare: bool,
+    typesafe: bool,
+    decider: str,
+    level: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import shutil
+
+    from rote.compiler import Compiler, system1
+
+    _creds(monkeypatch, cloudflare, typesafe)
+    passed: list[tuple[str, str]] = []
+
+    def prepare(skill_dir: Any, work_dir: Any, decider: str, **kw: Any) -> Any:
+        passed.append((decider, kw["decider_why"]))
+        raise _Stop
+
+    class _Stop(Exception):
+        pass
+
+    class _Agent:
+        name = "claude"
+
+    monkeypatch.setattr(system1, "prepare", prepare)
+    monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: _Agent())
+    skill = tmp_path / "skill"
+    shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
+    events: list[Any] = []
+    compiler = Compiler(run_generated_tests=False, tool_discovery="none", on_event=events.append)
+    with pytest.raises(_Stop):
+        asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    [(chosen, why)] = passed
+    assert chosen == decider and why == dm.default_checker()[1]
+    assert [(e.type, e.message) for e in events if e.message == f"system1: {why}"] == [
+        (level, f"system1: {why}")
+    ]
+
+
+def test_the_report_says_why_no_decision_model_checked(skill: Any, tmp_path: Path) -> None:
+    from rote.compiler import system1
+    from rote.compiler.system1 import report_extras
+
+    plan, rec = _decide(skill, FakeCall(good_answer()), None)
+    plan.structure = rec
+    work = tmp_path / "w"
+    work.mkdir()
+    system1.write(plan, work)
+    why = "no decision model ran (no credentials for one): set X for Clef, or Y for Jev"
+    system1._record_checker(work, "rules", why)
+    assert json.loads((work / "system1" / "decisions.json").read_text())["checker"] == {
+        "decider": "rules",
+        "why": why,
+    }
+    assert f"; {why}" in report_extras(work, plan).preamble
+    system1._record_checker(work, "rules", None)
+    assert "no decision model checked it (--decider rules)" in report_extras(work, plan).preamble

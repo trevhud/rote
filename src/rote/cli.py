@@ -3822,7 +3822,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["effort"].value or f"{_COMPILER_DEFAULT_EFFORT} (claude driver)",
             resolved["effort"].source,
         ),
-        "decider": (resolved["decider"].value or "rules", resolved["decider"].source),
+        "decider": (resolved["decider"].value or "auto", resolved["decider"].source),
         "tiebreak": (
             resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             resolved["tiebreak"].source,
@@ -3848,7 +3848,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "model": resolved["model"].value,
             "effort": resolved["effort"].value,
             # Concrete like runtime: unset means rules, which is what runs.
-            "decider": resolved["decider"].value or "rules",
+            "decider": resolved["decider"].value or "auto",
             "tiebreak": resolved["tiebreak"].value or DEFAULT_TIEBREAK,
             "structure": resolved["structure"].value or DEFAULT_STRUCTURE,
             "inference": resolved["inference"].value,
@@ -4252,8 +4252,8 @@ def _local_decider(args: argparse.Namespace, resolved: Resolved, command: str) -
     From a config file or env var it is a standing preference for System-1
     compiles, so this one compile says it does not apply and uses none.
     """
-    decider = resolved.value or "rules"
-    if decider == "rules" or _runs_system1(args):
+    decider = resolved.value or "auto"
+    if decider in ("rules", "auto") or _runs_system1(args):
         return decider
     why = "--no-system1" if args.system1 is False else "--update (always the full-rubric agent)"
     if resolved.source == "flag":
@@ -4312,13 +4312,13 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
         choices=DECIDERS,
         default=None,
         help=(
-            "Who decides each step's kind and whether a person must act (default: the "
-            "`decider` setting, else rules). 'rules' makes no call. 'clef' (Cloudflare) "
-            "and 'jev' (Typesafe) are decision models: each answers where it is confident, "
-            "and the rules decide elsewhere. Both send every step's text to your "
-            "Cloudflare account's Workers AI and need CLOUDFLARE_ACCOUNT_ID and "
-            "CLOUDFLARE_API_TOKEN. Clef costs about $0.005 a compile, billed to Workers AI. "
-            "Jev costs about $0.001, billed to the account's AI Gateway credits"
+            "The decision model that checks the structure pass, or decides step kinds and "
+            "gates under --structure rules (default: the `decider` setting, else auto). "
+            "'auto' takes Clef when ROTE_CLEF_ACCOUNT_ID and ROTE_CLEF_API_TOKEN are set "
+            "(Workers AI, about $0.005 a compile), else Jev when TYPESAFE_API_KEY is set "
+            "(Typesafe's API, about $0.001), else no check, and says which. CLOUDFLARE_* "
+            "deploy credentials are never used for it. 'clef' or 'jev' by name fails "
+            "before any spend without its credentials. 'rules' makes no call"
         ),
     )
     p.add_argument(

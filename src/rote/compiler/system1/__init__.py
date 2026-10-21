@@ -67,7 +67,7 @@ TEXT_RUBRIC_REFERENCES = ("implementation.md", "llm-judge-extraction.md")
 
 #: Who decides step kinds and gates. Mandatory and fan_out are always rules.
 #: ``rules`` makes no call. The others are decision models on Workers AI.
-DECIDERS = ("rules", *decision_model.MODELS)
+DECIDERS = ("auto", "rules", *decision_model.MODELS)
 
 
 def prepare(
@@ -80,6 +80,7 @@ def prepare(
     rubric: Path | None = None,
     observations: Iterable[Any] = (),
     structure_lane: Lane | None = None,
+    decider_why: str | None = None,
 ) -> Plan:
     """Decide everything and write the skeleton into ``work_dir``.
 
@@ -97,7 +98,8 @@ def prepare(
     one call, with ``rubric`` (node-kinds.md) as its guide, and its node
     lists replace their conservative defaults
     (:mod:`rote.compiler.system1.tiebreak`). Without it nothing is asked."""
-    if decider not in DECIDERS:
+    if decider not in ("rules", *decision_model.MODELS):
+        # `auto` is resolved by the Compiler (decision_model.default_checker).
         raise ValueError(f"unknown --decider {decider!r}; choose from {DECIDERS}")
     skill = parse_skill(skill_dir)
     if structure_lane is not None:
@@ -131,6 +133,7 @@ def prepare(
         path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         if verdicts is not None:
             _record_calls(work_dir, verdicts, None)
+        _record_checker(work_dir, decider, decider_why)
         return p
     model = decision_model.MODELS.get(decider)
     verdicts = decision_model.decide(model, skill) if model is not None else None
@@ -151,7 +154,16 @@ def prepare(
     write(p, work_dir)
     if verdicts is not None or tb is not None:
         _record_calls(work_dir, verdicts, tb)
+    _record_checker(work_dir, decider, decider_why)
     return p
+
+
+def _record_checker(work_dir: Path, decider: str, why: str | None) -> None:
+    """Which decision model ran (or none), and why, in decisions.json."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["checker"] = {"decider": decider, "why": why or f"--decider {decider}"}
+    path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
 
 
 def _record_calls(work_dir: Path, verdicts: Verdicts | None, tb: tiebreak.TieBreak | None) -> None:
@@ -246,13 +258,20 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
         costs: dict[str, float | None] = {f"{st.model}, structure pass": cost}
         sources = [f"{st.model}'s structure pass"]
         model, _, decider_costs = _calls_made(work_dir)
+        why = _checker_why(work_dir)
         if model is not None:
             who += (
-                f"; then the {model.label} decision model double-checked each step, "
+                f"; then the {model.label} decision model ({why}) double-checked each step, "
                 f"{len(st.checked)} disagreement(s) went back to the pass, and "
                 f"{len(st.kept)} it kept are Open questions"
             )
             costs.update(decider_costs)
+        elif why is not None:
+            who += (
+                f"; no decision model checked it ({why})"
+                if why.startswith("--decider")
+                else f"; {why}"
+            )
     else:
         model, asked, costs = _calls_made(work_dir)
         deciders = ["rules"]
@@ -329,6 +348,26 @@ def calls_cost_usd(work_dir: Path) -> float | None:
             return None
         total += float(cost)
     return total
+
+
+def checker_of(work_dir: Path) -> str | None:
+    """The decision model that ran on this compile (``clef``, ``jev``, or
+    ``rules`` for none), from decisions.json; None when it records none."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if not path.is_file():
+        return None
+    checker = json.loads(path.read_text(encoding="utf-8")).get("checker") or {}
+    decider = checker.get("decider")
+    return decider if isinstance(decider, str) else None
+
+
+def _checker_why(work_dir: Path) -> str | None:
+    """Why this decision model ran, or none did, from decisions.json."""
+    path = work_dir / BRIEF_DIRNAME / DECISIONS_FILENAME
+    if not path.is_file():
+        return None
+    checker = json.loads(path.read_text(encoding="utf-8")).get("checker") or {}
+    return checker.get("why")
 
 
 def _calls_made(

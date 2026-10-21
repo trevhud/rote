@@ -18,10 +18,17 @@ model's two thresholds were fitted on the dev skills only and then frozen
 before the one measurement on ``examples/holdout/``. Changing any of them
 invalidates that measurement. The numbers are in ``docs/compile-bench.md``.
 
-Credentials are the user's own Cloudflare account, from the environment
-(``CLOUDFLARE_ACCOUNT_ID``, ``CLOUDFLARE_API_TOKEN``). Missing credentials
-fail the compile. There is no silent fallback to rules: asking for a model
-and getting rules would report numbers for a decider that never ran.
+Clef runs on Workers AI with ``ROTE_CLEF_ACCOUNT_ID`` and
+``ROTE_CLEF_API_TOKEN``, and Jev on Typesafe's own API with
+``TYPESAFE_API_KEY`` (:func:`route`). Never ``CLOUDFLARE_*``: those are the
+credentials ``rote deploy`` and ``rote mcp release`` use, and having them must
+not opt a compile into sending skill text to an account that gets billed for
+it (on a work machine, often the employer's). An explicit model with no
+credentials for it fails the
+compile: asking for a model and getting rules would report numbers for a
+decider that never ran. The built-in default (``auto``) instead takes the
+first of :data:`CHECKER_ORDER` that has credentials, and none is no check
+(:func:`default_checker`).
 ``CLOUDFLARE_AI_GATEWAY_ID`` routes the calls through that AI Gateway, and
 ``CLOUDFLARE_AI_GATEWAY_METADATA`` (a JSON object) tags each logged call.
 
@@ -39,6 +46,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -116,6 +124,33 @@ JEV = DecisionModel(
 #: Every model decider, by ``--decider`` value.
 MODELS: dict[str, DecisionModel] = {m.name: m for m in (CLEF, JEV)}
 
+#: The built-in default checks with the first of these that has credentials,
+#: best measured first. Set by sk-check2 (2026-10-21, the structure pass with
+#: each as its checker, 2 trials on the dev and held-out skills, numbers in
+#: docs/design/system1-compile.md): Clef made the one change of the round, and
+#: it was right (customer-onboarding's sanctions screen is an external_call),
+#: while Jev made none. A later bench changes the order here and nowhere else.
+CHECKER_ORDER: tuple[DecisionModel, ...] = (CLEF, JEV)
+
+
+def default_checker() -> tuple[str, str]:
+    """``(decider, why)`` for the built-in ``auto``: the first of
+    :data:`CHECKER_ORDER` with credentials, else ``rules`` (no check)."""
+    for model in CHECKER_ORDER:
+        try:
+            via = route(model)
+        except DeciderUnavailable:
+            continue
+        return model.name, (
+            f"the default: {model.label}, the best-measured decision model with credentials "
+            f"here ({via.via})"
+        )
+    return "rules", (
+        f"no decision model ran (no credentials for one): set {CLEF_ACCOUNT_ENV} and "
+        f"{CLEF_TOKEN_ENV} for Clef, or {TYPESAFE_KEY_ENV} for Jev"
+    )
+
+
 KINDS = {
     "v0": {
         "pure_function": "Fixed logic code can do exactly: filter, match, compute, format, apply stated rules",
@@ -191,16 +226,78 @@ def questions_for(variant: str) -> dict[str, Any]:
     }
 
 
-def credentials(model: DecisionModel) -> tuple[str, str]:
-    account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "").strip()
-    token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
-    if not account or not token:
-        raise DeciderUnavailable(
-            f"--decider {model.name} needs CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN "
-            "for the Cloudflare account that runs Workers AI (use a personal account, not "
-            "an ambient work login)"
+#: Typesafe's own endpoint for Jev (docs.typesafe.ai/api: ``POST /v1/systemone``,
+#: ``Authorization: Bearer <API_KEY>``; the body is ``model``, ``state``,
+#: ``questions``, and the answer ``{model, answers, usage}`` with no wrapper).
+TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
+#: Where Typesafe's key is read from. Typesafe's docs name no variable; this is
+#: the one LiteLLM's Typesafe pass-through uses.
+TYPESAFE_KEY_ENV = "TYPESAFE_API_KEY"
+#: The Jev version its frozen thresholds were fitted on, pinned rather than
+#: ``jev-latest`` so a new release cannot move the measurement.
+TYPESAFE_JEV_MODEL = "jev-1.14.0"
+
+
+@dataclass(frozen=True)
+class Route:
+    """Where one model's calls go, and with which key."""
+
+    url: str
+    token: str
+    body: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+    #: Who answers, for messages and the report.
+    via: str
+    #: Workers AI calls may go through an AI Gateway; Typesafe's never do.
+    cloudflare: bool
+
+
+#: Clef's credentials: a Cloudflare account and an API token that can run
+#: Workers AI, set for rote's decision model alone.
+CLEF_ACCOUNT_ENV = "ROTE_CLEF_ACCOUNT_ID"
+CLEF_TOKEN_ENV = "ROTE_CLEF_API_TOKEN"
+
+
+def clef_credentials() -> tuple[str, str] | None:
+    account = os.environ.get(CLEF_ACCOUNT_ENV, "").strip()
+    token = os.environ.get(CLEF_TOKEN_ENV, "").strip()
+    return (account, token) if account and token else None
+
+
+def typesafe_key() -> str | None:
+    return os.environ.get(TYPESAFE_KEY_ENV, "").strip() or None
+
+
+def route(model: DecisionModel) -> Route:
+    """The model's calls: Clef on Workers AI, Jev on Typesafe's own API, each
+    with its own rote variables. No credentials for the model fails, naming
+    what to set."""
+    if model.name == JEV.name:
+        key = typesafe_key()
+        if key is None:
+            raise DeciderUnavailable(
+                f"--decider jev needs {TYPESAFE_KEY_ENV}, a key for Typesafe's API "
+                "(console.typesafe.ai)"
+            )
+        return Route(
+            TYPESAFE_URL,
+            key,
+            lambda state, questions: {
+                "model": TYPESAFE_JEV_MODEL,
+                "state": state,
+                "questions": questions,
+            },
+            "Typesafe",
+            cloudflare=False,
         )
-    return account, token
+    clef = clef_credentials()
+    if clef is None:
+        raise DeciderUnavailable(
+            f"--decider {model.name} needs {CLEF_ACCOUNT_ENV} and {CLEF_TOKEN_ENV}: a "
+            "Cloudflare account and an API token that can run Workers AI, set for rote's "
+            "decision model alone (CLOUDFLARE_* deploy credentials are never used for it)"
+        )
+    account, token = clef
+    return Route(model.url(account), token, model.body, "Workers AI", cloudflare=True)
 
 
 def _gateway_headers() -> dict[str, str]:
@@ -261,11 +358,13 @@ def _checked_metadata(parsed: object) -> dict[str, str | int | float | bool]:
     return parsed
 
 
-def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+def _post(
+    url: str, token: str, body: dict[str, Any], via: str = "Workers AI", cloudflare: bool = True
+) -> dict[str, Any]:
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
-        **_gateway_headers(),
+        **(_gateway_headers() if cloudflare else {}),
     }
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST"
@@ -274,15 +373,13 @@ def _post(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         with urllib.request.urlopen(req, timeout=120) as r:
             loaded = json.loads(r.read())
     except urllib.error.HTTPError as e:
-        detail = f"Workers AI answered HTTP {e.code}: {e.read()[:300]!r}"
-        if e.code == 402:
-            # Measured: Jev, a partner model, bills the account's AI Gateway
-            # Unified Billing credits, while Clef bills Workers AI itself, so
-            # one account can serve Clef and refuse Jev.
+        detail = f"{via} answered HTTP {e.code}: {e.read()[:300]!r}"
+        if e.code == 402 and cloudflare:
+            # Calls routed through an AI Gateway bill its Unified Billing
+            # credits; an empty balance answers 402.
             detail += (
-                ". The account's AI Gateway balance is empty: partner models such as "
-                "Jev bill Unified Billing credits, so add credits in the Cloudflare "
-                "dashboard (AI > AI Gateway) or use --decider clef"
+                ". The AI Gateway's balance is empty: add credits in the Cloudflare "
+                "dashboard (AI > AI Gateway), or unset CLOUDFLARE_AI_GATEWAY_ID"
             )
         if 400 <= e.code < 500 and e.code != 429:
             # A bad token, a missing model or a malformed body fails the same
@@ -296,23 +393,24 @@ def _answers(resp: dict[str, Any]) -> dict[str, Any] | None:
     """The ``{"answers", "usage"}`` record, wherever the route put it.
 
     A per-model route returns it as ``result``. The unified ``/ai/run``
-    route wraps it once more, as ``result.result``."""
+    route wraps it once more, as ``result.result``. Typesafe's own API
+    returns it at the top level."""
+    if "answers" in resp:
+        return resp
     res = resp.get("result")
     if isinstance(res, dict) and "answers" not in res and isinstance(res.get("result"), dict):
         res = res["result"]
     return res if isinstance(res, dict) and "answers" in res else None
 
 
-def ask(
-    model: DecisionModel, account: str, token: str, state: dict[str, Any], variant: str
-) -> dict[str, Any]:
+def ask(model: DecisionModel, via: Route, state: dict[str, Any], variant: str) -> dict[str, Any]:
     """One call: {"answers": ..., "usage": ...}. Retries 429s and transient errors."""
-    url = model.url(account)
-    body = model.body(state, questions_for(variant))
+    url, token = via.url, via.token
+    body = via.body(state, questions_for(variant))
     last: Exception | None = None
     for attempt in range(6):
         try:
-            resp = _post(url, token, body)
+            resp = _post(url, token, body, via.via, via.cloudflare)
         except DeciderRejected:
             raise
         except (DeciderUnavailable, OSError) as e:
@@ -322,7 +420,7 @@ def ask(
         res = _answers(resp)
         if res is not None:
             return res
-        last = DeciderUnavailable(f"Workers AI returned no answers: {json.dumps(resp)[:300]}")
+        last = DeciderUnavailable(f"{via.via} returned no answers: {json.dumps(resp)[:300]}")
         time.sleep(min(4 * (attempt + 1), 20))
     raise DeciderUnavailable(f"{model.label} did not answer after 6 tries: {last}")
 
@@ -363,15 +461,14 @@ def decide(model: DecisionModel, skill: SkillParse) -> Verdicts:
     verdict on text the model never saw."""
     from concurrent.futures import ThreadPoolExecutor
 
-    account, token = credentials(model)
-    _gateway_headers()  # a bad gateway setting fails here, not six retries later
+    via = route(model)
+    if via.cloudflare:
+        _gateway_headers()  # a bad gateway setting fails here, not six retries later
     states = {u.index: state_for(skill, u) for u in skill.units}
     _check_fits(model, list(states.values()))
     jobs = [(u, variant) for u in skill.units for variant in VARIANTS]
     with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
-        results = list(
-            pool.map(lambda j: ask(model, account, token, states[j[0].index], j[1]), jobs)
-        )
+        results = list(pool.map(lambda j: ask(model, via, states[j[0].index], j[1]), jobs))
     filled = [
         r
         for r in results

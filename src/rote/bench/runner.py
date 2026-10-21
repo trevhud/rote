@@ -38,6 +38,7 @@ from rote.bench.report import (
     render_table,
     variance,
 )
+from rote.compiler.system1 import DECIDERS
 
 #: The examples with a hand-written expected/pipeline.yaml, smallest
 #: first. expense-audit alone is the cheap inner loop (about $2.5).
@@ -94,6 +95,8 @@ def compile_argv(skill_copy: Path, out_dir: Path, args: argparse.Namespace) -> l
         argv += ["--model", args.model]
     if args.agent:
         argv += ["--agent", args.agent]
+    if args.decider:
+        argv += ["--decider", args.decider]
     argv += args.compile_flag
     return argv
 
@@ -321,6 +324,16 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--runtime", default="dbos", help="The compile's --runtime (default: dbos)")
     p.add_argument("--model", default=None, help="Passed to rote compile --model")
     p.add_argument("--agent", default=None, help="Passed to rote compile --agent")
+    p.add_argument(
+        "--decider",
+        choices=DECIDERS,
+        default=None,
+        help=(
+            "Passed to rote compile --decider, to pin the checker. Unset, each compile "
+            "takes the default (auto), which depends on the credentials where the bench "
+            "runs; the chk column says which ran"
+        ),
+    )
     p.add_argument(
         "--compile-flag",
         action="append",

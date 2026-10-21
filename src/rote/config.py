@@ -148,8 +148,9 @@ CONFIG_KEYS: tuple[ConfigKey, ...] = (
         name="decider",
         env="ROTE_DECIDER",
         description=(
-            "who decides System-1's step kinds and gates: rules (no call), clef or jev "
-            "(Workers AI on your Cloudflare account); unset = rules"
+            "the decision model that checks the structure pass: auto (Clef with "
+            "ROTE_CLEF_ACCOUNT_ID and ROTE_CLEF_API_TOKEN, else Jev with TYPESAFE_API_KEY, "
+            "else none), clef, jev, or rules (no call); unset = auto"
         ),
         lazy_choices="decider",
     ),
