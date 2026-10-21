@@ -28,6 +28,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from rote.extras import install_hint
+from rote.mcp.registry import declared_read_only
 
 #: A single wedged tools/call must become a reportable tool failure, never
 #: a frozen compile. The bound covers the whole exchange, connect
@@ -48,17 +49,18 @@ def mcp_tool_id(server: str, tool: str) -> str:
     return f"{MCP_TOOL_PREFIX}{server}__{tool}"
 
 
-def read_only_tools(tools: Sequence[Any]) -> list[Any]:
-    """The subset of listed tools whose server-declared read-only hint is true.
+def read_only_tools(tools: Sequence[Any], server_read_only: bool = False) -> list[Any]:
+    """The subset of listed tools safe to fire unattended.
 
     The one side-effect gate for exposing MCP tools to an unattended
-    agent: only tools the server annotates as read-only are callable.
-    A tool with no annotations (or a false/absent hint) is excluded.
+    agent, and the same predicate a read-only pipeline run applies to its
+    calls (:func:`rote.mcp._runtime_helper.tool_is_read_only`): the user
+    registered the server read-only (``rote mcp add --read-only``), or the
+    server annotates the tool read-only. Anything else is excluded.
     """
-    # snake_case: MCP SDK v2 renamed readOnlyHint, and the camelCase
-    # alias fastmcp keeps fires FastMCPDeprecationWarning on every read
-    # (it surfaced as stderr noise in prod error mail under 3.x/4 mixes).
-    return [t for t in tools if t.annotations is not None and t.annotations.read_only_hint is True]
+    from rote.mcp._runtime_helper import tool_is_read_only
+
+    return [t for t in tools if tool_is_read_only(t, server_read_only)]
 
 
 def result_text(result: Any) -> str:
@@ -163,7 +165,7 @@ class LiveMcpTools:
                     f"({type(e).__name__}: {e}) — continuing without it"
                 )
                 continue
-            read_only = read_only_tools(tools)
+            read_only = read_only_tools(tools, declared_read_only(name))
             if not read_only:
                 self._warn(
                     f"MCP server {name!r} declares no read-only tools "

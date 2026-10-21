@@ -197,6 +197,7 @@ async def read_only_allowlist(
     """
     from rote.mcp._runtime_helper import RoteMcpAuthNeeded, mcp_client
     from rote.mcp.live_tools import mcp_tool_id, read_only_tools
+    from rote.mcp.registry import declared_read_only
 
     allowed: list[str] = []
     skipped: dict[str, str] = {}
@@ -213,11 +214,12 @@ async def read_only_allowlist(
             continue
         # The one readOnlyHint predicate, shared with the in-process
         # compiler drivers so the two gates cannot drift.
-        read_only = [t.name for t in read_only_tools(tools)]
+        read_only = [t.name for t in read_only_tools(tools, declared_read_only(server))]
         if not read_only:
             skipped[server] = (
                 f"no tools declare readOnlyHint ({len(tools)} tools total) — "
-                "pass --allow-writes to wire this server"
+                "pass --allow-writes to wire this server, or register it with "
+                f"`rote mcp add {server} <url> --read-only` if none of its tools write"
             )
             continue
         allowed.extend(mcp_tool_id(server, name) for name in sorted(read_only))
