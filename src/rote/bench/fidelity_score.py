@@ -246,25 +246,27 @@ def _arg_value(value: Any) -> Any:
     return normalize(value) if _is_scalar(value) else value
 
 
-def write_fields(runs: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """``{"server.tool": argument names}`` a write is identified by.
+def write_arguments(runs: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+    """``{"server.tool": {"kept": [...], "dropped": [...]}}`` for every written tool.
 
-    An argument identifies a write when every run sent the same values for
-    it to that tool (as a multiset, so two runs writing the same records in
-    a different order still agree on them). Prose arguments differ in every
-    agent run (a drafted brief, a message body): kept in the key, no two
-    runs would ever agree on a write, and a pipeline that made the same
-    write would count as an extra one. A tool none of whose arguments
-    agree is identified by the tool alone.
+    An argument is kept, and identifies the write, when every run sent the
+    same values for it to that tool (as a multiset, so two runs writing the
+    same records in a different order still agree on them). Prose arguments
+    differ in every agent run (a drafted brief, a message body): kept in the
+    key, no two runs would ever agree on a write, and a pipeline that made
+    the same write would count as an extra one. They are dropped, and the
+    scorecard says so. A tool none of whose arguments agree is identified by
+    the tool alone.
     """
     tools: dict[str, set[str]] = {}
     for run in runs:
         for c in run.get("calls", []):
             if c.get("side_effect"):
                 tools.setdefault(f"{c['server']}.{c['tool']}", set()).update(c["arguments"])
-    fields: dict[str, list[str]] = {}
+    out: dict[str, dict[str, list[str]]] = {}
     for tool, names in sorted(tools.items()):
-        stable = []
+        kept: list[str] = []
+        dropped: list[str] = []
         for name in sorted(names):
             per_run = {
                 json.dumps(
@@ -276,10 +278,14 @@ def write_fields(runs: list[dict[str, Any]]) -> dict[str, list[str]]:
                 )
                 for run in runs
             }
-            if len(per_run) == 1:
-                stable.append(name)
-        fields[tool] = stable
-    return fields
+            (kept if len(per_run) == 1 else dropped).append(name)
+        out[tool] = {"kept": kept, "dropped": dropped}
+    return out
+
+
+def write_fields(runs: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """``{"server.tool": argument names}`` a write is identified by (:func:`write_arguments`)."""
+    return {tool: a["kept"] for tool, a in write_arguments(runs).items()}
 
 
 def effect_key(call: dict[str, Any], fields: dict[str, list[str]] | None) -> str:
@@ -399,7 +405,8 @@ def stable_reference(
     }
 
     counted = [] if insufficient else ok
-    effect_fields = write_fields(counted)
+    written = write_arguments(counted)
+    effect_fields = {tool: a["kept"] for tool, a in written.items()}
 
     def keys(run: dict[str, Any], side_effect: bool) -> list[str]:
         return [
@@ -423,6 +430,7 @@ def stable_reference(
         "side_effects": effect_seqs[0] if counted and ordered else None,
         "side_effects_unordered": sorted(set.intersection(*effect_sets)) if effect_sets else [],
         "write_fields": effect_fields,
+        "write_fields_dropped": {t: a["dropped"] for t, a in written.items() if a["dropped"]},
         "seen_calls": sorted({call_key(c) for r in ok for c in r.get("calls", [])}),
     }
 

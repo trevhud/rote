@@ -795,6 +795,8 @@ def pipeline_fidelity(
                 "successful_runs": ref["successful_runs"],
                 "insufficient_runs": ref["insufficient_runs"],
                 **ref["coverage"],
+                "write_fields": ref["write_fields"],
+                "write_fields_dropped": ref["write_fields_dropped"],
             }
             cases[case.id] = scored
     finally:
