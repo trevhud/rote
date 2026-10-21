@@ -52,7 +52,10 @@ def test_the_emitted_helper_runs_on_the_oldest_supported_python(tmp_path: Path) 
     python = _oldest_python()
     if python is None:
         if os.environ.get("CI"):
-            pytest.fail(f"CI must install Python {EMITTED_PYTHON_FLOOR} (uv python install)")
+            pytest.fail(
+                f"CI must install Python {EMITTED_PYTHON_FLOOR}: "
+                "add the .github/actions/oldest-python step"
+            )
         pytest.skip(
             f"no Python {EMITTED_PYTHON_FLOOR} here (uv python install {EMITTED_PYTHON_FLOOR})"
         )

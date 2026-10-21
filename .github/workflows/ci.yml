@@ -48,10 +48,7 @@ jobs:
 
       - uses: ./.github/actions/bubblewrap
 
-      # The emitted judge helper ships into apps that run on older Pythons
-      # than rote itself; tests/test_helper_on_oldest_python.py imports it there.
-      - name: Install the oldest Python emitted apps support
-        run: uv python install 3.10
+      - uses: ./.github/actions/oldest-python
 
       - name: Pytest (fast suite)
         run: pytest tests/
