@@ -417,3 +417,58 @@ def test_five_scalar_entries_are_accepted(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "rote")
     monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_METADATA", json.dumps(meta))
     assert json.loads(_sent_headers(monkeypatch)["cf-aig-metadata"]) == meta
+
+
+def _long_skill(tmp_path: Path, chars: int) -> Any:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = tmp_path / "long"
+    skill.mkdir(parents=True)
+    body = "Total every line in USD. " + "word " * (chars // 5)
+    (skill / "SKILL.md").write_text(
+        f"---\nname: long\ndescription: x\n---\n\n# Long\n\n## Step 1: Total\n\n{body}\n"
+    )
+    return parse_skill(skill)
+
+
+@MODELS
+def test_a_step_the_model_would_truncate_is_refused_before_any_call(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    """Workers AI truncates a long text state without an error: the verdict
+    would be on part of the step."""
+    skill = _long_skill(tmp_path, int(model.context_tokens * 2.5))
+    calls = _stub(
+        monkeypatch,
+        {u.title: _answers({**ZERO, "pure_function": 0.9}, 0.0) for u in skill.units},
+        model,
+    )
+    with pytest.raises(dm.DeciderUnavailable, match="truncates a longer state"):
+        dm.decide(model, skill)
+    assert calls == []
+    fits = _long_skill(tmp_path / "fits", int(model.context_tokens * 2.5 * 0.5))
+    calls = _stub(
+        monkeypatch,
+        {u.title: _answers({**ZERO, "pure_function": 0.9}, 0.0) for u in fits.units},
+        model,
+    )
+    dm.decide(model, fits)
+    assert calls
+
+
+@MODELS
+def test_a_call_that_filled_the_window_is_refused(
+    model: DecisionModel, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, creds: None
+) -> None:
+    from rote.compiler.system1.parse import parse_skill
+
+    skill = parse_skill(_skill(tmp_path))
+    full = _answers({**ZERO, "pure_function": 0.9}, 0.0)
+    full["result"]["usage"]["input_tokens"] = model.context_tokens
+    _stub(monkeypatch, {u.title: full for u in skill.units}, model)
+    with pytest.raises(dm.DeciderUnavailable, match="likely truncated"):
+        dm.decide(model, skill)
+
+
+def test_the_windows_are_clefs_documented_one_and_jevs_assumed_one() -> None:
+    assert (CLEF.context_tokens, JEV.context_tokens) == (65_536, 32_768)
