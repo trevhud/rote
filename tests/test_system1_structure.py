@@ -1456,11 +1456,11 @@ def test_the_report_names_the_structure_pass_and_its_cost(skill: Any, tmp_path: 
     assert "skeleton.yaml" in extras.next_steps[-1]
 
 
-def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
+def test_a_structure_compile_runs_the_decider_as_its_checker_and_skips_the_tiebreak(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """--tiebreak haiku resolved its lane (and could fail the compile) for a call
-    the structure pass makes sure never happens; --decider clef went unused silently."""
+    """--decider now double-checks the pass; --tiebreak haiku still never runs
+    with the pass on, so its lane is not resolved and the compile says so."""
     import asyncio
     import shutil
 
@@ -1468,12 +1468,17 @@ def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
     from rote.compiler.system1 import decision_model, tiebreak
 
     def never(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("resolved or called for a pass that does not run")
+        raise AssertionError("the tie-break lane was resolved for a pass that does not run")
+
+    asked: list[str] = []
+
+    def decide(model: Any, skill: Any) -> Any:
+        asked.append(model.name)
+        raise _Asked("checker")
 
     monkeypatch.setattr(tiebreak, "lane_for", never)
-    monkeypatch.setattr(decision_model, "decide", never)
+    monkeypatch.setattr(decision_model, "decide", decide)
     monkeypatch.setattr(structure, "lane_for", lambda driver, choice: Lane("claude-cli"))
-    monkeypatch.setattr(structure, "decide", lambda *a, **k: (_ for _ in ()).throw(_Asked("pass")))
     monkeypatch.setattr(Compiler, "select_driver", lambda self: _ClaudeSpy())
     skill = tmp_path / "skill"
     shutil.copytree(Path(__file__).parent.parent / "examples" / "ops-report" / "skill", skill)
@@ -1485,12 +1490,14 @@ def test_a_structure_compile_runs_no_decider_or_tiebreak_and_says_so(
         system1_tiebreak="haiku",
         on_event=lambda e: logs.append(e.message),
     )
-    with pytest.raises(_Asked, match="pass"):
+    with pytest.raises(_Asked, match="checker"):
         asyncio.run(compiler.compile(skill, tmp_path / "out"))
+    assert asked == ["clef"]
     assert (
-        "system1: --decider clef and --tiebreak haiku do not run while the structure pass "
-        "(haiku) decides the skeleton; pass --structure rules to use them"
+        "system1: --tiebreak haiku does not run while the structure pass (haiku) decides "
+        "the skeleton; pass --structure rules to use it"
     ) in logs
+    assert not any("--decider" in m for m in logs)
 
 
 def test_system1s_calls_cost_counts_the_structure_pass_and_its_redecides(

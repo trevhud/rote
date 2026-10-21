@@ -39,6 +39,7 @@ from typing import Any
 import yaml
 
 from rote.compiler.system1 import tiebreak
+from rote.compiler.system1.checker import CHECKER_NOTE_PREFIX
 from rote.compiler.system1.decide import (
     ARG_INPUT_PREFIX,
     REVIEW_BELOW,
@@ -328,6 +329,22 @@ in the same format, with every contradiction fixed. Change nothing else.
 {contradictions}
 """
 
+_SECOND_OPINION = """\
+Your skeleton below passed every code check. A decision model then read
+each SKILL.md step on its own and, where it is confident, disagrees with
+the skeleton as listed after it. It is a second opinion, not evidence: it
+did not see the rest of the skill. Change a node where the skill's text
+supports the model; keep it where the text supports you, and say why in
+that node's `why`. Return the whole skeleton again, in the same format.
+Change nothing else.
+
+=== YOUR SKELETON ===
+{previous}
+
+=== SECOND OPINION ===
+{disagreements}
+"""
+
 
 @dataclass
 class Structure:
@@ -347,6 +364,10 @@ class Structure:
     first_answer: dict[str, Any] = field(default_factory=dict)
     #: Bindings re-decided after verification (:func:`redecide`), one line each.
     redecided: list[str] = field(default_factory=list)
+    #: The decision model's disagreements sent back to the pass, and those
+    #: still standing after its second-opinion round (``checker``).
+    checked: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -356,6 +377,8 @@ class Structure:
             "contradictions": self.contradictions,
             "resolved": self.resolved,
             "redecided": self.redecided,
+            "checked": self.checked,
+            "kept": self.kept,
             "cost_usd": None if self.cost_usd is None else round(self.cost_usd, 6),
             "usage": self.usage,
         }
@@ -896,8 +919,15 @@ def decide(
     tools: Mapping[tuple[str, str], Any] | None = None,
     sample: Any = None,
     call: Call | None = None,
+    checker: Callable[[dict[str, Any]], list[str]] | None = None,
 ) -> tuple[Plan, Structure]:
-    """Ask for the skeleton, check it, repair it, and build the plan."""
+    """Ask for the skeleton, check it, repair it, and build the plan.
+
+    ``checker`` (a decision model's second opinion,
+    :mod:`rote.compiler.system1.checker`) sees the skeleton once it passes
+    every code check. Its disagreements go back for one more round, which the
+    pass may use to change a node or keep it; a reply that breaks a code
+    check is not taken. What still disagrees becomes an Open question."""
     from rote.compiler.system1.tiebreak import _cost
 
     call = call or _structured_call()
@@ -944,6 +974,21 @@ def decide(
                 contradictions="\n".join(f"- {c}" for c in found),
             )
         )
+    if checker is not None and not result.contradictions[-1]:
+        answer = _second_opinion(
+            answer,
+            checker,
+            call,
+            client,
+            lane,
+            base,
+            skill,
+            skill_md,
+            declared,
+            tools,
+            sample,
+            result,
+        )
     result.answer = answer
     result.cost_usd = _cost(result.usage)
     try:
@@ -962,7 +1007,64 @@ def decide(
         )
     assert plan_ is not None
     plan_.review += [f"{STRUCTURE_NOTE_PREFIX}{r}" for r in result.resolved]
+    plan_.review += [f"{CHECKER_NOTE_PREFIX}{k}" for k in result.kept]
     return plan_, result
+
+
+def _second_opinion(
+    answer: dict[str, Any],
+    checker: Callable[[dict[str, Any]], list[str]],
+    call: Call,
+    client: Any,
+    lane: Lane,
+    base: str,
+    skill: SkillParse,
+    skill_md: str,
+    declared: Mapping[tuple[str, str], Any],
+    tools: Mapping[tuple[str, str], Any] | None,
+    sample: Any,
+    result: Structure,
+) -> dict[str, Any]:
+    """One round on the decision model's disagreements; the answer to keep."""
+    result.checked = checker(answer)
+    if not result.checked:
+        return answer
+    prompt = (
+        base
+        + "\n\n"
+        + _SECOND_OPINION.format(
+            previous=json.dumps(answer, indent=1),
+            disagreements="\n".join(f"- {d}" for d in result.checked),
+        )
+    )
+    try:
+        reply, rows = call(
+            node_id=NODE_ID,
+            provider=lane.provider,
+            client=lane.client,
+            model=lane.model,
+            prompt=prompt,
+            output_schema=SCHEMA,
+            sdk_client=client,
+            max_tokens=MAX_TOKENS,
+        )
+    except RuntimeError as e:
+        raise StructureUnavailable(
+            f"the System-1 structure pass ({lane.model}) failed on the second opinion: {e}",
+            result.usage + billed_rows(e),
+        ) from e
+    result.usage += [{"model": m, **u} for m, u in rows]
+    result.rounds += 1
+    found = check(reply, skill, skill_md, declared, sample)
+    if not found:
+        found = _build_and_validate(reply, skill, declared, tools, sample)[1]
+    result.contradictions.append(found)
+    if found:
+        # A second opinion must not cost a skeleton that passed every check.
+        result.kept = [*result.checked]
+        return answer
+    result.kept = checker(reply)
+    return reply
 
 
 def _build_and_validate(

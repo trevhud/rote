@@ -605,24 +605,15 @@ class Compiler:
             s1_plan: system1.Plan | None = None
             if use_system1:
                 structure_runs = self.system1_structure != "rules"
-                unused = [
-                    flag
-                    for flag, on in (
-                        (f"--decider {self.system1_decider}", self.system1_decider != "rules"),
-                        ("--tiebreak haiku", self.system1_tiebreak == "haiku"),
-                    )
-                    if on
-                ]
-                if structure_runs and unused:
-                    # The structure pass decides every kind and gate, so a step
-                    # decider and the tie-break never run: say so, never ignore
-                    # them silently, and resolve no lane for a call never made.
+                if structure_runs and self.system1_tiebreak == "haiku":
+                    # The structure pass decides every kind and gate, so the
+                    # tie-break never runs (the decider double-checks the pass
+                    # instead): say so, and resolve no lane for it.
                     self._emit(
                         "warning",
-                        f"system1: {' and '.join(unused)} "
-                        f"{'does' if len(unused) == 1 else 'do'} not run while the structure "
-                        f"pass ({self.system1_structure}) decides the skeleton; pass "
-                        "--structure rules to use them",
+                        "system1: --tiebreak haiku does not run while the structure pass "
+                        f"({self.system1_structure}) decides the skeleton; pass "
+                        "--structure rules to use it",
                     )
                 try:
                     lane = (
