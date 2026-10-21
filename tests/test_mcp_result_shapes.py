@@ -238,7 +238,7 @@ async def test_the_compile_records_the_declared_schemas_beside_the_ir(
     monkeypatch.setattr(Compiler, "select_driver", lambda self: fake)
     monkeypatch.setattr(generate.Settings, "prime_seconds", 0.0)
 
-    async def listed(self: Any, observations: Any, skill_dir: Path) -> Any:
+    async def listed(self: Any, observations: Any, skill_dir: Path, snapshot: Any = None) -> Any:
         return _declared(), {}
 
     monkeypatch.setattr(Compiler, "_tool_schemas", listed)
