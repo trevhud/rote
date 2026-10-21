@@ -1,7 +1,7 @@
 """Skeleton scores: the rules against the whole-skill structure pass.
 
 usage: python skeletons.py [clef|jev|haiku|sonnet|openai:<model> ...] [--trials N]
-       [--json out.json] [--keep DIR]
+       [--json out.json] [--keep DIR] [--skills a,b]
 (--keep saves each skeleton as DIR/<split>/<arm>/<skill>/t<N>/pipeline.yaml)
 (clef/jev: the step-by-step path with that decision model, no structure pass;
 CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN for a personal account)
@@ -129,10 +129,14 @@ def main() -> None:
     args = sys.argv[1:]
     trials = int(args[args.index("--trials") + 1]) if "--trials" in args else 1
     keep = Path(args[args.index("--keep") + 1]) if "--keep" in args else None
+    only = set(args[args.index("--skills") + 1].split(",")) if "--skills" in args else None
     choices = ["rules", *[a for a in args if a in CHOICES or a.startswith("openai:")]]
     catalog = fetch_catalog()
     out: list[dict[str, Any]] = []
-    for split, (examples, skills) in SPLITS.items():
+    for split, (examples, all_skills) in SPLITS.items():
+        skills = [s for s in all_skills if only is None or s in only]
+        if not skills:
+            continue
         for choice in choices:
             # The structure call's effort knob (rote.inference node_effort).
             os.environ["ROTE_EFFORT_SYSTEM1_STRUCTURE"] = "low" if choice.endswith("-low") else ""
@@ -162,7 +166,8 @@ def main() -> None:
                 "by": choice,
                 "errors": len(errors),
                 **{
-                    k: round(statistics.mean(r[k] for r in rows), 3)
+                    # A score that does not apply to a skeleton (None) is left out.
+                    k: round(statistics.mean(v for r in rows if (v := r[k]) is not None), 3)
                     for k in ("kind", "kmix", "edgeF1", "seconds")
                 },
                 **{
