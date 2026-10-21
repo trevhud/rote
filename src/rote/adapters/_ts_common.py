@@ -270,8 +270,16 @@ function strings(value: unknown): string[] {
     return [String(value)];
 }
 
+const MD_LINK_RE = /\\[([^\\]\\n]*)\\]\\([^)\\n]*\\)/g;
+const MD_MARK_RE = /\\*\\*|__|`/g;
+
 function squash(text: string): string {
-    return text.split(/\\s+/).filter((w) => w.length > 0).join(" ");
+    return text
+        .replace(MD_LINK_RE, "$1")
+        .replace(MD_MARK_RE, "")
+        .split(/\\s+/)
+        .filter((w) => w.length > 0)
+        .join(" ");
 }
 
 export function quoteProblems(text: unknown, inputs: unknown): string[] {

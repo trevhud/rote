@@ -1016,8 +1016,17 @@ def _strings(value: Any) -> list[str]:
     return [str(value)]
 
 
+#: Markdown a quote reads past: a link's text stands for the link, and
+#: emphasis and code marks are not words. Docs search results are Markdown,
+#: and a live judge quoted "D1 queries on the Workers Free plan will fail"
+#: from "D1 queries on the [Workers Free plan](/workers/...) will fail".
+_MD_LINK_RE = re.compile(r"\[([^\]\n]*)\]\([^)\n]*\)")
+_MD_MARK_RE = re.compile(r"\*\*|__|`")
+
+
 def _squash(text: str) -> str:
-    return " ".join(text.split())
+    """``text`` as a reader sees it: Markdown links and marks removed, spaces collapsed."""
+    return " ".join(_MD_MARK_RE.sub("", _MD_LINK_RE.sub(r"\1", text)).split())
 
 
 def quote_problems(text: Any, inputs: Any) -> list[str]:

@@ -29,6 +29,7 @@ INPUTS = {
             "text": "Pull consumers can now read  5,000 messages\nper second",
         },
         {"title": "Pricing", "text": "billed at $0.40 / million operations"},
+        {"text": "queries on the [Workers Free plan](/workers/pricing/) will **fail**"},
     ],
     "count": 3,
 }
@@ -38,6 +39,9 @@ CASES: list[tuple[str, list[str]]] = [
     ('low: "read 5,000 messages per second"', []),
     # Whitespace differs on both sides: the answer's double space, the input's line break.
     ('low: "read 5,000  messages per second"', []),
+    # A link's text stands for the link; emphasis marks are not words.
+    ('high: "queries on the Workers Free plan will fail"', []),
+    ('high: "queries on the [Workers Free plan](/workers/pricing/) will fail"', []),
     ("low: “billed at $0.40 / million operations”", []),
     (
         'high: "requires the Workers Paid plan"',
