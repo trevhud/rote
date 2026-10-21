@@ -78,14 +78,17 @@ interpreter as the bench. Two things are forced, not configurable:
   `tools/list` to ground its tool arguments the way a compile against
   registered real servers does, so it sees exactly the schemas the
   fixtures enforce when the pipeline runs.
-- **The example's sample run.** When `examples/<name>/sample.json`
-  exists, the compile gets `--sample-input` pointing at it: the
+- **The example's sample run.** An example with fidelity cases bundles
+  its sample run in the skill dir, at `skill/sample-input.json`, so the
+  bench's copy carries it and the compile finds it exactly as a plain
+  `rote compile examples/<name>/skill` does. It is the
   `{"input", "signals"}` envelope a user would supply, with the fidelity
   cases' keys and none of their values (a test pins both). rote extracts
   the input contract and gate payload keys from it and runs the
   pipeline's deterministic steps on it before the compile is done
   (`rote.compiler.grounding`, `rote.compiler.prefix`). `input.json`,
-  `eval-input.json` and `fidelity/` are never passed.
+  `eval-input.json` and `fidelity/` sit beside the skill, not in it, so
+  the compile never sees them.
 
 ## Benching other models through Cloudflare AI Gateway
 

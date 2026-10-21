@@ -104,6 +104,7 @@ examples/expense-audit/
 ├── scorecard.md                  # measured before/after (rote eval --run)
 ├── skill/
 │   ├── SKILL.md                  # the source skill, as an agent would run it
+│   ├── sample-input.json         # the sample run `rote compile` grounds its contracts in
 │   └── references/
 │       ├── expense-policy.md     # caps, receipts, severities
 │       ├── fx-rates.md           # finance month-end rates
