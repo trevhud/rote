@@ -78,9 +78,10 @@ one-line tip recommending it; it never blocks.
 uvx --from rote-cli rote compile <skill-dir> --runtime <runtime> --out <out-dir>
 ```
 
-- A realistic skill takes **2 to 6 minutes** on the default path (System-1:
-  rote decides the structure with rules, and the agent writes only code and
-  prompts). `--no-system1`, and every `--update`, run the full-rubric agent,
+- A realistic skill takes **about 1 minute** on the default path (System-1:
+  rote decides the structure with rules, and parallel model calls write only
+  code and prompts; with the codex or openai-api driver one agent session
+  writes them, 2 to 6 minutes). `--no-system1`, and every `--update`, run the full-rubric agent,
   which takes ~13 minutes and 30–40 agent turns. **Run it backgrounded** and
   poll — do not block.
 - **Confirm the resolved skill directory as an absolute path** with the human

@@ -9,8 +9,9 @@ it is the check that can fail.
 The prefix is every node that runs without a model or a person, in
 execution order: ``pure_function`` nodes with a written implementation,
 and MCP-bound nodes whose call a ``rote baseline`` run recorded (the
-recorded result stands in for the call, matched on the exact arguments).
-A judge, an agent loop, a gate, an unrecorded tool call or a stub ends
+recorded result stands in for the call, matched on the exact arguments),
+and gates the sample answers (its ``signals`` payload is the gate's result).
+A judge, an agent loop, an unanswered gate, an unrecorded tool call or a stub ends
 the prefix on its branch: nodes that need its output are reported as not
 reached, never guessed at.
 
@@ -86,6 +87,7 @@ def build_plan(
     from rote.probe import parse_tool_result
 
     status = {i.node_id: i.status for i in implementations}
+    answers = _gate_answers(pipeline, sample)
     recorded: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for o in observations:
         output = parse_tool_result(o.result)
@@ -103,7 +105,11 @@ def build_plan(
                 else:
                     bindings.append([param, "node", parsed.node_id, parsed.field])
             step: dict[str, Any] = {"id": node.id, "bindings": bindings}
-            if node.mcp is not None:
+            if node.kind is NodeKind.HITL_GATE and node.id in answers:
+                # The sample says what the person answered: the gate's result,
+                # so the nodes after it run on the sample too.
+                step |= {"kind": "gate", "payload": answers[node.id]}
+            elif node.mcp is not None:
                 declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
                 step |= {
                     "kind": "mcp",
@@ -159,6 +165,35 @@ def probe_shapes(output_schema: dict[str, Any] | None) -> list[str]:
     if isinstance(kind, str) and kind in _SHAPE_OF_TYPE:
         return [_SHAPE_OF_TYPE[kind]]
     return list(UNDECLARED_SHAPES)
+
+
+def _gate_answers(pipeline: Pipeline, sample: Sample) -> dict[str, dict[str, Any]]:
+    """``{gate id: the sample's answer}`` for the gates the sample surely answers.
+
+    Pairing comes from grounding's one matcher, but running past a gate
+    takes more than a pairing: the answer must carry the gate's signal, or
+    only keys the gate declares. The matcher's last resort pairs a leftover
+    answer with the next unmatched gate even when nothing matches (that is
+    right for the gate check, which then reports the mismatch). Run on such
+    an answer, the nodes after the gate would fail on keys it never had and
+    blame correct code.
+    """
+    if not sample.gates:
+        return {}
+    from rote.compiler.grounding import GateView, match_sample_gates
+
+    views = {
+        n.id: GateView(n.id, n.signal, n.output_keys)
+        for wave in pipeline.execution_waves()
+        for n in wave
+        if n.kind is NodeKind.HITL_GATE
+    }
+    answers: dict[str, dict[str, Any]] = {}
+    for signal, gate_id in match_sample_gates(list(views.values()), sample).items():
+        gate, answer = views[gate_id], sample.gates[signal]
+        if gate.signal == signal or (answer and set(answer) <= gate.keys):
+            answers[gate_id] = answer
+    return answers
 
 
 def _where(at: dict[str, Any] | None) -> str:
@@ -273,6 +308,49 @@ def _argument_findings(
     return findings
 
 
+def output_findings(
+    pipeline: Pipeline, report: dict[str, dict[str, Any]], sample: Sample
+) -> list[ContractFinding]:
+    """Each result on the sample, against its node's declared ``output_schema``.
+
+    The schema is the contract the node's consumers were written against
+    (System-1 fixes it before any module is written), so a module that
+    returns another shape fails here, on data no model wrote, instead of in
+    the next node. A fan_out node's result is one value per element, each
+    checked. A node without an ``output_schema`` declares nothing to check.
+    """
+    from rote.compiler.grounding import schema_mismatches
+
+    findings: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        step = report.get(node.id) or {}
+        if not node.output_schema or step.get("status") != "ok" or "output" not in step:
+            continue
+        values = step["output"] if node.fan_out else [step["output"]]
+        if not isinstance(values, list):
+            continue
+        for i, value in enumerate(values):
+            where = f"{node.id}[{i}]" if node.fan_out else node.id
+            problems = schema_mismatches(node.output_schema, value, where)
+            if problems:
+                findings.append(
+                    ContractFinding(
+                        node_id=node.id,
+                        kind="output_schema_mismatch",
+                        severity="error",
+                        message=(
+                            f"on the sample input ({sample.source}), {node.id} returned a "
+                            f"value its output_schema does not allow: {'; '.join(problems[:5])}. "
+                            "Its consumers were written against that schema: return what it "
+                            "says"
+                        ),
+                        path=node.impl.partition(":")[0] if node.impl else "pipeline.yaml",
+                    )
+                )
+                break  # one element names the problem; the rest repeat it
+    return findings
+
+
 def summarize(report: dict[str, dict[str, Any]]) -> str:
     counts: dict[str, int] = {}
     for step in report.values():
@@ -359,9 +437,13 @@ def run_prefix(
         )
         return PrefixRun(status="failed", summary="crashed", findings=[finding])
     report: dict[str, dict[str, Any]] = json.loads(written)
-    findings = findings_from_report(report, sample) + _argument_findings(
-        pipeline, report, tools or {}
+    findings = (
+        findings_from_report(report, sample)
+        + _argument_findings(pipeline, report, tools or {})
+        + output_findings(pipeline, report, sample)
     )
+    for step in report.values():
+        step.pop("output", None)  # checked; the verdict carries no payloads
     return PrefixRun(
         status="failed" if findings else "ran",
         summary=summarize(report),

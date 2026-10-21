@@ -46,7 +46,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.compiler.drivers import (
+    CompilerDriver,
+    DriverError,
+    DriverResult,
+    Generation,
+    GenerationRequest,
+)
 from rote.compiler.drivers._fs_tools import (
     TURN_SNIPPET_CHARS,
     anthropic_tool_schemas,
@@ -65,6 +71,7 @@ from rote.compiler.drivers._fs_tools import (
     handle_write_file as _handle_write_file,
 )
 from rote.compiler.drivers._heartbeat import await_with_heartbeat
+from rote.compiler.drivers.claude import DEFAULT_EFFORT, EFFORT_LEVELS
 from rote.compiler.events import (
     CompilationEvent,
     EventCallback,
@@ -72,6 +79,7 @@ from rote.compiler.events import (
     relative_display_path,
 )
 from rote.extras import install_hint
+from rote.inference import structured_answer, structured_output_schema
 
 if TYPE_CHECKING:
     from anthropic.types import MessageParam, ToolResultBlockParam
@@ -394,6 +402,7 @@ class AnthropicApiDriver(CompilerDriver):
         default_headers: dict[str, str] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         web_tools: bool = False,
+        effort: str = DEFAULT_EFFORT,
         **_ignored: Any,
     ) -> None:
         """
@@ -426,7 +435,16 @@ class AnthropicApiDriver(CompilerDriver):
             (see :mod:`rote.extras`). Only tools whose server
             declares ``readOnlyHint`` are exposed; a server that cannot
             be reached is skipped with a warning event, never an error.
+        effort
+            ``rote compile --effort``, sent as ``output_config.effort`` on
+            :meth:`generate` calls. Unset, the API runs at its own default,
+            and a measured ops-report compile's pieces spent 12k to 21k
+            output tokens each, against 2k to 3k at ``low``, the claude
+            driver's default (:data:`rote.compiler.drivers.claude.DEFAULT_EFFORT`).
         """
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"effort must be one of {', '.join(EFFORT_LEVELS)}, got {effort!r}")
+        self.effort = effort
         self.model = model
         self.max_iterations = max_iterations
         self.max_tokens_per_turn = max_tokens_per_turn
@@ -478,6 +496,69 @@ class AnthropicApiDriver(CompilerDriver):
             "The ANTHROPIC_API_KEY environment variable is not set. "
             "Export it or use the `claude` / `codex` driver to authenticate "
             "via your existing Claude Max/Pro or ChatGPT subscription.",
+        )
+
+    async def generate(self, request: GenerationRequest) -> Generation:
+        """One schema-locked call: structured outputs, the answer as JSON text.
+
+        ``output_config.format`` constrains decoding to ``request.schema``.
+        A forced tool would do the same on older models, and current ones
+        (Sonnet 5.5, Haiku 5.5) reject ``tool_choice`` ``tool`` and ``any``
+        outright with a 400. The shared prefix is the system prompt, marked
+        for the prompt cache, so the calls of one compile after the first
+        read it at the cache rate, and usage keeps all four buckets for that
+        reason. No ``temperature``: current models reject it. The API
+        reports no cost, so ``cost_usd`` is the call's own model's list price
+        on its four buckets (:func:`run_cost_usd`), or ``None`` when that
+        cannot be priced.
+        """
+        if not _ANTHROPIC_AVAILABLE:
+            raise DriverError(f"anthropic package is not installed. Run: {install_hint('api')}")
+        try:
+            # The one rewrite into the subset structured outputs accepts
+            # (shared with emitted judges): it refuses an open object rather
+            # than closing it.
+            schema = structured_output_schema(request.schema, node_id=request.label)
+        except RuntimeError as e:
+            raise DriverError(f"cannot lock the answer for {request.label}: {e}") from e
+        started = time.monotonic()
+        client = anthropic.AsyncAnthropic(**self._client_kwargs())
+        try:
+            message = await _streamed_message(
+                client,
+                {
+                    "model": request.model,
+                    "max_tokens": self.max_tokens_per_turn,
+                    "system": cached_system(request.system),
+                    "messages": [{"role": "user", "content": request.prompt}],
+                    "output_config": {
+                        "format": {"type": "json_schema", "schema": schema},
+                        "effort": self.effort,
+                    },
+                },
+            )
+        except Exception as e:  # noqa: BLE001 (any SDK failure is this call's)
+            raise DriverError(f"Anthropic API call failed for {request.label}: {e}") from e
+        finally:
+            await client.close()
+        totals = usage_buckets(message.usage)
+        metadata = {f"{bucket}_tokens": count for bucket, count in totals.items()}
+        try:
+            payload = structured_answer(message, node_id=request.label)
+        except RuntimeError as e:  # truncated, refused, or not JSON: still a paid call
+            raise DriverError(f"Anthropic API returned no answer: {e}", metadata=metadata) from e
+        if not isinstance(payload, dict):
+            raise DriverError(
+                f"Anthropic API returned no answer for {request.label}: a JSON "
+                f"{type(payload).__name__}, not an object",
+                metadata=metadata,
+            )
+        return Generation(
+            payload=payload,
+            model=str(message.model),
+            cost_usd=run_cost_usd(str(message.model), totals),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            **metadata,
         )
 
     async def run(

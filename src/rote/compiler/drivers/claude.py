@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,7 +38,13 @@ from pathlib import Path
 from shutil import which
 from typing import Any
 
-from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.compiler.drivers import (
+    CompilerDriver,
+    DriverError,
+    DriverResult,
+    Generation,
+    GenerationRequest,
+)
 from rote.compiler.drivers._fs_tools import build_task_prompt
 from rote.compiler.events import (
     CompilationEvent,
@@ -747,6 +754,89 @@ class ClaudeDriver(CompilerDriver):
         env.pop("CLAUDE_CODE_EFFORT_LEVEL", None)
         env.update(PROMPT_CACHE_ENV)
         return env
+
+    async def generate(self, request: GenerationRequest) -> Generation:
+        """One schema-locked call through ``claude -p``, on the subscription.
+
+        ``--json-schema`` is a forced tool call under the hood, so the
+        answer arrives validated in ``structured_output``. No tools, and
+        the same context isolation as emitted judges (no settings, no MCP,
+        no memory). The shared prefix is the system prompt, read from a
+        file: it carries the whole skill, too large for comfort in argv and
+        visible in ``ps`` there. The task goes on stdin. The CLI reports an
+        API failure inside a zero exit (``is_error``), so the envelope, not
+        the return code, decides success.
+        """
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory(prefix="rote-generate-") as tmp:
+            system_file = Path(tmp) / "system.md"
+            system_file.write_text(request.system, encoding="utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                self.claude_executable,
+                "-p",
+                "--output-format",
+                "json",
+                "--json-schema",
+                json.dumps(request.schema),
+                "--model",
+                request.model,
+                "--effort",
+                self.effort,
+                "--system-prompt-file",
+                str(system_file),
+                *CLI_CONTEXT_ISOLATION_FLAGS,
+                # A value is required: the flag is variadic (see run()).
+                "--tools",
+                "",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._build_child_env(),
+                cwd=tmp,
+                limit=_STREAM_LINE_LIMIT,
+            )
+            try:
+                stdout, stderr = await proc.communicate(request.prompt.encode("utf-8"))
+            except asyncio.CancelledError:
+                # A sibling failed the compile: the child must not keep
+                # running (and billing) after its caller has gone.
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                raise
+        try:
+            envelope = json.loads(stdout)
+        except ValueError:
+            detail = (stderr or stdout).decode("utf-8", "replace").strip()[:400]
+            raise DriverError(
+                f"claude -p returned no JSON envelope for {request.label} "
+                f"(exit {proc.returncode}): {detail}"
+            ) from None
+        if not isinstance(envelope, dict):
+            raise DriverError(f"claude -p returned a non-object envelope for {request.label}")
+        metadata = self._parse_metadata(envelope, dict(_EMPTY_TOTALS))
+        payload = envelope.get("structured_output")
+        if envelope.get("is_error") or not isinstance(payload, dict):
+            reason = envelope.get("result") or envelope.get("terminal_reason") or "no answer"
+            raise DriverError(
+                f"claude -p failed for {request.label}: {str(reason)[:400]}",
+                metadata=metadata,
+            )
+        model_usage = envelope.get("modelUsage")
+        models = list(model_usage) if isinstance(model_usage, dict) else []
+        cost = metadata.get("cost_usd")
+        return Generation(
+            payload=payload,
+            # What actually ran, from modelUsage: an alias or a fallback model
+            # can differ from what was asked for. Several means a fallback ran.
+            model=",".join(models) if models else request.model,
+            input_tokens=int(metadata.get("input_tokens") or 0),
+            output_tokens=int(metadata.get("output_tokens") or 0),
+            cache_write_tokens=int(metadata.get("cache_write_tokens") or 0),
+            cache_read_tokens=int(metadata.get("cache_read_tokens") or 0),
+            cost_usd=float(cost) if isinstance(cost, int | float) else None,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     def _build_system_prompt(self, skill_md_text: str) -> str:
         """Build the ``--append-system-prompt`` content.
