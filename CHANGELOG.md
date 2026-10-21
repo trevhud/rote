@@ -11,6 +11,14 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ### Changed
 
+- **With the structure pass on, `--decider clef|jev` double-checks it.**
+  The decision model answers its two questions (kind, and whether a person
+  acts) for every SKILL.md heading, one step at a time. A confident answer
+  the skeleton contradicts goes back to the pass as one more repair round,
+  never as an override; one the pass keeps is an Open question with both
+  answers. `--decider rules` (the built-in) makes no check. The warning
+  that `--decider` does nothing with the pass on is gone.
+
 - **The structure pass decides the pipeline's skeleton by default.** One
   schema-locked `claude-haiku-5-5` call reads the whole skill and returns
   every node, and rote checks each one against the skill's text, its tools'

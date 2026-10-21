@@ -13,7 +13,9 @@ run the full-rubric agent instead, which decides the structure itself.
 
 from __future__ import annotations
 
+import functools
 import json
+import re
 import shutil
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
@@ -21,7 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from rote.compiler.report import ReportExtras
-from rote.compiler.system1 import decision_model, evidence, structure, tiebreak
+from rote.compiler.system1 import checker, decision_model, evidence, structure, tiebreak
+from rote.compiler.system1.checker import CHECKER_NOTE_PREFIX
 from rote.compiler.system1.decide import REVIEW_BELOW, Plan, plan, unit_segments, unsure_units
 from rote.compiler.system1.decision_model import DeciderUnavailable, Verdicts
 from rote.compiler.system1.enforce import all_changes, check_proposals, enforce
@@ -98,17 +101,26 @@ def prepare(
         raise ValueError(f"unknown --decider {decider!r}; choose from {DECIDERS}")
     skill = parse_skill(skill_dir)
     if structure_lane is not None:
-        # PROTOTYPE: the whole-skill structure pass decides the skeleton
-        # (rote.compiler.system1.structure); code only checks it.
+        # The whole-skill structure pass proposes the skeleton
+        # (rote.compiler.system1.structure); code checks it, and the decider,
+        # when one is set, double-checks it (rote.compiler.system1.checker).
         if rubric is None:
             raise ValueError("the structure pass needs the node-kinds rubric")
+        headings = replace(skill, units=structure.section_units(skill_dir))
+        model = decision_model.MODELS.get(decider)
+        verdicts = decision_model.decide(model, headings) if model is not None else None
         p, record = structure.decide(
-            replace(skill, units=structure.section_units(skill_dir)),
+            headings,
             structure.skill_text(skill_dir),
             rubric.read_text("utf-8"),
             structure_lane,
             tools=tools,
             sample=sample,
+            checker=(
+                None
+                if verdicts is None
+                else functools.partial(checker.disagreements, verdicts, headings.units)
+            ),
         )
         p.structure = record
         evidence.bind_recorded_arguments(p, observations, getattr(sample, "payload", None))
@@ -117,6 +129,8 @@ def prepare(
         doc = json.loads(path.read_text(encoding="utf-8"))
         doc["structure"] = record.as_dict()
         path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+        if verdicts is not None:
+            _record_calls(work_dir, verdicts, None)
         return p
     model = decision_model.MODELS.get(decider)
     verdicts = decision_model.decide(model, skill) if model is not None else None
@@ -184,6 +198,14 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
     is built before the work dir moves to the output."""
     questions: list[tuple[str, str]] = []
     for line in p.review:
+        if line.startswith(CHECKER_NOTE_PREFIX):
+            # A disagreement the pass kept: both answers are in the line.
+            body = line.removeprefix(CHECKER_NOTE_PREFIX)
+            # The heading is quoted (repr) and may itself hold a colon.
+            m = re.match(r"section \d+ (?:'[^']*'|\"[^\"]*\")", body)
+            where = m.group(0) if m else "pipeline"
+            questions.append((f"A decision model disagrees: {where}", line))
+            continue
         # A structure-pass note names its node after the prefix: it records a
         # decision the pass changed, not a low-confidence one.
         changed = line.startswith(STRUCTURE_NOTE_PREFIX)
@@ -223,6 +245,14 @@ def report_extras(work_dir: Path, p: Plan) -> ReportExtras:
         )
         costs: dict[str, float | None] = {f"{st.model}, structure pass": cost}
         sources = [f"{st.model}'s structure pass"]
+        model, _, decider_costs = _calls_made(work_dir)
+        if model is not None:
+            who += (
+                f"; then the {model.label} decision model double-checked each step, "
+                f"{len(st.checked)} disagreement(s) went back to the pass, and "
+                f"{len(st.kept)} it kept are Open questions"
+            )
+            costs.update(decider_costs)
     else:
         model, asked, costs = _calls_made(work_dir)
         deciders = ["rules"]
