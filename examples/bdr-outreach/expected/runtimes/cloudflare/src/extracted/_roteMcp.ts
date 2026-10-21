@@ -578,6 +578,16 @@ export async function listMcpTools(
     });
 }
 
+/**
+ * What an agent loop is handed: its bound tools, and the declared tools a
+ * read-only run withheld because they may write ({name: why}), which the
+ * loop's instructions name so it reports them as not done.
+ */
+export interface AgentToolBinding {
+    tools: BoundMcpTool[];
+    withheld: Record<string, string>;
+}
+
 /** A tool bound to a callable — structurally a BoundTool for the agent loop. */
 export interface BoundMcpTool {
     name: string;
@@ -621,7 +631,7 @@ export async function bindAgentTools(
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
-): Promise<BoundMcpTool[]> {
+): Promise<AgentToolBinding> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const withheld = new Map<string, string>();
@@ -680,7 +690,7 @@ export async function bindAgentTools(
         }
         throw new Error(message);
     }
-    return [...bound.values()];
+    return { tools: [...bound.values()], withheld: Object.fromEntries(withheld) };
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {

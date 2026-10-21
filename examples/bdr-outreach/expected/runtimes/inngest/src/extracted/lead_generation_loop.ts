@@ -41,7 +41,8 @@ export async function leadGenerationLoop(
     input: unknown,
 ): Promise<{ "vetted_contacts": VettedContact[]; "discarded_summary": VettingSummary }> {
     const vars = process.env;
-    const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
+    const bound = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
+    const tools: BoundTool[] = [...bound.tools];
     // loop_body sub-nodes: real pipeline steps, driven per iteration.
     tools.push(
         {
@@ -70,6 +71,7 @@ export async function leadGenerationLoop(
         model: vars.ROTE_MODEL_LEAD_GENERATION_LOOP ?? "claude-sonnet-4-6",
         tools,
         maxIterations: 10,
+        withheld: bound.withheld,
         termination: "vetted_count >= target_quota",
         baseUrl: vars.ROTE_BASE_URL_LEAD_GENERATION_LOOP ?? null,
         env: vars,

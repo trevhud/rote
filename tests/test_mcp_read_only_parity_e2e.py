@@ -84,24 +84,30 @@ EXPECTED = {
         "lookup": {"found": "x"},
         "publish": {"published": "x"},
         "agent": ["lookup", "publish"],
+        "agent_withheld": [],
         "agent_writes_only": ["publish"],
+        "agent_writes_only_withheld": [],
     },
     "read_only": {
         "lookup": {"found": "x"},
         "publish": "refused",
         "agent": ["lookup"],
+        "agent_withheld": ["publish"],
         "agent_writes_only": "refused",
     },
     "server_declared": {
         "lookup": {"found": "x"},
         "publish": {"published": "x"},
         "agent": ["lookup", "publish"],
+        "agent_withheld": [],
         "agent_writes_only": ["publish"],
+        "agent_writes_only_withheld": [],
     },
     "declared_elsewhere": {
         "lookup": {"found": "x"},
         "publish": "refused",
         "agent": ["lookup"],
+        "agent_withheld": ["publish"],
         "agent_writes_only": "refused",
     },
 }
@@ -127,7 +133,9 @@ _TS_BODY = """\
         ["agent_writes_only", ["publish"]],
     ] as const) {
         try {
-            out[key] = (await bind([...tools])).map((t) => t.name).sort();
+            const bound = await bind([...tools]);
+            out[key] = bound.tools.map((t) => t.name).sort();
+            out[`${key}_withheld`] = Object.keys(bound.withheld).sort();
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             if (!isRoteMcpConfigError(err) || !message.includes("may write")) throw err;
@@ -242,8 +250,9 @@ def _python(url: str, env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> d
     pins = {"lookup": "ro", "publish": "ro"}
     for key, tools in (("agent", ["lookup", "publish"]), ("agent_writes_only", ["publish"])):
         try:
-            _servers, allowed, _withheld = inference._mcp_config_for(tools, pins)
+            _servers, allowed, withheld = inference._mcp_config_for(tools, pins)
             out[key] = sorted(a.split("__", 2)[2] for a in allowed)
+            out[f"{key}_withheld"] = sorted(withheld)
         except helper.RoteMcpConfigError as e:
             assert "may write" in str(e)
             out[key] = "refused"

@@ -1204,6 +1204,20 @@ def _withhold_writes(
 MCP_CONNECTOR_BETA = "mcp-client-2026-09-15"
 
 
+def _withheld_note(withheld: Mapping[str, str]) -> str:
+    """What a read-only run tells a loop about the declared tools it withheld.
+
+    Without it the loop is simply never offered them, and a model asked to
+    "publish the brief" reported it published. The same text as the TS
+    helper's withheldNote.
+    """
+    return (
+        "This run is read-only, so these tools are not available to you because "
+        f"they may write: {', '.join(sorted(withheld))}. Do not say you used them or that "
+        "their part of the task is done: say plainly which part you could not do."
+    )
+
+
 #: The tool an agent loop calls once, at the end, with its declared output
 #: (rote.adapters._common.AGENT_SUBMIT_TOOL; the TS twin uses the same name).
 _SUBMIT_TOOL = "submit_result"
@@ -1342,6 +1356,8 @@ def _run_agent_via_cli(
     if binary is None:  # pragma: no cover — select_provider checks first
         raise RuntimeError("the `claude` CLI vanished between provider selection and the call")
     servers, allowed, withheld = _mcp_config_for(tools, tool_servers)
+    if withheld:
+        prompt = f"{prompt}\n\n{_withheld_note(withheld)}"
     command = [
         binary,
         "-p",
@@ -1492,7 +1508,9 @@ def _run_agent_via_sdk(
                 strict=True if output_strict else None,
             )(submit)
         )
-    servers, allowed, _withheld = _mcp_config_for(tools, tool_servers)
+    servers, allowed, withheld = _mcp_config_for(tools, tool_servers)
+    if withheld:
+        prompt = f"{prompt}\n\n{_withheld_note(withheld)}"
     # The connector exposes a server's tools through one mcp_toolset per
     # server, and an allowlist is the only shape that holds the loop to the
     # tools it declared (and, in a read-only run, the ones that cannot

@@ -1714,6 +1714,16 @@ export async function listMcpTools(
     });
 }
 
+/**
+ * What an agent loop is handed: its bound tools, and the declared tools a
+ * read-only run withheld because they may write ({name: why}), which the
+ * loop's instructions name so it reports them as not done.
+ */
+export interface AgentToolBinding {
+    tools: BoundMcpTool[];
+    withheld: Record<string, string>;
+}
+
 /** A tool bound to a callable — structurally a BoundTool for the agent loop. */
 export interface BoundMcpTool {
     name: string;
@@ -1764,7 +1774,7 @@ export async function bindAgentTools(
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
-): Promise<BoundMcpTool[]> {
+): Promise<AgentToolBinding> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const withheld = new Map<string, string>();
@@ -1827,7 +1837,7 @@ export async function bindAgentTools(
         }
         throw new Error(message);
     }
-    return [...bound.values()];
+    return { tools: [...bound.values()], withheld: Object.fromEntries(withheld) };
 }
 
 function isUnauthorized(err: unknown): boolean {
@@ -2261,6 +2271,16 @@ export async function listMcpTools(
     });
 }
 
+/**
+ * What an agent loop is handed: its bound tools, and the declared tools a
+ * read-only run withheld because they may write ({name: why}), which the
+ * loop's instructions name so it reports them as not done.
+ */
+export interface AgentToolBinding {
+    tools: BoundMcpTool[];
+    withheld: Record<string, string>;
+}
+
 /** A tool bound to a callable — structurally a BoundTool for the agent loop. */
 export interface BoundMcpTool {
     name: string;
@@ -2304,7 +2324,7 @@ export async function bindAgentTools(
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
-): Promise<BoundMcpTool[]> {
+): Promise<AgentToolBinding> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const withheld = new Map<string, string>();
@@ -2363,7 +2383,7 @@ export async function bindAgentTools(
         }
         throw new Error(message);
     }
-    return [...bound.values()];
+    return { tools: [...bound.values()], withheld: Object.fromEntries(withheld) };
 }
 
 function isUnauthorizedWorkers(err: unknown): boolean {
@@ -2731,6 +2751,16 @@ export async function listMcpTools(
     }));
 }
 
+/**
+ * What an agent loop is handed: its bound tools, and the declared tools a
+ * read-only run withheld because they may write ({name: why}), which the
+ * loop's instructions name so it reports them as not done.
+ */
+export interface AgentToolBinding {
+    tools: BoundMcpTool[];
+    withheld: Record<string, string>;
+}
+
 /** A tool bound to a callable — structurally a BoundTool for the agent loop. */
 export interface BoundMcpTool {
     name: string;
@@ -2769,7 +2799,7 @@ export async function bindAgentTools(
     declaredServers: string[],
     serverUrls: Record<string, string | null> = {},
     toolServers: Record<string, string> = {},
-): Promise<BoundMcpTool[]> {
+): Promise<AgentToolBinding> {
     const wanted = new Set(allowed);
     const bound = new Map<string, BoundMcpTool>();
     const failures: unknown[] = [];
@@ -2815,7 +2845,7 @@ export async function bindAgentTools(
         }
         throw new Error(message);
     }
-    return [...bound.values()];
+    return { tools: [...bound.values()], withheld: {} };
 }
 """.replace("__ROTE_TS_INPUT_REQUIRED__", _TS_INPUT_REQUIRED).replace(
     "__MCP_TEXT_PAYLOAD_TS__", _MCP_TEXT_PAYLOAD_TS
@@ -3108,9 +3138,12 @@ function taskPrompt(
     task: unknown,
     termination: string | null,
     submit: boolean,
+    withheld: Record<string, string> = {},
 ): string {
     const parts = [description.trim(), "", JSON.stringify(task, null, 2)];
     if (termination) parts.push("", `Stop when: ${termination}`);
+    const names = Object.keys(withheld).sort();
+    if (names.length > 0) parts.push("", withheldNote(names));
     if (submit) {
         parts.push(
             "",
@@ -3120,6 +3153,16 @@ function taskPrompt(
         );
     }
     return parts.join("\\n");
+}
+
+/** What a read-only run tells a loop about the declared tools it withheld.
+ *  The same text as the Python helper's _withheld_note. */
+function withheldNote(names: string[]): string {
+    return (
+        `This run is read-only, so these tools are not available to you because ` +
+        `they may write: ${names.join(", ")}. Do not say you used them or that ` +
+        "their part of the task is done: say plainly which part you could not do."
+    );
 }
 
 /** Endpoint + credential for the SDK lanes. */
@@ -3386,6 +3429,8 @@ export async function runAgentLoop(opts: {
     outputFormat?: Record<string, unknown> | null;
     unwrapKey?: string | null;
     outputStrict?: boolean;
+    /** Declared tools a read-only run withheld ({name: why}), from bindAgentTools. */
+    withheld?: Record<string, string>;
 }): Promise<unknown> {
     const workersAi = opts.workersAi ?? null;
     const outputSchema = opts.outputSchema ?? null;
@@ -3395,6 +3440,7 @@ export async function runAgentLoop(opts: {
         opts.task,
         opts.termination ?? null,
         outputSchema !== null,
+        opts.withheld ?? {},
     );
     const submitted: Record<string, unknown>[] | null = outputSchema ? [] : null;
     const tools = submitted
@@ -3711,7 +3757,8 @@ def emit_agent_loop_module(
         f"    const vars = {env_source};",
     ]
     if tools:
-        body.append(f"    const tools: BoundTool[] = {bind_call};")
+        body.append(f"    const bound = {bind_call};")
+        body.append("    const tools: BoundTool[] = [...bound.tools];")
     else:
         body.append("    const tools: BoundTool[] = [];")
     if workers_ai_model is not None:
@@ -3746,6 +3793,7 @@ def emit_agent_loop_module(
             f"        model: vars.{model_var} ?? {json.dumps(default_model)},",
             "        tools,",
             f"        maxIterations: {max_iterations},",
+            *(["        withheld: bound.withheld,"] if tools else []),
         ]
     )
     if node.termination is not None:

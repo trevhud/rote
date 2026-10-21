@@ -33,13 +33,14 @@ export async function targetResearch(
     env: unknown, // the workflow's Env; cast below
 ): Promise<IntelBrief> {
     const vars = env as Record<string, string | undefined>;
-    const tools: BoundTool[] = await bindAgentTools(
+    const bound = await bindAgentTools(
         env as RoteMcpEnv,
         TOOLS,
         SERVERS,
         SERVER_URLS,
         TOOL_SERVERS,
     );
+    const tools: BoundTool[] = [...bound.tools];
     const ai = (env as { AI?: unknown }).AI;
     const workersAi: WorkersAiLane | null = ai
         ? {
@@ -55,6 +56,7 @@ export async function targetResearch(
         model: vars.ROTE_MODEL_TARGET_RESEARCH ?? "claude-sonnet-4-6",
         tools,
         maxIterations: 10,
+        withheld: bound.withheld,
         baseUrl: vars.ROTE_BASE_URL_TARGET_RESEARCH ?? null,
         env: vars,
         workersAi,

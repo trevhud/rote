@@ -233,3 +233,94 @@ def test_the_refusal_rule_lists_nothing_when_the_run_may_write(
     assert list(asyncio.run(mcp.agent_tool_refusals("ro", None, ["lookup", "publish"]))) == [
         "publish"
     ]
+
+
+# ───────── the loop is told what it was not given ─────────
+
+NOTE = "these tools are not available to you because they may write: publish_brief"
+
+
+def _cli_prompt(monkeypatch: pytest.MonkeyPatch) -> str:
+    seen = _capture_cli(monkeypatch, _agent_envelope())
+    monkeypatch.setattr(helper, "select_provider", lambda *a, **k: "claude-cli")
+    helper.run_agent_loop(
+        node_id="research",
+        description="Research, then publish a brief.",
+        task="{}",
+        model="claude-sonnet-5-5",
+        tools=["lookup", "publish"],
+        tool_servers=PINS,
+        max_iterations=3,
+    )
+    return str(seen["input"])
+
+
+def test_a_read_only_loop_is_told_which_tools_it_was_not_given(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without it a real claude -p loop asked to publish reported it had."""
+    _read_only(monkeypatch)
+    prompt = _cli_prompt(monkeypatch)
+    assert NOTE.replace("publish_brief", "publish") in prompt
+    assert "Do not say you used them" in prompt
+
+
+def test_a_loop_that_may_write_is_told_nothing(
+    server: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(mcp.READ_ONLY_ENV, raising=False)
+    assert "not available to you" not in _cli_prompt(monkeypatch)
+
+
+def test_the_connector_loop_is_told_too(server: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    _read_only(monkeypatch)
+    [message] = _sdk_request(monkeypatch, ["lookup", "publish"])["messages"]
+    assert NOTE.replace("publish_brief", "publish") in message["content"]
+
+
+def test_both_languages_tell_a_loop_the_same_thing() -> None:
+    import re
+
+    from rote.adapters._ts_common import ROTE_INFERENCE_HELPER_TS
+
+    body = re.search(
+        r"function withheldNote\(names: string\[\]\): string \{(.*?)\n\}",
+        ROTE_INFERENCE_HELPER_TS,
+        re.S,
+    )
+    assert body is not None
+    source = body.group(1).replace('${names.join(", ")}', "publish_brief")
+    ts = "".join(re.findall(r'[`"]([^`"]*)[`"]', source))
+    assert ts == helper._withheld_note({"publish_brief": "why"})
+
+
+def test_the_emitted_ts_loop_passes_the_withheld_tools_on() -> None:
+    from rote.adapters import get_adapter
+    from rote.ir import Pipeline
+
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "p",
+            "version": "0.1.0",
+            "input": {"type": "In"},
+            "nodes": [
+                {
+                    "id": "loop",
+                    "kind": "agent_loop",
+                    "description": "d",
+                    "tools": ["lookup"],
+                    "tool_servers": {"lookup": "ro"},
+                    "termination": {"condition": "done", "max_iterations": 2},
+                }
+            ],
+            "edges": [],
+        }
+    )
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as out:
+        get_adapter("dbos-ts").emit(pipeline, Path(out))
+        src = (Path(out) / "src" / "extracted" / "loop.ts").read_text()
+    assert "const tools: BoundTool[] = [...bound.tools];" in src
+    assert "withheld: bound.withheld," in src
