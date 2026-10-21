@@ -43,6 +43,45 @@ DISTRIBUTIONS = {
 }
 
 
+def third_party_imports(
+    app: Path, dirs: tuple[str, ...] = ("extracted", "signatures")
+) -> dict[str, set[Path]]:
+    """Every non-stdlib absolute import in the app's ``dirs``, with the files that make it.
+
+    Imports of the app's own packages (``extracted``, ``signatures``) are
+    not third party. Imports inside functions count: a lazily imported
+    vendor SDK is still needed when that function runs.
+    """
+    found: dict[str, set[Path]] = {}
+    for d in dirs:
+        for path in sorted((app / d).glob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    names = [node.module]
+                for name in names:
+                    top = name.split(".")[0]
+                    if top in sys.stdlib_module_names or top in ("extracted", "signatures"):
+                        continue
+                    found.setdefault(name, set()).add(path)
+    return found
+
+
+def distribution_for(name: str) -> str | None:
+    """The distribution providing import ``name``, from :data:`DISTRIBUTIONS`, else None."""
+    return (
+        DISTRIBUTIONS.get(name)
+        or DISTRIBUTIONS.get(".".join(name.split(".")[:2]))
+        or DISTRIBUTIONS.get(name.split(".")[0])
+    )
+
+
 def vendor_requirements(app: Path) -> list[str]:
     """Distributions the app imports that this interpreter cannot import yet.
 
@@ -52,34 +91,14 @@ def vendor_requirements(app: Path) -> list[str]:
     """
     needed: set[str] = set()
     unknown: set[str] = set()
-    for path in sorted((app / "extracted").glob("*.py")) + sorted(
-        (app / "signatures").glob("*.py")
-    ):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
+    for name in third_party_imports(app):
+        if _importable(name):
             continue
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [a.name for a in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                names = [node.module]
-            for name in names:
-                top = name.split(".")[0]
-                if top in sys.stdlib_module_names or top in ("extracted", "signatures"):
-                    continue
-                dist = (
-                    DISTRIBUTIONS.get(name)
-                    or DISTRIBUTIONS.get(".".join(name.split(".")[:2]))
-                    or DISTRIBUTIONS.get(top)
-                )
-                if _importable(name):
-                    continue
-                if dist is None:
-                    unknown.add(name)
-                else:
-                    needed.add(dist)
+        dist = distribution_for(name)
+        if dist is None:
+            unknown.add(name)
+        else:
+            needed.add(dist)
     if unknown:
         raise VendorDepsError(
             f"the app imports {', '.join(sorted(unknown))}, which is not installed here and "

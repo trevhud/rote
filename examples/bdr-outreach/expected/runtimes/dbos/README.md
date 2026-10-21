@@ -15,11 +15,12 @@ resumes from the last completed step after a crash.
 - `signatures/` — typed LLM judges generated from the pipeline IR
   (Pydantic models + direct vendor SDK calls)
 - `dbos-config.yaml` — CLI/Cloud tooling config for `dbos start`
+- `requirements.txt` — what the emitted code imports, vendor SDKs included
 
 ## Run locally
 
 ```sh
-pip install 'dbos>=3.3,<4' 'anthropic>=1.15'
+pip install -r requirements.txt   # dbos 3, plus what extracted/ imports
 python main.py '{"your": "input"}'   # one run, blocks until done
 python main.py --serve                 # long-lived worker (see below)
 ```
