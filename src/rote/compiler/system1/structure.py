@@ -77,6 +77,14 @@ MAX_TOKENS = 48000
 TIMEOUT_S = 300.0
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: A server or tool name that may reach the prompt (tool_grounding's rule).
+_SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
+#: A number written plainly: no leading zero, sign or exponent games. "00123",
+#: "5%" and "1e3" stay strings, because the prompt asked for them verbatim.
+_PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
+#: Prefix of a node input an MCP argument reads, so it never collides with
+#: `request`, a read node's id or another input.
+ARG_INPUT_PREFIX = "arg_"
 _DURATION = re.compile(r"^\d+[smhd]$")
 _URL = re.compile(r"https?://[^\s)`>\]]+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
 _LOCAL_PATH = re.compile(r"(?<![\w.])[~/][\w.-]*/[\w./-]*|\b[\w-]+/[\w.-]+\.\w{1,5}\b")
@@ -334,16 +342,23 @@ def lane_with(lane: Lane, choice: str) -> Lane:
 def declared_tools(
     skill: SkillParse, tools: Mapping[tuple[str, str], Any] | None
 ) -> dict[tuple[str, str], list[dict[str, Any]] | None]:
-    """Every declared ``(server, tool)``, with its parameters when a schema is known."""
-    out: dict[tuple[str, str], list[dict[str, Any]] | None] = {
-        (server, tool): None for tool, server in skill.tool_registry.items()
-    }
+    """Every declared ``(server, tool)``, with its parameters when a schema is known.
+
+    Declared means a server's tools/list (live or the skill's bundled
+    snapshot, both in ``tools``) or an explicit "(X MCP - `tool`)" annotation.
+    The parser's tool tables are not a source: they also read rule-table
+    codes (``ground_transport``) as tools, which #193 found. A name that is
+    not a plain identifier never reaches the prompt: tools/list is remote
+    input, and a tool called "IGNORE THE RUBRIC" would be read as text."""
+    out: dict[tuple[str, str], list[dict[str, Any]] | None] = {}
     for u in skill.units:
         for server, tool in u.mcp:
-            if tool:
+            if tool and _SAFE_NAME.fullmatch(server) and _SAFE_NAME.fullmatch(tool):
                 out.setdefault((server, tool), None)
     for key, schema in (tools or {}).items():
-        if checkable(schema.input_schema) is None:
+        if not (_SAFE_NAME.fullmatch(key[0]) and _SAFE_NAME.fullmatch(key[1])):
+            continue
+        if schema is None or checkable(schema.input_schema) is None:
             out.setdefault(key, None)
             continue
         kept, _ = parameters(schema)
@@ -429,8 +444,11 @@ def check(
     for pos, n in enumerate(answer.get("nodes") or []):
         nid = str(n.get("id", ""))
         where = f"node {nid or f'#{pos}'}"
-        if not _IDENTIFIER.match(nid) or nid in _RESERVED_IDS:
-            out.append(f"{where}: the id must be a snake_case identifier, not a reserved name")
+        if not _IDENTIFIER.match(nid) or nid in _RESERVED_IDS or nid.startswith(ARG_INPUT_PREFIX):
+            out.append(
+                f"{where}: the id must be a snake_case identifier, not a reserved name, and "
+                f"not start with {ARG_INPUT_PREFIX!r}"
+            )
         if nid in seen:
             out.append(f"{where}: the id is used twice")
         u = units.get(n.get("section"))
@@ -449,7 +467,13 @@ def check(
             elif ref in seen and seen[ref].get("in_loop") and not n.get("in_loop"):
                 out.append(f"{where}: reads {ref!r}, which runs inside a loop, from outside it")
         fan = n.get("fan_out_over") or ""
-        if fan and fan not in reads:
+        if fan == "pipeline.input":
+            out.append(
+                f"{where}: fans out over the pipeline input; a fan runs over a node's list. "
+                "Add a pure_function that reads pipeline.input and returns {items: [...]}, "
+                "and fan out over that node"
+            )
+        elif fan and fan not in reads:
             out.append(f"{where}: fans out over {fan!r}, which it does not read")
         if fan and fan in seen and seen[fan].get("kind") == "hitl_gate":
             out.append(f"{where}: fans out over the gate {fan!r}; a gate returns no list")
@@ -474,6 +498,7 @@ def check(
                 by_tool,
                 _input_names(answer, sample),
                 ui_session,
+                seen,
             )
             ui_session = ui_session or _opens_app(system, u)
         elif io not in ("none", None) or how not in ("none", None):
@@ -506,8 +531,11 @@ def check(
         if kind == "agent_loop":
             lp = n.get("loop") or {}
             unknown = [t for t in lp.get("tools") or [] if t not in by_tool]
-            if declared and unknown:
-                out.append(f"{where}: loop tools {unknown} are not declared tools")
+            if unknown:
+                out.append(
+                    f"{where}: loop tools {unknown} are not declared tools (declared: "
+                    f"{sorted(by_tool)})"
+                )
         seen[nid] = n
     if sample is not None and sample.gates:
         out += _check_gates(answer, sample)
@@ -535,10 +563,13 @@ def _check_run_outputs(answer: dict[str, Any]) -> list[str]:
 
 
 def _check_gates(answer: dict[str, Any], sample: Any) -> list[str]:
-    """The sample's gate answers, in order, against the skeleton's gates.
+    """The sample's gate answers against the skeleton's gates.
 
     Each answer is what a person sent at one pause, so the skeleton has one
-    gate per answer, in the same order, expecting the same keys."""
+    gate per answer, each expecting that answer's keys. Answers meet gates
+    through grounding's matcher, by signal name first."""
+    from rote.compiler.grounding import GateView, match_sample_gates
+
     gates = [n for n in answer.get("nodes") or [] if n.get("kind") == "hitl_gate"]
     answers = [sorted(keys) for keys in sample.gates.values()]
     if len(gates) != len(answers):
@@ -547,12 +578,25 @@ def _check_gates(answer: dict[str, Any], sample: Any) -> list[str]:
             f"{answers}; the skeleton has {len(gates)} gate(s). A gate is one pause "
             "the person answers once, with all of its keys"
         ]
-    return [
-        f"node {g.get('id')}: the sample answers this gate with keys {keys}, not "
-        f"{sorted((g.get('gate') or {}).get('payload') or [])}"
-        for g, keys in zip(gates, answers, strict=True)
-        if sorted((g.get("gate") or {}).get("payload") or []) != keys
+    views = [
+        GateView(
+            str(g.get("id")),
+            str((g.get("gate") or {}).get("signal") or ""),
+            frozenset((g.get("gate") or {}).get("payload") or []),
+        )
+        for g in gates
     ]
+    by_id = {str(g.get("id")): g for g in gates}
+    out = []
+    for signal, gate_id in match_sample_gates(views, sample).items():
+        payload = sorted((by_id[gate_id].get("gate") or {}).get("payload") or [])
+        keys = sorted(sample.gates[signal])
+        if payload != keys:
+            out.append(
+                f"node {gate_id}: the sample answers this gate ({signal!r}) with keys {keys}, "
+                f"not {payload}"
+            )
+    return out
 
 
 def _arg_problem(
@@ -563,8 +607,13 @@ def _arg_problem(
     reads: set[str],
     input_names: set[str] | None,
     fan: str = "",
+    earlier: Mapping[str, dict[str, Any]] | None = None,
 ) -> str | None:
-    """Why one MCP argument binding is wrong, or None."""
+    """Why one MCP argument binding is wrong, or None.
+
+    ``earlier`` is the nodes before this one, by id, in the answer's form
+    (``kind``, ``fan_out_over``, ``outputs``): an element must come from a
+    list a pure_function builds, and a field from a source that returns it."""
     p, src, val = a.get("param"), a.get("source"), str(a.get("value", ""))
     if not _IDENTIFIER.match(str(p)):
         return f"argument name {p!r} is not an identifier"
@@ -580,10 +629,31 @@ def _arg_problem(
         )
     if src == "fan_element" and (not fan or val != fan):
         return f"argument {p!r} binds a fan_element of {val!r}, but the node fans out over {fan!r}"
+    builder = (earlier or {}).get(val) if src == "fan_element" else None
+    if builder is not None and (
+        builder.get("kind") != "pure_function" or builder.get("fan_out_over")
+    ):
+        return (
+            f"argument {p!r} binds the elements of {val!r}, which is not a pure_function "
+            "building one list: add a pure_function that returns {items: [...]} with the "
+            "values this parameter takes, and fan out over it"
+        )
     if src == "upstream_field":
         node_id, _, fld = val.partition(".")
         if node_id not in reads or not _IDENTIFIER.match(fld):
             return f"argument {p!r} reads {val!r}; write '<node id>.<field>' for a node it reads"
+        source = (earlier or {}).get(node_id)
+        if source is not None and source.get("fan_out_over"):
+            return (
+                f"argument {p!r} reads field {fld!r} of {node_id!r}, which fans out: its "
+                "result is a list, with no fields"
+            )
+        if source is not None and fld not in (source.get("outputs") or []):
+            return (
+                f"argument {p!r} reads field {fld!r} of {node_id!r}, which declares outputs "
+                f"{list(source.get('outputs') or [])}: add it to that node's outputs, or read "
+                "a field it returns"
+            )
     return None
 
 
@@ -613,6 +683,7 @@ def _check_call(
     by_tool: Mapping[str, list[str]],
     input_names: set[str] | None = None,
     ui_session: bool = False,
+    earlier: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     """Why this external_call is not backed by evidence under its own section.
 
@@ -638,7 +709,7 @@ def _check_call(
         reads = {r for r in n.get("reads") or [] if r != "pipeline.input"}
         for a in n.get("args") or []:
             problem = _arg_problem(
-                a, tool, names, constants, reads, input_names, n.get("fan_out_over") or ""
+                a, tool, names, constants, reads, input_names, n.get("fan_out_over") or "", earlier
             )
             if problem:
                 out.append(f"{where}: {problem}")
@@ -845,7 +916,7 @@ def resolve(
             )
             continue
         nid = str(n.get("id", ""))
-        if not _IDENTIFIER.match(nid) or nid in _RESERVED_IDS:
+        if not _IDENTIFIER.match(nid) or nid in _RESERVED_IDS or nid.startswith(ARG_INPUT_PREFIX):
             nid = f"step_{slug(u.title)}"[:60]
         base, k = nid, 2
         while nid in ids:
@@ -859,7 +930,9 @@ def resolve(
         if len(reads) != len(n.get("reads") or []):
             notes.append(f"`{nid}`: dropped reads of nodes that do not come before it")
         n["reads"] = reads
-        if n.get("fan_out_over") and n["fan_out_over"] not in reads:
+        if n.get("fan_out_over") and n["fan_out_over"] not in ids:
+            # A fan runs over an earlier node's list; the pipeline input is not one.
+            notes.append(f"`{nid}`: dropped its fan_out over {n['fan_out_over']!r}")
             n["fan_out_over"] = ""
         if n.get("fan_out_over") and next(
             (m for m in nodes if m["id"] == n["fan_out_over"] and m["kind"] == "hitl_gate"), None
@@ -873,8 +946,9 @@ def resolve(
         if kind == "external_call":
             inputs = _input_names(answer, sample)
             system = n.get("system") or {}
+            earlier = {m["id"]: m for m in nodes}
             problems = _check_call(
-                f"`{nid}`", n, system, u, skill_md, declared, by_tool, inputs, ui_session
+                f"`{nid}`", n, system, u, skill_md, declared, by_tool, inputs, ui_session, earlier
             )
             ui_session = ui_session or _opens_app(system, u)
             if problems and system.get("how") == "declared_tool" and system.get("tool") in by_tool:
@@ -893,6 +967,7 @@ def resolve(
                         upstream,
                         inputs,
                         n.get("fan_out_over") or "",
+                        earlier,
                     )
                     is None
                 ]
@@ -960,7 +1035,10 @@ def resolve(
             }
         if n["kind"] == "agent_loop":
             lp = n.get("loop") or {}
+            dropped = [t for t in lp.get("tools") or [] if t not in by_tool]
             lp["tools"] = [t for t in lp.get("tools") or [] if t in by_tool]
+            if dropped:
+                notes.append(f"`{nid}`: dropped loop tools no server declares: {dropped}")
             n["loop"] = lp
         ids.add(nid)
         nodes.append(n)
@@ -970,25 +1048,43 @@ def resolve(
 
 
 def _gates_from_sample(nodes: list[dict[str, Any]], sample: Any) -> list[str]:
-    """Give each gate the sample's keys, in order, or fail when the counts differ.
+    """Give each gate the sample answer that belongs to it, or fail.
 
-    The sample's answers are data, so they outrank the model's payload. A
-    different number of gates cannot be fixed without guessing which pause
-    the model got wrong, so it fails the structure pass."""
+    Matched with grounding's one matcher (signal name first, then shared
+    key words, then order), the same one the compiled IR is checked with.
+    The sample is data, so the matched gate takes its keys and its signal
+    name. A different number of gates cannot be fixed without guessing which
+    pause the model got wrong, so it fails the structure pass."""
+    from rote.compiler.grounding import GateView, match_sample_gates
+
     gates = [n for n in nodes if n["kind"] == "hitl_gate"]
-    answers = [sorted(keys) for keys in sample.gates.values()]
-    if len(gates) != len(answers):
+    if len(gates) != len(sample.gates):
         raise StructureUnavailable(
-            f"the sample answers {len(answers)} gate(s) and the skeleton still has "
+            f"the sample answers {len(sample.gates)} gate(s) and the skeleton still has "
             f"{len(gates)} after repair; rote does not guess which pause is wrong"
         )
+    views = [GateView(g["id"], g["gate"]["signal"], frozenset(g["gate"]["payload"])) for g in gates]
+    by_id = {g["id"]: g for g in gates}
+    taken = {g["gate"]["signal"] for g in gates}
     notes = []
-    for g, keys in zip(gates, answers, strict=True):
-        if sorted(g["gate"]["payload"]) != keys:
+    for signal, gate_id in match_sample_gates(views, sample).items():
+        gate = by_id[gate_id]["gate"]
+        keys = sorted(sample.gates[signal])
+        if sorted(gate["payload"]) != keys:
             notes.append(
-                f"`{g['id']}`: gate keys {g['gate']['payload']} replaced by the sample's {keys}"
+                f"`{gate_id}`: gate keys {gate['payload']} replaced by the sample's {keys}"
             )
-            g["gate"]["payload"] = keys
+            gate["payload"] = keys
+        if (
+            gate["signal"] != signal
+            and _IDENTIFIER.match(signal)
+            and signal not in taken - {gate["signal"]}
+        ):
+            notes.append(
+                f"`{gate_id}`: signal {gate['signal']!r} renamed to the sample's {signal!r}"
+            )
+            taken = (taken - {gate["signal"]}) | {signal}
+            gate["signal"] = signal
     return notes
 
 
@@ -1001,31 +1097,41 @@ def _one_line(text: Any, limit: int = 160) -> str:
 
 
 def _value(raw: str) -> int | float | str:
-    n = to_number(raw)
+    """A plainly written number as a number; every other value verbatim."""
+    if not _PLAIN_NUMBER.fullmatch(raw.strip()):
+        return raw
+    n = to_number(raw.strip())
     return raw if n is None else n
 
 
-def mcp_args(args: list[dict[str, Any]], inputs: dict[str, str]) -> dict[str, Any]:
+def mcp_args(
+    args: list[dict[str, Any]],
+    inputs: dict[str, str],
+    types: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
     """``mcp.args`` from the answer's argument sources, adding the inputs they read.
 
-    An input field or an upstream field becomes a node input of its own, and
-    the argument names it; a fanned element is already bound under its
-    source's id; a constant is named; a literal is ``{literal: v}``."""
+    An input field or an upstream field becomes a node input of its own,
+    ``arg_<param>``, so it cannot collide with ``request``, a read node's id
+    or another argument's input; the argument names it. A fanned element is
+    already bound under its source's id. A constant is named. A literal is
+    ``{literal: v}``, a number only when the tool's parameter is numeric
+    (``types``: parameter name to JSON type) and the value is written plainly."""
     out: dict[str, Any] = {}
     for a in args:
-        src, val = a["source"], str(a["value"])
+        param, src, val = a["param"], a["source"], str(a["value"])
         if src == "literal":
-            out[a["param"]] = {"literal": _value(val)}
+            numeric = (types or {}).get(param) in ("number", "integer")
+            out[param] = {"literal": _value(val) if numeric else val}
         elif src == "input_field":
-            inputs.setdefault(val, f"pipeline.input.{val}")
-            out[a["param"]] = val
+            inputs[f"{ARG_INPUT_PREFIX}{param}"] = f"pipeline.input.{val}"
+            out[param] = f"{ARG_INPUT_PREFIX}{param}"
         elif src == "upstream_field":
             source, _, fld = val.partition(".")
-            key = f"{source}_{fld}"
-            inputs.setdefault(key, f"{source}.output.{fld}")
-            out[a["param"]] = key
+            inputs[f"{ARG_INPUT_PREFIX}{param}"] = f"{source}.output.{fld}"
+            out[param] = f"{ARG_INPUT_PREFIX}{param}"
         else:
-            out[a["param"]] = val
+            out[param] = val
     return out
 
 
@@ -1097,7 +1203,10 @@ def to_plan(
         if kind == "external_call":
             node.role = "fetch" if system.get("io") == "read" else "write"
             if system.get("how") == "declared_tool":
-                args = mcp_args(n.get("args") or [], node.inputs)
+                params = declared.get((system["server"], system["tool"])) or []
+                args = mcp_args(
+                    n.get("args") or [], node.inputs, {q["name"]: q["type"] for q in params}
+                )
                 for a in n.get("args") or []:
                     if a["source"] != "fan_element":
                         continue
@@ -1107,6 +1216,8 @@ def to_plan(
                     params = declared.get((system["server"], system["tool"])) or []
                     ptype = next((q["type"] for q in params if q["name"] == a["param"]), "value")
                     builder = by_id[str(a["value"])]
+                    if builder.output_schema is not None or builder.kind != "pure_function":
+                        continue  # check() refuses this shape; never change a fixed schema
                     builder.output_schema = {
                         "type": "object",
                         "properties": {
@@ -1122,12 +1233,26 @@ def to_plan(
                     ).strip()
                 node.mcp = {"server": system["server"], "tool": system["tool"], "args": args}
                 node.decide("mcp", dict(node.mcp), conf, rule)
+                for param, value in args.items():
+                    if isinstance(value, dict) and "literal" in value:
+                        # A fixed value frozen into every run: a reviewer checks it.
+                        node.decide(
+                            f"mcp.args.{param}",
+                            value,
+                            min(conf, REVIEW_BELOW - 0.01),
+                            f"the structure pass fixed `{param}` to a literal",
+                        )
             node.decide("system", {k: system.get(k) for k in ("io", "how", "name")}, conf, rule)
         if kind == "agent_loop":
             lp = n.get("loop") or {}
-            node.tools = list(lp.get("tools") or []) or [f"{node.id}_tool"]
+            node.tools = list(lp.get("tools") or [])
             node.tool_servers = {t: by_tool[t] for t in node.tools if t in by_tool}
-            node.decide("tools", node.tools, conf, rule)
+            if node.tools:
+                node.decide("tools", node.tools, conf, rule)
+            else:
+                # The IR needs a tool; no server declares one this loop can use.
+                node.tools = [f"{node.id}_tool"]
+                node.decide("tools", node.tools, 0.2, "no declared tool: placeholder, needs review")
             stop, bound = str(lp.get("stop_condition") or ""), int(lp.get("max_iterations") or 0)
             if stop and bound > 0:
                 node.termination = {"condition": _one_line(stop, 300), "max_iterations": bound}
@@ -1145,10 +1270,14 @@ def to_plan(
             by_id[loop].loop_body.append(node.id)
         nodes.append(node)
         by_id[node.id] = node
+    for node in nodes:
+        if "items" in node.output_keys and not node.lists_output:
+            # Only a node a later one fans over returns the `items` list.
+            node.output_keys = [k for k in node.output_keys if k != "items"]
     fields = {
         slug(str(f["name"])): _one_line(f.get("description", ""), 200)
         for f in answer.get("input_fields") or []
-        if slug(str(f.get("name", ""))) not in ("", "step")
+        if re.search(r"[A-Za-z0-9]", str(f.get("name", "")))
     }
     review = [
         f"`{n.id}` {d.field} = {d.value!r} (confidence {d.confidence:.2f}): {d.rule}"
@@ -1361,14 +1490,33 @@ def redecide(
             "server": entry.get("server", ""),
             "tool": entry.get("tool", ""),
         }
+        # The IR nodes in the answer's form, for the argument-source checks.
+        earlier = {
+            m["id"]: {
+                "kind": m["kind"],
+                "fan_out_over": "fanned" if m.get("fan_out") else "",
+                "outputs": list(m["output"]) if isinstance(m.get("output"), dict) else [],
+            }
+            for m in doc["nodes"]
+            if m["id"] != nid
+        }
         problems = _check_call(
-            f"node {nid}", candidate, system, None, skill_md, declared, by_tool, inputs_names
+            f"node {nid}",
+            candidate,
+            system,
+            None,
+            skill_md,
+            declared,
+            by_tool,
+            inputs_names,
+            earlier=earlier,
         )
         if problems:
             changes.append(f"`{nid}`: the new binding was not applied: {'; '.join(problems)}")
             continue
         inputs = dict(node.get("inputs") or {})
-        args = mcp_args(new_args, inputs)
+        params = declared.get((system["server"], system["tool"])) or []
+        args = mcp_args(new_args, inputs, {q["name"]: q["type"] for q in params})
         node["inputs"] = inputs
         node["mcp"] = {"server": system["server"], "tool": system["tool"], "args": args}
         applied = True
