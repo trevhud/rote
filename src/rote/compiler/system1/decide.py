@@ -150,6 +150,9 @@ class NodePlan:
     loop_body: list[str] = field(default_factory=list)  # an agent_loop's per-item sub-nodes
     termination: dict[str, Any] | None = None  # an agent_loop's stated stop condition
     in_loop: str | None = None  # the loop that calls this node per item
+    intent: str | None = None  # the structure pass's one-sentence intent, the description
+    output_schema: dict[str, Any] | None = None  # a result contract the structure pass fixed
+    output_keys: list[str] = field(default_factory=list)  # the result's keys, when decided
 
     def decide(self, name: str, value: Any, confidence: float, rule: str) -> None:
         self.decisions.append(Decision(name, value, round(confidence, 2), rule))
@@ -167,6 +170,11 @@ class Plan:
     #: The tie-break's answers and cost (:class:`rote.compiler.system1.tiebreak.TieBreak`),
     #: when one ran.
     tiebreak: Any = None
+    #: The pipeline input's fields as the structure pass names them; without
+    #: it (and without a sample) the skill's wording names them.
+    input_fields: dict[str, str] | None = None
+    #: The structure pass's record (:class:`rote.compiler.system1.structure.Structure`).
+    structure: Any = None
 
 
 # ── kinds and segmentation ────────────────────────────────────────────────

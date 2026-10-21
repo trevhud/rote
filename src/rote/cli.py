@@ -899,6 +899,7 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         system1_decider=args.decider,
         system1_tiebreak=args.tiebreak,
         max_parallel=args.max_parallel,
+        system1_structure=args.structure,
         # Tool schemas come from a read-only tools/list; --no-mcp means the
         # compile touches no MCP server at all.
         tool_discovery="none" if args.no_mcp else args.tool_discovery,
@@ -4234,6 +4235,12 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "CLOUDFLARE_API_TOKEN. Clef costs about $0.005 a compile, billed to Workers AI. "
             "Jev costs about $0.001, billed to the account's AI Gateway credits"
         ),
+    )
+    p.add_argument(
+        "--structure",
+        choices=["rules", "haiku", "sonnet"],
+        default="rules",
+        help=argparse.SUPPRESS,  # PROTOTYPE: the whole-skill structure pass
     )
     p.add_argument(
         "--tiebreak",
