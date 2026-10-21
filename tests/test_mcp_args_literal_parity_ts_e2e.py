@@ -10,6 +10,7 @@ Slow: npm install and the real dev servers (wrangler, inngest-cli).
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Any
@@ -94,14 +95,15 @@ def test_a_read_only_cloudflare_run_gets_its_gate_through_wrangler_vars(
     app = tmp_path / "cloudflare"
     get_adapter("cloudflare").emit(PIPELINE, app)
     (app / ".dev.vars").write_text(as_dev_vars(env), encoding="utf-8")
-    servers = sorted({n.mcp.server for n in PIPELINE.nodes if n.mcp is not None})
+    # The declaration names the endpoint the Worker resolves the server to.
+    servers = {n.mcp.server: echo_server for n in PIPELINE.nodes if n.mcp is not None}
     refused = run_cloudflare(
         app,
         PAYLOAD,
         signals={},
         gate_order=[],
         timeout_seconds=180,
-        worker_vars={"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": ""},
+        worker_vars={"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "{}"},
     )
     assert refused.error is not None and "may write" in refused.error, refused.error
     allowed = run_cloudflare(
@@ -110,7 +112,10 @@ def test_a_read_only_cloudflare_run_gets_its_gate_through_wrangler_vars(
         signals={},
         gate_order=[],
         timeout_seconds=180,
-        worker_vars={"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": ",".join(servers)},
+        worker_vars={
+            "ROTE_MCP_READ_ONLY": "1",
+            "ROTE_MCP_READ_ONLY_SERVERS": json.dumps(servers),
+        },
     )
     assert allowed.error is None, allowed.error
     assert allowed.output == EXPECTED

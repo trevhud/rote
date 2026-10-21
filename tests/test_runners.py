@@ -344,7 +344,13 @@ def test_run_pipeline_dispatches_to_trial(tmp_path: Path, monkeypatch: pytest.Mo
 @pytest.mark.parametrize(
     ("allow_writes", "seen"),
     [
-        (False, {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "docs"}),
+        (
+            False,
+            {
+                "ROTE_MCP_READ_ONLY": "1",
+                "ROTE_MCP_READ_ONLY_SERVERS": '{"docs": "https://docs.example/mcp"}',
+            },
+        ),
         (True, {"ROTE_MCP_READ_ONLY": None, "ROTE_MCP_READ_ONLY_SERVERS": None}),
     ],
 )
@@ -398,10 +404,46 @@ def test_mcp_add_read_only_is_stored_and_trusted_by_both_sides(
     assert "read-only: every tool on it" in capsys.readouterr().out
     assert load_registry().servers["deepwiki"].read_only is True
     assert load_registry().servers["briefs"].read_only is None
-    assert read_only_servers() == ["deepwiki"]
+    assert read_only_servers() == {"deepwiki": "https://mcp.deepwiki.com/mcp"}
     unannotated = [SimpleNamespace(name="ask_question", annotations=None)]
     assert read_only_tools(unannotated, declared_read_only("deepwiki")) == unannotated
     assert read_only_tools(unannotated, declared_read_only("briefs")) == []
+
+
+def test_a_read_only_declaration_covers_the_registered_endpoint_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ROTE_MCP_<SERVER>_URL` wins over the registry, so a name registered
+    read-only could be pointed at an endpoint whose tools write. The
+    declaration is the user's word about the registered URL, nothing else."""
+    from rote.mcp import _runtime_helper as helper
+    from rote.mcp.registry import McpRegistry, McpServerConfig, declared_read_only, save_registry
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "deepwiki": McpServerConfig(url="https://mcp.deepwiki.com/mcp", read_only=True)
+            }
+        )
+    )
+    monkeypatch.delenv("ROTE_MCP_DEEPWIKI_URL", raising=False)
+    assert declared_read_only("deepwiki")
+    monkeypatch.setenv("ROTE_MCP_DEEPWIKI_URL", "https://MCP.deepwiki.com:443/mcp/")
+    assert declared_read_only("deepwiki")  # the same endpoint, spelled differently
+    monkeypatch.setenv("ROTE_MCP_DEEPWIKI_URL", "https://writes.example/mcp")
+    assert not declared_read_only("deepwiki")
+    # The pipeline side applies the same rule to the URL the call resolves to.
+    monkeypatch.setenv("ROTE_MCP_READ_ONLY", "1")
+    monkeypatch.setenv("ROTE_MCP_READ_ONLY_SERVERS", '{"deepwiki": "https://mcp.deepwiki.com/mcp"}')
+    tool = type("T", (), {"name": "ask_question", "annotations": None})()
+    assert (
+        helper.write_refusal("deepwiki", "https://mcp.deepwiki.com/mcp", "ask_question", [tool])
+        is None
+    )
+    refusal = helper.write_refusal("deepwiki", "https://writes.example/mcp", "ask_question", [tool])
+    assert refusal is not None
+    assert "registered read-only at https://mcp.deepwiki.com/mcp" in refusal
+    assert "https://writes.example/mcp" in refusal
 
 
 def test_runnable_runtimes_is_the_current_set() -> None:
@@ -466,7 +508,7 @@ def test_run_pipeline_dispatches_cloudflare(
         "gate_order": ["g1"],
         "timeout_seconds": 42.0,
         # Read-only by default, passed as Worker vars (workerd sees no env).
-        "worker_vars": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": ""},
+        "worker_vars": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "{}"},
     }
 
 

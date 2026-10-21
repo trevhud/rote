@@ -116,14 +116,26 @@ class McpRegistry(BaseModel):
 
 
 def declared_read_only(server: str) -> bool:
-    """Whether the user registered ``server`` read-only (``rote mcp add --read-only``)."""
+    """Whether the user registered ``server`` read-only, at the endpoint a call
+    to it resolves to now (``ROTE_MCP_<SERVER>_URL`` wins over the registry,
+    and the declaration covers the registered endpoint only)."""
+    from rote.mcp._runtime_helper import RoteMcpConfigError, declared_read_only_at, resolve_url
+
     config = load_registry().servers.get(server)
-    return config is not None and config.read_only is True
+    if config is None or config.read_only is not True:
+        return False
+    try:
+        resolved = resolve_url(server, None)
+    except RoteMcpConfigError:
+        return False
+    return declared_read_only_at(config.url, resolved)
 
 
-def read_only_servers() -> list[str]:
-    """Every server the user registered read-only, for a read-only run's environment."""
-    return sorted(name for name, c in load_registry().servers.items() if c.read_only is True)
+def read_only_servers() -> dict[str, str]:
+    """``{name: registered url}`` for every server the user registered read-only."""
+    return {
+        name: c.url for name, c in sorted(load_registry().servers.items()) if c.read_only is True
+    }
 
 
 def load_registry(path: Path | None = None) -> McpRegistry:

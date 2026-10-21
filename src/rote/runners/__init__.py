@@ -463,14 +463,15 @@ def read_only_env(allow_writes: bool) -> dict[str, str]:
     allowlist: every emitted MCP helper refuses a tool that may write
     (``rote.mcp._runtime_helper.write_refusal``), with the servers the user
     registered read-only passed along, since a Worker cannot read the
-    registry.
+    registry. Each declared server carries its registered URL, so the
+    declaration covers that endpoint and no other.
     """
     from rote.mcp._runtime_helper import READ_ONLY_ENV, READ_ONLY_SERVERS_ENV
     from rote.mcp.registry import read_only_servers
 
     if allow_writes:
         return {}
-    return {READ_ONLY_ENV: "1", READ_ONLY_SERVERS_ENV: ",".join(read_only_servers())}
+    return {READ_ONLY_ENV: "1", READ_ONLY_SERVERS_ENV: json.dumps(read_only_servers())}
 
 
 @contextlib.contextmanager

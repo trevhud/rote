@@ -203,8 +203,9 @@ class RoteMcpConfigError(RuntimeError):
 
 
 #: Set to ``1`` by ``rote run`` unless ``--allow-writes``: refuse any MCP
-#: tool that may write. ``ROTE_MCP_READ_ONLY_SERVERS`` (comma-separated)
-#: names the servers the user registered with ``rote mcp add --read-only``.
+#: tool that may write. ``ROTE_MCP_READ_ONLY_SERVERS`` is a JSON object of
+#: the servers the user registered with ``rote mcp add --read-only``,
+#: ``{name: registered url}``: the trust is in that endpoint, not the name.
 READ_ONLY_ENV = "ROTE_MCP_READ_ONLY"
 READ_ONLY_SERVERS_ENV = "ROTE_MCP_READ_ONLY_SERVERS"
 
@@ -225,19 +226,38 @@ def tool_is_read_only(tool: Any, server_read_only: bool = False) -> bool:
     return annotations is not None and getattr(annotations, "read_only_hint", None) is True
 
 
-def write_refusal(server: str, tool: str, listed: Sequence[Any]) -> str | None:
-    """Why a read-only run must not call ``server.tool``, or ``None``."""
+def declared_read_only_at(registered_url: str | None, resolved_url: str) -> bool:
+    """Whether a ``--read-only`` declaration covers the endpoint being called.
+
+    The user vouched for the endpoint they registered. ``ROTE_MCP_<SERVER>_URL``
+    can point the same name elsewhere, and that endpoint's tools are not
+    covered by the declaration.
+    """
+    return registered_url is not None and normalize_server_url(
+        registered_url
+    ) == normalize_server_url(resolved_url)
+
+
+def write_refusal(server: str, url: str, tool: str, listed: Sequence[Any]) -> str | None:
+    """Why a read-only run must not call ``server.tool`` at ``url``, or ``None``."""
     if os.environ.get(READ_ONLY_ENV) != "1":
         return None
-    declared = {s.strip() for s in os.environ.get(READ_ONLY_SERVERS_ENV, "").split(",")}
+    declared = json.loads(os.environ.get(READ_ONLY_SERVERS_ENV) or "{}")
+    registered = declared.get(server)
     spec = next((t for t in listed if getattr(t, "name", None) == tool), None)
-    if tool_is_read_only(spec, server in declared):
+    if tool_is_read_only(spec, declared_read_only_at(registered, url)):
         return None
+    if registered is not None:
+        why = (
+            f"{server} is registered read-only at {registered}, but this run calls it at "
+            f"{url}, which the declaration does not cover"
+        )
+    else:
+        why = f"{server} does not mark it readOnlyHint and is not registered read-only"
     return (
-        f"this run is read-only, and {server}.{tool} may write: {server} does not "
-        f"mark it readOnlyHint and is not registered read-only. Pass --allow-writes "
-        f'to let the run write, or register the server with "rote mcp add {server} '
-        f'<url> --read-only" if none of its tools write.'
+        f"this run is read-only, and {server}.{tool} may write: {why}. Pass "
+        f'--allow-writes to let the run write, or register the server with "rote mcp '
+        f'add {server} <url> --read-only" if none of its tools write.'
     )
 
 
@@ -796,7 +816,7 @@ async def call_mcp_tool(
             # listing failure ahead of the call instead of after the tool
             # has already run its side effects.
             listed = await client.list_tools()
-            refusal = write_refusal(server, tool, listed)
+            refusal = write_refusal(server, url, tool, listed)
             if refusal is not None:
                 raise RoteMcpConfigError(refusal)
             schemas = {t.name: t.output_schema for t in listed}

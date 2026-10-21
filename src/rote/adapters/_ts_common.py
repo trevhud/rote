@@ -1214,23 +1214,49 @@ function textContentPayload(content: unknown): unknown {
 #: The read-only-run gate for a direct-client TS helper: the TS twin of
 #: ``rote.mcp._runtime_helper.write_refusal`` (and its predicate
 #: ``tool_is_read_only``), spliced into the Node and Workers helpers.
-_WRITE_REFUSAL_TS = """/**
- * Why a read-only run must not call `server.tool`, or null. `rote run`
- * sets ROTE_MCP_READ_ONLY=1 unless --allow-writes, and names the servers
- * the user registered read-only in ROTE_MCP_READ_ONLY_SERVERS. A tool may
- * be called when its server is one of those or the server marks it
- * readOnlyHint: the same rule a skill run's tool allowlist applies.
+_WRITE_REFUSAL_TS = """/** `raw` in the form two spellings of one endpoint share: lowercase
+ * scheme and host, default port dropped, no trailing slash, no fragment.
+ * Same rule as the Python helper's normalize_server_url. */
+function normalizeServerUrl(raw: string): string {
+    const u = new URL(raw.trim());
+    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
+    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\\/+$/, "")}${u.search}`;
+}
+
+/** Whether a stored login URL names `url`. False when the stored one
+ * does not parse (`new URL` throws on a bad port or host). */
+function sameServerUrl(stored: string, url: string): boolean {
+    let normalized: string;
+    try {
+        normalized = normalizeServerUrl(stored);
+    } catch {
+        return false;
+    }
+    return normalized === normalizeServerUrl(url);
+}
+
+/**
+ * Why a read-only run must not call `server.tool` at `url`, or null.
+ * `rote run` sets ROTE_MCP_READ_ONLY=1 unless --allow-writes, and passes
+ * the servers the user registered read-only as a JSON object in
+ * ROTE_MCP_READ_ONLY_SERVERS, {name: registered url}. A tool may be
+ * called when the server marks it readOnlyHint, or when its server was
+ * registered read-only at the endpoint being called: ROTE_MCP_<SERVER>_URL
+ * can point the name elsewhere, and the declaration does not cover that.
+ * The same rule as the Python helper's write_refusal.
  */
 async function writeRefusal(
     client: Client,
     server: string,
+    url: string,
     tool: string,
     readOnly: unknown,
     declaredServers: unknown,
 ): Promise<string | null> {
     if (readOnly !== "1") return null;
-    const declared = String(declaredServers ?? "").split(",").map((s) => s.trim());
-    if (declared.includes(server)) return null;
+    const declared = JSON.parse(String(declaredServers || "{}")) as Record<string, string>;
+    const registered = declared[server];
+    if (registered !== undefined && sameServerUrl(registered, url)) return null;
     let cursor: string | undefined;
     do {
         const page = await client.listTools(cursor ? { cursor } : undefined);
@@ -1241,11 +1267,15 @@ async function writeRefusal(
         }
         cursor = page.nextCursor;
     } while (cursor);
+    const why =
+        registered !== undefined
+            ? `${server} is registered read-only at ${registered}, but this run calls it at ` +
+              `${url}, which the declaration does not cover`
+            : `${server} does not mark it readOnlyHint and is not registered read-only`;
     return (
-        `this run is read-only, and ${server}.${tool} may write: ${server} does not ` +
-        `mark it readOnlyHint and is not registered read-only. Pass --allow-writes ` +
-        `to let the run write, or register the server with "rote mcp add ${server} ` +
-        `<url> --read-only" if none of its tools write.`
+        `this run is read-only, and ${server}.${tool} may write: ${why}. Pass ` +
+        `--allow-writes to let the run write, or register the server with "rote mcp ` +
+        `add ${server} <url> --read-only" if none of its tools write.`
     );
 }
 
@@ -1502,27 +1532,6 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
 }
 
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
-/** `raw` in the form two spellings of one endpoint share: lowercase
- * scheme and host, default port dropped, no trailing slash, no fragment.
- * Same rule as the Python helper's normalize_server_url. */
-function normalizeServerUrl(raw: string): string {
-    const u = new URL(raw.trim());
-    const user = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
-    return `${u.protocol}//${user}${u.host}${u.pathname.replace(/\\/+$/, "")}${u.search}`;
-}
-
-/** Whether a stored login URL names `url`. False when the stored one
- * does not parse (`new URL` throws on a bad port or host). */
-function sameServerUrl(stored: string, url: string): boolean {
-    let normalized: string;
-    try {
-        normalized = normalizeServerUrl(stored);
-    } catch {
-        return false;
-    }
-    return normalized === normalizeServerUrl(url);
-}
-
 export async function freshHeaders(
     server: string,
     url: string,
@@ -1621,6 +1630,7 @@ export async function callMcpTool(
         const refusal = await writeRefusal(
             client,
             server,
+            resolveUrl(server, pipelineUrl),
             tool,
             process.env.ROTE_MCP_READ_ONLY,
             process.env.ROTE_MCP_READ_ONLY_SERVERS,
@@ -2151,6 +2161,7 @@ export async function callMcpTool(
         const refusal = await writeRefusal(
             client,
             server,
+            resolveUrl(env, server, pipelineUrl),
             tool,
             env.ROTE_MCP_READ_ONLY,
             env.ROTE_MCP_READ_ONLY_SERVERS,

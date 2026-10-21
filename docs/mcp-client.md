@@ -462,14 +462,18 @@ pipeline can be compared side by side without either one writing:
 - **One rule.** A tool may be called when the server marks it
   `readOnlyHint`, or when the user registered the whole server read-only
   with `rote mcp add <name> <url> --read-only` (stored as `read_only` in
-  the registry). Many real servers set no annotations at all (DeepWiki is
+  the registry). The declaration covers the registered URL only:
+  `ROTE_MCP_<SERVER>_URL` wins over the registry, so a name registered
+  read-only can be pointed at another endpoint, and that endpoint's tools
+  are judged by their own annotations. Many real servers set no annotations at all (DeepWiki is
   one), so the declaration is the only way to read from them unattended.
   The predicate is `rote.mcp._runtime_helper.tool_is_read_only`, used by
   the skill side's tool allowlist (`rote.mcp.live_tools.read_only_tools`)
   and by every emitted helper.
 - **Skill runs** get an allowlist of the tools that pass (unchanged).
 - **Pipeline runs** get `ROTE_MCP_READ_ONLY=1` and
-  `ROTE_MCP_READ_ONLY_SERVERS` (the declared servers) in the app's
+  `ROTE_MCP_READ_ONLY_SERVERS` (a JSON object of the declared servers and
+  their registered URLs) in the app's
   environment, or as `wrangler dev --var` on Cloudflare, since a Worker
   cannot read the registry. The Python, Node and Workers helpers check
   each call against the `tools/list` they already fetch and refuse a
@@ -478,6 +482,16 @@ pipeline can be compared side by side without either one writing:
   to read-only calls yet, so a read-only run refuses to start one.
 - `--allow-writes` lifts the gate on either side. An emitted app run
   directly, outside `rote run`, has no gate.
+
+What the gate is not:
+
+- **It covers MCP calls only.** A pipeline emitted with `--backend api`
+  calls vendor HTTP APIs from its own code, and those requests, writes
+  included, are not gated.
+- **It is a guard for cooperative code, not a sandbox.** The emitted
+  helpers check before they call; code that reaches a server another way
+  (its own client, a subprocess, a hand edit to the helper) is not
+  stopped, and neither is a server whose `readOnlyHint` is wrong.
 
 The rote-cloud binding helper has no gate: a deployed run is not a
 `rote run`.

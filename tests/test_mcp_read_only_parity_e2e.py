@@ -61,10 +61,20 @@ mcp.run(transport="http", host="127.0.0.1", port=int(sys.argv[1]))
 #: Each case: (environment, the outcome of lookup, of publish). An outcome
 #: is the tool's value or "refused" (the read-only refusal), and the
 #: agent-loop binding is "refused" whenever the run is read-only.
+#: ``__URL__`` is replaced by the server's real endpoint. A declaration for
+#: another endpoint under the same name covers nothing: the name can be
+#: pointed anywhere with ROTE_MCP_<SERVER>_URL, the trust is in the URL.
 CASES: dict[str, dict[str, str]] = {
     "writes_allowed": {},
-    "read_only": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": ""},
-    "server_declared": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "other,ro"},
+    "read_only": {"ROTE_MCP_READ_ONLY": "1", "ROTE_MCP_READ_ONLY_SERVERS": "{}"},
+    "server_declared": {
+        "ROTE_MCP_READ_ONLY": "1",
+        "ROTE_MCP_READ_ONLY_SERVERS": '{"other": "https://x.example/mcp", "ro": "__URL__/"}',
+    },
+    "declared_elsewhere": {
+        "ROTE_MCP_READ_ONLY": "1",
+        "ROTE_MCP_READ_ONLY_SERVERS": '{"ro": "https://trusted.example/mcp"}',
+    },
 }
 EXPECTED = {
     "writes_allowed": {"lookup": {"found": "x"}, "publish": {"published": "x"}, "agent": "bound"},
@@ -74,7 +84,13 @@ EXPECTED = {
         "publish": {"published": "x"},
         "agent": "refused",
     },
+    "declared_elsewhere": {"lookup": {"found": "x"}, "publish": "refused", "agent": "refused"},
 }
+
+
+def _env(case: str, url: str) -> dict[str, str]:
+    return {k: v.replace("__URL__", url) for k, v in CASES[case].items()}
+
 
 _TS_BODY = """\
     const out: Record<string, unknown> = {};
@@ -258,7 +274,7 @@ def test_python_refuses_a_write_in_a_read_only_run(
 ) -> None:
     url, written = server
     before = written.read_text().count("\n") if written.exists() else 0
-    assert _python(url, CASES[case], monkeypatch) == EXPECTED[case]
+    assert _python(url, _env(case, url), monkeypatch) == EXPECTED[case]
     after = written.read_text().count("\n") if written.exists() else 0
     # A refused write never reached the server.
     assert after - before == (0 if EXPECTED[case]["publish"] == "refused" else 1)
@@ -269,6 +285,6 @@ def test_node_and_workers_refuse_the_same_writes(server: tuple[str, Path], tmp_p
     url, _written = server
     node = _node_app(url, tmp_path)
     workers = _workers_app(url, tmp_path)
-    for case, env in CASES.items():
-        assert _ts(node, "dist/driver.js", url, env) == EXPECTED[case], case
-        assert _ts(workers, "dist/driver.mjs", url, env) == EXPECTED[case], case
+    for case in CASES:
+        assert _ts(node, "dist/driver.js", url, _env(case, url)) == EXPECTED[case], case
+        assert _ts(workers, "dist/driver.mjs", url, _env(case, url)) == EXPECTED[case], case
