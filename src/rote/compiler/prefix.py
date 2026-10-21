@@ -111,8 +111,15 @@ def build_plan(
                 step |= {"kind": "gate", "payload": answers[node.id]}
             elif node.mcp is not None:
                 declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
+                try:
+                    fan = fan_out_element_param(node, pipeline) if node.fan_out else None
+                except ValueError as e:
+                    step |= {"kind": "skip", "reason": f"fan_out: {e}"}
+                    steps.append(step)
+                    continue
                 step |= {
                     "kind": "mcp",
+                    "fan_param": fan,
                     "args": mcp_tool_arguments(node),
                     "observed": recorded.get((node.mcp.server, node.mcp.tool), []),
                     "probe_shapes": probe_shapes(getattr(declared, "output_schema", None)),
@@ -283,28 +290,34 @@ def _argument_findings(
     findings: list[ContractFinding] = []
     for node in pipeline.nodes:
         step = report.get(node.id) or {}
-        if node.mcp is None or "arguments" not in step:
+        if node.mcp is None or not ("arguments" in step or "arguments_each" in step):
             continue
         schema = tools.get((node.mcp.server, node.mcp.tool))
         if schema is None or not schema.declared:
             continue
-        if names_problem(schema.input_schema, step["arguments"]) is not None:
-            continue  # the static check already names it (tool_findings)
-        problem = argument_problem(schema.input_schema, step["arguments"])
-        if problem is not None:
+        # A fan_out node calls the tool once per element: each call is checked.
+        calls = step["arguments_each"] if "arguments_each" in step else [step["arguments"]]
+        for i, arguments in enumerate(calls):
+            if names_problem(schema.input_schema, arguments) is not None:
+                break  # the static check already names it (tool_findings)
+            problem = argument_problem(schema.input_schema, arguments)
+            if problem is None:
+                continue
+            where = f"{node.id}[{i}]" if "arguments_each" in step else node.id
             findings.append(
                 ContractFinding(
                     node_id=node.id,
                     kind="tool_arguments_invalid",
                     severity="error",
                     message=(
-                        f"on the sample input, {node.id} would call "
-                        f"{node.mcp.server}.{node.mcp.tool} with {step['arguments']!r}: "
+                        f"on the sample input, {where} would call "
+                        f"{node.mcp.server}.{node.mcp.tool} with {arguments!r}: "
                         f"{problem} (schema: {schema.source})"
                     ),
                     path="pipeline.yaml",
                 )
             )
+            break
     return findings
 
 

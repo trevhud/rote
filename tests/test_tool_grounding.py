@@ -200,6 +200,69 @@ def test_the_prefix_checks_the_values_it_would_send(tmp_path: Path) -> None:
     assert run_prefix(pipeline, root, good, impls, trust_skill=True, tools=DECLARED).findings == []
 
 
+_FANNED_IR = """\
+name: fanned
+input: {type: Products}
+nodes:
+  - id: build_queries
+    kind: pure_function
+    description: one query per product
+    impl: extracted/q.py:build_queries
+    inputs: {request: pipeline.input}
+    output: {items: list}
+  - id: search
+    kind: external_call
+    description: search once per query
+    impl: extracted/q.py:search
+    fan_out: true
+    mcp: {server: gmail, tool: search_threads, args: {query: build_queries}}
+    inputs: {build_queries: build_queries.output.items}
+edges:
+  - {from: build_queries, to: search, fan_out: true}
+entry_nodes: [build_queries]
+exit_nodes: [search]
+"""
+
+_FANNED_PY = """\
+def build_queries(request):
+    return {"items": [QUERY(p) for p in request["products"]]}
+
+
+def search(**kwargs):
+    raise NotImplementedError("runs as the mcp binding")
+"""
+
+
+def _fanned(tmp_path: Path, query: str) -> tuple[Pipeline, Path]:
+    (tmp_path / "extracted").mkdir(parents=True)
+    (tmp_path / "pipeline.yaml").write_text(_FANNED_IR)
+    (tmp_path / "extracted" / "q.py").write_text(_FANNED_PY.replace("QUERY(p)", query))
+    return load_pipeline(tmp_path / "pipeline.yaml"), tmp_path
+
+
+def test_the_prefix_checks_a_fanned_call_once_per_element(tmp_path: Path) -> None:
+    """A fan_out MCP node sends one element per call, not the whole list.
+
+    e2echeck's demo: one search per product, and the prefix reported the
+    whole list as the `query` argument, failing a correct compile."""
+    sample = Sample(payload={"products": ["R2", "D1"]}, source="sample.json")
+    pipeline, root = _fanned(tmp_path / "ok", 'p + " limits"')
+    impls = implementation_status(pipeline, root)
+    run = run_prefix(pipeline, root, sample, impls, trust_skill=True, tools=DECLARED)
+    assert run.findings == []
+    assert run.steps["search"]["arguments_each"] == [
+        {"query": "R2 limits"},
+        {"query": "D1 limits"},
+    ]
+    pipeline, root = _fanned(tmp_path / "bad", '{"query": p}')
+    impls = implementation_status(pipeline, root)
+    [finding] = run_prefix(pipeline, root, sample, impls, trust_skill=True, tools=DECLARED).findings
+    assert finding.kind == "tool_arguments_invalid"
+    assert "search[0] would call gmail.search_threads with {'query': {'query': 'R2'}}" in (
+        finding.message
+    )
+
+
 # ───────── discovery, against the bench's real fixture servers ─────────
 
 

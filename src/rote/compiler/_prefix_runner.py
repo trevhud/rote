@@ -246,14 +246,30 @@ def run(plan: dict[str, Any], root: Path) -> dict[str, Any]:
             if step["kind"] == "mcp":
                 # The arguments are reported either way: rote checks them
                 # against the tool's schema, recorded call or not.
-                arguments = _mcp_arguments(step, payload)
-                output = _mcp_result(step, arguments)
-                if output is _MISSING:
-                    report[node_id] = {"status": "no_recording", "arguments": arguments}
-                    unrecorded[node_id] = step.get("probe_shapes") or ["list", "text"]
+                fan = step.get("fan_param")
+                if fan is None:
+                    arguments = _mcp_arguments(step, payload)
+                    output = _mcp_result(step, arguments)
+                    if output is _MISSING:
+                        report[node_id] = {"status": "no_recording", "arguments": arguments}
+                        unrecorded[node_id] = step.get("probe_shapes") or ["list", "text"]
+                        continue
+                    results[node_id] = output
+                    report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}
                     continue
-                results[node_id] = output
-                report[node_id] = {"status": "ok", "recorded": True, "arguments": arguments}
+                # One call per element, the way every runtime fans the step.
+                items = payload.get(fan)
+                if not isinstance(items, list):
+                    raise BindingError(
+                        f"fan_out over `{fan}` expected a list, got {type(items).__name__}"
+                    )
+                each = [_mcp_arguments(step, {**payload, fan: item}) for item in items]
+                outputs = [_mcp_result(step, arguments) for arguments in each]
+                if any(o is _MISSING for o in outputs):
+                    report[node_id] = {"status": "no_recording", "arguments_each": each}
+                    continue
+                results[node_id] = outputs
+                report[node_id] = {"status": "ok", "recorded": True, "arguments_each": each}
                 continue
             module = importlib.import_module(step["module"])
             fn = getattr(module, step["symbol"])
