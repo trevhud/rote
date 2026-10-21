@@ -125,6 +125,8 @@ class ApiSpec(BaseModel):
     revision: str
     source: Literal["google-discovery", "openapi", "graphql-sdl", "docs"]
     source_url: str
+    #: A GraphQL API's schema, as SDL (``source="graphql-sdl"``).
+    graphql_schema: str | None = None
     #: Every page a ``docs`` spec was written from (``source="docs"``).
     sources: list[str] = Field(default_factory=list)
     #: Parameters every operation accepts (Discovery's top-level
