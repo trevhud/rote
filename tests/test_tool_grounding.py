@@ -259,8 +259,21 @@ def test_only_an_exact_name_counts(tmp_path: Path) -> None:
     assert unbound_tool_findings(_ir(tmp_path, _PLAIN), None, DOCS) == []
 
 
+def test_a_plain_word_tool_counts_only_as_a_code_span(tmp_path: Path) -> None:
+    plain = {
+        ("files", name): ToolSchema("files", name, {"type": "object"}, "x", True)
+        for name in ("search", "fetch", "get", "list", "query", "read", "run")
+    }
+    prose = _named_skill(tmp_path, "Search the archive folder and fetch the latest copy.")
+    assert unbound_tool_findings(_ir(tmp_path, _PLAIN), prose, plain) == []
+    (tmp_path / "b").mkdir()
+    spans = _named_skill(tmp_path / "b", "Call `search` for the folder, then `fetch(id)`.")
+    found = unbound_tool_findings(_ir(tmp_path, _PLAIN), spans, plain)
+    assert [f.message.split("`")[1] for f in found] == ["fetch", "search"]
+
+
 def test_verification_sends_an_unbound_tool_to_repair(tmp_path: Path) -> None:
-    skill = _named_skill(tmp_path, "Call search_cloudflare_documentation.")
+    skill = _named_skill(tmp_path, "Call `search_cloudflare_documentation`.")
     root = tmp_path / "out"
     root.mkdir()
     (root / "pipeline.yaml").write_text(_PLAIN)

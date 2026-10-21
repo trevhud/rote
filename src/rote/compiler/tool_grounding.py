@@ -479,6 +479,23 @@ def _skill_text(skill_dir: Path) -> str:
     return "\n".join(parts)
 
 
+#: A name that can only be an identifier: it has ``_`` or ``-``, or a capital
+#: inside it (``read_wiki_structure``, ``docs-search``, ``getPage``).
+_IDENTIFIER_SHAPED = re.compile(r"[_-]|[a-z][A-Z]")
+
+
+def _names_tool(tool: str, text: str) -> bool:
+    """Does ``text`` name ``tool`` as an identifier, not as an ordinary word?
+
+    An identifier-shaped name counts wherever it appears whole. A plain word
+    (``search``, ``fetch``, ``get``) counts only as a code span, because
+    "search the archive folder and fetch the latest copy" is prose."""
+    name = re.escape(tool)
+    if _IDENTIFIER_SHAPED.search(tool):
+        return re.search(rf"(?<![\w-]){name}(?![\w-])", text) is not None
+    return re.search(rf"`{name}(?:\([^`]*\))?`", text) is not None
+
+
 def unbound_tool_findings(
     pipeline: Pipeline, skill_dir: Path | None, tools: ToolSchemas
 ) -> list[ContractFinding]:
@@ -503,7 +520,7 @@ def unbound_tool_findings(
     text = _skill_text(skill_dir)
     findings: list[ContractFinding] = []
     for tool in sorted(declared):
-        if tool in bound or re.search(rf"(?<![\w-]){re.escape(tool)}(?![\w-])", text) is None:
+        if tool in bound or not _names_tool(tool, text):
             continue
         servers = sorted(declared[tool])
         findings.append(
