@@ -1798,7 +1798,8 @@ about which input is the list.
 
 `rote.eval.pricing` fetches current models + official prices at eval
 time (models.dev primary, OpenRouter cross-check; 24h cache in
-`~/.cache/rote/pricing.json`; loud `PricingError` when offline — never
+`~/.cache/rote/pricing.json`, dir overridable with
+`ROTE_PRICING_CACHE_DIR`; loud `PricingError` when offline — never
 a baked-in table). Two things you will get wrong if you touch it:
 
 1. **"Most expensive = flagship" is false.** Previous-generation
@@ -2361,8 +2362,22 @@ replaced the real implementations with stubs. That dirtied the
 merge-queue worktree and blocked merges. A session hook in
 `tests/conftest.py` now fails the run if anything under `examples/`
 changed (`__pycache__` and `node_modules` excepted). When an adapter
-change is intended, regenerate with the `rote emit` command the failing
-snapshot test prints, and commit the result.
+change is intended, regenerate with the `scripts/isolated-rote emit`
+command the failing snapshot test prints, and commit the result.
+
+### Repo maintenance runs rote through `scripts/isolated-rote`
+
+A plain `rote emit` appends its output dir to the developer's real
+`~/.local/share/rote/apps.json`, and `rote mcp login` later walks that
+list to release parked runs. Agents regenerating snapshots kept adding
+`examples/` and temp dirs to it. `scripts/isolated-rote <args>` runs the
+repo's rote with every per-user state path moved into a temp dir that is
+deleted afterwards (`ROTE_ISOLATED_STATE=<dir>` keeps it). The list of
+paths is `rote.isolation.STATE_PATHS`, the same one `tests/conftest.py`
+and the bench harness use. `tests/test_isolated_rote.py` derives the set
+of `ROTE_*_PATH`/`_DIR`/`_CONFIG` overrides from `src/` and fails when a
+new one is missing from the list. The wrapper hides your MCP logins too,
+so use plain `rote` for a run that needs a real MCP server.
 
 ## Workflow expectations
 
@@ -2381,7 +2396,7 @@ it behind a `@pytest.mark.slow` decorator and document why.
 ### Running the real compiler
 
 ```sh
-.venv/bin/rote compile examples/bdr-outreach/skill \
+scripts/isolated-rote compile examples/bdr-outreach/skill \
   --runtime temporal \
   --out /tmp/bdr-compiled
 ```
@@ -2667,7 +2682,8 @@ Don't waste time debugging stubs. These are intentional.
   `claude -p` for the skill, the emitted python/DBOS app for the
   pipeline with cross-process gate signaling via `DBOSClient`; real
   judge usage captured through the emitted `$ROTE_USAGE_LOG` hook;
-  measurements appended to `~/.local/share/rote/eval-corpus.jsonl`)
+  measurements appended to `~/.local/share/rote/eval-corpus.jsonl`,
+  or `ROTE_EVAL_CORPUS_PATH`)
 - 1228 tests (1201 fast + 27 slow). Run with `pytest tests/` (fast
   only — what runs by default). Slow tests cover the runtime e2e
   suites (Temporal, Cloudflare, DBOS, DBOS-TS, Inngest,
