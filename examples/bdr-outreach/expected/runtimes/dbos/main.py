@@ -615,6 +615,7 @@ if __name__ == "__main__":
         if _input_error is not None:
             print(f"error: {_input_error}", file=sys.stderr)
             sys.exit(2)
+    config_error: str | None = None
     launch()
     try:
         if "--serve" in sys.argv[1:]:
@@ -623,6 +624,16 @@ if __name__ == "__main__":
         else:
             handle = DBOS.start_workflow(run_pipeline, pipeline_input)
             print(f"workflow started: {handle.workflow_id}", file=sys.stderr)
-            print(json.dumps(handle.get_result(), indent=2, default=str))
+            try:
+                result = handle.get_result()
+            except Exception as exc:
+                if type(exc).__name__ != "RoteMcpConfigError":
+                    raise
+                config_error = str(exc)
+            else:
+                print(json.dumps(result, indent=2, default=str))
     finally:
         DBOS.destroy()
+    if config_error is not None:
+        print(f"error: {config_error}", file=sys.stderr)
+        sys.exit(2)

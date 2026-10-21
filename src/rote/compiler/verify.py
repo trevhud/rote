@@ -66,7 +66,7 @@ from rote.compiler.provenance import (
     assumptions,
     provenance_findings,
 )
-from rote.compiler.tool_grounding import tool_findings, tool_questions
+from rote.compiler.tool_grounding import tool_findings, tool_questions, unchecked_tools
 from rote.contracts import (
     ContractFinding,
     NodeImplementation,
@@ -675,6 +675,12 @@ class Verification:
     questions: list[ContractQuestion] = field(default_factory=list)
     #: ``--backend api``: every vendor request, checked against its spec.
     spec_checks: list[RequestCheck] = field(default_factory=list)
+    #: ``{server: [tool, ...]}`` whose arguments no schema checked
+    #: (:func:`rote.compiler.tool_grounding.unchecked_tools`).
+    unchecked_tools: dict[str, list[str]] = field(default_factory=dict)
+    #: ``{server: why}`` for the registered servers rote did not list
+    #: (:attr:`rote.compiler.grounding.Grounding.unlisted`).
+    unlisted_servers: dict[str, str] = field(default_factory=dict)
 
     @property
     def errors(self) -> list[ContractFinding]:
@@ -913,8 +919,13 @@ def _verify(
         pipeline = load_pipeline(root / "pipeline.yaml")
     except Exception as e:  # noqa: BLE001 (any load failure is the agent's to fix)
         return Verification(pipeline=None, pipeline_error=str(e))
-    implementations = implementation_status(pipeline, root)
     api_backend = emit_target is not None and emit_target.external_backend == "api"
+    implementations = implementation_status(
+        pipeline,
+        root,
+        emit_target.runtime if emit_target is not None else "dbos",
+        "api" if api_backend else "mcp",
+    )
     findings = (
         check_contracts(pipeline, root)
         + _deliverable_findings(
@@ -938,6 +949,7 @@ def _verify(
             findings += unfetched_sources(root, web_research.was_fetched)
     prefix: PrefixRun | None = None
     questions: list[ContractQuestion] = []
+    unchecked: dict[str, list[str]] = {}
     if grounding is not None:
         # On the api backend no binding is called: its tool's arguments and
         # result shape are not the pipeline's contract, and a recorded tool
@@ -945,6 +957,7 @@ def _verify(
         called = api_view(pipeline) if api_backend else pipeline
         findings += grounding_findings(called, skill_dir, grounding.sample)
         findings += tool_findings(called, grounding.tools)
+        unchecked = unchecked_tools(called, grounding.tools)
         questions = contract_questions(called, skill_dir, grounding) + [
             ContractQuestion(node_id, text)
             for node_id, text in tool_questions(called, grounding.tools)
@@ -989,4 +1002,6 @@ def _verify(
         prefix=prefix,
         questions=questions,
         spec_checks=spec_checks,
+        unchecked_tools=unchecked,
+        unlisted_servers=dict(grounding.unlisted) if grounding is not None else {},
     )

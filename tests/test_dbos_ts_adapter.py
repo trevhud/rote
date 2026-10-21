@@ -271,11 +271,13 @@ def test_emitted_files_never_reference_mcp(emit_result: dict[str, Path]) -> None
     see tests/_helpers.py.
     """
     # BDR's two agent loops declare MCP tools, so their modules and the
-    # helper that binds them are the pipeline's legitimate MCP sites.
+    # helper that binds them are the pipeline's legitimate MCP sites, and
+    # so is main.ts, which prints a missing endpoint as one line.
     assert_no_mcp_in_ts(
         emit_result,
         min_files=13,
         expected={
+            "main",
             "extracted/_roteMcp",
             "extracted/target_research",
             "extracted/lead_generation_loop",

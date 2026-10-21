@@ -34,6 +34,7 @@ import { exclusionCheckSequence } from "./extracted/exclusion_check_sequence";
 import { personalizeEmail } from "./signatures/personalize_email";
 import { createSalesTemplate } from "./extracted/create_sales_template";
 import { preEnrollmentReport } from "./extracted/pre_enrollment_report";
+import { isRoteMcpConfigError } from "./extracted/_roteMcp";
 
 function requireEnv(name: string): string {
     const value = process.env[name];
@@ -463,6 +464,11 @@ export async function main(): Promise<void> {
 
 if (require.main === module) {
     main().catch((err) => {
+        if (isRoteMcpConfigError(err)) {
+            console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+            process.exitCode = 2;
+            return;
+        }
         console.error(err);
         process.exitCode = 1;
     });

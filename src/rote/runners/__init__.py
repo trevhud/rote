@@ -254,16 +254,29 @@ def resolve_input(
 
 
 def parse_signal_args(raw: list[str]) -> dict[str, Any]:
-    """``--signal name=JSON`` arguments → ``{name: payload}``."""
+    """``--signal NAME=JSON`` / ``--signal NAME=@FILE`` arguments → ``{name: payload}``.
+
+    ``@FILE`` reads the payload from a JSON file, the curl convention, so a
+    gate answer too long for a shell argument does not need quoting.
+    """
     signals: dict[str, Any] = {}
     for item in raw:
         name, sep, value = item.partition("=")
         if not sep or not name:
-            raise TargetError(f"--signal must be NAME=JSON, got: {item!r}")
+            raise TargetError(f"--signal must be NAME=JSON or NAME=@FILE, got: {item!r}")
+        if value.startswith("@"):
+            path = Path(value[1:])
+            try:
+                value = path.read_text(encoding="utf-8")
+            except OSError as e:
+                raise TargetError(f"--signal {name}: cannot read {path}: {e}") from e
+            source = f"{path} is"
+        else:
+            source = "payload is"
         try:
             signals[name] = json.loads(value)
         except json.JSONDecodeError as e:
-            raise TargetError(f"--signal {name}: payload is not valid JSON: {e}") from e
+            raise TargetError(f"--signal {name}: {source} not valid JSON: {e}") from e
     return signals
 
 

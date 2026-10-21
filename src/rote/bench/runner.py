@@ -422,6 +422,14 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--save-fixtures",
+        action="store_true",
+        help=(
+            "Validate each --skills example's http: fixtures against the vendors' specs "
+            "and save them to the fixture store as <example>.<case> (no compile, no tokens)"
+        ),
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -637,6 +645,41 @@ def _fidelity_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _save_fixtures(args: argparse.Namespace) -> int:
+    """``--save-fixtures``: each case's http: sets, validated, into the fixture store."""
+    from rote.bench.fidelity import has_cases, load_cases
+    from rote.bench.http_fixtures import specs_for
+    from rote.vendor_specs.fixture_store import FixtureStore
+    from rote.vendor_specs.store import SpecStore
+
+    if args.examples is None:
+        print("rote bench: --examples is required", file=sys.stderr)
+        return 2
+    examples = args.examples.resolve()
+    skills = (
+        discover_skills(examples)
+        if args.skills is None
+        else [s.strip() for s in args.skills.split(",") if s.strip()]
+    )
+    store, specs = FixtureStore(), SpecStore()
+    saved = 0
+    for skill in skills:
+        if not has_cases(examples / skill):
+            continue
+        for case in load_cases(examples / skill).cases:
+            for spec in specs_for(case.http, specs):
+                path = store.save(
+                    case.http[spec.key],
+                    spec,
+                    name=f"{skill}.{case.id}",
+                    origin=f"examples/{skill}/fidelity/cases.yaml#{case.id}",
+                )
+                print(f"rote bench: saved {spec.key} rev {spec.revision} -> {path}")
+                saved += 1
+    print(f"rote bench: {saved} fixture set(s) in {store.root}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
     args = _parser().parse_args(argv)
     if args.report is not None:
@@ -657,6 +700,8 @@ def main(argv: list[str]) -> int:
         os.environ.pop(key, None)
     if args.rescore is not None:
         return _rescore(args)
+    if args.save_fixtures:
+        return _save_fixtures(args)
     if args.record_reference or args.fidelity_of is not None:
         return _fidelity_command(args)
     if args.examples is None or args.out is None:

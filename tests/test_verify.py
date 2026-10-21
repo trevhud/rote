@@ -489,7 +489,7 @@ def test_the_committed_ops_report_compile_still_verifies() -> None:
     for impl in v.implementations:
         by_kind.setdefault(impl.kind, set()).add(impl.status)
     assert by_kind == {"pure_function": {"implemented"}, "external_call": {"stub"}}
-    assert all(i.mcp_bound for i in v.implementations if i.status == "stub")
+    assert all(i.mcp_backed and not i.blocks_run for i in v.implementations if i.status == "stub")
 
 
 def test_the_summary_is_pytests_not_the_interpreters_last_words(tmp_path: Path) -> None:

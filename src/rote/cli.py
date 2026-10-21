@@ -1035,14 +1035,16 @@ def _cmd_compile(args: argparse.Namespace) -> int:
     if deliverable is not None and deliverable.implementations:
         impls = deliverable.implementations
         done = [i for i in impls if i.status == "implemented"]
+        via_mcp = [i for i in impls if i.status != "implemented" and not i.blocks_run]
         print(
-            f"rote compile: {len(done)} of {len(impls)} impl node(s) implemented",
+            f"rote compile: {len(done)} of {len(impls)} impl node(s) implemented"
+            + (f", {len(via_mcp)} more run via their mcp binding" if via_mcp else ""),
             file=sys.stderr,
         )
         for impl in impls:
             if impl.status == "implemented":
                 continue
-            via = " (runs via its mcp binding)" if impl.mcp_bound else ""
+            via = "" if impl.blocks_run else " (runs via its mcp binding)"
             reason = f": {impl.reason}" if impl.reason else ""
             print(f"  {impl.status}: {impl.node_id}{via}{reason}", file=sys.stderr)
     if deliverable is not None:
@@ -1113,6 +1115,11 @@ def _cmd_compile(args: argparse.Namespace) -> int:
         rendered = ", ".join(f"{e['server']} [{e['auth']}]" for e in mcp_servers)
         print(f"  required MCP servers: {rendered}", file=summary_stream)
         for line in _mcp_recommendation_lines(mcp_servers):
+            print(line, file=summary_stream)
+    if deliverable is not None:
+        for line in _unchecked_tool_lines(
+            deliverable.unchecked_tools, mcp_servers, deliverable.unlisted_servers
+        ):
             print(line, file=summary_stream)
 
     # ── Static contract check ── `impl: extracted/x.py:f` is a promise the
@@ -2378,7 +2385,7 @@ def _mcp_requirements(
     gates anything — callers render recommendations, and park-on-auth
     remains the runtime backstop.
     """
-    from rote.compiler.backend import bindings_called
+    from rote.adapters._common import bindings_called
     from rote.mcp import auth_status, load_registry, read_token_file
     from rote.mcp.learned import learned_auth
 
@@ -2456,6 +2463,62 @@ def _mcp_recommendation_lines(mcp_servers: list[dict[str, object]]) -> list[str]
                 f"  {server}: {auth} — the run will park at its first {server} call; "
                 f"recommended: rote mcp login {server}"
             )
+    return lines
+
+
+#: A ``tools/list`` failure that a login fixes, as the MCP client words it.
+_AUTH_FAILURE = re.compile(r"RoteMcpAuthNeeded|Unauthorized|\b401\b")
+
+
+def _unchecked_tool_lines(
+    unchecked: dict[str, list[str]],
+    mcp_servers: list[dict[str, object]],
+    unlisted: dict[str, str] | None = None,
+) -> list[str]:
+    """The summary's warning for MCP calls whose arguments no schema checked.
+
+    The parameter names are the compile's guess (a skill says "search
+    Gmail", never that the argument is ``query``), and a real server
+    refuses a wrong one, so this sits in the summary rather than only in
+    the open questions. The fix depends on why there was no schema:
+    the server is not registered, needs a login, was not listed, or
+    listed tools that do not include this one.
+    """
+    auth = {entry["server"]: entry["auth"] for entry in mcp_servers}
+    unlisted = unlisted or {}
+    # A server the run does not call (python/temporal emit the impl) is not
+    # this run's problem.
+    unchecked = {server: tools for server, tools in unchecked.items() if server in auth}
+    if not unchecked:
+        return []
+    calls = ", ".join(f"{server}.{tool}" for server, tools in unchecked.items() for tool in tools)
+    lines = [
+        f"  WARNING: tool arguments NOT checked against a schema: {calls}. The "
+        "parameter names are a guess, and a real server refuses a wrong one."
+    ]
+    for server, tools in unchecked.items():
+        why = unlisted.get(server)
+        if auth[server] == "not registered":
+            fix = (
+                f"{server} is not registered, so rote could not read its tools. "
+                f"Register it, then compile again: rote mcp add {server} <url>"
+            )
+        elif why is not None and _AUTH_FAILURE.search(why):
+            fix = (
+                f"{server} needs a login before rote can read its tools ({why}). "
+                f"Log in, then compile again: rote mcp login {server}"
+            )
+        elif why is not None:
+            fix = (
+                f"rote did not read {server}'s tools: {why}. Fix that (or pass "
+                "--tool-discovery all), then compile again"
+            )
+        else:
+            fix = (
+                f"{server}'s tools/list has no {', '.join(tools)}. Check the binding's "
+                "tool name against the server"
+            )
+        lines.append(f"    {fix}")
     return lines
 
 
@@ -4442,7 +4505,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="NAME=JSON",
         help=(
-            "Resume payload for a HITL gate (repeatable). Gates without one "
+            "Resume payload for a HITL gate (repeatable): inline JSON, or "
+            "NAME=@FILE to read it from a JSON file. Gates without one "
             "are prompted for interactively before the run starts — payloads "
             "are delivered when the workflow parks."
         ),

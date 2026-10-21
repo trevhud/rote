@@ -120,7 +120,10 @@ message. On top of that:
   real function that raises `NotImplementedError` on one unsupported
   branch. The sentinel in a comment or docstring does not count. A file
   that does not parse is not reported here, so check `contract_findings`
-  and run it.
+  and run it. A top-level function whose node has an `mcp:` binding does
+  not count on the default `mcp` backend: the step calls the tool, never
+  the function, and the manifest's `mcp_backed` key lists it. On
+  `--backend api` it is the call, so it counts.
 - **TypeScript:** a file is a stub while `[rote stub]` appears anywhere
   outside a comment, even in a string that is never thrown. A comment
   mentioning it does not count. A `throw` without the sentinel is not
