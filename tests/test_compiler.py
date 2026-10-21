@@ -29,6 +29,7 @@ import pytest
 
 from rote.compiler import Compiler, CompilerError
 from rote.compiler.drivers import CompilerDriver, DriverError, DriverResult
+from rote.eval.sidecar import load_eval_estimates
 from rote.ir import load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1137,3 +1138,68 @@ def test_the_compile_report_says_whether_the_tests_ran(
     assert "The agent's text." not in report
     assert report.count("## rote verification") == 1
     assert expected in report
+
+
+# ───────── An invalid eval.yaml is a verification error, never a crash ─────────
+
+_EXPLAINED_STUB = (
+    "def only_node():\n"
+    "    raise NotImplementedError('needs the FakeInput schema, which the skill does not state')\n"
+)
+_SIDECAR_STEPS = (
+    "version: 1\nsteps:\n  - description: Do the one step\n    node_id: only_node\n"
+    "    estimated_turns: {low: 1, high: 2}\n"
+)
+#: The shape a real compile committed: one totals range per path.
+_INVALID_SIDECAR = _SIDECAR_STEPS + "totals:\n  main_path: {low: 1, high: 2}\n"
+_VALID_SIDECAR = _SIDECAR_STEPS + "totals: {low: 1, high: 2}\n"
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_eval_sidecar_is_repaired_in_the_same_conversation(
+    fake_skill_dir: Path, fake_compiler_skill_dir: Path, tmp_path: Path
+) -> None:
+    driver = _RepairableDriver(
+        [VALID_YAML],
+        files={"extracted/foo.py": _EXPLAINED_STUB, "eval.yaml": _INVALID_SIDECAR},
+        file_fixes=[{"eval.yaml": _VALID_SIDECAR}],
+    )
+    compiler = Compiler(system1=False, compiler_skill_dir=fake_compiler_skill_dir)
+    compiler.select_driver = lambda: driver  # type: ignore[method-assign]
+
+    result = await compiler.compile(fake_skill_dir, tmp_path / "out")
+
+    [instruction] = driver.repair_instructions
+    assert "- eval.yaml: " in instruction and "main_path" in instruction
+    assert result.verification is not None and result.verification.ok
+    load_eval_estimates(tmp_path / "out" / "eval.yaml")
+
+
+def test_cli_reports_an_unrepaired_sidecar_instead_of_crashing_on_the_scorecard(
+    tmp_path: Path,
+    fake_skill_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The scorecard runs after the paid run. It used to raise pydantic's
+    ValidationError on the agent's sidecar, so the compile died with a
+    traceback instead of the verification verdict."""
+    from rote.cli import main
+    from tests.test_eval_cli import FAKE_CATALOG
+
+    monkeypatch.setattr("rote.eval.pricing.fetch_catalog", lambda **kwargs: FAKE_CATALOG)
+    driver = _FakeDriver(
+        VALID_YAML, extras={"extracted/foo.py": _EXPLAINED_STUB, "eval.yaml": _INVALID_SIDECAR}
+    )
+    monkeypatch.setattr(Compiler, "select_driver", lambda self: driver)
+    out = tmp_path / "run"
+    rc = main(
+        ["compile", str(fake_skill_dir), "--local", "--no-system1", "--runtime", "dbos",
+         "--out", str(out)]
+    )  # fmt: skip
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "still fails verification" in err
+    assert "skipped scorecard (eval.yaml fails its schema" in err
+    assert not (out / "compiled" / "scorecard.md").exists()
+    assert (out / "runtime" / "dbos" / "main.py").is_file()
