@@ -53,11 +53,11 @@ def _bound(p: Pipeline, tool: str) -> Any:
 def test_recorded_values_bind_the_arguments_the_compile_left_out(tmp_path: Path) -> None:
     p = _skeleton(tmp_path, _observations())
     search = _bound(p, "microsoft_docs_search")
-    assert search.mcp.args == {"query": "query"}
-    assert search.inputs["query"] == "pipeline.input.topic"
+    assert search.mcp.args == {"query": "arg_query"}
+    assert search.inputs["arg_query"] == "pipeline.input.topic"
     wiki = _bound(p, "read_wiki_structure")
-    assert wiki.mcp.args == {"repoName": "repoName"}
-    assert wiki.inputs["repoName"] == "pipeline.input.repo"
+    assert wiki.mcp.args == {"repoName": "arg_repoName"}
+    assert wiki.inputs["arg_repoName"] == "pipeline.input.repo"
     # The required argument the hard check refused before is bound now.
     assert tool_findings(p, TOOLS) == []
 
@@ -124,8 +124,8 @@ def test_a_constant_and_an_upstream_result_are_sources(tmp_path: Path) -> None:
     bind_recorded_arguments(p, calls, {})
     assert search.mcp["args"] == {"query": "topic_text"}
     assert "query" not in search.inputs  # a constant needs no input
-    assert wiki.mcp["args"] == {"repoName": "repoName"}
-    assert wiki.inputs["repoName"] == f"{search.id}.output.repo"
+    assert wiki.mcp["args"] == {"repoName": "arg_repoName"}
+    assert wiki.inputs["arg_repoName"] == f"{search.id}.output.repo"
     decision = next(d for d in reversed(wiki.decisions) if d.field == "mcp.args")
     assert decision.confidence == pytest.approx(0.95)
     assert "every recorded call sent" in decision.rule
@@ -219,8 +219,8 @@ async def test_a_compile_binds_from_its_baseline_recordings(
         skill, out, probe_dir=probe
     )
     wiki = _bound(load_pipeline(out / "pipeline.yaml"), "read_wiki_structure")
-    assert wiki.mcp.args == {"repoName": "repoName"}
-    assert wiki.inputs["repoName"] == "pipeline.input.repo"
+    assert wiki.mcp.args == {"repoName": "arg_repoName"}
+    assert wiki.inputs["arg_repoName"] == "pipeline.input.repo"
 
 
 def test_a_boolean_field_is_no_source_for_a_number(tmp_path: Path) -> None:
@@ -231,3 +231,101 @@ def test_a_boolean_field_is_no_source_for_a_number(tmp_path: Path) -> None:
         p, [_call("read_wiki_structure", "deepwiki", {"repoName": 1})], {"verbose": True}
     )
     assert wiki.mcp["args"] == {}
+
+
+def test_the_structure_path_binds_recorded_arguments_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The structure pass leaves `query` unbound; the recorded call fills it, as on rules."""
+
+    from rote.compiler.system1 import structure
+    from rote.compiler.system1.tiebreak import Lane
+
+    units = {u.title: u.index for u in structure.section_units(SKILL)}
+    none = {"io": "none", "how": "none", "name": "", "server": "", "tool": ""}
+    search = {
+        "io": "read",
+        "how": "declared_tool",
+        "name": "mslearn",
+        "server": "mslearn",
+        "tool": "microsoft_docs_search",
+    }
+
+    def node(nid: str, title: str, quote: str, kind: str, **over: Any) -> dict[str, Any]:
+        return {
+            "id": nid,
+            "section": units[title],
+            "quote": quote,
+            "kind": kind,
+            "intent": nid,
+            "reads": ["pipeline.input"],
+            "fan_out_over": "",
+            "in_loop": "",
+            "mandatory": True,
+            "outputs": [],
+            "system": dict(none),
+            "args": [],
+            "constants": [],
+            "gate": {"signal": "", "payload": [], "timeout": ""},
+            "loop": {"tools": [], "stop_condition": "", "max_iterations": 0},
+            "evidence_field": "",
+            "confidence": 0.9,
+            "why": "fixture",
+            **over,
+        }
+
+    answer = {
+        "input_fields": [],
+        "run_outputs": [],
+        "nodes": [
+            node(
+                "search_learn",
+                "1. Search Microsoft Learn",
+                "Call `microsoft_docs_search`",
+                "external_call",
+                system=search,
+            ),
+            node(
+                "write_digest",
+                "4. Write the digest",
+                "Return a markdown document",
+                "pure_function",
+                reads=["search_learn"],
+            ),
+        ],
+    }
+
+    def call(**kw: Any) -> tuple[dict[str, Any], list[Any]]:
+        return json.loads(json.dumps(answer)), []
+
+    monkeypatch.setattr(structure, "_structured_call", lambda: call)
+    rubric = tmp_path / "rubric.md"
+    rubric.write_text("rubric")
+    work = tmp_path / "work"
+    work.mkdir()
+    system1.prepare(
+        SKILL,
+        work,
+        sample=load_sample(SKILL / "sample-input.json"),
+        tools=TOOLS,
+        observations=_observations(),
+        structure_lane=Lane("claude-cli"),
+        rubric=rubric,
+    )
+    p = Pipeline.model_validate(yaml.safe_load((work / "pipeline.yaml").read_text()))
+    bound = _bound(p, "microsoft_docs_search")
+    assert bound.mcp is not None and bound.mcp.args == {"query": "arg_query"}
+    assert bound.inputs["arg_query"] == "pipeline.input.topic"
+
+
+def test_a_taken_bare_key_does_not_drop_the_binding(tmp_path: Path) -> None:
+    """The argument binds to `arg_<param>`, so an input named `repoName` is no obstacle."""
+    p = _plan(tmp_path)
+    wiki = next(n for n in p.nodes if n.mcp and n.mcp["tool"] == "read_wiki_structure")
+    wiki.inputs["repoName"] = "pipeline.input"
+    bind_recorded_arguments(
+        p, [_call("read_wiki_structure", "deepwiki", {"repoName": "a/b"})], {"repo": "a/b"}
+    )
+    assert wiki.mcp["args"] == {"repoName": "arg_repoName"}
+    assert wiki.inputs["arg_repoName"] == "pipeline.input.repo"
+    assert wiki.inputs["repoName"] == "pipeline.input"

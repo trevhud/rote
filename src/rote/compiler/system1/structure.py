@@ -39,6 +39,7 @@ from typing import Any
 import yaml
 
 from rote.compiler.system1.decide import (
+    ARG_INPUT_PREFIX,
     REVIEW_BELOW,
     NodePlan,
     Plan,
@@ -82,9 +83,7 @@ _SAFE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}")
 #: A number written plainly: no leading zero, sign or exponent games. "00123",
 #: "5%" and "1e3" stay strings, because the prompt asked for them verbatim.
 _PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
-#: Prefix of a node input an MCP argument reads, so it never collides with
-#: `request`, a read node's id or another input.
-ARG_INPUT_PREFIX = "arg_"
+
 _DURATION = re.compile(r"^\d+[smhd]$")
 _URL = re.compile(r"https?://[^\s)`>\]]+|\b(?:GET|POST|PUT|PATCH|DELETE)\s+/\S*")
 _LOCAL_PATH = re.compile(r"(?<![\w.])[~/][\w.-]*/[\w./-]*|\b[\w-]+/[\w.-]+\.\w{1,5}\b")

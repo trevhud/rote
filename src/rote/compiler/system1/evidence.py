@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from rote.compiler.system1.decide import NodePlan, Plan
+from rote.compiler.system1.decide import ARG_INPUT_PREFIX, NodePlan, Plan
 
 #: Confidence of a binding every recorded call agrees on.
 RECORDED_CONFIDENCE = 0.95
@@ -101,10 +101,11 @@ def bind_recorded_arguments(
                 args[param] = name
             else:
                 ref = f"pipeline.input.{name}" if origin == "input" else f"{origin}.output.{name}"
-                if n.inputs.get(param, ref) != ref:
+                key = f"{ARG_INPUT_PREFIX}{param}"
+                if n.inputs.get(key, ref) != ref:
                     continue  # the name already carries something else
-                n.inputs[param] = ref
-                args[param] = param
+                n.inputs[key] = ref
+                args[param] = key
             bound.append(f"`{param}` <- {'constant' if origin == 'constant' else ref}")
         if bound:
             n.mcp = {**n.mcp, "args": args}
