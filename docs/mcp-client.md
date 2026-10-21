@@ -478,8 +478,17 @@ pipeline can be compared side by side without either one writing:
   cannot read the registry. The Python, Node and Workers helpers check
   each call against the `tools/list` they already fetch and refuse a
   tool that may write before calling it, as a `RoteMcpConfigError`: not
-  retried, and printed as one line. An agent loop's MCP tools are not held
-  to read-only calls yet, so a read-only run refuses to start one.
+  retried, and printed as one line.
+- **Agent loops** call their tools through their own runner, so a
+  read-only run filters what the loop is handed, by the same predicate at
+  the same endpoint: `claude -p` gets only the passing tools in
+  `--allowedTools` and the rest in `--disallowedTools`; the Anthropic MCP
+  connector gets one `mcp_toolset` per server with every tool disabled
+  except the passing ones (that allowlist applies to every SDK-lane loop,
+  so a loop never sees a server tool it did not declare); the TS
+  `bindAgentTools` (Node and Workers) binds only the passing tools. A loop
+  none of whose MCP tools pass does not start, and says which tool was
+  withheld and why.
 - `--allow-writes` lifts the gate on either side. An emitted app run
   directly, outside `rote run`, has no gate.
 

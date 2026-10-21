@@ -61,6 +61,7 @@ from rote.compiler.provenance import REPORT_FILENAME
 from rote.compiler.report import ReportExtras, render_compile_report
 from rote.compiler.system1 import TIEBREAKS, generate
 from rote.compiler.system1.generate import DEFAULT_MAX_PARALLEL
+from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.update import (
     UPDATE_CONTEXT_DIRNAME,
@@ -253,6 +254,7 @@ class Compiler:
         system1: bool | None = None,
         system1_decider: str = "rules",
         system1_tiebreak: str = DEFAULT_TIEBREAK,
+        system1_structure: str = "rules",
         tool_discovery: tool_grounding.Discovery = "named",
         max_parallel: int = DEFAULT_MAX_PARALLEL,
     ) -> None:
@@ -345,6 +347,9 @@ class Compiler:
         if max_parallel < 1:
             raise CompilerError(f"--max-parallel must be at least 1, got {max_parallel}")
         self.max_parallel = max_parallel
+        if system1_structure not in ("rules", *STRUCTURE_MODELS):
+            raise CompilerError(f"unknown --structure {system1_structure!r}")
+        self.system1_structure = system1_structure
 
     @property
     def api_backend(self) -> bool:
@@ -607,6 +612,13 @@ class Compiler:
                         tools=grounding.tools,
                         observations=grounding.observations,
                         tiebreak_lane=lane,
+                        structure_lane=(
+                            system1.structure.lane_with(
+                                system1.tiebreak.lane_for(driver), self.system1_structure
+                            )
+                            if self.system1_structure != "rules"
+                            else None
+                        ),
                         # rote's own rubric, whichever compiler skill the agent gets.
                         rubric=_default_compiler_skill_dir() / "references" / "node-kinds.md",
                     )
@@ -614,8 +626,17 @@ class Compiler:
                     system1.UnsafeSkillText,
                     system1.DeciderUnavailable,
                     system1.TieBreakUnavailable,
+                    system1.structure.StructureUnavailable,
                 ) as e:
                     raise CompilerError(str(e)) from e
+                st = s1_plan.structure
+                if st is not None:
+                    cost = "cost unknown" if st.cost_usd is None else f"${st.cost_usd:.4f}"
+                    self._emit(
+                        "log",
+                        f"system1: structure pass by {st.model} via {st.lane}, "
+                        f"{st.rounds} round(s), {len(st.resolved)} unresolved ({cost})",
+                    )
                 tb = s1_plan.tiebreak
                 if tb is not None:
                     cost = "cost unknown" if tb.cost_usd is None else f"${tb.cost_usd:.4f}"
@@ -935,7 +956,45 @@ class Compiler:
             on_event=self.on_event,
             run_tests=self.run_generated_tests,
             trust_skill=self.trust_skill,
+            redecide=self._redecide(driver, skill_dir, work_dir, s1_plan, grounding),
         )
+
+    def _redecide(
+        self,
+        driver: Any,
+        skill_dir: Path,
+        work_dir: Path,
+        s1_plan: system1.Plan,
+        grounding: Grounding,
+    ) -> generate.Redecide | None:
+        """The structure pass's re-decide for MCP bindings, when it decided the skeleton."""
+        record = s1_plan.structure
+        if record is None:
+            return None
+        from dataclasses import replace as _replace
+
+        from rote.compiler.system1 import structure
+        from rote.compiler.system1.parse import parse_skill
+
+        lane = structure.lane_with(system1.tiebreak.lane_for(driver), self.system1_structure)
+        skill = _replace(parse_skill(skill_dir), units=structure.section_units(skill_dir))
+        skill_md = structure.skill_text(skill_dir)
+
+        def run(findings: dict[str, list[str]]) -> list[str]:
+            changes, usage = structure.redecide(
+                work_dir,
+                findings,
+                skill,
+                skill_md,
+                lane,
+                tools=grounding.tools,
+                sample=grounding.sample,
+            )
+            record.usage += usage
+            record.redecided += changes
+            return changes
+
+        return run
 
     async def _tool_schemas(
         self,

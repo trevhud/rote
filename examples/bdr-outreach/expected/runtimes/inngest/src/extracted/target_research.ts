@@ -31,7 +31,8 @@ export async function targetResearch(
     input: unknown,
 ): Promise<IntelBrief> {
     const vars = process.env;
-    const tools: BoundTool[] = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
+    const bound = await bindAgentTools(TOOLS, SERVERS, SERVER_URLS, TOOL_SERVERS);
+    const tools: BoundTool[] = [...bound.tools];
     return (await runAgentLoop({
         nodeId: "target_research",
         description: "Run external research (Bright Data web search, ClinicalTrials.gov)\nand internal research (Airweave enterprise search, Salesforce account\nhistory, internal publications) in parallel. Compile a short intel\nbrief covering pipeline, RWE/HEOR signals, key programs/teams, prior\naccount interactions, and validated TA experience.\n",
@@ -39,6 +40,7 @@ export async function targetResearch(
         model: vars.ROTE_MODEL_TARGET_RESEARCH ?? "claude-sonnet-4-6",
         tools,
         maxIterations: 10,
+        withheld: bound.withheld,
         baseUrl: vars.ROTE_BASE_URL_TARGET_RESEARCH ?? null,
         env: vars,
         outputSchema: {"type": "object", "properties": {"result": {"description": "Value of type IntelBrief."}}, "required": ["result"], "additionalProperties": false},
