@@ -153,6 +153,7 @@ class NodePlan:
     intent: str | None = None  # the structure pass's one-sentence intent, the description
     output_schema: dict[str, Any] | None = None  # a result contract the structure pass fixed
     output_keys: list[str] = field(default_factory=list)  # the result's keys, when decided
+    evidence_field: str | None = None  # a judge's output whose quotes must be in its inputs
 
     def decide(self, name: str, value: Any, confidence: float, rule: str) -> None:
         self.decisions.append(Decision(name, value, round(confidence, 2), rule))

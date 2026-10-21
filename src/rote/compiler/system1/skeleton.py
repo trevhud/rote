@@ -134,6 +134,15 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
                 "prompt": SKELETON_PROMPT,
                 "client": "anthropic",
             }
+            if n.evidence_field is not None:
+                # The quoted-evidence check needs the field as a string from
+                # the start; the agent's output schema keeps it (generate).
+                node["signature_spec"]["evidence_field"] = n.evidence_field
+                node["signature_spec"]["output_schema"] = {
+                    "type": "object",
+                    "properties": {n.evidence_field: {"type": "string"}},
+                    "required": [n.evidence_field],
+                }
         if n.kind == "agent_loop":
             node["tools"] = list(n.tools)
             if n.loop_body:

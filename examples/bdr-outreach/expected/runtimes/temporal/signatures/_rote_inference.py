@@ -995,6 +995,62 @@ def _call_claude_cli(
 # ───────── the one entry point emitted judges call ─────────
 
 
+#: A quoted span in a judge's answer: between straight or curly double
+#: quotes, at least four characters. The TypeScript twin is
+#: ``quoteProblems`` in rote.adapters._ts_common.QUOTE_HELPER_TS, with the
+#: same pattern and messages: a judge checks its evidence the same way on
+#: every runtime.
+_QUOTE_RE = re.compile(r'"([^"\n]{4,}?)"|\u201c([^\u201d\n]{4,}?)\u201d')
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string, number and boolean leaf in ``value``, as text."""
+    if isinstance(value, Mapping):
+        return [s for v in value.values() for s in _strings(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _strings(v)]
+    if value is None:
+        return []
+    if isinstance(value, bool):
+        return ["true" if value else "false"]
+    return [str(value)]
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def quote_problems(text: Any, inputs: Any) -> list[str]:
+    """What is wrong with the quoted evidence in ``text``, given the judge's ``inputs``.
+
+    For a judge whose skill step asks it to quote the evidence a decision
+    rests on: each quoted span must appear in the inputs verbatim (up to
+    whitespace), and there must be at least one. A quote the inputs do not
+    contain is the judge's own knowledge presented as evidence (a live
+    judge "quoted" a plan rule no search result said)."""
+    spans = [a or b for a, b in _QUOTE_RE.findall(str(text or ""))]
+    if not spans:
+        return [
+            "it quotes nothing from its inputs: quote the evidence it rests on in "
+            "double quotes, exactly as the inputs write it"
+        ]
+    haystack = "\n".join(_squash(s) for s in _strings(inputs))
+    return [
+        f"the quote {json.dumps(span)} is not in its inputs"
+        for span in spans
+        if _squash(span) not in haystack
+    ]
+
+
+def quote_retry_note(problems: Sequence[str]) -> str:
+    """The text a judge's re-ask appends to its prompt."""
+    return (
+        "\n\nYour previous answer failed the evidence check: "
+        + "; ".join(problems)
+        + ". Answer again, quoting only text that appears in the inputs above, exactly."
+    )
+
+
 def call_judge(
     *,
     node_id: str,
@@ -1005,27 +1061,51 @@ def call_judge(
     base_url: str | None = None,
     sampling: dict[str, Any] | None = None,
     max_tokens: int = 4096,
+    evidence_field: str | None = None,
+    inputs: Any = None,
 ) -> dict[str, Any]:
     """Run one schema-locked judge call and return its raw output dict.
 
     The caller owns validation (it holds the generated Pydantic model);
     this returns the decoded payload so the same helper serves every
     judge regardless of its schema.
+
+    With ``evidence_field`` (the IR's ``signature_spec.evidence_field``),
+    that field's quotes are checked against ``inputs``
+    (:func:`quote_problems`); a failing answer is re-asked once with the
+    problems named, and one that fails again raises.
     """
     provider = select_provider(node_id, client, base_url=base_url)
-    payload, rows = structured_call(
-        node_id=node_id,
-        provider=provider,
-        client=client,
-        model=model,
-        prompt=prompt,
-        output_schema=output_schema,
-        base_url=base_url,
-        sampling=sampling,
-        max_tokens=max_tokens,
-    )
-    for row_model, row_usage in rows:
-        _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+
+    def ask(text: str) -> dict[str, Any]:
+        payload, rows = structured_call(
+            node_id=node_id,
+            provider=provider,
+            client=client,
+            model=model,
+            prompt=text,
+            output_schema=output_schema,
+            base_url=base_url,
+            sampling=sampling,
+            max_tokens=max_tokens,
+        )
+        for row_model, row_usage in rows:
+            _log_usage(node_id=node_id, provider=provider, model=row_model, usage=row_usage)
+        return payload
+
+    payload = ask(prompt)
+    if evidence_field is None:
+        return payload
+    problems = quote_problems(payload.get(evidence_field), inputs)
+    if not problems:
+        return payload
+    payload = ask(prompt + quote_retry_note(problems))
+    again = quote_problems(payload.get(evidence_field), inputs)
+    if again:
+        raise RuntimeError(
+            f"judge {node_id}: its quoted evidence is not in its inputs after a re-ask: "
+            + "; ".join(again)
+        )
     return payload
 
 

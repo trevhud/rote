@@ -134,6 +134,16 @@ def _merge_spec(
     if not isinstance(agent, dict):
         return copy.deepcopy(base)
     merged = {**copy.deepcopy(base), **copy.deepcopy(agent)}
+    # Which output field carries quoted evidence is a structure decision.
+    evidence = base.get("evidence_field") if isinstance(base, dict) else None
+    if merged.get("evidence_field") != evidence:
+        changes.append(
+            f"`{node_id}` signature_spec.evidence_field: agent wrote "
+            f"{agent.get('evidence_field')!r}, kept {evidence!r}"
+        )
+    merged.pop("evidence_field", None)
+    if evidence is not None:
+        merged["evidence_field"] = evidence
     if decided is None:
         decided = base.get("input_schema") if isinstance(base, dict) else None
     mine = agent.get("input_schema")

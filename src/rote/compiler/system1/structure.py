@@ -180,6 +180,10 @@ SCHEMA: dict[str, Any] = _obj(
                             "max_iterations": {"type": "integer", "description": "0 if unstated"},
                         }
                     ),
+                    "evidence_field": _str(
+                        description="for an llm_judge whose step asks it to quote its "
+                        "evidence: the output key holding that quoted reason; else ''"
+                    ),
                     "confidence": {"type": "number", "description": "0 to 1"},
                     "why": _str(description="one short clause"),
                 }
@@ -253,6 +257,10 @@ Per node:
   back, and the timeout if the skill states one. Else empty.
 - loop: for an agent_loop, the declared tools it may use, its stop condition
   and its iteration bound, as the skill states them. Else empty.
+- evidence_field: for an llm_judge whose step tells it to quote the
+  evidence its decision rests on ("a reason that quotes the limit"), the
+  output key of that reason, which is also in its outputs; the compiled
+  judge then checks each quote against its inputs. "" otherwise.
 - confidence: how sure you are of this node, 0 to 1. why: one short clause.
 
 Not outside systems: the results of earlier nodes, the pipeline's input, and
@@ -481,6 +489,11 @@ def check(
         loop = n.get("in_loop") or ""
         if loop and (loop not in seen or seen[loop].get("kind") != "agent_loop"):
             out.append(f"{where}: in_loop {loop!r} is not an earlier agent_loop")
+        evidence = str(n.get("evidence_field") or "")
+        if evidence and (kind != "llm_judge" or evidence not in (n.get("outputs") or [])):
+            out.append(
+                f"{where}: evidence_field {evidence!r} must be one of an llm_judge's outputs"
+            )
         bad_keys = [k for k in n.get("outputs") or [] if not _IDENTIFIER.match(str(k))]
         if bad_keys:
             out.append(f"{where}: output keys {bad_keys} are not snake_case identifiers")
@@ -1140,6 +1153,10 @@ def to_plan(
         kind = n["kind"]
         node = NodePlan(n["id"], kind, role_of_kind(kind), u)
         node.intent = _one_line(n.get("intent", ""), 400) or None
+        evidence = str(n.get("evidence_field") or "")
+        if kind == "llm_judge" and evidence and _IDENTIFIER.match(evidence):
+            node.evidence_field = evidence
+            node.decide("evidence_field", evidence, conf, rule)
         if kind != "hitl_gate":
             node.output_keys = [str(k) for k in n.get("outputs") or [] if _IDENTIFIER.match(str(k))]
         node.decide("kind", kind, conf, rule)

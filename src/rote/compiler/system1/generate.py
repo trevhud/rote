@@ -815,6 +815,15 @@ def interface_problems(ctx: Context, node: Any, entry: dict[str, Any]) -> list[s
                 "output_schema lacks the keys the skeleton names for this node: "
                 + ", ".join(f"`{k}`" for k in missing)
             )
+    spec = getattr(node, "signature_spec", None)
+    evidence = getattr(spec, "evidence_field", None)
+    if evidence is not None:
+        prop = (schema.get("properties") or {}).get(evidence)
+        if not isinstance(prop, dict) or prop.get("type") != "string":
+            problems.append(
+                f"output field `{evidence}` must be a string: it holds the quoted "
+                "evidence the judge's answer is checked against"
+            )
     if isinstance(node.output, dict) and "items" in node.output:
         items = (schema.get("properties") or {}).get("items")
         if not isinstance(items, dict) or items.get("type") != "array":

@@ -1047,3 +1047,33 @@ def test_a_skeleton_output_schema_is_fixed_and_named_keys_are_required(tmp_path:
     )
     plain = interface_request(ctx, base, "system", "m").prompt
     assert "named by the skeleton" not in plain
+
+
+def test_a_judges_evidence_field_must_stay_a_string(tmp_path: Path) -> None:
+    ctx, _ = _context(tmp_path, "deal-monitor")
+    judge = _node(ctx, NodeKind.LLM_JUDGE)
+    assert judge.signature_spec is not None
+    spec = judge.signature_spec.model_copy(
+        update={
+            "evidence_field": "reason",
+            "output_schema": {
+                "type": "object",
+                "properties": {"reason": {"type": "string"}},
+                "required": ["reason"],
+            },
+        }
+    )
+    node = judge.model_copy(update={"signature_spec": spec})
+    numeric = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"reason": {"type": "number"}}},
+    }
+    assert (
+        "output field `reason` must be a string: it holds the quoted evidence the judge's "
+        "answer is checked against"
+    ) in interface_problems(ctx, node, numeric)
+    text = {
+        "description": "x",
+        "output_schema": {"type": "object", "properties": {"reason": {"type": "string"}}},
+    }
+    assert not any("quoted evidence" in p for p in interface_problems(ctx, node, text))

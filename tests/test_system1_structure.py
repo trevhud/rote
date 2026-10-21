@@ -985,3 +985,28 @@ def test_a_builders_fixed_schema_is_never_rewritten(skill: Any) -> None:
     want = "integer" if first == "max_results" else "string"
     assert builder.output_schema is not None
     assert builder.output_schema["properties"]["items"]["items"] == {"type": want}
+
+
+def test_a_judge_that_must_quote_its_evidence_reaches_the_skeleton(
+    skill: Any, tmp_path: Path
+) -> None:
+    from rote.compiler.system1.enforce import _merge_spec
+
+    answer = good_answer()
+    answer["nodes"][1]["outputs"] = ["summary", "quote"]
+    answer["nodes"][1]["evidence_field"] = "quote"
+    plan, rec, _ = run(skill, answer)
+    assert rec.contradictions == [[]]
+    doc = {n["id"]: n for n in pipeline_doc(plan)["nodes"]}
+    spec = doc["summarize_email"]["signature_spec"]
+    assert spec["evidence_field"] == "quote"
+    assert spec["output_schema"]["properties"]["quote"] == {"type": "string"}
+    Pipeline.model_validate(pipeline_doc(plan))
+    # enforce keeps the decision whatever the agent writes.
+    changes: list[str] = []
+    merged = _merge_spec(spec, {**spec, "evidence_field": None}, "summarize_email", changes)
+    assert merged["evidence_field"] == "quote" and changes
+    answer["nodes"][1]["evidence_field"] = "missing"
+    assert structure.check(answer, skill, SKILL, structure.declared_tools(skill, TOOLS)) == [
+        "node summarize_email: evidence_field 'missing' must be one of an llm_judge's outputs"
+    ]
