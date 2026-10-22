@@ -1609,3 +1609,15 @@ def test_an_orderings_quote_is_the_steps_text_not_its_heading() -> None:
 
     assert problems("After pulling the above") == []
     assert problems("Step 4: Ask the manager")
+
+
+def test_resolve_names_a_loop_dependency_as_the_reason() -> None:
+    """The third reason an ordering is dropped: its dep runs inside a loop."""
+    from types import SimpleNamespace
+
+    u = SimpleNamespace(title="Step 4: Ask", text="After pulling the above, ask them.")
+    seen = {"each_row": {"id": "each_row", "in_loop": "rows_loop"}}
+    n = {"after": ["each_row"], "after_quote": "After pulling the above"}
+    assert structure._check_after("`ask`", n, seen, u) == [  # type: ignore[arg-type]
+        "`ask`: after 'each_row', which runs inside a loop, from outside it"
+    ]
