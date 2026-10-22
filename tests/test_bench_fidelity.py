@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from rote.bench.fidelity_score import (
     call_key,
@@ -1126,3 +1127,42 @@ def test_the_bench_names_the_read_a_gate_parked_before() -> None:
         "gate manual_data: parked before gmail.search->response[0], which the skill made first"
         in line
     )
+
+
+def test_a_case_whose_gates_get_equal_payloads_is_refused(tmp_path: Path) -> None:
+    """Two gates sent one payload cannot be told apart by what they received;
+    the loader refuses the case and says how to fix it. Distinct payloads,
+    the negative half, load."""
+    from rote.bench.fidelity import load_cases
+
+    example = tmp_path / "ex"
+    (example / "fidelity").mkdir(parents=True)
+    cases = example / "fidelity" / "cases.yaml"
+
+    def write(gates: list[dict[str, Any]]) -> None:
+        cases.write_text(
+            yaml.safe_dump(
+                {
+                    "output_fields": {"total": "the total"},
+                    "cases": [{"id": "two_gates", "input": {}, "gates": gates}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    write([{"approved": True}, {"approved": True}])
+    with pytest.raises(ValueError, match=r"'two_gates': gates 0 and 1 .* `note` or\s+`approver`"):
+        load_cases(example)
+    write([{"approved": True, "approver": "controller"}, {"approved": True, "approver": "cfo"}])
+    assert [c.gates for c in load_cases(example).cases] == [
+        [{"approved": True, "approver": "controller"}, {"approved": True, "approver": "cfo"}]
+    ]
+
+
+@pytest.mark.parametrize("example", ["expense-audit", "ops-report"])
+def test_every_committed_case_gives_its_gates_distinct_payloads(example: str) -> None:
+    from rote.bench.fidelity import load_cases
+
+    from .conftest import EXAMPLES_DIR
+
+    assert load_cases(EXAMPLES_DIR / example).cases
