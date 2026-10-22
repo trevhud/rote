@@ -1,0 +1,1224 @@
+# A real compile of examples/ops-report/skill on main 3f41039 (rote bench,
+# release check 2026-10-21). Its gate takes only the pipeline input, so it
+# runs in the first wave, beside the fetches, where the hand-written IR asks
+# after them. Kept verbatim: the bench's general node matcher pairs the
+# expected gate with a pure function that sits where the gate sat.
+version: 0.1.0
+description: Scheduled daily executive operations report for a parcel fulfillment
+  network. Auto-pulls shipment-container and dock/dwell spreadsheets from Google Drive
+  and dock-activity emails from Gmail, asks the duty manager for the handful of numbers
+  that live behind interactive dashboards, then assembles a three-section executive
+  summary with a KPI header and color-coded dwell alerts.
+name: ops-report
+source_skill: ../skill-src/ops-report
+input:
+  type: OpsReportInput
+  input_schema:
+    type: object
+    properties:
+      report_date:
+        type: string
+    required:
+    - report_date
+edges:
+- from: fetch_shipment_containers
+  to: parse_shipment_containers
+- from: fetch_dock_pending_log
+  to: summarize_dock_pending_log
+- from: search_dock_activity_emails
+  to: summarize_dock_activity_emails
+- from: fetch_open_dwell_tickets
+  to: filter_open_dwell_tickets
+- from: request_manual_data
+  to: appointment_compliance
+- from: request_manual_data
+  to: sorter_metrics_alerts
+- from: request_manual_data
+  to: current_dwell_alerts
+- from: parse_shipment_containers
+  to: build_executive_summary
+- from: summarize_dock_pending_log
+  to: build_executive_summary
+- from: summarize_dock_activity_emails
+  to: build_executive_summary
+- from: filter_open_dwell_tickets
+  to: build_executive_summary
+- from: appointment_compliance
+  to: build_executive_summary
+- from: sorter_metrics_alerts
+  to: build_executive_summary
+- from: current_dwell_alerts
+  to: build_executive_summary
+entry_nodes:
+- fetch_shipment_containers
+- fetch_dock_pending_log
+- search_dock_activity_emails
+- fetch_open_dwell_tickets
+- request_manual_data
+exit_nodes:
+- build_executive_summary
+nodes:
+- description: Reads the shipment containers spreadsheet from Google Drive and returns
+    its facility summary table as CSV text.
+  output: dict
+  output_schema:
+    type: string
+    description: CSV text of the first tab (facility summary table with COMPLETION
+      % column), as the Drive tool returns spreadsheet content as text
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: &id001
+          report_date:
+            type: string
+        required: &id002
+        - report_date
+  id: fetch_shipment_containers
+  kind: external_call
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  impl: extracted/fetch_shipment_containers.py:fetch_shipment_containers
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id:
+        literal: 1ExampleShipmentContainersFileId00000000000
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Parses the shipment-container facility summary CSV into per-site active,
+    loaded, staged, shipped counts and completion %, flags sites below 75% completion,
+    and computes average completion and week-over-week trend when available.
+  output:
+    container_flow_by_site: list
+    sites_below_threshold: list
+  output_schema:
+    type: object
+    properties: &id003
+      container_flow_by_site:
+        type: array
+        items:
+          type: object
+          properties:
+            site:
+              type: string
+              description: Site name
+            active:
+              type: integer
+              description: Active container count
+            loaded:
+              type: integer
+              description: Loaded container count
+            staged:
+              type: integer
+              description: Staged container count
+            shipped:
+              type: integer
+              description: Shipped container count
+            completion_pct:
+              type: number
+              description: Completion percent for the site
+            below_threshold:
+              type: boolean
+              description: True when completion is below 75%
+            wow_trend:
+              type:
+              - number
+              - 'null'
+              description: Week-over-week completion change in points, null if unavailable
+          required:
+          - site
+          - active
+          - loaded
+          - staged
+          - shipped
+          - completion_pct
+          - below_threshold
+        description: One row per site in the facility summary
+      sites_below_threshold:
+        type: array
+        items:
+          type: string
+        description: Names of sites with completion below 75%
+      active_sites:
+        type: integer
+        description: Number of active sites, for the KPI header
+      avg_completion_pct:
+        type:
+        - number
+        - 'null'
+        description: Average completion % across sites, null if no sites
+    required: &id004
+    - container_flow_by_site
+    - sites_below_threshold
+    - active_sites
+    - avg_completion_pct
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      fetch_shipment_containers: {}
+  id: parse_shipment_containers
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    fetch_shipment_containers: fetch_shipment_containers.output
+  mandatory: true
+  constants:
+    completion_flag_threshold: 75%
+  impl: extracted/parse_shipment_containers.py:parse_shipment_containers
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Reads the Dock Pending Log spreadsheet from Google Drive and returns
+    its content as CSV text.
+  output: dict
+  output_schema:
+    type: string
+    description: Dock Pending Log as CSV text (first tab) with header row including
+      Resolved, site and issue type columns; inferred from the tool returning content
+      as text
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+  id: fetch_dock_pending_log
+  kind: external_call
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  impl: extracted/fetch_dock_pending_log.py:fetch_dock_pending_log
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id:
+        literal: 1ExampleDockPendingLogFileId0000000000000000
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Counts the Dock Pending Log rows where Resolved = FALSE and breaks
+    them down by site and by issue type.
+  output:
+    pending_total: int
+    pending_by_site: dict
+    pending_by_issue_type: dict
+  output_schema:
+    type: object
+    properties: &id005
+      pending_total:
+        type: integer
+        description: Total open rows where Resolved = FALSE
+      pending_by_site:
+        type: object
+        properties: {}
+        description: Open count keyed by site (EAST1, WEST2, etc.)
+      pending_by_issue_type:
+        type: object
+        properties: {}
+        description: Open count keyed by issue type (PO Number, Pallet/Piece Count
+          Discrepancy)
+    required: &id006
+    - pending_total
+    - pending_by_site
+    - pending_by_issue_type
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      fetch_dock_pending_log: {}
+  id: summarize_dock_pending_log
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    fetch_dock_pending_log: fetch_dock_pending_log.output
+  mandatory: true
+  constants:
+    unresolved_filter: Resolved = FALSE
+  impl: extracted/summarize_dock_pending_log.py:summarize_dock_pending_log
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Searches Gmail with the query "label:dock-activity newer_than:1d" and
+    returns the matching dock-activity threads, newest first.
+  output: dict
+  output_schema:
+    type: array
+    items:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Thread id
+        subject:
+          type: string
+          description: Thread subject, shows Approved or Requested
+        sender:
+          type:
+          - string
+          - 'null'
+          description: Sender of the latest message
+        date:
+          type:
+          - string
+          - 'null'
+          description: Date of the thread
+        snippet:
+          type: string
+          description: Snippet of the latest message
+      required:
+      - id
+      - subject
+      - snippet
+    description: 'Matching Gmail threads, newest first (inferred: tool returns the
+      matching threads as an array)'
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+  id: search_dock_activity_emails
+  kind: external_call
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  impl: extracted/search_dock_activity_emails.py:search_dock_activity_emails
+  mcp:
+    server: gmail
+    tool: search_threads
+    args:
+      query:
+        literal: label:dock-activity newer_than:1d
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Counts Approved versus Requested dock appointments in the last day's
+    dock-activity emails and lists the outstanding requests not yet approved.
+  output:
+    approved_count: int
+    requested_count: int
+    outstanding_requests: list
+  signature_spec:
+    input_schema:
+      type: object
+      properties:
+        request:
+          type: object
+          properties:
+            report_date:
+              type: string
+          required:
+          - report_date
+        search_dock_activity_emails: {}
+    output_schema:
+      type: object
+      properties:
+        approved_count:
+          type: integer
+          description: Number of Approved appointments
+        requested_count:
+          type: integer
+          description: Number of Requested appointments
+        outstanding_requests:
+          type: array
+          items:
+            type: object
+            properties:
+              thread_id:
+                type: string
+                description: Gmail thread id of the request
+              subject:
+                type: string
+                description: Email subject of the request
+              sender:
+                type: string
+                description: Sender of the request
+              date:
+                type: string
+                description: Date of the request email
+              reason:
+                type: string
+                description: Why it is flagged as not yet approved
+            required:
+            - subject
+          description: Requests not yet approved
+      required:
+      - approved_count
+      - requested_count
+      - outstanding_requests
+    prompt: 'You are summarizing the dock-activity emails for the daily executive
+      operations report dated {{ request.report_date }}.
+
+
+      The emails come from the Gmail search "label:dock-activity newer_than:1d". The
+      search result (it may be a list of threads, an object wrapping them, or JSON
+      text) is:
+
+
+      {{ search_dock_activity_emails }}
+
+
+      The skill''s instruction for this step: "Count Approved vs. Requested appointments.
+      Flag any outstanding requests not yet approved."
+
+
+      Do the following:
+
+      1. Count the appointments that are Approved, using each thread''s subject, sender,
+      date and snippet.
+
+      2. Count the appointments that are Requested.
+
+      3. List every outstanding request, meaning a request that has not yet been approved.
+      For each, give the thread id, subject, sender and date when available, and a
+      short reason it is flagged as not yet approved.
+
+
+      Use only what the emails show. If the result is empty, return zero counts and
+      an empty outstanding list. Decide any case the skill does not define from the
+      skill''s criteria above.
+
+
+      Return your decision via the structured output tool.'
+    client: anthropic
+  output_schema:
+    type: object
+    properties: &id007
+      approved_count:
+        type: integer
+        description: Number of Approved appointments
+      requested_count:
+        type: integer
+        description: Number of Requested appointments
+      outstanding_requests:
+        type: array
+        items:
+          type: object
+          properties:
+            thread_id:
+              type: string
+              description: Gmail thread id of the request
+            subject:
+              type: string
+              description: Email subject of the request
+            sender:
+              type: string
+              description: Sender of the request
+            date:
+              type: string
+              description: Date of the request email
+            reason:
+              type: string
+              description: Why it is flagged as not yet approved
+          required:
+          - subject
+        description: Requests not yet approved
+    required: &id008
+    - approved_count
+    - requested_count
+    - outstanding_requests
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      search_dock_activity_emails: {}
+  id: summarize_dock_activity_emails
+  kind: llm_judge
+  inputs:
+    request: pipeline.input
+    search_dock_activity_emails: search_dock_activity_emails.output
+  mandatory: true
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Reads the dwell ticket log tab "Dwell Log - Form Responses" from Google
+    Drive and returns its content as CSV text.
+  output: dict
+  output_schema:
+    type: string
+    description: CSV text of the Dwell Log - Form Responses tab, header row first
+      (inferred from the tool returning file content as text)
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+  id: fetch_open_dwell_tickets
+  kind: external_call
+  inputs:
+    request: pipeline.input
+  mandatory: true
+  constants:
+    dwell_tab: Dwell Log - Form Responses
+  impl: extracted/fetch_open_dwell_tickets.py:fetch_open_dwell_tickets
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id:
+        literal: 1ExampleDwellTicketLogFileId0000000000000000
+      tab: dwell_tab
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 'Data sources to auto-pull:'
+- description: Filters the dwell ticket log to rows where Open/Closed is "Open", reports
+    each open ticket's details, and flags the Missort Warning, Missort Alert and Possible
+    Misload Alert thresholds.
+  output:
+    open_dwell_tickets: list
+    ticket_alerts: list
+  output_schema:
+    type: object
+    properties: &id009
+      open_dwell_tickets:
+        type: array
+        items:
+          type: object
+          properties:
+            date:
+              type:
+              - string
+              - 'null'
+              description: Ticket date
+            facility:
+              type:
+              - string
+              - 'null'
+              description: Facility of the ticket
+            packages:
+              type:
+              - integer
+              - 'null'
+              description: Number of packages
+            client_impact:
+              type:
+              - string
+              - 'null'
+              description: Client impact text
+            carrier_impact:
+              type:
+              - string
+              - 'null'
+              description: Carrier impact text
+            issue_description:
+              type:
+              - string
+              - 'null'
+              description: Issue description
+          required:
+          - date
+          - facility
+          - packages
+          - client_impact
+          - carrier_impact
+          - issue_description
+        description: Open tickets, one per row
+      ticket_alerts:
+        type: array
+        items:
+          type: object
+          properties:
+            ticket_index:
+              type: integer
+              description: Index into open_dwell_tickets
+            facility:
+              type:
+              - string
+              - 'null'
+              description: Facility of flagged ticket
+            alert:
+              type: string
+              enum:
+              - Missort Warning
+              - Missort Alert
+              - Possible Misload Alert
+              description: Alert type raised
+            value:
+              type: number
+              description: Packages or carrier value that triggered it
+          required:
+          - ticket_index
+          - facility
+          - alert
+          - value
+        description: Threshold flags raised on open tickets
+    required: &id010
+    - open_dwell_tickets
+    - ticket_alerts
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      fetch_open_dwell_tickets: {}
+  id: filter_open_dwell_tickets
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    fetch_open_dwell_tickets: fetch_open_dwell_tickets.output
+  mandatory: true
+  constants:
+    missort_warning_min: 25
+    missort_alert_min: 41
+    carrier_misload_min: 80
+  impl: extracted/filter_open_dwell_tickets.py:filter_open_dwell_tickets
+  source:
+    section: 'Data sources to auto-pull:'
+- description: 'Manual data to request from user:: Pause until the duty manager supplies
+    the appointment, sorter, and current-dwell numbers that live behind dashboards.'
+  output:
+    dock_appointment_completion: dict
+    sorter_metrics: list
+    current_dwell: list
+  output_schema:
+    type: object
+    properties:
+      current_dwell:
+        type: array
+        items:
+          type: object
+          properties:
+            carrier:
+              type: string
+            packages:
+              type: integer
+            shipper:
+              type: string
+            site:
+              type: string
+          required:
+          - carrier
+          - packages
+          - shipper
+          - site
+      dock_appointment_completion:
+        type: object
+        properties:
+          green:
+            type: integer
+          grey:
+            type: integer
+          other:
+            type: integer
+          red:
+            type: integer
+        required:
+        - green
+        - grey
+        - other
+        - red
+      sorter_metrics:
+        type: array
+        items:
+          type: object
+          properties:
+            fail_rate_pct:
+              type: number
+            prior_day_volume:
+              type: integer
+            site:
+              type: string
+            volume:
+              type: integer
+          required:
+          - fail_rate_pct
+          - prior_day_volume
+          - site
+          - volume
+    required:
+    - current_dwell
+    - dock_appointment_completion
+    - sorter_metrics
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+  id: request_manual_data
+  kind: hitl_gate
+  inputs:
+    request: pipeline.input
+  signal: manual_data
+  source:
+    section: 'Manual data to request from user:'
+- description: Turns the duty manager's prior-day dock appointment counts into appointment
+    tiles and flags Non-Compliant appointments for escalation.
+  output:
+    appointment_tiles: dict
+    non_compliant_escalations: list
+  output_schema:
+    type: object
+    properties: &id011
+      appointment_tiles:
+        type: object
+        properties:
+          green:
+            type: integer
+            description: Green (Complete) count
+          red:
+            type: integer
+            description: Red (No Call/No Show) count
+          grey:
+            type: integer
+            description: Grey (Canceled) count
+          non_compliant:
+            type: integer
+            description: Non-Compliant count (any other color)
+          total:
+            type: integer
+            description: Sum of all appointment counts
+        description: Appointment count tiles by color status
+        required:
+        - green
+        - red
+        - grey
+        - non_compliant
+        - total
+      non_compliant_escalations:
+        type: array
+        items:
+          type: object
+          properties:
+            status:
+              type: string
+              enum:
+              - Non-Compliant
+              description: Escalated appointment status
+            count:
+              type: integer
+              description: Number of Non-Compliant appointments
+            message:
+              type: string
+              description: Escalation note stating Non-Compliant must be escalated
+          required:
+          - status
+          - count
+          - message
+        description: Escalation entries for Non-Compliant appointments; empty when
+          none
+    required: &id012
+    - appointment_tiles
+    - non_compliant_escalations
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      request_manual_data:
+        type: object
+        properties:
+          current_dwell:
+            type: array
+            items:
+              type: object
+              properties:
+                carrier:
+                  type: string
+                packages:
+                  type: integer
+                shipper:
+                  type: string
+                site:
+                  type: string
+              required:
+              - carrier
+              - packages
+              - shipper
+              - site
+          dock_appointment_completion:
+            type: object
+            properties:
+              green:
+                type: integer
+              grey:
+                type: integer
+              other:
+                type: integer
+              red:
+                type: integer
+            required:
+            - green
+            - grey
+            - other
+            - red
+          sorter_metrics:
+            type: array
+            items:
+              type: object
+              properties:
+                fail_rate_pct:
+                  type: number
+                prior_day_volume:
+                  type: integer
+                site:
+                  type: string
+                volume:
+                  type: integer
+              required:
+              - fail_rate_pct
+              - prior_day_volume
+              - site
+              - volume
+        required:
+        - current_dwell
+        - dock_appointment_completion
+        - sorter_metrics
+  id: appointment_compliance
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    request_manual_data: request_manual_data.output
+  mandatory: true
+  impl: extracted/appointment_compliance.py:appointment_compliance
+  source:
+    section: 'Manual data to request from user:'
+- description: Evaluates each site's sorter metrics and flags fail rate above 5% and
+    day-over-day volume drops above 15%.
+  output:
+    sorter_alerts: list
+  output_schema:
+    type: object
+    properties: &id013
+      sorter_alerts:
+        type: array
+        items:
+          type: object
+          properties:
+            site:
+              type: string
+              description: Site name
+            volume:
+              type: number
+              description: Volume output for the day
+            prior_day_volume:
+              type: number
+              description: Prior day volume
+            fail_rate_pct:
+              type: number
+              description: Fail rate percent
+            volume_change_pct:
+              type:
+              - number
+              - 'null'
+              description: Day-over-day volume change percent; null if prior volume
+                is zero
+            fail_rate_alert:
+              type: boolean
+              description: True when fail rate exceeds 5% (action needed)
+            volume_drop_alert:
+              type: boolean
+              description: True when volume dropped more than 15% day-over-day (divert
+                adjustment may be needed)
+            flags:
+              type: array
+              items:
+                type: string
+              description: Human-readable alert messages for the site
+          required:
+          - site
+          - volume
+          - prior_day_volume
+          - fail_rate_pct
+          - volume_change_pct
+          - fail_rate_alert
+          - volume_drop_alert
+          - flags
+        description: One entry per site with sorter metrics and flags
+    required: &id014
+    - sorter_alerts
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      request_manual_data:
+        type: object
+        properties:
+          current_dwell:
+            type: array
+            items:
+              type: object
+              properties:
+                carrier:
+                  type: string
+                packages:
+                  type: integer
+                shipper:
+                  type: string
+                site:
+                  type: string
+              required:
+              - carrier
+              - packages
+              - shipper
+              - site
+          dock_appointment_completion:
+            type: object
+            properties:
+              green:
+                type: integer
+              grey:
+                type: integer
+              other:
+                type: integer
+              red:
+                type: integer
+            required:
+            - green
+            - grey
+            - other
+            - red
+          sorter_metrics:
+            type: array
+            items:
+              type: object
+              properties:
+                fail_rate_pct:
+                  type: number
+                prior_day_volume:
+                  type: integer
+                site:
+                  type: string
+                volume:
+                  type: integer
+              required:
+              - fail_rate_pct
+              - prior_day_volume
+              - site
+              - volume
+        required:
+        - current_dwell
+        - dock_appointment_completion
+        - sorter_metrics
+  id: sorter_metrics_alerts
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    request_manual_data: request_manual_data.output
+  mandatory: true
+  constants:
+    fail_rate_threshold: 5%
+    volume_drop_threshold: 15%
+  impl: extracted/sorter_metrics_alerts.py:sorter_metrics_alerts
+  source:
+    section: 'Manual data to request from user:'
+- description: Applies the Missort Warning, Missort Alert and Possible Misload Alert
+    thresholds to the manager-supplied current dwell rows and returns the flagged
+    entries.
+  output:
+    current_dwell_alerts: list
+  output_schema:
+    type: object
+    properties: &id015
+      current_dwell_alerts:
+        type: array
+        items:
+          type: object
+          properties:
+            shipper:
+              type: string
+              description: Shipper or brand name
+            carrier:
+              type: string
+              description: Carrier name
+            site:
+              type: string
+              description: Site code
+            packages:
+              type: integer
+              description: Number of orders/packages dwelling
+            alert:
+              type: string
+              enum:
+              - Missort Warning
+              - Missort Alert
+              - Possible Misload Alert
+              - None
+              description: Alert level triggered by thresholds
+            color:
+              type: string
+              enum:
+              - light red
+              - bright red
+              - darkest red
+              - none
+              description: Color code for the alert
+          required:
+          - shipper
+          - carrier
+          - site
+          - packages
+          - alert
+          - color
+        description: Dwell rows with their alert level
+    required: &id016
+    - current_dwell_alerts
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      request_manual_data:
+        type: object
+        properties:
+          current_dwell:
+            type: array
+            items:
+              type: object
+              properties:
+                carrier:
+                  type: string
+                packages:
+                  type: integer
+                shipper:
+                  type: string
+                site:
+                  type: string
+              required:
+              - carrier
+              - packages
+              - shipper
+              - site
+          dock_appointment_completion:
+            type: object
+            properties:
+              green:
+                type: integer
+              grey:
+                type: integer
+              other:
+                type: integer
+              red:
+                type: integer
+            required:
+            - green
+            - grey
+            - other
+            - red
+          sorter_metrics:
+            type: array
+            items:
+              type: object
+              properties:
+                fail_rate_pct:
+                  type: number
+                prior_day_volume:
+                  type: integer
+                site:
+                  type: string
+                volume:
+                  type: integer
+              required:
+              - fail_rate_pct
+              - prior_day_volume
+              - site
+              - volume
+        required:
+        - current_dwell
+        - dock_appointment_completion
+        - sorter_metrics
+  id: current_dwell_alerts
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    request_manual_data: request_manual_data.output
+  mandatory: true
+  constants:
+    missort_warning_range: 25-40
+    missort_alert_min: 41
+    carrier_misload_min: 80
+  impl: extracted/current_dwell_alerts.py:current_dwell_alerts
+  source:
+    section: 'Manual data to request from user:'
+- description: Assembles the three-section executive operations summary with a KPI
+    header, dwell alerts, and a reminder to open the live "ops-report" artifact.
+  output:
+    executive_summary: dict
+  output_schema:
+    type: object
+    properties:
+      executive_summary:
+        type: object
+        properties:
+          report_date:
+            type: string
+            description: Report date
+          kpi_header:
+            type: object
+            properties:
+              active_sites:
+                type: integer
+                description: Count of active sites
+              dock_pending_count:
+                type: integer
+                description: Total open dock pending items
+              avg_completion_pct:
+                type:
+                - number
+                - 'null'
+                description: Average completion % across sites
+              open_dwell_tickets:
+                type: integer
+                description: Count of open dwell tickets
+            description: KPI header values
+            required:
+            - active_sites
+            - dock_pending_count
+            - avg_completion_pct
+            - open_dwell_tickets
+          section_1_dock_compliance:
+            type: object
+            properties:
+              appointment_tiles:
+                type: object
+                properties: {}
+                description: Appointment completion tiles from appointment_compliance
+              gmail_summary:
+                type: object
+                properties: {}
+                description: Dock activity email summary
+              pending_log_table:
+                type: object
+                properties: {}
+                description: Pending log summary by site and issue type
+            description: Section 1 Dock Compliance
+            required:
+            - appointment_tiles
+            - gmail_summary
+            - pending_log_table
+          section_2_missort_loss:
+            type: object
+            properties:
+              sorter_metrics:
+                type: array
+                items:
+                  type: object
+                  properties: {}
+                description: Sorter metrics with alerts per site
+              container_flow_table:
+                type: array
+                items:
+                  type: object
+                  properties: {}
+                description: Container flow by site with completion %
+            description: Section 2 Missort and Loss
+            required:
+            - sorter_metrics
+            - container_flow_table
+          section_3_dwell:
+            type: object
+            properties:
+              dwell_alerts:
+                type: array
+                items:
+                  type: object
+                  properties: {}
+                description: Color-coded BI dashboard dwell alerts
+              open_dwell_tickets:
+                type: array
+                items:
+                  type: object
+                  properties: {}
+                description: Open Dwell Impact Log tickets
+            description: Section 3 Dwell
+            required:
+            - dwell_alerts
+            - open_dwell_tickets
+          artifact_reminder:
+            type: string
+            description: Reminder to open the live ops-report artifact
+        description: The full executive report
+        required:
+        - report_date
+        - kpi_header
+        - section_1_dock_compliance
+        - section_2_missort_loss
+        - section_3_dwell
+        - artifact_reminder
+    required:
+    - executive_summary
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      parse_shipment_containers:
+        type: object
+        properties: *id003
+        required: *id004
+      summarize_dock_pending_log:
+        type: object
+        properties: *id005
+        required: *id006
+      summarize_dock_activity_emails:
+        type: object
+        properties: *id007
+        required: *id008
+      filter_open_dwell_tickets:
+        type: object
+        properties: *id009
+        required: *id010
+      appointment_compliance:
+        type: object
+        properties: *id011
+        required: *id012
+      sorter_metrics_alerts:
+        type: object
+        properties: *id013
+        required: *id014
+      current_dwell_alerts:
+        type: object
+        properties: *id015
+        required: *id016
+  id: build_executive_summary
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    parse_shipment_containers: parse_shipment_containers.output
+    summarize_dock_pending_log: summarize_dock_pending_log.output
+    summarize_dock_activity_emails: summarize_dock_activity_emails.output
+    filter_open_dwell_tickets: filter_open_dwell_tickets.output
+    appointment_compliance: appointment_compliance.output
+    sorter_metrics_alerts: sorter_metrics_alerts.output
+    current_dwell_alerts: current_dwell_alerts.output
+  mandatory: true
+  impl: extracted/build_executive_summary.py:build_executive_summary
+  source:
+    section: 'Report format:'
