@@ -13,4 +13,4 @@ for rote and is made up; it is not part of the upstream skill.
 | License | Apache-2.0 |
 | Fetched | 2026-10-21 |
 
-Licensed under the Apache License, Version 2.0. The full license text is in this repository's [LICENSE](../../../LICENSE) (the same Apache-2.0 text) and upstream at https://github.com/huggingface/skills/blob/c3ff942be3e07116b475253f0a8fc4f54682c1a8/LICENSE.
+Licensed under the Apache License, Version 2.0. The upstream license file is copied byte for byte, as distributed at the pinned commit, in [LICENSE-huggingface-skills](../LICENSE-huggingface-skills). Upstream: https://github.com/huggingface/skills/blob/c3ff942be3e07116b475253f0a8fc4f54682c1a8/LICENSE.

@@ -26,7 +26,14 @@ change is decided.
 | `hf-best-model` | Hugging Face | Apache-2.0 | public no-auth Hub API calls per benchmark leaderboard, a device memory budget, rank and filter, `hub_repo_search` (Hugging Face MCP) as the fallback |
 
 Each `<name>/NOTICE.md` records the source URL at a pinned commit, the
-author, the license and the date fetched. Each `skill/sample-input.json`
+author, the license and the date fetched. The upstream license files sit
+beside this README, byte for byte as distributed at the pinned commits:
+`LICENSE-Apache-2.0` is knowledge-work-plugins' `sales/LICENSE` (the
+`legal/` and `customer-support/` files are identical to it),
+`LICENSE-knowledge-work-plugins-root` is that repository's root LICENSE,
+which covers the small-business plugin (trailing text included, as
+shipped), and `LICENSE-huggingface-skills` is huggingface/skills' LICENSE.
+Apollo's MIT text is reproduced in its NOTICE.md. Each `skill/sample-input.json`
 is made up for rote: an input that uses the skill's own field names,
 wrapped in the `{"input", "signals"}` envelope when the skill has a gate
 (`rote.compiler.grounding` reads it, see

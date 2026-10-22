@@ -13,7 +13,7 @@ for rote and is made up; it is not part of the upstream skill.
 | License | MIT |
 | Fetched | 2026-10-21 |
 
-The skill is published in Anthropic's knowledge-work-plugins repository under `partner-built/apollo/`, which carries its own MIT license from Apollo.io (https://github.com/anthropics/knowledge-work-plugins/blob/2d97716bced3a843bcc3add4356ce0cecc5a0dab/partner-built/apollo/LICENSE). The notice it requires:
+The skill is published in Anthropic's knowledge-work-plugins repository under `partner-built/apollo/`, which carries its own MIT license from Apollo.io (https://github.com/anthropics/knowledge-work-plugins/blob/2d97716bced3a843bcc3add4356ce0cecc5a0dab/partner-built/apollo/LICENSE). Its license text, reproduced verbatim:
 
 ```text
 MIT License
