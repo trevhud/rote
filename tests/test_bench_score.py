@@ -726,3 +726,44 @@ def test_turns_come_from_either_driver_shape(
     )
     assert job["run"]["turns"] == turns
     assert job["run"]["repair_rounds"] == metadata.get("repair_rounds")
+
+
+_REPO = Path(__file__).resolve().parent.parent
+
+
+def test_a_gate_is_scored_against_the_compiled_gate_not_its_general_match() -> None:
+    """The real ops-report compile from the 3f41039 release check. Its gate
+    runs in the first wave, so on position and degree the general matcher
+    pairs the expected gate with a pure function that sits where the gate
+    sat (kind is deliberately not a matching signal). The gate metrics must
+    still compare the two gates: identical payload keys, different signal."""
+    expected = load_pipeline(_REPO / "examples" / "ops-report" / "expected" / "pipeline.yaml")
+    compiled = load_pipeline(_REPO / "tests" / "fixtures" / "bench" / "ops-report-early-gate.yaml")
+    general = {m.expected_id: m.compiled_id for m in match_nodes(expected, compiled)}
+    assert general["manual_data_gate"] != "request_manual_data"  # the case this guards
+
+    gates = score_pipeline(expected, compiled)["gates"]
+    assert gates["found"] == 1
+    (row,) = gates["gates"]
+    assert row["compiled"] == "request_manual_data"
+    assert row["payload_jaccard"] == 1.0
+    assert (row["signal_expected"], row["signal_compiled"]) == (
+        "manual_data_provided",
+        "manual_data",
+    )
+    assert row["signal_match"] is False
+
+
+def test_a_gate_with_no_compiled_gate_is_still_missing() -> None:
+    """The negative half: a compile with no hitl_gate has nothing to pair."""
+    expected = load_pipeline(_REPO / "examples" / "ops-report" / "expected" / "pipeline.yaml")
+    compiled = load_pipeline(_REPO / "tests" / "fixtures" / "bench" / "ops-report-early-gate.yaml")
+    gateless = compiled.model_copy(
+        update={"nodes": [n for n in compiled.nodes if n.id != "request_manual_data"]}
+    )
+    gates = score_pipeline(expected, gateless)["gates"]
+    assert (gates["found"], gates["gates"][0]["compiled"], gates["payload_jaccard_mean"]) == (
+        0,
+        None,
+        0.0,
+    )
