@@ -210,7 +210,7 @@ own offline checks on it.
 | `waves` | pairwise ordering agreement: for each pair of matched nodes, do both pipelines put them before / together / after? Robust to a whole wave shifting |
 | `fanP`, `fanR` | fan_out precision and recall vs expected |
 | `mandP`, `mandR` | mandatory precision and recall |
-| `gates`, `sig`, `gateJ` | compiled/expected gates, gates with the same signal name, mean Jaccard of the resume payload keys |
+| `gates`, `sig`, `gateJ` | compiled/expected gates, gates with the same signal name, mean Jaccard of the resume payload keys. Each expected gate is compared with a compiled gate, paired among the compiled gates only (`score.match_gates`): the node matcher ignores kind, so it can put a gate's counterpart on a step that is not a gate. The gate pairing has no similarity floor, so the found count in `results.json` (`gates.found`) means paired with some compiled gate, at most the smaller of the two gate counts. A gate at the wrong step still pairs, and shows up as a signal and payload mismatch in its row |
 | `sigN`, `gateJN` | the same two on normalized tokens (separators and inflection ignored), so `cs_lead_approved` matches `cs_lead_approval` and `approved_plan` shares `plan` |
 | `inR`, `inP` | pipeline input field names, recall and precision |
 | `impl` | pure_function nodes implemented / total (the rest are stubs) |

@@ -482,6 +482,39 @@ def match_nodes(
     return matches
 
 
+def match_gates(expected: Pipeline, compiled: Pipeline, matches: list[NodeMatch]) -> dict[str, str]:
+    """``{expected gate id: compiled gate id}``, pairing gates only with gates.
+
+    The general matcher leaves a node's kind out on purpose, so it can pair
+    an expected gate with whatever compiled node sits where the gate sat: a
+    real ops-report compile ran its gate in the first wave, and the gate went
+    to a pure function. Grading a gate's signal and payload against a non-gate
+    measures the matcher, not the compile. So the gate metrics take their
+    own optimal assignment over the compiled ``hitl_gate`` nodes, scored by
+    :func:`node_similarity` with the general matches as neighbor context.
+    Any positive similarity pairs: among gates, kind already rules out the
+    unrelated nodes the threshold exists for.
+    """
+    e_gates = sorted(
+        (n for n in expected.nodes if n.kind is NodeKind.HITL_GATE), key=lambda n: n.id
+    )
+    c_gates = sorted(
+        (n for n in compiled.nodes if n.kind is NodeKind.HITL_GATE), key=lambda n: n.id
+    )
+    if not e_gates or not c_gates:
+        return {}
+    ec, cc = _Context(expected), _Context(compiled)
+    assignment = {m.expected_id: m.compiled_id for m in matches}
+    weights = [
+        [_weighted(similarity_signals(e, ec, c, cc, assignment)) for c in c_gates] for e in e_gates
+    ]
+    return {
+        e_gates[i].id: c_gates[j].id
+        for i, j in _max_weight_assignment(weights)
+        if weights[i][j] > 0
+    }
+
+
 def _rate(num: int, den: int) -> float | None:
     return round(num / den, 4) if den else None
 
@@ -676,7 +709,7 @@ def score_pipeline(expected: Pipeline, compiled: Pipeline) -> dict[str, Any]:
     by_id_c = {n.id: n for n in compiled.nodes}
     exp_gates = [n for n in expected.nodes if n.kind is NodeKind.HITL_GATE]
     cmp_gates = [n for n in compiled.nodes if n.kind is NodeKind.HITL_GATE]
-    exp_to_cmp = {m.expected_id: m.compiled_id for m in matches}
+    exp_to_cmp = match_gates(expected, compiled, matches)
     gate_rows: list[dict[str, Any]] = []
     for g in exp_gates:
         cid = exp_to_cmp.get(g.id)
