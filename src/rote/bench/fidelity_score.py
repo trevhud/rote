@@ -32,6 +32,7 @@ from decimal import Decimal
 from typing import Any
 
 from rote.bench.score import _tokens
+from rote.eval.gate_server import GATE_SERVER
 
 #: A reference value: a normalized scalar, or ``{"set": [...]}`` for a
 #: list (sorted by its JSON text, so it is comparable and serializable).
@@ -391,6 +392,45 @@ def _head(path: str) -> str:
     return re.split(r"[.\[]", path, maxsplit=1)[0]
 
 
+def _is_ask(call: dict[str, Any]) -> bool:
+    """A run asking the person at a gate (:mod:`rote.eval.gate_server`)."""
+    return call.get("server") == GATE_SERVER
+
+
+def _read_entry(call: dict[str, Any]) -> dict[str, Any]:
+    return {"key": call_key(call), "request": request_key(call), "live": _live(call)}
+
+
+def _reads_before_gates(runs: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """For each gate, the reads every run made before it asked the person.
+
+    Read off each run's call log, where ``ask_person`` calls interleave with
+    the tool calls in the order they were made. Only gates every run
+    reached count, and only reads every run made before that gate's ask,
+    so an agent that reads in a different order on one run does not fix an
+    order the skill does not. Empty for runs recorded with the answers up
+    front: they never asked, so nothing says where their gates fell.
+    """
+    per_run: list[list[dict[str, dict[str, Any]]]] = []
+    for run in runs:
+        seen: dict[str, dict[str, Any]] = {}
+        gates: list[dict[str, dict[str, Any]]] = []
+        for c in run.get("calls", []):
+            if _is_ask(c):
+                gates.append(dict(seen))
+            elif not c.get("side_effect"):
+                seen.setdefault(call_key(c), _read_entry(c))
+        per_run.append(gates)
+    if not per_run:
+        return []
+    reached = min(len(g) for g in per_run)
+    out = []
+    for i in range(reached):
+        keys = set.intersection(*(set(g[i]) for g in per_run))
+        out.append([per_run[0][i][k] for k in sorted(keys)])
+    return out
+
+
 def stable_reference(
     runs: list[dict[str, Any]],
     contract: Iterable[str] | None = None,
@@ -418,7 +458,10 @@ def stable_reference(
     whether the runs disagreed on the values, only on where they put them,
     or left the field out.
     """
-    ok = [r for r in runs if r.get("output") is not None and not r.get("error")]
+    succeeded = [r for r in runs if r.get("output") is not None and not r.get("error")]
+    # A run's asks of the person (ask_person) are not tool reads or writes;
+    # they only mark where each gate fell in the run (reads_before_gate).
+    ok = [{**r, "calls": [c for c in r.get("calls", []) if not _is_ask(c)]} for r in succeeded]
     keep = None if contract is None else list(dict.fromkeys(contract))
     flats = [
         {p: v for p, v in flatten_layout(r["output"]).items() if keep is None or _head(p) in keep}
@@ -468,6 +511,7 @@ def stable_reference(
     }
 
     counted = [] if insufficient else ok
+    before_gates = _reads_before_gates([] if insufficient else succeeded)
     written = write_arguments(counted)
     effect_fields = {tool: a["kept"] for tool, a in written.items()}
 
@@ -495,6 +539,7 @@ def stable_reference(
         "side_effects_unordered": sorted(set.intersection(*effect_sets)) if effect_sets else [],
         "write_fields": effect_fields,
         "write_fields_dropped": {t: a["dropped"] for t, a in written.items() if a["dropped"]},
+        "reads_before_gate": before_gates,
         "seen_calls": sorted({call_key(c) for r in ok for c in r.get("calls", [])}),
         "seen_requests": sorted(
             {request_key(c) for r in ok for c in r.get("calls", []) if not c.get("side_effect")}
@@ -605,12 +650,44 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
     gate_fit = trace.get("gate_fit") or []
     gates = _mean([g["fit"] for g in gate_fit]) if gate_fit else None
 
+    # Gate order: the reads the skill made before asking at each gate, made
+    # by the pipeline before that gate parked. A pipeline that asks first
+    # puts a person's decision ahead of data the skill had in hand. A gate
+    # the pipeline never reached is left unscored here on purpose, not
+    # counted as a miss: the missing gate already costs gate fit (and the
+    # outcome when the run stopped), and scoring it again would charge one
+    # absence twice.
+    order_misses: list[dict[str, Any]] = []
+    ref_before = reference.get("reads_before_gate") or []
+    pipe_before = trace.get("reads_before_gate")
+    order_rates: list[float] = []
+    if pipe_before is not None:
+        for i, want in enumerate(ref_before):
+            if not want:
+                continue
+            have = pipe_before[i] if i < len(pipe_before) else None
+            if have is None:
+                continue
+            have_keys = {call_key(c) for c in have}
+            have_requests = {request_key(c) for c in have if _live(c)}
+            missed = [
+                w["key"]
+                for w in want
+                if w["key"] not in have_keys and w["request"] not in have_requests
+            ]
+            order_rates.append((len(want) - len(missed)) / len(want))
+            if missed:
+                signal = gate_fit[i].get("signal") if i < len(gate_fit) else None
+                order_misses.append({"gate": i, "signal": signal, "parked_before": missed})
+    gate_order = round(sum(order_rates) / len(order_rates), 4) if order_rates else None
+
     components = {
         "outputs": outputs,
         "outcome": outcome,
         "reads": reads,
         "side_effects": effects,
         "gates": gates,
+        "gate_order": gate_order,
     }
     return {
         "score": _mean(list(components.values())),
@@ -620,6 +697,7 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
         "reads_missing": sorted(missing),
         "reads_unexpected": unexpected,
         "response_drift": sorted(drift, key=lambda d: d["read"]),
+        "gate_order_misses": order_misses,
         "side_effects_pipeline": pipe_effects,
     }
 

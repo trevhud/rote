@@ -331,9 +331,35 @@ An example opts in with `examples/<name>/fidelity/cases.yaml`:
 
 **The reference** is the skill itself. `--record-reference` runs it
 through the baseline path (`claude -p`, the prompt `rote baseline` uses,
-plus the output contract and the gate answers) on every case, several
-times, and commits `reference.json`: each run's output and tool calls,
-and what all runs agree on. Agents are not deterministic, so **only stable
+plus the output contract) on every case, several times, and commits
+`reference.json`: each run's output and tool calls, and what all runs
+agree on. The agent gets each gate's answer from `ask_person`, a stdio MCP
+tool (`rote.eval.gate_server`) it calls when the skill would ask someone,
+never up front: an answer known before the gate lets the agent use it
+early, and leaves no record of where the gate fell. Each ask lands in the
+call log between the tool calls, so the reads every run made before
+asking are the reads the skill makes before that gate. `rote run <skill>
+--signal` serves its answers the same way.
+
+The wording that tells the agent when to call `ask_person`
+(`rote.eval.empirical.GATE_INSTRUCTIONS`, and the tool's description in
+`rote.eval.gate_server`) is load-bearing, and it rests on a small sample.
+Its first version said only "when the skill needs a person's input or
+approval", and 2 of 3 expense-audit `unknown_currency` runs then asked
+finance for the missing CHF rate through the tool, took the controller's
+approval as the rate, and finished where the skill stops. The current
+wording limits it to the skill's own review and approval steps and says to
+stop, without asking, when information is missing. All 3 runs of that case
+then stopped with no ask: evidence from three runs, not a proof. When you
+change the wording, or re-record a reference, check each trial's
+`calls.jsonl` under the run directory:
+
+- every run of a gated case asks exactly once per gate (`rote_gates`
+  lines), after the reads the skill makes first;
+- every run of a stop case asks zero times and ends `stopped`;
+- the case's coverage and stable fields match the previous reference, or
+  the difference is explained. A stop case whose `outcome` turns unstable
+  is the symptom of an agent asking the tool what it should stop on. Agents are not deterministic, so **only stable
 fields count against a pipeline**: a field whose normalized value differs
 between two agent runs of the same case is listed under
 `unstable_fields` and skipped. Prose fields fall out this way on their
@@ -358,6 +384,7 @@ component with nothing to compare is left out):
 | `reads` | reads every reference run made, recall, averaged with the share of the pipeline's reads that some reference run also made. A read matches on the data it got (the fixture response that answered it, so a differently worded search for the same data still counts) or, for a live server, on the request it sent. A live read that sent a reference request exactly (server, tool and the arguments as sent, only surrounding whitespace ignored) and got an answer the reference never got is `response_drift`, listed with both answers and not scored: the server reindexed, the pipeline did not change. A read with no answer is still a lost read, and a fixture's answer never drifts. A call is live when its log entry says `"live": true`, which a recording proxy in front of a real server writes and a fixture never does |
 | `side_effects` | writes, in order (LCS over the longer sequence) when the reference runs agree on the order, as a set otherwise. A write is identified by its tool and the arguments every reference run sent the same values for: a drafted message body differs in every agent run, so it never decides whether two writes are the same |
 | `gates` | key overlap between the case's gate payload and what the compiled gate declares |
+| `gate_order` | for each gate, the reads every reference run made before asking that the pipeline also made before the gate parked (its `DBOS.recv` start against the call log's times). A pipeline that asks a person before data the skill had in hand loses the share, and the bench prints `gate <signal>: parked before <read>, which the skill made first`. Left out for a reference recorded with the answers up front, which never asked, and for a gate the pipeline never reached, which gate fit already penalizes. Pipeline parks are matched to gates by the message each `DBOS.recv` received (the payload sent on that gate's signal), so an auth park or an extra compiled gate does not shift the comparison |
 
 `fidelity` is the mean case score. It is a top-level column (`fidel`) in
 the table when `--fidelity` is on, with its judge cost under

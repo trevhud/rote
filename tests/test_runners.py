@@ -270,9 +270,13 @@ def test_run_skill_applies_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`rote run <skill> --signal` reaches the agent's prompt, in the order
-    given, @FILE included: without it a gated skill stops at its first gate."""
+    """`rote run <skill> --signal` serves the answers through ask_person, in
+    the order given, @FILE included. The prompt says how to ask and carries
+    no answer: the agent gets each one when it reaches the gate."""
+    import json
+
     from rote.cli import main as cli_main
+    from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
 
     skill = tmp_path / "skill"
     skill.mkdir()
@@ -283,16 +287,19 @@ def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
 
     def fake_trial(skill_dir: Any, payload: Any, **kwargs: Any) -> tuple[Any, list[Any], list[str]]:
         captured.update(kwargs)
+        entry = kwargs["mcp_servers"][GATE_SERVER]
+        captured["answers"] = json.loads(Path(entry["args"][2]).read_text(encoding="utf-8"))
         return MeasuredRun(wall_seconds=1.0, output={"ok": True}), [], []
 
     monkeypatch.setattr("rote.runners.resolve_mcp_wiring", lambda **_: ({}, [], {}))
     monkeypatch.setattr("rote.runners.run_baseline_trial", fake_trial)
     argv = ["run", str(skill), "--input", "{}", "--signal", f"approval=@{answer}"]
     assert cli_main([*argv, "--signal", 'second={"n": 2}']) == 0
+    assert captured["answers"] == [{"approved": True, "reviewer": "Priya"}, {"n": 2}]
+    assert f"mcp__{GATE_SERVER}__{GATE_TOOL}" in captured["mcp_tool_ids"]
     text = captured["extra_instructions"]
-    assert "do not wait and do not ask" in text
-    assert '1. {"approved": true, "reviewer": "Priya"}' in text
-    assert '2. {"n": 2}' in text
+    assert GATE_TOOL in text
+    assert "Priya" not in text  # no answer up front
     # Byte-identical to what the bench's fidelity references are told.
     from rote.bench.fidelity import Case as FidelityCase
     from rote.bench.fidelity import CaseFile, agent_instructions
@@ -302,15 +309,23 @@ def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
         description="",
         input={},
         gates=[{"approved": True, "reviewer": "Priya"}, {"n": 2}],
-        gate_instructions=None,
         fixtures={},
     )
     bench = agent_instructions(CaseFile(tmp_path, {"x": "y"}, {}, [case]), case)
     assert text in bench
-    # Without --signal the prompt carries no answers at all.
+    # Without --signal there is no gate server and nothing about gates.
     captured.clear()
+
+    def plain_trial(
+        skill_dir: Any, payload: Any, **kwargs: Any
+    ) -> tuple[Any, list[Any], list[str]]:
+        captured.update(kwargs)
+        return MeasuredRun(wall_seconds=1.0, output={"ok": True}), [], []
+
+    monkeypatch.setattr("rote.runners.run_baseline_trial", plain_trial)
     assert cli_main(["run", str(skill), "--input", "{}"]) == 0
     assert captured["extra_instructions"] is None
+    assert GATE_SERVER not in (captured["mcp_servers"] or {})
 
 
 def test_run_pipeline_rejects_unorchestrated_runtimes(tmp_path: Path) -> None:

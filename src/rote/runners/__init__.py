@@ -30,11 +30,12 @@ from rote.eval.baseline import (
     run_baseline_trial,
 )
 from rote.eval.empirical import (
+    GATE_INSTRUCTIONS,
     MeasuredRun,
-    gate_answers_instructions,
+    gate_answers_server,
     run_pipeline_trial,
-    signal_answers,
 )
+from rote.eval.gate_server import GATE_SERVER
 from rote.extras import MissingExtraError, require_extra
 
 __all__ = [
@@ -342,6 +343,8 @@ class SkillRunOutcome:
     servers_wired: tuple[str, ...]
     servers_skipped: dict[str, str]
     read_only: bool
+    #: How many times the run called ``ask_person`` (None without ``--signal``).
+    gates_asked: int | None = None
 
     @property
     def observed_servers(self) -> list[str]:
@@ -367,28 +370,43 @@ def run_skill(
     actually touched. ``signals`` are the answers a person gives at the
     skill's gates, in order: a skill has no gate names of its own, so a
     name is only a label, and the run is told the answers up front the way
-    the compile bench's references are.
+    the compile bench's references are: through ``ask_person``
+    (:mod:`rote.eval.gate_server`), one answer per ask, when the run
+    reaches each gate. ``gates_asked`` says how many it asked for.
     """
     servers, mcp_tool_ids, skipped = resolve_mcp_wiring(allow_writes=allow_writes)
-    run, observed, _lines = run_baseline_trial(
-        skill_dir,
-        input_payload,
-        model=model,
-        max_turns=max_turns,
-        mcp_tool_ids=mcp_tool_ids,
-        executable=executable,
-        timeout_seconds=timeout_seconds,
-        mcp_servers=servers or None,
-        extra_instructions=(
-            gate_answers_instructions(signal_answers(list(signals.values()))) if signals else None
-        ),
-    )
+    with tempfile.TemporaryDirectory(prefix="rote-gates-") as tmp:
+        work = Path(tmp)
+        wired = dict(servers)
+        tool_ids = list(mcp_tool_ids or [])
+        if signals:
+            entry, gate_tool = gate_answers_server(list(signals.values()), work)
+            wired[GATE_SERVER] = entry
+            tool_ids.append(gate_tool)
+        run, observed, _lines = run_baseline_trial(
+            skill_dir,
+            input_payload,
+            model=model,
+            max_turns=max_turns,
+            mcp_tool_ids=tool_ids or None,
+            executable=executable,
+            timeout_seconds=timeout_seconds,
+            mcp_servers=wired or None,
+            extra_instructions=GATE_INSTRUCTIONS if signals else None,
+        )
+        asks = work / "calls.jsonl"
+        gates_asked = (
+            sum(1 for line in asks.read_text(encoding="utf-8").splitlines() if line)
+            if signals and asks.is_file()
+            else (0 if signals else None)
+        )
     return SkillRunOutcome(
         run=run,
-        observations=tuple(observed),
+        observations=tuple(o for o in observed if o.server != GATE_SERVER),
         servers_wired=tuple(sorted(servers)),
         servers_skipped=skipped,
         read_only=not allow_writes,
+        gates_asked=gates_asked,
     )
 
 

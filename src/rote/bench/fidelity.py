@@ -42,7 +42,8 @@ from rote.bench.fidelity_score import fidelity_summary, score_case, stable_refer
 from rote.bench.http_fixtures import HttpFixtureError, api_calls, api_side, load_http
 from rote.compiler.api_docs import api_view
 from rote.compiler.backend import read_backend
-from rote.eval.empirical import gate_answers_instructions, signal_answers
+from rote.eval.empirical import GATE_INSTRUCTIONS, gate_answers_server
+from rote.eval.gate_server import GATE_SERVER
 from rote.ir import NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs.store import SpecStore
 
@@ -63,7 +64,6 @@ class Case:
     description: str
     input: dict[str, Any]
     gates: list[dict[str, Any]]
-    gate_instructions: str | None
     fixtures: dict[str, dict[str, list[dict[str, Any]]]]
     #: ``--backend api`` fixtures: spec key -> FixtureSet (rote.vendor_specs.fixtures).
     http: dict[str, Any] = field(default_factory=dict)
@@ -99,7 +99,6 @@ def load_cases(example_dir: Path) -> CaseFile:
                 description=c.get("description", ""),
                 input=payload,
                 gates=list(c.get("gates") or []),
-                gate_instructions=c.get("gate_instructions"),
                 fixtures=c.get("fixtures") or {},
                 http=load_http(c.get("http")),
             )
@@ -278,7 +277,7 @@ def read_calls(log: Path) -> list[dict[str, Any]]:
 
 
 def agent_instructions(casefile: CaseFile, case: Case) -> str:
-    """The output contract, and the answers a person gives at each gate."""
+    """The output contract, and how the run reaches the person at each gate."""
     fields = "\n".join(f"- `{k}`: {v}" for k, v in casefile.output_fields.items())
     parts = [
         "This run is recorded as a reference. Your result.json must use exactly "
@@ -291,8 +290,7 @@ def agent_instructions(casefile: CaseFile, case: Case) -> str:
         "did not derive."
     ]
     if case.gates:
-        answers = case.gate_instructions or signal_answers(case.gates)
-        parts.append(gate_answers_instructions(answers))
+        parts.append(GATE_INSTRUCTIONS)
     if casefile.servers:
         parts.append(
             "Use the connected MCP tools for every external system the skill "
@@ -327,12 +325,23 @@ def record_reference(
                 log(f"rote bench: reference {case.id} #{trial}: skipped, budget spent")
                 continue
             with fixture_servers(casefile, case, work / case.id / f"t{trial}") as (urls, calls_log):
+                servers: dict[str, dict[str, Any]] = {
+                    n: {"type": "http", "url": u} for n, u in urls.items()
+                }
+                tool_ids = [f"mcp__{n}__*" for n in urls]
+                if case.gates:
+                    # The gate answers come from ask_person, logged into the
+                    # same call log, so the reads before each ask are known.
+                    servers[GATE_SERVER], gate_tool = gate_answers_server(
+                        case.gates, calls_log.parent
+                    )
+                    tool_ids.append(gate_tool)
                 run, _observed, _lines = run_baseline_trial(
                     skill_dir,
                     case.input,
                     model=model,
-                    mcp_servers={n: {"type": "http", "url": u} for n, u in urls.items()},
-                    mcp_tool_ids=[f"mcp__{n}__*" for n in urls],
+                    mcp_servers=servers,
+                    mcp_tool_ids=tool_ids,
                     output_fields=[*casefile.output_fields, "outcome"],
                     extra_instructions=agent_instructions(casefile, case),
                 )
@@ -450,7 +459,15 @@ def _dbos_objects(app: Path) -> tuple[list[dict[str, Any]], list[Any]]:
                 name = str(step["function_name"])
                 output = step["output"]
                 steps.append(
-                    {"workflow": wf.workflow_id, "name": name, "error": bool(step["error"])}
+                    {
+                        "workflow": wf.workflow_id,
+                        "name": name,
+                        "error": bool(step["error"]),
+                        "started_at_ms": step.get("started_at_epoch_ms"),
+                        # What a recv received identifies which wait it was
+                        # (reads_before_parks); other steps' outputs are below.
+                        "received": output if name == "DBOS.recv" else None,
+                    }
                 )
                 # A gate's received payload is the case's own input echoed
                 # back; crediting it would reward a pipeline for being told
@@ -496,6 +513,57 @@ BENCH_ENV_NAMES = frozenset(
 #: And by prefix: locale, the DBOS runtime's own settings, rote's (its
 #: per-node inference knobs, isolation paths, MCP endpoints).
 BENCH_ENV_PREFIXES = ("LC_", "DBOS_", "ROTE_")
+
+
+def _message_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def reads_before_parks(
+    steps: list[dict[str, Any]], calls: list[dict[str, Any]], gate_payloads: list[Any]
+) -> list[list[dict[str, Any]] | None]:
+    """For each gate, in gate order, the reads the pipeline made before it parked.
+
+    A DBOS gate parks in ``DBOS.recv``; its step's ``started_at_ms`` is the
+    moment it starts to wait, and a read counts when its call-log ``ts`` is
+    earlier. Each gate is found by what its recv received: the bench sends
+    gate i's payload on gate i's signal, so the recv that got that payload
+    is gate i's, whatever else waited around it. DBOS records no topic on a
+    step, and the message stands in for it: an auth park (a recv on
+    ``rote:auth:<server>``, released with another message) or a gate the
+    skill does not have cannot shift the comparison, as matching the i-th
+    recv by start time would. Two gates sent equal payloads take their
+    recvs in start order. A gate whose recv never ran is None.
+    """
+    recvs = sorted(
+        (s for s in steps if s["name"] == "DBOS.recv" and s.get("started_at_ms") is not None),
+        key=lambda s: s["started_at_ms"],
+    )
+    reads = [c for c in calls if not c.get("side_effect") and c.get("server") != GATE_SERVER]
+    used: set[int] = set()
+    out: list[list[dict[str, Any]] | None] = []
+    for payload in gate_payloads:
+        want = _message_key(payload)
+        park = next(
+            (
+                (k, s["started_at_ms"])
+                for k, s in enumerate(recvs)
+                if k not in used and _message_key(s.get("received")) == want
+            ),
+            None,
+        )
+        if park is None:
+            out.append(None)
+            continue
+        used.add(park[0])
+        out.append(
+            [
+                _portable_call(c)
+                for c in reads
+                if c.get("ts") is not None and c["ts"] * 1000 < park[1]
+            ]
+        )
+    return out
 
 
 def bench_environment() -> dict[str, str]:
@@ -579,6 +647,7 @@ def run_pipeline_case(
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
+        "reads_before_gate": reads_before_parks(steps, calls, [signals[g.signal] for g in gates]),
         "gate_fit": gate_fit,
         "unknown_servers": unknown,
         "backend": backend,

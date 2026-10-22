@@ -380,7 +380,6 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
         description="",
         input={},
         gates=[],
-        gate_instructions=None,
         fixtures={
             "drive": {
                 "read_file_content": [
@@ -451,6 +450,7 @@ def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
     itself unreachable."""
     from rote.bench.fidelity import load_cases
     from rote.bench.fixture_mcp import _schema_error
+    from rote.eval.gate_server import GATE_SERVER
 
     from .conftest import EXAMPLES_DIR
 
@@ -460,6 +460,8 @@ def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
         for case in reference["cases"].values():
             for run in case["runs"]:
                 for call in run["calls"]:
+                    if call["server"] == GATE_SERVER:
+                        continue  # the person at a gate, not a fixture server
                     tool = casefile.servers[call["server"]]["tools"][call["tool"]]
                     assert _schema_error(tool["parameters"], call["arguments"]) is None, call
 
@@ -480,9 +482,7 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
     casefile = fidelity.CaseFile(
         example_dir=tmp_path, output_fields={}, servers={"drive": {"tools": {}}}
     )
-    case = fidelity.Case(
-        id="c", description="", input={}, gates=[], gate_instructions=None, fixtures={}
-    )
+    case = fidelity.Case(id="c", description="", input={}, gates=[], fixtures={})
     with (
         pytest.raises(fidelity.FixtureError, match="need fastmcp"),
         fidelity.fixture_servers(casefile, case, tmp_path / "w"),
@@ -959,3 +959,170 @@ def test_a_fixture_answer_cannot_drift() -> None:
     s = score_case(ref, _ran(_answered("search", 1, query="dock")))
     assert s["response_drift"] == []
     assert s["reads"] == 0.0
+
+
+def _ask(i: int) -> dict[str, Any]:
+    """A run asking the person at its i-th gate, as ask_person logs it."""
+    from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
+
+    return {
+        "server": GATE_SERVER,
+        "tool": GATE_TOOL,
+        "arguments": {"question": "approve?"},
+        "side_effect": False,
+        "response": i,
+        "gate": i,
+    }
+
+
+def _gated_reference() -> dict[str, Any]:
+    """Every run reads the containers and the emails, then asks; one run
+    also reads a third file before asking, so only the first two are fixed."""
+    containers = _answered("read_file", 0, file_id="containers")
+    emails = _answered("search", 0, query="dock")
+    extra = _answered("read_file", 1, file_id="tickets")
+    return stable_reference(
+        [
+            _run({"x": 1}, [containers, emails, _ask(0)]),
+            _run({"x": 1}, [emails, extra, containers, _ask(0)]),
+        ]
+    )
+
+
+def _parked(before: list[dict[str, Any]]) -> dict[str, Any]:
+    reads = [
+        _answered("read_file", 0, file_id="containers"),
+        _answered("search", 0, query="dock"),
+    ]
+    return {
+        "completed": True,
+        "objects": [],
+        "calls": reads,
+        "gate_fit": [{"gate": "review", "signal": "manual_data", "fit": 1.0}],
+        "reads_before_gate": [before],
+    }
+
+
+def test_the_reads_before_a_gate_are_the_ones_every_run_made_before_asking() -> None:
+    ref = _gated_reference()
+    (before,) = ref["reads_before_gate"]
+    assert {r["key"] for r in before} == {
+        call_key(_answered("read_file", 0, file_id="containers")),
+        call_key(_answered("search", 0, query="dock")),
+    }
+    # The asks are not reads.
+    assert all("ask_person" not in k for k in ref["reads"] + ref["seen_calls"])
+
+
+def test_a_gate_that_parks_before_a_read_the_skill_made_first_loses_the_point() -> None:
+    """Before/after pair: the same pipeline reads, parked after both reads
+    (full credit) or after only one (half, with the read it parked before)."""
+    ref = _gated_reference()
+    containers = _answered("read_file", 0, file_id="containers")
+    emails = _answered("search", 0, query="dock")
+    after = score_case(ref, _parked([containers, emails]))
+    assert (after["gate_order"], after["gate_order_misses"]) == (1.0, [])
+    early = score_case(ref, _parked([containers]))
+    assert early["gate_order"] == 0.5
+    assert early["gate_order_misses"] == [
+        {"gate": 0, "signal": "manual_data", "parked_before": [call_key(emails)]}
+    ]
+
+
+def test_a_reference_recorded_with_answers_up_front_has_no_gate_order() -> None:
+    """Old references never asked, so nothing says where their gates fell."""
+    ref = stable_reference(
+        [_run({"x": 1}, [_call("read", f="A")]), _run({"x": 1}, [_call("read", f="A")])]
+    )
+    assert ref["reads_before_gate"] == []
+    s = score_case(ref, _parked([]))
+    assert s["gate_order"] is None
+
+
+def _recv(at_ms: int, received: Any) -> dict[str, Any]:
+    return {
+        "workflow": "w",
+        "name": "DBOS.recv",
+        "error": False,
+        "started_at_ms": at_ms,
+        "received": received,
+    }
+
+
+def test_reads_before_parks_compares_call_times_with_each_gate_recv() -> None:
+    from rote.bench.fidelity import reads_before_parks
+
+    steps = [
+        {"workflow": "w", "name": "fetch", "error": False, "started_at_ms": 1_000},
+        _recv(2_000, {"approved": True}),
+        _recv(4_000, {"n": 2}),
+    ]
+    calls = [
+        {**_answered("read", 0, f="A"), "ts": 1.5},
+        {**_answered("read", 1, f="B"), "ts": 3.0},
+        {**_call("write", True, n="1"), "ts": 1.0},
+    ]
+    first, second = reads_before_parks(steps, calls, [{"approved": True}, {"n": 2}])
+    assert [c["arguments"] for c in first or []] == [{"f": "A"}]
+    assert [c["arguments"] for c in second or []] == [{"f": "A"}, {"f": "B"}]
+    # A gate whose recv never ran is unscored, not empty.
+    assert reads_before_parks(steps, calls, [{"approved": True}, {"never": "sent"}])[1] is None
+
+
+def test_an_auth_park_between_gates_does_not_shift_the_comparison() -> None:
+    """An MCP auth park also waits in DBOS.recv. Matched by start order, it
+    would be taken for the gate: the gate would look as if it parked before
+    the read that came between the two. Matched by what each recv received,
+    the gate keeps its own park time."""
+    from rote.bench.fidelity import reads_before_parks
+
+    steps = [
+        _recv(2_000, {"released": True}),  # rote:auth:<server>, released by a login
+        _recv(4_000, {"approved": True}),
+    ]
+    calls = [
+        {**_answered("read", 0, f="A"), "ts": 1.0},
+        {**_answered("read", 1, f="B"), "ts": 3.0},  # after the auth park, before the gate
+    ]
+    (gate,) = reads_before_parks(steps, calls, [{"approved": True}])
+    assert [c["arguments"] for c in gate or []] == [{"f": "A"}, {"f": "B"}]
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [calls[0], calls[1], _ask(0)]),
+            _run({"x": 1}, [calls[0], calls[1], _ask(0)]),
+        ]
+    )
+    trace = {
+        "completed": True,
+        "objects": [],
+        "calls": calls,
+        "gate_fit": [{"gate": "g", "signal": "approved", "fit": 1.0}],
+        "reads_before_gate": [gate],
+    }
+    assert (score_case(ref, trace)["gate_order"], score_case(ref, trace)["gate_order_misses"]) == (
+        1.0,
+        [],
+    )
+
+
+def test_a_gate_the_pipeline_never_reached_leaves_gate_order_unscored() -> None:
+    """Fewer gates reached than the reference: unscored on purpose, since the
+    missing gate already costs gate fit."""
+    ref = _gated_reference()
+    trace = {**_parked([]), "reads_before_gate": [None]}
+    s = score_case(ref, trace)
+    assert (s["gate_order"], s["gate_order_misses"]) == (None, [])
+
+
+def test_the_bench_names_the_read_a_gate_parked_before() -> None:
+    from rote.bench.runner import coverage_lines
+
+    coverage = {"covered": 1, "fields": 1, "stable_leaves": 1, "leaves": 1}
+    miss = {"gate": 0, "signal": "manual_data", "parked_before": ["gmail.search->response[0]"]}
+    (line,) = coverage_lines(
+        {"cases": {"busy_day": {"reference": {"coverage": coverage}, "gate_order_misses": [miss]}}}
+    )
+    assert (
+        "gate manual_data: parked before gmail.search->response[0], which the skill made first"
+        in line
+    )
