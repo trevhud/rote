@@ -127,8 +127,11 @@ def _require_distinct_gate_payloads(path: Path, case_id: str, gates: list[Any]) 
             raise ValueError(
                 f"{path}: case {case_id!r}: gates {seen[key]} and {i} are sent the same "
                 "payload, so fidelity cannot tell their parks apart (it matches each "
-                "gate by the message it received). Add a field such as `note` or "
-                "`approver` that differs between them."
+                "gate by the message it received). Make a value differ in a field the "
+                "skill's gate already takes (a different approver, decision or comment). "
+                "Add a key only if the skill's gate really has one: gate fit compares "
+                "the payload's keys with the compiled gate's, so an extra key lowers "
+                "every compile's score."
             )
         seen[key] = i
 

@@ -1151,7 +1151,7 @@ def test_a_case_whose_gates_get_equal_payloads_is_refused(tmp_path: Path) -> Non
         )
 
     write([{"approved": True}, {"approved": True}])
-    with pytest.raises(ValueError, match=r"'two_gates': gates 0 and 1 .* `note` or\s+`approver`"):
+    with pytest.raises(ValueError, match=r"'two_gates': gates 0 and 1 .* field the skill's gate"):
         load_cases(example)
     write([{"approved": True, "approver": "controller"}, {"approved": True, "approver": "cfo"}])
     assert [c.gates for c in load_cases(example).cases] == [
