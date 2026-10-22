@@ -1268,11 +1268,15 @@ def resolve(
         if len(reads) != len(n.get("reads") or []):
             notes.append(f"`{nid}`: dropped reads of nodes that do not come before it")
         n["reads"] = reads
-        if n.get("after") and _check_after(f"`{nid}`", n, {m["id"]: m for m in nodes}, u):
-            # An ordering no words of the step back is the model's, not the skill's.
+        why_not = (
+            _check_after(f"`{nid}`", n, {m["id"]: m for m in nodes}, u) if n.get("after") else []
+        )
+        if why_not:
+            # An ordering the step's words or the earlier nodes do not back is
+            # the model's, not the skill's; the note says which check failed.
             notes.append(
-                f"`{nid}`: dropped its ordering after {n['after']!r}: no words of its own "
-                "step back it"
+                f"`{nid}`: dropped its ordering after {n['after']!r}: "
+                + "; ".join(w.removeprefix(f"`{nid}`: ") for w in why_not)
             )
             n["after"], n["after_quote"] = [], ""
         if n.get("fan_out_over") and n["fan_out_over"] not in ids:

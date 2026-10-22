@@ -1571,7 +1571,13 @@ def test_resolve_drops_an_unbacked_ordering_and_says_so(skill: Any) -> None:
     declared = structure.declared_tools(skill, TOOLS)
     fixed, notes = structure.resolve(_with_after(["fetch_emails"], "nope"), skill, SKILL, declared)
     notify = next(n for n in fixed["nodes"] if n["id"] == "notify")
-    assert notify["after"] == [] and any("dropped its ordering after" in n for n in notes)
+    assert notify["after"] == []
+    assert any(
+        "dropped its ordering after ['fetch_emails']: after needs after_quote" in n for n in notes
+    )
+    # A dep that is not an earlier node says so, not that the words are missing.
+    fixed, notes = structure.resolve(_with_after(["later"], UNDER_3), skill, SKILL, declared)
+    assert any("after 'later', which is not an earlier node" in n for n in notes), notes
 
 
 def test_an_ordering_becomes_an_edge_that_waits_but_hides_no_result(skill: Any) -> None:
