@@ -1,0 +1,34 @@
+{
+  "input": {
+    "today": "2026-10-21",
+    "currency": "USD",
+    "mail_connector": "Gmail",
+    "ar_aging": [
+      {"invoice_number": "1042", "customer": "Acme Corp", "customer_email": "ap@acmecorp.example", "amount": 1200.00, "invoice_date": "2026-09-03", "due_date": "2026-10-03", "days_past_due": 18, "source": "QuickBooks"},
+      {"invoice_number": "1019", "customer": "Smith LLC", "customer_email": "billing@smithllc.example", "amount": 300.00, "invoice_date": "2026-08-05", "due_date": "2026-09-04", "days_past_due": 47, "source": "QuickBooks"},
+      {"invoice_number": "1031", "customer": "Smith LLC", "customer_email": "billing@smithllc.example", "amount": 150.00, "invoice_date": "2026-08-25", "due_date": "2026-09-24", "days_past_due": 27, "source": "QuickBooks"},
+      {"invoice_number": "0988", "customer": "Pearl St Bistro", "customer_email": "owner@pearlstbistro.example", "amount": 467.00, "invoice_date": "2026-06-22", "due_date": "2026-07-22", "days_past_due": 91, "source": "QuickBooks"},
+      {"invoice_number": "1047", "customer": "Harbor Yoga", "customer_email": "hello@harboryoga.example", "amount": 640.00, "invoice_date": "2026-09-12", "due_date": "2026-10-12", "days_past_due": 9, "source": "QuickBooks"}
+    ],
+    "payment_history": [
+      {"customer": "Acme Corp", "invoice_number": "0912", "due_date": "2026-03-01", "paid_date": "2026-02-26"},
+      {"customer": "Acme Corp", "invoice_number": "0951", "due_date": "2026-05-01", "paid_date": "2026-04-30"},
+      {"customer": "Acme Corp", "invoice_number": "0990", "due_date": "2026-07-01", "paid_date": "2026-07-01"},
+      {"customer": "Acme Corp", "invoice_number": "1011", "due_date": "2026-09-01", "paid_date": "2026-09-05"},
+      {"customer": "Smith LLC", "invoice_number": "0901", "due_date": "2026-02-10", "paid_date": "2026-03-19"},
+      {"customer": "Smith LLC", "invoice_number": "0944", "due_date": "2026-04-10", "paid_date": "2026-05-22"},
+      {"customer": "Smith LLC", "invoice_number": "0977", "due_date": "2026-06-10", "paid_date": "2026-06-09"},
+      {"customer": "Pearl St Bistro", "invoice_number": "0930", "due_date": "2026-04-15", "paid_date": "2026-05-30"},
+      {"customer": "Pearl St Bistro", "invoice_number": "0961", "due_date": "2026-05-20", "paid_date": "2026-07-02"},
+      {"customer": "Pearl St Bistro", "invoice_number": "0973", "due_date": "2026-06-18", "paid_date": "2026-08-11"},
+      {"customer": "Harbor Yoga", "invoice_number": "1002", "due_date": "2026-08-12", "paid_date": "2026-08-10"}
+    ],
+    "recent_payments": [
+      {"processor": "PayPal", "transaction_status": "S", "payer_email": "hello@harboryoga.example", "amount": 640.00, "date": "2026-10-18"},
+      {"processor": "Stripe", "status": "succeeded", "customer_email": "ap@northgate.example", "amount": 90.00, "date": "2026-10-15"}
+    ]
+  },
+  "signals": {
+    "owner_approval": {"approved": true, "send": ["Acme Corp", "Smith LLC", "Pearl St Bistro"]}
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "request": "what's the best open model for coding that runs on my MacBook Pro M3 with 36GB?",
+  "task": "coding",
+  "device": "MacBook Pro M3, 36GB unified memory",
+  "open_models_only": true
+}
