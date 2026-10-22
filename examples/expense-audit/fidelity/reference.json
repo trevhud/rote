@@ -4,8 +4,21 @@
       "description": "the bundled September batch; the controller approves three review items and rejects one",
       "runs": [
         {
-          "calls": [],
-          "cost_usd": 0.5045283,
+          "calls": [
+            {
+              "arguments": {
+                "question": "Controller review needed for the 2026-09 expense audit. One item requires your decision (approve or reject). Block items are listed for your information \u2014 they are returned to the employee regardless of your decision.\n\n**Review items (your decision required):**\n\n| Expense | Employee | Rule | Severity | Detail |\n| --- | --- | --- | --- | --- |\n| EXP-2413 | Ben Okafor | Late submission | review | Dated 2026-06-30, which is 92 days before 2026-09-30 (policy window is 60 days). Meals at Sweetgreen, $18.75 USD, receipt not required at that amount. |\n\n**Block items (returned to employee, no decision needed):**\n\n| Expense | Employee | Rule | Severity | Detail |\n| --- | --- | --- | --- | --- |\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | block | $130.39 USD > $75.00 cap per line |\n| EXP-2404 | Ana Ruiz | Receipt missing | block | $25.97 USD \u2265 $25.00 threshold, no receipt attached |\n| EXP-2410 | Ben Okafor | Software cap exceeded | block | $249.00 USD > $100.00 cap per line (should go through IT procurement) |\n| EXP-2412 | Ben Okafor | Duplicate submission | block | Duplicate of EXP-2411 (same employee, merchant Lyft, $38.20 USD, 2026-09-12) |\n| EXP-2420 | Chloe Martin | Entertainment without pre-approval | block | $446.25 USD entertainment at Dishoom, no preapproval_id on file |\n\nPlease reply with your decision on EXP-2413: approve or reject."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.5125608,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -14,7 +27,9 @@
             ],
             "batch_total_usd": 3304.15,
             "blocked_ids": [
+              "EXP-2403",
               "EXP-2404",
+              "EXP-2410",
               "EXP-2412",
               "EXP-2420"
             ],
@@ -27,119 +42,38 @@
             "outcome": "completed",
             "pending_usd": 0.0,
             "period": "2026-09",
-            "reimbursable_usd": 2544.73,
+            "reimbursable_usd": 2414.34,
             "report_filename": "2026-09-expense-audit.md",
             "report_status": "final",
-            "returned_usd": 759.42,
+            "returned_usd": 889.81,
             "review_queue": [
               {
-                "decision": "approved",
-                "detail": "$130.39 exceeds $75.00 per-line cap",
+                "decision": "returned",
+                "detail": "$130.39 USD > $75.00 per-line cap",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
                 "rule": "meals cap exceeded",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "$25.97 USD requires a receipt (threshold $25.00)",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2404",
-                "rule": "missing receipt",
                 "severity": "block"
               },
               {
-                "decision": "rejected",
-                "detail": "$249.00 exceeds $100.00 per-line cap",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2410",
-                "rule": "software cap exceeded",
-                "severity": "review"
-              },
-              {
                 "decision": "returned",
-                "detail": "duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12)",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2412",
-                "rule": "duplicate",
-                "severity": "block"
-              },
-              {
-                "decision": "approved",
-                "detail": "dated 2026-06-30, 92 days before period close",
-                "employee": "Ben Okafor",
-                "expense_id": "EXP-2413",
-                "rule": "late submission",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "no preapproval_id on file for Dishoom $446.25",
-                "employee": "Chloe Martin",
-                "expense_id": "EXP-2420",
-                "rule": "entertainment without pre-approval",
-                "severity": "block"
-              }
-            ]
-          },
-          "turns": 6,
-          "wall_seconds": 173.0
-        },
-        {
-          "calls": [],
-          "cost_usd": 0.5989476000000001,
-          "error": null,
-          "output": {
-            "auto_approved_employees": [
-              "Dev Patel",
-              "Emi Tanaka"
-            ],
-            "batch_total_usd": 3304.15,
-            "blocked_ids": [
-              "EXP-2404",
-              "EXP-2412"
-            ],
-            "duplicate_ids": [
-              "EXP-2412"
-            ],
-            "late_ids": [
-              "EXP-2413"
-            ],
-            "outcome": "completed",
-            "pending_usd": 0.0,
-            "period": "2026-09",
-            "reimbursable_usd": 2990.98,
-            "report_filename": "2026-09-expense-audit.md",
-            "report_status": "final",
-            "returned_usd": 313.17,
-            "review_queue": [
-              {
-                "decision": "approved",
-                "detail": "$130.39 exceeds $75.00 per-line cap",
-                "employee": "Ana Ruiz",
-                "expense_id": "EXP-2403",
-                "rule": "meals cap exceeded",
-                "severity": "review"
-              },
-              {
-                "decision": "returned",
-                "detail": "$25.97 >= $25.00 threshold, no receipt attached",
+                "detail": "$25.97 USD >= $25.00 threshold, no receipt attached",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2404",
                 "rule": "receipt missing",
                 "severity": "block"
               },
               {
-                "decision": "rejected",
-                "detail": "$249.00 exceeds $100.00 per-line cap",
+                "decision": "returned",
+                "detail": "$249.00 USD > $100.00 per-line cap (requires IT procurement)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
                 "rule": "software cap exceeded",
-                "severity": "review"
+                "severity": "block"
               },
               {
                 "decision": "returned",
-                "detail": "duplicate of EXP-2411 (same employee, Lyft, $38.20 USD, 2026-09-12)",
+                "detail": "Duplicate of EXP-2411 (merchant: Lyft, $38.20 USD, 2026-09-12)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2412",
                 "rule": "duplicate submission",
@@ -147,28 +81,41 @@
               },
               {
                 "decision": "approved",
-                "detail": "dated 2026-06-30, 92 days before period end, exceeds 60-day window",
+                "detail": "Dated 2026-06-30, 92 days before period end 2026-09-30 (60-day window)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2413",
                 "rule": "late submission",
                 "severity": "review"
               },
               {
-                "decision": "approved",
-                "detail": "no preapproval_id on entertainment line",
+                "decision": "returned",
+                "detail": "$446.25 USD at Dishoom, no preapproval_id on file",
                 "employee": "Chloe Martin",
                 "expense_id": "EXP-2420",
-                "rule": "entertainment without pre-approval",
-                "severity": "review"
+                "rule": "entertainment without pre-approval id",
+                "severity": "block"
               }
             ]
           },
-          "turns": 8,
-          "wall_seconds": 192.2
+          "turns": 9,
+          "wall_seconds": 166.9
         },
         {
-          "calls": [],
-          "cost_usd": 0.5207112,
+          "calls": [
+            {
+              "arguments": {
+                "question": "Controller review needed for the 2026-09 expense audit. Three lines need your decision (approve or reject). Block items are listed for information \u2014 they go back to the employee regardless.\n\n**Review items \u2014 need your decision:**\n\n| Expense | Employee | Rule | Detail |\n|---------|----------|------|--------|\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | $130.39 USD > $75.00 per-line cap (Casa Lucio, Madrid, 2026-09-04) |\n| EXP-2410 | Ben Okafor | Software cap exceeded | $249.00 USD > $100.00 per-line cap (JetBrains, 2026-09-08) \u2014 policy notes this should go through IT procurement |\n| EXP-2413 | Ben Okafor | Late submission | Dated 2026-06-30, submitted 92 days before period end (Sweetgreen, $18.75 USD) |\n\n**Block items \u2014 returned to employee (for information only):**\n\n| Expense | Employee | Rule |\n|---------|----------|------|\n| EXP-2404 | Ana Ruiz | Missing receipt ($25.97 \u2265 $25.00 threshold) |\n| EXP-2412 | Ben Okafor | Duplicate of EXP-2411 (Lyft $38.20 USD 2026-09-12) |\n| EXP-2420 | Chloe Martin | Entertainment without pre-approval ID (Dishoom, $446.25 USD) |\n\nPlease approve or reject each of EXP-2403, EXP-2410, and EXP-2413."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.6609219000000001,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -196,9 +143,106 @@
             "returned_usd": 759.42,
             "review_queue": [
               {
+                "decision": "approved",
+                "detail": "$130.39 USD exceeds $75.00 per-line meals cap (Casa Lucio, 2026-09-04)",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
+                "rule": "meals cap exceeded",
                 "severity": "review"
+              },
+              {
+                "decision": "returned",
+                "detail": "$25.97 USD >= $25.00 receipt threshold, no receipt attached (Cabify, 2026-09-05)",
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2404",
+                "rule": "missing receipt",
+                "severity": "block"
+              },
+              {
+                "decision": "rejected",
+                "detail": "$249.00 USD exceeds $100.00 per-line software cap. Policy requires IT procurement above cap (JetBrains, 2026-09-08)",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2410",
+                "rule": "software cap exceeded",
+                "severity": "review"
+              },
+              {
+                "decision": "returned",
+                "detail": "Duplicate of EXP-2411 (Lyft, $38.20 USD, 2026-09-12, merchant match is case-insensitive)",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2412",
+                "rule": "duplicate submission",
+                "severity": "block"
+              },
+              {
+                "decision": "approved",
+                "detail": "Dated 2026-06-30, 92 days before period end 2026-09-30 (Sweetgreen, $18.75 USD)",
+                "employee": "Ben Okafor",
+                "expense_id": "EXP-2413",
+                "rule": "late submission",
+                "severity": "review"
+              },
+              {
+                "decision": "returned",
+                "detail": "No preapproval_id on entertainment line (Dishoom, $446.25 USD, 2026-09-15)",
+                "employee": "Chloe Martin",
+                "expense_id": "EXP-2420",
+                "rule": "entertainment without pre-approval ID",
+                "severity": "block"
+              }
+            ]
+          },
+          "turns": 9,
+          "wall_seconds": 241.0
+        },
+        {
+          "calls": [
+            {
+              "arguments": {
+                "question": "Controller review required for the 2026-09 expense audit. Below is the review queue. Block items are listed for information \u2014 they are returned to the employee regardless. Please approve or reject each review item.\n\n**REVIEW ITEMS (need your decision):**\n\n| Expense | Employee | Rule | Severity | Detail |\n| --- | --- | --- | --- | --- |\n| EXP-2413 | Ben Okafor | Late submission | review | Dated 2026-06-30 \u2014 92 days before period end, exceeds 60-day limit |\n\n**BLOCK ITEMS (returned to employee, no decision needed):**\n\n| Expense | Employee | Rule | Severity | Detail |\n| --- | --- | --- | --- | --- |\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | block | $130.39 USD > $75.00 cap |\n| EXP-2404 | Ana Ruiz | Receipt missing | block | $25.97 USD \u2265 $25.00, no receipt attached |\n| EXP-2410 | Ben Okafor | Software cap exceeded | block | $249.00 USD > $100.00 cap |\n| EXP-2412 | Ben Okafor | Duplicate submission | block | Same as EXP-2411 (Lyft, $38.20, USD, 2026-09-12) |\n| EXP-2420 | Chloe Martin | Entertainment without pre-approval | block | No preapproval_id on entertainment expense of $446.25 |\n\nPlease respond with \"approve EXP-2413\" or \"reject EXP-2413\"."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.4730937,
+          "error": null,
+          "output": {
+            "auto_approved_employees": [
+              "Dev Patel",
+              "Emi Tanaka"
+            ],
+            "batch_total_usd": 3304.15,
+            "blocked_ids": [
+              "EXP-2403",
+              "EXP-2404",
+              "EXP-2410",
+              "EXP-2412",
+              "EXP-2420"
+            ],
+            "duplicate_ids": [
+              "EXP-2412"
+            ],
+            "late_ids": [
+              "EXP-2413"
+            ],
+            "outcome": "completed",
+            "pending_usd": 0.0,
+            "period": "2026-09",
+            "reimbursable_usd": 2414.34,
+            "report_filename": "2026-09-expense-audit.md",
+            "report_status": "final",
+            "returned_usd": 889.81,
+            "review_queue": [
+              {
+                "employee": "Ana Ruiz",
+                "expense_id": "EXP-2403",
+                "severity": "block"
               },
               {
                 "employee": "Ana Ruiz",
@@ -208,7 +252,7 @@
               {
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
-                "severity": "review"
+                "severity": "block"
               },
               {
                 "employee": "Ben Okafor",
@@ -227,8 +271,8 @@
               }
             ]
           },
-          "turns": 7,
-          "wall_seconds": 158.6
+          "turns": 8,
+          "wall_seconds": 148.4
         }
       ],
       "stable": {
@@ -296,9 +340,14 @@
           }
         },
         "insufficient_runs": false,
+        "read_units": [],
         "reads": [],
+        "reads_before_gate": [
+          []
+        ],
         "runs": 3,
         "seen_calls": [],
+        "seen_requests": [],
         "side_effects": [],
         "side_effects_unordered": [],
         "successful_runs": 3,
@@ -309,15 +358,30 @@
           "review_queue[].decision",
           "review_queue[].detail",
           "review_queue[].rule"
-        ]
+        ],
+        "write_fields": {},
+        "write_fields_dropped": {}
       }
     },
     "second_batch": {
       "description": "the same batch with a missing receipt (block), a line dated after the period closed (late), a category the policy does not list (block), and an entertainment line that now carries its pre-approval; the controller approves two review items and rejects two",
       "runs": [
         {
-          "calls": [],
-          "cost_usd": 0.5383332,
+          "calls": [
+            {
+              "arguments": {
+                "question": "Controller review needed for the 2026-09 expense audit. Two items require your decision (approve or reject). Block items are listed for reference \u2014 they are returned to employees regardless of your decision.\n\n**Review items (approve or reject):**\n\n| Expense | Employee | Rule | Detail |\n|---------|----------|------|--------|\n| EXP-2413 | Ben Okafor | Late submission | Meals at Sweetgreen, $18.75. Dated 2026-06-30 \u2014 92 days before period close. |\n| EXP-2440 | Emi Tanaka | Late submission | Office supplies at Itoya, $104.41. Dated 2026-10-02 \u2014 after period closed. |\n\n**Block items (returned to employee, for your information):**\n\n| Expense | Employee | Rule | Detail |\n|---------|----------|------|--------|\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | $130.39 vs $75.00 cap |\n| EXP-2404 | Ana Ruiz | Receipt missing | Ground transport $25.97 \u2014 no receipt attached |\n| EXP-2410 | Ben Okafor | Software cap exceeded | $249.00 vs $100.00 cap \u2014 should go through IT procurement |\n| EXP-2412 | Ben Okafor | Duplicate | Duplicate of EXP-2411 (Lyft, $38.20, 2026-09-12) |\n| EXP-2432 | Dev Patel | Receipt missing | Meals $46.34 \u2014 no receipt attached |\n| EXP-2442 | Emi Tanaka | Unknown category | \"gifts\" is not a reimbursable category \u2014 must be recategorized |\n\nPlease approve or reject EXP-2413 and EXP-2440."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.6026640000000001,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -325,7 +389,9 @@
             ],
             "batch_total_usd": 3334.66,
             "blocked_ids": [
+              "EXP-2403",
               "EXP-2404",
+              "EXP-2410",
               "EXP-2412",
               "EXP-2432",
               "EXP-2442"
@@ -340,59 +406,96 @@
             "outcome": "completed",
             "pending_usd": 0.0,
             "period": "2026-09",
-            "reimbursable_usd": 3044.5,
+            "reimbursable_usd": 2795.5,
             "report_filename": "2026-09-expense-audit.md",
             "report_status": "final",
-            "returned_usd": 290.16,
+            "returned_usd": 539.16,
             "review_queue": [
               {
+                "decision": "returned",
+                "detail": "$130.39 exceeds $75.00 per-line cap",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
-                "severity": "review"
+                "rule": "Meals cap exceeded",
+                "severity": "block"
               },
               {
+                "decision": "returned",
+                "detail": "$25.97 ground transport, no receipt attached",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2404",
+                "rule": "Receipt missing",
                 "severity": "block"
               },
               {
+                "decision": "returned",
+                "detail": "$249.00 exceeds $100.00 cap. Route through IT procurement",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
-                "severity": "review"
+                "rule": "Software cap exceeded",
+                "severity": "block"
               },
               {
+                "decision": "returned",
+                "detail": "Duplicate of EXP-2411 (Lyft, $38.20, 2026-09-12)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2412",
+                "rule": "Duplicate submission",
                 "severity": "block"
               },
               {
+                "decision": "rejected",
+                "detail": "Dated 2026-06-30, 92 days before period close",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2413",
+                "rule": "Late submission",
                 "severity": "review"
               },
               {
+                "decision": "returned",
+                "detail": "$46.34 meals at Pai, no receipt attached",
                 "employee": "Dev Patel",
                 "expense_id": "EXP-2432",
+                "rule": "Receipt missing",
                 "severity": "block"
               },
               {
+                "decision": "approved",
+                "detail": "Dated 2026-10-02, after period closed",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2440",
+                "rule": "Late submission",
                 "severity": "review"
               },
               {
+                "decision": "returned",
+                "detail": "\"gifts\" is not a policy category. Must be recategorized",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2442",
+                "rule": "Unknown category",
                 "severity": "block"
               }
             ]
           },
-          "turns": 6,
-          "wall_seconds": 173.2
+          "turns": 14,
+          "wall_seconds": 185.4
         },
         {
-          "calls": [],
-          "cost_usd": 0.6851841,
+          "calls": [
+            {
+              "arguments": {
+                "question": "Controller review needed for the 2026-09 expense audit. Two items require your decision (approve or reject). Block items are listed for information only \u2014 those go back to the employee regardless.\n\n**REVIEW items (your decision required):**\n\n| Expense | Employee | Rule | Severity | Detail |\n|---|---|---|---|---|\n| EXP-2413 | Ben Okafor | Late submission | review | Meals $18.75 at Sweetgreen dated 2026-06-30, which is 92 days before the period end \u2014 more than the 60-day window |\n| EXP-2440 | Emi Tanaka | Late submission | review | Office supplies $104.41 at Itoya dated 2026-10-02 \u2014 submitted after the 2026-09 period closed |\n\n**BLOCK items (returned to employee, for your information):**\n\n| Expense | Employee | Rule | Severity | Detail |\n|---|---|---|---|---|\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | block | $130.39 exceeds the $75.00 per-line cap |\n| EXP-2404 | Ana Ruiz | Receipt missing | block | $25.97 ground_transport with no receipt attached |\n| EXP-2410 | Ben Okafor | Software cap exceeded | block | $249.00 exceeds the $100.00 software cap |\n| EXP-2412 | Ben Okafor | Duplicate | block | Duplicate of EXP-2411 (same employee, Lyft, $38.20 USD, 2026-09-12) |\n| EXP-2432 | Dev Patel | Receipt missing | block | $46.34 meals with no receipt attached |\n| EXP-2442 | Emi Tanaka | Category not in policy | block | \"gifts\" is not a recognized expense category |\n\nPlease respond with your decision for EXP-2413 and EXP-2440 (approve or reject for each)."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.5346260999999999,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -400,7 +503,9 @@
             ],
             "batch_total_usd": 3334.66,
             "blocked_ids": [
+              "EXP-2403",
               "EXP-2404",
+              "EXP-2410",
               "EXP-2412",
               "EXP-2432",
               "EXP-2442"
@@ -415,83 +520,72 @@
             "outcome": "completed",
             "pending_usd": 0.0,
             "period": "2026-09",
-            "reimbursable_usd": 3044.5,
+            "reimbursable_usd": 2795.5,
             "report_filename": "2026-09-expense-audit.md",
             "report_status": "final",
-            "returned_usd": 290.16,
+            "returned_usd": 539.16,
             "review_queue": [
               {
-                "decision": "rejected",
-                "detail": "$130.39 exceeds $75.00 per-line cap",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
-                "rule": "meals cap exceeded",
-                "severity": "review"
+                "severity": "block"
               },
               {
-                "decision": "returned",
-                "detail": "$25.97 >= $25.00 threshold. No receipt attached",
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2404",
-                "rule": "missing receipt",
                 "severity": "block"
               },
               {
-                "decision": "approved",
-                "detail": "$249.00 exceeds $100.00 per-line cap",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
-                "rule": "software cap exceeded",
-                "severity": "review"
+                "severity": "block"
               },
               {
-                "decision": "returned",
-                "detail": "Duplicate of EXP-2411 (same employee, merchant Lyft, $38.20 USD, 2026-09-12)",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2412",
-                "rule": "duplicate",
                 "severity": "block"
               },
               {
-                "decision": "rejected",
-                "detail": "Dated 2026-06-30, more than 60 days before 2026-09-30",
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2413",
-                "rule": "late submission",
                 "severity": "review"
               },
               {
-                "decision": "returned",
-                "detail": "$46.34 >= $25.00 threshold. No receipt attached",
                 "employee": "Dev Patel",
                 "expense_id": "EXP-2432",
-                "rule": "missing receipt",
                 "severity": "block"
               },
               {
-                "decision": "approved",
-                "detail": "Dated 2026-10-02, after period close 2026-09-30",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2440",
-                "rule": "late submission",
                 "severity": "review"
               },
               {
-                "decision": "returned",
-                "detail": "\"gifts\" is not a recognized expense category. Employee must recategorize",
                 "employee": "Emi Tanaka",
                 "expense_id": "EXP-2442",
-                "rule": "category not in policy",
                 "severity": "block"
               }
             ]
           },
           "turns": 9,
-          "wall_seconds": 218.7
+          "wall_seconds": 232.3
         },
         {
-          "calls": [],
-          "cost_usd": 0.6390096,
+          "calls": [
+            {
+              "arguments": {
+                "question": "Please review the following expense items for the 2026-09 period and approve or reject each one.\n\n**Review items** (your decision needed):\n\n| Expense | Employee | Rule | Detail |\n|---------|----------|------|--------|\n| EXP-2413 | Ben Okafor | Late submission | Dated 2026-06-30, 92 days before period end 2026-09-30. Meals at Sweetgreen, $18.75 USD, no receipt (not required \u2014 under $25). |\n| EXP-2440 | Emi Tanaka | Late submission | Dated 2026-10-02, after period closed 2026-09-30. Office supplies at Itoya, $104.41 USD, receipt attached. |\n\n**Block items** (returned to employee regardless, listed for your information):\n\n| Expense | Employee | Rule | Detail |\n|---------|----------|------|--------|\n| EXP-2403 | Ana Ruiz | Meals cap exceeded | $130.39 > $75.00 per-line cap |\n| EXP-2404 | Ana Ruiz | Missing receipt | $25.97 \u2265 $25.00 threshold, no receipt |\n| EXP-2410 | Ben Okafor | Software cap exceeded | $249.00 > $100.00 cap; requires IT procurement |\n| EXP-2412 | Ben Okafor | Duplicate submission | Matches EXP-2411 (same employee, merchant Lyft, $38.20 USD, 2026-09-12) |\n| EXP-2432 | Dev Patel | Missing receipt | $46.34 \u2265 $25.00 threshold, no receipt |\n| EXP-2442 | Emi Tanaka | Unknown category | Category \"gifts\" not in policy table |\n\nPlease provide approve or reject for EXP-2413 and EXP-2440."
+              },
+              "invalid_arguments": null,
+              "live": null,
+              "matched": true,
+              "response": 0,
+              "server": "rote_gates",
+              "side_effect": false,
+              "tool": "ask_person"
+            }
+          ],
+          "cost_usd": 0.5660469,
           "error": null,
           "output": {
             "auto_approved_employees": [
@@ -499,7 +593,9 @@
             ],
             "batch_total_usd": 3334.66,
             "blocked_ids": [
+              "EXP-2403",
               "EXP-2404",
+              "EXP-2410",
               "EXP-2412",
               "EXP-2432",
               "EXP-2442"
@@ -514,15 +610,15 @@
             "outcome": "completed",
             "pending_usd": 0.0,
             "period": "2026-09",
-            "reimbursable_usd": 3044.5,
+            "reimbursable_usd": 2795.5,
             "report_filename": "2026-09-expense-audit.md",
             "report_status": "final",
-            "returned_usd": 290.16,
+            "returned_usd": 539.16,
             "review_queue": [
               {
                 "employee": "Ana Ruiz",
                 "expense_id": "EXP-2403",
-                "severity": "review"
+                "severity": "block"
               },
               {
                 "employee": "Ana Ruiz",
@@ -532,7 +628,7 @@
               {
                 "employee": "Ben Okafor",
                 "expense_id": "EXP-2410",
-                "severity": "review"
+                "severity": "block"
               },
               {
                 "employee": "Ben Okafor",
@@ -561,8 +657,8 @@
               }
             ]
           },
-          "turns": 7,
-          "wall_seconds": 281.2
+          "turns": 9,
+          "wall_seconds": 181.8
         }
       ],
       "stable": {
@@ -587,7 +683,9 @@
           "batch_total_usd": 3334.66,
           "blocked_ids": {
             "set": [
+              "exp-2403",
               "exp-2404",
+              "exp-2410",
               "exp-2412",
               "exp-2432",
               "exp-2442"
@@ -607,10 +705,10 @@
           "outcome": "completed",
           "pending_usd": 0.0,
           "period": "2026-09",
-          "reimbursable_usd": 3044.5,
+          "reimbursable_usd": 2795.5,
           "report_filename": "2026-09-expense-audit.md",
           "report_status": "final",
-          "returned_usd": 290.16,
+          "returned_usd": 539.16,
           "review_queue[].employee": {
             "set": [
               "ana ruiz",
@@ -639,9 +737,14 @@
           }
         },
         "insufficient_runs": false,
+        "read_units": [],
         "reads": [],
+        "reads_before_gate": [
+          []
+        ],
         "runs": 3,
         "seen_calls": [],
+        "seen_requests": [],
         "side_effects": [],
         "side_effects_unordered": [],
         "successful_runs": 3,
@@ -649,7 +752,9 @@
           "review_queue[].decision",
           "review_queue[].detail",
           "review_queue[].rule"
-        ]
+        ],
+        "write_fields": {},
+        "write_fields_dropped": {}
       }
     },
     "unknown_currency": {
@@ -657,7 +762,7 @@
       "runs": [
         {
           "calls": [],
-          "cost_usd": 0.339612,
+          "cost_usd": 0.2449968,
           "error": null,
           "output": {
             "auto_approved_employees": null,
@@ -677,14 +782,14 @@
             "report_status": null,
             "returned_usd": null,
             "review_queue": null,
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses CHF, which does not appear in the 2026-09 FX rate table. The skill requires the finance team to supply the rate before the audit can continue. No controller-review answer was available for this question \u2014 the only queued answer was a controller-review decision, which cannot substitute for a missing FX rate."
+            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses CHF, which is not listed in the 2026-09 FX rate table. The policy requires the finance-published month-end rate for every currency. Finance must supply the CHF rate before the audit can continue."
           },
           "turns": 5,
-          "wall_seconds": 112.3
+          "wall_seconds": 74.1
         },
         {
           "calls": [],
-          "cost_usd": 0.353511,
+          "cost_usd": 0.21898499999999999,
           "error": null,
           "output": {
             "auto_approved_employees": null,
@@ -704,14 +809,14 @@
             "report_status": null,
             "returned_usd": null,
             "review_queue": null,
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not listed in the 2026-09 FX rate table. Per policy, the audit cannot proceed until finance provides the rate; it must not be looked up online because payroll must match the general ledger."
+            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 2026-09-16) uses currency CHF, which is not in the 2026-09 FX rate table. Finance must supply the CHF month-end rate before the audit can continue. Per policy, the audit cannot use a live rate \u2014 payroll must match the general ledger."
           },
           "turns": 5,
-          "wall_seconds": 146.5
+          "wall_seconds": 64.5
         },
         {
           "calls": [],
-          "cost_usd": 0.2999712,
+          "cost_usd": 0.23938289999999998,
           "error": null,
           "output": {
             "auto_approved_employees": null,
@@ -731,10 +836,10 @@
             "report_status": null,
             "returned_usd": null,
             "review_queue": null,
-            "stop_reason": "EXP-2422 (Chloe Martin, Pret, 12.40 CHF) uses currency CHF, which is not in the 2026-09 FX rate table. The skill requires asking finance for the finance-published month-end rate before proceeding. The audit cannot continue until that rate is provided."
+            "stop_reason": "EXP-2422 (Chloe Martin, CHF 12.40, meals, Pret) uses currency CHF, which is not listed in the 2026-09 FX rates table. The skill requires asking finance for the rate before continuing. The audit cannot proceed without it, and looking up a live rate is prohibited because payroll must match the general ledger."
           },
           "turns": 5,
-          "wall_seconds": 82.6
+          "wall_seconds": 69.3
         }
       ],
       "stable": {
@@ -774,20 +879,25 @@
           "review_queue": null
         },
         "insufficient_runs": false,
+        "read_units": [],
         "reads": [],
+        "reads_before_gate": [],
         "runs": 3,
         "seen_calls": [],
+        "seen_requests": [],
         "side_effects": [],
         "side_effects_unordered": [],
         "successful_runs": 3,
-        "unstable_fields": []
+        "unstable_fields": [],
+        "write_fields": {},
+        "write_fields_dropped": {}
       }
     }
   },
-  "cost_usd": 4.4798,
+  "cost_usd": 4.0533,
   "example": "expense-audit",
   "model": "claude-sonnet-4-6",
-  "recorded_at": "2026-10-20T05:53:17.349660+00:00",
+  "recorded_at": "2026-10-22T02:43:33.418574+00:00",
   "schema_version": 1,
   "trials": 3
 }

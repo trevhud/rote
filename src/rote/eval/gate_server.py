@@ -31,9 +31,11 @@ GATE_TOOL = "ask_person"
 _TOOL = {
     "name": GATE_TOOL,
     "description": (
-        "Ask the person this skill needs an answer or an approval from. Call it "
-        "at the moment the skill asks them, with what you would ask; the "
-        "result is their answer."
+        "The person at this skill's review or approval steps. Call it when the "
+        "skill reaches a step that hands its work to someone to approve, "
+        "decide or supply input before it goes on; the result is their "
+        "answer. Not for missing or invalid information the skill says to "
+        "stop on: then stop instead."
     ),
     "inputSchema": {
         "type": "object",

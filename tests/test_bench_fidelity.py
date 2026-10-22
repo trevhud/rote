@@ -450,6 +450,7 @@ def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
     itself unreachable."""
     from rote.bench.fidelity import load_cases
     from rote.bench.fixture_mcp import _schema_error
+    from rote.eval.gate_server import GATE_SERVER
 
     from .conftest import EXAMPLES_DIR
 
@@ -459,6 +460,8 @@ def test_every_recorded_reference_call_passes_its_fixture_schema() -> None:
         for case in reference["cases"].values():
             for run in case["runs"]:
                 for call in run["calls"]:
+                    if call["server"] == GATE_SERVER:
+                        continue  # the person at a gate, not a fixture server
                     tool = casefile.servers[call["server"]]["tools"][call["tool"]]
                     assert _schema_error(tool["parameters"], call["arguments"]) is None, call
 

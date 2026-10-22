@@ -245,10 +245,15 @@ class MeasuredRun:
 #: (:mod:`rote.eval.gate_server`) when it reaches the gate, as a person
 #: would answer then and not before.
 GATE_INSTRUCTIONS = (
-    "When the skill needs a person's input or approval, call the "
-    f"`{GATE_TOOL}` tool (server `{GATE_SERVER}`) at that moment, with what you "
-    "would ask them, and continue with its answer. Do not ask in text, do not "
-    "wait, and do not call it before the skill reaches that step."
+    f"`{GATE_TOOL}` (server `{GATE_SERVER}`) is the person at this skill's own "
+    "review or approval steps: the steps where the skill hands its work to "
+    "someone to approve, decide or supply input before it goes on. When the "
+    "skill reaches one of those steps, call it with what you would ask, and "
+    "continue with its answer. Do not ask in text, do not wait, and do not "
+    "call it before the skill reaches that step. It is for nothing else: when "
+    "the skill says to stop because information is missing or invalid (ask "
+    "someone for a rate, a file, a fix), stop as the skill says and report "
+    "why. Do not call it for that."
 )
 
 
