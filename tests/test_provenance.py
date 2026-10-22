@@ -479,3 +479,15 @@ def test_a_module_citing_the_real_row_has_no_citation_finding(tmp_path: Path) ->
     )
     kinds = [f.kind for f in provenance_findings(pipeline, root, EXPENSE_SKILL)]
     assert "citation_not_in_skill" not in kinds
+
+
+@pytest.mark.parametrize("quote", ["| a | e |", "| l | v |", "| a | the |", "| Lat | revi |"])
+def test_a_row_is_cited_by_whole_cells_not_letters_of_them(tmp_path: Path, quote: str) -> None:
+    """review6's gaming cases: two fragments of cells unlocked the column
+    headers, and the headers supplied the four words."""
+    (tmp_path / "SKILL.md").write_text(
+        "# T\n\nRules:\n\n| Finding type | Severity level assigned |\n|---|---|\n"
+        "| Late a the | review e |\n"
+    )
+    assert _row_problem(quote, tmp_path) is not None
+    assert _row_problem("| Late a the | review e |", tmp_path) is None

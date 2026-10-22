@@ -215,9 +215,12 @@ def _row_citation_problem(quote: str, rows: list[TableRow]) -> str | None:
     """Why a quoted table row is not a row of the skill, or None if it is.
 
     Cells match in order, at any offset in the row: a cell is either elided
-    (``...``, which matches any cell, the skill's own ``...`` included) or
-    contained in the row's cell there. What the citation says must reach
-    :data:`MIN_FRAGMENT_WORDS` words, the same floor as prose: the words of
+    (``...``, which matches any cell, the skill's own ``...`` included) or the
+    whole row cell there, after the normalization every quote gets. Citing a
+    row means quoting its cells: a substring match let ``| a | e |`` pass on
+    letters of two cells and unlock their headers' words (review6). What the
+    citation says must reach :data:`MIN_FRAGMENT_WORDS` words, the same floor
+    as prose: the words of
     its cells that are not elided, plus, when it quotes two cells or more,
     the header words of those columns (``| Late | review |`` under
     ``| Finding | Severity |`` says which rule it is). A bare cell
@@ -229,7 +232,7 @@ def _row_citation_problem(quote: str, rows: list[TableRow]) -> str | None:
     nearest = ""
     for row in rows:
         for offset in range(len(row.cells) - len(cells) + 1):
-            if not all(c in _ELIDED or c in row.cells[offset + i] for i, c in enumerate(cells)):
+            if not all(c in _ELIDED or c == row.cells[offset + i] for i, c in enumerate(cells)):
                 continue
             context = (
                 sum(_words(row.header[offset + i]) for i in said if offset + i < len(row.header))
