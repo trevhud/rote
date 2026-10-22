@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from rote._dbos import dbos_system_database_url as _dbos_system_database_url
 from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
+from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
 from rote.extras import extra_for_missing_module, install_hint
@@ -237,27 +238,36 @@ class MeasuredRun:
 # ───────── Skill (before) trials ─────────
 
 
-def gate_answers_instructions(answers: str) -> str:
-    """The prompt text that hands a skill run the answers a person gives at
-    its gates, so the run does not stop to ask (``answers``: one per line,
-    in the order the skill asks). One wording for ``rote run <skill>
-    --signal`` and the compile bench's fidelity references."""
-    return (
-        "When the skill needs a person's input or approval, do not wait and do "
-        "not ask: these are the answers you get, in the order the skill asks:\n"
-        f"{answers}"
-    )
+#: What a skill run is told about its gates. One wording for ``rote run
+#: <skill> --signal`` and the compile bench's fidelity references, so the
+#: two prompts a side-by-side demo compares are byte-identical. The answers
+#: themselves are not in it: the agent gets each one from ``ask_person``
+#: (:mod:`rote.eval.gate_server`) when it reaches the gate, as a person
+#: would answer then and not before.
+GATE_INSTRUCTIONS = (
+    "When the skill needs a person's input or approval, call the "
+    f"`{GATE_TOOL}` tool (server `{GATE_SERVER}`) at that moment, with what you "
+    "would ask them, and continue with its answer. Do not ask in text, do not "
+    "wait, and do not call it before the skill reaches that step."
+)
 
 
-def signal_answers(payloads: Sequence[Any]) -> str:
-    """Gate answers as a numbered list, in the order the skill asks.
+def gate_answers_server(answers: Sequence[Any], work: Path) -> tuple[dict[str, Any], str]:
+    """The MCP config entry that serves ``answers`` to a skill run, and its tool id.
 
-    One rendering for ``rote run <skill> --signal`` and the compile bench's
-    fidelity references, so the two prompts a side-by-side demo compares
-    are byte-identical. A ``--signal`` name is only a label for the order:
-    a skill's gates have no names, so it is not sent.
+    A stdio server the agent's MCP client launches (:mod:`rote.eval.gate_server`),
+    logging each ask to ``work/calls.jsonl``, the file the bench's fixture
+    servers log to, so asks and reads interleave in call order.
     """
-    return "\n".join(f"{i}. {json.dumps(payload)}" for i, payload in enumerate(payloads, 1))
+    work.mkdir(parents=True, exist_ok=True)
+    answers_file = work / "gate-answers.json"
+    answers_file.write_text(json.dumps(list(answers)), encoding="utf-8")
+    entry = {
+        "type": "stdio",
+        "command": sys.executable,
+        "args": ["-m", "rote.eval.gate_server", str(answers_file), str(work / "calls.jsonl")],
+    }
+    return entry, f"mcp__{GATE_SERVER}__{GATE_TOOL}"
 
 
 def _skill_prompt(

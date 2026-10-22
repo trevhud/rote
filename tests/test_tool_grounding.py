@@ -334,7 +334,7 @@ def test_the_fixture_servers_serve_exactly_the_skills_bundled_snapshot(
     from rote.compiler.tool_grounding import bundled
 
     casefile = load_cases(OPS)
-    silent = Case(id="c", description="", input={}, gates=[], gate_instructions=None, fixtures={})
+    silent = Case(id="c", description="", input={}, gates=[], fixtures={})
     with fixture_servers(casefile, silent, tmp_path) as (urls, _log):
         registry = tmp_path / "mcp.json"
         registry.write_text(

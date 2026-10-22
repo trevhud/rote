@@ -559,10 +559,20 @@ def _drift_lines(case: dict[str, Any]) -> list[str]:
     ]
 
 
-def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
-    """Per-case coverage lines for a ``pipeline_fidelity`` report, with any drift."""
+def _gate_order_lines(case: dict[str, Any]) -> list[str]:
+    """Each gate that parked before reads the skill made first, and which."""
     return [
-        _coverage_line(cid, c["reference"]) + "".join(_drift_lines(c))
+        f"\n  gate {m.get('signal') or m['gate']}: parked before {read}, which the skill made first"
+        for m in case.get("gate_order_misses") or []
+        for read in m["parked_before"]
+    ]
+
+
+def coverage_lines(fidelity: dict[str, Any]) -> list[str]:
+    """Per-case coverage lines for a ``pipeline_fidelity`` report, with any
+    drift and any gate that parked early."""
+    return [
+        _coverage_line(cid, c["reference"]) + "".join(_drift_lines(c) + _gate_order_lines(c))
         for cid, c in (fidelity.get("cases") or {}).items()
         if "reference" in c
     ]
