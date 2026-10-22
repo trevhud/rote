@@ -767,3 +767,38 @@ def test_a_gate_with_no_compiled_gate_is_still_missing() -> None:
         None,
         0.0,
     )
+
+
+def test_a_misplaced_gate_still_pairs_and_its_rows_show_the_mismatch() -> None:
+    """The only compiled gate sits at a different step, asking for different
+    things. Pairing among gates has no similarity floor (a real ops-report
+    gate scored below unrelated pure functions, so a floor would drop it),
+    so the two gates still pair: ``found`` means "paired with some compiled
+    gate". The rows, not the count, carry the mismatch."""
+    expected = _expected()
+    compiled = _pipeline(
+        [
+            {
+                "id": "fetch",
+                "kind": "external_call",
+                "description": "fetch the ledger export",
+                "impl": "extracted/m.py:fetch",
+            },
+            {
+                "id": "confirm_region",
+                "kind": "hitl_gate",
+                "description": "ask which region to fetch",
+                "signal": "region_chosen",
+                "output": {"region": "str"},
+            },
+            _pure("dedupe_rows", "remove duplicate rows by id"),
+        ],
+        [("confirm_region", "fetch"), ("fetch", "dedupe_rows")],
+        required=["period"],
+    )
+    gates = score_pipeline(expected, compiled)["gates"]
+    assert gates["found"] == 1
+    (row,) = gates["gates"]
+    assert row["compiled"] == "confirm_region"
+    assert (row["signal_match"], row["signal_match_normalized"]) == (False, False)
+    assert row["payload_jaccard"] == 0.0
