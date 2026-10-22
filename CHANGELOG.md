@@ -40,9 +40,9 @@ This release has breaking changes. Each one has a full entry below.
 - **The default compile skeleton is new.** The structure pass makes one
   model call (about $0.015 and 70 s) on the compile driver's own client,
   never a fallback key. `--structure rules` (or `structure: rules`,
-  `ROTE_STRUCTURE`) keeps the rule-based skeleton. System-1 is also the default
-  compile path now. The `--system1` flag is gone, and `--no-system1` runs
-  the full-rubric agent.
+  `ROTE_STRUCTURE`) keeps the rule-based skeleton. System-1, new in this
+  release, is the default compile path, and `--no-system1` runs the
+  full-rubric agent.
 - **`rote run <pipeline>` is read-only unless you pass `--allow-writes`.**
   An MCP tool that may write is refused before it is called. A tool passes
   when its server marks it `readOnlyHint`, or when you registered the whole
@@ -57,6 +57,11 @@ This release has breaking changes. Each one has a full entry below.
 - **IR: a `loop_body` sub-node must be a pure_function, external_call or
   llm_judge, and must not be `mandatory`.**
 - **Re-emit TypeScript apps** to pick up `@anthropic-ai/sdk` `^0.136.0`.
+- **With `XDG_DATA_HOME` or `XDG_CACHE_HOME` set, rote's data and caches
+  move under them.** That covers the eval corpus, the fixture store and the
+  price and spec caches. An existing `~/.local/share/rote/eval-corpus.jsonl`
+  is no longer read: move it to `$XDG_DATA_HOME/rote/`, or point
+  `ROTE_EVAL_CORPUS_PATH` at it.
 
 ### Added
 
@@ -1920,7 +1925,8 @@ This release has breaking changes. Each one has a full entry below.
   Anthropic API, Codex stub), the `rote compile` / `rote emit` CLI,
   and the BDR-outreach example skill.
 
-[Unreleased]: https://github.com/trevhud/rote/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/trevhud/rote/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/trevhud/rote/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/trevhud/rote/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/trevhud/rote/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trevhud/rote/compare/v0.12.1...v0.13.0
