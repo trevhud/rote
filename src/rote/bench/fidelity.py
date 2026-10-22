@@ -93,6 +93,7 @@ def load_cases(example_dir: Path) -> CaseFile:
             payload = c["input"]
         for patch in c.get("input_patches") or []:
             _apply_patch(payload, patch)
+        _require_distinct_gate_payloads(path, c["id"], list(c.get("gates") or []))
         cases.append(
             Case(
                 id=c["id"],
@@ -109,6 +110,30 @@ def load_cases(example_dir: Path) -> CaseFile:
         servers=_fixture_servers_spec(example_dir, raw.get("servers") or {}),
         cases=cases,
     )
+
+
+def _require_distinct_gate_payloads(path: Path, case_id: str, gates: list[Any]) -> None:
+    """Refuse a case whose gates are sent equal payloads.
+
+    The pipeline side finds each gate's park by the message its recv
+    received (:func:`reads_before_parks`). Equal payloads cannot tell two
+    gates apart, so they fall back to start order, and a compile that
+    reorders the gates is then scored against the wrong reference gate.
+    """
+    seen: dict[str, int] = {}
+    for i, payload in enumerate(gates):
+        key = _message_key(payload)
+        if key in seen:
+            raise ValueError(
+                f"{path}: case {case_id!r}: gates {seen[key]} and {i} are sent the same "
+                "payload, so fidelity cannot tell their parks apart (it matches each "
+                "gate by the message it received). Make a value differ in a field the "
+                "skill's gate already takes (a different approver, decision or comment). "
+                "Add a key only if the skill's gate really has one: gate fit compares "
+                "the payload's keys with the compiled gate's, so an extra key lowers "
+                "every compile's score."
+            )
+        seen[key] = i
 
 
 def _fixture_servers_spec(
