@@ -2060,7 +2060,9 @@ user turn, up to `MAX_VALIDATION_REPAIRS`. Things to preserve:
   looser version, so keep them: a citation fragment is 4+ words of prose
   (headings excluded), fragments match in order within one paragraph,
   the quote closes at the `"` ending a comment line (so it may contain
-  quotes), every outcome literal in a pure_function module needs a
+  quotes), a quote starting with `|` is a table row matched cell by cell
+  (`...` any cell; 4+ words across the quoted cells, counting their column
+  headers only when two or more cells are quoted, so a bare cell never passes), every outcome literal in a pure_function module needs a
   marker on its statement or in the comment directly above it or above
   the `if` that decides it (an early-return `if` ladder counts as one;
   independent checks do not, because proximity let a real compile's

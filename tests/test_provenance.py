@@ -401,3 +401,81 @@ def test_a_citation_that_only_changes_the_dash_is_verbatim(tmp_path: Path) -> No
 def test_open_questions_counts_subheadings_not_their_detail() -> None:
     report = "## Open questions\n\n### OQ-1\n- a\n- b\n\n### OQ-2\n- c\n\n## Next\n- d\n"
     assert len(open_questions(report)) == 2
+
+
+# ───────── a markdown table row is cited as a row ─────────
+
+EXPENSE_SKILL = Path(__file__).resolve().parents[1] / "examples" / "expense-audit" / "skill"
+#: The citation that failed a real expense-audit compile (st11, 2026-10-21):
+#: the skill's own template row, quoted verbatim, read as prose fragments
+#: split on its `...` cells and refused as "under 4 words".
+REAL_ROW = "| ... | ... | ... | review | ... | approved / rejected / pending |"
+
+
+def _row_problem(quote: str, skill_dir: Path = EXPENSE_SKILL) -> str | None:
+    from rote.compiler.provenance import citation_problem, skill_paragraphs, skill_table_rows
+
+    return citation_problem(quote, skill_paragraphs(skill_dir), skill_table_rows(skill_dir))
+
+
+def test_the_real_failing_table_row_citation_is_a_citation() -> None:
+    assert _row_problem(REAL_ROW) is None
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        "| review |",
+        "| ... | review | ... |",
+        "| ... | ... | ... | review | ... | ... |",
+    ],
+)
+def test_a_bare_cell_never_passes(quote: str) -> None:
+    problem = _row_problem(quote)
+    assert problem is not None and "a bare cell such as 'review'" in problem
+
+
+def test_a_row_the_skill_does_not_have_is_refused() -> None:
+    wrong = "| ... | ... | ... | block | ... | approved / rejected / pending |"
+    assert _row_problem(wrong) == "no table row of the skill has these cells, in this order"
+
+
+def test_a_short_row_counts_its_column_headers(tmp_path: Path) -> None:
+    """`| Late | review |` under its headers says which rule it is; a header,
+    however long, never rescues a single cell."""
+    (tmp_path / "SKILL.md").write_text(
+        "# T\n\nSeverity by finding:\n\n| Finding | Severity the controller sees |\n|---|---|\n"
+        "| Late | review |\n| Duplicate | block |\n"
+    )
+    assert _row_problem("| Late | review |", tmp_path) is None
+    assert _row_problem("| review |", tmp_path) is not None
+    assert _row_problem("| Late | block |", tmp_path) is not None
+
+
+def test_a_module_citing_the_real_row_has_no_citation_finding(tmp_path: Path) -> None:
+    """End to end through provenance_findings, as the compile verdict reads it."""
+    from rote.compiler.provenance import provenance_findings
+
+    root = tmp_path / "work"
+    (root / "extracted").mkdir(parents=True)
+    (root / "extracted" / "render.py").write_text(
+        f'def render(row):\n    # skill: "{REAL_ROW}"\n    return row\n'
+    )
+    pipeline = Pipeline(
+        name="t",
+        input={"type": "In", "required": []},
+        nodes=[
+            Node(
+                id="render",
+                kind=NodeKind.PURE_FUNCTION,
+                description="d",
+                impl="extracted/render.py:render",
+                inputs={"row": "pipeline.input"},
+            )
+        ],
+        edges=[],
+        entry_nodes=["render"],
+        exit_nodes=["render"],
+    )
+    kinds = [f.kind for f in provenance_findings(pipeline, root, EXPENSE_SKILL)]
+    assert "citation_not_in_skill" not in kinds

@@ -157,6 +157,99 @@ def skill_paragraphs(skill_dir: Path) -> list[str]:
     return paragraphs
 
 
+#: A markdown table's separator row (``|---|:--:|``): it has no text to cite.
+_TABLE_SEPARATOR = re.compile(r"^\|?[\s:|-]+\|?$")
+#: A cell that elides cells: ``...`` or ``…``, in a citation or in a
+#: skill's own template row.
+_ELIDED = frozenset({"...", "…"})
+
+
+def _cells(line: str) -> list[str]:
+    """A markdown table row's cells, each normalized like prose."""
+    body = line.strip()
+    body = body[1:] if body.startswith("|") else body
+    body = body[:-1] if body.endswith("|") else body
+    return [_normalized(c) for c in body.split("|")]
+
+
+@dataclass(frozen=True)
+class TableRow:
+    """One markdown table row of the skill, and its table's header cells."""
+
+    cells: list[str]
+    #: The header row's cells (the row before the ``|---|`` separator); empty
+    #: for a header row itself, or a table with no separator.
+    header: list[str]
+
+
+def skill_table_rows(skill_dir: Path) -> list[TableRow]:
+    """Every markdown table row in the skill, as its normalized cells.
+
+    A table row is how a skill states a rule (``| Late | review | ... |``),
+    and the prose reading of a row joins its pipes into the text, so a row
+    cited as a row could never match. Separator rows are left out."""
+    rows: list[TableRow] = []
+    for path in sorted(skill_dir.rglob("*.md")):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        header: list[str] = []
+        previous: list[str] | None = None
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                header, previous = [], None
+                continue
+            if _TABLE_SEPARATOR.match(stripped):
+                header = previous or []
+                continue
+            cells = _cells(stripped)
+            rows.append(TableRow(cells, header))
+            previous = cells
+    return rows
+
+
+def _words(text: str) -> int:
+    return len(re.findall(r"[^\W_]+", text))
+
+
+def _row_citation_problem(quote: str, rows: list[TableRow]) -> str | None:
+    """Why a quoted table row is not a row of the skill, or None if it is.
+
+    Cells match in order, at any offset in the row: a cell is either elided
+    (``...``, which matches any cell, the skill's own ``...`` included) or
+    contained in the row's cell there. What the citation says must reach
+    :data:`MIN_FRAGMENT_WORDS` words, the same floor as prose: the words of
+    its cells that are not elided, plus, when it quotes two cells or more,
+    the header words of those columns (``| Late | review |`` under
+    ``| Finding | Severity |`` says which rule it is). A bare cell
+    (``| review |``) never passes: it says no more than the word "review",
+    and every severity table has one."""
+    cells = _cells(quote)
+    said = [i for i, c in enumerate(cells) if c not in _ELIDED]
+    own = sum(_words(cells[i]) for i in said)
+    nearest = ""
+    for row in rows:
+        for offset in range(len(row.cells) - len(cells) + 1):
+            if not all(c in _ELIDED or c in row.cells[offset + i] for i, c in enumerate(cells)):
+                continue
+            context = (
+                sum(_words(row.header[offset + i]) for i in said if offset + i < len(row.header))
+                if len(said) >= 2
+                else 0
+            )
+            if own + context >= MIN_FRAGMENT_WORDS:
+                return None
+            nearest = nearest or "the row is in the skill"
+    first = cells[said[0]] if said else ""
+    if nearest or own < MIN_FRAGMENT_WORDS:
+        return (
+            f"the table row's cells say {own} word(s); a row is cited by at least "
+            f"{MIN_FRAGMENT_WORDS} words of its cells' text (with their column headers when "
+            f"it quotes two cells or more), so a bare cell such as {first!r} cannot say "
+            "which rule decides anything"
+        )
+    return "no table row of the skill has these cells, in this order"
+
+
 # ───────── Citations in the code ─────────
 
 
@@ -202,8 +295,16 @@ def citations(source: str) -> list[Citation]:
     return found
 
 
-def citation_problem(quote: str, paragraphs: list[str]) -> str | None:
-    """Why ``quote`` is not a citation of the skill, or None if it is."""
+def citation_problem(
+    quote: str, paragraphs: list[str], rows: list[TableRow] | None = None
+) -> str | None:
+    """Why ``quote`` is not a citation of the skill, or None if it is.
+
+    A quote that is a markdown table row (it starts with ``|``) is read as
+    the row's cells against ``rows`` (:func:`skill_table_rows`); any other
+    quote as prose fragments against ``paragraphs``."""
+    if quote.strip().startswith("|") and rows is not None:
+        return _row_citation_problem(quote, rows)
     fragments = [_normalized(f) for f in quote.replace("…", "...").split("...")]
     fragments = [f for f in fragments if f]
     if not fragments:
@@ -672,6 +773,7 @@ def provenance_findings(
     paragraphs = (
         skill_paragraphs(skill_dir) if skill_dir is not None and skill_dir.is_dir() else None
     )
+    rows = skill_table_rows(skill_dir) if paragraphs is not None and skill_dir else []
     pure_modules = {
         node.impl.partition(":")[0]
         for node in pipeline.nodes
@@ -693,7 +795,7 @@ def provenance_findings(
                         )
                     )
                     continue
-                problem = citation_problem(cite.quote, paragraphs)
+                problem = citation_problem(cite.quote, paragraphs, rows)
                 if problem is not None:
                     findings.append(
                         _finding(
