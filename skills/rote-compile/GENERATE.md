@@ -132,6 +132,20 @@ The test file:
   90.0 not), the skill's own examples verbatim, the empty input, and a
   malformed input (the `ValueError`).
 - pins every constant with one assertion.
+- builds each rule's cases from one clean fixture that passes every rule
+  (one test asserts it produces no finding), changing only the field the
+  rule reads. Check that the changed value trips no other rule of the
+  step: a $2,500 meals line meant to test a report limit also exceeds a
+  $75 meals cap. Assert on that rule's own finding, not only the overall
+  outcome.
+- never hard-codes a number worked out by hand. Compute an expected
+  amount in the test from the inputs and the skill's table values, or take
+  it from the skill's own example, and compare numbers with
+  `pytest.approx`. Mental arithmetic in a test is the most common reason
+  a correct module fails.
+- passes inputs shaped the way they arrive: JSON values like the sample
+  input or the upstream node's `output_schema` in the message. A number
+  is an `int` or a `float`, never a `Decimal`; a list is a list.
 - uses plain pytest and the stdlib, needs no network, credentials or
   files, and is deterministic.
 
@@ -196,7 +210,10 @@ Asked to repair, you get your earlier answer and what rote found wrong
 with it, verbatim. Fix each problem and change nothing else. For a module
 or test, prefer `edits`: each `old` is copied exactly from the current
 file and appears there once, and `new` replaces it. A whole file in
-`module` or `test` replaces that file. A field left empty keeps its file. When a test and the module disagree, the skill
-decides which one is wrong. Never weaken an assertion that encodes a rule
+`module` or `test` replaces that file. A field left empty keeps its file.
+A failing test's output lists its local values under the assertion. Read
+them before choosing a fix: an outcome other than the one expected often
+comes from a second rule the fixture also trips. When a test and the
+module disagree, the skill decides which one is wrong. Never weaken an assertion that encodes a rule
 from the skill, and never turn a working implementation into a stub to
 silence a failure.

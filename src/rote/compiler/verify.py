@@ -232,6 +232,13 @@ def run_generated_tests(
             "-p",
             "no:cacheprovider",
             "--tb=short",
+            # A failed assertion on an overall outcome hides the finding that
+            # caused it; the locals show it to the repair. pytest shortens
+            # each local's repr when not verbose (-q), so the output budget
+            # holds. Locals come from this confined run only: the env is the
+            # allowlist above, and anything else a test can reach it could
+            # already print.
+            "--showlocals",
         ]
 
     run = run_confined(
