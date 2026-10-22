@@ -1,0 +1,13 @@
+{
+  "ticket": "Subject: Scheduled reports stopped sending\n\nHi team, none of our scheduled weekly reports went out this Monday. Our ops managers rely on them for the 9am standup and three of them have already pinged me. I checked the schedule page and every job shows status 'Queued' with a last run of last Monday. Manual export still works if I click Download. We didn't change anything on our side. Can someone look at this today? - Priya Raman, Ops Systems Lead",
+  "customer": {
+    "account_name": "Meridian Home Goods",
+    "plan": "Business",
+    "seats": 85,
+    "region": "us-east",
+    "open_tickets": 1,
+    "csm": "Dana Whitfield"
+  },
+  "channel": "email",
+  "received_at": "2026-10-19T13:42:00Z"
+}
