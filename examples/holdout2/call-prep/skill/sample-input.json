@@ -1,0 +1,32 @@
+{
+  "request": "prep me for my Thursday 2pm call with Northwind Logistics",
+  "today": "2026-10-21",
+  "meeting": {
+    "title": "Northwind x Larkspur: pilot scope review",
+    "start": "2026-10-22T14:00:00-04:00",
+    "end": "2026-10-22T14:45:00-04:00",
+    "attendees": [
+      {"name": "Jordan Ellis", "email": "jordan.ellis@larkspur.example", "internal": true},
+      {"name": "Marisol Vega", "email": "mvega@northwindlogistics.example"},
+      {"name": "Tom Okafor", "email": "tokafor@northwindlogistics.example"}
+    ],
+    "agenda": "Review pilot scope, success criteria, and security questionnaire status."
+  },
+  "account": {
+    "name": "Northwind Logistics",
+    "domain": "northwindlogistics.example",
+    "industry": "Third-party logistics",
+    "employees": 1400
+  },
+  "opportunities": [
+    {"name": "Northwind - Route Optimization Pilot", "stage": "Discovery", "amount": 48000, "close_date": "2026-12-15", "next_step": "10/09 - send pilot SOW draft to Marisol", "last_activity": "2026-10-09"}
+  ],
+  "contacts": [
+    {"name": "Marisol Vega", "email": "mvega@northwindlogistics.example", "title": "VP Operations"}
+  ],
+  "prior_call_notes": "2026-10-08 discovery call: Marisol said their dispatch team re-plans routes by hand every morning, about 3 hours a day. Open question: can the pilot read from their Oracle TMS? We committed to send a sample SOW and our SOC 2 report. Objection: they were burned by a previous vendor whose pilot ran 6 months over.",
+  "email_threads": [
+    {"date": "2026-10-09", "from": "jordan.ellis@larkspur.example", "subject": "Pilot SOW draft", "summary": "Sent SOW draft; SOC 2 report promised by end of week."},
+    {"date": "2026-10-16", "from": "mvega@northwindlogistics.example", "subject": "Re: Pilot SOW draft", "summary": "Asked to add Tom Okafor (IT) to the next call to cover the security questionnaire."}
+  ]
+}

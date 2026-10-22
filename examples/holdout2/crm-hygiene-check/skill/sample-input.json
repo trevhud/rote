@@ -1,0 +1,10 @@
+{
+  "scope": "my opps",
+  "today": "2026-10-21",
+  "opportunities": [
+    {"Id": "0065g00000AbC1Q", "Name": "Northwind - Route Optimization Pilot", "Account.Name": "Northwind Logistics", "StageName": "Discovery", "Amount": 48000, "CloseDate": "2026-12-15", "NextStep": "10/09 - send pilot SOW draft to Marisol", "LastActivityDate": "2026-10-16", "CreatedDate": "2026-09-02", "OpportunityContactRoles": [{"ContactId": "0035g00000Mv1", "Role": "Decision Maker"}, {"ContactId": "0035g00000To2", "Role": "Technical Buyer"}]},
+    {"Id": "0065g00000AbC2R", "Name": "Brightwater - Annual Renewal", "Account.Name": "Brightwater Freight", "StageName": "Proposal", "Amount": 0, "CloseDate": "2026-09-30", "NextStep": "", "LastActivityDate": "2026-08-27", "CreatedDate": "2026-06-11", "OpportunityContactRoles": [{"ContactId": "0035g00000Bw1", "Role": "Economic Buyer"}]},
+    {"Id": "0065g00000AbC3S", "Name": "Meridian - Expansion 40 seats", "Account.Name": "Meridian Home Goods", "StageName": "Negotiation", "Amount": 31500, "CloseDate": "2026-10-31", "NextStep": "09/22 - redlines back from Meridian legal", "LastActivityDate": "2026-10-02", "CreatedDate": "2026-07-14", "OpportunityContactRoles": []},
+    {"Id": "0065g00000AbC4T", "Name": "Pinecrest - New Logo", "Account.Name": "Pinecrest Outfitters", "StageName": "Qualification", "Amount": 22000, "CloseDate": "2026-11-28", "NextStep": "10/20 - discovery call with Sam and Lee", "LastActivityDate": "2026-10-20", "CreatedDate": "2026-10-01", "OpportunityContactRoles": [{"ContactId": "0035g00000Pc1", "Role": "Champion"}, {"ContactId": "0035g00000Pc2", "Role": "Influencer"}]}
+  ]
+}

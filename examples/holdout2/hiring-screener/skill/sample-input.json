@@ -1,0 +1,30 @@
+{
+  "input": {
+    "job_post": "Lead Roofing Technician, Dayton OH. Full time, Monday-Friday 7am-3:30pm. You will run a 3-person crew on residential and light-commercial re-roofs. Required: valid Ohio driver's license, OSHA 10 certification, 3+ years of shingle or low-slope roofing. Preferred: crew lead experience, TPO/EPDM membrane work, estimating with EagleView reports. Nice to have: Spanish.",
+    "rubric": {
+      "must_have": ["Valid driver's license", "OSHA 10 certification", "3+ years shingle or low-slope roofing", "Available Mon-Fri 7am-3:30pm"],
+      "should_have": [
+        {"criterion": "Years of comparable roofing work", "weight": 35},
+        {"criterion": "Crew lead or supervisory experience", "weight": 35},
+        {"criterion": "TPO/EPDM membrane installs", "weight": 20},
+        {"criterion": "Estimating from aerial measurement reports", "weight": 10}
+      ],
+      "nice_to_have": ["Spanish"]
+    },
+    "applications": [
+      {"candidate_id": "c-01", "name": "Luis Alvarez", "email": "luis.alvarez@mail.example", "resume_text": "Roofer, Miami Valley Roofing, 2019-present. Lead a 4-man crew on tear-offs, 30+ homes a season. Installed TPO on 6 strip-mall jobs. OSHA 10 (2021). Ohio CDL Class B. Bilingual English/Spanish."},
+      {"candidate_id": "c-02", "name": "Erin Brennan", "email": "ebrennan@mail.example", "resume_text": "Roofing laborer 2024-2026, Kettering. Shingle tear-off and install. OSHA 10 card. Looking to grow into a lead role."},
+      {"candidate_id": "c-03", "name": "Daniel Cho", "email": "dcho@mail.example", "resume_text": "Commercial roofing foreman, 2016-2025, Columbus. EPDM and TPO, crews of 5-8. Wrote estimates from EagleView reports. Driver's license. Available any shift."},
+      {"candidate_id": "c-04", "name": "Marcus Reed", "email": "mreed@mail.example", "resume_text": "Residential roofing 2020-present, Springfield OH, shingles and gutters. Ran the crew when the owner was out. Valid Ohio license. Note: certifications on request."}
+    ],
+    "owner_availability": [
+      {"date": "2026-10-27", "slots": ["10:00", "13:00"]},
+      {"date": "2026-10-28", "slots": ["09:00", "15:00"]}
+    ],
+    "interview_length_minutes": 45
+  },
+  "signals": {
+    "approve_replies": {"approved": true},
+    "approve_invites": {"approved": true, "invites": [{"candidate_id": "c-01", "slot": "2026-10-27T10:00"}, {"candidate_id": "c-03", "slot": "2026-10-28T09:00"}]}
+  }
+}

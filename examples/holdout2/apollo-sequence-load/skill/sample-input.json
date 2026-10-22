@@ -1,0 +1,15 @@
+{
+  "input": {
+    "arguments": "add 5 VP Sales at SaaS companies, 50-500 employees, US to my \"Q1 Outbound\" sequence",
+    "person_titles": ["VP Sales", "Vice President of Sales"],
+    "person_seniorities": ["vp"],
+    "q_organization_keyword_tags": ["saas"],
+    "organization_num_employees_ranges": ["51,200", "201,500"],
+    "person_locations": ["United States"],
+    "sequence_name": "Q1 Outbound",
+    "volume": 5
+  },
+  "signals": {
+    "confirm_enrollment": {"approved": true}
+  }
+}
