@@ -81,17 +81,35 @@ def _pipeline() -> Pipeline:
     )
 
 
-def _first_line(lines: list[str], pattern: str) -> int:
-    rx = re.compile(pattern)
-    return next(i for i, line in enumerate(lines) if rx.search(line))
+def _assignment(source: str, rid: str) -> int:
+    """Offset just past the first statement that assigns ``<rid>_result``.
+
+    A plain or annotated assignment at the start of a line
+    (``x_result = ...``, ``const x_result: T = ...``, ``a_result, x_result =``),
+    or a destructure across lines (``const [a_result, x_result] = ...``,
+    ``(a_result, x_result) = ...``). A bare declaration such as
+    ``let x_result;`` assigns nothing, so it never counts: an adapter that
+    declares the result above the wave and assigns it after the gate fails.
+    """
+    name = rf"{rid}_result"
+    others = r"(?:[\w$]+\s*,\s*)*"
+    rest = r"(?:\s*,\s*[\w$]+)*"
+    line = re.compile(
+        rf"^[ \t]*(?:const|let|var)?[ \t]*{others}\b{name}\b{rest}[ \t]*(?::[^=\n]*)?=(?!=)",
+        re.M,
+    )
+    destructure = re.compile(rf"[\[(]\s*{others}\b{name}\b{rest}\s*,?\s*[\])]\s*=(?!=)")
+    ends = [m.end() for rx in (line, destructure) if (m := rx.search(source))]
+    assert ends, f"no assignment of {name}"
+    return min(ends)
 
 
 def _gate_waits_after_reads(source: str, wait_pattern: str) -> bool:
-    """The gate's wait line comes after the first line binding each read's
+    """The gate's wait comes after the statement that assigns each read's
     finished result (``<id>_result``; a handle or promise is named apart)."""
-    lines = source.splitlines()
-    wait = _first_line(lines, wait_pattern)
-    return all(_first_line(lines, rf"\b{rid}_result\b") < wait for rid in _READS)
+    wait = re.compile(wait_pattern, re.M).search(source)
+    assert wait, wait_pattern
+    return all(_assignment(source, rid) < wait.start() for rid in _READS)
 
 
 def test_the_fixture_puts_the_gate_in_the_reads_wave_first_by_id() -> None:
@@ -117,3 +135,17 @@ def test_the_check_fails_on_a_gate_that_waits_first() -> None:
         ]
     )
     assert not _gate_waits_after_reads(early, r'topic="approved"')
+
+
+def test_a_forward_declaration_does_not_count_as_the_result() -> None:
+    """Declaring the result above the gate and assigning it after is a gate
+    that waits first; the first mention alone would have passed it."""
+    declared = "\n".join(
+        [
+            "let fetch_rows_result;",
+            "let fetch_totals_result;",
+            'const approve_event = await step.waitForEvent("approve", { type: "approved" });',
+            "[fetch_rows_result, fetch_totals_result] = await Promise.all([a, b]);",
+        ]
+    )
+    assert not _gate_waits_after_reads(declared, r'type: "approved"')
