@@ -141,6 +141,16 @@ SCHEMA: dict[str, Any] = _obj(
                         "items": _str(),
                         "description": "earlier node ids it reads, or 'pipeline.input'",
                     },
+                    "after": {
+                        "type": "array",
+                        "items": _str(),
+                        "description": "earlier node ids it must wait for without reading "
+                        "their results, because its own step's text says so",
+                    },
+                    "after_quote": _str(
+                        description="the 4+ words of this node's own section that say "
+                        "it waits, or '' when after is empty"
+                    ),
                     "fan_out_over": _str(description="a node id in reads, or ''"),
                     "in_loop": _str(description="the agent_loop node that calls it, or ''"),
                     "mandatory": {"type": "boolean"},
@@ -237,6 +247,11 @@ Per node:
   own fields reads pipeline.input, even when it comes after another step:
   reading a node it does not need makes it wait on that node, and fail
   with it.
+- after: the earlier nodes this one must wait for although it reads none
+  of their results, only when its own step's text orders it after them
+  (a step that says to ask the person after the data is pulled waits for
+  the pulls). after_quote: at least four words copied exactly from the text
+  under its own heading that say so. Both empty otherwise.
 - fan_out_over: when the node runs once per element of a list another node
   returns (a call per query, a write per row), that node's id. Else "".
   Judge at the skill's granularity: an llm_judge whose step decides over a
@@ -577,6 +592,7 @@ def check(
                 out.append(f"{where}: reads {ref!r}, which is not an earlier node")
             elif ref in seen and seen[ref].get("in_loop") and not n.get("in_loop"):
                 out.append(f"{where}: reads {ref!r}, which runs inside a loop, from outside it")
+        out += _check_after(where, n, seen, u)
         fan = n.get("fan_out_over") or ""
         if fan == "pipeline.input":
             out.append(
@@ -1252,6 +1268,13 @@ def resolve(
         if len(reads) != len(n.get("reads") or []):
             notes.append(f"`{nid}`: dropped reads of nodes that do not come before it")
         n["reads"] = reads
+        if n.get("after") and _check_after(f"`{nid}`", n, {m["id"]: m for m in nodes}, u):
+            # An ordering no words of the step back is the model's, not the skill's.
+            notes.append(
+                f"`{nid}`: dropped its ordering after {n['after']!r}: no words of its own "
+                "step back it"
+            )
+            n["after"], n["after_quote"] = [], ""
         if n.get("fan_out_over") and n["fan_out_over"] not in ids:
             # A fan runs over an earlier node's list; the pipeline input is not one.
             notes.append(f"`{nid}`: dropped its fan_out over {n['fan_out_over']!r}")
@@ -1478,6 +1501,39 @@ def system_of(n: Mapping[str, Any]) -> dict[str, Any]:
     return dict(n.get("system") or {})
 
 
+#: The fewest words an ordering's quote may have (provenance's citation floor).
+AFTER_QUOTE_MIN_WORDS = 4
+
+
+def _check_after(
+    where: str, n: Mapping[str, Any], seen: Mapping[str, Any], u: Unit | None
+) -> list[str]:
+    """An ordering the text states: earlier nodes, backed by the node's own words.
+
+    `reads` carries only data the step uses, so a step whose text orders it
+    after others without reading them ("After pulling the above, ask the duty
+    manager") said nothing about when it runs, and a gate parked before the
+    data it was meant to follow was pulled. `after` states that ordering, and
+    its quote is checked like every other: verbatim, under the node's own
+    heading, at least four words."""
+    after = [str(a) for a in n.get("after") or []]
+    if not after:
+        return []
+    out: list[str] = []
+    for dep in after:
+        if dep not in seen:
+            out.append(f"{where}: after {dep!r}, which is not an earlier node")
+        elif seen[dep].get("in_loop") and not n.get("in_loop"):
+            out.append(f"{where}: after {dep!r}, which runs inside a loop, from outside it")
+    quote = str(n.get("after_quote") or "")
+    if u is None or len(quote.split()) < AFTER_QUOTE_MIN_WORDS or not _appears(quote, u.text):
+        out.append(
+            f"{where}: after needs after_quote, at least {AFTER_QUOTE_MIN_WORDS} words copied "
+            "exactly from the text under its own heading that order it after those nodes"
+        )
+    return out
+
+
 def to_plan(
     answer: dict[str, Any],
     skill: SkillParse,
@@ -1538,6 +1594,9 @@ def to_plan(
                 by_id[fan].lists_output = True
             node.decide("fan_out", True, conf, rule)
         node.decide("inputs", dict(node.inputs), conf, rule)
+        node.after = [str(a) for a in n.get("after") or [] if str(a) in by_id]
+        if node.after:
+            node.decide("after", list(node.after), conf, rule)
         if kind not in ("agent_loop", "hitl_gate"):
             node.mandatory = bool(n.get("mandatory"))
             node.decide("mandatory", node.mandatory, conf, rule)

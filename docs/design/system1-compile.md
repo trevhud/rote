@@ -416,7 +416,15 @@ back what fails, up to two repair rounds:
   upstream field is in its source's declared outputs;
 - a loop holds only optional pure_function, external_call or llm_judge
   nodes, and a MANDATORY step never goes inside one;
-- every result the skill says the run produces reaches the run's result.
+- every result the skill says the run produces reaches the run's result;
+- an `after` ordering (a node waiting for earlier nodes it does not read,
+  because its own step says so) names earlier nodes and quotes at least four
+  words of that step's own text, verbatim. It becomes an IR edge, so
+  `execution_waves` orders the node after them, and exit nodes come from the
+  data edges alone, so an ordering never hides a result. Before it, a node
+  read only what its text uses, and ops-report's gate ("After pulling the
+  above, ask the duty manager to provide:") parked in wave 0, beside the
+  pulls; measured on 2026-10-21 it waits for all four (2 of 2 trials).
 
 What still fails after the repairs is resolved conservatively and never
 shipped as decided: an unquoted node is dropped, a call with an unbound
