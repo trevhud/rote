@@ -102,6 +102,57 @@ def test_red_generated_tests_are_sent_back_with_the_failure(tmp_path: Path) -> N
     assert "the skill decides which is wrong" in instruction
 
 
+#: The st9 expense-audit failure, reduced: a $2,500 meals line meant to sit
+#: exactly at the report limit also trips the $75 meals cap, so the test's
+#: expected outcome is wrong. Only the result's findings say why.
+RULE_INTERACTION_TEST = """\
+from extracted.logic import count_open
+
+
+def test_a_clean_report_at_the_limit_is_approved():
+    rows = [{"Resolved": "FALSE"}]
+    result = count_open(rows)
+    assert result["outcome"] == "approved"
+"""
+
+RULE_INTERACTION = """\
+def count_open(rows: list[dict]) -> dict:
+    return {"outcome": "pending", "findings": [{"rule": "cap_exceeded"}], "open": len(rows)}
+"""
+
+
+def test_a_failing_test_shows_the_repair_its_local_values(tmp_path: Path) -> None:
+    """A failed assertion on an overall outcome says only `'pending' ==
+    'approved'`. The finding that caused it sits in a local, and without the
+    locals no repair round could see it (st9 spent 8 calls and never did)."""
+    root = _deliverable(
+        tmp_path,
+        {
+            "extracted/logic.py": RULE_INTERACTION,
+            "extracted/vendor.py": VENDOR_STUB,
+            "tests/test_logic.py": RULE_INTERACTION_TEST,
+        },
+    )
+    instruction = verify_deliverable(root).repair_instruction(root)
+    assert instruction is not None
+    assert "assert 'pending' == 'approved'" in instruction
+    assert "'rule': 'cap_exceeded'" in instruction
+
+
+def test_a_large_local_is_shortened_in_the_repair(tmp_path: Path) -> None:
+    """pytest shortens each local's repr when not verbose, so one big local
+    cannot fill the repair's output budget and push out the summary."""
+    big_test = "def test_big():\n    blob = 'x' * 50_000\n    assert len(blob) == 1\n"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_big.py").write_text(big_test)
+    result = run_generated_tests(tmp_path)
+    assert result is not None and result.status == "failed"
+    blob_lines = [line for line in result.output.splitlines() if line.strip().startswith("blob")]
+    assert blob_lines, result.output
+    assert all(len(line) < 400 for line in blob_lines)
+    assert "1 failed" in result.output
+
+
 @pytest.mark.parametrize(
     ("files", "kind"),
     [
