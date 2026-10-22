@@ -652,7 +652,11 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
 
     # Gate order: the reads the skill made before asking at each gate, made
     # by the pipeline before that gate parked. A pipeline that asks first
-    # puts a person's decision ahead of data the skill had in hand.
+    # puts a person's decision ahead of data the skill had in hand. A gate
+    # the pipeline never reached is left unscored here on purpose, not
+    # counted as a miss: the missing gate already costs gate fit (and the
+    # outcome when the run stopped), and scoring it again would charge one
+    # absence twice.
     order_misses: list[dict[str, Any]] = []
     ref_before = reference.get("reads_before_gate") or []
     pipe_before = trace.get("reads_before_gate")
@@ -661,7 +665,9 @@ def score_case(reference: dict[str, Any], trace: dict[str, Any]) -> dict[str, An
         for i, want in enumerate(ref_before):
             if not want:
                 continue
-            have = pipe_before[i] if i < len(pipe_before) else []
+            have = pipe_before[i] if i < len(pipe_before) else None
+            if have is None:
+                continue
             have_keys = {call_key(c) for c in have}
             have_requests = {request_key(c) for c in have if _live(c)}
             missed = [

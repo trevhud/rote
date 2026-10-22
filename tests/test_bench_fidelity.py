@@ -1039,23 +1039,79 @@ def test_a_reference_recorded_with_answers_up_front_has_no_gate_order() -> None:
     assert s["gate_order"] is None
 
 
+def _recv(at_ms: int, received: Any) -> dict[str, Any]:
+    return {
+        "workflow": "w",
+        "name": "DBOS.recv",
+        "error": False,
+        "started_at_ms": at_ms,
+        "received": received,
+    }
+
+
 def test_reads_before_parks_compares_call_times_with_each_gate_recv() -> None:
     from rote.bench.fidelity import reads_before_parks
 
     steps = [
         {"workflow": "w", "name": "fetch", "error": False, "started_at_ms": 1_000},
-        {"workflow": "w", "name": "DBOS.recv", "error": False, "started_at_ms": 2_000},
-        {"workflow": "w", "name": "DBOS.recv", "error": False, "started_at_ms": 4_000},
+        _recv(2_000, {"approved": True}),
+        _recv(4_000, {"n": 2}),
     ]
     calls = [
         {**_answered("read", 0, f="A"), "ts": 1.5},
         {**_answered("read", 1, f="B"), "ts": 3.0},
         {**_call("write", True, n="1"), "ts": 1.0},
     ]
-    first, second = reads_before_parks(steps, calls, gates=2)  # type: ignore[misc]
-    assert [c["arguments"] for c in first] == [{"f": "A"}]
-    assert [c["arguments"] for c in second] == [{"f": "A"}, {"f": "B"}]
-    assert reads_before_parks(steps, calls, gates=3) is None  # a gate never reached
+    first, second = reads_before_parks(steps, calls, [{"approved": True}, {"n": 2}])
+    assert [c["arguments"] for c in first or []] == [{"f": "A"}]
+    assert [c["arguments"] for c in second or []] == [{"f": "A"}, {"f": "B"}]
+    # A gate whose recv never ran is unscored, not empty.
+    assert reads_before_parks(steps, calls, [{"approved": True}, {"never": "sent"}])[1] is None
+
+
+def test_an_auth_park_between_gates_does_not_shift_the_comparison() -> None:
+    """An MCP auth park also waits in DBOS.recv. Matched by start order, it
+    would be taken for the gate: the gate would look as if it parked before
+    the read that came between the two. Matched by what each recv received,
+    the gate keeps its own park time."""
+    from rote.bench.fidelity import reads_before_parks
+
+    steps = [
+        _recv(2_000, {"released": True}),  # rote:auth:<server>, released by a login
+        _recv(4_000, {"approved": True}),
+    ]
+    calls = [
+        {**_answered("read", 0, f="A"), "ts": 1.0},
+        {**_answered("read", 1, f="B"), "ts": 3.0},  # after the auth park, before the gate
+    ]
+    (gate,) = reads_before_parks(steps, calls, [{"approved": True}])
+    assert [c["arguments"] for c in gate or []] == [{"f": "A"}, {"f": "B"}]
+    ref = stable_reference(
+        [
+            _run({"x": 1}, [calls[0], calls[1], _ask(0)]),
+            _run({"x": 1}, [calls[0], calls[1], _ask(0)]),
+        ]
+    )
+    trace = {
+        "completed": True,
+        "objects": [],
+        "calls": calls,
+        "gate_fit": [{"gate": "g", "signal": "approved", "fit": 1.0}],
+        "reads_before_gate": [gate],
+    }
+    assert (score_case(ref, trace)["gate_order"], score_case(ref, trace)["gate_order_misses"]) == (
+        1.0,
+        [],
+    )
+
+
+def test_a_gate_the_pipeline_never_reached_leaves_gate_order_unscored() -> None:
+    """Fewer gates reached than the reference: unscored on purpose, since the
+    missing gate already costs gate fit."""
+    ref = _gated_reference()
+    trace = {**_parked([]), "reads_before_gate": [None]}
+    s = score_case(ref, trace)
+    assert (s["gate_order"], s["gate_order_misses"]) == (None, [])
 
 
 def test_the_bench_names_the_read_a_gate_parked_before() -> None:

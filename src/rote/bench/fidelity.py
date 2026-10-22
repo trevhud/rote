@@ -464,6 +464,9 @@ def _dbos_objects(app: Path) -> tuple[list[dict[str, Any]], list[Any]]:
                         "name": name,
                         "error": bool(step["error"]),
                         "started_at_ms": step.get("started_at_epoch_ms"),
+                        # What a recv received identifies which wait it was
+                        # (reads_before_parks); other steps' outputs are below.
+                        "received": output if name == "DBOS.recv" else None,
                     }
                 )
                 # A gate's received payload is the case's own input echoed
@@ -512,28 +515,55 @@ BENCH_ENV_NAMES = frozenset(
 BENCH_ENV_PREFIXES = ("LC_", "DBOS_", "ROTE_")
 
 
+def _message_key(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, default=str)
+
+
 def reads_before_parks(
-    steps: list[dict[str, Any]], calls: list[dict[str, Any]], gates: int
-) -> list[list[dict[str, Any]]] | None:
+    steps: list[dict[str, Any]], calls: list[dict[str, Any]], gate_payloads: list[Any]
+) -> list[list[dict[str, Any]] | None]:
     """For each gate, in gate order, the reads the pipeline made before it parked.
 
     A DBOS gate parks in ``DBOS.recv``; its step's ``started_at_ms`` is the
-    moment it starts to wait, and a read counts when its call-log ``ts``
-    is earlier. The i-th recv, by start time, is the i-th gate. None when
-    the run did not reach every gate (no times to compare).
+    moment it starts to wait, and a read counts when its call-log ``ts`` is
+    earlier. Each gate is found by what its recv received: the bench sends
+    gate i's payload on gate i's signal, so the recv that got that payload
+    is gate i's, whatever else waited around it. DBOS records no topic on a
+    step, and the message stands in for it: an auth park (a recv on
+    ``rote:auth:<server>``, released with another message) or a gate the
+    skill does not have cannot shift the comparison, as matching the i-th
+    recv by start time would. Two gates sent equal payloads take their
+    recvs in start order. A gate whose recv never ran is None.
     """
-    parks = sorted(
-        s["started_at_ms"]
-        for s in steps
-        if s["name"] == "DBOS.recv" and s.get("started_at_ms") is not None
+    recvs = sorted(
+        (s for s in steps if s["name"] == "DBOS.recv" and s.get("started_at_ms") is not None),
+        key=lambda s: s["started_at_ms"],
     )
-    if gates == 0 or len(parks) < gates:
-        return None
     reads = [c for c in calls if not c.get("side_effect") and c.get("server") != GATE_SERVER]
-    return [
-        [_portable_call(c) for c in reads if c.get("ts") is not None and c["ts"] * 1000 < park]
-        for park in parks[:gates]
-    ]
+    used: set[int] = set()
+    out: list[list[dict[str, Any]] | None] = []
+    for payload in gate_payloads:
+        want = _message_key(payload)
+        park = next(
+            (
+                (k, s["started_at_ms"])
+                for k, s in enumerate(recvs)
+                if k not in used and _message_key(s.get("received")) == want
+            ),
+            None,
+        )
+        if park is None:
+            out.append(None)
+            continue
+        used.add(park[0])
+        out.append(
+            [
+                _portable_call(c)
+                for c in reads
+                if c.get("ts") is not None and c["ts"] * 1000 < park[1]
+            ]
+        )
+    return out
 
 
 def bench_environment() -> dict[str, str]:
@@ -617,7 +647,7 @@ def run_pipeline_case(
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
-        "reads_before_gate": reads_before_parks(steps, calls, len(gates)),
+        "reads_before_gate": reads_before_parks(steps, calls, [signals[g.signal] for g in gates]),
         "gate_fit": gate_fit,
         "unknown_servers": unknown,
         "backend": backend,
