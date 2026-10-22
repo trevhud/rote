@@ -1528,3 +1528,96 @@ def test_system1s_calls_cost_counts_the_structure_pass_and_its_redecides(
     record_structure(work, plan)
     assert calls_cost_usd(work) == pytest.approx(0.031)
     assert json.loads(path.read_text())["structure"]["usage"][-1]["cost_usd"] == 0.02
+
+
+# ───────── `after`: an ordering the step's own text states ─────────
+
+UNDER_3 = "Send the digest to the finance team"
+
+
+def _with_after(after: list[str], quote: str) -> dict[str, Any]:
+    answer = good_answer()
+    answer["nodes"].append(
+        node("notify", 3, "pure_function", reads=["pipeline.input"], after=after, after_quote=quote)
+    )
+    return answer
+
+
+def test_an_ordering_backed_by_the_steps_own_words_passes(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    assert structure.check(_with_after(["fetch_emails"], UNDER_3), skill, SKILL, declared) == []
+
+
+@pytest.mark.parametrize(
+    ("after", "quote", "says"),
+    [
+        (["nobody"], UNDER_3, "after 'nobody', which is not an earlier node"),
+        (["fetch_emails"], "", "after needs after_quote"),
+        (["fetch_emails"], "Send the digest", "after needs after_quote"),  # under 4 words
+        (["fetch_emails"], "Step 3: Deliver", "after needs after_quote"),  # its heading
+        # Verbatim, but another step's words.
+        (["fetch_emails"], "Write a three-line summary of each email", "after needs after_quote"),
+    ],
+)
+def test_an_ordering_the_text_does_not_back_is_a_contradiction(
+    skill: Any, after: list[str], quote: str, says: str
+) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    found = structure.check(_with_after(after, quote), skill, SKILL, declared)
+    assert any(says in f for f in found), found
+
+
+def test_resolve_drops_an_unbacked_ordering_and_says_so(skill: Any) -> None:
+    declared = structure.declared_tools(skill, TOOLS)
+    fixed, notes = structure.resolve(_with_after(["fetch_emails"], "nope"), skill, SKILL, declared)
+    notify = next(n for n in fixed["nodes"] if n["id"] == "notify")
+    assert notify["after"] == []
+    assert any(
+        "dropped its ordering after ['fetch_emails']: after needs after_quote" in n for n in notes
+    )
+    # A dep that is not an earlier node says so, not that the words are missing.
+    fixed, notes = structure.resolve(_with_after(["later"], UNDER_3), skill, SKILL, declared)
+    assert any("after 'later', which is not an earlier node" in n for n in notes), notes
+
+
+def test_an_ordering_becomes_an_edge_that_waits_but_hides_no_result(skill: Any) -> None:
+    """ops-report's gate parked in wave 0, before the pulls it was meant to follow."""
+    from rote.compiler.system1.skeleton import pipeline_doc
+    from rote.ir import Pipeline
+
+    plan, _, _ = run(skill, _with_after(["render_digest"], UNDER_3))
+    by_id = {n.id: n for n in plan.nodes}
+    assert by_id["notify"].after == ["render_digest"]
+    doc = pipeline_doc(plan)
+    assert {"from": "render_digest", "to": "notify"} in doc["edges"]
+    # Nothing reads render_digest's result, so it is still part of the run's.
+    assert "render_digest" in doc["exit_nodes"] and "notify" not in doc["entry_nodes"]
+    waves = [[n.id for n in w] for w in Pipeline.model_validate(doc).execution_waves()]
+    at = {nid: i for i, wave in enumerate(waves) for nid in wave}
+    assert at["notify"] > at["render_digest"]
+
+
+def test_an_orderings_quote_is_the_steps_text_not_its_heading() -> None:
+    from types import SimpleNamespace
+
+    u = SimpleNamespace(title="Step 4: Ask the manager", text="After pulling the above, ask them.")
+    seen = {"pull": {"id": "pull"}}
+
+    def problems(quote: str) -> list[str]:
+        n = {"after": ["pull"], "after_quote": quote}
+        return structure._check_after("`ask`", n, seen, u)  # type: ignore[arg-type]
+
+    assert problems("After pulling the above") == []
+    assert problems("Step 4: Ask the manager")
+
+
+def test_resolve_names_a_loop_dependency_as_the_reason() -> None:
+    """The third reason an ordering is dropped: its dep runs inside a loop."""
+    from types import SimpleNamespace
+
+    u = SimpleNamespace(title="Step 4: Ask", text="After pulling the above, ask them.")
+    seen = {"each_row": {"id": "each_row", "in_loop": "rows_loop"}}
+    n = {"after": ["each_row"], "after_quote": "After pulling the above"}
+    assert structure._check_after("`ask`", n, seen, u) == [  # type: ignore[arg-type]
+        "`ask`: after 'each_row', which runs inside a loop, from outside it"
+    ]

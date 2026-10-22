@@ -9,6 +9,16 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The structure pass keeps an order the skill states without a data
+  dependency.** A node can declare `after: [earlier nodes]`, backed by at
+  least four words of its own step's text that code checks verbatim, and
+  the order becomes an IR edge. ops-report's gate ("After pulling the
+  above, ask the duty manager to provide:") was asked in parallel with the
+  data pulls; it now waits for them. An unbacked order is dropped with an
+  Open question.
+
 ## [0.16.0] - 2026-10-21
 
 The compile now decides a pipeline's structure before any agent runs, and

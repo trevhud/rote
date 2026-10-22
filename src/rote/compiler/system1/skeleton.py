@@ -155,8 +155,14 @@ def pipeline_doc(plan: Plan) -> dict[str, Any]:
                 if n.element_source == src:
                     edge["fan_out"] = True
                 edges.append(edge)
-    has_in = {e["to"] for e in edges}
+    # The run's result is what nothing reads: exit nodes come from the data
+    # edges alone, so an ordering cannot hide a node's result.
     has_out = {e["from"] for e in edges}
+    for n in plan.nodes:
+        for dep in n.after:
+            if n.in_loop is None and {"from": dep, "to": n.id} not in edges:
+                edges.append({"from": dep, "to": n.id})
+    has_in = {e["to"] for e in edges}
     ids = [n.id for n in plan.nodes if n.in_loop is None]
     skill = plan.skill
     doc = {
