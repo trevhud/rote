@@ -1094,7 +1094,15 @@ class Pipeline(BaseModel):
         """Topologically sort the top-level nodes into parallel waves.
 
         A wave is a set of nodes whose dependencies have all finished by
-        the time it starts; nodes within a wave may run concurrently.
+        the time it starts; nodes within a wave may run concurrently, with
+        one exception every adapter holds to: a ``hitl_gate`` waits only
+        after every other node in its wave has finished. A gate with no
+        dependency on a wave's reads (one that takes only the pipeline
+        input) therefore still parks after them, so a person is never asked
+        before the data the same wave pulls in has arrived. Nothing in the
+        IR orders a gate after its wave siblings; the adapters do, and
+        ``tests/test_gate_after_wave.py`` holds every gate-capable runtime
+        to it.
         Nodes in another node's ``loop_body`` are excluded: they run
         inside their parent loop, not as workflow steps. Ties sort by id,
         so emission order is deterministic. Raises ``ValueError`` on a
