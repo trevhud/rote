@@ -484,10 +484,12 @@ def test_a_module_citing_the_real_row_has_no_citation_finding(tmp_path: Path) ->
 @pytest.mark.parametrize("quote", ["| a | e |", "| l | v |", "| a | the |", "| Lat | revi |"])
 def test_a_row_is_cited_by_whole_cells_not_letters_of_them(tmp_path: Path, quote: str) -> None:
     """review6's gaming cases: two fragments of cells unlocked the column
-    headers, and the headers supplied the four words."""
+    headers, and the headers supplied the four words. Every probe's cells
+    sit inside the row's cells, as letters or as whole words (`| a | the |`),
+    so a substring or a word-boundary match would accept each of them."""
+    row = "| Late a fee | review over the limit |"
     (tmp_path / "SKILL.md").write_text(
-        "# T\n\nRules:\n\n| Finding type | Severity level assigned |\n|---|---|\n"
-        "| Late a the | review e |\n"
+        "# T\n\nRules:\n\n| Finding type | Severity level assigned |\n|---|---|\n" + row + "\n"
     )
     assert _row_problem(quote, tmp_path) is not None
-    assert _row_problem("| Late a the | review e |", tmp_path) is None
+    assert _row_problem(row, tmp_path) is None
