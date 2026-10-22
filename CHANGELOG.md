@@ -9,43 +9,54 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
-### Changed
+## [0.16.0] - 2026-10-21
 
-- **With the structure pass on, `--decider clef|jev` double-checks it.**
-  The decision model answers its two questions (kind, and whether a person
-  acts) for every SKILL.md heading, one step at a time. A confident answer
-  the skeleton contradicts goes back to the pass as one more repair round,
-  never as an override; one the pass keeps is an Open question with both
-  answers, and a kept one must quote at least four words of the step's own
-  text. The built-in decider is now `auto`: Clef when
-  `ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN` are set, else Jev on
-  Typesafe's own API when `TYPESAFE_API_KEY` is set, else no check, with one
-  line saying which and why. The decision models no longer read
-  `CLOUDFLARE_*`, so deploy credentials never opt a compile into inference;
-  set `ROTE_CLEF_*` instead. `rote bench` reports the checker per job and
-  takes `--decider` to pin it. `--decider rules` makes no check. The warning
-  that `--decider` does nothing with the pass on is gone.
+The compile now decides a pipeline's structure before any agent runs, and
+checks it against the skill, its tools and a sample of its input.
 
-- **The structure pass decides the pipeline's skeleton by default.** One
-  schema-locked `claude-haiku-5-5` call reads the whole skill and returns
-  every node, and rote checks each one against the skill's text, its tools'
-  schemas and the sample input, asking again up to twice. About $0.015 and
-  70 s a compile, billed like the compile. On the held-out skills it scores
-  kind accuracy 0.88 against the rules' 0.49 and edge F1 0.78 against
-  0.58. `--structure rules` (or `structure: rules`, `ROTE_STRUCTURE`) keeps
-  the rules, with no call. In cloud mode the flag is rejected, like
-  `--tiebreak`. With no lane the
-  compile fails and names that flag. `rote analyze` now passes
-  `--structure` through; it used to ignore it.
-- **System-1's model calls run on the compile driver's own client only.**
-  The structure pass and the tie-break use `claude -p` under the claude
-  driver, the api driver's client under `--agent api`, and now the
-  openai-api driver's client and model under `--agent openai-api`, and
-  `codex exec --output-schema` under `--agent codex`. They used to fall
-  back to an `ANTHROPIC_*` key or a `claude` on PATH, which billed your
-  Claude account for a compile sent to another provider and failed in
-  containers that have neither. A transient failure (a timeout, a rate
-  limit, a 5xx) is retried on the same lane up to three calls in all.
+- **The structure pass is the default compile skeleton.** One schema-locked
+  Haiku call reads the whole skill and returns every node. rote checks each
+  node against the skill's text, its tools' schemas and the sample input.
+  `--structure rules` opts out.
+- **Clef or Jev checks the structure pass by default** (`--decider auto`).
+  Clef runs when `ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN` are set,
+  else Jev when `TYPESAFE_API_KEY` is set, else nothing checks it and the
+  compile says so. Against a confident verdict, the pass must change the
+  node, or keep it and quote 4+ words of the step's text.
+- **`rote run` is read-only by default** on both sides. An agent loop gets
+  only the MCP tools that cannot write. `--allow-writes` lifts it.
+- **Fidelity scoring is drift-aware.** `rote bench --fidelity` matches a
+  read on the request it sent, and reports a live answer that changed as
+  drift, not as a lost read.
+- **MCP calls are grounded in data.** Tool arguments are checked against each
+  tool's own input schema. Result shapes come from recordings and declared
+  output schemas before any guess. A bound tool must exist, and every
+  argument must have a source.
+- **A failed compile reports what it spent.** The summary `cost_usd` is the
+  whole compile, including failed calls and System-1's decision calls.
+
+### Upgrading from 0.15
+This release has breaking changes. Each one has a full entry below.
+- **The default compile skeleton is new.** The structure pass makes one
+  model call (about $0.015 and 70 s) on the compile driver's own client,
+  never a fallback key. `--structure rules` (or `structure: rules`,
+  `ROTE_STRUCTURE`) keeps the rule-based skeleton. System-1 is also the default
+  compile path now. The `--system1` flag is gone, and `--no-system1` runs
+  the full-rubric agent.
+- **`rote run <pipeline>` is read-only unless you pass `--allow-writes`.**
+  An MCP tool that may write is refused before it is called. A tool passes
+  when its server marks it `readOnlyHint`, or when you registered the whole
+  server with `rote mcp add <name> <url> --read-only`. A deployed run is
+  not affected.
+- **Decision-model credentials are `ROTE_CLEF_ACCOUNT_ID` /
+  `ROTE_CLEF_API_TOKEN` (Clef) and `TYPESAFE_API_KEY` (Jev).** `CLOUDFLARE_*`
+  is no longer read for them, so your deploy credentials never opt a compile
+  into inference.
+- **`mcp.args: {}` calls the tool with no arguments.** Only an omitted
+  `args` passes the step's payload through.
+- **IR: a `loop_body` sub-node must be a pure_function, external_call or
+  llm_judge, and must not be `mandatory`.**
+- **Re-emit TypeScript apps** to pick up `@anthropic-ai/sdk` `^0.136.0`.
 
 ### Added
 
@@ -61,50 +72,6 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   `--tiebreak haiku` (or `tiebreak: haiku`, `ROTE_TIEBREAK`) turns it on. With no lane
   the compile fails and says so. `rote bench`'s `cost$` now includes
   System-1's decision calls.
-
-### Fixed
-
-- **`--decider clef|jev` refuses a step it would read only part of.**
-  Workers AI truncates a text state past the model's window without an
-  error, so a long step got a verdict on text the model never saw. Clef's
-  window is its documented 65,536 tokens; Jev's is unpublished, so the
-  smaller of the two listed figures (32,768) is assumed. A step estimated
-  over 90% of it fails the compile before any call, naming
-  `--decider rules`, and a call whose input filled the window fails it after.
-- **Emitted Python apps list what their code imports.** The dbos app now
-  emits a `requirements.txt` (it had none, and its README installed `dbos`
-  alone), and both dbos and python add the vendor SDKs that `extracted/`
-  imports, from the same import map verification installs from. An import
-  rote cannot name is a comment naming the file, never a guessed package.
-  The python app's file also lists `fastmcp` when the MCP helper ships;
-  it used to omit it.
-
-### Changed
-
-- **System-1 writes its text as parallel calls.** With the `claude` and `api`
-  drivers, each node's interface entry, module and tests, and each judge's
-  prompt is its own schema-locked call, all at once (`--max-parallel`,
-  default 8), checked by code as it arrives and repaired alone. On the bench
-  (3 compiles per skill, subscription lane), expense-audit went from 321 s
-  and $0.69 to 63 s and $0.43 at fidelity 0.92 to 0.98, and ops-report from
-  209 s and $0.57 to 62 s and $0.33 at fidelity 0.60 to 0.93. The prefix run on the sample now
-  checks each result against its node's `output_schema` and runs past gates
-  the sample answers. See `docs/design/parallel-generation.md`.
-- **System-1 is the default `rote compile` path.** rote decides the pipeline
-  structure with rules before the agent runs, and the agent writes only text.
-  On the bench, a default compile of expense-audit or ops-report costs about
-  $0.47 and takes about 3 minutes, against about $1.00 and 6 to 7 minutes on
-  the full-rubric path.
-  `--no-system1` runs the full-rubric agent. `--update` always runs it,
-  because System-1 does not support incremental re-compilation yet, and the
-  compile log says so. The `--system1` flag is gone: there is nothing to opt
-  into. `rote analyze` takes the same flags. In cloud mode `--no-system1`
-  and `--decider` are local-only flags. `Compiler`
-  defaults to the same rule (`system1=None`), so library callers such as
-  rote-cloud get System-1 too.
-
-### Added
-
 - **Effort knob for Anthropic judges and agent loops.** `ROTE_EFFORT_<NODE_ID>`
   sets one node's effort, and `ROTE_JUDGE_EFFORT` sets it for every node. An
   empty value omits it. The SDK lanes send `output_config.effort`; the
@@ -112,80 +79,17 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   there too instead of being ignored. Unset, judges still send no effort (the
   API runs `high`): measured on 8 example judges, `low` saved 15 to 33% of
   output tokens but changed decisions. Works on every runtime.
-
-### Fixed
-
-- **An unknown effort level fails before a subscription call is paid for.**
-  `claude -p` ignores an unknown `--effort` with only a warning, so rote now
-  asks the CLI with a free `claude --effort <level> --version` first, and
-  self-checks once per process that the CLI still warns in a way rote
-  recognizes.
-
-- **`ROTE_TEMPERATURE_<NODE_ID>` reaches judges on DBOS-TS and Inngest.**
-  Those runtimes pass each judge a narrow env object, which left the
-  temperature knob out, so an empty value could not drop the parameter.
-- **Emitted judges work on claude-sonnet-5-5.** That model rejects a forced
-  `tool_choice` with HTTP 400, and every Anthropic judge forced one, so
-  pointing `ROTE_MODEL_<ID>` at it failed every judge call. Judges on every
-  Anthropic lane (Python and TypeScript) now use structured outputs
-  (`output_config.format`), on every model. The request schema is rewritten
-  into the subset structured outputs accepts (objects closed, `oneOf` as
-  `anyOf`, bounds moved into descriptions). The judge still validates the
-  answer against the original. A `refusal` or `max_tokens` stop is an
-  error, never data. An anthropic judge whose output schema has an object that
-  admits undeclared keys (no properties, or `additionalProperties: true`
-  or a schema) or an untyped value now fails at `rote emit` and in the
-  compile's dry emit, naming the path. The dbos README and a new temporal
-  `requirements.txt` pin `anthropic>=1.15`, the SDK floor with
-  `output_config`. An
-  agent loop's one extra turn after it ends without `submit_result` uses
-  the same mechanism.
-- **System-1 binds MCP arguments only from schema names that pass grounding's
-  filter.** It read raw property names from a server's tool schema, so a name
-  that is not identifier-shaped became an `mcp.args` key and the skeleton failed
-  IR validation: a hostile or sloppy server could break the compile. Such names
-  are now withheld and listed under Open questions, the same as in the agent's
-  brief.
-- **`mcp.args: {}` now calls the tool with no arguments, on every runtime.** It
-  used to behave like an omitted `args` and send the step's whole payload as the
-  tool's arguments. Only an omitted (null) `args` passes the payload through. A
-  hand-written pipeline that relied on `args: {}` as a pass-through must drop the
-  key; none of the examples does.
-- **System-1: an MCP step's arguments come from the step, never the whole input.**
-  The skeleton binds the parameters the step states (`Search query: ...`,
-  `File ID: ...`, `Tab: ...`) as constants in `mcp.args`, named by the tool's input
-  schema when grounding has one, and calls a tool with no arguments rather than
-  forwarding the pipeline input when the step states none.
-- **System-1: a write to no named system is the pipeline's output.** "Save it to
-  the shared folder" no longer becomes an external_call stub that raises
-  "target system not specified"; a named destination (HubSpot, #channel, a URL,
-  a tool, a UI action) still does.
-
-### Changed
-- **`rote emit` ships every top-level `.py` in `compiled/extracted/`,** not only
-  the modules a node's `impl:` names, for the dbos and python runtimes. A shared
-  helper the agent wrote (`extracted/_common.py`) used to stay behind, and the
-  emitted app crashed on its first import. A scratch `.py` left in that folder
-  now ships too, and from there to a deploy. Subdirectories, `__pycache__` and
-  non-`.py` files do not. Verification's dry emit also flags any `extracted`
-  import the emitted runtime cannot satisfy.
-
-### Added
 - **`--decider jev`: Typesafe's Jev decision model as a System-1 decider,
-  beside Clef.** Both run through one Workers AI client with their own
-  route and frozen thresholds. Jev's thresholds were fitted on the five dev
+  beside Clef.** Each has its own route and frozen thresholds. Jev's thresholds were fitted on the five dev
   skills and then measured once on the held-out set: kind 0.67 against the
   rules' 0.49, 3 of 3 gates against 2 of 3, one false gate, about $0.001 a
   compile. Clef there: kind 0.66, 3 of 3 gates, no false gate, about $0.005.
-  The built-in default stays `rules`. Not yet verified live: an end-to-end
-  compile with `--decider jev`, and Jev's calls tagged with
-  `CLOUDFLARE_AI_GATEWAY_METADATA` in the gateway logs. Jev's own calls ran
-  live in the skeleton measurement, and the shared metadata code is proven
-  live through Clef.
+  Jev runs on Typesafe's own API with `TYPESAFE_API_KEY`.
 - **The decider is a layered setting.** `--decider`, `ROTE_DECIDER`, or `decider:` in `rote.yaml` or the user
   config, with strict validation. `rote init` asks for it and `rote config`
-  shows it. A model decider without `CLOUDFLARE_ACCOUNT_ID` and
-  `CLOUDFLARE_API_TOKEN` fails the compile. A `--decider` flag on a compile
+  shows it. An explicit model decider without its credentials
+  (`ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN`, or `TYPESAFE_API_KEY`)
+  fails the compile. A `--decider` flag on a compile
   that does not run System-1 (`--no-system1`, `--update`) is a usage error.
   A configured one is skipped for that compile, with a one-line note.
 - **`rote bench --fidelity`: does the compiled pipeline behave like the
@@ -234,8 +138,233 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   is reserved: `rote register` refuses it, and an entry in a hand-edited
   registry whose trigger or companion name collides with a built-in is
   skipped with one stderr warning instead of shadowing it.
+- **`rote run <pipeline>` is read-only, with `--allow-writes` to lift it.**
+  The run sets `ROTE_MCP_READ_ONLY` for the emitted app (as `wrangler dev
+  --var` on Cloudflare). The Python, Node and Workers MCP helpers check each
+  call against the `tools/list` they already fetch and refuse a tool that may
+  write before calling it, as a configuration error that is not retried. One
+  predicate decides it on both sides of `rote run`: the server marks the tool
+  `readOnlyHint`, or the server was registered with the new `rote mcp add
+  <name> <url> --read-only`. An agent loop in a read-only run is handed only
+  the tools that pass, on every lane (`--allowedTools` / `--disallowedTools`
+  for `claude -p`, a per-server `mcp_toolset` on the SDK lane, filtered
+  bindings in TS). A loop with no passing tool does not start, and the error
+  names each withheld tool.
+- **`rote run <skill>` takes gate answers through `--signal NAME=JSON` or
+  `NAME=@FILE`,** in the order given. `--input` takes `@FILE` too.
+- **`rote run <dir> --live-check` (`--backend api`):** one real, read-only
+  call per entry vendor read, with your own credentials, compared with what
+  rote believed (`reads_missing`, `schema_drift`, `spec_only`). Only GET and
+  HEAD requests that resolve to a spec operation run. Anything else is
+  refused first, and again at run time. The report holds field paths and
+  types, never values. Drift or a missing read exits 1.
+- **MCP tool arguments are grounded in each tool's input schema.** Before
+  the agent runs, rote lists the tools of the registered servers the skill
+  names (`--tool-discovery all` lists every server, `none` none) and hands
+  their schemas to the agent. Verification checks every `mcp:` binding
+  against them. A skill may also ship `mcp-tools.json` beside its SKILL.md
+  with each server's `tools/list`. A live listing wins per server, and a
+  stale snapshot is reported.
+- **The pipeline's input contract is grounded in a sample input.** The
+  sample comes from `--sample-input`, else `sample-input.json` or
+  `input.json` in the skill dir, else a baseline's input. It is reduced to a
+  schema and handed to the agent, and verification runs the pipeline's pure
+  functions (and recorded MCP calls) on it before the compile is done. The
+  examples now ship `skill/sample-input.json`.
+- **MCP hard checks in verification:** `tool_unknown` (a bound tool the
+  live `tools/list` does not list), `tool_arguments_unsourced` (an
+  `mcp.args` entry naming a payload key nothing fills), and
+  `declared_tool_unbound` (a tool the skill names and a server declares, but
+  no node calls). A server that could not be listed proves nothing and never
+  produces the first.
+- **`--effort {low,medium,high}` on compile and analyze,** with
+  `ROTE_EFFORT` and an `effort` config key. The `claude` driver now defaults
+  to `low`: on the bench, expense-audit went from $2.25 / 986 s to $1.20-1.31 /
+  423-513 s with quality held.
+- **`--backend api` compiles research and check vendor calls.** The agent is
+  told it targets the api backend and must cite the docs it read. The api
+  and codex drivers get web research (the openai-api driver refuses
+  `--backend api`). Verification checks every vendor request against the
+  vendor's own machine-readable spec (Google Discovery, OpenAPI 3, GraphQL
+  schemas), or against a spec the agent writes from the docs it fetched,
+  labeled lower trust. Generated tests run with the vendor libraries the
+  code imports. A compile records its backend in `backend.json`, so a later
+  `rote emit` keeps it.
+- **A local fixture store** at `$XDG_DATA_HOME/rote/fixtures`
+  (`ROTE_FIXTURE_DIR`), keyed by vendor/api/version, and `rote bench
+  --fidelity` for `--backend api` pipelines against a fake vendor API built
+  from the spec.
+- **Clef's AI Gateway calls carry `CLOUDFLARE_AI_GATEWAY_METADATA`** when
+  `CLOUDFLARE_AI_GATEWAY_ID` routes them. Metadata the gateway would
+  silently change (more than five entries, a `cf.*` key, a non-scalar value)
+  is refused before the first call.
+- **Three held-out bench skills** in `examples/holdout/`, and bench nodes
+  matched by structure, not by name.
+
+### Changed
+
+- **With the structure pass on, `--decider clef|jev` double-checks it.**
+  The decision model answers its two questions (kind, and whether a person
+  acts) for every SKILL.md heading, one step at a time. A confident answer
+  the skeleton contradicts goes back to the pass as one more repair round,
+  never as an override; one the pass keeps is an Open question with both
+  answers, and a kept one must quote at least four words of the step's own
+  text. The built-in decider is now `auto`: Clef when
+  `ROTE_CLEF_ACCOUNT_ID` and `ROTE_CLEF_API_TOKEN` are set, else Jev on
+  Typesafe's own API when `TYPESAFE_API_KEY` is set, else no check, with one
+  line saying which and why. The decision models no longer read
+  `CLOUDFLARE_*`, so deploy credentials never opt a compile into inference;
+  set `ROTE_CLEF_*` instead. `rote bench` reports the checker per job and
+  takes `--decider` to pin it. `--decider rules` makes no check. The warning
+  that `--decider` does nothing with the pass on is gone.
+
+- **The structure pass decides the pipeline's skeleton by default.** One
+  schema-locked `claude-haiku-5-5` call reads the whole skill and returns
+  every node, and rote checks each one against the skill's text, its tools'
+  schemas and the sample input, asking again up to twice. About $0.015 and
+  70 s a compile, billed like the compile. On the held-out skills it scores
+  kind accuracy 0.88 against the rules' 0.49 and edge F1 0.78 against
+  0.58. `--structure rules` (or `structure: rules`, `ROTE_STRUCTURE`) keeps
+  the rules, with no call. In cloud mode the flag is rejected, like
+  `--tiebreak`. With no lane the
+  compile fails and names that flag. `rote analyze` now passes
+  `--structure` through; it used to ignore it.
+- **System-1's model calls run on the compile driver's own client only.**
+  The structure pass and the tie-break use `claude -p` under the claude
+  driver, the api driver's client under `--agent api`, and now the
+  openai-api driver's client and model under `--agent openai-api`, and
+  `codex exec --output-schema` under `--agent codex`. They used to fall
+  back to an `ANTHROPIC_*` key or a `claude` on PATH, which billed your
+  Claude account for a compile sent to another provider and failed in
+  containers that have neither. A transient failure (a timeout, a rate
+  limit, a 5xx) is retried on the same lane up to three calls in all.
+- **System-1 writes its text as parallel calls.** With the `claude` and `api`
+  drivers, each node's interface entry, module and tests, and each judge's
+  prompt is its own schema-locked call, all at once (`--max-parallel`,
+  default 8), checked by code as it arrives and repaired alone. On the bench
+  (3 compiles per skill, subscription lane), expense-audit went from 321 s
+  and $0.69 to 63 s and $0.43 at fidelity 0.92 to 0.98, and ops-report from
+  209 s and $0.57 to 62 s and $0.33 at fidelity 0.60 to 0.93. The prefix run on the sample now
+  checks each result against its node's `output_schema` and runs past gates
+  the sample answers. See `docs/design/parallel-generation.md`.
+- **System-1 is the default `rote compile` path.** rote decides the pipeline
+  structure with rules before the agent runs, and the agent writes only text.
+  On the bench, a default compile of expense-audit or ops-report costs about
+  $0.47 and takes about 3 minutes, against about $1.00 and 6 to 7 minutes on
+  the full-rubric path.
+  `--no-system1` runs the full-rubric agent. `--update` always runs it,
+  because System-1 does not support incremental re-compilation yet, and the
+  compile log says so. The `--system1` flag is gone: there is nothing to opt
+  into. `rote analyze` takes the same flags. In cloud mode `--no-system1`
+  and `--decider` are local-only flags. `Compiler`
+  defaults to the same rule (`system1=None`), so library callers such as
+  rote-cloud get System-1 too.
+- **`rote emit` ships every top-level `.py` in `compiled/extracted/`,** not only
+  the modules a node's `impl:` names, for the dbos and python runtimes. A shared
+  helper the agent wrote (`extracted/_common.py`) used to stay behind, and the
+  emitted app crashed on its first import. A scratch `.py` left in that folder
+  now ships too, and from there to a deploy. Subdirectories, `__pycache__` and
+  non-`.py` files do not. Verification's dry emit also flags any `extracted`
+  import the emitted runtime cannot satisfy.
+- **The compile summary's `cost_usd` is the whole compile's spend,** failed
+  calls and System-1's decider, tie-break and structure pass included, with
+  `system1_cost_usd` beside it. A failed api compile's `DriverError` carries
+  its usage and cost, so `rote bench --budget` counts it.
+- **Parallel repair reaches every finding a node owns,** interface entries
+  included. A finding on rote's own files, or a test run where pytest itself
+  died, is reported and sends nothing to a model.
+- **MCP results have one shape: what the step receives.** The emitted
+  helper's unwrap rule is the one every reader uses (probe, the prefix run,
+  System-1's interface). A tool's declared `outputSchema` and a decoded
+  recording decide the shape before the skill's words do. A reader of a
+  result nobody observed or declared gets an untyped parameter, so a guessed
+  shape cannot fail a judge's input model.
+- **System-1 asks for a node's return value as a field list** and code
+  writes the JSON Schema from it, so a model can no longer hand back a
+  schema that does not parse.
+- **Contract repairs and IR-validation repairs have their own budgets,** so
+  an IR that a contract fix broke still goes back for repair.
+- **rote renders `compile-report.md` itself** from the deliverable, and the
+  `claude` driver's child writes a 5-minute prompt cache instead of a
+  1-hour one.
+- **The api driver caches its prompt** (four breakpoints) and reports a
+  priced run in `compile-metrics.json`.
+- **Per-user caches and data follow the XDG dirs:** price caches and the
+  spec cache under `$XDG_CACHE_HOME/rote`, the fixture store and the eval
+  corpus under `$XDG_DATA_HOME/rote`. The `ROTE_*` overrides still win, an
+  empty XDG variable counts as unset, and nothing moves when the variables
+  are unset. The emitted TS MCP helper now treats an empty `XDG_*` or
+  `ROTE_MCP_CONFIG` as unset too.
+- **Emitted TypeScript apps pin `@anthropic-ai/sdk` `^0.136.0`** (was
+  `^0.115.0`).
+- **Fidelity scoring:** a read matches on the data it got or the request it
+  sent, and a changed live answer is `response_drift`, not a lost read. A
+  write is identified by the arguments every reference run agrees on, and a
+  value the pipeline sends in a write counts as an output it produced. Each
+  case reports its reference coverage and needs two reference runs. Fixtures
+  refuse arguments a real server would.
 
 ### Fixed
+
+- **`--decider clef|jev` refuses a step it would read only part of.**
+  Workers AI truncates a text state past the model's window without an
+  error, so a long step got a verdict on text the model never saw. Clef's
+  window is its documented 65,536 tokens; Jev's is unpublished, so the
+  smaller of the two listed figures (32,768) is assumed. A step estimated
+  over 90% of it fails the compile before any call, naming
+  `--decider rules`, and a call whose input filled the window fails it after.
+- **Emitted Python apps list what their code imports.** The dbos app now
+  emits a `requirements.txt` (it had none, and its README installed `dbos`
+  alone), and both dbos and python add the vendor SDKs that `extracted/`
+  imports, from the same import map verification installs from. An import
+  rote cannot name is a comment naming the file, never a guessed package.
+  The python app's file also lists `fastmcp` when the MCP helper ships;
+  it used to omit it.
+- **An unknown effort level fails before a subscription call is paid for.**
+  `claude -p` ignores an unknown `--effort` with only a warning, so rote now
+  asks the CLI with a free `claude --effort <level> --version` first, and
+  self-checks once per process that the CLI still warns in a way rote
+  recognizes.
+
+- **`ROTE_TEMPERATURE_<NODE_ID>` reaches judges on DBOS-TS and Inngest.**
+  Those runtimes pass each judge a narrow env object, which left the
+  temperature knob out, so an empty value could not drop the parameter.
+- **Emitted judges work on claude-sonnet-5-5.** That model rejects a forced
+  `tool_choice` with HTTP 400, and every Anthropic judge forced one, so
+  pointing `ROTE_MODEL_<ID>` at it failed every judge call. Judges on every
+  Anthropic lane (Python and TypeScript) now use structured outputs
+  (`output_config.format`), on every model. The request schema is rewritten
+  into the subset structured outputs accepts (objects closed, `oneOf` as
+  `anyOf`, bounds moved into descriptions). The judge still validates the
+  answer against the original. A `refusal` or `max_tokens` stop is an
+  error, never data. An anthropic judge whose output schema has an object that
+  admits undeclared keys (no properties, or `additionalProperties: true`
+  or a schema) or an untyped value now fails at `rote emit` and in the
+  compile's dry emit, naming the path. The dbos README and a new temporal
+  `requirements.txt` pin `anthropic>=1.15`, the SDK floor with
+  `output_config`. An
+  agent loop's one extra turn after it ends without `submit_result` uses
+  the same mechanism.
+- **System-1 binds MCP arguments only from schema names that pass grounding's
+  filter.** It read raw property names from a server's tool schema, so a name
+  that is not identifier-shaped became an `mcp.args` key and the skeleton failed
+  IR validation: a hostile or sloppy server could break the compile. Such names
+  are now withheld and listed under Open questions, the same as in the agent's
+  brief.
+- **`mcp.args: {}` now calls the tool with no arguments, on every runtime.** It
+  used to behave like an omitted `args` and send the step's whole payload as the
+  tool's arguments. Only an omitted (null) `args` passes the payload through. A
+  hand-written pipeline that relied on `args: {}` as a pass-through must drop the
+  key; none of the examples does.
+- **System-1: an MCP step's arguments come from the step, never the whole input.**
+  The skeleton binds the parameters the step states (`Search query: ...`,
+  `File ID: ...`, `Tab: ...`) as constants in `mcp.args`, named by the tool's input
+  schema when grounding has one, and calls a tool with no arguments rather than
+  forwarding the pipeline input when the step states none.
+- **System-1: a write to no named system is the pipeline's output.** "Save it to
+  the shared folder" no longer becomes an external_call stub that raises
+  "target system not specified"; a named destination (HubSpot, #channel, a URL,
+  a tool, a UI action) still does.
 - A Cloudflare app whose judge returns free-form objects (`{type: object}`
   with no properties, alone, in an array or nested) or an untyped field
   now compiles. The judge's Zod schema typed them `Record<string,
@@ -251,6 +380,21 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   a corrupt file. Every read path now logs the parse error and keeps
   serving the previous entries, and the next read retries, so fixing
   the file recovers the server without a restart.
+- **An `eval.yaml` that fails its schema goes back to the agent** as a
+  verification error, instead of a traceback after the paid run. `rote eval`
+  works on every committed run under `examples/`.
+- **The sample prefix fans out an MCP node** one call per element, as the
+  emitted code does, instead of failing a correct pipeline on a list
+  argument.
+- **IR validation rejects a `loop_body` sub-node that is a `hitl_gate` or
+  marked `mandatory`.** The loop's agent decides whether to call it.
+- **`rote run` and `rote compile` agree on stubs.** An mcp-bound function on
+  the default backend is not a stub that blocks a run, and a missing MCP
+  endpoint ends the emitted app with one `error:` line.
+- **Citations treat an em dash, an en dash and a run of hyphens as one mark,**
+  and ignore a backslash before a quote.
+- **The openai-api driver** sends `--effort` as `reasoning_effort` and
+  echoes Gemini's `thought_signature`.
 
 ## [0.15.0] - 2026-10-19
 
