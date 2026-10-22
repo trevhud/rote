@@ -18,6 +18,15 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
   above, ask the duty manager to provide:") was asked in parallel with the
   data pulls; it now waits for them. An unbacked order is dropped with an
   Open question.
+- **A table row is cited as a row.** A rule a skill states in a markdown
+  table (`| ... | review | ... | approved / rejected / pending |`) could not
+  be cited: the citation was read as prose fragments split on its `...`
+  cells and refused as "under 4 words", which exited a real expense-audit
+  compile 1. A quote that starts with `|` is now matched cell by cell
+  against the skill's table rows, `...` matching any cell, and must carry
+  at least four words between the cells it quotes (with their column
+  headers when it quotes two cells or more). A bare cell such as
+  `| review |` still never passes.
 
 ## [0.16.0] - 2026-10-21
 
