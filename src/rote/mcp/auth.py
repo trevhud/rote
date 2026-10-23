@@ -23,8 +23,9 @@ the engine leaves open:
   authorization server's ``issuer`` stamped beside the tokens.
 - A no-browser mode for SSH boxes.
 
-fastmcp is an optional dependency (the `mcp` extra, see `rote.extras`), so
-everything here imports it lazily and fails with that hint.
+fastmcp is a base dependency, imported lazily so a command that never
+touches MCP does not pay for the import; a broken install that lacks it
+fails with :func:`rote.extras.dependency_hint`.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
-from rote.extras import install_hint
+from rote.extras import dependency_hint
 from rote.mcp._runtime_helper import (
     is_registration_request,
     normalize_server_url,
@@ -142,7 +143,7 @@ def _require_fastmcp() -> Any:
         import fastmcp
     except ImportError as e:
         raise McpAuthError(
-            f"MCP auth requires the fastmcp client — install it with: {install_hint('mcp')}"
+            f"MCP auth needs the fastmcp client: {dependency_hint('fastmcp')}"
         ) from e
     return fastmcp
 

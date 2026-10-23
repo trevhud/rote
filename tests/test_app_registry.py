@@ -8,6 +8,7 @@ real cross-process park→release loop runs in tests/test_mcp_park_e2e.py
 
 from __future__ import annotations
 
+import re
 import sys
 import types
 from dataclasses import dataclass, field
@@ -192,7 +193,7 @@ def test_release_skips_stale_and_never_ran_apps(
     assert fake_dbos.created == []  # nothing reachable → no client built
 
 
-def test_release_without_dbos_extra_is_a_loud_note(
+def test_release_without_dbos_is_a_loud_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """DBOS apps registered but the dbos package missing → ReleaseUnavailable
@@ -201,7 +202,12 @@ def test_release_without_dbos_extra_is_a_loud_note(
     assert release_parked_workflows("vendor").released == ()
 
     record_app(_make_app(tmp_path, "demo"), "dbos", "demo")
-    with pytest.raises(ReleaseUnavailable, match="rote-cli\\[dbos\\]"):
+    from rote import __version__
+
+    hint = f"pip install 'rote-cli[dbos]=={__version__}'"
+    with pytest.raises(
+        ReleaseUnavailable, match=re.escape(f"needs `dbos`, from the dbos extra ({hint})")
+    ):
         release_parked_workflows("vendor")
 
 

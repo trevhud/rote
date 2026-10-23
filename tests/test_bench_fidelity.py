@@ -347,7 +347,6 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Started as the bench starts it, called through rote's own MCP client."""
-    pytest.importorskip("fastmcp")
     from rote.bench.fidelity import Case, CaseFile, fixture_servers, read_calls
     from rote.mcp._runtime_helper import call_mcp_tool
 
@@ -471,24 +470,35 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A wheel without the mcp extra once scored ops-report 0.0 with only
-    "fixture MCP server exited with code 1" to show for it."""
-    import importlib.util
+    "fixture MCP server exited with code 1" to show for it. The base
+    install's fastmcp is the slim client, which imports as ``fastmcp`` but
+    cannot serve: only the full distribution (the serve extra) can."""
+    import importlib.metadata
 
+    from rote import __version__
     from rote.bench import fidelity
 
-    real = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util, "find_spec", lambda name, *a: None if name == "fastmcp" else real(name, *a)
-    )
+    real = importlib.metadata.distribution
+
+    def slim_only(name: str) -> importlib.metadata.Distribution:
+        if name in ("fastmcp", "cyclopts"):  # the slim client: no server half
+            raise importlib.metadata.PackageNotFoundError(name)
+        return real(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", slim_only)
     casefile = fidelity.CaseFile(
         example_dir=tmp_path, output_fields={}, servers={"drive": {"tools": {}}}
     )
     case = fidelity.Case(id="c", description="", input={}, gates=[], fixtures={})
     with (
-        pytest.raises(fidelity.FixtureError, match="need fastmcp"),
+        pytest.raises(fidelity.FixtureError) as raised,
         fidelity.fixture_servers(casefile, case, tmp_path / "w"),
     ):
         pass
+    assert str(raised.value) == (
+        "fidelity cases with fixture MCP servers need the serve extra (fastmcp's "
+        f"server half): pip install 'rote-cli[serve]=={__version__}'"
+    )
 
 
 @pytest.mark.slow
@@ -499,8 +509,6 @@ def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
     tool that takes `query`. The fixture refuses it, the case lists the
     refused call with the reason, and the failure is the mcp binding's,
     not a replay of the node's impl (here a stub that never runs)."""
-    pytest.importorskip("dbos")
-    pytest.importorskip("fastmcp")
     import yaml
 
     from rote.bench.fidelity import pipeline_fidelity
@@ -615,7 +623,6 @@ def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> Non
     """DBOS re-raises a step's error without its traceback; the replay
     rebuilds the failing node's inputs from what DBOS recorded and finds
     the line. Breaks the gold expense-audit at a known line to check it."""
-    pytest.importorskip("dbos")
     import shutil
 
     from rote.adapters import get_adapter
@@ -649,11 +656,120 @@ def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> Non
     )
     assert run.error is not None
 
-    site = failure_site(app, pipeline, payload)
+    site = failure_site(app, pipeline, payload, run.error)
     assert site is not None
     assert site["node"] == "find_late_submissions"
     assert site["exception"] == "KeyError: 'no_such_field'"
     assert site["at"] == f"extracted/checks.py:{line}"
+
+
+#: The compiled pipeline each example with fidelity cases holds up as
+#: current: every pure_function implemented, every tool reached over MCP.
+#: The older runs/ snapshots are records of what an earlier compiler wrote
+#: and are not expected to run (see each example's README).
+RUNNABLE_PIPELINES = {
+    "expense-audit": "expected",
+    "ops-report": "runs/2026-10-23-system1",
+}
+
+#: A compile from before tool results were grounded: it binds
+#: `fetch_*.output.content`, and the Drive tool returns the CSV as text.
+OPS_UNGROUNDED = "runs/2026-10-18-implements-pure-functions"
+
+
+def test_every_example_with_fidelity_cases_names_a_runnable_pipeline() -> None:
+    from rote.bench.fidelity import has_cases
+
+    from .conftest import EXAMPLES_DIR
+
+    with_cases = {d.name for d in EXAMPLES_DIR.iterdir() if d.is_dir() and has_cases(d)}
+    assert with_cases == set(RUNNABLE_PIPELINES)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("example", sorted(RUNNABLE_PIPELINES))
+def test_the_committed_pipeline_runs_its_fidelity_cases(example: str, tmp_path: Path) -> None:
+    """The committed pipeline, on the fixtures its own cases define, ends
+    every case the way the skill did: completed where the skill completed,
+    stopped where it stopped. A pipeline that crashes on its own example's
+    data fails here, not in a paid measurement round."""
+    pytest.importorskip("dbos")
+    pytest.importorskip("fastmcp")
+    from rote.bench.fidelity import pipeline_fidelity
+
+    from .conftest import EXAMPLES_DIR
+
+    report = pipeline_fidelity(
+        EXAMPLES_DIR / example / RUNNABLE_PIPELINES[example],
+        EXAMPLES_DIR / example,
+        tmp_path / "work",
+    )
+    assert report["judge_calls"] == 0
+    for case_id, case in report["cases"].items():
+        assert case["outcome"] == 1.0, (case_id, case["run_error"], case["failure"])
+        assert case["refused_calls"] == [], case_id
+        assert case["steps"] > 0, case_id
+
+
+@pytest.mark.slow
+def test_a_run_that_dies_building_a_payload_names_the_binding(tmp_path: Path) -> None:
+    """The ungrounded ops-report compile dies in the workflow body, reading
+    `["content"]` off the CSV text the Drive tool returns. No step recorded
+    an error, so the failure is the binding: the node whose payload was
+    being built, the reference, and what the source really returned."""
+    pytest.importorskip("dbos")
+    pytest.importorskip("fastmcp")
+    from rote.bench.fidelity import pipeline_fidelity
+
+    from .conftest import EXAMPLES_DIR
+
+    example = EXAMPLES_DIR / "ops-report"
+    report = pipeline_fidelity(example / OPS_UNGROUNDED, example, tmp_path / "work")
+    for case in report["cases"].values():
+        assert case["run_error"] == "TypeError: string indices must be integers, not 'str'"
+        assert case["failure"] == {
+            "node": "parse_dock_pending_log",
+            "exception": case["run_error"],
+            "at": (
+                "input raw_content: fetch_dock_pending_log.output.content "
+                "(fetch_dock_pending_log returned a str, which has no field 'content')"
+            ),
+            "code": None,
+        }
+
+
+@pytest.mark.parametrize(
+    ("exception", "blamed"),
+    [
+        ("TypeError: string indices must be integers, not 'str'", True),
+        ("RuntimeError: the DBOS system database went away", False),
+        ("KeyError: 'content'", False),  # a str source raises TypeError, not KeyError
+        (None, False),
+    ],
+)
+def test_a_binding_is_blamed_only_for_the_error_its_read_raises(
+    exception: str | None, blamed: bool
+) -> None:
+    """A run that died for another reason after the fetches finished must
+    not be pinned on a bad reference further down."""
+    from rote.bench.fidelity import _binding_failure
+    from rote.ir import load_pipeline
+
+    from .conftest import EXAMPLES_DIR
+
+    pipeline = load_pipeline(EXAMPLES_DIR / "ops-report" / OPS_UNGROUNDED / "pipeline.yaml")
+    csv = "Site,Active\nEAST1,40\n"
+    outputs: dict[str, Any] = {
+        "fetch_shipment_containers": csv,
+        "fetch_dock_pending_log": csv,
+        "fetch_dwell_tickets": csv,
+        "fetch_dock_activity_emails": [],
+    }
+    site = _binding_failure(pipeline, outputs, exception)
+    if blamed:
+        assert site is not None and site["node"] == "parse_dock_pending_log"
+    else:
+        assert site is None
 
 
 def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:

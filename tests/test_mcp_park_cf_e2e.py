@@ -46,11 +46,8 @@ import pytest
 from rote.adapters.cloudflare import CloudflareAdapter, workflow_class_name
 from rote.ir import MCPBinding, Node, NodeKind, Pipeline, PipelineInput, RetryPolicy
 from rote.mcp.parked import parse_auth_park_markers
-from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
-
-pytest.importorskip("fastmcp")
-
 from tests import _node_trees as node_trees  # noqa: E402
+from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
 from tests.test_cloudflare_e2e import (  # noqa: E402 — reuse the proven live harness
     _http_get,
     _http_post,

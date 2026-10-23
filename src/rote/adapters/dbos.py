@@ -113,7 +113,7 @@ from rote.adapters._py_common import emit_extracted_module as _shared_emit_extra
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
 
-#: The DBOS the emitted main.py targets (rote's own `dbos` extra pins the same).
+#: The DBOS the emitted main.py targets (rote-cli's own `dbos` extra pins the same).
 DBOS_REQUIREMENT = "dbos>=3.3,<4"
 
 # ───────── Adapter configuration ─────────
@@ -944,6 +944,8 @@ def emit_dbos_config(pipeline: Pipeline) -> str:
 
 
 def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
+    from rote.mcp._runtime_helper import FASTMCP_REQUIREMENT
+
     mcp_servers = sorted(
         {
             n.mcp.server
@@ -962,8 +964,8 @@ def emit_readme(pipeline: Pipeline, cfg: DbosAdapterConfig) -> str:
         mcp_note = (
             "\n## MCP-backed steps\n\n"
             "Some `external_call` steps call MCP tools over Streamable HTTP\n"
-            "(the `mcp` backend). `requirements.txt` carries `fastmcp`; set one\n"
-            "endpoint env var per server:\n\n"
+            "(the `mcp` backend). `requirements.txt` carries the MCP client,\n"
+            f"`{FASTMCP_REQUIREMENT}`; set one endpoint env var per server:\n\n"
             "```sh\n"
             f"{env_lines}\n"
             "```\n\n"

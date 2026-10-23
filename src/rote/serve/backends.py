@@ -23,7 +23,7 @@ import contextlib
 import uuid
 from typing import Any
 
-from rote.extras import install_hint
+from rote.extras import dependency_hint
 from rote.serve.registry import (
     CloudflareTrigger,
     DbosTrigger,
@@ -94,9 +94,7 @@ async def _temporal_client(trigger: TemporalTrigger) -> Any:
     try:
         from temporalio.client import Client
     except ImportError as e:  # pragma: no cover - environment-dependent
-        raise BackendError(
-            f"temporalio is not installed. Install the Temporal extra: {install_hint('temporal')}"
-        ) from e
+        raise BackendError(f"the temporal backend needs {dependency_hint('temporalio')}") from e
 
     try:
         return await asyncio.wait_for(
@@ -236,9 +234,7 @@ async def _dbos_client(trigger: DbosTrigger) -> Any:
     try:
         from dbos import DBOSClient
     except ImportError as e:  # pragma: no cover - environment-dependent
-        raise BackendError(
-            f"dbos is not installed. Install the DBOS extra: {install_hint('dbos')}"
-        ) from e
+        raise BackendError(f"the dbos backend needs {dependency_hint('dbos')}") from e
 
     # Construction connects eagerly (DBOSClient runs a connection check),
     # and it is synchronous — run it off the event loop.

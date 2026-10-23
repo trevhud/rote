@@ -27,14 +27,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import dbos  # noqa: E402, F401
+import fastmcp  # noqa: E402,F401  (the dev extra installs it: fail, never skip)
 import pytest
 
 from rote.adapters.dbos import DbosAdapter
 from rote.adapters.python import PythonAdapter
 from tests._helpers import unconfigured_mcp_pipelines
-
-pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
-pytest.importorskip("fastmcp")
 
 pytestmark = pytest.mark.slow
 

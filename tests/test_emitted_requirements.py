@@ -115,7 +115,7 @@ def test_the_mcp_helpers_own_imports_are_not_vendor_requirements(tmp_path: Path)
     app = tmp_path / "app"
     get_adapter("dbos").emit(pipeline, app)
     text = (app / "requirements.txt").read_text(encoding="utf-8")
-    assert _lines(app) == ["dbos>=3.3,<4", "fastmcp>=4.1.1,<5"]
+    assert _lines(app) == ["dbos>=3.3,<4", "fastmcp-slim[client]>=4.1.3,<5"]
     assert "_rote_mcp.py imports" not in text
 
 

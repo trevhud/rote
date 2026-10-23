@@ -12,12 +12,8 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 from rote.eval.empirical import gate_answers_server
 from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
-
-fastmcp = pytest.importorskip("fastmcp")
 
 
 def test_each_ask_gets_the_next_answer_and_lands_in_the_log(tmp_path: Path) -> None:

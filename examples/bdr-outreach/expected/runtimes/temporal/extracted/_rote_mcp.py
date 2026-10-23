@@ -53,8 +53,11 @@ _E = TypeVar("_E", bound=BaseException)
 
 #: The fastmcp range this helper is verified against. It reads MCP SDK v2
 #: field names and builds an httpx2 client, so fastmcp 3.x cannot run it.
-#: Emitted READMEs print it; tests pin it to pyproject's extras.
-FASTMCP_REQUIREMENT = "fastmcp>=4.1.1,<5"
+#: The slim distribution's client half is all it imports (``Client``,
+#: ``StreamableHttpTransport``, ``OAuth``); the full ``fastmcp`` adds a
+#: server nobody's app runs. Emitted READMEs and requirements.txt print
+#: it, and a test pins it to rote-cli's own base dependency.
+FASTMCP_REQUIREMENT = "fastmcp-slim[client]>=4.1.3,<5"
 
 
 def _registry_servers() -> dict[str, Any]:

@@ -72,6 +72,15 @@ dependencies = [
     # OpenCode, Cursor...), which allow comments and trailing commas.
     # Pure Python, typed.
     "json5>=0.17.3,<1",
+    # The MCP client: every MCP-bound step, `rote mcp login`, compile's tool
+    # grounding. The slim distribution's client half is what rote needs on
+    # every install; the server half (uvicorn, cyclopts, joserfc...) is only
+    # for `rote serve` and the bench's fixture servers, the serve extra.
+    # rote.mcp._runtime_helper.FASTMCP_REQUIREMENT is this same string
+    # (tested). fastmcp-slim speaks HTTP through httpx2; rote's own HTTP
+    # calls (run releases, pending logins) use httpx.
+    "fastmcp-slim[client]>=4.1.3,<5",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]
@@ -84,17 +93,24 @@ api = [
 openai-api = [
     "openai>=2.45",
 ]
+# The workflow runtimes rote runs in its own environment are extras: a
+# user who picks temporal should not download dbos, and the other way
+# round. Running an app whose extra is missing (`rote run` on a dbos app)
+# offers to install it, as a plan the user confirms
+# (rote.setup.install_extra); compile, emit and init only print the hint.
 dbos = [
     "dbos>=3.3,<4",
 ]
+# `rote serve` and the bench's fixture MCP servers: fastmcp's server half.
+# The full distribution is fastmcp-slim[client,server] at the same version,
+# so its range is the base one (tested).
 serve = [
-    "fastmcp>=4.1.1,<5",
-    "httpx>=0.28",
+    "fastmcp>=4.1.3,<5",
 ]
-mcp = [
-    "fastmcp>=4.1.1,<5",
-    "httpx>=0.28",
-]
+# The MCP client is a base dependency now. The extra stays, empty, so an
+# install command written for an older release (`rote-cli[mcp]`) still
+# resolves. rote.extras.ALIAS_EXTRAS lists it (tested).
+mcp = []
 dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
@@ -104,8 +120,7 @@ dev = [
     "anthropic>=1.15",
     "openai>=2.45",
     "dbos>=3.3,<4",
-    "fastmcp>=4.1.1,<5",
-    "httpx>=0.28",
+    "fastmcp>=4.1.3,<5",
     "trustme>=1.2.1",
     "requests>=2.34.2",
     "httplib2>=0.32.0",

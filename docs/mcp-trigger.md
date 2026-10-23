@@ -6,10 +6,11 @@ and any MCP client (Claude Code, Claude Desktop, claude.ai custom
 connectors) can trigger the deterministic workflow instead of
 re-running the fuzzy skill.
 
-Built on FastMCP 4.x (>= 4.1.1, on MCP Python SDK v2). One server
+Built on FastMCP 4.x (>= 4.1.3, on MCP Python SDK v2). One server
 answers both protocol eras: sessionless 2026-07-28 clients and
-handshake-era (2025-11-25 and earlier) clients. Install with the serve
-extra:
+handshake-era (2025-11-25 and earlier) clients. The base install carries
+only fastmcp's client half (`fastmcp-slim[client]`); the server half is
+the serve extra:
 
 ```sh
 pip install 'rote-cli[serve]'
@@ -135,8 +136,8 @@ or `<name>_signal` would collide with a built-in.
 Backends connect lazily: the server starts and lists tools even when
 the runtime is down; unreachability surfaces as a clear tool-call error
 (e.g. `Temporal at localhost:7233 ... is unreachable`). Triggering DBOS
-pipelines additionally needs the dbos extra in the serve environment
-(`pip install 'rote-cli[serve,dbos]'`).
+or Temporal pipelines additionally needs that runtime's extra in the serve
+environment (`pip install 'rote-cli[serve,dbos]'`, or `[serve,temporal]`).
 
 #### The DBOS operational contract
 

@@ -57,7 +57,14 @@ from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
-from rote.extras import EXTRAS, install_hint
+from rote.extras import (
+    BASE_MODULES,
+    EXTRAS,
+    dependency_hint,
+    install_hint,
+    is_installed,
+    reinstall_hint,
+)
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
@@ -201,6 +208,7 @@ def _cmd_emit(args: argparse.Namespace) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
     args.runtime = runtime_rv.value or "dbos"
+    _note_missing_runtime_extra("emit", args.runtime)
 
     try:
         pipeline = load_pipeline(pipeline_path)
@@ -609,7 +617,7 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     compile-time analog of the baseline's registry wiring. The
     subprocess drivers (claude / codex) don't take the kwarg, so
     resolution only happens when the run will actually use an in-process
-    driver. Never fatal: a missing ``mcp`` extra or an unauthenticated
+    driver. Never fatal: a missing fastmcp or an unauthenticated
     server prints a note to stderr and is skipped.
     """
     name = agent
@@ -630,7 +638,7 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     except ImportError:
         print(
             "rote compile: mcp — registered servers not wired into the "
-            f"compiler (install the extra: {install_hint('mcp')})",
+            f"compiler ({dependency_hint('fastmcp')})",
             file=sys.stderr,
         )
         return None
@@ -658,6 +666,47 @@ def _no_mcp_driver(agent: str | None) -> str:
             "configuration. Select --agent api or --agent openai-api."
         )
     return agent
+
+
+def _note_missing_runtime_extra(command: str, runtime: str | None) -> None:
+    """One stderr line when ``runtime``'s extra is missing, for a command
+    that only writes the runtime's code (compile, emit, init): it does its
+    work without the extra, so it neither asks nor stops."""
+    from rote.setup.install_extra import missing_extra_note
+
+    note = missing_extra_note(runtime)
+    if note is not None:
+        print(f"rote {command}: note: {note}", file=sys.stderr)
+
+
+def _ensure_runtime_extra(
+    args: argparse.Namespace, runtime: str | None, purpose: str
+) -> int | None:
+    """Offer to install ``runtime``'s extra when it is missing, for a
+    command that runs the runtime (:func:`rote.setup.install_extra.ensure_extra`).
+
+    None means go on; an int is the exit code to return. Reads the
+    command's ``--json`` / ``--yes`` / ``--agent-mode`` when it has them."""
+    from rote.extras import RUNTIME_EXTRAS, is_installed
+
+    extra = RUNTIME_EXTRAS.get(runtime or "")
+    if extra is None or is_installed(extra):
+        return None
+    from rote.interact.mode import Mode
+    from rote.interact.output import Output
+    from rote.setup.install_extra import ensure_extra
+
+    try:
+        mode = Mode.resolve(
+            json=bool(getattr(args, "json", False)),
+            yes=bool(getattr(args, "yes", False)),
+            agent_mode=getattr(args, "agent_mode", None),
+        )
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
+    return ensure_extra(extra, purpose, mode=mode, out=Output(mode), argv=argv)
 
 
 def _cmd_compile(args: argparse.Namespace) -> int:
@@ -856,6 +905,10 @@ def _cmd_compile(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    # Emitting needs none of the runtime's extra, so a missing one is a
+    # note, never a stop: `rote run` on the result offers the install.
+    _note_missing_runtime_extra("compile", args.runtime)
 
     out_dir = Path(args.out)
     compiled_dir = out_dir / "compiled"
@@ -2027,12 +2080,23 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     """
     from rote.serve.registry import default_registry_path
 
+    # The base install's fastmcp is the slim client; the server half is
+    # the serve extra. Never offered as an install here: in stdio mode
+    # stdin and stdout are the MCP transport, so there is nobody to ask.
+    if not is_installed("serve"):
+        print(
+            "error: rote serve needs the serve extra (fastmcp's server half): "
+            f"{install_hint('serve')}",
+            file=sys.stderr,
+        )
+        return 2
     try:
         from rote.serve.server import build_server
-    except ImportError as e:
+    except ModuleNotFoundError as e:
+        if e.name is None or e.name.split(".")[0] not in BASE_MODULES:
+            raise
         print(
-            f"error: fastmcp is not installed ({e}). "
-            f"Install the serve extra: {install_hint('serve')}",
+            f"error: rote serve needs {dependency_hint(e.name.split('.')[0])}",
             file=sys.stderr,
         )
         return 2
@@ -3438,17 +3502,30 @@ def _build_doctor_report() -> dict[str, Any]:
         for name, available, reason in available_drivers()
     ]
     runtimes = [
-        {"name": extra, "installed": importlib.util.find_spec(module) is not None}
-        for extra, module in EXTRAS.items()
+        {"name": extra, "used_for": spec.used_for, "installed": is_installed(extra)}
+        for extra, spec in EXTRAS.items()
+    ]
+    # Base dependencies a working install always has. Every MCP step and
+    # login needs them, so one missing fails the check however many
+    # drivers are available.
+    dependencies = [
+        {
+            "module": module,
+            "used_for": dep.used_for,
+            "installed": importlib.util.find_spec(module) is not None,
+        }
+        for module, dep in BASE_MODULES.items()
     ]
     return {
         "version": __version__,
         "python": platform.python_version(),
         "drivers": drivers,
+        "dependencies": dependencies,
         "runtimes": runtimes,
         "mcp_servers": _doctor_mcp_servers(),
         "apps": _doctor_apps(),
-        "ok": any(bool(d["available"]) for d in drivers),
+        "ok": any(bool(d["available"]) for d in drivers)
+        and all(bool(d["installed"]) for d in dependencies),
     }
 
 
@@ -3470,12 +3547,23 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append("  note: CLI subscription auth (claude/codex) is only verified at run time.")
     lines.append("")
 
-    lines.append("Optional extras (runtime dependencies):")
-    for runtime in report["runtimes"]:
-        if runtime["installed"]:
-            lines.append(f"  ✓ [{runtime['name']}] extra")
+    lines.append("Dependencies (always installed with rote-cli):")
+    for dep in report["dependencies"]:
+        if dep["installed"]:
+            lines.append(f"  ✓ {dep['module']} ({dep['used_for']})")
         else:
-            lines.append(f"  ✗ [{runtime['name']}] extra — {install_hint(runtime['name'])}")
+            lines.append(f"  ✗ {dep['module']} ({dep['used_for']}) — missing")
+    lines.append("")
+
+    lines.append("Optional extras (installed on demand; these do not fail this check):")
+    for runtime in report["runtimes"]:
+        used_for = f" ({runtime['used_for']})" if runtime.get("used_for") else ""
+        if runtime["installed"]:
+            lines.append(f"  ✓ [{runtime['name']}] extra{used_for}")
+        else:
+            lines.append(
+                f"  ✗ [{runtime['name']}] extra{used_for} — {install_hint(runtime['name'])}"
+            )
     lines.append("")
 
     lines.append("MCP servers:")
@@ -3503,7 +3591,13 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append("  (MCP and app issues are informational — they do not fail this check.)")
     lines.append("")
 
-    lines.append("✓ ready to compile" if report["ok"] else "✗ no compiler driver available")
+    missing = [str(d["module"]) for d in report["dependencies"] if not d["installed"]]
+    if missing:
+        lines.append(f"✗ this install is missing {', '.join(missing)}: {reinstall_hint()}")
+    elif report["ok"]:
+        lines.append("✓ ready to compile")
+    else:
+        lines.append("✗ no compiler driver available")
     return "\n".join(lines)
 
 
@@ -3891,7 +3985,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             return 0
 
         # Before input derivation (an LLM call) and gate prompts: a run
-        # that cannot start should say so before asking for anything.
+        # that cannot start should say so before asking for anything. A
+        # missing runtime extra is offered as an install first; preflight
+        # still refuses one that stayed missing.
+        code = _ensure_runtime_extra(args, target.runtime, f"running a {target.runtime} app")
+        if code is not None:
+            return code
         preflight_pipeline(target, allow_stubs=args.allow_stubs)
         _export_inference_selection(args.inference)
 
@@ -4475,12 +4574,13 @@ def _cmd_example(args: argparse.Namespace) -> int:
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a compilation set up to succeed before spending money?
 
-    Reports the rote/Python versions, which compiler drivers are usable
-    (the load-bearing gate), which optional runtime deps are installed,
-    the auth state of every registered MCP server, and every emitted app
-    rote knows about. Exits non-zero only when NO compiler driver is
-    available, so it doubles as a scriptable gate; MCP and app findings
-    are informational.
+    Reports the rote/Python versions, which compiler drivers are usable,
+    whether the base dependencies are importable, which optional extras
+    are installed, the auth state of every registered MCP server, and
+    every emitted app rote knows about. Exits non-zero when NO compiler
+    driver is available or a base dependency is missing (the two
+    load-bearing gates), so it doubles as a scriptable gate; MCP and app
+    findings are informational.
     """
     report = _build_doctor_report()
     if args.json:

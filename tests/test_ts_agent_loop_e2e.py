@@ -48,8 +48,6 @@ from tests._messages_api import reject_like_the_api
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-
 
 def _node_available() -> bool:
     return shutil.which("node") is not None and shutil.which("npm") is not None

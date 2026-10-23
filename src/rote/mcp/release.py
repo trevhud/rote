@@ -24,7 +24,7 @@ from typing import Any
 
 from rote._dbos import dbos_system_database_url, dbos_ts_system_database_url
 from rote.app_registry import RegisteredApp, registered_apps
-from rote.extras import install_hint
+from rote.extras import dependency_hint
 from rote.mcp.learned import note_auth_park_safely
 
 
@@ -139,7 +139,7 @@ def scan_dbos_apps(
     except ImportError as e:
         raise ReleaseUnavailable(
             "DBOS apps are registered but reaching their parked workflows "
-            f"requires the dbos extra: {install_hint('dbos')}"
+            f"needs {dependency_hint('dbos')}"
         ) from e
 
     skipped: list[SkippedApp] = []
@@ -210,7 +210,7 @@ def _release_inngest_apps(
         import httpx
     except ImportError:
         skipped.extend(
-            SkippedApp(a.path, f"releasing Inngest runs requires httpx ({install_hint('mcp')})")
+            SkippedApp(a.path, f"releasing Inngest runs needs {dependency_hint('httpx')}")
             for a in apps
         )
         return
@@ -270,9 +270,7 @@ def _release_cloudflare_apps(
         import httpx
     except ImportError:
         skipped.extend(
-            SkippedApp(
-                a.path, f"releasing Cloudflare instances requires httpx ({install_hint('mcp')})"
-            )
+            SkippedApp(a.path, f"releasing Cloudflare instances needs {dependency_hint('httpx')}")
             for a in apps
         )
         return

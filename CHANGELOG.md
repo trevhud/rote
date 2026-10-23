@@ -9,6 +9,39 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **The base install carries only the MCP client; the workflow runtimes are
+  extras installed when you pick one.** `pip install rote-cli` now brings
+  `fastmcp-slim[client]` (the client half of fastmcp: `Client`,
+  `StreamableHttpTransport`, OAuth) and httpx, so an MCP login, compile's
+  tool grounding and every compiled MCP step work on a plain install. dbos
+  and temporal stay extras, so a user who picks temporal never downloads
+  dbos, and `rote serve` (fastmcp's server half) is the `serve` extra. The
+  base install is 64.3 MB (65 packages) in a clean venv, against 27.6 MB
+  without the MCP client and 104.0 MB with dbos and full fastmcp too.
+- **`rote run` on a dbos or temporal app whose extra is missing offers to
+  install it.** It shows a plan: start the installer for how rote was
+  installed (`uv tool install` keeping your extras and `--with` packages,
+  `pipx inject --force`, this interpreter's pip, `uv pip install --python` for a
+  venv without pip, `pip install -e` for a checkout), contacting pypi.org.
+  A person confirms it; `--yes` applies it; `--json` or an agent caller
+  without `--yes` gets `action_required` (exit 2) and nothing is installed.
+  uvx, or an install from a path, gets the command to run instead. The
+  version is pinned in every install command, so adding an extra never
+  moves rote.
+- **Behavior change: a dbos or temporal app needs its extra, and on a plain
+  install `rote run` stops to ask for it.** `rote compile`, `rote emit` and
+  `rote init` never stop for it: they write the code, print the install
+  hint as a note, and exit as before.
+- `rote doctor` checks the base dependencies, names the command that
+  restores a missing one, and fails its check when one is missing; it used
+  to say "ready to compile" without them. Missing extras are listed and
+  never fail it. Emitted apps' `requirements.txt` and READMEs name the
+  same MCP client range rote installs (`fastmcp-slim[client]>=4.1.3,<5`).
+- The `mcp` extra stays as an empty alias, so `rote-cli[mcp]` still
+  resolves.
+
 ### Fixed
 
 - **The structure pass keeps an order the skill states without a data

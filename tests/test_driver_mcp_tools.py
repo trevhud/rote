@@ -311,7 +311,7 @@ async def test_live_tools_missing_fastmcp_names_the_extra(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setitem(sys.modules, "fastmcp", None)
-    with pytest.raises(RuntimeError, match=r"rote-cli\[mcp\]"):
+    with pytest.raises(RuntimeError, match="`fastmcp`, a rote-cli dependency missing"):
         async with LiveMcpTools(_wordbank_servers()):
             pass
 
@@ -591,7 +591,7 @@ async def test_anthropic_driver_missing_mcp_extra_is_a_driver_error(
     monkeypatch.setitem(sys.modules, "fastmcp", None)
 
     driver = AnthropicApiDriver(mcp_servers=_wordbank_servers())
-    with pytest.raises(DriverError, match=r"rote-cli\[mcp\]"):
+    with pytest.raises(DriverError, match="`fastmcp`, a rote-cli dependency missing"):
         await driver.run(skill_dir, compiler_dir, work_dir)
 
 

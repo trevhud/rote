@@ -30,8 +30,6 @@ from collections.abc import Iterator
 import pytest
 
 pytestmark = pytest.mark.slow
-
-pytest.importorskip("fastmcp")
 import httpx  # noqa: E402
 
 from rote.mcp import (  # noqa: E402

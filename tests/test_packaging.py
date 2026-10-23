@@ -67,6 +67,72 @@ def test_the_package_requires_pytest_without_any_extra() -> None:
     assert isinstance(deps, list) and any(d.startswith("pytest") for d in deps)
 
 
+def test_the_base_install_carries_only_the_mcp_client() -> None:
+    """Read the installed metadata, as the wheel carries it. The base install
+    is the MCP client (fastmcp-slim's client half) and httpx; the workflow
+    runtimes and fastmcp's server half are extras a user installs when they
+    pick them, so a temporal user never downloads dbos. `[mcp]` stays a
+    declared extra (an old command resolves) that adds nothing."""
+    from importlib.metadata import metadata, requires
+
+    from rote.extras import ALIAS_EXTRAS
+
+    reqs = requires("rote-cli") or []
+
+    def names(rs: list[str]) -> set[str]:
+        return {re.split(r"[<>=!~\[ ;]", r, maxsplit=1)[0] for r in rs}
+
+    unconditional = [r for r in reqs if "extra ==" not in r]
+    assert {"fastmcp-slim", "httpx"} <= names(unconditional), sorted(unconditional)
+    assert not {"fastmcp", "dbos", "temporalio"} & names(unconditional), sorted(unconditional)
+    slim = next(r for r in unconditional if r.startswith("fastmcp-slim"))
+    assert re.match(r"fastmcp-slim\[client\]", slim), slim
+
+    def extra(name: str) -> set[str]:
+        # The marker's quote style is the build backend's (hatchling writes
+        # single quotes); match either, or the check passes vacuously.
+        marker = re.compile(rf"""extra\s*==\s*["']{re.escape(name)}["']""")
+        return names([r.split(";")[0] for r in reqs if marker.search(r)])
+
+    assert extra("dbos") == {"dbos"}
+    assert extra("temporal") == {"temporalio"}
+    assert extra("serve") == {"fastmcp"}
+    provided = set(metadata("rote-cli").get_all("Provides-Extra") or [])
+    assert set(ALIAS_EXTRAS) <= provided
+    for alias in ALIAS_EXTRAS:
+        assert extra(alias) == set(), alias
+
+
+def test_requirement_ranges_are_one_fact() -> None:
+    """The range rote installs and the range emitted apps are told to
+    install are the same string: the MCP client in the base dependencies is
+    FASTMCP_REQUIREMENT, the dbos extra is DBOS_REQUIREMENT. And the serve
+    extra's full fastmcp shares the client's version range, since it pins
+    fastmcp-slim to its own version: two ranges could leave no version that
+    satisfies both."""
+    from rote.adapters.dbos import DBOS_REQUIREMENT
+    from rote.mcp._runtime_helper import FASTMCP_REQUIREMENT
+
+    project = _project()
+    optional = project["optional-dependencies"]
+    assert isinstance(optional, dict)
+    assert FASTMCP_REQUIREMENT in project["dependencies"]
+    assert optional["dbos"] == [DBOS_REQUIREMENT]
+    (serve,) = optional["serve"]
+    assert serve.removeprefix("fastmcp") == FASTMCP_REQUIREMENT.removeprefix("fastmcp-slim[client]")
+    assert serve.startswith("fastmcp>")
+
+
+def test_base_dependencies_import() -> None:
+    """A base dependency is never skipped around in this suite; it must import."""
+    import importlib
+
+    from rote.extras import BASE_MODULES
+
+    for module in BASE_MODULES:
+        importlib.import_module(module)
+
+
 @pytest.mark.slow
 def test_an_installed_wheel_resolves_the_demo_inside_itself(tmp_path: Path) -> None:
     """`rote try` reads the demo from the install, not a checkout. Build
