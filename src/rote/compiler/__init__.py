@@ -1132,7 +1132,10 @@ class Compiler:
         for finding in verification.errors:
             self._emit("warning", f"unresolved: {finding.node_id}: {finding.message}")
         for finding in verification.review_gaps:
-            self._emit("warning", f"provenance review: {finding.message}")
+            if finding in verification.provenance_gaps:
+                self._emit("warning", f"provenance review: {finding.message}")
+            else:
+                self._emit("warning", f"review: {finding.node_id}: {finding.message}")
         if verification.assumptions:
             self._emit(
                 "log",
@@ -1222,12 +1225,14 @@ class Compiler:
                 what = "pipeline.yaml failed validation"
             else:
                 problems = len(verification.errors)
-                gaps = len(verification.review_gaps)
+                gaps = len(verification.provenance_gaps)
+                dead = len(verification.review_gaps) - gaps
                 tests = verification.tests
                 red = tests is not None and tests.status == "failed"
                 what = (
                     f"the deliverable failed verification ({problems} contract "
                     f"problem(s){f', {gaps} provenance gap(s)' if gaps else ''}"
+                    f"{f', {dead} unused constant(s)' if dead else ''}"
                     f"{', generated tests failing' if red else ''})"
                 )
             attempt = invalid_attempts if invalid else attempts

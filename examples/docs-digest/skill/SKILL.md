@@ -29,7 +29,7 @@ the search text.
 
 ## 2. Pick the reading list
 
-Keep the first five results. For each, keep its title and its link.
+Keep the first 5 results. For each, keep its title and its link.
 
 ## 3. Read the repo's wiki outline
 

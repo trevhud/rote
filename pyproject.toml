@@ -156,6 +156,11 @@ packages = ["src/rote"]
 "examples/expense-audit/expected/extracted" = "rote/examples/expense-audit/expected/extracted"
 "examples/expense-audit/scorecard.md" = "rote/examples/expense-audit/scorecard.md"
 "examples/expense-audit/runs" = "rote/examples/expense-audit/runs"
+# The first-run demo (`rote.demo`), also `rote example docs-digest`.
+"examples/docs-digest/README.md" = "rote/examples/docs-digest/README.md"
+"examples/docs-digest/skill" = "rote/examples/docs-digest/skill"
+"examples/docs-digest/compiled" = "rote/examples/docs-digest/compiled"
+"examples/docs-digest/reference.json" = "rote/examples/docs-digest/reference.json"
 
 [tool.hatch.build.targets.sdist]
 # Keep the sdist lean but self-sufficient: building a wheel from the
@@ -164,6 +169,7 @@ include = [
     "src/rote",
     "skills/rote-compile",
     "examples/expense-audit",
+    "examples/docs-digest",
 ]
 
 [tool.ruff]

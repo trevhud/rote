@@ -7,9 +7,12 @@ with "executable not found" even though `uvx --from rote-cli rote` works.
 
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from pathlib import Path
+
+import pytest
 
 PYPROJECT = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
@@ -62,3 +65,38 @@ def test_the_package_requires_pytest_without_any_extra() -> None:
     assert any(re.match(r"pytest\s*[<>=!~]", r) for r in unconditional), unconditional
     deps = _project()["dependencies"]
     assert isinstance(deps, list) and any(d.startswith("pytest") for d in deps)
+
+
+@pytest.mark.slow
+def test_an_installed_wheel_resolves_the_demo_inside_itself(tmp_path: Path) -> None:
+    """`rote try` reads the demo from the install, not a checkout. Build
+    the real wheel, unpack it as site-packages would hold it, and resolve
+    the demo from a fresh interpreter that imports rote from there."""
+    import subprocess
+    import sys
+    import zipfile
+
+    from tests.test_examples_command import _build_wheel
+
+    _build_wheel(tmp_path / "dist")
+    (wheel,) = (tmp_path / "dist").glob("rote_cli-*.whl")
+    site = tmp_path / "site"
+    zipfile.ZipFile(wheel).extractall(site)
+    probe = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "import json, rote.demo as d; r = d.load_reference(); "
+        "print(json.dumps([str(d.docs_digest_dir()), str(d.pipeline_path()), "
+        "(d.skill_dir() / 'input.json').is_file(), len(r.fields)]))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe, str(site)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stderr
+    demo_dir, pipeline, has_input, fields = json.loads(done.stdout)
+    assert Path(demo_dir) == site / "rote" / "examples" / "docs-digest"
+    assert Path(pipeline).is_file() and Path(pipeline).is_relative_to(site)
+    assert has_input is True and fields == 4

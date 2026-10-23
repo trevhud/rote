@@ -1,0 +1,212 @@
+{
+  "format": "rote-demo-reference/1",
+  "skill": "docs-digest",
+  "recorded_on": "2026-10-22",
+  "rote_version": "0.16.0",
+  "claude_cli_version": "2.1.308",
+  "input": {
+    "topic": "Azure Functions durable orchestration",
+    "repo": "Azure/azure-functions-durable-python"
+  },
+  "servers": {
+    "mslearn": {
+      "url": "https://learn.microsoft.com/api/mcp",
+      "tool": "microsoft_docs_search"
+    },
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp",
+      "tool": "read_wiki_structure"
+    }
+  },
+  "skill_run": {
+    "command": "rote run skill --input skill/input.json",
+    "read_only": true,
+    "model": "claude-sonnet-4-6",
+    "wall_seconds": 14.9,
+    "turns": 4,
+    "cost_usd": 0.088,
+    "cost_basis": "claude -p total_cost_usd (client-side estimate)",
+    "tokens": {
+      "input": 5,
+      "output": 966,
+      "cache_read": 34948,
+      "cache_write": 10508
+    },
+    "mcp_calls": 2,
+    "output": {
+      "digest": "## Reading list\n\n- [Bindings for Durable Functions in Azure Functions (programming-language-javascript)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Durable orchestrations (durable-functions)](https://learn.microsoft.com/azure/durable-task/common/durable-task-orchestrations)\n- [Bindings for Durable Functions in Azure Functions (programming-language-python)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Bindings for Durable Functions in Azure Functions (programming-language-powershell)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Bindings for Durable Functions in Azure Functions (programming-language-csharp)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n\n## Repo outline\n\nAvailable pages for Azure/azure-functions-durable-python:\n\n- 1 Overview\n- 2 Getting Started\n- 3 Writing Orchestrations\n  - 3.1 Orchestration Context\n  - 3.2 Tasks and Activities\n  - 3.3 Actions and Workflow Patterns\n  - 3.4 State Management\n- 4 Managing Orchestrations\n- 5 Durable Entities\n- 6 Testing and Development\n  - 6.1 Testing Framework\n  - 6.2 Contributing\n  - 6.3 CI/CD Pipeline\n- 7 API Reference\n  - 7.1 Core Models\n  - 7.2 Action Types\n- 8 Examples\n- 9 Advanced Topics\n  - 9.1 Continue As New\n  - 9.2 Configuration and Deployment"
+    }
+  },
+  "compile": {
+    "command": "rote compile skill --runtime dbos --out . --no-eval --decider rules",
+    "driver": "claude",
+    "runtime": "dbos",
+    "models": {
+      "structure": "claude-haiku-5-5",
+      "text": "claude-sonnet-5-5"
+    },
+    "effort": "low",
+    "wall_seconds": 28,
+    "wall_seconds_measures": "the whole rote compile process, start to exit (1 s resolution)",
+    "turns": 6,
+    "repair_rounds": 0,
+    "cost_usd": 0.0758,
+    "cost_basis": "claude -p total_cost_usd per call, structure pass included",
+    "tokens": {
+      "input": 12,
+      "output": 3458,
+      "cache_read": 27945,
+      "cache_write": 14182
+    },
+    "tokens_exclude": "the structure pass ($0.0030), which reports only its cost",
+    "nodes": {
+      "external_call": 2,
+      "pure_function": 2
+    },
+    "generated_tests": 11,
+    "constants": {
+      "pick_reading_list": {
+        "result_count": 5
+      }
+    }
+  },
+  "pipeline_run": {
+    "command": "rote emit compiled/pipeline.yaml --runtime dbos --out app-dbos && rote run app-dbos --input skill/input.json",
+    "runtime": "dbos",
+    "wall_seconds": 6.6,
+    "wall_seconds_includes": "process start, DBOS launch on SQLite, both MCP sessions",
+    "model_calls": 0,
+    "cost_usd": 0.0,
+    "output": {
+      "write_digest": {
+        "digest": "## Reading list\n\n- [Bindings for Durable Functions in Azure Functions (programming-language-javascript)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Durable orchestrations (durable-functions)](https://learn.microsoft.com/azure/durable-task/common/durable-task-orchestrations)\n- [Bindings for Durable Functions in Azure Functions (programming-language-python)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Bindings for Durable Functions in Azure Functions (programming-language-powershell)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n- [Bindings for Durable Functions in Azure Functions (programming-language-csharp)](https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger)\n\n## Repo outline\n\nAvailable pages for Azure/azure-functions-durable-python:\n\n- 1 Overview\n- 2 Getting Started\n- 3 Writing Orchestrations\n  - 3.1 Orchestration Context\n  - 3.2 Tasks and Activities\n  - 3.3 Actions and Workflow Patterns\n  - 3.4 State Management\n- 4 Managing Orchestrations\n- 5 Durable Entities\n- 6 Testing and Development\n  - 6.1 Testing Framework\n  - 6.2 Contributing\n  - 6.3 CI/CD Pipeline\n- 7 API Reference\n  - 7.1 Core Models\n  - 7.2 Action Types\n- 8 Examples\n- 9 Advanced Topics\n  - 9.1 Continue As New\n  - 9.2 Configuration and Deployment\n"
+      }
+    },
+    "tool_calls": [
+      {
+        "node": "search_microsoft_learn",
+        "server": "mslearn",
+        "tool": "microsoft_docs_search",
+        "arguments": {
+          "query": "Azure Functions durable orchestration"
+        },
+        "result": {
+          "results": [
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-javascript)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            },
+            {
+              "title": "Durable orchestrations (durable-functions)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/common/durable-task-orchestrations"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-python)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-powershell)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-csharp)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-csharp)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-client"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-csharp)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-python)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-client"
+            },
+            {
+              "title": "Durable orchestrations (durable-functions)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/common/durable-task-orchestrations#features-and-patterns"
+            },
+            {
+              "title": "Bindings for Durable Functions in Azure Functions (programming-language-java)",
+              "contentUrl": "https://learn.microsoft.com/azure/durable-task/durable-functions/durable-functions-bindings#orchestration-trigger"
+            }
+          ]
+        }
+      },
+      {
+        "node": "read_repo_outline",
+        "server": "deepwiki",
+        "tool": "read_wiki_structure",
+        "arguments": {
+          "repoName": "Azure/azure-functions-durable-python"
+        },
+        "result": "Available pages for Azure/azure-functions-durable-python:\n\n- 1 Overview\n- 2 Getting Started\n- 3 Writing Orchestrations\n  - 3.1 Orchestration Context\n  - 3.2 Tasks and Activities\n  - 3.3 Actions and Workflow Patterns\n  - 3.4 State Management\n- 4 Managing Orchestrations\n- 5 Durable Entities\n- 6 Testing and Development\n  - 6.1 Testing Framework\n  - 6.2 Contributing\n  - 6.3 CI/CD Pipeline\n- 7 API Reference\n  - 7.1 Core Models\n  - 7.2 Action Types\n- 8 Examples\n- 9 Advanced Topics\n  - 9.1 Continue As New\n  - 9.2 Configuration and Deployment"
+      }
+    ],
+    "tool_calls_note": "The run's two MCP calls: the arguments each step sent and the value it received. Microsoft Learn's page excerpts (each result's content) are dropped; the pipeline reads only title and contentUrl. Replaying these through rote's prefix runner reproduces output."
+  },
+  "fields": [
+    {
+      "name": "sections",
+      "pipeline": "/write_digest/digest",
+      "skill": "/digest",
+      "measure": "headings",
+      "expect": "equal",
+      "why": "The skill fixes the digest's two sections; no server supplies them."
+    },
+    {
+      "name": "reading_list_size",
+      "pipeline": "/write_digest/digest",
+      "skill": "/digest",
+      "section": "Reading list",
+      "measure": "bullets",
+      "expect": "equal",
+      "why": "The skill keeps the first 5 results, and Microsoft Learn returns 10 for this topic, so the list is 5 long whatever the index holds."
+    },
+    {
+      "name": "reading_list",
+      "pipeline": "/write_digest/digest",
+      "skill": "/digest",
+      "section": "Reading list",
+      "expect": "drifts",
+      "why": "Microsoft Learn search over a live index: which pages rank in the first five, their order, their titles and their URLs change as docs are published, retitled or moved."
+    },
+    {
+      "name": "repo_outline",
+      "pipeline": "/write_digest/digest",
+      "skill": "/digest",
+      "section": "Repo outline",
+      "expect": "drifts",
+      "why": "DeepWiki regenerates a repo's wiki from the repo, so page names and numbering change when it re-indexes. Slower than the search results: the outline's first pages read the same on 2026-10-20 and 2026-10-22."
+    }
+  ],
+  "drift": {
+    "runs": [
+      {
+        "run": "skill run (earlier skill text)",
+        "minutes_after_first": 0
+      },
+      {
+        "run": "pipeline run (earlier compile)",
+        "minutes_after_first": 3
+      },
+      {
+        "run": "pipeline run (earlier compile)",
+        "minutes_after_first": 8
+      },
+      {
+        "run": "skill_run",
+        "minutes_after_first": 44
+      },
+      {
+        "run": "pipeline_run",
+        "minutes_after_first": 44
+      }
+    ],
+    "observed": "Across five runs over 44 minutes, nothing drifted: every pipeline run got byte-identical tool results (all ten search results, excerpts included, and the wiki outline) and returned the same digest, and both agent runs returned that digest without its trailing newline. Against a run recorded on 2026-10-20 (tests/fixtures/mcp_results/docs_digest.json), the first two search results and the start of the outline were also unchanged.",
+    "expected": "Over days and weeks: the reading list (ranking, titles, URLs) first, the repo outline slowly. The section headings and the number of reading-list bullets are not live data.",
+    "quirks": "Microsoft Learn returns several chunks of one page as separate results, so the first five can repeat a URL (four of the five recorded links are the same page). The skill and the pipeline both keep the repeats, as the skill says to."
+  }
+}

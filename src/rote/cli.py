@@ -1449,7 +1449,11 @@ def _provenance_lines(deliverable: Any, command: str) -> list[str]:
             lines.append(f"  {node}:")
             lines += [f"    {a.path}:{a.line}  {a.text}" for a in entries]
     for finding in deliverable.review_gaps:
-        lines.append(f"rote {command}: provenance warning ({finding.kind}): {finding.message}")
+        if finding in deliverable.provenance_gaps:
+            what, where = "provenance warning", ""
+        else:
+            what, where = "warning", f"{finding.node_id}: "
+        lines.append(f"rote {command}: {what} ({finding.kind}): {where}{finding.message}")
     if deliverable.prefix is not None:
         lines.append(
             f"rote {command}: deterministic prefix on the sample input: "
@@ -1524,7 +1528,7 @@ def _record_verification_in_report(
         )
         gaps = deliverable.review_gaps
         if gaps:
-            lines.append(f"- Provenance gaps to review ({len(gaps)}, not failures):")
+            lines.append(f"- Review gaps ({len(gaps)}, not failures):")
             lines += [f"  - {f.kind}: {f.message}" for f in gaps]
         found = deliverable.assumptions
         lines.append(

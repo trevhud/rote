@@ -84,7 +84,9 @@ The module:
    required field is a failure.
 4. Implements every rule the skill states for this step, with the
    operator the prose implies (`>= 10`, `> 5%`, `below 90%`). Each
-   constant gets a module-level name and is enforced in code. Import
+   constant arrives as its parameter, and the logic uses the parameter: a
+   module-level copy may be its default, never the value the code applies.
+   rote sends a constant the body never reads back as dead config. Import
    rule-table values from `extracted.rule_tables` when the message lists
    them. Never retype them.
 5. Python 3.11 syntax, stdlib only, imports at the top. No backslash,

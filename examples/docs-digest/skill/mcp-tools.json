@@ -1,0 +1,107 @@
+{
+  "_note": "The tools/list entries of the two tools this skill calls, from https://learn.microsoft.com/api/mcp (mslearn) and https://mcp.deepwiki.com/mcp (deepwiki) on 2026-10-22. rote compile grounds tool arguments in it for a server it cannot list live; a live tools/list wins.",
+  "servers": {
+    "mslearn": {
+      "tools": [
+        {
+          "name": "microsoft_docs_search",
+          "title": "Microsoft Docs Search",
+          "description": "Search official Microsoft/Azure documentation to find the most relevant and trustworthy content for a user's query. This tool returns up to 10 high-quality content chunks (each max 500 tokens), extracted from Microsoft Learn and other official sources. Each result includes the article title, URL, and a self-contained content excerpt optimized for fast retrieval and reasoning. Always use this tool to quickly ground your answers in accurate, first-party Microsoft/Azure knowledge.\n\n## Follow-up Pattern\nTo ensure completeness, use microsoft_docs_fetch when high-value pages are identified by search. The fetch tool complements search by providing the full detail. This is a required step for comprehensive results.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "description": "a query or topic about Microsoft/Azure products, services, platforms, developer tools, frameworks, or APIs",
+                "type": "string",
+                "default": null
+              }
+            }
+          },
+          "outputSchema": {
+            "type": "object",
+            "properties": {
+              "results": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "contentUrl": {
+                      "type": "string"
+                    },
+                    "content_omitted": {
+                      "type": "boolean"
+                    },
+                    "extensionData": {
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "annotations": {
+            "title": "Microsoft Docs Search",
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true
+          }
+        }
+      ]
+    },
+    "deepwiki": {
+      "tools": [
+        {
+          "name": "read_wiki_structure",
+          "description": "Get a list of documentation topics for a GitHub repository.",
+          "inputSchema": {
+            "properties": {
+              "repoName": {
+                "description": "GitHub repository in owner/repo format (e.g. \"facebook/react\").",
+                "type": "string"
+              }
+            },
+            "required": [
+              "repoName"
+            ],
+            "type": "object"
+          },
+          "outputSchema": {
+            "properties": {
+              "result": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "result"
+            ],
+            "type": "object",
+            "x-fastmcp-wrap-result": true
+          },
+          "_meta": {
+            "_fastmcp": {
+              "tags": []
+            }
+          }
+        }
+      ]
+    }
+  }
+}

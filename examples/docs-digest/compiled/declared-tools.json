@@ -1,0 +1,134 @@
+[
+ {
+  "server": "deepwiki",
+  "tool": "ask_wiki_question",
+  "output_schema": {
+   "properties": {
+    "result": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  }
+ },
+ {
+  "server": "deepwiki",
+  "tool": "read_wiki_contents",
+  "output_schema": {
+   "properties": {
+    "result": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  }
+ },
+ {
+  "server": "deepwiki",
+  "tool": "read_wiki_structure",
+  "output_schema": {
+   "properties": {
+    "result": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "result"
+   ],
+   "type": "object",
+   "x-fastmcp-wrap-result": true
+  }
+ },
+ {
+  "server": "mslearn",
+  "tool": "microsoft_code_sample_search",
+  "output_schema": {
+   "type": "object",
+   "properties": {
+    "results": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "description": {
+        "type": "string"
+       },
+       "codeSnippet": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "link": {
+        "type": "string"
+       },
+       "language": {
+        "type": "string"
+       },
+       "content_omitted": {
+        "type": "boolean"
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "server": "mslearn",
+  "tool": "microsoft_docs_fetch",
+  "output_schema": null
+ },
+ {
+  "server": "mslearn",
+  "tool": "microsoft_docs_search",
+  "output_schema": {
+   "type": "object",
+   "properties": {
+    "results": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "title": {
+        "type": "string"
+       },
+       "content": {
+        "type": [
+         "string",
+         "null"
+        ]
+       },
+       "contentUrl": {
+        "type": "string"
+       },
+       "content_omitted": {
+        "type": "boolean"
+       },
+       "extensionData": {
+        "type": [
+         "object",
+         "null"
+        ]
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+]

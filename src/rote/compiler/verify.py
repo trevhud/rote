@@ -41,6 +41,7 @@ hand.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -81,7 +82,7 @@ from rote.contracts import (
     implementation_status,
 )
 from rote.eval.sidecar import EVAL_SIDECAR_FILENAME, load_eval_estimates
-from rote.ir import NodeKind, Pipeline, load_pipeline
+from rote.ir import Node, NodeKind, Pipeline, load_pipeline
 from rote.vendor_specs import RequestCheck, SpecStore, check_deliverable, spec_findings
 from rote.vendor_specs.deps import VendorDepsError, install_vendor_deps
 from rote.vendor_specs.docs import unfetched_sources
@@ -511,6 +512,49 @@ class EmitTarget:
             )
 
 
+def _impl_reads(
+    node: Node, root: Path, trees: dict[Path, ast.Module | None]
+) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, set[str]] | None:
+    """The node's impl function and every name its body reads, or ``None``
+    when that cannot be decided from the code: no impl, a module that does
+    not parse, no top-level function by that name, or a body that can read
+    a named parameter without naming it (``locals()``, ``vars()``).
+
+    ``**kwargs`` is no such way: it never holds a named parameter, so
+    ``def f(x, limit, **kw): return kw`` still never reads ``limit``. An
+    exemption for it hid exactly that dead config.
+    """
+    if node.impl is None:
+        return None
+    rel, _, symbol = node.impl.partition(":")
+    path = root / rel
+    if path not in trees:
+        try:
+            trees[path] = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            trees[path] = None
+    tree = trees[path]
+    fn = next(
+        (
+            s
+            for s in (tree.body if tree is not None else [])
+            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name == symbol
+        ),
+        None,
+    )
+    if fn is None:
+        return None
+    # The body only: a default value or a decorator is not a read.
+    used = {n.id for stmt in fn.body for n in ast.walk(stmt) if isinstance(n, ast.Name)}
+    if used & {"locals", "vars"}:
+        return None
+    return fn, used
+
+
+def _parameters(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    return {a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]}
+
+
 def unused_input_questions(
     pipeline: Pipeline, root: Path, implementations: list[NodeImplementation]
 ) -> list[ContractQuestion]:
@@ -530,30 +574,13 @@ def unused_input_questions(
     for node in pipeline.nodes:
         if node.kind is not NodeKind.PURE_FUNCTION or node.id not in implemented:
             continue
-        if node.impl is None or node.id in in_loops:
+        if node.id in in_loops:
             continue
-        rel, _, symbol = node.impl.partition(":")
-        path = root / rel
-        if path not in trees:
-            try:
-                trees[path] = ast.parse(path.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError, UnicodeDecodeError):
-                trees[path] = None
-        tree = trees[path]
-        fn = next(
-            (
-                s
-                for s in (tree.body if tree is not None else [])
-                if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)) and s.name == symbol
-            ),
-            None,
-        )
-        if fn is None or fn.args.kwarg is not None:
+        found = _impl_reads(node, root, trees)
+        if found is None:
             continue
-        used = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-        if used & {"locals", "vars"}:
-            continue
-        params = {a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]}
+        fn, used = found
+        params = _parameters(fn)
         for param, ref in (node.inputs or {}).items():
             source = ref.split(".", 1)[0]
             if source == "pipeline" or param not in params or param in used:
@@ -564,6 +591,63 @@ def unused_input_questions(
                     f"{node.id} reads {ref} as `{param}`, but its code never uses it: the "
                     f"step waits on {source}, and fails when {source} fails. Remove the "
                     "input if the step does not need it",
+                )
+            )
+    return out
+
+
+#: A constant the impl takes as a parameter and never reads.
+UNUSED_CONSTANT = "unused_constant"
+
+#: Findings that are repaired like errors and, if they survive, warnings
+#: (:attr:`Verification.review_gaps`), besides the provenance ones.
+REVIEW_GAP_KINDS = frozenset({UNUSED_CONSTANT})
+
+
+def unused_constant_findings(
+    pipeline: Pipeline, root: Path, implementations: list[NodeImplementation]
+) -> list[ContractFinding]:
+    """Each node constant its implementation accepts and never reads.
+
+    Every Python runtime merges a node's ``constants`` into its impl's
+    arguments, so a constant the function takes and then ignores is dead
+    config: editing it in pipeline.yaml changes nothing. A real
+    docs-digest compile took ``result_limit`` and sliced with its own
+    module-level ``RESULT_LIMIT = 5``. Decided from the code alone: the
+    parameter is named nowhere in the function body, and the body has no
+    ``locals()`` or ``vars()`` that could read it unnamed (``**kwargs``
+    cannot: it never holds a named parameter). A
+    review gap, not an error: it goes back for repair, and a reviewer
+    closes it if it survives."""
+    implemented = {i.node_id for i in implementations if i.status == "implemented"}
+    held = {NodeKind.PURE_FUNCTION, NodeKind.EXTERNAL_CALL}
+    trees: dict[Path, ast.Module | None] = {}
+    out: list[ContractFinding] = []
+    for node in pipeline.nodes:
+        if node.kind not in held or node.id not in implemented or not node.constants:
+            continue
+        found = _impl_reads(node, root, trees)
+        if found is None:
+            continue
+        fn, used = found
+        params = _parameters(fn)
+        assert node.impl is not None
+        rel = node.impl.partition(":")[0]
+        for key, value in node.constants.items():
+            if key not in params or key in used:
+                continue
+            out.append(
+                ContractFinding(
+                    node_id=node.id,
+                    kind=UNUSED_CONSTANT,
+                    severity="warning",
+                    message=(
+                        f"{fn.name}() takes the constant `{key}` (pipeline.yaml: "
+                        f"{json.dumps(value)}) but never reads it, so editing the constant "
+                        f"changes nothing. Make the logic read the parameter: a module-level "
+                        f"copy is only the default for a direct call"
+                    ),
+                    path=rel,
                 )
             )
     return out
@@ -795,11 +879,19 @@ class Verification:
 
     @property
     def review_gaps(self) -> list[ContractFinding]:
-        """Provenance declarations that are missing, not false: repaired, but
-        not a failure (see :mod:`rote.compiler.provenance`)."""
+        """Findings that are repaired but are not a failure: provenance
+        declarations that are missing, not false (see
+        :mod:`rote.compiler.provenance`), and :data:`REVIEW_GAP_KINDS`."""
         return [
-            f for f in self.findings if f.node_id == PROVENANCE_NODE and f.severity == "warning"
+            f
+            for f in self.findings
+            if f.severity == "warning"
+            and (f.node_id == PROVENANCE_NODE or f.kind in REVIEW_GAP_KINDS)
         ]
+
+    @property
+    def provenance_gaps(self) -> list[ContractFinding]:
+        return [f for f in self.review_gaps if f.node_id == PROVENANCE_NODE]
 
     def provenance_report(self) -> dict[str, object]:
         """Counts and lists for ``--json``, progress.jsonl and ``rote analyze``."""
@@ -807,9 +899,9 @@ class Verification:
         return {
             "assumptions": len(self.assumptions),
             "errors": len(provenance_errors),
-            "review_gaps": len(self.review_gaps),
+            "review_gaps": len(self.provenance_gaps),
             "assumption_list": [a.as_dict() for a in self.assumptions],
-            "findings": [f.as_dict() for f in provenance_errors + self.review_gaps],
+            "findings": [f.as_dict() for f in provenance_errors + self.provenance_gaps],
         }
 
     @property
@@ -849,10 +941,16 @@ class Verification:
                 "Contract problems:\n"
                 + "\n".join(f"- {f.node_id}: {f.message}" for f in self.errors)
             )
-        if self.review_gaps:
+        if self.provenance_gaps:
             parts.append(
                 "Provenance gaps (a reviewer needs these declared; close each one):\n"
-                + "\n".join(f"- {f.message}" for f in self.review_gaps)
+                + "\n".join(f"- {f.message}" for f in self.provenance_gaps)
+            )
+        dead = [f for f in self.review_gaps if f.node_id != PROVENANCE_NODE]
+        if dead:
+            parts.append(
+                "Dead configuration (close each one):\n"
+                + "\n".join(f"- {f.node_id} ({f.path}): {f.message}" for f in dead)
             )
         if self.tests is not None and self.tests.status == "failed":
             parts.append(
@@ -1090,6 +1188,7 @@ def _verify(
             )
             findings += prefix.findings
     questions += unused_input_questions(pipeline, root, implementations)
+    findings += unused_constant_findings(pipeline, root, implementations)
     vendor_paths: tuple[Path, ...] = ()
     if api_backend and run_tests:
         # The agent's tests import the vendor's SDK, which rote does not
