@@ -189,17 +189,21 @@ def _project_dirs(cwd: Path) -> list[Path]:
 
 
 def bundled_roots() -> list[tuple[str, Path]]:
-    """``(example name, skill dir)`` for each bundled example that ships a skill."""
+    """``(example name, skill dir)`` for each bundled example that ships a skill,
+    the demo ``rote try`` and ``rote setup`` run (:data:`rote.demo.DEMO_NAME`)
+    first, then the rest in :data:`rote.examples.BUNDLED` order."""
+    from rote.demo import DEMO_NAME
     from rote.examples import BUNDLED, ExampleError, examples_root
 
     try:
         root = examples_root()
     except ExampleError:
         return []
+    names = sorted(BUNDLED, key=lambda name: name != DEMO_NAME)  # stable: BUNDLED order
     return [
         (name, root / name / "skill")
-        for name, example in BUNDLED.items()
-        if "skill" in example.files and (root / name / "skill" / SKILL_FILE).is_file()
+        for name in names
+        if "skill" in BUNDLED[name].files and (root / name / "skill" / SKILL_FILE).is_file()
     ]
 
 
@@ -334,7 +338,10 @@ def readiness_of(skill_dir: Path, registry: RegistryView, *, bundled: bool) -> R
         + [f"rote mcp login {name}" for name in [*missing, *logins]]
     )
     if bundled:
-        reason = "the bundled demo: runs precompiled, no login or tokens needed"
+        from rote.demo import DEMO_NAME
+
+        what = "the demo rote try runs" if skill_dir.parent.name == DEMO_NAME else "bundled"
+        reason = f"{what}: runs precompiled, no login or tokens needed"
         if servers and not missing and not logins:
             reason += "; its servers are ready for the live run too"
         return Readiness("bundled", reason, servers, nexts)

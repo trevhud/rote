@@ -417,7 +417,7 @@ setup's skill step. Roots, in the order a duplicate is credited to:
 
 | Client | Project (cwd up to the repo root) | User |
 | --- | --- | --- |
-| rote | the bundled examples that ship a skill (`rote.examples.BUNDLED`) | |
+| rote | the bundled examples that ship a skill, the demo `rote try` runs (`rote.demo.DEMO_NAME`, docs-digest) first | |
 | Claude Code | `.claude/skills` | `<config dir>/skills` (`CLAUDE_CONFIG_DIR`), each enabled plugin's `skills/` |
 | cross-client | `.agents/skills` | `~/.agents/skills` (Codex, Gemini CLI, OpenCode) |
 | Codex | | `$CODEX_HOME/skills`, the older location Codex still reads |

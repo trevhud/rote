@@ -250,15 +250,20 @@ def test_readiness_reads_the_real_registry_and_token_store(machine: tuple[Path, 
 
 
 def test_the_bundled_demo_comes_first(machine: tuple[Path, Path]) -> None:
+    from rote.demo import DEMO_NAME
     from rote.examples import BUNDLED
 
     home, project = machine
     _skill(home / ".claude" / "skills", "aaa-first-by-name")
     result = discover(_ctx(home, project), registry=RegistryView())
-    shipped = [n for n, e in BUNDLED.items() if "skill" in e.files]
+    others = [n for n, e in BUNDLED.items() if "skill" in e.files and n != DEMO_NAME]
+    shipped = [DEMO_NAME, *others]
+    assert DEMO_NAME in BUNDLED and others  # the ordering below is not vacuous
     head = result.skills[: len(shipped)]
     assert [s.readiness.state for s in head] == ["bundled"] * len(shipped)
     assert [s.path.parent.name for s in head] == shipped
+    assert head[0].readiness.reason.startswith("the demo rote try runs:")
+    assert head[1].readiness.reason.startswith("bundled:")
     assert result.skills[len(shipped)].name == "aaa-first-by-name"
 
 
@@ -307,12 +312,16 @@ def test_skills_list_command(
     assert states[-1] == ("uses-crm", "needs_server")
     assert states[0][1] == "bundled"
 
-    assert cli_main(["skills", "list", "--limit", "1"]) == 0
-    out = capsys.readouterr().out.splitlines()
-    assert out[0].split()[0] == "demo"
-    # The bundled set grows as demos ship; the count comes from the listing.
-    assert payload["total"] == len(payload["skills"]) >= 2
-    assert out[-1] == f"  ... {payload['total'] - 1} more (drop --limit to see them)"
+    # The bundled set grows as demos ship, so the counts come from the
+    # listing; two limits, so no constant can match both.
+    total = payload["total"]
+    assert total == len(payload["skills"]) >= 3
+    for limit in (1, 2):
+        assert cli_main(["skills", "list", "--limit", str(limit)]) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert out[0].split()[0] == "demo"
+        assert len(out) == limit + 1
+        assert out[-1] == f"  ... {total - limit} more (drop --limit to see them)"
 
 
 # ── hostile skills (a .claude/skills/<x> in a cloned repository) ─────────
