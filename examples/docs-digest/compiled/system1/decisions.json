@@ -1,0 +1,209 @@
+{
+ "nodes": {
+  "search_microsoft_learn": {
+   "unit": 4,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single search call on the declared mslearn tool with the topic as query."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single search call on the declared mslearn tool with the topic as query."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single search call on the declared mslearn tool with the topic as query."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "mslearn",
+      "tool": "microsoft_docs_search",
+      "args": {
+       "query": "arg_query"
+      }
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single search call on the declared mslearn tool with the topic as query."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "mslearn"
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single search call on the declared mslearn tool with the topic as query."
+    }
+   ]
+  },
+  "pick_reading_list": {
+   "unit": 5,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed slicing and field selection over structured results."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "search_microsoft_learn": "search_microsoft_learn.output"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed slicing and field selection over structured results."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed slicing and field selection over structured results."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "result_limit": "first five"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed slicing and field selection over structured results."
+    }
+   ]
+  },
+  "read_repo_wiki_outline": {
+   "unit": 6,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single call on the declared deepwiki tool with the repo input."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single call on the declared deepwiki tool with the repo input."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single call on the declared deepwiki tool with the repo input."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "deepwiki",
+      "tool": "read_wiki_structure",
+      "args": {
+       "repoName": "arg_repoName"
+      }
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single call on the declared deepwiki tool with the repo input."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "deepwiki"
+     },
+     "confidence": 0.95,
+     "rule": "structure pass: Fixed single call on the declared deepwiki tool with the repo input."
+    }
+   ]
+  },
+  "write_digest": {
+   "unit": 7,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed markdown template over two already-structured results."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "pick_reading_list": "pick_reading_list.output",
+      "read_repo_wiki_outline": "read_repo_wiki_outline.output"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed markdown template over two already-structured results."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed markdown template over two already-structured results."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "first_section": "Reading list",
+      "second_section": "Repo outline"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed markdown template over two already-structured results."
+    }
+   ]
+  }
+ },
+ "review": [],
+ "rule_tables": [],
+ "structure": {
+  "model": "claude-haiku-5-5",
+  "lane": "claude -p (subscription)",
+  "rounds": 2,
+  "contradictions": [
+   [
+    "node write_digest: constant 'sections' = 'Reading list, Repo outline' does not appear in the skill's text"
+   ],
+   []
+  ],
+  "resolved": [],
+  "redecided": [],
+  "checked": [],
+  "changed": [],
+  "kept": [],
+  "cost_usd": 0.006263,
+  "usage": [
+   {
+    "model": "claude-haiku-5-5",
+    "input_tokens": 2,
+    "output_tokens": 2664,
+    "cache_write_tokens": 8976,
+    "cache_read_tokens": 1872,
+    "cost_usd": 0.00314612
+   },
+   {
+    "model": "claude-haiku-5-5",
+    "input_tokens": 2,
+    "output_tokens": 1806,
+    "cache_write_tokens": 10976,
+    "cache_read_tokens": 1872,
+    "cost_usd": 0.00311712
+   }
+  ]
+ },
+ "checker": {
+  "decider": "rules",
+  "why": "--decider rules"
+ }
+}

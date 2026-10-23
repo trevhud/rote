@@ -1,7 +1,8 @@
 """MCP arguments bound from what a recorded run sent (rote.compiler.system1.evidence).
 
 The recorded calls and the sample are a real ``--baseline`` run of the
-docs-digest skill against DeepWiki and Microsoft Learn (fixtures/mcp_results).
+docs-digest skill (examples/docs-digest/skill) against DeepWiki and Microsoft
+Learn (fixtures/mcp_results).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from rote.ir import Pipeline
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mcp_results"
 DATA = json.loads((FIXTURES / "docs_digest.json").read_text(encoding="utf-8"))
-SKILL = FIXTURES / "docs-digest"
+SKILL = Path(__file__).resolve().parent.parent / "examples" / "docs-digest" / "skill"
 TOOLS = {
     (d["server"], d["tool"]): ToolSchema(
         d["server"], d["tool"], d["input_schema"], "tools/list", True, d["output_schema"]
@@ -41,7 +42,7 @@ def _observations(**overrides: dict[str, Any]) -> list[ObservedToolCall]:
 def _skeleton(tmp_path: Path, observations: list[Any], sample: Any = None) -> Pipeline:
     work = tmp_path / "work"
     work.mkdir()
-    sample = sample or load_sample(SKILL / "sample-input.json")
+    sample = sample or load_sample(SKILL / "input.json")
     system1.prepare(SKILL, work, sample=sample, tools=TOOLS, observations=observations)
     return Pipeline.model_validate(yaml.safe_load((work / "pipeline.yaml").read_text()))
 
@@ -306,7 +307,7 @@ def test_the_structure_path_binds_recorded_arguments_too(
     system1.prepare(
         SKILL,
         work,
-        sample=load_sample(SKILL / "sample-input.json"),
+        sample=load_sample(SKILL / "input.json"),
         tools=TOOLS,
         observations=_observations(),
         structure_lane=Lane("claude-cli"),

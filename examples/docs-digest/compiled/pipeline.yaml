@@ -1,0 +1,207 @@
+version: 0.1.0
+description: Build a short reading list on a Microsoft technology from Microsoft Learn,
+  plus the wiki outline of the open-source repo that goes with it.
+name: docs-digest
+source_skill: ../skill
+input:
+  type: DocsDigestInput
+  input_schema:
+    type: object
+    properties:
+      repo:
+        type: string
+      topic:
+        type: string
+    required:
+    - repo
+    - topic
+edges:
+- from: search_microsoft_learn
+  to: pick_reading_list
+- from: pick_reading_list
+  to: write_digest
+- from: read_repo_wiki_outline
+  to: write_digest
+entry_nodes:
+- search_microsoft_learn
+- read_repo_wiki_outline
+exit_nodes:
+- write_digest
+nodes:
+- description: Searches Microsoft Learn with the topic as the query and returns the
+    decoded search result, an object whose results array holds each match's title
+    and link.
+  output:
+    results: list
+  output_schema:
+    type: object
+    properties: &id003
+      results:
+        type: array
+        items:
+          type: object
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+            title:
+              type: string
+            content:
+              type:
+              - string
+              - 'null'
+            contentUrl:
+              type: string
+            content_omitted:
+              type: boolean
+            extensionData:
+              type:
+              - object
+              - 'null'
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: &id001
+          repo:
+            type: string
+          topic:
+            type: string
+        required: &id002
+        - repo
+        - topic
+      arg_query:
+        type: string
+  id: search_microsoft_learn
+  kind: external_call
+  inputs:
+    request: pipeline.input
+    arg_query: pipeline.input.topic
+  mandatory: true
+  impl: extracted/search_microsoft_learn.py:search_microsoft_learn
+  mcp:
+    server: mslearn
+    tool: microsoft_docs_search
+    args:
+      query: arg_query
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 1. Search Microsoft Learn
+- description: Keeps the first five Microsoft Learn search results, each reduced to
+    its title and link.
+  output:
+    reading_list: list
+  output_schema:
+    type: object
+    properties: &id004
+      reading_list:
+        type: array
+        items:
+          type: object
+          properties:
+            title:
+              type: string
+              description: Result title
+            url:
+              type: string
+              description: Result link (contentUrl)
+          required:
+          - title
+          - url
+        description: First five results in search order
+    required: &id005
+    - reading_list
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      search_microsoft_learn:
+        type: object
+        properties: *id003
+  id: pick_reading_list
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    search_microsoft_learn: search_microsoft_learn.output
+  mandatory: true
+  constants:
+    result_limit: first five
+  impl: extracted/pick_reading_list.py:pick_reading_list
+  source:
+    section: 2. Pick the reading list
+- description: Calls the deepwiki read_wiki_structure tool for the input repository
+    and returns the wiki outline as text (a string, as the tool returns it).
+  output: dict
+  output_schema:
+    type: string
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      arg_repoName:
+        type: string
+  id: read_repo_wiki_outline
+  kind: external_call
+  inputs:
+    request: pipeline.input
+    arg_repoName: pipeline.input.repo
+  mandatory: true
+  impl: extracted/read_repo_wiki_outline.py:read_repo_wiki_outline
+  mcp:
+    server: deepwiki
+    tool: read_wiki_structure
+    args:
+      repoName: arg_repoName
+  retry:
+    max: 3
+    backoff: exponential
+  source:
+    section: 3. Read the repo's wiki outline
+- description: Builds the markdown digest with a Reading list section of linked titles
+    and a Repo outline section holding the wiki outline as returned.
+  output:
+    digest: str
+  output_schema:
+    type: object
+    properties:
+      digest:
+        type: string
+        description: Markdown document with Reading list and Repo outline sections
+    required:
+    - digest
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      pick_reading_list:
+        type: object
+        properties: *id004
+        required: *id005
+      read_repo_wiki_outline:
+        type: string
+  id: write_digest
+  kind: pure_function
+  inputs:
+    request: pipeline.input
+    pick_reading_list: pick_reading_list.output
+    read_repo_wiki_outline: read_repo_wiki_outline.output
+  mandatory: true
+  constants:
+    first_section: Reading list
+    second_section: Repo outline
+  impl: extracted/write_digest.py:write_digest
+  source:
+    section: 4. Write the digest

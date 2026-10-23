@@ -1,0 +1,40 @@
+version: 1
+source_skill: ../skill
+steps:
+- description: Docs digest
+  estimated_turns:
+    low: 1
+    high: 1
+- description: Tools
+  estimated_turns:
+    low: 1
+    high: 1
+- description: mslearn
+  estimated_turns:
+    low: 1
+    high: 1
+- description: deepwiki
+  estimated_turns:
+    low: 1
+    high: 1
+- description: 1. Search Microsoft Learn
+  estimated_turns:
+    low: 1
+    high: 3
+  node_id: search_microsoft_learn
+- description: 2. Pick the reading list
+  estimated_turns:
+    low: 1
+    high: 2
+  node_id: pick_reading_list
+- description: 3. Read the repo's wiki outline
+  estimated_turns:
+    low: 1
+    high: 3
+  node_id: read_repo_wiki_outline
+- description: 4. Write the digest
+  estimated_turns:
+    low: 1
+    high: 2
+  node_id: write_digest
+notes: 'System-1 defaults: turns per step by node kind, not measured for this skill.'

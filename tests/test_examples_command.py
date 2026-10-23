@@ -48,8 +48,9 @@ def test_the_wheel_ships_exactly_the_bundled_files() -> None:
 def test_list_names_every_bundled_example(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["example"]) == 0
     out = capsys.readouterr().out
-    assert list(BUNDLED) == ["expense-audit"]
+    assert list(BUNDLED) == ["expense-audit", "docs-digest"]
     assert "  expense-audit  Month-end expense audit" in out
+    assert "  docs-digest    Reading list from Microsoft Learn" in out
 
 
 def test_unknown_example_names_the_available_ones(
@@ -57,7 +58,7 @@ def test_unknown_example_names_the_available_ones(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     assert main(["example", "bdr-outreach"]) == 2
-    assert "available: expense-audit" in capsys.readouterr().err
+    assert "available: expense-audit, docs-digest" in capsys.readouterr().err
     assert not (tmp_path / "bdr-outreach").exists()
 
 
@@ -147,6 +148,40 @@ def test_the_copied_readme_names_the_copys_own_paths(
         assert (copy / "/".join(stack)).exists(), "/".join(stack)
     assert (copy / "scorecard.md").is_file()
     assert (copy / "runs" / "2026-10-18-first-agent-run" / "pipeline.yaml").is_file()
+
+
+def test_the_docs_digest_copy_runs_from_its_own_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The demo's printed commands name the copy, and its emit command
+    works offline. The run command needs the two live servers, so it is
+    only checked for the paths it names."""
+    from rote.examples import rewrite_readme
+
+    example = BUNDLED["docs-digest"]
+    source = (examples_root() / "docs-digest" / "README.md").read_text(encoding="utf-8")
+    for old, _new in example.readme_rewrites:
+        assert old in source, f"README no longer contains {old!r}; update readme_rewrites"
+
+    monkeypatch.chdir(tmp_path)
+    assert main(["example", "docs-digest"]) == 0
+    out = capsys.readouterr().out
+    copy = tmp_path / "docs-digest"
+    for rel in example.files:
+        assert (copy / rel).exists(), rel
+    readme = (copy / "README.md").read_text(encoding="utf-8")
+    assert readme == rewrite_readme(example, source, "docs-digest")
+    assert "examples/docs-digest" not in readme and "/tmp/" not in readme
+
+    commands = [line.strip() for line in out.splitlines() if line.startswith("  rote ")]
+    assert [c.split()[1] for c in commands] == ["mcp", "mcp", "emit", "run", "run"]
+    assert "--read-only" in commands[0] and "--read-only" in commands[1]
+    assert main([*shlex.split(commands[2])[1:], "--json"]) == 0
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["unimplemented_stubs"] == []
+    assert (copy / "app-dbos" / "main.py").is_file()
+    assert commands[3] == "rote run docs-digest/app-dbos --input docs-digest/skill/input.json"
+    assert commands[4] == "rote run docs-digest/skill --input docs-digest/skill/input.json"
 
 
 def _build_wheel(out: Path) -> None:

@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "skill_md_sha256": "59a914db2954525ef7f344f4a662b94ba9b4238ab1810b65813345cc662ee093",
+  "sections": {
+    "": "f768f9c1c747d3889e319926998b4e082d21ab8618670113169a8c6e42a89a79",
+    "1. Search Microsoft Learn": "e10b342e2ff8ff1050c9f16be562ecadd1bfa789674cd4bab482a8af25971820",
+    "2. Pick the reading list": "e11087f2d6bda740cf9424fe0fd566b57851e27dac9d7a519174438c1dd36375",
+    "3. Read the repo's wiki outline": "2c81c01e3180379b8c0a4130ebe84c481d4371c73434cb58151882224083dead",
+    "4. Write the digest": "3e3e4cdbd4b38b5d01848b2a218b4af54947f84abfab80f824a94cf5e863022e",
+    "Docs digest": "ba44d638c8300dc1fe3ff78f9540a6084362c0b323137164700835655a909b19",
+    "Tools": "0b27734b46fbf7ef264d7dcff4505a08b8773717141fac872ecc4d1c686ca54c",
+    "deepwiki": "625e9c2d956aa34e8f0dde65e475e1e814476757ce770e1514ebd59bd444990f",
+    "mslearn": "b81fb2490ae8c53f0a23516a834d76eed91fecbc16314556655efdffbb7feaa4"
+  },
+  "nodes": {
+    "pick_reading_list": {
+      "section": "2. Pick the reading list",
+      "content_hash": "e11087f2d6bda740cf9424fe0fd566b57851e27dac9d7a519174438c1dd36375"
+    },
+    "read_repo_wiki_outline": {
+      "section": "3. Read the repo's wiki outline",
+      "content_hash": "2c81c01e3180379b8c0a4130ebe84c481d4371c73434cb58151882224083dead"
+    },
+    "search_microsoft_learn": {
+      "section": "1. Search Microsoft Learn",
+      "content_hash": "e10b342e2ff8ff1050c9f16be562ecadd1bfa789674cd4bab482a8af25971820"
+    },
+    "write_digest": {
+      "section": "4. Write the digest",
+      "content_hash": "3e3e4cdbd4b38b5d01848b2a218b4af54947f84abfab80f824a94cf5e863022e"
+    }
+  }
+}

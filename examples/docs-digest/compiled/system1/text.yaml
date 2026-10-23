@@ -1,0 +1,122 @@
+search_microsoft_learn:
+  description: Searches Microsoft Learn with the topic as the query and returns the
+    decoded search result, an object whose results array holds each match's title
+    and link.
+  output_schema:
+    type: object
+    properties: &id003
+      results:
+        type: array
+        items:
+          type: object
+          properties:
+            id:
+              type:
+              - string
+              - 'null'
+            title:
+              type: string
+            content:
+              type:
+              - string
+              - 'null'
+            contentUrl:
+              type: string
+            content_omitted:
+              type: boolean
+            extensionData:
+              type:
+              - object
+              - 'null'
+  output:
+    results: list
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: &id001
+          repo:
+            type: string
+          topic:
+            type: string
+        required: &id002
+        - repo
+        - topic
+      arg_query:
+        type: string
+pick_reading_list:
+  description: Keeps the first five Microsoft Learn search results, each reduced to
+    its title and link.
+  output_schema:
+    type: object
+    properties: &id004
+      reading_list:
+        type: array
+        items:
+          type: object
+          properties:
+            title:
+              type: string
+              description: Result title
+            url:
+              type: string
+              description: Result link (contentUrl)
+          required:
+          - title
+          - url
+        description: First five results in search order
+    required: &id005
+    - reading_list
+  output:
+    reading_list: list
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      search_microsoft_learn:
+        type: object
+        properties: *id003
+read_repo_wiki_outline:
+  description: Calls the deepwiki read_wiki_structure tool for the input repository
+    and returns the wiki outline as text (a string, as the tool returns it).
+  output_schema:
+    type: string
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      arg_repoName:
+        type: string
+write_digest:
+  description: Builds the markdown digest with a Reading list section of linked titles
+    and a Repo outline section holding the wiki outline as returned.
+  output_schema:
+    type: object
+    properties:
+      digest:
+        type: string
+        description: Markdown document with Reading list and Repo outline sections
+    required:
+    - digest
+  output:
+    digest: str
+  input_schema:
+    type: object
+    properties:
+      request:
+        type: object
+        properties: *id001
+        required: *id002
+      pick_reading_list:
+        type: object
+        properties: *id004
+        required: *id005
+      read_repo_wiki_outline:
+        type: string
