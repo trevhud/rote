@@ -257,10 +257,10 @@ def skill_tool_table_servers(skill_dir: Path) -> set[str]:
     A skill it cannot parse safely names no server this way; its prose
     still can.
     """
-    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
+    from rote.compiler.system1.parse import UnsafeSkillText, tool_registry
 
     try:
-        return set(parse_skill(skill_dir).tool_registry.values())
+        return set(tool_registry(skill_dir).values())
     except UnsafeSkillText:
         return set()
 
@@ -625,11 +625,12 @@ def sent_arguments(node: Node) -> dict[str, Any]:
 
 
 def _skill_text(skill_dir: Path) -> str:
-    """SKILL.md and every reference file under the skill."""
-    parts = [(skill_dir / "SKILL.md").read_text(encoding="utf-8")]
-    refs = skill_dir / "references"
-    if refs.is_dir():
-        parts += [ref.read_text(encoding="utf-8") for ref in sorted(refs.rglob("*.md"))]
+    """SKILL.md and every reference file under the skill, read with bounds
+    (:mod:`rote.skill_files`: size caps, nothing outside the skill dir)."""
+    from rote.skill_files import read_references, read_skill_md
+
+    parts = [read_skill_md(skill_dir)]
+    parts += [text for _, text in read_references(skill_dir, recursive=True)]
     return "\n".join(parts)
 
 
