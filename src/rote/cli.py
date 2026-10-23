@@ -4407,6 +4407,42 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_skills_list(args: argparse.Namespace) -> int:
+    """``rote skills list``: :func:`rote.skills.discover`, rendered."""
+    import json as _json
+
+    from rote.skills import discover
+
+    found = discover()
+    skills = found.skills if args.limit is None else found.skills[: max(args.limit, 0)]
+    if args.json:
+        payload = found.to_dict()
+        payload["skills"] = [s.to_dict() for s in skills]
+        print(_json.dumps({"ok": True, "total": len(found.skills), **payload}, indent=2))
+        return 0
+    for problem in found.problems:
+        print(f"note: {problem}", file=sys.stderr)
+    if not found.skills:
+        print("rote skills: no skills found in any client's skill directory")
+        return 0
+    labels = {
+        "bundled": "demo",
+        "ready": "ready",
+        "needs_login": "login",
+        "needs_server": "add server",
+        "unreadable": "unreadable",
+    }
+    width = max(len(s.name) for s in skills)
+    for skill in skills:
+        root = skill.found_in[0]
+        where = root.client + (f" plugin {root.plugin}" if root.plugin else f" {root.scope}")
+        state = labels[skill.readiness.state]
+        print(f"  {state:<10}  {skill.name.ljust(width)}  {where:<24}  {skill.readiness.reason}")
+    if len(skills) < len(found.skills):
+        print(f"  ... {len(found.skills) - len(skills)} more (drop --limit to see them)")
+    return 0
+
+
 def _cmd_example(args: argparse.Namespace) -> int:
     """List the bundled examples, or copy one into ./<name> and say how to run it."""
     from rote.examples import BUNDLED, ExampleError, copy_example, render_commands
@@ -6003,6 +6039,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Copy into ./<name> even if it exists, overwriting the example's own files",
     )
     example_p.set_defaults(func=_cmd_example)
+
+    # rote skills
+    skills_p = subparsers.add_parser(
+        "skills",
+        help="The skills your AI clients load, ranked by how ready they are to compile",
+        description=(
+            "Find the skills Claude Code (user, project, enabled plugins), Codex, "
+            "Gemini CLI, OpenCode and .agents/skills load, plus rote's bundled demo, "
+            "and rank them: the demo, then skills whose MCP servers are all registered "
+            "and logged in, then those a login away, then the rest. Reads files only; "
+            "contacts nothing."
+        ),
+    )
+    skills_sub = skills_p.add_subparsers(dest="skills_command", required=True)
+    skills_list = skills_sub.add_parser("list", help="List skills, best first")
+    skills_list.add_argument("--json", action="store_true", help="One JSON object on stdout")
+    skills_list.add_argument(
+        "--limit", type=int, default=None, metavar="N", help="Show only the first N"
+    )
+    skills_list.set_defaults(func=_cmd_skills_list)
 
     # rote doctor
     doctor = subparsers.add_parser(

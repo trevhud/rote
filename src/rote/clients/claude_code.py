@@ -462,31 +462,79 @@ class ClaudeCodeSource:
     def _plugin_candidates(
         reader: Reader, paths: _Paths, settings: Iterable[Mapping[str, Any]]
     ) -> list[ImportCandidate]:
-        enabled: dict[str, bool] = {}
-        for layer in settings:  # later layers win: user < project < local
-            raw = layer.get("enabledPlugins")
-            if isinstance(raw, dict):
-                enabled.update({k: v for k, v in raw.items() if isinstance(v, bool)})
-        installed = reader.mapping(paths.installed_plugins)
-        plugins = installed.get("plugins")
-        if not isinstance(plugins, dict):
-            return []
         found: list[ImportCandidate] = []
-        for key, installs in sorted(plugins.items()):
-            if enabled.get(key) is not True or not isinstance(installs, list):
-                continue
-            plugin = key.split("@", 1)[0]
-            for install in installs:
-                if not isinstance(install, dict) or not isinstance(install.get("installPath"), str):
-                    continue
-                root = Path(install["installPath"])
-                for origin, servers in _plugin_servers(reader, root):
-                    for name, entry in servers.items():
-                        found.append(
-                            _candidate(name, entry, scope="plugin", origin=origin, plugin=plugin)
-                        )
-                break  # one install per plugin key is the one Claude Code loads
+        for plugin in _enabled_plugins(reader, paths, settings):
+            for origin, servers in _plugin_servers(reader, plugin.root):
+                for name, entry in servers.items():
+                    found.append(
+                        _candidate(name, entry, scope="plugin", origin=origin, plugin=plugin.name)
+                    )
         return found
+
+
+@dataclass(frozen=True)
+class EnabledPlugin:
+    """A Claude Code plugin that is installed and turned on."""
+
+    #: ``name@marketplace``, the key in ``enabledPlugins``.
+    key: str
+    name: str
+    #: The install's ``installPath``: where its ``.mcp.json``, ``skills/``
+    #: and ``.claude-plugin/plugin.json`` live.
+    root: Path
+
+
+def _enabled_plugins(
+    reader: Reader, paths: _Paths, settings: Iterable[Mapping[str, Any]]
+) -> list[EnabledPlugin]:
+    enabled: dict[str, bool] = {}
+    for layer in settings:  # later layers win: user < project < local
+        raw = layer.get("enabledPlugins")
+        if isinstance(raw, dict):
+            enabled.update({k: v for k, v in raw.items() if isinstance(v, bool)})
+    installed = reader.mapping(paths.installed_plugins)
+    plugins = installed.get("plugins")
+    if not isinstance(plugins, dict):
+        return []
+    found: list[EnabledPlugin] = []
+    for key, installs in sorted(plugins.items()):
+        if enabled.get(key) is not True or not isinstance(installs, list):
+            continue
+        for install in installs:
+            if not isinstance(install, dict) or not isinstance(install.get("installPath"), str):
+                continue
+            found.append(EnabledPlugin(key, key.split("@", 1)[0], Path(install["installPath"])))
+            break  # one install per plugin key is the one Claude Code loads
+    return found
+
+
+@dataclass(frozen=True)
+class ClaudeCodeLayout:
+    """Where Claude Code keeps things for one context, for readers other
+    than the MCP source (rote.skills): the config dir (``~/.claude``, or
+    ``CLAUDE_CONFIG_DIR``), the project root it resolves from the cwd, the
+    enabled plugins, and what could not be read."""
+
+    config_dir: Path
+    project_root: Path | None
+    plugins: tuple[EnabledPlugin, ...]
+    problems: tuple[str, ...]
+
+
+def claude_code_layout(ctx: ClientContext) -> ClaudeCodeLayout:
+    """The same resolution :class:`ClaudeCodeSource` reads servers with:
+    the settings layers that decide ``enabledPlugins`` are user, project
+    and local, from the project ``~/.claude.json`` knows for the cwd."""
+    paths = _paths(ctx)
+    reader = Reader()
+    project_dir, _ = _project_entry(reader.mapping(paths.claude_json), ctx.cwd)
+    root = _project_root(ctx.cwd, project_dir)
+    layers = [reader.mapping(paths.user_settings)]
+    if root is not None:
+        layers.append(reader.mapping(root / ".claude" / "settings.json"))
+        layers.append(reader.mapping(root / ".claude" / "settings.local.json"))
+    plugins = _enabled_plugins(reader, paths, layers)
+    return ClaudeCodeLayout(paths.config_dir, root, tuple(plugins), tuple(reader.problems))
 
 
 def _plugin_servers(reader: Reader, root: Path) -> list[tuple[Path, dict[str, Any]]]:

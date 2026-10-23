@@ -93,7 +93,7 @@ LIMITS = (
 )
 
 
-def _gemini_dir(ctx: ClientContext) -> Path:
+def gemini_dir(ctx: ClientContext) -> Path:
     home = ctx.env.get("GEMINI_CLI_HOME", "").strip()
     return (Path(home) if home else ctx.home) / ".gemini"
 
@@ -115,7 +115,7 @@ def _defaults_file(ctx: ClientContext, system: Path | None) -> Path | None:
 
 
 def _workspace_file(ctx: ClientContext) -> Path | None:
-    gemini_home = _gemini_dir(ctx).parent
+    gemini_home = gemini_dir(ctx).parent
     if ctx.cwd.resolve() == gemini_home.resolve():
         return None
     return ctx.cwd / ".gemini" / "settings.json"
@@ -149,7 +149,7 @@ def _trusted(ctx: ClientContext, reader: Reader, folder_trust: Any) -> bool:
     if env.get("GEMINI_CLI_TRUST_WORKSPACE") == "true" or folder_trust is False:
         return True
     override = env.get("GEMINI_CLI_TRUSTED_FOLDERS_PATH", "").strip()
-    path = Path(override) if override else _gemini_dir(ctx) / "trustedFolders.json"
+    path = Path(override) if override else gemini_dir(ctx) / "trustedFolders.json"
     rules = reader.mapping(path, "jsonc")
     cwd = ctx.cwd.resolve()
     best: tuple[int, bool] | None = None
@@ -231,7 +231,7 @@ class GeminiSource:
         system = _system_file(ctx)
         defaults = _defaults_file(ctx, system)
         workspace = _workspace_file(ctx)
-        directory = _gemini_dir(ctx)
+        directory = gemini_dir(ctx)
         return tuple(
             p
             for p in (
@@ -246,11 +246,11 @@ class GeminiSource:
         )
 
     def detect(self, ctx: ClientContext) -> bool:
-        return _gemini_dir(ctx).is_dir()
+        return gemini_dir(ctx).is_dir()
 
     def read(self, ctx: ClientContext) -> SourceReading:
         reader = Reader()
-        directory = _gemini_dir(ctx)
+        directory = gemini_dir(ctx)
         system_path = _system_file(ctx)
         defaults_path = _defaults_file(ctx, system_path)
         workspace_path = _workspace_file(ctx)

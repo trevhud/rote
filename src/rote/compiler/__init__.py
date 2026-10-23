@@ -535,6 +535,20 @@ class Compiler:
             raise CompilerError(f"Skill directory does not exist: {skill_dir}")
         if not (skill_dir / "SKILL.md").is_file():
             raise CompilerError(f"Not a skill bundle (no SKILL.md found): {skill_dir}")
+        from rote.skill_files import SkillTooLarge, preflight
+
+        try:
+            # Before anything reads the skill, and before any driver runs.
+            outside = preflight(skill_dir)
+        except SkillTooLarge as e:
+            raise CompilerError(f"{skill_dir}: {e}") from e
+        if outside:
+            listed = ", ".join(str(p.relative_to(skill_dir)) for p in outside)
+            self._emit(
+                "warning",
+                f"skipped {len(outside)} reference path(s) that resolve outside the skill "
+                f"directory: {listed}",
+            )
 
         skill_md_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         if self.system1 and update:

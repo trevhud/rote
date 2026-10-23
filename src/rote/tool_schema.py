@@ -167,9 +167,12 @@ def load_bundled_tools(skill_dir: Any) -> dict[str, dict[str, dict[str, Any]]]:
     import json
     from pathlib import Path
 
+    from rote.skill_files import BUNDLED_TOOLS_MAX_BYTES, check_size
+
     path = Path(skill_dir) / BUNDLED_TOOLS_FILENAME
     if not path.is_file():
         return {}
+    check_size(path, BUNDLED_TOOLS_MAX_BYTES, BUNDLED_TOOLS_FILENAME)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:

@@ -2601,6 +2601,18 @@ after reading a gate that passed, and otherwise `trust_unknown` or
 candidate left at the default. `preselectable` and `needs_opt_in` are what
 `rote mcp import` reads.
 
+`rote.skills.discover` (skill discovery and ranking) follows the same
+rules: files only, through `ClientContext`, enabled plugins from
+`claude_code_layout` (one resolution for MCP servers and skills), and no
+skill text reaches the terminal unsanitized (`_display`). Keep it cheap:
+it reads hundreds of skills, so a check it runs per skill must not grow
+into a full parse (`system1.parse.tool_registry` exists for that).
+Skill text is untrusted and unbounded: read it through `rote.skill_files`
+(size caps checked by `stat` first, references kept inside the resolved
+skill dir, no symlinked-directory walks), never with a bare `read_text` or
+`rglob` over `references/`. Compile's tool grounding and the System-1
+parser already do; a new reader of a whole skill should too.
+
 ## Workflow expectations
 
 ### Running tests
