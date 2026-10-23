@@ -709,7 +709,7 @@ else:
 
 
 def failure_site(
-    app: Path, pipeline: Pipeline, case_input: dict[str, Any], run_error: str | None = None
+    app: Path, pipeline: Pipeline, case_input: dict[str, Any], run_error: str | None
 ) -> dict[str, Any] | None:
     """Which node a failed run died in, and the line of its code that raised.
 
@@ -815,7 +815,8 @@ def _binding_failure(
 
     Only nodes that never ran are candidates, and only references into a
     node whose output was recorded: those are the payloads the workflow
-    body was building when it raised.
+    body was building when it raised. The first such reference is blamed
+    only when the run's exception is the one that read raises.
     """
     from rote.ir import parse_input_ref
 
@@ -832,6 +833,12 @@ def _binding_failure(
                 source = outputs[parsed.node_id]
                 if isinstance(source, dict) and parsed.field in source:
                     continue
+                # The read raises KeyError on an object without the field and
+                # TypeError on anything else. A run that died with some other
+                # error died for another reason: never blame this binding.
+                expected = "KeyError" if isinstance(source, dict) else "TypeError"
+                if not (exception or "").startswith(f"{expected}:"):
+                    return None
                 got = (
                     f"an object with keys {sorted(source)}"
                     if isinstance(source, dict)

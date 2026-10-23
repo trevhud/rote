@@ -649,7 +649,7 @@ def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> Non
     )
     assert run.error is not None
 
-    site = failure_site(app, pipeline, payload)
+    site = failure_site(app, pipeline, payload, run.error)
     assert site is not None
     assert site["node"] == "find_late_submissions"
     assert site["exception"] == "KeyError: 'no_such_field'"
@@ -729,6 +729,40 @@ def test_a_run_that_dies_building_a_payload_names_the_binding(tmp_path: Path) ->
             ),
             "code": None,
         }
+
+
+@pytest.mark.parametrize(
+    ("exception", "blamed"),
+    [
+        ("TypeError: string indices must be integers, not 'str'", True),
+        ("RuntimeError: the DBOS system database went away", False),
+        ("KeyError: 'content'", False),  # a str source raises TypeError, not KeyError
+        (None, False),
+    ],
+)
+def test_a_binding_is_blamed_only_for_the_error_its_read_raises(
+    exception: str | None, blamed: bool
+) -> None:
+    """A run that died for another reason after the fetches finished must
+    not be pinned on a bad reference further down."""
+    from rote.bench.fidelity import _binding_failure
+    from rote.ir import load_pipeline
+
+    from .conftest import EXAMPLES_DIR
+
+    pipeline = load_pipeline(EXAMPLES_DIR / "ops-report" / OPS_UNGROUNDED / "pipeline.yaml")
+    csv = "Site,Active\nEAST1,40\n"
+    outputs: dict[str, Any] = {
+        "fetch_shipment_containers": csv,
+        "fetch_dock_pending_log": csv,
+        "fetch_dwell_tickets": csv,
+        "fetch_dock_activity_emails": [],
+    }
+    site = _binding_failure(pipeline, outputs, exception)
+    if blamed:
+        assert site is not None and site["node"] == "parse_dock_pending_log"
+    else:
+        assert site is None
 
 
 def test_a_run_error_keeps_only_the_line_that_says_what_failed() -> None:
