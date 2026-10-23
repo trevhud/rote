@@ -844,7 +844,7 @@ break-the-code check.
 | 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, manifest check, `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |
 | 6 | Driver e2e suite against fixture MCP servers (the list in section 7), wired into the Python e2e CI job | 4, 5 | 180 |
-| 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records. One measured eval on docs-digest, ops-report and expense-audit (about $3), which explains ops-report's fidelity gap, and the batch-size sweep | 4 | 210 |
+| 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records. One measured eval on docs-digest, ops-report and expense-audit (about $3) and the batch-size sweep | 4 | 210 |
 | 8 | `rote try` rebuilt on 7, closing #250, with review6's three fixes | 7 | 150 |
 | 9 | Dependencies: `fastmcp-slim[client]` in the base, and dbos, serve and temporal as extras installed by a confirmed Action. Supersedes #249 | 3 | 120 |
 | 10 | Make the skill target the first-run default (`rote init`, `rote setup`'s skill step, docs, CHANGELOG), once 7's numbers are in | 8, 9 | 60 |
