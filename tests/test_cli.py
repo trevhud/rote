@@ -1019,6 +1019,7 @@ def test_doctor_json_mode_is_machine_readable(
         "version",
         "python",
         "drivers",
+        "dependencies",
         "runtimes",
         "mcp_servers",
         "apps",
@@ -1029,15 +1030,11 @@ def test_doctor_json_mode_is_machine_readable(
         {"name": "claude", "available": True, "reason": ""},
         {"name": "codex", "available": False, "reason": "codex not installed: brew install codex"},
     ]
-    # runtimes report install status for each optional extra
-    assert {r["name"] for r in report["runtimes"]} == {
-        "temporal",
-        "api",
-        "openai-api",
-        "dbos",
-        "serve",
-        "mcp",
-    }
+    # runtimes report install status for each optional extra; dbos and
+    # fastmcp are base dependencies, reported (and gated on) separately.
+    assert {r["name"] for r in report["runtimes"]} == {"temporal", "api", "openai-api"}
+    assert [d["module"] for d in report["dependencies"]] == ["dbos", "fastmcp", "httpx"]
+    assert all(d["installed"] is True for d in report["dependencies"])
     assert all(isinstance(r["installed"], bool) for r in report["runtimes"])
 
 
@@ -1158,7 +1155,7 @@ def test_doctor_human_mode_renders_checklist_with_driver_reason(
     assert "✓ claude driver" in out
     assert "✗ codex driver" in out
     # "api" is both a driver and an extra; each line says which it is.
-    assert "Optional extras (runtime dependencies):" in out
+    assert "Optional extras:" in out
     assert out.count("[api] extra") == 1
     assert "\n  ✓ api\n" not in out and "\n  ✗ api\n" not in out
     assert "codex not installed: brew install codex" in out  # reason shown inline

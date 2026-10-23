@@ -113,7 +113,7 @@ from rote.adapters._py_common import emit_extracted_module as _shared_emit_extra
 from rote.adapters._py_common import emit_signature_module as _shared_emit_signature_module
 from rote.ir import Node, NodeKind, Pipeline
 
-#: The DBOS the emitted main.py targets (rote's own `dbos` extra pins the same).
+#: The DBOS the emitted main.py targets (rote-cli's own dbos dependency pins the same).
 DBOS_REQUIREMENT = "dbos>=3.3,<4"
 
 # ───────── Adapter configuration ─────────

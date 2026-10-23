@@ -48,8 +48,6 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS  # noqa: E402
 
 from rote.adapters import get_adapter  # noqa: E402

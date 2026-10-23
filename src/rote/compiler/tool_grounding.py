@@ -287,7 +287,7 @@ async def discover(
 
     try:
         from rote.mcp._runtime_helper import mcp_client
-    except ImportError as e:  # the mcp extra is not installed
+    except ImportError as e:  # a broken install without fastmcp
         for name in names:
             _skip(name, f"no MCP client ({e})")
         return {}

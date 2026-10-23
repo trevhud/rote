@@ -17,11 +17,19 @@ from typing import Any
 
 import pytest
 
+from rote import __version__
 from rote.adapters import get_adapter
 from rote.adapters._common import judge_override_readme, unimplemented_stubs
 from rote.cli import main as cli_main
 from rote.eval.empirical import failure_excerpt
-from rote.extras import EXTRAS, extra_for_missing_module, install_hint
+from rote.extras import (
+    ALIAS_EXTRAS,
+    BASE_MODULES,
+    EXTRAS,
+    install_hint,
+    missing_module_in,
+    reinstall_hint,
+)
 from rote.ir import Pipeline, load_pipeline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -65,13 +73,27 @@ def test_install_commands_are_only_spelled_in_rote_extras() -> None:
 
 
 def test_install_hint_spells_the_pypi_distribution() -> None:
-    assert install_hint("dbos") == "pip install 'rote-cli[dbos]'"
+    assert install_hint("temporal") == "pip install 'rote-cli[temporal]'"
+    assert reinstall_hint() == f"pip install 'rote-cli=={__version__}'"
+
+
+def test_install_hint_refuses_an_alias_extra() -> None:
+    """``rote-cli[dbos]`` installs nothing beyond the base set, so a hint
+    naming it would send someone to a command that changes nothing."""
+    for alias in ALIAS_EXTRAS:
+        with pytest.raises(ValueError, match="empty alias"):
+            install_hint(alias)
 
 
 def test_every_known_extra_exists_in_pyproject() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    declared = set(pyproject["project"]["optional-dependencies"])
-    assert set(EXTRAS) <= declared
+    optional = pyproject["project"]["optional-dependencies"]
+    assert set(EXTRAS) <= set(optional)
+    # The aliases resolve (declared) and install nothing (empty), so an old
+    # `rote-cli[dbos]` command keeps working and means the base install.
+    assert {alias: optional[alias] for alias in ALIAS_EXTRAS} == {a: [] for a in ALIAS_EXTRAS}
+    base = {re.split(r"[<>=!~\[ ]", d, maxsplit=1)[0] for d in pyproject["project"]["dependencies"]}
+    assert set(BASE_MODULES) <= base
 
 
 def test_doctor_hints_use_rote_cli(capsys: pytest.CaptureFixture[str]) -> None:
@@ -81,13 +103,45 @@ def test_doctor_hints_use_rote_cli(capsys: pytest.CaptureFixture[str]) -> None:
         "version": "0",
         "python": "3",
         "drivers": [{"name": "api", "available": False, "reason": "missing"}],
-        "runtimes": [{"name": "dbos", "installed": False}],
+        "dependencies": [{"module": "dbos", "used_for": "x", "installed": False}],
+        "runtimes": [{"name": "temporal", "installed": False}],
         "mcp_servers": [],
         "apps": [],
         "ok": False,
     }
     lines = _render_doctor_text(report).splitlines()
-    assert "  ✗ [dbos] extra — pip install 'rote-cli[dbos]'" in lines
+    assert "  ✗ [temporal] extra — pip install 'rote-cli[temporal]'" in lines
+    reinstall = f"pip install 'rote-cli=={__version__}'"
+    assert "  ✗ dbos (x) — missing" in lines
+    assert lines[-1] == f"✗ this install is missing dbos: {reinstall}"
+
+
+def test_doctor_is_not_ready_while_a_base_dependency_is_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`rote doctor` said "ready to compile" with dbos and fastmcp missing,
+    and the first compile (dbos is the default runtime) then failed."""
+    import importlib.util
+
+    monkeypatch.setattr("rote.cli.available_drivers", lambda: [("claude", True, "")])
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "fastmcp" else real_find_spec(name, *a),
+    )
+    assert cli_main(["doctor", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is False
+    assert {d["module"]: d["installed"] for d in report["dependencies"]} == {
+        "dbos": True,
+        "fastmcp": False,
+        "httpx": True,
+    }
+    # Negative half: the same machine with fastmcp present is ready.
+    monkeypatch.setattr(importlib.util, "find_spec", real_find_spec)
+    assert cli_main(["doctor"]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "✓ ready to compile"
 
 
 # ───────── 1/2a. failure excerpts: the end of stderr, plus the hint ─────────
@@ -118,23 +172,28 @@ def test_failure_excerpt_short_output_is_untouched() -> None:
     assert failure_excerpt("boom\n") == "boom"
 
 
-def test_failure_excerpt_appends_the_extra_for_a_missing_module() -> None:
-    stderr = (
-        'Traceback (most recent call last):\n  File "main.py", line 31\n'
-        "ModuleNotFoundError: No module named 'dbos'\n"
+def test_failure_excerpt_appends_the_fix_for_a_missing_module() -> None:
+    def tail(module: str) -> str:
+        stderr = (
+            'Traceback (most recent call last):\n  File "main.py", line 31\n'
+            f"ModuleNotFoundError: No module named '{module}'\n"
+        )
+        return failure_excerpt(stderr).splitlines()[-1]
+
+    assert tail("dbos") == (
+        "hint: the app imports `dbos`, a rote-cli dependency missing from this install "
+        f"(restore it with: pip install 'rote-cli=={__version__}')"
     )
-    text = failure_excerpt(stderr)
-    assert text.splitlines()[-1] == (
-        "hint: the app imports `dbos`, which the dbos extra provides: pip install 'rote-cli[dbos]'"
+    assert tail("temporalio") == (
+        "hint: the app imports `temporalio`, from the temporal extra "
+        "(pip install 'rote-cli[temporal]')"
     )
 
 
 def test_missing_module_outside_the_extras_gets_no_hint() -> None:
-    assert extra_for_missing_module("ModuleNotFoundError: No module named 'requests'") is None
-    assert extra_for_missing_module("ModuleNotFoundError: No module named 'openai.types'") == (
-        "openai",
-        "openai-api",
-    )
+    assert missing_module_in("ModuleNotFoundError: No module named 'requests'") is None
+    assert missing_module_in("ModuleNotFoundError: No module named 'openai.types'") == "openai"
+    assert missing_module_in("ModuleNotFoundError: No module named 'fastmcp.client'") == "fastmcp"
 
 
 # ───────── 2b/1. `rote run` preflight ─────────
@@ -201,10 +260,26 @@ def test_run_preflight_passes_once_stubs_are_filled(
     assert json.loads(capsys.readouterr().out) == {"ok": True}
 
 
-@pytest.mark.parametrize(("runtime", "extra"), [("dbos", "dbos"), ("temporal", "temporal")])
-def test_run_names_the_missing_extra(
+@pytest.mark.parametrize(
+    ("runtime", "module", "fix"),
+    [
+        (
+            "dbos",
+            "dbos",
+            "`dbos`, a rote-cli dependency missing from this install "
+            f"(restore it with: pip install 'rote-cli=={__version__}')",
+        ),
+        (
+            "temporal",
+            "temporalio",
+            "`temporalio`, from the temporal extra (pip install 'rote-cli[temporal]')",
+        ),
+    ],
+)
+def test_run_names_the_missing_dependency(
     runtime: str,
-    extra: str,
+    module: str,
+    fix: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -220,7 +295,6 @@ def test_run_names_the_missing_extra(
         (app / "workflow.py").write_text("", encoding="utf-8")
         (app / "activities.py").write_text("", encoding="utf-8")
     real_find_spec = importlib.util.find_spec
-    module = EXTRAS[extra]
     monkeypatch.setattr(
         importlib.util,
         "find_spec",
@@ -228,10 +302,7 @@ def test_run_names_the_missing_extra(
     )
     rc = cli_main(["run", str(app), "--input", "{}"])
     assert rc == 2
-    assert capsys.readouterr().err.strip() == (
-        f"error: running a {runtime} app requires the {extra} extra: "
-        f"pip install 'rote-cli[{extra}]'"
-    )
+    assert capsys.readouterr().err.strip() == f"error: running a {runtime} app needs {fix}"
 
 
 # ───────── 4. `rote emit` reports stubs in plain text ─────────
@@ -850,26 +921,29 @@ def test_config_rows_align(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_install_hint_follows_the_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A uv tool install has no pip: the hint re-runs `uv tool install`
-    with the extras it already has plus the missing one. Under uvx the
-    next call names the extra. Anything else gets pip."""
-    from rote.extras import install_hint
-
+    with the extras it already has plus the missing one (an alias extra the
+    receipt still names is dropped: it installs nothing). Under uvx the
+    next call names the extra. Anything else gets pip. The reinstall hint
+    follows the same split and pins the running version."""
     tool = tmp_path / "uv" / "tools" / "rote-cli"
     tool.mkdir(parents=True)
     (tool / "uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{ name = "rote-cli", extras = ["temporal"] }]\n',
+        '[tool]\nrequirements = [{ name = "rote-cli", extras = ["temporal", "dbos"] }]\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("sys.prefix", str(tool))
-    assert install_hint("dbos") == "uv tool install 'rote-cli[dbos,temporal]'"
+    assert install_hint("api") == "uv tool install 'rote-cli[api,temporal]'"
+    assert reinstall_hint() == f"uv tool install --reinstall 'rote-cli[temporal]=={__version__}'"
 
     ephemeral = tmp_path / "cache" / "archive-v0" / "Xq9"
     ephemeral.mkdir(parents=True)
     monkeypatch.setattr("sys.prefix", str(ephemeral))
-    assert install_hint("dbos") == "uvx --from 'rote-cli[dbos]' rote ..."
+    assert install_hint("temporal") == "uvx --from 'rote-cli[temporal]' rote ..."
+    assert reinstall_hint() == f"uvx --reinstall --from 'rote-cli=={__version__}' rote ..."
 
     monkeypatch.setattr("sys.prefix", str(tmp_path / "venv"))
-    assert install_hint("dbos") == "pip install 'rote-cli[dbos]'"
+    assert install_hint("temporal") == "pip install 'rote-cli[temporal]'"
+    assert reinstall_hint() == f"pip install 'rote-cli=={__version__}'"
 
 
 def test_an_apps_one_line_error_survives_runtime_noise_after_it() -> None:

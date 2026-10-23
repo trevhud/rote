@@ -67,6 +67,38 @@ def test_the_package_requires_pytest_without_any_extra() -> None:
     assert isinstance(deps, list) and any(d.startswith("pytest") for d in deps)
 
 
+def test_dbos_and_fastmcp_are_base_requirements_and_their_extras_are_empty() -> None:
+    """The compile default (dbos) and the first-run demo (dbos plus MCP)
+    failed on a plain `pip install rote-cli` while both were extras.
+
+    Read the installed metadata, as the wheel carries it: dbos and fastmcp
+    must be unconditional, and `[dbos]`, `[mcp]`, `[serve]` must still be
+    declared extras (an old command resolves) that add nothing."""
+    from importlib.metadata import metadata, requires
+
+    from rote.extras import ALIAS_EXTRAS
+
+    reqs = requires("rote-cli") or []
+    unconditional = {
+        re.split(r"[<>=!~\[ ;]", r, maxsplit=1)[0] for r in reqs if "extra ==" not in r
+    }
+    assert {"dbos", "fastmcp", "httpx"} <= unconditional, sorted(unconditional)
+    provided = set(metadata("rote-cli").get_all("Provides-Extra") or [])
+    assert set(ALIAS_EXTRAS) <= provided
+    for alias in ALIAS_EXTRAS:
+        assert not [r for r in reqs if f'extra == "{alias}"' in r], alias
+
+
+def test_base_dependencies_import() -> None:
+    """A base dependency is never skipped around in this suite; it must import."""
+    import importlib
+
+    from rote.extras import BASE_MODULES
+
+    for module in BASE_MODULES:
+        importlib.import_module(module)
+
+
 @pytest.mark.slow
 def test_an_installed_wheel_resolves_the_demo_inside_itself(tmp_path: Path) -> None:
     """`rote try` reads the demo from the install, not a checkout. Build

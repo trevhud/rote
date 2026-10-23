@@ -38,8 +38,6 @@ import pytest
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-
 from fastmcp import Client  # noqa: E402
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS  # noqa: E402
 

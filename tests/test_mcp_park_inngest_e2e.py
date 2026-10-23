@@ -42,9 +42,6 @@ from rote.mcp.parked import parse_auth_park_markers
 from rote.mcp.release import release_parked_workflows
 from tests import _node_trees as node_trees
 from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
-
-pytest.importorskip("fastmcp")
-
 from tests.test_inngest_e2e import (  # noqa: E402 — reuse the proven live harness
     INNGEST_CLI_SPEC,
     _DevServer,

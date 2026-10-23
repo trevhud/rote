@@ -207,7 +207,6 @@ def test_a_fixture_set_round_trips_as_its_shareable_json() -> None:
 def test_a_pipeline_process_reaches_the_fake_and_nothing_else_of_the_vendor(
     tmp_path: Path, store: SpecStore
 ) -> None:
-    pytest.importorskip("httpx")
     api = _api(store, tmp_path / "log.jsonl")
     script = textwrap.dedent(
         """
@@ -461,8 +460,6 @@ def test_an_api_pipeline_is_scored_against_the_skill_through_the_fake(
     scoring the pipeline 0.0 (it was a ValueError, scored as a dead run)."""
     bad = variant == "bad_request"
     monkeypatch.setenv("DOCK_SECRET", "the-users-real-value")
-    pytest.importorskip("dbos")
-    pytest.importorskip("httpx")
     import yaml
 
     from rote.bench.fidelity import pipeline_fidelity
@@ -742,7 +739,6 @@ def test_a_read_keys_as_the_mcp_response_its_fixture_names(tmp_path: Path) -> No
 
 def test_an_api_case_without_http_fixtures_stops_the_bench(tmp_path: Path) -> None:
     """Nothing to answer its vendor calls: the bench's mistake, not a 0.0."""
-    pytest.importorskip("dbos")
     import yaml
 
     from rote.bench.fidelity import pipeline_fidelity

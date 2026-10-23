@@ -256,8 +256,8 @@ def test_dbos_emits_the_helper_verbatim(tmp_path: Path) -> None:
     assert "fastmcp" not in requirements
 
 
-def test_helper_fastmcp_requirement_matches_the_package_extras() -> None:
-    """One verified range: the extras rote installs with and the range the
+def test_helper_fastmcp_requirement_matches_the_package_dependency() -> None:
+    """One verified range: the fastmcp rote installs with and the range the
     emitted helper advertises are the same string."""
     import tomllib
 
@@ -266,10 +266,7 @@ def test_helper_fastmcp_requirement_matches_the_package_extras() -> None:
     pyproject = tomllib.loads(
         (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
     )
-    extras = pyproject["project"]["optional-dependencies"]
-    pins = {
-        dep for name in ("mcp", "serve", "dev") for dep in extras[name] if dep.startswith("fastmcp")
-    }
+    pins = {d for d in pyproject["project"]["dependencies"] if d.startswith("fastmcp")}
     assert pins == {_runtime_helper.FASTMCP_REQUIREMENT}
 
 
@@ -713,7 +710,6 @@ def test_call_mcp_tool_maps_a_real_401_to_auth_needed(status: int) -> None:
     other failure status passes through as an ordinary error. Under
     fastmcp 4 both arrive as the same bare MCPError, so this pins the
     distinction the transport hook has to make."""
-    pytest.importorskip("fastmcp")
     from rote.mcp import _runtime_helper as helper
 
     server = _StatusServer(status)
@@ -815,7 +811,7 @@ def test_result_payload_is_plain_json_from_a_real_fastmcp_server() -> None:
     """
     import pickle
 
-    fastmcp = pytest.importorskip("fastmcp")
+    import fastmcp
     from fastmcp.tools import ToolResult
     from mcp.types import TextContent
 

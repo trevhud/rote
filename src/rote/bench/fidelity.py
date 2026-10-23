@@ -233,11 +233,10 @@ def _require_fixture_runtime() -> None:
     import importlib.util
 
     if importlib.util.find_spec("fastmcp") is None:
-        from rote.extras import install_hint
+        from rote.extras import dependency_hint
 
         raise FixtureError(
-            "fidelity cases with fixture MCP servers need fastmcp, which this "
-            f"install does not have: {install_hint('mcp')}"
+            f"fidelity cases with fixture MCP servers need {dependency_hint('fastmcp')}"
         )
 
 

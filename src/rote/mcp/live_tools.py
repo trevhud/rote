@@ -15,9 +15,8 @@ tools. Everything protocol-neutral lives here:
   registry (``rote mcp add`` / ``rote mcp login``) into driver specs —
   the compile-time analog of the baseline's registry wiring.
 
-fastmcp is an optional dependency (the ``mcp`` extra, see :mod:`rote.extras`) —
-everything here imports it lazily and fails with that hint, matching
-:mod:`rote.mcp.auth`.
+fastmcp is imported lazily, and a broken install that lacks it fails with
+:func:`rote.extras.dependency_hint`, matching :mod:`rote.mcp.auth`.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from rote.extras import install_hint
+from rote.extras import dependency_hint
 from rote.mcp.registry import declared_read_only
 
 #: A single wedged tools/call must become a reportable tool failure, never
@@ -144,8 +143,7 @@ class LiveMcpTools:
             import fastmcp  # noqa: F401
         except ImportError as e:
             raise RuntimeError(
-                "live MCP tools require the fastmcp client — "
-                f"install it with: {install_hint('mcp')}"
+                f"live MCP tools need the fastmcp client: {dependency_hint('fastmcp')}"
             ) from e
 
         for spec in self._servers:

@@ -57,7 +57,7 @@ from rote.compiler.system1.structure import MODELS as STRUCTURE_MODELS
 from rote.compiler.system1.tiebreak import DEFAULT_TIEBREAK
 from rote.compiler.verify import EmitTarget
 from rote.contracts import check_contracts
-from rote.extras import EXTRAS, install_hint
+from rote.extras import BASE_MODULES, EXTRAS, dependency_hint, install_hint, reinstall_hint
 from rote.inference import PROVIDERS as INFERENCE_PROVIDERS
 from rote.ir import Pipeline, load_pipeline
 
@@ -609,7 +609,7 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     compile-time analog of the baseline's registry wiring. The
     subprocess drivers (claude / codex) don't take the kwarg, so
     resolution only happens when the run will actually use an in-process
-    driver. Never fatal: a missing ``mcp`` extra or an unauthenticated
+    driver. Never fatal: a missing fastmcp or an unauthenticated
     server prints a note to stderr and is skipped.
     """
     name = agent
@@ -630,7 +630,7 @@ def _live_mcp_specs_for_driver(agent: str | None) -> list[dict[str, Any]] | None
     except ImportError:
         print(
             "rote compile: mcp — registered servers not wired into the "
-            f"compiler (install the extra: {install_hint('mcp')})",
+            f"compiler ({dependency_hint('fastmcp')})",
             file=sys.stderr,
         )
         return None
@@ -2029,10 +2029,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     try:
         from rote.serve.server import build_server
-    except ImportError as e:
+    except ModuleNotFoundError as e:
+        if e.name is None or e.name.split(".")[0] not in BASE_MODULES:
+            raise
         print(
-            f"error: fastmcp is not installed ({e}). "
-            f"Install the serve extra: {install_hint('serve')}",
+            f"error: rote serve needs {dependency_hint(e.name.split('.')[0])}",
             file=sys.stderr,
         )
         return 2
@@ -3035,14 +3036,27 @@ def _build_doctor_report() -> dict[str, Any]:
         {"name": extra, "installed": importlib.util.find_spec(module) is not None}
         for extra, module in EXTRAS.items()
     ]
+    # Base dependencies a working install always has. The compile default
+    # (dbos) and every MCP step need them, so one missing fails the check
+    # however many drivers are available.
+    dependencies = [
+        {
+            "module": module,
+            "used_for": used_for,
+            "installed": importlib.util.find_spec(module) is not None,
+        }
+        for module, used_for in BASE_MODULES.items()
+    ]
     return {
         "version": __version__,
         "python": platform.python_version(),
         "drivers": drivers,
+        "dependencies": dependencies,
         "runtimes": runtimes,
         "mcp_servers": _doctor_mcp_servers(),
         "apps": _doctor_apps(),
-        "ok": any(bool(d["available"]) for d in drivers),
+        "ok": any(bool(d["available"]) for d in drivers)
+        and all(bool(d["installed"]) for d in dependencies),
     }
 
 
@@ -3064,7 +3078,15 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append("  note: CLI subscription auth (claude/codex) is only verified at run time.")
     lines.append("")
 
-    lines.append("Optional extras (runtime dependencies):")
+    lines.append("Dependencies (always installed with rote-cli):")
+    for dep in report["dependencies"]:
+        if dep["installed"]:
+            lines.append(f"  ✓ {dep['module']} ({dep['used_for']})")
+        else:
+            lines.append(f"  ✗ {dep['module']} ({dep['used_for']}) — missing")
+    lines.append("")
+
+    lines.append("Optional extras:")
     for runtime in report["runtimes"]:
         if runtime["installed"]:
             lines.append(f"  ✓ [{runtime['name']}] extra")
@@ -3097,7 +3119,13 @@ def _render_doctor_text(report: dict[str, Any]) -> str:
     lines.append("  (MCP and app issues are informational — they do not fail this check.)")
     lines.append("")
 
-    lines.append("✓ ready to compile" if report["ok"] else "✗ no compiler driver available")
+    missing = [str(d["module"]) for d in report["dependencies"] if not d["installed"]]
+    if missing:
+        lines.append(f"✗ this install is missing {', '.join(missing)}: {reinstall_hint()}")
+    elif report["ok"]:
+        lines.append("✓ ready to compile")
+    else:
+        lines.append("✗ no compiler driver available")
     return "\n".join(lines)
 
 
@@ -4004,22 +4032,20 @@ def _cmd_example(args: argparse.Namespace) -> int:
         print(f"  {line}" if line else "")
     from rote.extras import DISTRIBUTION
 
-    print(
-        f"\nNo rote on PATH? Prefix each command with `uvx --from {DISTRIBUTION}`, "
-        f"or `uvx --from '{DISTRIBUTION}[dbos]'` for the dbos ones."
-    )
+    print(f"\nNo rote on PATH? Prefix each command with `uvx --from {DISTRIBUTION}`.")
     return 0
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only preflight: is a compilation set up to succeed before spending money?
 
-    Reports the rote/Python versions, which compiler drivers are usable
-    (the load-bearing gate), which optional runtime deps are installed,
-    the auth state of every registered MCP server, and every emitted app
-    rote knows about. Exits non-zero only when NO compiler driver is
-    available, so it doubles as a scriptable gate; MCP and app findings
-    are informational.
+    Reports the rote/Python versions, which compiler drivers are usable,
+    whether the base dependencies are importable, which optional extras
+    are installed, the auth state of every registered MCP server, and
+    every emitted app rote knows about. Exits non-zero when NO compiler
+    driver is available or a base dependency is missing (the two
+    load-bearing gates), so it doubles as a scriptable gate; MCP and app
+    findings are informational.
     """
     report = _build_doctor_report()
     if args.json:

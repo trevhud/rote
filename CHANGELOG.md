@@ -9,6 +9,20 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **dbos and fastmcp are base dependencies.** `pip install rote-cli` now
+  installs what the default compile runtime (dbos) and the first-run demo
+  need; a fresh install used to fail its first compile and its first demo
+  run without `[dbos]` and `[mcp]`. The `dbos`, `mcp` and `serve` extras
+  stay as empty aliases, so `rote-cli[dbos]` and friends still resolve.
+  The install grows by about 78 MB (67 packages) in a clean venv.
+  `rote doctor` checks the base dependencies, says which is missing with
+  the command that restores it (`pip install 'rote-cli==<version>'`, or
+  `uv tool install --reinstall`), and fails its check when one is; it used
+  to say "ready to compile" with them missing. Every install hint for
+  them now names that reinstall instead of an extra that installs nothing.
+
 ### Fixed
 
 - **The structure pass keeps an order the skill states without a data

@@ -34,10 +34,13 @@ nothing and tells you whether a run can even succeed:
 uvx --from rote-cli rote doctor --json
 ```
 
-`--json` gives `{version, python, drivers:[{name,available,reason}], runtimes,
-mcp_servers:[{name,url,auth}], apps, ok}`. Gate on `ok` (true iff at least one
-compiler driver is available — `rote doctor` also exits non-zero when none is).
-Each unavailable driver's `reason` is an actionable fix. It also surfaces MCP
+`--json` gives `{version, python, drivers:[{name,available,reason}],
+dependencies:[{module,used_for,installed}], runtimes, mcp_servers:[{name,url,auth}],
+apps, ok}`. Gate on `ok` (true iff at least one compiler driver is available and
+every base dependency imports — `rote doctor` also exits non-zero otherwise).
+Each unavailable driver's `reason` is an actionable fix, and a missing
+dependency's line names the reinstall command. `runtimes` lists the optional
+extras (temporal, api, openai-api); dbos and fastmcp are base dependencies. It also surfaces MCP
 servers whose auth is `expired`/`not authenticated` (those would park a run) and
 registered apps whose directory has gone missing. It does NOT probe CLI
 subscription auth for claude/codex — that's only verified at run time.

@@ -42,7 +42,7 @@ from rote._dbos import dbos_system_database_url as _dbos_system_database_url
 from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
-from rote.extras import extra_for_missing_module, install_hint
+from rote.extras import dependency_hint, missing_module_in
 from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS, build_subscription_env
 from rote.ir import NodeKind, Pipeline
 from rote.xdg import data_home
@@ -219,13 +219,9 @@ def failure_excerpt(stderr: str, stdout: str = "", limit: int = FAILURE_EXCERPT_
             text = f"{headers[-1]}\n{omitted}\n{cut}"
         else:
             text = f"{omitted}\n{cut}"
-    missing = extra_for_missing_module(stderr or stdout)
+    missing = missing_module_in(stderr or stdout)
     if missing is not None:
-        module, extra = missing
-        text += (
-            f"\nhint: the app imports `{module}`, which the {extra} extra provides: "
-            f"{install_hint(extra)}"
-        )
+        text += f"\nhint: the app imports {dependency_hint(missing)}"
     return text
 
 
@@ -614,9 +610,7 @@ def _send_dbos_signals(system_database_url: str, workflow_id: str, signals: dict
     try:
         from dbos import DBOSClient
     except ImportError as e:
-        raise EmpiricalError(
-            f"signaling a gated pipeline requires the dbos extra: {install_hint('dbos')}"
-        ) from e
+        raise EmpiricalError(f"signaling a gated pipeline needs {dependency_hint('dbos')}") from e
     client = DBOSClient(system_database_url=system_database_url)
     # DBOS notifications persist per-topic, so sending before the
     # workflow reaches its recv() is safe — the gate picks the payload

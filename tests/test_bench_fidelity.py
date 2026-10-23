@@ -347,7 +347,6 @@ def test_fixture_server_answers_from_fixtures_and_logs_every_call(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Started as the bench starts it, called through rote's own MCP client."""
-    pytest.importorskip("fastmcp")
     from rote.bench.fidelity import Case, CaseFile, fixture_servers, read_calls
     from rote.mcp._runtime_helper import call_mcp_tool
 
@@ -485,7 +484,7 @@ def test_a_missing_fixture_runtime_stops_the_bench_instead_of_scoring_zero(
     )
     case = fidelity.Case(id="c", description="", input={}, gates=[], fixtures={})
     with (
-        pytest.raises(fidelity.FixtureError, match="need fastmcp"),
+        pytest.raises(fidelity.FixtureError, match="need `fastmcp`, a rote-cli dependency"),
         fidelity.fixture_servers(casefile, case, tmp_path / "w"),
     ):
         pass
@@ -499,8 +498,6 @@ def test_a_misnamed_tool_argument_is_refused_and_blamed_on_the_binding(
     tool that takes `query`. The fixture refuses it, the case lists the
     refused call with the reason, and the failure is the mcp binding's,
     not a replay of the node's impl (here a stub that never runs)."""
-    pytest.importorskip("dbos")
-    pytest.importorskip("fastmcp")
     import yaml
 
     from rote.bench.fidelity import pipeline_fidelity
@@ -615,7 +612,6 @@ def test_a_failed_run_names_the_node_and_line_that_raised(tmp_path: Path) -> Non
     """DBOS re-raises a step's error without its traceback; the replay
     rebuilds the failing node's inputs from what DBOS recorded and finds
     the line. Breaks the gold expense-audit at a known line to check it."""
-    pytest.importorskip("dbos")
     import shutil
 
     from rote.adapters import get_adapter

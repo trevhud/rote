@@ -33,6 +33,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import fastmcp  # noqa: E402,F401  (a base dependency: fail, never skip)
 import pytest
 
 from rote.adapters.dbos_ts import DbosTsAdapter
@@ -42,9 +43,6 @@ from rote.mcp import clear_token_file, write_token_file
 from rote.mcp.release import release_parked_workflows
 from tests import _node_trees as node_trees
 from tests._helpers import attempts_in, count_ts_step_attempts, unconfigured_mcp_pipelines
-
-dbos = pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
-pytest.importorskip("fastmcp")
 
 pytestmark = pytest.mark.slow
 
