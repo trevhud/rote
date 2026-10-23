@@ -321,7 +321,7 @@ def test_skill_trial_wires_mcp_config_into_claude(
     assert "mcp__slack__*" in allowed.split(",")
 
 
-def test_skill_trial_without_mcp_passes_no_mcp_flags(
+def test_skill_trial_without_mcp_is_strict_with_an_empty_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     skill_dir = tmp_path / "skill"
@@ -336,8 +336,15 @@ def test_skill_trial_without_mcp_passes_no_mcp_flags(
 
     run_skill_trial(skill_dir, {}, model="m", executable=str(fake))
     args = (dump / "args.txt").read_text(encoding="utf-8").splitlines()
-    assert "--mcp-config" not in args
-    assert "--strict-mcp-config" not in args
+    # No pipeline server is no server at all, never the user's own set.
+    assert "--strict-mcp-config" in args
+    written = json.loads((dump / "mcp-config.json").read_text(encoding="utf-8"))
+    assert written == {"mcpServers": {}}
+    assert args[args.index("--permission-mode") + 1] == "dontAsk"
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert args[args.index("--tools") + 1] == "Read,Write,Edit,Glob,Grep"
+    allowed = args[args.index("--allowedTools") + 1].split(",")
+    assert not [t for t in allowed if t.startswith("mcp__")]
 
 
 # ───────── Reliability flags ─────────

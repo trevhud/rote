@@ -27,25 +27,28 @@ whose writes the user has said are acceptable to fire once.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
 from rote.eval.empirical import (
-    MCP_CONFIG_FILENAME,
     RESULT_FILENAME,
     EmpiricalError,
     MeasuredRun,
     _reliability_flags,
     _skill_prompt,
     measured_run_record,
+    permission_denials,
+    skill_run_isolation_args,
 )
-from rote.inference import build_subscription_env
+from rote.eval.gate_server import GATE_SERVER
+from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS, build_subscription_env
 
 BASELINE_DIRNAME = "baseline"
 METRICS_FILENAME = "metrics.json"
@@ -101,7 +104,11 @@ def derive_input_payload(
                 prompt,
                 "--model",
                 model,
-                "--allowedTools",
+                # Isolated like every other claude -p rote spawns: a reading
+                # task with no tools, no MCP server and none of the user's
+                # settings (whose permission mode could approve a tool).
+                *CLI_CONTEXT_ISOLATION_FLAGS,
+                "--tools",
                 "",
                 "--output-format",
                 "json",
@@ -184,22 +191,25 @@ def mcp_servers_from_registry() -> dict[str, dict[str, Any]]:
 
 async def read_only_allowlist(
     server_names: list[str],
-) -> tuple[list[str], dict[str, str]]:
+) -> tuple[list[str], list[str], dict[str, str]]:
     """Per-server allowlist of tools safe to fire without ``--allow-writes``.
 
     Connects to each server (same non-interactive auth resolution as
     emitted workflow code) and allows exactly the tools whose
-    ``readOnlyHint`` annotation is true. Returns ``(allowed, skipped)``:
-    ``allowed`` as ``mcp__<server>__<tool>`` ids, and ``skipped`` mapping
-    each server that contributed nothing to the reason (unreachable, not
-    authenticated, or simply declaring no read-only tools) — callers
-    surface these as non-blocking recommendations.
+    ``readOnlyHint`` annotation is true. Returns ``(allowed, denied,
+    skipped)``: ``allowed`` and ``denied`` as ``mcp__<server>__<tool>`` ids
+    (the listed tools the gate lets through, and the ones it keeps out),
+    and ``skipped`` mapping each server that contributed nothing to the
+    reason (unreachable, not authenticated, or simply declaring no
+    read-only tools) — callers surface these as non-blocking
+    recommendations.
     """
     from rote.mcp._runtime_helper import RoteMcpAuthNeeded, mcp_client
     from rote.mcp.live_tools import mcp_tool_id, read_only_tools
     from rote.mcp.registry import declared_read_only
 
     allowed: list[str] = []
+    denied: list[str] = []
     skipped: dict[str, str] = {}
     for server in server_names:
         try:
@@ -214,7 +224,7 @@ async def read_only_allowlist(
             continue
         # The one readOnlyHint predicate, shared with the in-process
         # compiler drivers so the two gates cannot drift.
-        read_only = [t.name for t in read_only_tools(tools, declared_read_only(server))]
+        read_only = {t.name for t in read_only_tools(tools, declared_read_only(server))}
         if not read_only:
             skipped[server] = (
                 f"no tools declare readOnlyHint ({len(tools)} tools total) — "
@@ -223,34 +233,92 @@ async def read_only_allowlist(
             )
             continue
         allowed.extend(mcp_tool_id(server, name) for name in sorted(read_only))
-    return allowed, skipped
+        denied.extend(
+            mcp_tool_id(server, name) for name in sorted({t.name for t in tools} - read_only)
+        )
+    return allowed, denied, skipped
 
 
-def resolve_mcp_wiring(
-    *, allow_writes: bool
-) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, str]]:
+@dataclass(frozen=True)
+class McpWiring:
+    """What one ``claude -p`` skill run may reach over MCP."""
+
+    #: mcp-config entries for the servers the run can see. A server that
+    #: contributes no callable tool is left out, so the run cannot see it
+    #: at all, and ``skipped`` says why.
+    servers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: ``--allowedTools`` MCP entries: explicit ids under the read-only
+    #: gate, ``mcp__<server>__*`` with writes allowed.
+    allowed: list[str] = field(default_factory=list)
+    #: ``--disallowedTools``: the wired servers' tools the gate keeps out.
+    denied: list[str] = field(default_factory=list)
+    #: ``{server: why}`` for registered servers the run does not get.
+    skipped: dict[str, str] = field(default_factory=dict)
+
+
+def resolve_mcp_wiring(*, allow_writes: bool) -> McpWiring:
     """The full MCP wiring decision for one ``claude -p`` skill run.
 
-    Returns ``(servers, allowed_tool_ids, skipped)``: the registry-wide
-    mcp-config entries, the tool allowlist (read-only gate applied unless
-    ``allow_writes``), and per-server reasons for contributing nothing.
-    Shared by the baseline and ``rote run`` so both make identical
-    auth/side-effect decisions.
+    The registry-wide mcp-config entries, the tool allowlist (read-only
+    gate applied unless ``allow_writes``) and its deny list, and
+    per-server reasons for contributing nothing. Shared by the baseline and
+    ``rote run`` so both make identical auth/side-effect decisions.
     """
     import asyncio
 
     servers = mcp_servers_from_registry()
-    skipped: dict[str, str] = {}
-    mcp_tool_ids: list[str] = []
-    if servers:
-        if allow_writes:
-            mcp_tool_ids = [f"mcp__{name}__*" for name in sorted(servers)]
+    if not servers:
+        return McpWiring()
+    if allow_writes:
+        return McpWiring(servers=servers, allowed=[f"mcp__{name}__*" for name in sorted(servers)])
+    allowed, denied, skipped = asyncio.run(read_only_allowlist(sorted(servers)))
+    return McpWiring(
+        servers={name: entry for name, entry in servers.items() if name not in skipped},
+        allowed=allowed,
+        denied=denied,
+        skipped=skipped,
+    )
+
+
+def _wire_name(server: str) -> str:
+    """A server name as Claude Code spells it inside a tool id."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", server)
+
+
+def missing_named_servers(
+    skill_dir: Path,
+    observations: list[ObservedToolCall],
+    *,
+    wired: Mapping[str, Any],
+    skipped: Mapping[str, str],
+    denied_tools: Sequence[str] = (),
+) -> dict[str, str]:
+    """``{server: why}`` for the servers the skill names that the run never called.
+
+    The skill's servers come from static detection
+    (:func:`rote.compiler.tool_grounding.servers_named`), the calls from the
+    transcript. A skill run without one of them still "succeeds": the agent
+    substitutes whatever it can find, so the gap must be said, with the fix.
+    """
+    from rote.compiler.tool_grounding import servers_named
+
+    registered = (set(wired) | set(skipped)) - {GATE_SERVER}
+    called = {_wire_name(o.server) for o in observations}
+    missing: dict[str, str] = {}
+    for server in servers_named(skill_dir, registered):
+        if _wire_name(server) in called:
+            continue
+        prefix = f"mcp__{_wire_name(server)}__"
+        refused = sorted({t for t in denied_tools if t.startswith(prefix)})
+        if refused:
+            missing[server] = "the read-only gate refused " + ", ".join(refused)
+        elif server in wired:
+            missing[server] = "wired, but the run never called it"
+        elif server in skipped:
+            missing[server] = skipped[server]
         else:
-            mcp_tool_ids, skipped = asyncio.run(read_only_allowlist(sorted(servers)))
-            # A server contributing zero allowed tools stays wired (its
-            # tools just aren't callable) — cheaper than rewriting config,
-            # and the strictness lives in --allowedTools anyway.
-    return servers, mcp_tool_ids, skipped
+            missing[server] = f"not registered with rote: rote mcp add {server} <url>"
+    return missing
 
 
 # ───────── Transcript observation (pure, testable) ─────────
@@ -334,11 +402,12 @@ def run_baseline_trial(
     *,
     model: str,
     max_turns: int = 60,
-    allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
     mcp_tool_ids: list[str] | None = None,
+    denied_mcp_tool_ids: list[str] | None = None,
     executable: str = "claude",
     timeout_seconds: float = 1800.0,
     mcp_servers: dict[str, dict[str, Any]] | None = None,
+    servers_skipped: Mapping[str, str] | None = None,
     min_expected_turns: int | None = None,
     output_fields: list[str] | None = None,
     extra_instructions: str | None = None,
@@ -351,9 +420,14 @@ def run_baseline_trial(
     every tool_use/tool_result pair is captured. Returns
     ``(measured_run, observations, transcript_lines)``.
 
-    ``mcp_tool_ids`` is the explicit tool allowlist (read-only gate);
-    pass ``["mcp__<server>__*" ...]`` wildcards to lift the gate.
-    ``output_fields`` names fields result.json must carry, and
+    The child is isolated by :func:`rote.eval.empirical.skill_run_isolation_args`:
+    it sees ``mcp_servers`` and no other server, and calls only what
+    ``mcp_tool_ids`` names (the read-only gate's explicit ids; pass
+    ``["mcp__<server>__*" ...]`` wildcards to lift it). Everything else is
+    denied, ``denied_mcp_tool_ids`` out of the model's context too.
+    ``servers_skipped`` (registered servers left unwired, with why) words
+    the run's ``missing_mcp_servers``: the servers the skill names that it
+    never called. ``output_fields`` names fields result.json must carry, and
     ``extra_instructions`` is appended to the prompt before the result
     instructions (the compile bench's fidelity references use both: a fixed
     output contract, and the answers a person would give at each gate).
@@ -369,8 +443,6 @@ def run_baseline_trial(
     prompt = _skill_prompt(skill_path, input_payload, output_fields, extra_instructions)
     with tempfile.TemporaryDirectory(prefix="rote-baseline-") as workdir_str:
         workdir = Path(workdir_str)
-        if mcp_tool_ids:
-            allowed_tools = ",".join([allowed_tools, *mcp_tool_ids])
         args = [
             executable,
             "-p",
@@ -379,20 +451,15 @@ def run_baseline_trial(
             model,
             "--add-dir",
             str(skill_path),
-            "--allowedTools",
-            allowed_tools,
+            *skill_run_isolation_args(
+                workdir, skill_path, mcp_servers, mcp_tool_ids or [], denied_mcp_tool_ids or []
+            ),
             "--output-format",
             "stream-json",
             "--verbose",
             "--max-turns",
             str(max_turns),
         ]
-        if mcp_servers:
-            mcp_config_path = workdir / MCP_CONFIG_FILENAME
-            mcp_config_path.write_text(
-                json.dumps({"mcpServers": mcp_servers}, indent=2), encoding="utf-8"
-            )
-            args += ["--mcp-config", str(mcp_config_path), "--strict-mcp-config"]
         started = time.monotonic()
         try:
             proc = subprocess.run(
@@ -454,6 +521,15 @@ def run_baseline_trial(
     elif output is None:
         error = parse_error
     turns = meta.get("num_turns")
+    observations = extract_observations(lines)
+    denied = permission_denials(meta)
+    missing = missing_named_servers(
+        skill_path,
+        observations,
+        wired=mcp_servers or {},
+        skipped=servers_skipped or {},
+        denied_tools=denied,
+    )
     run = MeasuredRun(
         wall_seconds=wall,
         output=output,
@@ -470,10 +546,12 @@ def run_baseline_trial(
             subtype=meta.get("subtype"),
             turns=turns,
             min_expected_turns=min_expected_turns,
-            missing_mcp_servers=None,
+            missing_mcp_servers=list(missing),
         ),
+        missing_mcp_servers=missing,
+        denied_tools=denied,
     )
-    return run, extract_observations(lines), lines
+    return run, observations, lines
 
 
 # ───────── Orchestration + artifacts ─────────
@@ -516,7 +594,7 @@ def run_baseline(
     ``observed-tools.json`` (deduplicated by call — full payloads), and
     one ``trial-<n>.transcript.jsonl`` per trial.
     """
-    servers, mcp_tool_ids, skipped = resolve_mcp_wiring(allow_writes=allow_writes)
+    wiring = resolve_mcp_wiring(allow_writes=allow_writes)
 
     baseline_dir = Path(out_dir) / BASELINE_DIRNAME
     baseline_dir.mkdir(parents=True, exist_ok=True)
@@ -529,10 +607,12 @@ def run_baseline(
             input_payload,
             model=model,
             max_turns=max_turns,
-            mcp_tool_ids=mcp_tool_ids,
+            mcp_tool_ids=wiring.allowed,
+            denied_mcp_tool_ids=wiring.denied,
             executable=executable,
             timeout_seconds=timeout_seconds,
-            mcp_servers=servers or None,
+            mcp_servers=wiring.servers,
+            servers_skipped=wiring.skipped,
         )
         (baseline_dir / f"trial-{n}.transcript.jsonl").write_text(
             "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
@@ -547,8 +627,8 @@ def run_baseline(
         read_only=not allow_writes,
         runs=tuple(runs),
         observations=tuple(observations),
-        servers_wired=tuple(sorted(servers)),
-        servers_skipped=skipped,
+        servers_wired=tuple(sorted(wiring.servers)),
+        servers_skipped=wiring.skipped,
     )
 
     (baseline_dir / METRICS_FILENAME).write_text(
