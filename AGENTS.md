@@ -175,8 +175,15 @@ directly — the keys above are the whole schema, and unknown keys or
 invalid values make every command exit 2 loudly. `rote config --json`
 returns `{settings: {<key>: {value, source}}, cloud: {logged_in, url,
 user}}` — the cheap way to learn what a flagless invocation would do
-on this machine. `rote init` itself is interactive-only (exits 2
-without a TTY); never invoke it from automation.
+on this machine. `rote init` asks only a person at a terminal. Under an
+agent, without a TTY, or with `--json` it never prompts: each question
+takes its flag (`--deploy`, `--runtime`, `--agent`, `--model`,
+`--structure`, `--decider`, `--tiebreak`, `--login`), `--yes` takes the
+defaults and applies the plan, and `--force` allows replacing an
+existing config. A run missing an answer exits 2 having written nothing,
+and with `--json` prints `{"status": "action_required", "missing": [...],
+"next": [{"command": ...}]}`: relay the question to the user, then run
+`next`.
 
 ## The compile default follows the login state
 

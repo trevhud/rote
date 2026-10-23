@@ -63,6 +63,11 @@ dependencies = [
     # --backend api checks a GraphQL request against the vendor's schema
     # (rote.vendor_specs.graphql). Pure Python.
     "graphql-core>=3.3,<4",
+    # Onboarding prompts (rote.interact.prompter): checkboxes and selects,
+    # drawn on stderr, testable through prompt_toolkit's pipe input.
+    "questionary>=2.1.1,<3",
+    # Styled stderr output for onboarding (rote.interact.output).
+    "rich>=15.0.0,<16",
 ]
 
 [project.optional-dependencies]

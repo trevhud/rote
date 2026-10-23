@@ -389,14 +389,15 @@ through your API credentials.
   even where config says otherwise. Logged out, everything works
   locally exactly as before. `rote whoami` shows the account (verified
   live); `rote logout` revokes the key server-side and clears the store.
-- **`rote init`**: one-time interactive onboarding: pick where
-  compiled pipelines run (rote cloud, with login offered inline, or
-  a local runtime, with a one-line pitch for each), which compiler
-  driver does the work (availability probed live), and optionally a
-  model. Answers are saved to `~/.config/rote/config.yaml`
+- **`rote init`**: one-time onboarding: pick where compiled pipelines
+  run (rote cloud, with login offered, or a local runtime), which
+  compiler driver and model do the work, and who decides a local
+  compile's structure. It shows what it will write and asks before
+  writing. Answers are saved to `~/.config/rote/config.yaml`
   (`--project` writes a `./rote.yaml` that overrides it per-repo) and
-  every later command reads them. It's the only interactive command
-  besides login; CI never hits a prompt.
+  every later command reads them. Every question has a flag, so CI and
+  agents run it with flags and `--yes`; it never prompts without a
+  person at a terminal.
 - **`rote config`**: print every configurable default with its
   effective value *and the layer that set it*. Resolution everywhere is
   `flag > ROTE_* env (ROTE_RUNTIME, ROTE_DEPLOY, ROTE_AGENT,

@@ -286,14 +286,14 @@ def resolve(key_name: str, flag_value: str | None, *, layers: ConfigLayers) -> R
     return Resolved(value=None, source="built-in default")
 
 
-def write_config(path: Path, values: dict[str, str]) -> None:
-    """Write a config file the way ``rote init`` presents it: one
-    commented line per setting, keys in registry order."""
+def render_config(values: dict[str, str], *, origin: str = "config") -> str:
+    """A config file's text the way ``rote init`` presents it: one
+    commented line per setting, keys in registry order. Validates first."""
     for name, value in values.items():
         key = _KEYS_BY_NAME.get(name)
         if key is None:
             raise ConfigError(f"cannot write unknown setting `{name}`")
-        _validate_value(key, value, str(path))
+        _validate_value(key, value, origin)
     lines = [
         "# rote defaults — written by `rote init`, read by every command.",
         "# Precedence: flag > ROTE_* env > project rote.yaml > this file.",
@@ -301,5 +301,11 @@ def write_config(path: Path, values: dict[str, str]) -> None:
     for key in CONFIG_KEYS:
         if key.name in values:
             lines.append(f"{key.name}: {values[key.name]}  # {key.description}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
+
+
+def write_config(path: Path, values: dict[str, str]) -> None:
+    """Write :func:`render_config`'s text to ``path`` atomically."""
+    from rote.interact.plan import atomic_write_text
+
+    atomic_write_text(path, render_config(values, origin=str(path)))

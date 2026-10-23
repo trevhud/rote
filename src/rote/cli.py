@@ -3753,35 +3753,79 @@ def _cmd_whoami(args: argparse.Namespace) -> int:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    """Interactive onboarding: choose the defaults once, save them.
+    """Onboarding: choose the defaults once, save them.
 
-    The only interactive command besides login — everything else stays
-    prompt-free for CI, so a non-TTY invocation is a usage error, not a
-    hang.
+    Interactive in a terminal. Otherwise every question takes its flag, or
+    its default under ``--yes``, and a run missing one stops naming it
+    (``rote.interact``): exit 2, nothing written.
     """
-    from rote.init_wizard import WizardAborted, run_wizard
+    from rote.init_wizard import InitError, InitFlags, build_plan
+    from rote.interact.mode import Mode
+    from rote.interact.output import Output
+    from rote.interact.plan import (
+        FORCE_FLAG,
+        ConfirmationRequired,
+        apply_plan,
+        confirm_plan,
+    )
+    from rote.interact.prompter import PromptCancelled, PromptRequired, prompter_for
+    from rote.interact.report import EXIT_ACTION_REQUIRED, action_required
 
-    if not sys.stdin.isatty():
-        print(
-            "error: rote init is interactive — run it in a terminal. "
-            "Automation should write the config file directly (see `rote config`) "
-            "or pass explicit flags per command.",
-            file=sys.stderr,
-        )
-        return 2
     try:
-        run_wizard(project=args.project)
-    except WizardAborted as e:
-        print(f"rote init: {e}", file=sys.stderr)
-        return 1
-    except EOFError:
-        # stdin closed mid-wizard (Ctrl-D, or a pipe that ran dry).
-        print("\nrote init: aborted (stdin closed) — nothing was written", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        print("\nrote init: aborted", file=sys.stderr)
+        mode = Mode.resolve(json=args.json, yes=args.yes, agent_mode=args.agent_mode)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out = Output(mode)
+    prompter = prompter_for(mode)
+    flags = InitFlags(
+        deploy=args.deploy,
+        runtime=args.runtime,
+        agent=args.agent,
+        model=args.model,
+        structure=args.structure,
+        decider=args.decider,
+        tiebreak=args.tiebreak,
+        login=args.login,
+    )
+    argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
+    try:
+        plan = build_plan(flags, prompter=prompter, out=out, project=args.project)
+        out.plan(plan)
+        granted = {FORCE_FLAG} if args.force else set()
+        if not confirm_plan(plan, prompter, yes=mode.yes, granted=granted):
+            out.say("rote init: nothing was written")
+            out.result({"ok": False, "applied": False, "plan": plan.to_dict()})
+            return 1
+    except (PromptRequired, ConfirmationRequired) as e:
+        out.error(str(e))
+        out.result(action_required(e, argv))
+        return EXIT_ACTION_REQUIRED
+    except InitError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except PromptCancelled:
+        out.say("rote init: cancelled; nothing was written")
         return 130
-    return 0
+    outcomes = apply_plan(plan)
+    for outcome in outcomes:
+        line = f"  {outcome.status}: {outcome.action_id}"
+        if outcome.error:
+            line += f" ({outcome.error})"
+        out.say(line)
+    ok = all(o.status == "done" for o in outcomes)
+    if ok:
+        out.say("  see the effective setup any time with: rote config")
+        out.say("  next: rote compile <skill-dir> --out ./compiled")
+    out.result(
+        {
+            "ok": ok,
+            "applied": True,
+            "plan": plan.to_dict(),
+            "outcomes": [o.to_dict() for o in outcomes],
+        }
+    )
+    return 0 if ok else 1
 
 
 def _cmd_config(args: argparse.Namespace) -> int:
@@ -4363,6 +4407,35 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
             "(one call per node, all at once, with the claude and api drivers; "
             f"default {DEFAULT_MAX_PARALLEL}). See docs/design/parallel-generation.md"
         ),
+    )
+
+
+def _add_onboarding_mode_flags(parser: argparse.ArgumentParser) -> None:
+    """The flags every onboarding command shares (``rote.interact.mode``)."""
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="take every default and apply the plan without asking",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="allow the plan to replace a file that exists",
+    )
+    parser.add_argument(
+        "--agent-mode",
+        choices=("auto", "yes", "no"),
+        default=None,
+        help=(
+            "auto (default): an AI agent detected in the environment means no prompts; "
+            "yes: never prompt; no: a person is here (also ROTE_AGENT_MODE)"
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the plan and the outcome as one JSON object on stdout; never prompts",
     )
 
 
@@ -5338,13 +5411,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # rote init
     init_p = subparsers.add_parser(
         "init",
-        help="Interactive onboarding — pick your defaults once (hosting, runtime, driver)",
+        help="Onboarding: pick your defaults once (hosting, runtime, driver, structure)",
         description=(
-            "Walk through the choices that shape every later command — "
-            "rote cloud vs a local runtime, compiler driver, model — and "
-            "save them to a config file. Writes the user-level config "
-            "(~/.config/rote/config.yaml) by default; --project writes a "
-            "./rote.yaml that overrides it for this repo."
+            "Choose the defaults that shape every later command (rote cloud or a "
+            "local runtime, compiler driver and model, who decides a compile's "
+            "structure) and save them to a config file. Writes the user-level "
+            "config (~/.config/rote/config.yaml) by default; --project writes a "
+            "./rote.yaml that overrides it for this repo. In a terminal it asks; "
+            "otherwise each question takes its flag, or its default with --yes, "
+            "and the plan is applied only with --yes (plus --force to replace a file)."
         ),
     )
     init_p.add_argument(
@@ -5352,6 +5427,25 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write ./rote.yaml (per-repo, beats the user config) instead",
     )
+    init_p.add_argument(
+        "--deploy", choices=("rote-cloud", "none"), default=None, help="rote cloud, or local"
+    )
+    init_p.add_argument("--runtime", default=None, help="default runtime (local hosting)")
+    init_p.add_argument(
+        "--agent", default=None, help="compiler driver, or auto to detect it at run time"
+    )
+    init_p.add_argument("--model", default=None, help="compiler model ('' for the driver default)")
+    init_p.add_argument("--structure", default=None, help="haiku, sonnet or rules")
+    init_p.add_argument("--decider", default=None, help="auto, rules, clef or jev")
+    init_p.add_argument("--tiebreak", default=None, help="haiku or none")
+    login_group = init_p.add_mutually_exclusive_group()
+    login_group.add_argument(
+        "--login", dest="login", action="store_true", default=None, help="log in to rote cloud"
+    )
+    login_group.add_argument(
+        "--no-login", dest="login", action="store_false", help="do not log in to rote cloud"
+    )
+    _add_onboarding_mode_flags(init_p)
     init_p.set_defaults(func=_cmd_init)
 
     # rote config
@@ -5608,6 +5702,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return bench_main(raw[1:])
     parser = _build_parser()
     args = parser.parse_args(_resolve_retired_command(raw))
+    # The words as typed, so a command that stops for a missing flag can
+    # print the exact command to run next (rote.interact.report).
+    args.raw_argv = raw
 
     if not getattr(args, "command", None):
         # No subcommand — print a helpful banner and usage.
