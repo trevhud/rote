@@ -67,7 +67,6 @@ def test_rote_run_on_python_reports_only_that_line(
 def test_dbos_script_rejects_a_missing_input_before_launching(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    pytest.importorskip("dbos")
     app = tmp_path / "dbos"
     _emit(EXPENSE / "pipeline.yaml", "dbos", app, capsys)
     sqlite = tmp_path / "sys.sqlite"

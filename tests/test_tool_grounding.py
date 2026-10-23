@@ -329,7 +329,6 @@ def test_the_fixture_servers_serve_exactly_the_skills_bundled_snapshot(
 ) -> None:
     """One schema: what a plain compile grounds in (skill/mcp-tools.json) is
     what the fixtures enforce, read back over a real tools/list."""
-    pytest.importorskip("fastmcp")
     from rote.bench.fidelity import Case, fixture_servers, load_cases
     from rote.compiler.tool_grounding import bundled
 
@@ -388,7 +387,6 @@ def test_discovery_keeps_a_declared_output_schema(monkeypatch: pytest.MonkeyPatc
 def test_an_unreachable_server_is_skipped_with_its_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("fastmcp")
     registry = tmp_path / "mcp.json"
     registry.write_text(
         json.dumps({"version": 1, "servers": {"gone": {"url": "http://127.0.0.1:9/mcp"}}})
@@ -413,7 +411,6 @@ def test_dead_servers_are_listed_concurrently_and_time_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Four servers that never answer cost one timeout, not four."""
-    pytest.importorskip("fastmcp")
     import time
 
     held = [_hanging_server() for _ in range(4)]

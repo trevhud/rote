@@ -36,7 +36,8 @@ From the repo root:
 rote mcp add mslearn https://learn.microsoft.com/api/mcp --auth none --read-only
 rote mcp add deepwiki https://mcp.deepwiki.com/mcp --auth none --read-only
 
-# The precompiled pipeline (needs the dbos extra: SQLite, no Node, no Docker)
+# The precompiled pipeline (dbos on SQLite: no Node, no Docker; the first run
+# offers to install the dbos extra)
 rote emit examples/docs-digest/compiled/pipeline.yaml --runtime dbos --out /tmp/docs-digest-dbos
 rote run /tmp/docs-digest-dbos --input examples/docs-digest/skill/input.json
 

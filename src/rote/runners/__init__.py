@@ -36,7 +36,7 @@ from rote.eval.empirical import (
     run_pipeline_trial,
 )
 from rote.eval.gate_server import GATE_SERVER
-from rote.extras import MissingExtraError, require_extra
+from rote.extras import EXTRAS, RUNTIME_EXTRAS, MissingDependencyError, require_module
 
 __all__ = [
     "RUNNABLE_RUNTIMES",
@@ -415,11 +415,6 @@ def run_skill(
 #: Runtimes whose emitted implementations are TypeScript.
 _TS_RUNTIMES = frozenset({"cloudflare", "inngest", "dbos-ts"})
 
-#: Runtimes whose runner needs a Python extra in rote's own environment:
-#: dbos apps run under ``sys.executable`` and temporal runs its worker
-#: in-process. The TS runtimes bring their own toolchain.
-_RUNTIME_EXTRAS: dict[str, str] = {"dbos": "dbos", "temporal": "temporal"}
-
 
 def preflight_pipeline(target: RunTarget, *, allow_stubs: bool = False) -> None:
     """Refuse a run that cannot work, before anything starts or retries.
@@ -427,7 +422,10 @@ def preflight_pipeline(target: RunTarget, *, allow_stubs: bool = False) -> None:
     Two checks, both cheap and both things a newcomer hits first:
 
     * the runtime's extra is installed (otherwise the app dies on its
-      first import, behind a traceback that never says which extra);
+      first import, behind a traceback that never says how to install it).
+      ``rote run`` offers the install first
+      (:mod:`rote.setup.install_extra`); this is the refusal for a caller
+      that did not, or a person who declined;
     * no emitted ``extracted/`` module is still a stub. A stub raises on
       every call, and a durable runtime retries it per the IR's policy
       before failing, so the user waits through the retries only to
@@ -439,11 +437,11 @@ def preflight_pipeline(target: RunTarget, *, allow_stubs: bool = False) -> None:
     :func:`run_pipeline` does not repeat it.
     """
     runtime = target.runtime or ""
-    extra = _RUNTIME_EXTRAS.get(runtime)
+    extra = RUNTIME_EXTRAS.get(runtime)
     if extra is not None:
         try:
-            require_extra(extra, f"running a {runtime} app")
-        except MissingExtraError as e:
+            require_module(EXTRAS[extra].module, f"running a {runtime} app")
+        except MissingDependencyError as e:
             raise TargetError(str(e)) from e
     stubs = [] if allow_stubs else unimplemented_stubs(target.path)
     if stubs:

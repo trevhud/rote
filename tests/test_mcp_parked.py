@@ -394,7 +394,6 @@ def test_announced_login_always_prints_the_url_and_says_when_no_browser_opened(
     on a callback for a URL they never saw."""
     import asyncio
 
-    pytest.importorskip("fastmcp")
     from rote.mcp.auth import build_oauth
 
     opened_urls: list[str] = []

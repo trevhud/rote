@@ -76,7 +76,8 @@ BUNDLED: dict[str, Example] = {
             ),
             ("", "rote run {dir}/app-python --input {dir}/input.json"),
             (
-                "DBOS, with the controller's decision for the parked gate (needs the dbos extra)",
+                "DBOS, with the controller's decision for the parked gate (needs the dbos extra; "
+                "rote run offers to install it)",
                 "rote emit {dir}/expected/pipeline.yaml --runtime dbos --out {dir}/app-dbos",
             ),
             (
@@ -120,7 +121,8 @@ BUNDLED: dict[str, Example] = {
             ),
             ("", "rote mcp add deepwiki https://mcp.deepwiki.com/mcp --auth none --read-only"),
             (
-                "Emit and run the precompiled pipeline (needs the dbos extra)",
+                "Emit and run the precompiled pipeline (needs the dbos extra; rote run offers to "
+                "install it)",
                 "rote emit {dir}/compiled/pipeline.yaml --runtime dbos --out {dir}/app-dbos",
             ),
             ("", "rote run {dir}/app-dbos --input {dir}/skill/input.json"),

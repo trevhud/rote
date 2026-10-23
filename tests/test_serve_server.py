@@ -855,7 +855,8 @@ class _FakeDbosClient:
 
 @pytest.fixture()
 def fake_dbos_client(monkeypatch: pytest.MonkeyPatch) -> type[_FakeDbosClient]:
-    dbos_module = pytest.importorskip("dbos")
+    import dbos as dbos_module
+
     _FakeDbosClient.construct_error = None
     _FakeDbosClient.retrieve_error = None
     _FakeDbosClient.status = "PENDING"

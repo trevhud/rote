@@ -41,8 +41,6 @@ from tests.test_constants_reach_every_caller import EVIL
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-
 SERVER = "echo"
 
 PIPELINE = Pipeline.model_validate(

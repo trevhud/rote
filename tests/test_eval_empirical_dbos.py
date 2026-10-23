@@ -12,13 +12,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import dbos  # noqa: E402, F401
 import pytest
 
 from rote.adapters import get_adapter
 from rote.eval.empirical import run_pipeline_trial
 from rote.ir import Pipeline
-
-pytest.importorskip("dbos", reason="dbos not installed (pip install 'rote-cli[dbos]')")
 
 pytestmark = pytest.mark.slow
 

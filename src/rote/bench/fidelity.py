@@ -229,15 +229,16 @@ def _wait_for_port(
 
 
 def _require_fixture_runtime() -> None:
-    """Fail before any case runs when the fixture server cannot start."""
-    import importlib.util
+    """Fail before any case runs when the fixture server cannot start.
 
-    if importlib.util.find_spec("fastmcp") is None:
-        from rote.extras import install_hint
+    A fixture server is a FastMCP server, and the base install's fastmcp
+    is the slim client: the server half is the serve extra."""
+    from rote.extras import install_hint, is_installed
 
+    if not is_installed("serve"):
         raise FixtureError(
-            "fidelity cases with fixture MCP servers need fastmcp, which this "
-            f"install does not have: {install_hint('mcp')}"
+            "fidelity cases with fixture MCP servers need the serve extra "
+            f"(fastmcp's server half): {install_hint('serve')}"
         )
 
 

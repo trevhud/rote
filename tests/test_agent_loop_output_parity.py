@@ -40,8 +40,6 @@ from tests.test_ts_agent_loop_e2e import _MOCK_MCP, _serve_mcp
 
 pytestmark = pytest.mark.slow
 
-pytest.importorskip("fastmcp")
-
 PIPELINE = Pipeline.model_validate(
     {
         "name": "loop-output",

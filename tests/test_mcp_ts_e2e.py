@@ -31,8 +31,6 @@ from pathlib import Path
 import pytest
 
 pytestmark = pytest.mark.slow
-
-pytest.importorskip("fastmcp")
 import httpx  # noqa: E402
 
 from rote.adapters import get_adapter  # noqa: E402

@@ -44,7 +44,7 @@ from rote.eval.empirical import (
     failure_excerpt,
     usage_error,
 )
-from rote.extras import install_hint, is_installed
+from rote.extras import dependency_hint, is_installed
 from rote.mcp.parked import (
     DbosAuthChannel,
     ParkWatchFactory,
@@ -137,7 +137,7 @@ def _send_signals_portable(url: str, workflow_id: str, signals: dict[str, Any]) 
         from dbos import DBOSClient, WorkflowSerializationFormat
     except ImportError as e:
         raise EmpiricalError(
-            f"signaling a gated dbos-ts pipeline requires the dbos extra: {install_hint('dbos')}"
+            f"signaling a gated dbos-ts pipeline needs {dependency_hint('dbos')}"
         ) from e
     client = DBOSClient(system_database_url=url)
     for topic, payload in signals.items():
@@ -247,12 +247,13 @@ def run_dbos_ts(
             )
             watcher = None
             if park_watch is not None and app_parks_on_auth(app_dir):
-                # Reading the park needs the Python DBOS client, which a
-                # TS-only install may not have. The run itself does not.
+                # Reading the park needs the Python DBOS client, the dbos
+                # extra, which a TS-only install may not have. The run
+                # itself does not.
                 if not is_installed("dbos"):
                     print(
                         "rote run: note: auth parks of this run will not be reported "
-                        f"(needs the dbos extra: {install_hint('dbos')})",
+                        f"(that needs {dependency_hint('dbos')})",
                         file=sys.stderr,
                     )
                 else:
