@@ -670,8 +670,11 @@ number:
   Claude Code session Bash is always loaded, so the eval loads it on both
   sides (section 7).
 - **ops-report's compiled fidelity is lower** (0.92 against 0.97, from its
-  outputs score) on all three runs. The cause is not yet known. PR 7 must
-  explain or fix it before the default can flip.
+  outputs score) on all three runs. The cause is the compile, not the skill
+  target. The fresh compile's `open_dwell_filter` keeps each ticket's date
+  and facility but drops its ID, so `open_ticket_alerts` reads
+  `EAST1 2026-10-18` where the original reads `DW-101`. The DBOS runtime
+  from the same compile runs the same module and loses the same field.
 - **Cost from a single run is noise.** The same compiled docs-digest run
   cost $0.092 cold and $0.043 warm. The eval reports means over trials
   with the cache state recorded.
