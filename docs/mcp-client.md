@@ -549,6 +549,55 @@ the MCP spec today (device grant is an open proposal); machine
 identities (client-credentials) can be added later via the SDK's
 `extensions` providers if a server supports them.
 
+## Logging in from an agent: `--no-wait` and `--complete`
+
+An agent runs rote through a shell tool that cannot hold a command open
+while its user approves in a browser. So the login splits in two
+(`rote.mcp.pending_login`), Stripe CLI's pending-login shape:
+
+```sh
+rote mcp login figma --no-wait --yes --json   # prints authorization_url + pending_id, exits
+# the user approves in the browser
+rote mcp login --complete <pending_id> --json  # reports the stored login
+```
+
+- `--no-wait` is a Plan (contact the server, start a listener, write the
+  record, open the browser unless `--no-browser`), so without a person
+  at the terminal it needs `--yes`, and prints `action_required` JSON
+  otherwise. Its JSON is the same shape with reason
+  `authorization_pending` and two `next` commands.
+- It starts a **detached listener**: `python -m rote.mcp.pending_login
+  <id>`, in its own session, stdio on `/dev/null`, running the same
+  `rote.mcp.auth.login` as a blocking login on the usual
+  `CALLBACK_PORTS` selection (so the CIMD redirect URIs still match).
+  It hands the authorization URL back over a pipe and keeps waiting.
+  A listener that inherited the caller's stdout would make the shell
+  tool wait for it, and one in the caller's process group would die with
+  the tool's cleanup; `tests/test_mcp_login_no_wait_e2e.py` checks both.
+- The PKCE verifier and `state` exist only in the listener's memory.
+  The `state` is printed only inside the authorization URL, which has to
+  reach the browser. The record
+  (`<token dir>/pending-logins/<id>.json`, 0600 in a 0700 dir) holds the
+  server, its URL, the listener's pid and port, status, and a result
+  summary with no credential in it.
+- A callback whose `state` is wrong is dropped before it counts, for the
+  blocking login too: the login keeps waiting for the real browser, and
+  the SDK's mismatch error (which quotes the expected state) never runs.
+  `--complete` reports how many were dropped.
+- `--complete [<id>] [--wait 30]` waits a bounded time. Still waiting is
+  exit 2 with the same `authorization_pending` object; done, failed and
+  expired remove the record, so each id completes once.
+- A browser on another machine cannot reach this loopback and ends on a
+  page that fails to load. `--complete <id> --callback-url '<that URL>'`
+  replays it to the listener, only to `127.0.0.1` on the record's own
+  port. The pasted code is useless to anything else: it is single-use
+  and bound to the verifier only the listener holds.
+- The record expires after 10 minutes; the listener stops at that
+  deadline. `--cancel [<id>]` deletes the record, and the listener, which
+  watches it, exits. A second `--no-wait` for a server with a live
+  login is refused naming the first id; another server takes the next
+  free published port.
+
 ## TypeScript runtimes
 
 **Node targets (DBOS-TS, Inngest) — shipped.** MCP-bound nodes emit a

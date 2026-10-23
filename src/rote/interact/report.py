@@ -29,7 +29,7 @@ from rote.interact.prompter import PromptRequired
 #: The exit code a run that stopped for a missing answer or consent returns.
 EXIT_ACTION_REQUIRED = 2
 
-Reason = Literal["missing_answer", "confirmation_required"]
+Reason = Literal["missing_answer", "confirmation_required", "authorization_pending"]
 
 
 def next_command(argv: Sequence[str], extra: Sequence[str]) -> str:
@@ -62,4 +62,56 @@ def action_required(
         "missing": missing,
         "next": [{"command": command}],
         **extra,
+    }
+
+
+def authorization_pending(
+    *,
+    server: str,
+    pending_id: str,
+    authorization_url: str | None,
+    expires_at: float,
+    still_waiting: bool = False,
+) -> dict[str, Any]:
+    """The ``--json`` object for a login that waits on the user's browser.
+
+    The same shape as :func:`action_required`, with reason
+    ``authorization_pending``: the agent shows the user
+    ``authorization_url``, and once they say they approved it runs the
+    first ``next`` command. The second is for a browser on another machine,
+    whose return to ``localhost`` cannot load: the user copies that URL.
+
+    ``ok`` is True when the run did what it was asked (``--no-wait``
+    started the login) and False when it could not finish (``--complete``
+    while the browser has not returned yet), so ``ok`` keeps meaning "the
+    command succeeded" in every rote ``--json`` object.
+    """
+    complete = next_command(["mcp", "login", "--complete", pending_id], [])
+    if still_waiting:
+        message = (
+            f"the login for {server!r} is still waiting for the browser; ask the user to "
+            "approve it, then run the next command again"
+        )
+    else:
+        message = (
+            f"open the authorization URL in a browser and approve rote's access to "
+            f"{server!r}; then run the next command"
+        )
+    return {
+        "ok": not still_waiting,
+        "status": "action_required",
+        "reason": "authorization_pending",
+        "message": message,
+        "server": server,
+        "pending_id": pending_id,
+        "authorization_url": authorization_url,
+        "expires_at": expires_at,
+        "next": [
+            {"command": complete, "when": "the user approved access in the browser"},
+            {
+                "command": f"{complete} --callback-url <url>",
+                "when": "the browser ran on another machine: <url> is the "
+                "http://localhost:.../callback?... address it ended on",
+            },
+        ],
     }

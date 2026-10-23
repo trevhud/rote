@@ -130,6 +130,7 @@ jobs:
             tests/test_bad_input_one_line.py \
             tests/test_mcp_oauth_e2e.py \
             tests/test_mcp_oauth_registration_e2e.py \
+            tests/test_mcp_login_no_wait_e2e.py \
             tests/test_dbos_e2e.py \
             tests/test_dbos_serve_e2e.py \
             tests/test_eval_empirical_dbos.py \

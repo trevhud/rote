@@ -27,7 +27,7 @@ said yes to a plan that listed it, or because a script passed `--yes` (plus
 | `--agent auto\|yes\|no` | Supabase [`internal/utils/agent.go`](https://github.com/supabase/cli/blob/HEAD/apps/cli-go/internal/utils/agent.go) | `--agent-mode` (see Deviations) |
 | An unrecognized answer on a pipe is never consent | Supabase TS [`prompt-yes-no.ts`](https://github.com/supabase/cli/blob/HEAD/apps/cli/src/command-internal/prompt-yes-no.ts) (its Go version's default-on-timeout is the anti-pattern) | `NonInteractivePrompter` never reads stdin |
 | Plan printed inside the confirmation; side effects documented per command | Supabase [`db-push-core.ts`](https://github.com/supabase/cli/blob/HEAD/apps/cli/src/command-internal/db-push-core.ts), [`SIDE_EFFECTS.md`](https://github.com/supabase/cli/blob/HEAD/apps/cli/src/commands/db/push/SIDE_EFFECTS.md) | `Plan` + `Effect` records |
-| Login as a two-step resumable flow (`--non-interactive`, then `--complete`) | Stripe [`pkg/login/oauth_pending.go`](https://github.com/stripe/stripe-cli/blob/HEAD/pkg/login/oauth_pending.go), [`cmd/login.go`](https://github.com/stripe/stripe-cli/blob/HEAD/pkg/cmd/login.go) | `rote mcp login --no-wait` / `--complete` (PR 5) |
+| Login as a two-step resumable flow (`--non-interactive`, then `--complete`) | Stripe [`pkg/login/oauth_pending.go`](https://github.com/stripe/stripe-cli/blob/HEAD/pkg/login/oauth_pending.go), [`cmd/login.go`](https://github.com/stripe/stripe-cli/blob/HEAD/pkg/cmd/login.go) | `rote mcp login --no-wait` / `--complete` (PR 4, `rote.mcp.pending_login`) |
 | Output channels as capabilities, not branches | uv [`printer.rs`](https://github.com/astral-sh/uv/blob/HEAD/crates/uv-command-support/src/printer.rs) | `rote.interact.output.Output` (`say` to stderr, `result` to stdout) |
 | Steps that see earlier answers; cancel as a value | clack [`group.ts`](https://github.com/bombshell-dev/clack/blob/HEAD/packages/prompts/src/group.ts), [`core/utils`](https://github.com/bombshell-dev/clack/blob/HEAD/packages/core/src/utils/index.ts) | `SetupContext.results`; `PromptCancelled` |
 | Plan/apply split; a trivial plan never prompts; JSON mode refuses rather than auto-approving | Terraform [`backend_apply.go`](https://github.com/hashicorp/terraform/blob/HEAD/internal/backend/local/backend_apply.go), [`arguments/apply.go`](https://github.com/hashicorp/terraform/blob/HEAD/internal/command/arguments/apply.go) | `confirm_plan`: empty plan needs nothing, `--json` without `--yes` stops |
@@ -400,8 +400,11 @@ defaults step, and `rote init` stays as an alias.
 ## Open items the follow-up PRs own
 
 - **`rote init --login` without a person** is refused (the device flow polls
-  for a browser approval nobody can give). It works once `rote login` gets the
-  `--no-wait` / `--complete` split.
+  for a browser approval nobody can give). That is the rote cloud login;
+  `rote mcp login` has the `--no-wait` / `--complete` split now (PR 4, see
+  docs/mcp-client.md), and `rote login` needs its own, which can follow
+  Stripe more closely (the device code, not a listener, is what the pending
+  record would hold).
 - **Two raw `input()` prompts remain in `cli.py`**: the baseline-input confirm
   ("Run the baseline with this input?") and the "Send them?" confirm. They
   predate this layer; move both onto `Prompter` + `Plan` (the baseline run is a

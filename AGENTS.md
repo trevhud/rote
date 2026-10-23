@@ -325,5 +325,12 @@ released automatically. Full details, including releasing runs when the
 credential was fixed another way (`rote mcp release <server>`), are in
 [`docs/mcp-client.md`](docs/mcp-client.md).
 
+From an agent's shell, `rote mcp login <server>` would block on the
+browser. Use the split instead: `rote mcp login <server> --no-wait --yes
+--json` prints `authorization_url` and `pending_id`; show the URL to the
+user, and once they say they approved it, run `rote mcp login --complete
+<pending_id> --json`. Exit 2 from `--complete` means the browser has not
+returned yet; ask and run it again.
+
 To expose a deployed pipeline back to an agent as an MCP tool, see
 `rote register` + `rote serve` and [`docs/mcp-trigger.md`](docs/mcp-trigger.md).

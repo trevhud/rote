@@ -199,7 +199,15 @@ async def token(name: str, request: Request) -> Response:
     form = dict(await request.form())
     grant_type = form.get("grant_type")
     client_id = str(form.get("client_id", ""))
-    log("token", issuer=issuer(name), grant_type=grant_type, client_id=client_id)
+    # The verifier is logged so a test can prove rote never printed or stored it.
+    verifier_sent = form.get("code_verifier")
+    log(
+        "token",
+        issuer=issuer(name),
+        grant_type=grant_type,
+        client_id=client_id,
+        **({"code_verifier": str(verifier_sent)} if verifier_sent else {}),
+    )
     if grant_type == "authorization_code":
         record = CODES.pop(str(form.get("code", "")), None)
         if record is None or record["as"] != name or record["client_id"] != client_id:
