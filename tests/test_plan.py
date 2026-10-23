@@ -11,6 +11,7 @@ import yaml
 
 from rote.ir import Pipeline, load_pipeline
 from rote.plan import (
+    PLACEHOLDER,
     PLAN_FORMAT,
     PlanError,
     build_plan,
@@ -186,15 +187,66 @@ def test_gate_answer_schema_follows_the_declared_output(
 
 def test_an_agent_loop_carries_its_tools_cap_and_output_contract() -> None:
     steps = _steps(build_plan(_example("bdr-outreach/expected"), mcp="live"))
-    [loop] = [s for s in steps.values() if s["kind"] == "loop"][:1]
+    loop = steps["lead_generation_loop"]
+    assert loop["kind"] == "loop"
     pipeline = _example("bdr-outreach/expected")
     node = pipeline.node_by_id(loop["id"])
     assert loop["tools"] == node.tools
-    assert loop["loop_body"] == (node.loop_body or [])
     assert loop["max_iterations"] == (node.termination.max_iterations if node.termination else 10)
     assert loop["output_schema"]["additionalProperties"] is False
+    # Each body sub-node rides along in full, so the driver never reads the IR.
+    enrich, vet = loop["body"]
+    assert node.loop_body == [enrich["id"], vet["id"]] == ["enrich_contact_batch", "vet_contact"]
+    enrich_node = pipeline.node_by_id("enrich_contact_batch")
+    assert (enrich["kind"], enrich["module"], enrich["symbol"]) == (
+        "call",
+        "extracted.zoominfo",
+        "enrich_batch",
+    )
+    assert enrich["constants"] == enrich_node.constants and enrich["constants"]
+    vet_spec = pipeline.node_by_id("vet_contact").signature_spec
+    assert vet_spec is not None
+    assert vet["kind"] == "judge" and vet["prompt"] == vet_spec.prompt
+    assert vet["output_schema"] == vet_spec.output_schema
+    assert vet["references"] == ["contact", "brief", "intel"]
+    assert "bindings" not in enrich and enrich["fan_param"] is None
     # Loop-body sub-nodes run inside the loop, never as top-level steps.
     assert not set(node.loop_body or ()) & set(steps)
+
+
+def test_a_loop_body_step_the_driver_cannot_run_is_refused() -> None:
+    """A legacy ``signature:`` judge has no prompt to carry, in a body as anywhere."""
+    nodes = [
+        {"id": "inner", "kind": "llm_judge", "description": "d", "signature": "signatures/i.py:I"},
+        {
+            "id": "loop",
+            "kind": "agent_loop",
+            "description": "d",
+            "tools": ["t"],
+            "loop_body": ["inner"],
+        },
+    ]
+    pipeline = _mini(nodes)
+    with pytest.raises(PlanError, match="inner: a judge needs a signature_spec"):
+        build_plan(pipeline, mcp="live")
+    recorded = _steps(build_plan(pipeline, mcp="recorded"))
+    assert recorded["loop"]["kind"] == "skip"  # the prefix never runs a loop
+
+
+def test_a_single_type_gate_takes_its_output_schema_as_the_answer() -> None:
+    """Evidence beats the type name, as for an agent loop's output."""
+    evidence = {"type": "array", "items": {"type": "string"}}
+    gate = {
+        "id": "ask",
+        "kind": "hitl_gate",
+        "description": "d",
+        "signal": "go",
+        "output": "list",
+        "output_schema": evidence,
+    }
+    assert gate_answer_schema(_mini([gate]).nodes[0]) == evidence
+    named = {k: v for k, v in gate.items() if k != "output_schema"}
+    assert gate_answer_schema(_mini([named]).nodes[0]) == {"type": "array"}
 
 
 def test_a_legacy_judge_cannot_run_live_and_skips_in_the_prefix() -> None:
@@ -255,3 +307,85 @@ def test_the_plan_hash_follows_the_plan_bytes() -> None:
     edited = pipeline.model_copy(deep=True)
     edited.node_by_id("pick_reading_list").constants = {"result_count": 3}
     assert plan_hash(plan_text(build_plan(edited, mcp="live"))) != plan_hash(text)
+
+
+def _emitted_interpolate() -> Any:
+    """The ``_interpolate`` a real emitted judge module defines."""
+    namespace: dict[str, Any] = {}
+    exec(compile(_emitted_judge_source(), "judge", "exec"), namespace)
+    return namespace["_interpolate"]
+
+
+def _emitted_judge_source() -> str:
+    from rote.adapters._py_common import emit_signature_module
+    from rote.ir import Node
+
+    out = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    node = Node.model_validate(
+        {
+            "id": "j",
+            "kind": "llm_judge",
+            "description": "d",
+            "signature_spec": {
+                "prompt": "p",
+                "input_schema": {"type": "object", "properties": {}},
+                "output_schema": out,
+            },
+        }
+    )
+    return emit_signature_module(
+        node,
+        anthropic_default_model="m",
+        openai_default_model="m",
+        generated_by="t",
+        regen_command="t",
+        context_note="t",
+    )
+
+
+def _values_for(references: list[str]) -> dict[str, Any]:
+    """Input under which every reference resolves (a leaf another one reads into is a dict)."""
+    values: dict[str, Any] = {}
+    for ref in sorted(references, key=lambda r: -r.count(".")):
+        *parents, leaf = ref.split(".")
+        here = values
+        for part in parents:
+            here = here.setdefault(part, {})
+        here.setdefault(leaf, "v")
+    return values
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Score {{ opportunity.arr }} against {{scoring_rubric}} for {{ opportunity.account_name }}",
+        "{{a}}{{ a.b.c }} {{ a.b.c }}",
+        "nothing here: {single}, {{ not-a-ref }}, {{ }}",
+        "{{ 9lives }} and {{ _x }}",
+    ],
+)
+def test_judge_references_are_exactly_what_the_emitted_judge_reads(prompt: str) -> None:
+    """With every reference present the emitted ``_interpolate`` renders the whole
+    prompt; with any one missing it raises. So the references are what it reads."""
+    interpolate = _emitted_interpolate()
+    references = judge_references(prompt)
+    values = _values_for(references)
+    rendered = interpolate(prompt, values)
+    assert not PLACEHOLDER.search(rendered)
+    for ref in references:
+        top = ref.split(".")[0]
+        with pytest.raises(KeyError):
+            interpolate(prompt, {k: v for k, v in values.items() if k != top})
+    # Text that is not a reference stays as written, on both sides.
+    for literal in ("{single}", "{{ not-a-ref }}", "{{ }}"):
+        if literal in prompt:
+            assert literal in rendered
+
+
+def test_every_placeholder_regex_comes_from_one_constant() -> None:
+    from rote.adapters._common import PROMPT_PLACEHOLDER
+    from rote.adapters._ts_common import _INTERPOLATE_HELPER
+
+    assert PLACEHOLDER.pattern == PROMPT_PLACEHOLDER
+    assert f"/{PROMPT_PLACEHOLDER}/g" in _INTERPOLATE_HELPER
+    assert f're.sub(r"{PROMPT_PLACEHOLDER}", _resolve, template)' in _emitted_judge_source()

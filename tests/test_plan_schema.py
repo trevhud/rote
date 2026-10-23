@@ -16,7 +16,6 @@ item counts) are stricter here on purpose, and tested on their own below.
 from __future__ import annotations
 
 import copy
-import json
 import sys
 import types
 from pathlib import Path
@@ -174,10 +173,30 @@ def _corpus(schema: dict[str, Any]) -> list[tuple[str, Any]]:
 
 def _pydantic_verdict(model: type[pydantic.BaseModel], value: Any) -> tuple[bool, Any]:
     try:
-        dumped = model.model_validate(value).model_dump(by_alias=True)
+        return True, model.model_validate(value).model_dump(by_alias=True)
     except pydantic.ValidationError:
         return False, None
-    return True, json.loads(json.dumps(dumped))
+
+
+def _same(a: Any, b: Any) -> bool:
+    """Equal values of the same types throughout: ``3`` is not ``3.0`` here."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
+def _check(label: str, schema: dict[str, Any], model: type[pydantic.BaseModel], cases: Any) -> None:
+    for case, value in cases:
+        accepted, dumped = _pydantic_verdict(model, value)
+        errors = schema_errors(schema, value)
+        assert (not errors) == accepted, (label, case, errors)
+        if accepted:
+            ours = project(schema, value)
+            assert _same(ours, dumped), (label, case, ours, dumped)
 
 
 @pytest.mark.parametrize(("label", "node"), JUDGES, ids=[label for label, _ in JUDGES])
@@ -190,12 +209,71 @@ def test_verdicts_and_projections_match_the_emitted_models(label: str, node: Nod
     ):
         cases = _corpus(schema)
         assert len(cases) >= 4, (label, side)
-        for case, value in cases:
-            accepted, dumped = _pydantic_verdict(model, value)
-            errors = schema_errors(schema, value)
-            assert (not errors) == accepted, (label, side, case, errors)
-            if accepted:
-                assert project(schema, value) == dumped, (label, side, case)
+        _check(f"{label} {side}", schema, model, cases)
+
+
+_A = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+_AB = {
+    "type": "object",
+    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+    "required": ["a"],
+}
+
+#: Shapes the example corpus lacks, where a union's branch or a number's type
+#: decides what the model dumps. ``(name, the value's schema, cases)``.
+PROBES: list[tuple[str, dict[str, Any], list[tuple[str, Any]]]] = [
+    # Smart mode: the branch with the most fields set wins, not the first match.
+    ("more fields win", {"anyOf": [_A, _AB]}, [("a and b", {"a": 1, "b": 2}), ("a", {"a": 1})]),
+    ("tie goes left", {"anyOf": [_AB, _A]}, [("a", {"a": 1}), ("a and b", {"a": 1, "b": 2})]),
+    ("number dumps a float", {"type": "number"}, [("int", 3), ("float", 3.0), ("half", 3.5)]),
+    ("integer dumps an int", {"type": "integer"}, [("int", 3), ("integral float", 3.0)]),
+    (
+        "exact number type wins",
+        {"anyOf": [{"type": "integer"}, {"type": "number"}]},
+        [("int", 3), ("float", 3.0), ("half", 3.5)],
+    ),
+    (
+        "exact number type wins, reversed",
+        {"anyOf": [{"type": "number"}, {"type": "integer"}]},
+        [("int", 3), ("float", 3.0)],
+    ),
+    (
+        "oneOf is a union",
+        {"oneOf": [{"type": "string"}, {"type": "integer"}]},
+        [("string", "x"), ("int", 2), ("neither", [1]), ("null", None)],
+    ),
+    (
+        "nullable enum",
+        {"anyOf": [{"type": "string", "enum": ["a", "b"]}, {"type": "null"}]},
+        [("a", "a"), ("null", None), ("other", "c")],
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "schema", "cases"), PROBES, ids=[p[0] for p in PROBES])
+def test_probes_match_the_emitted_model(
+    name: str, schema: dict[str, Any], cases: list[tuple[str, Any]]
+) -> None:
+    root = {"type": "object", "properties": {"v": schema}, "required": ["v"]}
+    node = Node.model_validate(
+        {
+            "id": "probe",
+            "kind": "llm_judge",
+            "description": "d",
+            "signature_spec": {"prompt": "p", "input_schema": root, "output_schema": root},
+        }
+    )
+    _, model = _models(name, node)
+    _check(name, root, model, [(case, {"v": value}) for case, value in cases])
+
+
+def test_the_probes_pin_what_the_model_does() -> None:
+    """The cases above are not degenerate: these are the dumps they compare."""
+    assert project({"anyOf": [_A, _AB]}, {"a": 1, "b": 2}) == {"a": 1, "b": 2}
+    assert project({"anyOf": [_AB, _A]}, {"a": 1}) == {"a": 1, "b": None}
+    assert type(project({"type": "number"}, 3)) is float
+    assert type(project({"anyOf": [{"type": "number"}, {"type": "integer"}]}, 3)) is int
+    assert type(project({"anyOf": [{"type": "integer"}, {"type": "number"}]}, 3.0)) is float
 
 
 def test_the_corpus_covers_every_kind_of_judge_and_rejects_something() -> None:

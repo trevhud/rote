@@ -33,6 +33,12 @@ from rote.ir import MCPLiteral, Node, NodeKind, Pipeline
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
 
+#: A judge prompt's ``{{ dotted.path }}`` placeholder, as a regex source both
+#: Python ``re`` and JavaScript read the same way. The one definition: the
+#: emitted Python ``_interpolate`` (``_py_common``), the TS ``interpolate``
+#: (``_ts_common``) and :data:`rote.plan.PLACEHOLDER` are all built from it.
+PROMPT_PLACEHOLDER = r"\{\{\s*([\w.]+)\s*\}\}"
+
 # ───────── Judge operator knobs ─────────
 #
 # One naming convention for every runtime, Python and TypeScript alike,

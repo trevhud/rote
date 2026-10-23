@@ -277,12 +277,68 @@ def _number_errors(schema: Mapping[str, Any], value: float, path: str) -> list[s
     return errors
 
 
+def _exactness(schema: Any, value: Any, root: Mapping[str, Any]) -> int:
+    """How closely ``value`` matches a branch it validates against, as Pydantic
+    scores it: 2 exact (an int for ``integer``), 1 strict (an int for
+    ``number``; any value for an untyped branch), 0 lax (an integral float for
+    ``integer``, which strict mode refuses)."""
+    if not isinstance(schema, Mapping) or not schema:
+        return 1
+    schema = _resolve(schema, root)
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            return max(
+                _exactness(option, value, root)
+                for option in schema[key]
+                if not schema_errors(option, value, "value", root)
+            )
+    if "enum" in schema or "const" in schema:
+        return 2
+    kinds = schema.get("type")
+    if kinds is None:
+        return 1
+    allowed = [kinds] if isinstance(kinds, str) else list(kinds)
+    if isinstance(value, float) and "number" not in allowed:
+        return 0
+    if isinstance(value, int) and not isinstance(value, bool) and "integer" not in allowed:
+        return 1
+    return 2
+
+
+def _fields_set(schema: Any, value: Any, root: Mapping[str, Any]) -> int:
+    """The keys of ``value`` a model branch declares: Pydantic's ``fields_set``."""
+    if not isinstance(value, dict) or not isinstance(schema, Mapping):
+        return 0
+    properties = _resolve(schema, root).get("properties") or {}
+    return sum(1 for key in value if key in properties)
+
+
+def _union_branch(options: list[Any], value: Any, root: Mapping[str, Any]) -> Any:
+    """The branch Pydantic's smart-mode union validates ``value`` with.
+
+    Of the branches the value is valid against, the one with the most model
+    fields set, then the most exact type match, then the leftmost. Checked
+    against the real models in ``tests/test_plan_schema.py``.
+    """
+    best: tuple[tuple[int, int], Any] | None = None
+    for option in options:
+        if schema_errors(option, value, "value", root):
+            continue
+        score = (_fields_set(option, value, root), _exactness(option, value, root))
+        if best is None or score > best[0]:
+            best = (score, option)
+    if best is None:
+        raise ValueError("project() needs a value that matches the schema")
+    return best[1]
+
+
 def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> Any:
     """``value`` as the emitted judge's model dumps it. Call only on a valid value.
 
     Declared properties only (undeclared keys dropped), an omitted optional
-    property as its ``default`` or ``None``, a union through its first
-    matching branch, an integral float under ``integer`` as an int.
+    property as its ``default`` or ``None``, a union through the branch
+    Pydantic's smart mode picks (:func:`_union_branch`), an integral float
+    under ``integer`` as an int and an int under ``number`` as a float.
     """
     if not isinstance(schema, Mapping) or not schema:
         return copy.deepcopy(value)
@@ -290,14 +346,14 @@ def project(schema: Any, value: Any, root: Mapping[str, Any] | None = None) -> A
     schema = _resolve(schema, root)
     for key in ("anyOf", "oneOf"):
         if key in schema:
-            for option in schema[key]:
-                if not schema_errors(option, value, "value", root):
-                    return project(option, value, root)
-            raise ValueError("project() needs a value that matches the schema")
+            return project(_union_branch(schema[key], value, root), value, root)
     kinds = schema.get("type")
     allowed = [kinds] if isinstance(kinds, str) else list(kinds or ())
-    if "integer" in allowed and isinstance(value, float) and _is_type("integer", value):
-        return int(value)
+    if isinstance(value, float) and "number" not in allowed and "integer" in allowed:
+        return int(value)  # schema_errors let it through only if it is integral
+    is_int = isinstance(value, int) and not isinstance(value, bool)
+    if is_int and "number" in allowed and "integer" not in allowed:
+        return float(value)
     if isinstance(value, dict) and ("object" in allowed or not allowed):
         properties: Mapping[str, Any] = schema.get("properties") or {}
         if not properties:

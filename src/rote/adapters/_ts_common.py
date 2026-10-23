@@ -39,6 +39,7 @@ from typing import Any
 
 from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
+    PROMPT_PLACEHOLDER,
     _to_camel_case,
     _to_pascal_case,
     agent_loop_named_types,
@@ -233,7 +234,7 @@ def _effort_block(node_id: str) -> tuple[list[str], str]:
 
 _INTERPOLATE_HELPER = """\
 function interpolate(template: string, vars: Record<string, unknown>): string {
-    return template.replace(/\\{\\{\\s*([\\w.]+)\\s*\\}\\}/g, (_match, key: string) => {
+    return template.replace(/__PROMPT_PLACEHOLDER__/g, (_match, key: string) => {
         const value = key.split(".").reduce<unknown>(
             (acc, part) =>
                 acc != null && typeof acc === "object"
@@ -253,7 +254,7 @@ function interpolate(template: string, vars: Record<string, unknown>): string {
         return typeof value === "string" ? value : JSON.stringify(value);
     });
 }
-"""
+""".replace("__PROMPT_PLACEHOLDER__", PROMPT_PLACEHOLDER)
 
 
 def emit_signature_anthropic(

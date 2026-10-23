@@ -33,7 +33,7 @@ Step kinds, each a JSON object with ``id``, ``node_kind``, ``wave`` and
   ``signal``; a recorded plan whose sample answered the gate adds
   ``payload``.
 - ``loop``: ``description``, ``termination``, ``max_iterations``,
-  ``tools``, ``tool_servers``, ``loop_body``, ``output_schema``,
+  ``tools``, ``tool_servers``, ``body`` (each sub-node as a full step), ``output_schema``,
   ``unwrap_key``.
 - ``skip`` (recorded plans only): ``reason``. The prefix does not run it.
 """
@@ -45,6 +45,7 @@ import json
 import re
 from typing import Any, Literal
 
+from rote.adapters._common import PROMPT_PLACEHOLDER
 from rote.ir import (
     CONSTANT_ARGUMENT_KINDS,
     Node,
@@ -58,9 +59,9 @@ from rote.ir import (
 #: with another format rather than misreading it.
 PLAN_FORMAT = "rote-plan/1"
 
-#: The ``{{ dotted.path }}`` placeholder of a judge prompt, exactly as the
-#: emitted ``_interpolate`` matches it (``rote.adapters._py_common``).
-PLACEHOLDER = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
+#: The ``{{ dotted.path }}`` placeholder of a judge prompt, built from the one
+#: source the emitted ``_interpolate`` and TS ``interpolate`` are built from.
+PLACEHOLDER = re.compile(PROMPT_PLACEHOLDER)
 
 McpMode = Literal["recorded", "live"]
 
@@ -155,6 +156,91 @@ def build_plan(
     live = mcp == "live"
     recorded = _recordings(observations, tools) if not live else {}
     answers = gate_answers or {}
+
+    def fields(node: Node, kind: str, fan: str | None) -> dict[str, Any]:
+        """What a ``kind`` step needs to run ``node``, beyond its id and bindings."""
+        if kind == "gate":
+            gate: dict[str, Any] = {
+                "signal": node.signal,
+                "description": node.description.strip(),
+                "message": (node.notify.message_template or "").strip() if node.notify else "",
+                "answer_schema": gate_answer_schema(node),
+                "timeout_s": _gate_timeout_s(node, pipeline),
+            }
+            if node.id in answers:
+                # The sample says what the person answered: the gate's
+                # result, so the nodes after it run on the sample too.
+                gate["payload"] = answers[node.id]
+            return gate
+        if kind == "mcp":
+            assert node.mcp is not None
+            call: dict[str, Any] = {
+                "server": node.mcp.server,
+                "tool": node.mcp.tool,
+                "url": node.mcp.url,
+                "args": mcp_tool_arguments(node),
+                "fan_param": fan,
+                "retry": _retry(node),
+            }
+            if not live:
+                declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
+                call["observed"] = recorded.get((node.mcp.server, node.mcp.tool), [])
+                call["probe_shapes"] = probe_shapes(getattr(declared, "output_schema", None))
+            return call
+        if kind == "call":
+            assert node.impl is not None
+            module, symbol = _module_of(node.impl)
+            return {
+                "module": module,
+                "symbol": symbol,
+                "constants": node.constants,
+                "fan_param": fan,
+                "retry": _retry(node),
+            }
+        if kind == "judge":
+            spec = node.signature_spec
+            assert spec is not None
+            return {
+                "prompt": spec.prompt,
+                "references": judge_references(spec.prompt),
+                "input_schema": spec.input_schema,
+                "output_schema": spec.output_schema,
+                "fan_param": fan,
+            }
+        contract = agent_loop_output(node)
+        return {
+            "description": node.description.strip(),
+            "termination": node.termination.condition if node.termination else None,
+            "max_iterations": (
+                node.termination.max_iterations
+                if node.termination
+                else DEFAULT_AGENT_MAX_ITERATIONS
+            ),
+            "tools": list(node.tools or ()),
+            "tool_servers": dict(node.tool_servers or {}),
+            "body": [body_step(pipeline.node_by_id(i)) for i in node.loop_body or ()],
+            "output_schema": contract.schema,
+            "unwrap_key": contract.unwrap_key,
+        }
+
+    def body_step(node: Node) -> dict[str, Any]:
+        """A loop-body sub-node in full, so the driver never reads the IR. The
+        loop calls it with arguments the model builds, so its ``inputs:``
+        describe rather than bind, and it does not fan out."""
+        kind = _step_kind(node, live, backend, implementations or {}, answers)
+        if kind not in ("call", "mcp", "judge"):
+            if live:
+                raise PlanError(_no_body(node, backend))
+            return {"id": node.id, "node_kind": str(node.kind), "kind": "skip"}
+        return {
+            "id": node.id,
+            "node_kind": str(node.kind),
+            "kind": kind,
+            "description": node.description.strip(),
+            "input_schema": node.input_schema,
+            **fields(node, kind, None),
+        }
+
     steps: list[dict[str, Any]] = []
     for index, wave in enumerate(pipeline.execution_waves()):
         for node in wave:
@@ -179,70 +265,7 @@ def build_plan(
                         raise PlanError(f"{node.id}: fan_out: {e}") from e
                     steps.append(step | {"kind": "skip", "reason": f"fan_out: {e}"})
                     continue
-            step["kind"] = kind
-            if kind == "gate":
-                step |= {
-                    "signal": node.signal,
-                    "description": node.description.strip(),
-                    "message": (node.notify.message_template or "").strip() if node.notify else "",
-                    "answer_schema": gate_answer_schema(node),
-                    "timeout_s": _gate_timeout_s(node, pipeline),
-                }
-                if node.id in answers:
-                    # The sample says what the person answered: the gate's
-                    # result, so the nodes after it run on the sample too.
-                    step["payload"] = answers[node.id]
-            elif kind == "mcp":
-                assert node.mcp is not None
-                step |= {
-                    "server": node.mcp.server,
-                    "tool": node.mcp.tool,
-                    "url": node.mcp.url,
-                    "args": mcp_tool_arguments(node),
-                    "fan_param": fan,
-                    "retry": _retry(node),
-                }
-                if not live:
-                    declared = (tools or {}).get((node.mcp.server, node.mcp.tool))
-                    step["observed"] = recorded.get((node.mcp.server, node.mcp.tool), [])
-                    step["probe_shapes"] = probe_shapes(getattr(declared, "output_schema", None))
-            elif kind == "call":
-                assert node.impl is not None
-                module, symbol = _module_of(node.impl)
-                step |= {
-                    "module": module,
-                    "symbol": symbol,
-                    "constants": node.constants,
-                    "fan_param": fan,
-                    "retry": _retry(node),
-                }
-            elif kind == "judge":
-                spec = node.signature_spec
-                assert spec is not None
-                step |= {
-                    "prompt": spec.prompt,
-                    "references": judge_references(spec.prompt),
-                    "input_schema": spec.input_schema,
-                    "output_schema": spec.output_schema,
-                    "fan_param": fan,
-                }
-            else:
-                contract = agent_loop_output(node)
-                step |= {
-                    "description": node.description.strip(),
-                    "termination": node.termination.condition if node.termination else None,
-                    "max_iterations": (
-                        node.termination.max_iterations
-                        if node.termination
-                        else DEFAULT_AGENT_MAX_ITERATIONS
-                    ),
-                    "tools": list(node.tools or ()),
-                    "tool_servers": dict(node.tool_servers or {}),
-                    "loop_body": list(node.loop_body or ()),
-                    "output_schema": contract.schema,
-                    "unwrap_key": contract.unwrap_key,
-                }
-            steps.append(step)
+            steps.append(step | {"kind": kind} | fields(node, kind, fan))
     return {
         "format": PLAN_FORMAT,
         "name": pipeline.name,
@@ -317,9 +340,11 @@ def _step_kind(
     answers: dict[str, dict[str, Any]],
 ) -> str | None:
     """Which step ``node`` becomes; None when a live run has nothing to run."""
+    from rote.adapters._common import mcp_backed
+
     if node.kind is NodeKind.HITL_GATE:
         return "gate" if live or node.id in answers else "skip"
-    if node.mcp is not None and (not live or backend == "mcp"):
+    if node.mcp is not None and (not live or mcp_backed(node, "skill", backend)):
         return "mcp"
     if node.kind in CONSTANT_ARGUMENT_KINDS and node.impl is not None:
         if live:

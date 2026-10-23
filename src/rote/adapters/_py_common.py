@@ -29,6 +29,7 @@ from typing import Any
 
 from rote.adapters._common import (
     DEFAULT_AGENT_MAX_ITERATIONS,
+    PROMPT_PLACEHOLDER,
     STUB_SENTINEL,
     EmitWriter,
     _to_pascal_case,
@@ -971,9 +972,9 @@ def emit_signature_module(
                     return ""
                 return value if isinstance(value, str) else json.dumps(value, default=str)
 
-            return re.sub(r"\\{\\{\\s*([\\w.]+)\\s*\\}\\}", _resolve, template)
+            return re.sub(r"__PROMPT_PLACEHOLDER__", _resolve, template)
         '''
-    )
+    ).replace("__PROMPT_PLACEHOLDER__", PROMPT_PLACEHOLDER)
 
     if spec.client not in ("anthropic", "openai"):  # pragma: no cover — IR-validated
         raise ValueError(f"Unsupported LLM client: {spec.client!r}")
