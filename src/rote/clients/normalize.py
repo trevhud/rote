@@ -47,9 +47,11 @@ def server_identifier(name: str) -> str:
 class PlaceholderSyntax:
     """How one client writes an environment reference.
 
-    ``pattern`` must define the groups ``var`` (the variable name) and
-    optionally ``default``. ``other`` matches the client's references that
-    are not environment variables (VS Code's ``${input:id}``, a plugin's
+    ``pattern`` must define the group ``var`` (the variable name), and may
+    define ``bare`` (the name in a second spelling, such as ``$VAR`` beside
+    ``${VAR}``; a regex cannot name two groups alike) and ``default``.
+    ``other`` matches the client's references that are not environment
+    variables (VS Code's ``${input:id}``, a plugin's
     ``${CLAUDE_PLUGIN_ROOT}``), which rote cannot carry."""
 
     client: str
@@ -69,6 +71,44 @@ CLAUDE_CODE_SYNTAX = PlaceholderSyntax(
     pattern=re.compile(r"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}"),
     internal=frozenset({"CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"}),
 )
+
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+
+
+def _editor_style(client: str) -> PlaceholderSyntax:
+    """``${env:NAME}`` is the environment; every other ``${...}`` is the
+    editor's own (a folder, an input, a file), which rote cannot carry."""
+    return PlaceholderSyntax(
+        client=client,
+        pattern=re.compile(rf"\$\{{env:(?P<var>{_NAME})\}}"),
+        other=re.compile(r"\$\{(?!env:[A-Za-z_][A-Za-z0-9_]*\})[^}]*\}"),
+    )
+
+
+#: Cursor: ``${env:NAME}``, plus ``${userHome}``, ``${workspaceFolder}``,
+#: ``${workspaceFolderBasename}``, ``${pathSeparator}`` and ``${/}`` in
+#: command, args, env, url, headers and auth (cursor.com/docs/mcp.md,
+#: "Config interpolation").
+CURSOR_SYNTAX = _editor_style("cursor")
+#: VS Code's mcp.json: ``${env:NAME}``, ``${input:id}``, ``${config:...}``,
+#: ``${command:...}`` and the predefined variables
+#: (code.visualstudio.com/docs/reference/variables-reference).
+VSCODE_SYNTAX = _editor_style("vscode")
+#: Devin Desktop / Windsurf: ``${env:VAR}`` and ``${file:/path}`` in command,
+#: args, env, serverUrl, url and headers (docs.devin.ai/desktop/cascade/mcp).
+WINDSURF_SYNTAX = _editor_style("windsurf")
+
+#: The portable Copilot format (``.mcp.json``, ``~/.copilot/mcp-config.json``):
+#: ``${NAME}``, ``${NAME:-default}`` and ``$NAME`` (docs.github.com Copilot
+#: CLI command reference; VS Code's envVarResolution.ts, a port of it).
+COPILOT_SYNTAX = PlaceholderSyntax(
+    client="copilot",
+    pattern=re.compile(rf"\$\{{(?P<var>{_NAME})(?::-(?P<default>[^}}]*))?\}}|\$(?P<bare>{_NAME})"),
+)
+
+#: A client that expands nothing: every value is sent as written, so a
+#: ``${X}`` in it is a literal.
+NO_PLACEHOLDERS = PlaceholderSyntax(client="none", pattern=re.compile(r"(?!x)x(?P<var>)"))
 
 #: rote's one form, what every syntax is rewritten to.
 ROTE_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -90,7 +130,8 @@ def rewrite_placeholders(value: str, syntax: PlaceholderSyntax) -> Rewritten:
     unsupported: list[str] = []
 
     def replace(match: re.Match[str]) -> str:
-        var = match.group("var")
+        groups = match.groupdict()
+        var = groups.get("var") or groups["bare"]
         if var in syntax.internal:
             unsupported.append(match.group(0))
             return match.group(0)
@@ -131,7 +172,10 @@ def header_template(server: str, name: str, value: str, syntax: PlaceholderSynta
             f"fills in; {hint}",
         )
     residual = ROTE_REFERENCE.sub("", rewritten.template).strip().lower()
-    if not rewritten.env_vars or residual not in _SCHEME_WORDS:
+    # A ``${X}`` the client does not expand (OpenCode, Zed, Codex send it as
+    # written) must not become a reference rote would fill in.
+    literal_reference = set(ROTE_REFERENCE.findall(rewritten.template)) != set(rewritten.env_vars)
+    if not rewritten.env_vars or residual not in _SCHEME_WORDS or literal_reference:
         return HeaderVerdict(None, f"header {name}: a literal value, not copied; {hint}")
     notes = tuple(
         f"header {name}: the default for ${{{var}}} was not copied (it may be the secret itself); "
