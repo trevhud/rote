@@ -2,13 +2,13 @@
   "cost_basis": "driver_estimate",
   "driver": "claude",
   "metadata": {
-    "cache_read_tokens": 27705,
-    "cache_write_tokens": 14322,
-    "cost_usd": 0.072429,
-    "duration_ms": 14337,
+    "cache_read_tokens": 27945,
+    "cache_write_tokens": 14182,
+    "cost_usd": 0.072854,
+    "duration_ms": 14712,
     "input_tokens": 12,
     "num_turns": 6,
-    "output_tokens": 3383,
+    "output_tokens": 3458,
     "repair_rounds": 0,
     "usage_complete": true,
     "usage_source": "generations"

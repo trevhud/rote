@@ -15,5 +15,5 @@ from __future__ import annotations
 from typing import Any
 
 
-def read_repo_wiki_outline(request: dict, arg_repoName: str) -> str:
+def read_repo_outline(request: dict, arg_repoName: str) -> str:
     raise NotImplementedError("direct API for deepwiki.read_wiki_structure is not written: no recorded traffic shows its request and response, and rote does not write vendor calls from memory. The default MCP backend makes this call")

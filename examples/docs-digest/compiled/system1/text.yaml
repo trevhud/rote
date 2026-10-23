@@ -1,7 +1,7 @@
 search_microsoft_learn:
-  description: Searches Microsoft Learn with the topic as the query and returns the
-    decoded search result, an object whose results array holds each match's title
-    and link.
+  description: Searches Microsoft Learn with the topic as the search text and returns
+    the tool's decoded result, an object whose results array holds the matching articles
+    with title and contentUrl.
   output_schema:
     type: object
     properties: &id003
@@ -46,8 +46,8 @@ search_microsoft_learn:
       arg_query:
         type: string
 pick_reading_list:
-  description: Keeps the first five Microsoft Learn search results, each reduced to
-    its title and link.
+  description: Keeps the first 5 Microsoft Learn search results, each reduced to its
+    title and link.
   output_schema:
     type: object
     properties: &id004
@@ -58,14 +58,14 @@ pick_reading_list:
           properties:
             title:
               type: string
-              description: Result title
+              description: Result article title
             url:
               type: string
               description: Result link (contentUrl)
           required:
           - title
           - url
-        description: First five results in search order
+        description: First 5 search results in order
     required: &id005
     - reading_list
   output:
@@ -80,9 +80,9 @@ pick_reading_list:
       search_microsoft_learn:
         type: object
         properties: *id003
-read_repo_wiki_outline:
-  description: Calls the deepwiki read_wiki_structure tool for the input repository
-    and returns the wiki outline as text (a string, as the tool returns it).
+read_repo_outline:
+  description: Calls the deepwiki read_wiki_structure tool for the repository and
+    returns the wiki outline as text, as a string.
   output_schema:
     type: string
   input_schema:
@@ -118,5 +118,5 @@ write_digest:
         type: object
         properties: *id004
         required: *id005
-      read_repo_wiki_outline:
+      read_repo_outline:
         type: string

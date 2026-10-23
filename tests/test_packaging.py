@@ -99,4 +99,4 @@ def test_an_installed_wheel_resolves_the_demo_inside_itself(tmp_path: Path) -> N
     demo_dir, pipeline, has_input, fields = json.loads(done.stdout)
     assert Path(demo_dir) == site / "rote" / "examples" / "docs-digest"
     assert Path(pipeline).is_file() and Path(pipeline).is_relative_to(site)
-    assert has_input is True and fields == 2
+    assert has_input is True and fields == 4

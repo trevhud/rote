@@ -18,10 +18,12 @@ model call at all.
 ## What it demonstrates
 
 - **MCP-bound steps.** `search_microsoft_learn` and
-  `read_repo_wiki_outline` are bare tool calls through the emitted MCP
+  `read_repo_outline` are bare tool calls through the emitted MCP
   helper. They run in the same entry wave, concurrently.
-- **Rules lifted out of prose.** "Keep the first five results" and the
-  digest's two section names are code in `compiled/extracted/`.
+- **Rules lifted out of prose.** "Keep the first 5 results" is the
+  node constant `result_count: 5`, which the code reads, so editing it in
+  `pipeline.yaml` changes the digest. The two section names are code in
+  `compiled/extracted/`.
 - **Live data.** The servers answer from live indexes, so a run today
   can differ from the recorded one. `reference.json` says which fields
   are expected to drift and why.
@@ -56,23 +58,26 @@ recorded on 2026-10-22:
 
 | | Skill, as an agent | Compile | Pipeline |
 | --- | --- | --- | --- |
-| Wall time | 18.5 s | 34.4 s | 9.1 s, then 5.4 s |
+| Wall time | 14.9 s | 28 s | 6.6 s |
 | Turns or calls | 4 turns | 6 generations + 1 structure call | 0 model calls |
-| Cost | $0.088 | $0.079 | $0 |
+| Cost | $0.088 | $0.076 | $0 |
 | Model | claude-sonnet-4-6 | claude-sonnet-5-5, claude-haiku-5-5 | none |
 
 The skill's digest and the pipeline's digest were the same text, except
-that the pipeline ends it with a newline. Two pipeline runs five minutes
-apart got identical tool results and returned the same digest. The
-`drift` section of the reference lists what is still expected to change
-over days: the reading list first, the repo outline slowly.
+that the pipeline ends it with a newline. Five runs over 44 minutes (two
+agent runs, three pipeline runs across two compiles) got identical tool
+results. The `drift` section of the reference lists what is still
+expected to change over days: the reading list first, the repo outline
+slowly. The `fields` it compares on are the digest's sections and the
+reading list's length (equal on every run) and the two sections' text
+(expected to drift).
 
-`reference.json` also keeps the two tool results the first pipeline run
-received (`pipeline_run.tool_results`, Microsoft Learn's page excerpts
-dropped, since the pipeline reads only titles and links), so the
-compiled code can be checked offline:
-`tests/test_docs_digest_demo.py` feeds them through the extracted
-functions and requires the recorded digest back.
+`reference.json` also keeps the pipeline run's two MCP calls
+(`pipeline_run.tool_calls`: the arguments sent and the value received,
+Microsoft Learn's page excerpts dropped, since the pipeline reads only
+titles and links). `tests/test_docs_digest_demo.py` hands them to rote's
+own prefix runner as recorded calls, the interpreter verification uses,
+and requires the recorded digest back.
 
 ## Layout
 

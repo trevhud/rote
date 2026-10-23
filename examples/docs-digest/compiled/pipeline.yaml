@@ -20,17 +20,17 @@ edges:
   to: pick_reading_list
 - from: pick_reading_list
   to: write_digest
-- from: read_repo_wiki_outline
+- from: read_repo_outline
   to: write_digest
 entry_nodes:
 - search_microsoft_learn
-- read_repo_wiki_outline
+- read_repo_outline
 exit_nodes:
 - write_digest
 nodes:
-- description: Searches Microsoft Learn with the topic as the query and returns the
-    decoded search result, an object whose results array holds each match's title
-    and link.
+- description: Searches Microsoft Learn with the topic as the search text and returns
+    the tool's decoded result, an object whose results array holds the matching articles
+    with title and contentUrl.
   output:
     results: list
   output_schema:
@@ -91,8 +91,8 @@ nodes:
     backoff: exponential
   source:
     section: 1. Search Microsoft Learn
-- description: Keeps the first five Microsoft Learn search results, each reduced to
-    its title and link.
+- description: Keeps the first 5 Microsoft Learn search results, each reduced to its
+    title and link.
   output:
     reading_list: list
   output_schema:
@@ -105,14 +105,14 @@ nodes:
           properties:
             title:
               type: string
-              description: Result title
+              description: Result article title
             url:
               type: string
               description: Result link (contentUrl)
           required:
           - title
           - url
-        description: First five results in search order
+        description: First 5 search results in order
     required: &id005
     - reading_list
   input_schema:
@@ -132,12 +132,12 @@ nodes:
     search_microsoft_learn: search_microsoft_learn.output
   mandatory: true
   constants:
-    result_limit: first five
+    result_count: 5
   impl: extracted/pick_reading_list.py:pick_reading_list
   source:
     section: 2. Pick the reading list
-- description: Calls the deepwiki read_wiki_structure tool for the input repository
-    and returns the wiki outline as text (a string, as the tool returns it).
+- description: Calls the deepwiki read_wiki_structure tool for the repository and
+    returns the wiki outline as text, as a string.
   output: dict
   output_schema:
     type: string
@@ -150,13 +150,13 @@ nodes:
         required: *id002
       arg_repoName:
         type: string
-  id: read_repo_wiki_outline
+  id: read_repo_outline
   kind: external_call
   inputs:
     request: pipeline.input
     arg_repoName: pipeline.input.repo
   mandatory: true
-  impl: extracted/read_repo_wiki_outline.py:read_repo_wiki_outline
+  impl: extracted/read_repo_outline.py:read_repo_outline
   mcp:
     server: deepwiki
     tool: read_wiki_structure
@@ -190,18 +190,15 @@ nodes:
         type: object
         properties: *id004
         required: *id005
-      read_repo_wiki_outline:
+      read_repo_outline:
         type: string
   id: write_digest
   kind: pure_function
   inputs:
     request: pipeline.input
     pick_reading_list: pick_reading_list.output
-    read_repo_wiki_outline: read_repo_wiki_outline.output
+    read_repo_outline: read_repo_outline.output
   mandatory: true
-  constants:
-    first_section: Reading list
-    second_section: Repo outline
   impl: extracted/write_digest.py:write_digest
   source:
     section: 4. Write the digest

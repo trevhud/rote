@@ -1,9 +1,9 @@
 {
  "pick_reading_list": {
-  "description": "Keeps the first five Microsoft Learn search results, each reduced to its title and link.",
+  "description": "Keeps the first 5 Microsoft Learn search results, each reduced to its title and link.",
   "output_fields": [
    {
-    "description": "First five results in search order",
+    "description": "First 5 search results in order",
     "enum": [],
     "items": "object",
     "nullable": false,
@@ -12,7 +12,7 @@
     "type": "array"
    },
    {
-    "description": "Result title",
+    "description": "Result article title",
     "enum": [],
     "items": "",
     "nullable": false,
@@ -33,11 +33,11 @@
   "output_schema": {
    "properties": {
     "reading_list": {
-     "description": "First five results in search order",
+     "description": "First 5 search results in order",
      "items": {
       "properties": {
        "title": {
-        "description": "Result title",
+        "description": "Result article title",
         "type": "string"
        },
        "url": {
@@ -60,11 +60,11 @@
    "type": "object"
   }
  },
- "read_repo_wiki_outline": {
-  "description": "Calls the deepwiki read_wiki_structure tool for the input repository and returns the wiki outline as text (a string, as the tool returns it)."
+ "read_repo_outline": {
+  "description": "Calls the deepwiki read_wiki_structure tool for the repository and returns the wiki outline as text, as a string."
  },
  "search_microsoft_learn": {
-  "description": "Searches Microsoft Learn with the topic as the query and returns the decoded search result, an object whose results array holds each match's title and link."
+  "description": "Searches Microsoft Learn with the topic as the search text and returns the tool's decoded result, an object whose results array holds the matching articles with title and contentUrl."
  },
  "write_digest": {
   "description": "Builds the markdown digest with a Reading list section of linked titles and a Repo outline section holding the wiki outline as returned.",

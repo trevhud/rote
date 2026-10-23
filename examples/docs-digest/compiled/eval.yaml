@@ -31,7 +31,7 @@ steps:
   estimated_turns:
     low: 1
     high: 3
-  node_id: read_repo_wiki_outline
+  node_id: read_repo_outline
 - description: 4. Write the digest
   estimated_turns:
     low: 1
