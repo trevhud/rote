@@ -1,0 +1,21 @@
+version: 1
+source_skill: ../../skill
+steps:
+- description: Daily Executive Operations Report
+  estimated_turns:
+    low: 1
+    high: 1
+- description: 'Data sources to auto-pull:'
+  estimated_turns:
+    low: 8
+    high: 20
+- description: 'Manual data to request from user:'
+  estimated_turns:
+    low: 2
+    high: 3
+- description: 'Report format:'
+  estimated_turns:
+    low: 1
+    high: 2
+  node_id: executive_report
+notes: 'System-1 defaults: turns per step by node kind, not measured for this skill.'

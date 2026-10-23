@@ -477,17 +477,15 @@ def test_the_compile_report_says_unverified_when_pytest_is_missing(
     assert "UNVERIFIED: unverified: pytest not available" in report
 
 
-def test_the_committed_ops_report_compile_still_verifies() -> None:
-    """The snapshot of a real compile under this rubric: every pure_function
-    implemented, every generated test green, on whatever Python CI runs.
+@pytest.mark.parametrize("run", ["2026-10-18-implements-pure-functions", "2026-10-23-system1"])
+def test_the_committed_ops_report_compile_still_verifies(run: str) -> None:
+    """The snapshots of real compiles: every pure_function implemented,
+    every generated test green, on whatever Python CI runs.
 
-    Its four stubs are the mcp-bound fetches (vendor calls the default
+    Their four stubs are the mcp-bound fetches (vendor calls the default
     backend makes through MCP), which is the documented default.
     """
-    snapshot = (
-        Path(__file__).resolve().parent.parent
-        / "examples/ops-report/runs/2026-10-18-implements-pure-functions"
-    )
+    snapshot = Path(__file__).resolve().parent.parent / "examples/ops-report/runs" / run
     v = verify_deliverable(snapshot, skill_dir=snapshot.parent.parent / "skill")
     assert v.ok, (v.errors, v.tests and v.tests.output)
     assert v.tests is not None and v.tests.passed
