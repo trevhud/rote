@@ -489,15 +489,17 @@ def fake_pipx(monkeypatch: pytest.MonkeyPatch) -> str:
 def test_pipx_injects_the_apps_own_extra_keeping_the_recorded_ones(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pipx: str
 ) -> None:
-    """`pipx inject rote-cli 'rote-cli[...]'` rewrites the main package's
-    record (checked on pipx 1.11 and 1.18), so the extras already recorded
-    are carried, or a later `pipx reinstall` would drop them."""
+    """The extras the main package was installed with are carried into the
+    injected requirement, so the command names every extra the app has."""
     venv = _pipx_venv(tmp_path, "rote-cli[temporal, mcp]==0.1", name="rote-cli-dev")
     monkeypatch.setattr("sys.prefix", str(venv))
     found = installer(["dbos"])
     spec = f"rote-cli[dbos,temporal]=={__version__}"
-    assert found.argv == (fake_pipx, "inject", "rote-cli-dev", spec)
-    assert found.hint == f"pipx inject rote-cli-dev '{spec}'"
+    # --force is required: without it pipx 1.11.1 calls the app's own
+    # distribution already injected, warns, exits 0 and installs nothing.
+    # The fake pipx cannot show that; it was found on a real pipx run.
+    assert found.argv == (fake_pipx, "inject", "--force", "rote-cli-dev", spec)
+    assert found.hint == f"pipx inject --force rote-cli-dev '{spec}'"
     assert installer(reinstall=True).hint == "pipx reinstall rote-cli-dev"
 
 
@@ -523,7 +525,11 @@ def test_pipx_run_installs_through_pipx(
 
     monkeypatch.setattr("rote.runners.preflight_pipeline", preflight)
     assert cli_main(["run", str(_dbos_app(tmp_path)), "--input", "{}", "--yes"]) == 2
-    assert fake.calls == [(fake_pipx, "inject", "rote-cli", f"rote-cli[dbos]=={__version__}")]
+    # --force is required: without it pipx 1.11.1 calls the app's own
+    # distribution already injected, warns, exits 0 and installs nothing.
+    # The fake pipx cannot show that; it was found on a real pipx run.
+    spec = f"rote-cli[dbos]=={__version__}"
+    assert fake.calls == [(fake_pipx, "inject", "--force", "rote-cli", spec)]
 
 
 def test_a_with_requirement_keeps_its_marker(

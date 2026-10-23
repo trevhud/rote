@@ -347,16 +347,20 @@ def installer(extras: Iterable[str] = (), *, reinstall: bool = False) -> Install
             return Installer(hint, None, "uv is not on PATH")
         return Installer(hint, (uv, *words))
     if ctx.kind == "pipx":
-        # `pipx inject <venv> 'rote-cli[extra]'` installs into the app's own
-        # venv and rewrites the main package's record to the new
-        # requirement (checked against pipx 1.11 and 1.18), so a later
-        # `pipx reinstall` keeps the extra. Plain pip in the venv would work
+        # `pipx inject --force <venv> 'rote-cli[extra]'` installs into the
+        # app's own venv and records it as an injected package, which
+        # `pipx reinstall` injects again, so the extra survives it (checked
+        # end to end on pipx 1.11.1). Plain pip in the venv would work
         # once and be lost on that reinstall.
         venv = ctx.venv or DISTRIBUTION
         if reinstall:
             words = ["reinstall", venv]
         else:
-            words = ["inject", venv, spec((*ctx.existing, *wanted))]
+            # --force: pipx treats the app's own distribution as already
+            # injected, prints a warning and exits 0 having installed
+            # nothing (pipx 1.11.1); forced, the extra lands and survives
+            # `pipx reinstall`.
+            words = ["inject", "--force", venv, spec((*ctx.existing, *wanted))]
         hint = _join(["pipx", *words])
         if ctx.source is not None:
             return Installer(hint, None, f"this pipx app was installed from {ctx.source[1]}")

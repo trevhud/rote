@@ -23,7 +23,7 @@ While `rote` is pre-1.0, minor versions may include breaking changes.
 - **`rote run` on a dbos or temporal app whose extra is missing offers to
   install it.** It shows a plan: start the installer for how rote was
   installed (`uv tool install` keeping your extras and `--with` packages,
-  `pipx inject`, this interpreter's pip, `uv pip install --python` for a
+  `pipx inject --force`, this interpreter's pip, `uv pip install --python` for a
   venv without pip, `pip install -e` for a checkout), contacting pypi.org.
   A person confirms it; `--yes` applies it; `--json` or an agent caller
   without `--yes` gets `action_required` (exit 2) and nothing is installed.
