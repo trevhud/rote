@@ -1244,19 +1244,24 @@ def _mcp_config_for(
     for name in sorted(set(registry) | set(pins.values())):
         try:
             url = _rote_mcp.resolve_url(name, None)
+            # Checked now, sent later: a ${NAME} the environment lacks is a
+            # configuration fact, like a missing endpoint.
+            headers = _rote_mcp.registry_headers(name)
         except _rote_mcp.RoteMcpConfigError as exc:
             needed = sorted(tool for tool, server in pins.items() if server == name)
             if needed:
                 # The loop is known to need this server, and no attempt
-                # will find an endpoint that is not configured.
+                # will find an endpoint or a variable that is not configured.
                 raise _rote_mcp.RoteMcpConfigError(
                     f"agent loop tools {', '.join(needed)} are served by {name!r}: {exc}"
                 ) from None
             continue  # not known to be needed; the allowlist still binds
         config: dict[str, Any] = {"type": "http", "url": url}
-        headers = _rote_mcp.registry_headers(name)
         if headers:
-            config["headers"] = headers
+            # The CLI lane passes this config in argv, where `ps` shows it,
+            # so a header value never goes in it: claude runs the emitted
+            # helper for the headers at each connection instead.
+            config["headersHelper"] = _headers_helper_command(_rote_mcp, name)
         servers[name] = config
     allowed = [
         (server, tool)
@@ -1268,6 +1273,19 @@ def _mcp_config_for(
     ]
     removed, withheld = _withhold_writes(_rote_mcp, servers, allowed)
     return AgentMcp(servers, allowed, removed, withheld)
+
+
+def _headers_helper_command(_rote_mcp: Any, server: str) -> str:
+    """The shell command that prints ``server``'s registry headers, filled.
+
+    Runs the emitted MCP helper file itself (its ``headers`` entry point),
+    so the agent loop's config names a command, never a header value."""
+    import shlex
+    import sys
+
+    return " ".join(
+        shlex.quote(part) for part in (sys.executable, _rote_mcp.__file__, "headers", server)
+    )
 
 
 def _withhold_writes(

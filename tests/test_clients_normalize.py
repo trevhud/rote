@@ -121,6 +121,9 @@ BASE64URL22_SHAPED = "https://x.example.com/s/k3Jd9sLq2xPw8Zr4TnVb_Q/mcp"
         (SLACK_SHAPED, True),
         (HEX40_SHAPED, True),
         (BASE64URL22_SHAPED, True),
+        # Keys written in groups: no long part, but many that mix.
+        ("https://x.example.com/k/A7F2K-9QXM3-PL8RT-W4NBZ-Q6YJD/mcp", True),
+        ("https://x.example.com/k/Xk9q-pQ2m-mN7z-zL4w-wR8t-tY3u/mcp", True),
         ("https://x.example.com/w/550e8400-e29b-41d4-a716-446655440000/mcp", True),
         ("https://x.example.com/t/" + "ab12" * 8, True),  # a 32-char hex run
         ("https://mcp.figma.com/mcp", False),
@@ -150,14 +153,14 @@ def test_url_secret_risk_reads_the_form_of_each_path_segment(url: str, risky: bo
 @pytest.mark.parametrize(
     ("host", "work"),
     [
-        ("oms.acme.com", True),
-        ("acme.com", True),
-        ("acme.com:443", True),
-        ("notacme.com", False),
-        ("acme.com.evil.io", False),
+        ("oms.acme.example", True),
+        ("acme.example", True),
+        ("acme.example:443", True),
+        ("notacme.example", False),
+        ("acme.example.evil.io", False),
         (None, False),
     ],
 )
 def test_is_work_host_matches_the_domain_and_its_subdomains(host: str | None, work: bool) -> None:
-    assert is_work_host(host, ("acme.com",)) is work
+    assert is_work_host(host, ("acme.example",)) is work
     assert is_work_host(host, ()) is False

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -282,6 +283,65 @@ def test_nobody_at_the_terminal_must_answer_work_domains_for_a_skill(tmp_path: P
     assert planned.plan.actions[0].id == "write-work-domains"
 
 
+def test_only_the_user_answers_the_work_domain_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review: a project rote.yaml (or ROTE_WORK_DOMAINS) adds domains but is
+    not the user's answer. Before, a committed `work_domains: []` skipped the
+    question, let work servers be preselected, and was saved into the user's
+    config as their answer."""
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("# s\n", encoding="utf-8")
+    project = Path(os.environ["ROTE_PROJECT_CONFIG_PATH"])
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text("work_domains: []\n", encoding="utf-8")
+    flags = ImportFlags(servers_for=skill)
+    with pytest.raises(PromptRequired) as e:
+        _plan(tmp_path, YES, flags, wanted=lambda _p, _n: {})
+    assert e.value.flag == "--work-domain"
+    monkeypatch.setenv("ROTE_WORK_DOMAINS", "acme-work.example")
+    with pytest.raises(PromptRequired):
+        _plan(tmp_path, YES, flags, wanted=lambda _p, _n: {})
+    # A person's answer is saved alone; the env's domain still applies to the run.
+    planned = _plan(
+        tmp_path,
+        _person(
+            Answer("text", "--work-domain", "corp.example"),
+            Answer("checkbox", "--only", DEFAULT),
+            NO_LOGINS,
+        ),
+        flags,
+        wanted=lambda _p, _n: {"acme-wiki": "named", "deepwiki": "named"},
+    )
+    assert planned.work_domains == ("acme-work.example", "corp.example")
+    assert [r.name for r in planned.rows if r.writes] == ["deepwiki"]
+    _apply(planned)
+    assert load_config_file(user_config_path())["work_domains"] == ("corp.example",)
+    # A project/env value never writes the user's config.
+    user_config_path().unlink()
+    planned = _plan(tmp_path, YES, ImportFlags(only=("mslearn",)))
+    assert [a.id for a in planned.plan.actions] == ["write-registry"]
+
+
+def test_saving_work_domains_keeps_the_users_comments(tmp_path: Path) -> None:
+    user_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_config_path().write_text("# keep me\nruntime: temporal  # and me\n", encoding="utf-8")
+    planned = _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("acme-work.example",)))
+    [action] = planned.plan.actions
+    [effect] = action.effects
+    assert isinstance(effect, FileWrite) and effect.replaces is False
+    _apply(planned)
+    text = user_config_path().read_text(encoding="utf-8")
+    assert text.startswith("# keep me\nruntime: temporal  # and me\nwork_domains: ")
+    # A layout the line edit cannot handle is a marked replacement (--force).
+    user_config_path().write_text("{runtime: temporal}\n", encoding="utf-8")
+    planned = _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("corp.example",)))
+    [action] = planned.plan.actions
+    assert planned.plan.needed_flags() == ("--force",)
+    assert "comments are lost" in action.effects[0].describe()
+
+
 def test_an_explicit_pick_needs_no_work_domain_answer(tmp_path: Path) -> None:
     planned = _plan(tmp_path, YES, ImportFlags(only=("deepwiki",)))
     assert [a.id for a in planned.plan.actions] == ["write-registry"]
@@ -290,9 +350,9 @@ def test_an_explicit_pick_needs_no_work_domain_answer(tmp_path: Path) -> None:
 
 def test_bad_work_domains_are_refused(tmp_path: Path) -> None:
     with pytest.raises(McpImportError, match="no scheme, path or port"):
-        _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("https://acme.com",)))
+        _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("https://acme.example",)))
     with pytest.raises(McpImportError, match="cannot be combined"):
-        _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("none", "acme.com")))
+        _plan(tmp_path, YES, ImportFlags(only=(), work_domains=("none", "acme.example")))
 
 
 # ───────── the registry write ─────────

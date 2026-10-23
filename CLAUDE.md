@@ -2568,12 +2568,17 @@ three rules:
   "already registered".
 - **`work_domains` is a list setting: every layer adds, none removes**
   (`resolve_list`), so a project `rote.yaml` cannot switch off the user's
-  own. It is asked once, with no default (a default cannot know which
-  domains are work), and only when an answer matters.
+  own. Only the user answers the question (their config holding the key,
+  `--work-domain`, or the prompt); project and env values add domains but
+  never answer it and are never saved. It is asked once, with no default (a
+  default cannot know which domains are work), only when an answer matters,
+  and saved by editing just its line (`set_in_place`).
 
 A registry header's `${NAME}` is filled at connection time by one rule in
 every helper (`expand_headers`, TS `_HEADER_TEMPLATE_TS` in the Node
 helper); unset or empty is a `RoteMcpConfigError`, never an empty header.
+No filled value goes on a command line: the agent loop's `--mcp-config`
+(argv) carries a `headersHelper` running the emitted helper file instead.
 `tests/test_mcp_header_template_parity_e2e.py` pins the twins together.
 
 Client config readers (`rote.clients`) only read: never run the client,

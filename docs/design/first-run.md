@@ -292,7 +292,8 @@ does the same for `ClientContext.current()`, dropping `CLAUDE_CONFIG_DIR`,
 - **A credential-shaped URL path** (`url_secret_risk`): a path segment of 20+
   characters with Shannon entropy of 3.5+ bits per character in which one
   part, split on `-`, `_` and `.`, is 8+ characters mixing letters and
-  digits (a key's random body: `sk-ak-<body>`, `ghp_<body>`), or a 32+ hex
+  digits (a key's random body: `sk-ak-<body>`, `ghp_<body>`) or three or
+  more parts that each mix them (a grouped key, `A7F2K-9QXM3-PL8RT-...`), or a 32+ hex
   run (UUID dashes removed), sets `ImportCandidate.risk`. The part rule keeps
   slugs such as `my-awesome-server-2024` and
   `salesforce-opportunity-management-v2` importable: their letters and
@@ -514,16 +515,24 @@ client uses is registered, by endpoint).
    `--from` names. A source that is not installed is skipped.
 2. **Work domains, once.** `work_domains` is the first list setting in
    `rote.config` (`ConfigKey(kind="list")`, `resolve_list`): a YAML list of
-   domains, strict like every key (a scalar, a scheme, a path, a port or a
-   wildcard is a `ConfigError`), shown by `rote config`. Unlike a string
+   domains, strict like every key (a scalar, a scheme, a path, a port, a
+   wildcard or an IP address is a `ConfigError`, and so is an empty
+   `ROTE_WORK_DOMAINS`), shown by `rote config`. Unlike a string
    setting, every layer adds and none removes, so a committed project
    `rote.yaml` saying `work_domains: []` cannot switch off the user's own
    (Claude Code merges `deniedMcpServers` the same way). Asked when no layer
    holds the key and the answer matters: a person at the picker, or
-   `--servers-for` (a default would pick). The question has no default, so
-   even `--yes` stops on it; `--work-domain none` answers "none". The answer is
-   saved to the user config as an Action in the same plan. An explicit
-   `--only` never asks.
+   `--servers-for` (a default would pick). Only the user answers it: their
+   own config holding the key, a `--work-domain` flag, or the prompt. A
+   project `rote.yaml` or `ROTE_WORK_DOMAINS` adds domains to the run but is
+   not an answer (a committed `work_domains: []` must not stand in for the
+   user) and is never saved. The question has no default, so even `--yes`
+   stops on it; `--work-domain none` answers "none". The answer (a flag or
+   the prompt, nothing else) is saved to the user config as an Action in the
+   same plan, by editing only the `work_domains` line (`set_in_place`), so
+   comments and other lines stay; a layout the line edit cannot read back is
+   rewritten whole as a marked replacement (`--force`). An explicit `--only`
+   never asks.
 3. **Pick.** One checkbox (flag `--only`): host, client and scope, `WORK`,
    inactive reason, "needs your yes: ..." and how many settings were not
    copied; a blocked server is a row, not a choice; an endpoint already

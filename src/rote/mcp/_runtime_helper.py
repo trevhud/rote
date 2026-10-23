@@ -935,3 +935,28 @@ async def agent_tool_refusals(
         raise translated from exc
     refusals = {tool: write_refusal(server, url, tool, listed) for tool in tools}
     return {tool: why for tool, why in refusals.items() if why is not None}
+
+
+def main(argv: Sequence[str]) -> int:
+    """``python _rote_mcp.py headers <server>``: print the server's registry
+    headers, filled, as one JSON object (exit 1 naming the variable when one
+    is unset). The agent loop hands ``claude -p`` this as a ``headersHelper``,
+    so a header value is never on a command line."""
+    import sys
+
+    if len(argv) != 2 or argv[0] != "headers":
+        print("usage: python _rote_mcp.py headers <server>", file=sys.stderr)
+        return 2
+    try:
+        headers = registry_headers(argv[1])
+    except RoteMcpConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(headers or {}))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(main(sys.argv[1:]))

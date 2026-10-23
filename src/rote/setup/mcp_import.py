@@ -66,6 +66,7 @@ from rote.config import (
     parse_config_text,
     render_config,
     resolve_list,
+    set_in_place,
 )
 from rote.interact.output import Output
 from rote.interact.plan import Action, Contact, Launch, Plan, Snapshot, snapshot, write_file_action
@@ -299,11 +300,15 @@ class ImportPlanner:
             resolved = resolve_list("work_domains", flag_domains, layers=self.layers)
         except ConfigError as e:
             raise McpImportError(str(e)) from None
-        answered = resolved.is_set or bool(given)
+        # Answered only by the user: their own config, a flag, or the prompt.
+        # A project rote.yaml or ROTE_WORK_DOMAINS adds domains, but `[]`
+        # there is not the user saying they have none.
+        answered = "work_domains" in self.layers.user or bool(given)
         needed = (self.prompter.interactive or self.flags.servers_for is not None) and any(
             c.importable for c in self.found
         )
         new: tuple[str, ...] = flag_domains
+        asked = False
         if not answered and needed:
             raw = self.prompter.text(
                 "Your work domains, comma-separated (their servers are never preselected; "
@@ -313,10 +318,11 @@ class ImportPlanner:
                 validate=_domains_problem,
             )
             new = _parse_domains(raw)
-            answered = True
+            asked = True
         domains = tuple(dict.fromkeys((*resolved.values, *new)))
         user_has = self.layers.user.get("work_domains")
-        if not answered or (isinstance(user_has, tuple) and set(new) <= set(user_has)):
+        # Saved only from what the user said here: a flag or the answer.
+        if not (given or asked) or (isinstance(user_has, tuple) and set(new) <= set(user_has)):
             return domains, None
         return domains, self._config_action(new)
 
@@ -332,15 +338,27 @@ class ImportPlanner:
         kept = values.get("work_domains", ())
         assert isinstance(kept, tuple)
         merged = tuple(dict.fromkeys((*kept, *new)))
-        values["work_domains"] = merged
         shown = ", ".join(merged) if merged else "none"
+        # Only the work_domains line changes; the user's comments and other
+        # lines stay. A layout the line edit cannot handle is rewritten
+        # whole, and that loses comments, so it is a marked replacement.
+        content = (
+            set_in_place(text, "work_domains", merged, self.user_config_path)
+            if text is not None
+            else render_config({"work_domains": merged}, origin=str(self.user_config_path))
+        )
+        replaces = content is None
+        if content is None:
+            values["work_domains"] = merged
+            content = render_config(values, origin=str(self.user_config_path))
         return write_file_action(
             id="write-work-domains",
             title="Save your work domains",
             read=read,
-            content=render_config(values, origin=str(self.user_config_path)),
-            summary=f"work_domains: {shown}",
-            replaces=False,
+            content=content,
+            summary=f"work_domains: {shown}"
+            + (" (rewrites the file: its comments are lost)" if replaces else ""),
+            replaces=replaces,
             command="rote mcp import "
             + " ".join(f"--work-domain {d}" for d in (merged or (NO_WORK_DOMAINS,))),
         )

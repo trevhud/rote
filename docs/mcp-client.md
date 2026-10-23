@@ -284,7 +284,16 @@ a registry header fills it by one rule: `expand_headers` in
   value with a line break or NUL.
 - The Workers helper has no registry (its credentials are provisioned
   OAuth secrets) and the binding helper authenticates through the
-  platform, so neither has a static header to fill.
+  platform, so neither has a static header to fill. A server that
+  authenticates with a header (an API key, `Bearer ${TOKEN}`) therefore
+  cannot authenticate on Cloudflare Workers: the Workers helper sends only
+  an OAuth access token it refreshes from the provisioned secrets.
+- The Python agent loop's `claude -p --mcp-config` is argv, which `ps`
+  shows, so a header there is a `headersHelper` running the emitted helper
+  file (`python extracted/_rote_mcp.py headers <server>`), never a value. A
+  server whose variable is unset is skipped unless the loop's own tools are
+  pinned to it, which raises the config error (the TS `bindAgentTools`
+  skips the same way).
 - Skill runs (`rote run` on a skill, `rote eval --run`) hand `claude -p` a
   `headersHelper` for a templated header, so the filled value never lands
   in the `--mcp-config` file.

@@ -268,6 +268,8 @@ def domain_problem(value: str) -> str | None:
     labels = value.split(".")
     if len(value) > 253 or not all(_DOMAIN_LABEL.fullmatch(label) for label in labels):
         return "only letters, digits, hyphens and dots, like example.com"
+    if all(label.isdigit() for label in labels):
+        return "an IP address, not a domain"
     return None
 
 
@@ -400,7 +402,11 @@ class ResolvedList:
 
 
 def parse_list_env(key: ConfigKey, raw: str) -> tuple[str, ...]:
-    """A list setting's env twin: comma-separated, blank items ignored."""
+    """A list setting's env twin: comma-separated, blank items ignored. An
+    empty value is refused, as it is for a string setting: it would read as
+    "no items", which is an answer nobody gave."""
+    if not raw.strip():
+        raise ConfigError(f"{key.env}: `{key.name}` must name at least one item when set")
     return _validate_list(key, [v for v in raw.split(",") if v.strip()], key.env)
 
 
@@ -459,8 +465,42 @@ def render_config(values: Mapping[str, ConfigValue], *, origin: str = "config") 
     ]
     for key in CONFIG_KEYS:
         if key.name in values:
-            lines.append(f"{key.name}: {_render_value(values[key.name])}  # {key.description}")
+            lines.append(render_setting_line(key.name, values[key.name]))
     return "\n".join(lines) + "\n"
+
+
+def render_setting_line(name: str, value: ConfigValue) -> str:
+    """One setting's line, as :func:`render_config` writes it."""
+    return f"{name}: {_render_value(value)}  # {_KEYS_BY_NAME[name].description}"
+
+
+def set_in_place(text: str, name: str, value: ConfigValue, path: Path) -> str | None:
+    """``text`` with only setting ``name``'s line (and a block list under
+    it) replaced by ``value``, or appended; every other line, comments
+    included, kept as written. None when the result does not read back as
+    the same settings with ``name`` set to ``value`` (an unusual layout the
+    line edit cannot handle), so the caller can plan a marked replacement
+    instead."""
+    lines = text.splitlines(keepends=True)
+    line = render_setting_line(name, value) + "\n"
+    head = re.compile(rf"^{re.escape(name)}\s*:")
+    start = next((i for i, row in enumerate(lines) if head.match(row)), None)
+    if start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(line)
+    else:
+        end = start + 1
+        while end < len(lines) and lines[end].strip() and lines[end][0] in " \t-":
+            end += 1
+        lines[start:end] = [line]
+    edited = "".join(lines)
+    try:
+        expected = {**parse_config_text(text, path), name: value}
+        got = parse_config_text(edited, path)
+    except ConfigError:
+        return None
+    return edited if got == expected else None
 
 
 def write_config(path: Path, values: Mapping[str, ConfigValue]) -> None:

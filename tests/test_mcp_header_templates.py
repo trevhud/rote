@@ -157,6 +157,121 @@ def test_skill_runs_fill_templates_at_connection_never_in_a_file(
     assert "secret-value" not in json.dumps(servers)
 
 
+def test_pipeline_trials_fill_templates_at_connection_never_in_a_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The eval --run pipeline side, the same rule as the skill side."""
+    from rote.eval.empirical import mcp_servers_for_pipeline
+    from rote.ir import Pipeline
+
+    save_registry(
+        McpRegistry(
+            servers={
+                "tmpl": McpServerConfig(
+                    url="https://a.example/mcp", headers={"Authorization": "Bearer ${T}"}
+                ),
+                "lit": McpServerConfig(url="https://b.example/mcp", headers={"X-Key": "abc"}),
+            }
+        )
+    )
+    monkeypatch.setenv("T", "secret-value")
+    nodes = [
+        {
+            "id": f"call_{name}",
+            "kind": "external_call",
+            "description": "Call it.",
+            "mcp": {"server": name, "tool": "t"},
+        }
+        for name in ("tmpl", "lit")
+    ]
+    pipeline = Pipeline.model_validate(
+        {
+            "name": "p",
+            "input": {"type": "In", "required": [], "optional": []},
+            "nodes": nodes,
+            "edges": [],
+            "entry_nodes": ["call_tmpl", "call_lit"],
+            "exit_nodes": ["call_tmpl", "call_lit"],
+        }
+    )
+    servers, missing = mcp_servers_for_pipeline(pipeline)
+    assert missing == []
+    assert "headers" not in servers["tmpl"]
+    assert servers["tmpl"]["headersHelper"].endswith("-m rote mcp headers tmpl")
+    assert servers["lit"]["headers"] == {"X-Key": "abc"}
+    assert "secret-value" not in json.dumps(servers)
+
+
+def _loop_config(
+    monkeypatch: pytest.MonkeyPatch, pins: dict[str, str]
+) -> tuple[dict[str, Any], list[tuple[str, str]]]:
+    """The emitted agent loop's MCP config, with the real helper as the
+    app's extracted._rote_mcp."""
+    import sys
+    import types
+
+    from rote.inference import _runtime_helper as inference
+    from rote.mcp import _runtime_helper as mcp_helper
+
+    monkeypatch.setitem(sys.modules, "extracted", types.SimpleNamespace(_rote_mcp=mcp_helper))
+    monkeypatch.setitem(sys.modules, "extracted._rote_mcp", mcp_helper)
+    servers, allowed, _removed, _withheld = inference._mcp_config_for(["search", "lookup"], pins)
+    return servers, allowed
+
+
+def _two_servers() -> None:
+    save_registry(
+        McpRegistry(
+            servers={
+                "gh": McpServerConfig(
+                    url="https://api.example.com/mcp", headers={"Authorization": "Bearer ${GH_T}"}
+                ),
+                "open": McpServerConfig(url="https://open.example.com/mcp"),
+            }
+        )
+    )
+
+
+def test_an_agent_loop_skips_a_templated_server_it_does_not_need(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """review M16: an unset variable on a server the loop does not need
+    failed every loop. It is skipped like a missing endpoint, and raises only
+    when the loop's own tools are pinned to that server."""
+    _two_servers()
+    servers, allowed = _loop_config(monkeypatch, {"search": "open"})
+    assert sorted(servers) == ["open"]
+    assert sorted(allowed) == [("open", "lookup"), ("open", "search")]
+    with pytest.raises(
+        RoteMcpConfigError, match=r"agent loop tools lookup are served by 'gh'.*GH_T"
+    ):
+        _loop_config(monkeypatch, {"search": "open", "lookup": "gh"})
+
+
+def test_an_agent_loop_never_puts_a_header_value_in_its_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI lane passes the config in argv, where ps shows it: a header is
+    a headersHelper that runs the emitted helper file, never a value."""
+    import shlex
+    import subprocess
+
+    _two_servers()
+    monkeypatch.setenv("GH_T", "secret-value")
+    servers, _allowed = _loop_config(monkeypatch, {"lookup": "gh"})
+    assert "headers" not in servers["gh"]
+    assert "secret-value" not in json.dumps(servers)
+    helper = servers["gh"]["headersHelper"]
+    assert "_runtime_helper.py headers gh" in helper
+    run = subprocess.run(shlex.split(helper), capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == {"Authorization": "Bearer secret-value"}
+    monkeypatch.delenv("GH_T")
+    run = subprocess.run(shlex.split(helper), capture_output=True, text=True, timeout=60)
+    assert (run.returncode, run.stdout) == (1, "")
+    assert "needs GH_T, which is not set" in run.stderr
+
+
 def test_compile_time_listing_skips_a_server_whose_variable_is_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -4,7 +4,7 @@
     "README.md": "651ecb2b2b94efe254dbbabceb967dece8966403bb5868b29c6630cf4c56c9c5",
     "dbos-config.yaml": "7abe9f42813bc9d95ce012147955d3e94bce482752ce53d58bf94b126220fd31",
     "extracted/__init__.py": "b45f4d98dce919704be69b3f087ab759257301612eab131e755bd473bb09723b",
-    "extracted/_rote_mcp.py": "98969e79da8ee1efacf6b5114c60ad6bb5e05f42174b13dd482e87d0e55df14c",
+    "extracted/_rote_mcp.py": "be70145eb01fc26d71688d5f9344dec43b24f51cf19bcf166dda92566c3fd5d3",
     "extracted/exclusion_checks.py": "9306a78d07e1649d72633f3cc0fcf9a7d7f602bbd90a46eb7f5874b1d8337e0f",
     "extracted/hubspot.py": "573ed7e1d88e47153c3be4790737b1815393d4ff0b42f8382207d750d79b3db0",
     "extracted/report.py": "5e2092f143c1a7e4182e0298fd5d454d83cb84822019c800a250579acc658bd9",
@@ -13,7 +13,7 @@
     "main.py": "dd242494fcabb304780694f4513b2a396fa4c6dc3f7a91ca4b42f3f8b3f9a307",
     "requirements.txt": "ddef2d8d15401b39e1299feb272a084511b864ee200a725d5e858448e473d1da",
     "signatures/__init__.py": "fd4f3602f2a868d6b07b48232059ce49416f94e6a4d23aa42993c2b015a6600d",
-    "signatures/_rote_inference.py": "2170ca447ab75bc2508d1c859d413205bd28adf511de422e69ffafd3e44af9ee",
+    "signatures/_rote_inference.py": "3c6a99d1f3ccfa22bbb6e94fcf19dd8e6b98cca64e148ec213f8d99ca0669c1c",
     "signatures/personalize_email.py": "81699d0e17c9ee05450898c6a93cb8cb05a44e507d2d61941b3fdea13d725b36",
     "signatures/vet_contact.py": "cd66435f58adc5b74403d15920096100209a878592834ce2aa16951c96a09d4c"
   }

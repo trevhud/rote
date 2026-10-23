@@ -241,14 +241,25 @@ def _entropy(text: str) -> float:
     return -sum(n / total * math.log2(n / total) for n in counts.values())
 
 
+#: A key written in groups (``A7F2K-9QXM3-PL8RT``) has no long part, but
+#: many short ones that each mix letters and digits. A slug has at most one
+#: or two (``v2``, ``2fa``).
+_RANDOM_GROUPS_MIN = 3
+
+
+def _mixes(part: str) -> bool:
+    return any(c.isalpha() for c in part) and any(c.isdigit() for c in part)
+
+
 def _random_part(segment: str) -> bool:
-    """Whether some single ``-``/``_``/``.``-separated part of ``segment``
-    mixes letters and digits and is long enough to be a key's body."""
-    return any(
-        len(part) >= _RANDOM_PART_MIN_LENGTH
-        and any(c.isalpha() for c in part)
-        and any(c.isdigit() for c in part)
-        for part in _PART_SEPARATORS.split(segment)
+    """Whether ``segment`` holds a key's random body: one
+    ``-``/``_``/``.``-separated part long enough that mixes letters and
+    digits, or :data:`_RANDOM_GROUPS_MIN` or more parts that each mix them."""
+    parts = _PART_SEPARATORS.split(segment)
+    mixed = [part for part in parts if _mixes(part)]
+    return (
+        any(len(part) >= _RANDOM_PART_MIN_LENGTH for part in mixed)
+        or len(mixed) >= _RANDOM_GROUPS_MIN
     )
 
 
