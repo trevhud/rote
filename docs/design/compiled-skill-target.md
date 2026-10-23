@@ -227,15 +227,19 @@ A gate answer without `--said` or `--said-file` is refused, and so is
 
 `<name>` resolves through the apps registry (`rote.app_registry`), where
 `rote emit --runtime skill` and `rote skill install <dir>` record the skill
-dir and the hash of its `.rote-manifest.json`. Before every call, `rote skill
-run` checks the dir's files against the manifest. If a file differs, it
-refuses with `ERROR` and names `rote skill trust <name>`, which shows the
-changed files and records the new hashes once the user confirms. Without
-this check, an allow rule for `rote skill run *` would approve any code
-dropped into a directory that happens to use a registered name. Then it
-runs `scripts/run.py` with its own interpreter, `-I`, and the skill's
-scripts dir as the only import root. rote's library code never runs inside
-a skill run.
+dir and the hash of its `.rote-manifest.json`. The registry stores no hash
+today, and PR 4 adds it. `rote skill install <dir>` is the confirmed trust
+point that records the first hash. Before every call, `rote skill run`
+checks the dir's files against the manifest. It refuses with `ERROR` when a
+listed file differs or when the dir holds a file the manifest does not
+list, because a dropped-in `scripts/json.py` or `scripts/fastmcp.py` would
+shadow an import. The `ERROR` names `rote skill trust <name>`, which shows
+the changed and unlisted files and records the new hashes once the user
+confirms. Without this check, an allow rule for `rote skill run *` would
+approve any code dropped into a directory that happens to use a registered
+name. Then it runs `scripts/run.py` with its own interpreter and `-I`. The
+import path is the skill's scripts dir plus rote's site-packages, where
+fastmcp lives. rote's own modules are never imported inside a skill run.
 
 ### Blocks
 
@@ -385,6 +389,12 @@ sequenceDiagram
   crash, a killed client or a lost conversation costs only the step that
   was running. `resume` and `status` exist because an agent that lost its
   context needs a way back that does not start over.
+- **Re-entry checks gate results.** A gate node result without
+  `answered_by: "human"` and a `said` text is refused, and the run stops
+  with an `ERROR`. That stops an agent from writing `nodes/<gate>.json`
+  itself and then calling `resume`.
+- **Loop counts are journaled.** A LOOP's tool-call count is written to the
+  journal after each call, so `max_iterations` holds across a `resume`.
 - **At-least-once tool calls.** A tool call that finished is never
   repeated. One interrupted mid-call is repeated on resume. That matches
   the DBOS step guarantee and the python adapter's retry loop, and the doc
@@ -394,8 +404,13 @@ sequenceDiagram
   "already answered". The same answer sent twice has the same effect as
   sending it once. An answer naming the wrong step is refused, and the
   pending block is printed with it.
-- **One writer.** `fcntl.flock` on `run.lock`. A second call waits up to
-  10 s, then prints `ERROR: run busy`.
+- **One writer, short holds.** `fcntl.flock` on `run.lock` is held only
+  around journal reads and writes, never across a tool call, so a slow MCP
+  wave does not block other calls. A call claims the wave it will run in
+  the journal, with its process id. A second call that finds a wave
+  claimed by a live process prints `ERROR: run busy`, naming the step. A
+  claim whose process is gone is taken over. Lock waits stay short (1 s),
+  because no hold includes network time.
 - **Plan changes end the run.** If the plan hash in `run.json` differs
   from the skill's current `plan.json`, because the skill was re-emitted
   between calls, the run stops with an `ERROR` that says to start again.
@@ -525,8 +540,8 @@ That proxy gives four guarantees:
   body runs in code with its constants merged last, as `_text_result` does
   today. A judge body (bdr's `vet_contact`) is given in the task as a rule
   the model applies itself, with its prompt and output schema.
-- The driver counts calls, and past `max_iterations` it refuses further
-  tool calls and asks for the answer.
+- The driver counts calls in the journal, and past `max_iterations` it
+  refuses further tool calls and asks for the answer.
 - The answer is validated against `agent_loop_output`, the same contract
   all six runtimes use.
 
@@ -597,6 +612,11 @@ not to call it. Three cases:
   and the driver refuses a gate answer without the person's words. It
   cannot prove a person said them. The journal keeps the `said` text, so an
   invented approval is visible in the audit trail rather than silent.
+  Re-entry refuses a gate result without `answered_by: "human"` and
+  `said`, so writing the journal file by hand does not get past the gate
+  either. The remaining limit: the agent can write any file it likes with a
+  separate shell command. That command needs its own Bash approval, because
+  the allow rule covers only `rote skill run <name>`.
 - **DECIDE answers are the model's judgment.** They are validated for shape,
   not for truth. That is the same as every runtime's judge.
 
@@ -737,8 +757,10 @@ bound to MCP.
 - **Mutations to try** (CLAUDE.md's discipline): drop the per-item re-ask,
   send fields the template does not reference, accept a gate answer
   without `--said`, print the whole result at DONE, skip the manifest
-  check, make `answer` non-idempotent, retry a config error. Each one must
-  fail the suite.
+  check, accept an unlisted file in the skill dir, let re-entry accept a
+  hand-written gate result without `answered_by`, reset the loop count on
+  `resume`, make `answer` non-idempotent, retry a config error. Each one
+  must fail the suite.
 
 ### Evals (inference, run on purpose)
 
@@ -752,7 +774,8 @@ pair it reports:
 
 - **Fields:** the `rote.proof` field-by-field statuses (`matched`,
   `differs`, `drifted`), from the IR's exit nodes and the case's
-  `output_fields`. On the compiled side it compares both the agent's
+  `output_fields`. `rote.proof` exists only in paused #250, and PR 7 moves
+  it to main. On the compiled side it compares both the agent's
   `result.json` and the run folder's `result.json`, so an agent that
   misreports DONE shows up.
 - **Bypass:** a compiled result with no matching run folder fails as
@@ -829,10 +852,11 @@ If the skill target becomes the first-run default:
   temporal. Choosing a runtime whose extra is missing (`compile --runtime
   dbos`, `rote init` picking dbos, `rote run` on a dbos app) builds a Plan
   with one Action: `Launch(<installer>)` plus `Contact(pypi.org)`. The
-  command is the one `rote.extras.reinstall_hint` already derives for the
-  install method (`uv tool install --with 'rote-cli[dbos]'`, `pip install
-  'rote-cli[dbos]'`, `uvx --from 'rote-cli[dbos]'`). A person confirms it;
-  without a person, `--yes` applies it. It is never done silently.
+  command is the one `rote.extras.reinstall_hint` derives for the install
+  method (`uv tool install --with 'rote-cli[dbos]'`, `pip install
+  'rote-cli[dbos]'`, `uvx --from 'rote-cli[dbos]'`). That function does not
+  exist on main. It comes from #249, and bringing it over is part of PR 9.
+  A person confirms the Action. Without a person, `--yes` applies it. It is never done silently.
 - **#249 should not merge as written.** Its base-dependency move should be
   narrowed to fastmcp-slim, and its doctor checks and hint split kept.
 
@@ -847,12 +871,12 @@ break-the-code check.
 | 1 | `rote.plan`: move `build_plan` out of prefix, add judge, gate and loop steps and a live-MCP mode. Extend `_schema_errors` to the Pydantic subset, with the parity test | none | 150 |
 | 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus bounded summary, lazy fastmcp import and the start-up budget test | 1 | 360 |
 | 3 | `--runtime skill` adapter: SKILL.md stub, README, `plan.json`, verbatim helpers, manifest, apps-registry entry, stub refusal, `--judges session\|helper` | 1, 2 | 150 |
-| 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, manifest check, `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
+| 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, the manifest hash in the apps registry, the manifest check (unlisted files refused), `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |
 | 6 | Driver e2e suite against fixture MCP servers (the list in section 7), wired into the Python e2e CI job | 4, 5 | 180 |
-| 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records. One measured eval on docs-digest, ops-report and expense-audit (about $3) and the batch-size sweep | 4 | 210 |
+| 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records, and moving `rote.proof` from #250 to main. One measured eval on docs-digest, ops-report and expense-audit (about $3) and the batch-size sweep | 4 | 210 |
 | 8 | `rote try` rebuilt on 7, closing #250, with review6's three fixes | 7 | 150 |
-| 9 | Dependencies: `fastmcp-slim[client]` in the base, and dbos, serve and temporal as extras installed by a confirmed Action. Supersedes #249 | 3 | 120 |
+| 9 | Dependencies: `fastmcp-slim[client]` in the base, and dbos, serve and temporal as extras installed by a confirmed Action, with `reinstall_hint` brought over from #249. Supersedes #249 | 3 | 120 |
 | 10 | Make the skill target the first-run default (`rote init`, `rote setup`'s skill step, docs, CHANGELOG), once 7's numbers are in | 8, 9 | 60 |
 
 Total: about 1,740 minutes (29 hours). PRs 1 to 6 are the product. Number 7
