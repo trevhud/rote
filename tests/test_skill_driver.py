@@ -1173,6 +1173,14 @@ def _values_for(references: list[str]) -> dict[str, Any]:
     return values
 
 
+def test_the_drivers_placeholder_is_the_shared_one() -> None:
+    """The driver is stdlib-only, so it keeps its own copy of the regex."""
+    from rote.adapters._common import PROMPT_PLACEHOLDER
+    from rote.skill_target._driver import _PLACEHOLDER
+
+    assert _PLACEHOLDER.pattern == PROMPT_PLACEHOLDER
+
+
 def test_the_input_and_fan_messages_match_the_emitted_helpers() -> None:
     from rote.adapters._py_common import _FAN_OUT_LIST_HELPER_PY, _MISSING_INPUTS_HELPER_PY
     from rote.skill_target._driver import _fan_list, missing_inputs_error
