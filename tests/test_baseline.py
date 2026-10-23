@@ -287,17 +287,27 @@ def test_trial_scopes_file_access_to_the_cwd_and_the_skill(
     assert f"Read(/{skill_root}/**)".startswith("Read(//")  # `//` = absolute path
 
 
+@pytest.mark.parametrize("name", ["skills*", "a(1)", "x) Read (y", "tab\tbed"])
 def test_trial_refuses_a_skill_dir_a_rule_would_read_as_a_pattern(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     from rote.eval.empirical import EmpiricalError
 
-    skill = tmp_path / "skills*"
+    skill = tmp_path / name
     skill.mkdir()
     (skill / "SKILL.md").write_text("---\nname: t\n---\nDo it.\n")
     _install_fake_claude(monkeypatch, [_result_event()], write_result={})
     with pytest.raises(EmpiricalError, match="cannot scope"):
         run_baseline_trial(skill, {}, model="m")
+
+
+def test_a_skill_dir_with_a_plain_space_is_scoped_not_refused(tmp_path: Path) -> None:
+    from rote.eval.empirical import skill_run_file_rules
+
+    skill = tmp_path / "My Skills"
+    skill.mkdir()
+    root = skill.resolve().as_posix()
+    assert skill_run_file_rules(skill) == ["Read(./**)", f"Read(/{root}/**)", "Edit(./**)"]
 
 
 def test_trial_with_no_servers_is_still_strict_and_sees_none(

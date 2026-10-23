@@ -60,9 +60,14 @@ MCP_CONFIG_FILENAME = "mcp-config.json"
 #: built-in from the model's context, not just from its permissions.
 SKILL_RUN_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep")
 
-#: Characters a permission rule's path reads as a pattern. A skill dir
-#: holding one cannot be scoped exactly, so it is refused, never widened.
-_RULE_PATTERN_CHARS = frozenset("*?[]{}!\\,")
+#: Characters a permission rule's path reads as a pattern, or that end the
+#: rule early: ``--allowedTools`` splits on commas and whitespace outside a
+#: rule's parentheses, so a ``)`` in the path can close the rule and leave a
+#: bare, unscoped ``Read``. A skill dir holding one cannot be scoped exactly,
+#: so it is refused, never widened. A plain space is kept: a probe on Claude
+#: Code 2.1.308 scoped a dir with a space in its name correctly, and refusing
+#: it would refuse common paths. Other whitespace (tab, newline) is refused.
+_RULE_PATTERN_CHARS = frozenset("*?[]{}!\\,()\t\n\r\v\f")
 
 
 def skill_run_file_rules(skill_dir: Path) -> list[str]:
