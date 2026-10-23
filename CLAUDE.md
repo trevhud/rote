@@ -2507,6 +2507,37 @@ of `ROTE_*_PATH`/`_DIR`/`_CONFIG` overrides from `src/` and fails when a
 new one is missing from the list. The wrapper hides your MCP logins too,
 so use plain `rote` for a run that needs a real MCP server.
 
+### Onboarding commands: every side effect is a confirmed Action
+
+`rote init` (and `rote setup`, `rote mcp import`, `rote try` as they land)
+run on `rote.interact`; the architecture is
+[`docs/design/first-run.md`](docs/design/first-run.md). Three rules:
+
+- **Decide interactivity once, before any prompt.** `Mode.resolve` at
+  entry, then `prompter_for(mode)`. Never call `input()`, `isatty()` or
+  questionary in a command. prompt_toolkit reads a piped stdin as
+  keystrokes and returns an answer with no error, so a prompt reached
+  without a terminal is a silent wrong answer
+  (`tests/test_init.py::test_piped_answers_never_reach_a_prompt`).
+- **Every question names its flag**; the command checks the flag first.
+  Nobody at the terminal: `--yes` takes defaults, anything else raises
+  `PromptRequired` naming the flag (exit 2, `action_required` JSON).
+- **Every write, contact, launch or spend is an `Action` in a `Plan`**,
+  previewed and confirmed (`confirm_plan`) before `apply_plan` runs it.
+  Replacing a file needs `--force` beyond `--yes`, and spending needs the
+  `Spend`'s own flag: `--yes` never spends money. A `Contact` holds a
+  bare host, never a URL. A paid `Launch` must sit beside its `Spend`.
+  Writes go through `write_file_action`, which refuses at apply when the
+  file changed since the plan (a confirmed "create" must not replace a
+  file that appeared while the person read it).
+
+Client config readers (`rote.clients`) only read: never run the client,
+contact a server, or resolve a placeholder, and display hosts, never URLs
+or header values. A credential-shaped URL path sets `risk`, which keeps
+the server out of every default until the user opts in by name. They reach the machine only through `ClientContext`;
+`ROTE_CLIENT_HOME_DIR` (in `STATE_PATHS`) keeps tests and
+`scripts/isolated-rote` away from the user's real AI-client configs.
+
 ## Workflow expectations
 
 ### Running tests
