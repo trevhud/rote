@@ -1621,3 +1621,128 @@ def test_resolve_names_a_loop_dependency_as_the_reason() -> None:
     assert structure._check_after("`ask`", n, seen, u) == [  # type: ignore[arg-type]
         "`ask`: after 'each_row', which runs inside a loop, from outside it"
     ]
+
+
+# ── a gate blocks the step it guards ─────────────────────────────────────
+
+GATE = {"signal": "digest_approved", "payload": ["approved"], "timeout": ""}
+
+
+def _gated(**render: Any) -> dict[str, Any]:
+    """good_answer with an approval between the summaries and the delivery.
+
+    ``render`` overrides the delivery node, which by default reads the
+    summaries only: the gate sits in the middle and nothing waits for it."""
+    answer = good_answer()
+    gate = node("approve_digest", 2, "hitl_gate", gate=dict(GATE), reads=["summarize_email"])
+    answer["nodes"].insert(2, gate)
+    answer["nodes"][3].update(render)
+    return answer
+
+
+def _gate_findings(answer: dict[str, Any], skill: Any) -> list[str]:
+    declared = structure.declared_tools(skill, TOOLS)
+    return [
+        c
+        for c in structure.check(answer, skill, SKILL, declared)
+        if "no later step waits for this gate" in c
+    ]
+
+
+def test_a_gate_nothing_waits_for_goes_back_naming_the_gate(skill: Any) -> None:
+    found = _gate_findings(_gated(), skill)
+    assert len(found) == 1
+    assert found[0].startswith("node approve_digest: no later step waits for this gate")
+    # It asks which step the approval guards, and how to say so in the skeleton.
+    assert "Find the step in the skill that this approval guards" in found[0]
+    assert "add 'approve_digest' to that node's reads" in found[0]
+    assert "exit nodes now are ['approve_digest', 'render_digest']" in found[0]
+    # The rest of the skeleton is clean, so the gate is the only contradiction.
+    declared = structure.declared_tools(skill, TOOLS)
+    assert structure.check(_gated(), skill, SKILL, declared) == found
+
+
+@pytest.mark.parametrize(
+    "render",
+    [
+        {"reads": ["approve_digest"]},  # uses the person's answer
+        {  # waits without reading, in its own step's words
+            "after": ["approve_digest"],
+            "after_quote": "Send the digest to the finance team",
+        },
+    ],
+    ids=["reads", "after"],
+)
+def test_a_step_that_waits_for_the_gate_clears_it(skill: Any, render: dict[str, Any]) -> None:
+    assert _gate_findings(_gated(**render), skill) == []
+
+
+def test_a_gate_waited_for_through_another_step_clears_it(skill: Any) -> None:
+    answer = _gated(reads=["prepare_delivery"])
+    answer["nodes"].insert(
+        3, node("prepare_delivery", 3, "pure_function", reads=["approve_digest"])
+    )
+    assert _gate_findings(answer, skill) == []
+    # The negative half: cut the link in the middle and the gate blocks nothing.
+    answer["nodes"][3]["reads"] = ["summarize_email"]
+    assert len(_gate_findings(answer, skill)) == 1
+
+
+def test_a_loop_step_reading_the_gate_does_not_clear_it() -> None:
+    """A loop's own steps are called by its agent, so their reads order nothing."""
+    answer = _gated()
+    answer["nodes"] += [
+        node("follow_up", 4, "agent_loop", reads=["render_digest"], mandatory=False),
+        node("each_reply", 4, "pure_function", reads=["approve_digest"], in_loop="follow_up"),
+    ]
+    flagged = [gate for gate, _ in structure._gates_nothing_waits_for(answer["nodes"])]
+    assert flagged == ["approve_digest"]
+    # The negative half: the loop itself waiting for the gate clears it.
+    answer["nodes"][-2]["reads"] = ["render_digest", "approve_digest"]
+    assert structure._gates_nothing_waits_for(answer["nodes"]) == []
+
+
+def test_a_final_sign_off_after_every_step_is_kept(skill: Any) -> None:
+    """The BDR gold's shape: the run's last step is the person's sign-off."""
+    answer = good_answer()
+    answer["nodes"].append(
+        node("sign_off", 3, "hitl_gate", gate=dict(GATE), reads=["render_digest"])
+    )
+    assert _gate_findings(answer, skill) == []
+    # A sign-off with another step left running beside it is not the last step.
+    answer["nodes"][-1]["reads"] = ["summarize_email"]
+    found = _gate_findings(answer, skill)
+    assert len(found) == 1 and "exit nodes now are ['render_digest', 'sign_off']" in found[0]
+
+
+def test_two_terminal_gates_are_each_told_the_other_is_an_exit(skill: Any) -> None:
+    answer = good_answer()
+    for gid in ("first_review", "second_review"):
+        gate = {**GATE, "signal": f"{gid}_done"}
+        answer["nodes"].append(node(gid, 3, "hitl_gate", gate=gate, reads=["render_digest"]))
+    assert [c.split(":")[0] for c in _gate_findings(answer, skill)] == [
+        "node first_review",
+        "node second_review",
+    ]
+
+
+def test_the_pass_repairs_a_gate_by_adding_its_dependent(skill: Any) -> None:
+    plan, rec, fake = run(skill, _gated(), _gated(reads=["approve_digest"]))
+    assert rec.rounds == 2 and rec.contradictions[-1] == []
+    assert "node approve_digest: no later step waits for this gate" in fake.prompts[1]
+    by_id = {n.id: n for n in plan.nodes}
+    assert by_id["render_digest"].inputs["approve_digest"] == "approve_digest.output"
+    assert not any("approve_digest" in r for r in plan.review)
+
+
+def test_a_gate_still_unguarded_after_repair_is_an_open_question(skill: Any) -> None:
+    unguarded = _gated()
+    plan, rec, _ = run(skill, *[unguarded] * (structure.REPAIR_ROUNDS + 1))
+    assert rec.rounds == structure.REPAIR_ROUNDS + 1
+    # Nothing is guessed: the delivery still reads only the summaries.
+    by_id = {n.id: n for n in plan.nodes}
+    assert "approve_digest" not in by_id["render_digest"].inputs
+    assert not by_id["render_digest"].after
+    note = next(r for r in rec.resolved if r.startswith("`approve_digest`"))
+    assert "rote does not guess which step it guards" in note
+    assert f"{structure.STRUCTURE_NOTE_PREFIX}{note}" in plan.review

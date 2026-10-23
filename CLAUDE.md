@@ -98,6 +98,15 @@ comes from keeping them clean.
   a compile with a fake driver pass `system1_structure="rules"`, because the
   fake has no lane. Tune its prompt on the dev skills only; the holdout is
   for measuring.
+- **A gate must block something** (`structure._check_gate_waiters`). A
+  `hitl_gate` that no later node reaches by `reads` or `after` goes back for
+  repair naming the gate and asking which step the approval guards; after
+  the repairs it is an Open question, never a guessed edge. The one
+  exemption is the BDR gold's shape: a gate that is the run's only exit is
+  its final sign-off. It is a structure-pass check, not IR validation,
+  because every committed BDR pipeline ends in such a gate, and which step
+  a gate guards is a reading of the skill. An audit of 15 default compiles
+  found 3 of 16 gates blocking nothing.
 - **The decider double-checks the structure pass, never overrides it**
   (`system1/checker.py`). Its confident disagreements go back to the pass as
   one more repair round; what the pass keeps is an Open question. Keep it a
