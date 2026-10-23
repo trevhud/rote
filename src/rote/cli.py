@@ -2194,11 +2194,49 @@ def _cmd_mcp_remove(args: argparse.Namespace) -> int:
 
 
 def _cmd_mcp_login(args: argparse.Namespace) -> int:
+    """``rote mcp login``: blocking by default. ``--no-wait`` / ``--complete`` /
+    ``--cancel`` split it for agents (rote.mcp.pending_login)."""
     import asyncio
 
+    from rote.interact.mode import Mode
+    from rote.interact.output import Output
     from rote.mcp import McpAuthError, load_registry
-    from rote.mcp.auth import login, registration_of
+    from rote.mcp.auth import login
+    from rote.mcp.pending_login import PendingLoginError, result_summary
 
+    chosen = [
+        flag
+        for flag, value in (
+            ("--no-wait", args.no_wait),
+            ("--complete", args.complete is not None),
+            ("--cancel", args.cancel is not None),
+        )
+        if value
+    ]
+    if len(chosen) > 1:
+        print(f"error: {' and '.join(chosen)} cannot be combined", file=sys.stderr)
+        return 2
+    if args.callback_url is not None and args.complete is None:
+        print("error: --callback-url goes with --complete", file=sys.stderr)
+        return 2
+    try:
+        mode = Mode.resolve(json=args.json, yes=args.yes, agent_mode=args.agent_mode)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out = Output(mode)
+    if args.complete is not None or args.cancel is not None:
+        try:
+            if args.cancel is not None:
+                return _mcp_login_cancel(args, out)
+            return _mcp_login_complete(args, out)
+        except PendingLoginError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+
+    if args.name is None:
+        print("error: name the server to log in to: rote mcp login <name>", file=sys.stderr)
+        return 2
     registry = load_registry()
     config = registry.servers.get(args.name)
     if config is None:
@@ -2208,37 +2246,270 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.no_wait:
+        return _mcp_login_no_wait(args, config, mode, out)
     try:
         doc = asyncio.run(
-            login(args.name, config, no_browser=args.no_browser, callback_port=args.callback_port)
+            login(
+                args.name,
+                config,
+                no_browser=args.no_browser,
+                callback_port=args.callback_port,
+                on_rejected_callback=lambda: print(
+                    "note: ignored a callback with the wrong state (not this login's "
+                    "browser); still waiting",
+                    file=sys.stderr,
+                    flush=True,
+                ),
+            )
         )
     except McpAuthError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    if doc is None:
-        print(
-            f"rote mcp: {args.name!r} answered without asking for auth; recorded "
-            f"as no auth required (runs connect unauthenticated)"
-        )
-        _release_parked_after_login(args.name)
-        return 0
-    expires_at = doc.get("expires_at")
-    refresh = " (refresh token stored)" if (doc.get("tokens") or {}).get("refresh_token") else ""
-    print(f"rote mcp: authenticated {args.name!r}{refresh}")
-    client = {
-        "pre-registered": "the pre-registered client from the registry",
-        "cimd": "rote's client metadata document",
-        "dcr": "a dynamically registered client",
-    }[registration_of(doc, config)]
-    issuer = doc.get("issuer")
-    print(f"  client: {client}" + (f"; authorization server: {issuer}" if issuer else ""))
-    if expires_at:
-        print(f"  access token expires at epoch {expires_at:.0f}; refresh is automatic")
-    _release_parked_after_login(args.name)
+    _report_mcp_login(args.name, result_summary(doc, config), out)
     return 0
 
 
-def _release_parked_after_login(server: str) -> None:
+def _report_mcp_login(server: str, summary: dict[str, Any], out: Any) -> None:
+    """The lines (and the ``--json`` object) for a finished login, then the release.
+
+    ``summary`` is :func:`rote.mcp.pending_login.result_summary`: the
+    blocking login and ``--complete`` report through this one function.
+    """
+    if not summary.get("auth_required"):
+        out.say(
+            f"rote mcp: {server!r} answered without asking for auth; recorded "
+            "as no auth required (runs connect unauthenticated)"
+        )
+    else:
+        refresh = " (refresh token stored)" if summary.get("refresh_token") else ""
+        out.say(f"rote mcp: authenticated {server!r}{refresh}")
+        client = {
+            "pre-registered": "the pre-registered client from the registry",
+            "cimd": "rote's client metadata document",
+            "dcr": "a dynamically registered client",
+        }[summary["registration"]]
+        issuer = summary.get("issuer")
+        out.say(f"  client: {client}" + (f"; authorization server: {issuer}" if issuer else ""))
+        expires_at = summary.get("expires_at")
+        if expires_at:
+            out.say(f"  access token expires at epoch {expires_at:.0f}; refresh is automatic")
+    released = _release_parked_after_login(server, say=out.say)
+    out.result({"ok": True, "server": server, **summary, "released": released})
+
+
+def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: Any) -> int:
+    """Start a login an agent can hand to its user, then exit (rote.mcp.pending_login)."""
+    import webbrowser
+    from urllib.parse import urlsplit
+
+    from rote.interact.plan import (
+        Action,
+        ConfirmationRequired,
+        Contact,
+        FileWrite,
+        Launch,
+        Plan,
+        apply_plan,
+        confirm_plan,
+    )
+    from rote.interact.prompter import PromptCancelled, prompter_for
+    from rote.interact.report import (
+        EXIT_ACTION_REQUIRED,
+        action_required,
+        authorization_pending,
+    )
+    from rote.mcp.auth import CALLBACK_PORTS
+    from rote.mcp.pending_login import (
+        PENDING_TTL_SECONDS,
+        Started,
+        pending_dir,
+        start_pending_login,
+    )
+
+    server = args.name
+    if args.callback_port is not None:
+        print(
+            "error: --no-wait uses rote's published callback ports; drop --callback-port",
+            file=sys.stderr,
+        )
+        return 2
+    if config.headers and not config.client_id:
+        print(
+            f"error: server {server!r} is configured with static headers — no OAuth login needed",
+            file=sys.stderr,
+        )
+        return 2
+    host = urlsplit(config.url).hostname or config.url
+    minutes = PENDING_TTL_SECONDS // 60
+    ports = f"{CALLBACK_PORTS[0]}-{CALLBACK_PORTS[-1]}"
+    started: list[Started] = []
+
+    def start() -> str:
+        started.append(start_pending_login(server, config))
+        return started[0].kind
+
+    actions = [
+        Action(
+            id=f"start-login-{server}",
+            title=f"Start an OAuth login for {server!r} that waits in the background",
+            effects=(
+                Contact(
+                    host=host,
+                    purpose="find its authorization server, and register rote as a "
+                    "client there if it needs one",
+                ),
+                Launch(
+                    program=f"a rote callback listener on localhost (one of ports {ports})",
+                    purpose=f"receive the browser's return, for at most {minutes} minutes",
+                ),
+                FileWrite(
+                    path=pending_dir() / "<id>.json",
+                    summary="the pending login record, owner-only",
+                    file_mode=0o600,
+                ),
+            ),
+            run=start,
+            command=f"rote mcp login {server} --no-wait",
+        )
+    ]
+    if not args.no_browser:
+
+        def open_browser() -> bool:
+            if not started or started[0].authorization_url is None:
+                return False
+            return bool(webbrowser.open(started[0].authorization_url))
+
+        actions.append(
+            Action(
+                id="open-browser",
+                title="Open the authorization page",
+                effects=(Launch(program="your web browser", purpose="approve the login"),),
+                run=open_browser,
+                command=f"rote mcp login {server} --no-wait --no-browser",
+            )
+        )
+    plan = Plan(title=f"Log in to {server!r} without waiting", actions=tuple(actions))
+    argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
+    out.plan(plan)
+    try:
+        if not confirm_plan(plan, prompter_for(mode), yes=mode.yes):
+            out.say("rote mcp login: nothing was started")
+            out.result({"ok": False, "applied": False, "plan": plan.to_dict()})
+            return 1
+    except ConfirmationRequired as e:
+        out.error(str(e))
+        out.result(action_required(e, argv))
+        return EXIT_ACTION_REQUIRED
+    except PromptCancelled:
+        out.say("rote mcp login: cancelled; nothing was started")
+        return 130
+    outcomes = apply_plan(plan)
+    if not started:
+        failed = next(o for o in outcomes if o.status == "failed")
+        print(f"error: {(failed.error or '').split(': ', 1)[-1]}", file=sys.stderr)
+        return 1
+    begun = started[0]
+    if begun.kind == "done":
+        out.say(f"rote mcp: {server!r} needed no browser approval")
+        _report_mcp_login(server, begun.result or {}, out)
+        return 0
+    pending = begun.pending
+    url = begun.authorization_url or ""
+    opened = any(o.action_id == "open-browser" and o.result is True for o in outcomes)
+    out.say(f"Authorize {server!r} in a browser on this machine:")
+    out.say("")
+    out.say(f"  {url}")
+    out.say("")
+    if opened:
+        out.say("(opened in your browser)")
+    out.say(f"Then run: rote mcp login --complete {pending.id}")
+    out.say(
+        "A browser on another machine ends on a page that cannot load: copy that "
+        f"page's URL, run: rote mcp login --complete {pending.id} --callback-url - "
+        "and paste it on stdin"
+    )
+    out.say(f"This login expires in {minutes} minutes.")
+    out.result(
+        {
+            **authorization_pending(
+                server=server,
+                pending_id=pending.id,
+                authorization_url=url,
+                expires_at=pending.expires_at,
+            ),
+            "browser_opened": opened,
+            "applied": True,
+            "plan": plan.to_dict(),
+            "outcomes": [o.to_dict() for o in outcomes],
+        }
+    )
+    return 0
+
+
+def _mcp_login_complete(args: argparse.Namespace, out: Any) -> int:
+    from rote.interact.report import EXIT_ACTION_REQUIRED, authorization_pending
+    from rote.mcp.pending_login import replay_callback, resolve_pending, wait_for_outcome
+
+    pending = resolve_pending(args.complete or None, args.name)
+    if args.callback_url is not None:
+        url = args.callback_url
+        if url == "-":
+            # Off argv, so the code and state never show in `ps`.
+            url = sys.stdin.readline().strip()
+        replay_callback(pending, url)
+    outcome = wait_for_outcome(pending, wait=args.wait)
+    current = outcome.pending
+    if current.rejected_callbacks:
+        out.warn(
+            f"{current.rejected_callbacks} callback(s) to the login listener carried the "
+            "wrong state and were ignored"
+        )
+    if outcome.kind == "done":
+        _report_mcp_login(current.server, current.result or {}, out)
+        return 0
+    if outcome.kind == "waiting":
+        out.error(
+            f"the login for {current.server!r} is still waiting for the browser. Approve "
+            f"it at the authorization URL, then run again: rote mcp login --complete "
+            f"{current.id}"
+        )
+        out.result(
+            authorization_pending(
+                server=current.server,
+                pending_id=current.id,
+                authorization_url=None,
+                expires_at=current.expires_at,
+                still_waiting=True,
+            )
+        )
+        return EXIT_ACTION_REQUIRED
+    why = (
+        "expired before the browser returned"
+        if outcome.kind == "expired"
+        else f"failed: {current.error}"
+    )
+    print(
+        f"error: the login for {current.server!r} {why}. "
+        f"Start again: rote mcp login {current.server} --no-wait",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _mcp_login_cancel(args: argparse.Namespace, out: Any) -> int:
+    from rote.mcp.pending_login import delete_pending, resolve_pending
+
+    pending = resolve_pending(args.cancel or None, args.name)
+    delete_pending(pending.id)
+    out.say(f"rote mcp: cancelled the pending login {pending.id} for {pending.server!r}")
+    out.result({"ok": True, "cancelled": pending.id, "server": pending.server})
+    return 0
+
+
+def _release_parked_after_login(
+    server: str, *, say: Callable[[str], None] | None = None
+) -> list[str]:
     """Wake emitted workflows parked waiting for this server's auth.
 
     Emitted apps park durably on missing/dead MCP credentials (see
@@ -2250,17 +2521,23 @@ def _release_parked_after_login(server: str) -> None:
     """
     from rote.mcp.release import ReleaseUnavailable, release_parked_workflows
 
+    def note(line: str) -> None:
+        print(line, file=sys.stderr)
+
+    # Under --json, `say` sends every line to stderr: stdout holds one object.
+    tell = say or print
     try:
         report = release_parked_workflows(server)
     except ReleaseUnavailable as e:
-        print(f"  note: {e}", file=sys.stderr)
-        return
+        (say or note)(f"  note: {e}")
+        return []
     for wf in report.released:
-        print(f"  released parked workflow {wf.workflow_id} ({wf.app})")
+        tell(f"  released parked workflow {wf.workflow_id} ({wf.app})")
     for bc in report.broadcasts:
-        print(f"  broadcast release event {bc.event!r} → {bc.endpoint}")
+        tell(f"  broadcast release event {bc.event!r} → {bc.endpoint}")
     for app in report.skipped:
-        print(f"  note: skipped registered app {app.app}: {app.reason}", file=sys.stderr)
+        (say or note)(f"  note: skipped registered app {app.app}: {app.reason}")
+    return [wf.workflow_id for wf in report.released]
 
 
 def _cmd_mcp_release(args: argparse.Namespace) -> int:
@@ -4447,19 +4724,22 @@ def _add_system1_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_onboarding_mode_flags(parser: argparse.ArgumentParser) -> None:
-    """The flags every onboarding command shares (``rote.interact.mode``)."""
+def _add_onboarding_mode_flags(parser: argparse.ArgumentParser, *, force: bool = True) -> None:
+    """The flags every onboarding command shares (``rote.interact.mode``).
+
+    ``force=False`` for a command whose plans never replace a file."""
     parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
         help="take every default and apply the plan without asking",
     )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="allow the plan to replace a file that exists",
-    )
+    if force:
+        parser.add_argument(
+            "--force",
+            action="store_true",
+            help="allow the plan to replace a file that exists",
+        )
     parser.add_argument(
         "--agent-mode",
         choices=("auto", "yes", "no"),
@@ -5273,9 +5553,17 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_remove.set_defaults(func=_cmd_mcp_remove)
 
     mcp_login = mcp_sub.add_parser(
-        "login", help="Authenticate a server via OAuth (opens a browser)"
+        "login",
+        help="Authenticate a server via OAuth (opens a browser)",
+        description=(
+            "Log in to a registered MCP server. Blocks until the browser returns, "
+            "unless --no-wait: then a background listener waits for the browser, the "
+            "command prints the authorization URL and a pending id and exits, and "
+            "--complete <id> reports the outcome. That pair works from an agent's "
+            "non-interactive shell."
+        ),
     )
-    mcp_login.add_argument("name")
+    mcp_login.add_argument("name", nargs="?", default=None)
     mcp_login.add_argument(
         "--no-browser",
         action="store_true",
@@ -5291,6 +5579,48 @@ def _build_parser() -> argparse.ArgumentParser:
             "skips that document and uses DCR or a pre-registered client"
         ),
     )
+    mcp_login.add_argument(
+        "--no-wait",
+        action="store_true",
+        help=(
+            "Start the login, print the authorization URL and a pending id, and exit; "
+            "a listener on localhost waits for the browser for up to 10 minutes"
+        ),
+    )
+    mcp_login.add_argument(
+        "--complete",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="ID",
+        help="Finish a --no-wait login (the only pending one when no id is given)",
+    )
+    mcp_login.add_argument(
+        "--callback-url",
+        default=None,
+        metavar="URL",
+        help=(
+            "With --complete: the http://localhost:<port>/callback?... URL a browser on "
+            "another machine ended on; rote hands it to the waiting listener. '-' reads "
+            "it from stdin, which keeps it out of the process list"
+        ),
+    )
+    mcp_login.add_argument(
+        "--wait",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="With --complete: how long to wait for the browser (default 30)",
+    )
+    mcp_login.add_argument(
+        "--cancel",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="ID",
+        help="Cancel a --no-wait login; its listener stops",
+    )
+    _add_onboarding_mode_flags(mcp_login, force=False)
     mcp_login.set_defaults(func=_cmd_mcp_login)
 
     mcp_logout = mcp_sub.add_parser("logout", help="Clear a server's stored credentials")

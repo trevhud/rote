@@ -459,7 +459,7 @@ client across requests must hold the `Connection` instead (see
 
 ### MCP 2026-07-28: what keeps both eras and every registration mode working
 
-Seven things, each with a test that fails when it is undone
+Eight things, each with a test that fails when it is undone
 (`tests/test_mcp_era_matrix_e2e.py`, `tests/test_mcp_oauth_registration_e2e.py`,
 `tests/test_mcp_park_e2e.py`). See [`docs/mcp-client.md`](docs/mcp-client.md).
 
@@ -504,6 +504,20 @@ Seven things, each with a test that fails when it is undone
   name gets the old bearer token), and `_with_bound_issuer` fills
   `client_info.issuer` from the file (the SDK treats a missing one as
   matching every issuer).
+- **`--no-wait` keeps the verifier in a detached listener, never on disk.**
+  `rote mcp login --no-wait` spawns `python -m rote.mcp.pending_login
+  <id>` (own session, stdio on `/dev/null`) running the same `login()`;
+  it hands the authorization URL back over a pipe and waits for the
+  browser. `--complete` reads the 0600 record and waits a bounded time.
+  Don't move the PKCE state into the record for a paste-back: a pasted
+  callback goes to the listener (`--callback-url`), which is the only
+  thing that can redeem it. Inheriting the caller's stdout hangs the
+  agent's shell tool; sharing its process group kills the listener at
+  the tool's cleanup (`tests/test_mcp_login_no_wait_e2e.py`). The
+  callback's `state` is checked before it counts
+  (`auth._StateCheckedReady`): a forged request no longer ends a login,
+  and the SDK's mismatch error, which quotes the expected state, never
+  fires.
 - **`RoteMcpInputRequired` is not an auth error.** A server that wants
   input mid-call (`input_required`, or `-32021` for an undeclared
   capability; TS SDK servers send the latter because rote declares no

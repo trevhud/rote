@@ -33,10 +33,11 @@ import asyncio
 import ipaddress
 import json
 import os
+import secrets
 import socket
 import sys
 import webbrowser
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from importlib import resources
 from typing import Any, Literal, NamedTuple
 
@@ -75,6 +76,61 @@ CALLBACK_PORTS: tuple[int, ...] = (33418, 33419, 33420, 33421)
 CALLBACK_HOST = "localhost"
 
 Registration = Literal["pre-registered", "cimd", "dcr"]
+
+#: Receives the authorization URL instead of a browser or a terminal: the
+#: detached listener of ``rote mcp login --no-wait`` hands it to the
+#: command that started it (rote.mcp.pending_login).
+Handoff = Callable[[str], Awaitable[None]]
+
+
+def authorization_state(authorization_url: str) -> str | None:
+    """The ``state`` the SDK put in ``authorization_url``, or None."""
+    from urllib.parse import parse_qs, urlsplit
+
+    values = parse_qs(urlsplit(authorization_url).query).get("state")
+    return values[0] if values else None
+
+
+class _StateCheckedReady:
+    """fastmcp's callback "result ready" event, accepting only the right ``state``.
+
+    fastmcp's callback server keeps the first request it gets, and the SDK
+    then compares its ``state``. A request to the loopback port with any
+    other state, which anything on this machine can send, would end the
+    login, and the SDK's mismatch error quotes the expected state. Here a
+    success callback with the wrong state is dropped before it counts: the
+    login keeps waiting for the real browser, and the state is never
+    compared anywhere it could be printed. Error callbacks still end the
+    login (fastmcp does not keep their state), which costs a retry, never
+    a credential.
+    """
+
+    def __init__(
+        self, result: Any, expected_state: str | None, on_rejected: Callable[[], None] | None
+    ) -> None:
+        import anyio
+
+        self._event = anyio.Event()
+        self._result = result
+        self._expected = expected_state
+        self._on_rejected = on_rejected
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        result = self._result
+        if result.error is None and self._expected is not None:
+            state = result.state
+            if not isinstance(state, str) or not secrets.compare_digest(state, self._expected):
+                result.code = result.state = result.iss = None
+                if self._on_rejected is not None:
+                    self._on_rejected()
+                return
+        self._event.set()
+
+    async def wait(self) -> None:
+        await self._event.wait()
 
 
 class McpAuthError(RuntimeError):
@@ -342,9 +398,14 @@ def _oauth_class() -> type[Any]:
             token_endpoint: str | None,
             drop_unbound_client: bool,
             callback_sockets: list[socket.socket],
+            handoff: Handoff | None,
+            on_rejected_callback: Callable[[], None] | None,
             **kwargs: Any,
         ) -> None:
             self._rote_server = server
+            self._rote_handoff = handoff
+            self._rote_on_rejected_callback = on_rejected_callback
+            self._rote_expected_state: str | None = None
             self._rote_interactive = interactive
             self._rote_no_browser = no_browser
             self._rote_announce_url = announce_url
@@ -399,6 +460,11 @@ def _oauth_class() -> type[Any]:
                     f"and the server wants a new authorization. Re-authenticate with: "
                     f"rote mcp login {self._rote_server}"
                 )
+            self._rote_expected_state = authorization_state(authorization_url)
+            if self._rote_handoff is not None:
+                await self._preflight(authorization_url)
+                await self._rote_handoff(authorization_url)
+                return
             if self._rote_no_browser:
                 print(
                     f"\nOpen this URL in any browser to authorize {self._rote_server!r}:\n\n"
@@ -445,13 +511,15 @@ def _oauth_class() -> type[Any]:
                     f"login. Retry: rote mcp login {self._rote_server}"
                 )
             result = OAuthCallbackResult()
-            ready = anyio.Event()
+            ready = _StateCheckedReady(
+                result, self._rote_expected_state, self._rote_on_rejected_callback
+            )
             server = create_oauth_callback_server(
                 port=self.redirect_port,
                 host=self._callback_host,
                 server_url=self.mcp_url,
                 result_container=result,
-                result_ready=ready,
+                result_ready=ready,  # type: ignore[arg-type]  # duck-typed anyio.Event
             )
             try:
                 async with anyio.create_task_group() as tg:
@@ -476,12 +544,9 @@ def _oauth_class() -> type[Any]:
                 for sock in sockets:
                     sock.close()
 
-        async def _announce(self, authorization_url: str) -> None:
+        async def _preflight(self, authorization_url: str) -> None:
             # fastmcp's own pre-flight GET, kept: it is how a stale cached
-            # client gets detected and re-registered. Then the URL always goes
-            # to stderr: fastmcp logs it only at info level and ignores
-            # webbrowser.open's result, so on SSH the user would wait on a
-            # callback for a URL they never saw.
+            # client gets detected and re-registered.
             from fastmcp.client.auth.oauth import ClientNotFoundError
 
             async with self.httpx_client_factory() as client:
@@ -492,6 +557,12 @@ def _oauth_class() -> type[Any]:
                     )
                 if response.status_code not in (200, 302, 303, 307, 308):
                     raise RuntimeError(f"Unexpected authorization response: {response.status_code}")
+
+        async def _announce(self, authorization_url: str) -> None:
+            # The URL always goes to stderr: fastmcp logs it only at info
+            # level and ignores webbrowser.open's result, so on SSH the user
+            # would wait on a callback for a URL they never saw.
+            await self._preflight(authorization_url)
             print(
                 f"\nAuthorize {self._rote_server!r} in your browser:\n\n  {authorization_url}\n",
                 file=sys.stderr,
@@ -605,13 +676,20 @@ def build_oauth(
     no_browser: bool = False,
     callback_port: int | None = None,
     announce_url: bool = False,
+    handoff: Handoff | None = None,
+    callback_timeout: float | None = None,
+    on_rejected_callback: Callable[[], None] | None = None,
 ) -> Any:
     """A fastmcp ``OAuth`` bound to rote's token store for this server.
 
     ``interactive=False`` builds a refresh-only provider: anything that
     would need a browser or a new registration raises :class:`McpAuthError`.
     ``announce_url`` always prints the authorization URL to stderr and says
-    so when no browser could be opened.
+    so when no browser could be opened. ``handoff`` receives the URL
+    instead, and nothing is printed or opened. ``callback_timeout`` is how
+    long the callback server waits for the browser (fastmcp's default is
+    five minutes). ``on_rejected_callback`` runs for each callback dropped
+    for a wrong ``state``.
     """
     _require_fastmcp()
     metadata_url = client_metadata_url()
@@ -658,6 +736,9 @@ def build_oauth(
         token_endpoint=stored.get("token_endpoint"),
         drop_unbound_client=interactive,
         callback_sockets=callback_sockets,
+        handoff=handoff,
+        on_rejected_callback=on_rejected_callback,
+        **({} if callback_timeout is None else {"callback_timeout": callback_timeout}),
         mcp_url=config.url,
         scopes=config.scopes,
         client_name="rote",
@@ -738,8 +819,15 @@ async def login(
     no_browser: bool = False,
     callback_port: int | None = None,
     announce_url: bool = False,
+    handoff: Handoff | None = None,
+    callback_timeout: float | None = None,
+    on_rejected_callback: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """Run the full OAuth dance and persist tokens durably.
+
+    ``handoff``, ``callback_timeout`` and ``on_rejected_callback`` are
+    :func:`build_oauth`'s; ``rote mcp login --no-wait`` runs this same
+    function in its detached listener.
 
     Returns the stored contract document, or None when the server
     answered ``tools/list`` without a 401 (the provider discovered
@@ -765,6 +853,9 @@ async def login(
         no_browser=no_browser,
         callback_port=callback_port,
         announce_url=announce_url,
+        handoff=handoff,
+        callback_timeout=callback_timeout,
+        on_rejected_callback=on_rejected_callback,
     )
     try:
         await _list_tools(server, config.url, oauth)
