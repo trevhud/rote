@@ -310,7 +310,9 @@ def test_skills_list_command(
     assert cli_main(["skills", "list", "--limit", "1"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].split()[0] == "demo"
-    assert out[-1] == "  ... 1 more (drop --limit to see them)"
+    # The bundled set grows as demos ship; the count comes from the listing.
+    assert payload["total"] == len(payload["skills"]) >= 2
+    assert out[-1] == f"  ... {payload['total'] - 1} more (drop --limit to see them)"
 
 
 # ── hostile skills (a .claude/skills/<x> in a cloned repository) ─────────
