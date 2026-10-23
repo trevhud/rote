@@ -53,6 +53,7 @@ from rote.clients.common import (
     str_list,
     switch_off,
     trust_failed,
+    trust_verified,
 )
 from rote.clients.normalize import NO_PLACEHOLDERS
 
@@ -220,7 +221,10 @@ class CodexSource:
                 base = new_candidate(CLIENT_ID, m.name, scope=m.scope, origin=m.origin)
                 candidates.append(not_an_object(base, m.entry))
                 continue
-            candidates.append(_candidate(m.name, m.entry, scope=m.scope, origin=m.origin))
+            candidate = _candidate(m.name, m.entry, scope=m.scope, origin=m.origin)
+            if m.scope == "project":  # only layers in a trusted project merge
+                [candidate] = trust_verified([candidate])
+            candidates.append(candidate)
             if m.entry.get("enabled") is False:
                 off[(m.origin, m.name)] = "disabled in Codex (enabled = false)"
         return SourceReading(

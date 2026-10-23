@@ -22,18 +22,13 @@ published CLI (``@ampcode/cli``; Amp has no public source):
   ``scopes``). Workspace entries replace user entries by name.
 - Placeholders: ``${VAR}`` in env, command, args, url and headers; no
   default syntax; ``${amp:id-token}`` is Amp's own.
-- Workspace servers need approval (``amp mcp approve <name>``), kept in the
-  user file: ``amp.mcpTrustedServers`` (``{serverName, specHash, allow}``)
-  and ``amp.workspaces`` (``{path, allowAllMcpServers: true}``). User
-  servers need none. The trust check and the hash are recovered from the
-  CLI bundle (``@ampcode/cli-darwin-arm64@0.0.1792713681-g9b55f0``,
-  functions ``rGt``/``U3i`` and ``Ggr.isTrusted``; Amp publishes no source):
-  a workspace on the allowlist is trusted; else an entry matching both
-  ``serverName`` and ``specHash`` decides by its ``allow``; else Amp asks
-  ampcode.com's approvals, which are not in a file. ``specHash`` is the hex
-  SHA-256 of ``JSON.stringify`` of ``{type: "url", url, headers: <keys
-  sorted>, transport: transport || "http"}`` (``{type: "command", command,
-  args, env: <keys sorted>}`` for a command), taken on the entry as written.
+- Workspace servers need approval (``amp mcp approve <name>``; ``amp mcp
+  doctor`` shows "awaiting approval"). User servers need none. Amp keeps
+  approvals as machine-local state in the user file
+  (``amp.mcpTrustedServers``) but does not document how one is matched to
+  an entry, so rote never treats an approval as proof: a workspace server
+  reads trust ``unknown``, and one whose entry plainly says
+  ``"allow": false`` reads ``untrusted``.
 - ``amp.mcpPermissions`` (``{matches: {url | command | args}, action:
   "allow" | "reject"}``, first match wins) can reject a server.
 - The files are JSON with comments and trailing commas.
@@ -42,8 +37,6 @@ published CLI (``@ampcode/cli``; Amp has no public source):
 from __future__ import annotations
 
 import fnmatch
-import hashlib
-import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
@@ -75,8 +68,8 @@ AMP_SYNTAX = PlaceholderSyntax(
 )
 
 LIMITS = (
-    "approvals kept on ampcode.com are not read: a workspace server with no local approval "
-    "is listed with unknown trust",
+    "Amp's workspace approvals are not verified (the format is undocumented): every "
+    "workspace server is listed with unknown trust unless its entry denies it",
     "remote servers defined on ampcode.com (amp mcp remote), skills' mcp.json servers, "
     "servers in managed-settings.json (local commands) and --mcp-config are not read",
 )
@@ -160,83 +153,29 @@ def _rejected(url: str | None, rules: Iterable[Any]) -> bool:
     return False
 
 
-def _sorted_keys(value: Any) -> Any:
-    """Amp's ``jht``: the same object with its keys in sorted order."""
-    if not isinstance(value, dict):
-        return {}
-    return {key: value[key] for key in sorted(value)}
+def _approval(user: Mapping[str, Any], name: str) -> tuple[Trust, str]:
+    """What Amp's settings plainly say about workspace server ``name``.
 
-
-def spec_hash(entry: Mapping[str, Any]) -> str:
-    """The ``specHash`` Amp files an approval under (``rGt`` in the CLI).
-
-    Keys whose value is absent are left out, as ``JSON.stringify`` drops
-    ``undefined``; ``||`` defaults apply to any falsy value. Matches Amp for
-    string values; a number-valued header that JavaScript prints differently
-    from Python (``1.0``) would hash differently, which only makes rote report
-    an approval as missing, never invent one."""
-    shape: dict[str, Any]
-    if "command" in entry:
-        shape = {
-            "type": "command",
-            "command": entry.get("command"),
-            "args": entry.get("args") or [],
-            "env": _sorted_keys(entry.get("env") or {}),
-        }
-    else:
-        shape = {
-            "type": "url",
-            "url": entry.get("url"),
-            "headers": _sorted_keys(entry.get("headers") or {}),
-            "transport": entry.get("transport") or "http",
-        }
-    shape = {k: v for k, v in shape.items() if v is not None}
-    text = json.dumps(shape, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _approval(
-    user: Mapping[str, Any], workspace_dir: Path, name: str, entry: Any
-) -> tuple[Trust, str | None]:
-    """Amp's verdict on workspace server ``name``: ``Ggr.isTrusted`` read
-    from the user file. ``unknown`` when only ampcode.com could say."""
-    for item in user.get("amp.workspaces") or ():
-        if (
-            isinstance(item, dict)
-            and item.get("path") == str(workspace_dir)
-            and item.get("allowAllMcpServers") is True
-        ):
-            return "trusted", None
-    if not isinstance(entry, dict):
-        return "trusted", None  # blocked already; nothing to approve
-    digest = spec_hash(entry)
-    stale = False
+    An ``amp.mcpTrustedServers`` entry naming it with ``"allow": false`` is a
+    denial. Anything else is ``unknown``: Amp does not document how it
+    matches an approval to an entry, so an approval is never taken as
+    proof."""
     for item in user.get("amp.mcpTrustedServers") or ():
-        if not isinstance(item, dict) or item.get("serverName") != name:
-            continue
-        if item.get("specHash") == digest:
-            if item.get("allow") is True:
-                return "trusted", None
-            return "untrusted", "denied in Amp for this workspace"
-        stale = True
-    if stale:
-        why = (
-            "Amp's approval is for an earlier version of this entry (its spec hash differs), "
-            f"so Amp asks again; amp mcp approve {name}"
-        )
-    else:
-        why = (
-            f"no approval in Amp's settings, and ampcode.com's are not read; amp mcp approve {name}"
-        )
-    return "unknown", why
+        if isinstance(item, dict) and item.get("serverName") == name and item.get("allow") is False:
+            return "untrusted", "denied in Amp for this workspace (allow: false in its settings)"
+    return (
+        "unknown",
+        "Amp does not document how it matches a workspace approval to the entry; "
+        f"check amp mcp doctor, or approve with amp mcp approve {name}",
+    )
 
 
-def _with_trust(c: ImportCandidate, verdict: tuple[Trust, str | None] | None) -> ImportCandidate:
-    if verdict is None or verdict[0] == "trusted":
+def _with_trust(c: ImportCandidate, verdict: tuple[Trust, str] | None) -> ImportCandidate:
+    if verdict is None:
         return c
     state, why = verdict
     if state == "unknown":
-        return trust_unknown([c], "Amp", why or "")[0]
+        return trust_unknown([c], "Amp", why)[0]
     return replace(c, trust="untrusted", trust_note=why)
 
 
@@ -260,14 +199,14 @@ class AmpSource:
         reader = Reader()
         user_path = _user_file(ctx)
         user = reader.mapping(user_path, "jsonc")
-        workspace_path, workspace_dir = _workspace_file(ctx.cwd)
+        workspace_path, _ = _workspace_file(ctx.cwd)
         workspace = reader.mapping(workspace_path, "jsonc") if workspace_path else {}
         managed_path = _managed_file(ctx)
         managed = reader.mapping(managed_path, "jsonc") if managed_path else {}
 
         groups: list[tuple[str, list[ImportCandidate]]] = []
         off: dict[tuple[Path, str], str] = {}
-        trust: dict[tuple[Path, str], tuple[Trust, str | None]] = {}
+        trust: dict[tuple[Path, str], tuple[Trust, str]] = {}
         if workspace_path is not None:
             servers = reader.section(workspace_path, workspace, _SERVERS)
             groups.append(
@@ -279,9 +218,9 @@ class AmpSource:
                     ],
                 )
             )
-            for name, entry in servers.items():
-                trust[(workspace_path, name)] = _approval(user, workspace_dir, name, entry)
-            off = {key: why for key, (state, why) in trust.items() if state == "untrusted" and why}
+            for name in servers:
+                trust[(workspace_path, name)] = _approval(user, name)
+            off = {key: why for key, (state, why) in trust.items() if state == "untrusted"}
         servers = reader.section(user_path, user, _SERVERS)
         groups.append(
             ("user", [_candidate(n, e, scope="user", origin=user_path) for n, e in servers.items()])

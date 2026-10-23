@@ -2544,9 +2544,11 @@ real files (`tests/test_clients_registry.py` derives the set and fails).
 YAML goes through `common.Reader`'s YAML 1.2 loader, because PyYAML reads a
 Goose extension named `off` as `False`. A client whose entry wins by name
 even when disabled marks it with `switch_off` after `rank`, never before,
-or a disabled project entry uncovers the user's. A project scope the
-client gates on trust rote cannot read goes through `trust_unknown`, never
-listed as plainly active: `preselectable` and `needs_opt_in` are what
+or a disabled project entry uncovers the user's. A `project` candidate
+starts at trust `unknown` (fail closed). A source sets `trust_verified` only
+after reading a gate that passed, and otherwise `trust_unknown` or
+`trust_failed` with its own note. The registry test fails on a project
+candidate left at the default. `preselectable` and `needs_opt_in` are what
 `rote mcp import` reads.
 
 ## Workflow expectations

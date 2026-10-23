@@ -46,6 +46,14 @@ Scope = Literal["user", "local", "project", "plugin", "system"]
 #: Zed's worktree trust), so whether the client loads it is not known.
 Trust = Literal["trusted", "untrusted", "unknown"]
 
+#: Scopes a repository supplies, which a client may gate on trust. A
+#: candidate in one starts ``unknown``: a source must set ``trusted`` after
+#: reading the gate, so one that forgets fails closed.
+GATED_SCOPES: frozenset[str] = frozenset({"project"})
+#: The note an ungated default carries. A reading that still shows it means
+#: the source never decided (tests/test_clients_registry.py fails on it).
+UNCHECKED_TRUST = "no trust gate was read for this scope"
+
 
 #: Moves the home directory client sources read. tests/conftest.py and
 #: ``scripts/isolated-rote`` point it at an empty dir (it is in
@@ -184,8 +192,10 @@ class ImportCandidate:
     #: opt-in that names the risk (``--allow-url-secret <name>``).
     risk: str | None = None
     #: See :data:`Trust`. ``unknown`` is never preselected, and, like
-    #: :attr:`risk`, needs a per-server opt-in in ``rote mcp import``.
-    trust: Trust = "trusted"
+    #: :attr:`risk`, needs a per-server opt-in in ``rote mcp import``. None
+    #: at construction takes the scope's default: ``unknown`` for
+    #: :data:`GATED_SCOPES`, ``trusted`` otherwise; it is never None after.
+    trust: Trust | None = None
     #: Why trust is not ``trusted``: "trust in <client> could not be checked:
     #: ..." for ``unknown``, the failed gate for ``untrusted``.
     trust_note: str | None = None
@@ -195,6 +205,17 @@ class ImportCandidate:
     @property
     def importable(self) -> bool:
         return self.blocked is None
+
+    def __post_init__(self) -> None:
+        if self.trust is not None:
+            return
+        if self.scope in GATED_SCOPES:
+            object.__setattr__(self, "trust", "unknown")
+            if self.trust_note is None:
+                note = f"trust in {self.client} could not be checked: {UNCHECKED_TRUST}"
+                object.__setattr__(self, "trust_note", note)
+        else:
+            object.__setattr__(self, "trust", "trusted")
 
     @property
     def needs_opt_in(self) -> tuple[str, ...]:

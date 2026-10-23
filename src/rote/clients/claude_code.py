@@ -63,6 +63,7 @@ from rote.clients.common import (
     remote,
     servers_in,
     str_list,
+    trust_verified,
 )
 from rote.clients.normalize import CLAUDE_CODE_SYNTAX
 
@@ -380,7 +381,12 @@ class ClaudeCodeSource:
             )
             for name, entry in (project_servers or {}).items():
                 candidate = _candidate(name, entry, scope="project", origin=mcp_json_path)
-                by_scope["project"].append(replace(candidate, inactive=approval.why_inactive(name)))
+                why = approval.why_inactive(name)
+                if why is None:
+                    [candidate] = trust_verified([candidate])
+                else:
+                    candidate = replace(candidate, inactive=why, trust="untrusted", trust_note=why)
+                by_scope["project"].append(candidate)
 
         toggled_off = set(str_list(project_entry.get("disabledMcpServers")))
         ordered: list[ImportCandidate] = []

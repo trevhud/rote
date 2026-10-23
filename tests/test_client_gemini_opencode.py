@@ -236,6 +236,14 @@ def test_opencode_entries_and_placeholders(tmp_path: Path) -> None:
     assert found[("user", "local")].transport == "stdio"
     assert "type None" in (found[("user", "notype")].blocked or "")
     assert ("project", "deep") in found
+    # OpenCode loads a repository's config without asking.
+    deep = found[("project", "deep")]
+    assert deep.trust == "unknown" and not deep.preselectable
+    assert deep.trust_note == (
+        "trust in OpenCode could not be checked: "
+        "OpenCode loads project config without asking; confirm"
+    )
+    assert found[("user", "sentry")].trust == "trusted"
     assert_display_safe(reading)
 
 

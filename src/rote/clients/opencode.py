@@ -52,6 +52,7 @@ from rote.clients.common import (
     not_an_object,
     remote,
     switch_off,
+    trust_unknown,
     xdg_config_home,
 )
 from rote.clients.normalize import PlaceholderSyntax
@@ -177,7 +178,12 @@ class OpenCodeSource:
         candidates: list[ImportCandidate] = []
         off: dict[tuple[Path, str], str] = {}
         for m in merge_entries(layers, deep=True):
-            candidates.append(_candidate(m.name, m.entry, scope=m.scope, origin=m.origin))
+            candidate = _candidate(m.name, m.entry, scope=m.scope, origin=m.origin)
+            if m.scope == "project":
+                [candidate] = trust_unknown(
+                    [candidate], self.label, "OpenCode loads project config without asking; confirm"
+                )
+            candidates.append(candidate)
             if isinstance(m.entry, dict) and (
                 m.entry.get("enabled") is False or m.entry.get("disabled") is True
             ):

@@ -349,7 +349,7 @@ holds the parts they share:
 | `gemini` | system, trusted `<cwd>/.gemini/settings.json`, `~/.gemini/settings.json`, system defaults, extensions | `httpUrl`, `url` + `type`, `tcp` | `$X`, `${X}`, `${X:-d}`. Extension variables unsupported | `mcp.allowed`, `mcp.excluded`, `admin.mcp.enabled`, `mcp-server-enablement.json`. `trustedFolders.json` |
 | `opencode` | managed, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_CONFIG_DIR`, `.opencode/`, project `opencode.json(c)`, `OPENCODE_CONFIG`, global. Deep-merged | `type: remote`, `url`, `headers`, `oauth` | `{env:X}`. `{file:...}` unsupported | `enabled: false` (v2: `disabled`) |
 | `zed` | `.zed/settings.json`, user `settings.json` per OS | `url`, `headers`, `oauth.client_id` (Streamable HTTP) | none | `enabled: false` |
-| `amp` | nearest `.amp/settings.json(c)`, user `settings.json(c)` | `url`, `transport`, `headers`, `oauth` | `${X}`. `${amp:...}` unsupported | workspace servers need `amp mcp approve`, verified by Amp's spec hash. An `amp.mcpPermissions` reject blocks |
+| `amp` | nearest `.amp/settings.json(c)`, user `settings.json(c)` | `url`, `transport`, `headers`, `oauth` | `${X}`. `${amp:...}` unsupported | workspace servers need `amp mcp approve`. Approvals are not verified (the format is undocumented), so they read unknown, and `allow: false` reads untrusted. An `amp.mcpPermissions` reject blocks |
 | `goose` | user `config.yaml`, `GOOSE_ADDITIONAL_CONFIG_FILES`, `/etc/goose`. Merged per field | `type: streamable_http`, `uri`, `headers` (`sse` entries no longer load) | `${X}` / `$X`, filled only from the entry's `envs` / `env_keys` | `enabled: false` |
 | `windsurf` | `.devin/mcp_config.local.json`, `.devin/mcp_config.json`, `~/.config/devin/mcp_config.json`, legacy `~/.codeium/windsurf*/` | `serverUrl` or `url`, `transport`, `headers` | `${env:X}`. `${file:...}` unsupported | `disabled: true` |
 | `claude-desktop` | `claude_desktop_config.json` per OS | none: remote servers are claude.ai connectors | none | none |
@@ -360,23 +360,32 @@ holds the parts they share:
 - `trusted` means the scope has no gate, or rote read the gate and it passed.
 - `untrusted` means rote read the gate and it failed. The entry is inactive
   too, so it wins no precedence. Examples: Codex `trust_level`, Gemini
-  `trustedFolders.json`, an Amp denial.
-- `unknown` means the client gates the scope on trust that rote cannot read.
-  The note reads "trust in <client> could not be checked: ...". This covers
-  VS Code's Restricted Mode, Copilot CLI folder trust, Zed worktree trust,
-  and Cursor and Devin project files, where the docs do not say. It also
-  covers an Amp workspace server with no local approval, since only
-  ampcode.com could say.
+  `trustedFolders.json`, an Amp entry with `"allow": false`.
+- `unknown` means the client gates the scope on trust that rote cannot read,
+  or the client loads it with no gate at all. The note reads "trust in
+  <client> could not be checked: ...". This covers:
+  - VS Code's Restricted Mode, Copilot CLI folder trust and Zed worktree
+    trust.
+  - Cursor and Devin project files, where the docs do not say.
+  - OpenCode project config, which OpenCode loads without asking.
+  - Amp workspace approvals. Amp does not document how an approval matches
+    an entry, so an approval is never taken as proof.
 
 An `unknown` entry stays listed as the client's. It is never `preselectable`,
 and it appears in `needs_opt_in` beside a URL secret `risk`.
 `rote mcp import` reads `needs_opt_in` and asks for each such server by name.
 
-Amp's approvals are checked the way Amp checks them, not by name. The hash
-and the trust check were recovered from the CLI bundle (`rGt` / `U3i` and
-`Ggr.isTrusted`). `specHash` is SHA-256 over `JSON.stringify` of the entry's
-url, sorted headers and transport. `tests/test_client_goose_amp.py` pins the
-port to hashes computed by Node itself.
+It fails closed by construction. A candidate in a repository-supplied scope
+(`GATED_SCOPES`, today `project`) starts as `unknown`, with the note "no trust
+gate was read for this scope". A source has two ways to change that:
+
+- `trust_verified` after reading a gate that passed (Claude Code's project
+  approval, Codex `trust_level`, Gemini trusted folders).
+- `trust_unknown` or `trust_failed`, each with a note of its own.
+
+`tests/test_clients_registry.py` gives every source a project fixture and
+fails on any candidate still carrying the default note. A new source must
+either get a fixture there or be listed as having no project scope.
 
 `ClientContext.etc_dir` is the second machine-wide root, used by Codex,
 Goose, Gemini CLI and OpenCode: `/etc` on every Unix, `%ProgramData%` on

@@ -67,6 +67,7 @@ from rote.clients.common import (
     str_list,
     switch_off,
     trust_failed,
+    trust_verified,
 )
 from rote.clients.normalize import PlaceholderSyntax
 
@@ -276,8 +277,8 @@ class GeminiSource:
                 continue
             servers = reader.section(path, data, "mcpServers")
             found = [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()]
-            if label == "workspace" and not trusted:
-                found = trust_failed(found, _UNTRUSTED)
+            if label == "workspace":
+                found = trust_verified(found) if trusted else trust_failed(found, _UNTRUSTED)
             groups.append((label, found))
         groups.append(("extension", self._extension_candidates(reader, directory)))
         ranked = rank(groups)

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from rote.clients import SOURCES, ClientContext, ordered_sources, source
-from rote.clients.base import CLIENT_DIR_VARS
+from rote.clients.base import CLIENT_DIR_VARS, UNCHECKED_TRUST
 from rote.interact.agents import AI_AGENT_CLIENTS, SIGNALS
 from tests._clients import refuse_real_home, write_json
 
@@ -131,12 +131,16 @@ def test_unknown_trust_is_never_preselected_and_needs_an_opt_in(tmp_path: Path) 
         client="x",
         name="srv",
         original_name="srv",
-        scope="project",
+        scope="user",
         origin=tmp_path / "f.json",
         transport="streamable-http",
         url="https://srv.example.com/mcp",
     )
     assert base.trust == "trusted" and base.preselectable and base.needs_opt_in == ()
+    # A repository-supplied scope fails closed until a source reads its gate.
+    project = replace(base, scope="project", trust=None)
+    assert project.trust == "unknown" and not project.preselectable
+    assert project.trust_note == f"trust in x could not be checked: {UNCHECKED_TRUST}"
     unknown = replace(base, trust="unknown", trust_note="trust in X could not be checked: why")
     assert not unknown.preselectable
     assert unknown.needs_opt_in == ("trust in X could not be checked: why",)
@@ -145,3 +149,116 @@ def test_unknown_trust_is_never_preselected_and_needs_an_opt_in(tmp_path: Path) 
     untrusted = replace(base, trust="untrusted", trust_note="gate closed")
     assert not untrusted.preselectable and untrusted.needs_opt_in == ()
     assert untrusted.to_dict()["trust"] == "untrusted"
+
+
+def _remote(url: str) -> dict[str, str]:
+    return {"type": "http", "url": url}
+
+
+#: For every source with a repository-supplied scope: write one project
+#: server named ``proj`` (with the client's gate, if it has one, passed) and
+#: return the context to read it in.
+def _claude_code(home: Path, repo: Path) -> None:
+    write_json(repo / ".mcp.json", {"mcpServers": {"proj": _remote("https://p.example/mcp")}})
+    write_json(repo / ".claude" / "settings.local.json", {"enabledMcpjsonServers": ["proj"]})
+
+
+def _codex(home: Path, repo: Path) -> None:
+    (repo / ".codex").mkdir()
+    (repo / ".codex" / "config.toml").write_text(
+        '[mcp_servers.proj]\nurl = "https://p.example/mcp"\n'
+    )
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text(f'[projects."{repo}"]\ntrust_level = "trusted"\n')
+
+
+def _cursor(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".cursor" / "mcp.json", {"mcpServers": {"proj": {"url": "https://p.example/mcp"}}}
+    )
+
+
+def _vscode(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".vscode" / "mcp.json", {"servers": {"proj": _remote("https://p.example/mcp")}}
+    )
+
+
+def _copilot(home: Path, repo: Path) -> None:
+    write_json(repo / ".mcp.json", {"mcpServers": {"proj": _remote("https://p.example/mcp")}})
+
+
+def _gemini(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".gemini" / "settings.json",
+        {"mcpServers": {"proj": {"httpUrl": "https://p.example/mcp"}}},
+    )
+    write_json(home / ".gemini" / "trustedFolders.json", {str(repo): "TRUST_FOLDER"})
+
+
+def _opencode(home: Path, repo: Path) -> None:
+    write_json(
+        repo / "opencode.json",
+        {"mcp": {"proj": {"type": "remote", "url": "https://p.example/mcp"}}},
+    )
+
+
+def _zed(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".zed" / "settings.json",
+        {"context_servers": {"proj": {"url": "https://p.example/mcp"}}},
+    )
+
+
+def _amp(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".amp" / "settings.json",
+        {"amp.mcpServers": {"proj": {"url": "https://p.example/mcp"}}},
+    )
+
+
+def _windsurf(home: Path, repo: Path) -> None:
+    write_json(
+        repo / ".devin" / "mcp_config.json",
+        {"mcpServers": {"proj": {"url": "https://p.example/mcp"}}},
+    )
+
+
+PROJECT_FIXTURES = {
+    "claude-code": _claude_code,
+    "codex": _codex,
+    "cursor": _cursor,
+    "vscode": _vscode,
+    "copilot": _copilot,
+    "gemini": _gemini,
+    "opencode": _opencode,
+    "zed": _zed,
+    "amp": _amp,
+    "windsurf": _windsurf,
+}
+#: Sources with no repository-supplied scope at all.
+NO_PROJECT_SCOPE = {"goose", "claude-desktop"}
+
+
+def test_every_source_is_classified_for_project_trust() -> None:
+    """A new source must either get a project fixture below or say it has
+    no project scope; it cannot slip past the fail-closed check."""
+    assert {s.id for s in SOURCES} == set(PROJECT_FIXTURES) | NO_PROJECT_SCOPE
+
+
+@pytest.mark.usefixtures("refuse_real_home")
+@pytest.mark.parametrize("client", sorted(PROJECT_FIXTURES))
+def test_every_project_candidate_has_trust_set_on_purpose(tmp_path: Path, client: str) -> None:
+    """The default for a project candidate is unknown with UNCHECKED_TRUST.
+    A source must replace it: trusted after reading a passed gate, or a
+    note of its own. A source that forgets fails here."""
+    ctx = _empty_machine(tmp_path)
+    PROJECT_FIXTURES[client](ctx.home, ctx.cwd)
+    project = [c for c in source(client).read(ctx).candidates if c.scope == "project"]
+    assert [c.original_name for c in project] == ["proj"], client
+    [candidate] = project
+    assert UNCHECKED_TRUST not in (candidate.trust_note or ""), client
+    if candidate.trust == "trusted":
+        assert candidate.trust_note is None
+    else:
+        assert candidate.trust_note, client

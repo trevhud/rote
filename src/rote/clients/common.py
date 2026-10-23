@@ -336,6 +336,12 @@ def trust_unknown(
     return [replace(c, trust="unknown", trust_note=note) for c in candidates]
 
 
+def trust_verified(candidates: Iterable[ImportCandidate]) -> list[ImportCandidate]:
+    """Mark candidates whose trust gate rote read and found open. A gated
+    scope is ``unknown`` until a source says this."""
+    return [replace(c, trust="trusted", trust_note=None) for c in candidates]
+
+
 def trust_failed(candidates: Iterable[ImportCandidate], why: str) -> list[ImportCandidate]:
     """Mark candidates whose trust gate rote read and found closed: untrusted
     and inactive, so they win no precedence."""
