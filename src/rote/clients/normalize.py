@@ -20,6 +20,7 @@ Four rules, each a function so every source applies it identically:
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -165,6 +166,58 @@ def url_problem(url: str, syntax: PlaceholderSyntax) -> str | None:
             "the URL has a query string, which can carry an API key, so it is not copied; "
             "add it with rote mcp add <name> <url>"
         )
+    return None
+
+
+#: A URL path segment shorter than this is a word, a version or an id
+#: prefix, not a key. Every real API key format seen is longer (Zapier's
+#: ``sk-ak-`` keys, GitHub's 40-char tokens, 32-char hex secrets).
+_SECRET_MIN_LENGTH = 20
+#: Shannon entropy, in bits per character, at or above which a long
+#: letters-and-digits segment reads as random. Measured: a fake Zapier-shaped
+#: key ``sk-ak-`` plus 32 base62 characters is 5.05; slugs such as
+#: ``streamable-http-transport`` (3.48) and ``github-enterprise-cloud``
+#: (3.88) carry no digits, so the digit rule leaves them alone.
+_SECRET_MIN_ENTROPY = 3.5
+#: A run this long of only hex digits is a key, a hash or a UUID, any of
+#: which can be the credential in a hosted MCP URL.
+_HEX_RUN = re.compile(r"[0-9a-fA-F]{32,}")
+
+
+def _entropy(text: str) -> float:
+    counts = {c: text.count(c) for c in set(text)}
+    total = len(text)
+    return -sum(n / total * math.log2(n / total) for n in counts.values())
+
+
+def url_secret_risk(url: str) -> str | None:
+    """Why ``url``'s path looks like it carries a credential, or None.
+
+    Decided by the string's form, not by a word list: a segment of at
+    least :data:`_SECRET_MIN_LENGTH` characters that mixes letters and
+    digits and reads as random (entropy at or above
+    :data:`_SECRET_MIN_ENTROPY`), or a long hex run (with UUID dashes
+    removed). Hosted MCP servers put keys there (Zapier:
+    ``/api/mcp/s/<key>/sse``), and a key in the path is copied with the
+    URL, so it is never imported without the user's word. The reason
+    never quotes the segment."""
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        return None
+    for index, segment in enumerate(s for s in path.split("/") if s):
+        compact = segment.replace("-", "")
+        long_mixed = (
+            len(segment) >= _SECRET_MIN_LENGTH
+            and any(c.isalpha() for c in segment)
+            and any(c.isdigit() for c in segment)
+            and _entropy(segment) >= _SECRET_MIN_ENTROPY
+        )
+        if long_mixed or _HEX_RUN.fullmatch(compact):
+            return (
+                f"path segment {index + 1} of the URL ({len(segment)} characters, random-looking) "
+                "may be an API key; importing copies it into rote's registry"
+            )
     return None
 
 

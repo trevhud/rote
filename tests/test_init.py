@@ -202,15 +202,19 @@ def test_cloud_without_a_person_never_logs_in_unless_asked(config_path: Path) ->
     assert not [q for q in prompter.asked if q[1] == "--login"]
     assert any("rote login" in n for n in plan.notes)
 
-    flagged = build_plan(
-        InitFlags(login=True),
-        prompter=ScriptedPrompter(_cloud_answers(), interactive_=False),
-        out=out,
-        project=False,
-    )
-    login = flagged.actions[1]
-    assert login.command == "rote login --device"
-    assert [e.kind for e in login.effects] == ["contact"]  # no browser without a person
+
+def test_login_flag_is_refused_without_a_person(config_path: Path) -> None:
+    """The device login polls until someone approves in a browser; with
+    nobody at the terminal it would block forever."""
+    out, _ = _out()
+    with pytest.raises(InitError, match="--login needs a person at the terminal"):
+        build_plan(
+            InitFlags(login=True),
+            prompter=ScriptedPrompter(_cloud_answers(), interactive_=False),
+            out=out,
+            project=False,
+        )
+    assert not config_path.exists()
 
 
 def test_flags_answer_their_questions(config_path: Path) -> None:

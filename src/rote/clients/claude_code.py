@@ -39,10 +39,12 @@ an error to Claude Code itself (a missing type means stdio).
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from rote.clients.base import (
     ClientContext,
@@ -57,6 +59,7 @@ from rote.clients.normalize import (
     header_template,
     server_identifier,
     url_problem,
+    url_secret_risk,
 )
 
 CLIENT_ID = "claude-code"
@@ -79,6 +82,17 @@ class _Paths:
     claude_json: Path
     user_settings: Path
     installed_plugins: Path
+    #: Admin-deployed policy (code.claude.com/docs/en/managed-mcp). None when
+    #: the context reads no system directory.
+    managed_dir: Path | None
+
+
+#: What the Claude Code source never reads, said on every reading.
+LIMITS = (
+    "managed settings delivered by an MDM profile, the Windows registry or claude.ai "
+    "server-managed settings are not read, so a server they deny can still be listed",
+    "allowedMcpServers is not evaluated: a server an allowlist excludes is still listed",
+)
 
 
 def _paths(ctx: ClientContext) -> _Paths:
@@ -89,12 +103,84 @@ def _paths(ctx: ClientContext) -> _Paths:
     else:
         config_dir = ctx.home / ".claude"
         claude_json = ctx.home / ".claude.json"
+    managed_dir: Path | None = None
+    if ctx.system_dir is not None:
+        sub = "claude-code" if ctx.platform.startswith("linux") else "ClaudeCode"
+        managed_dir = ctx.system_dir / sub
     return _Paths(
         config_dir=config_dir,
         claude_json=claude_json,
         user_settings=config_dir / "settings.json",
         installed_plugins=config_dir / "plugins" / "installed_plugins.json",
+        managed_dir=managed_dir,
     )
+
+
+def _url_key(url: str) -> str | None:
+    """``scheme://host/path`` with the host lowercased and the port dropped."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if not parts.hostname:
+        return None
+    return f"{parts.scheme}://{parts.hostname.rstrip('.')}{parts.path or '/'}"
+
+
+_PATTERN_PORT = re.compile(r"^([^:/]*://[^/:]*)(:(\*|\d+))?")
+
+
+def _url_denied(url: str, pattern: str) -> bool:
+    """Claude Code's ``serverUrl`` match, read wider where it differs: ports
+    are ignored and the whole URL, path included, compares case-insensitively. A deny that
+    matches too much only blocks an import; one that matches too little
+    would import a server the user's policy blocks."""
+    key = _url_key(url)
+    if key is None:
+        return False
+    head = _PATTERN_PORT.match(pattern)
+    if head is None:
+        return False
+    host_part, rest = head.group(1), pattern[head.end() :]
+    if rest in ("", "/"):
+        rest = "/*"  # a pattern with no path matches any path (docs/en/managed-mcp)
+    regex = ".*".join(re.escape(piece) for piece in f"{host_part.lower()}{rest}".split("*"))
+    return re.fullmatch(regex, key, flags=re.IGNORECASE) is not None
+
+
+@dataclass(frozen=True)
+class _Denylist:
+    names: frozenset[str]
+    urls: tuple[str, ...]
+
+    def why(self, candidate: ImportCandidate) -> str | None:
+        if candidate.original_name in self.names:
+            return "blocked by a deniedMcpServers serverName entry in Claude Code's settings"
+        if candidate.url is not None:
+            for pattern in self.urls:
+                if _url_denied(candidate.url, pattern):
+                    return "blocked by a deniedMcpServers serverUrl entry in Claude Code's settings"
+        return None
+
+
+def _denylist(layers: Iterable[Mapping[str, Any]]) -> _Denylist:
+    """``deniedMcpServers`` merged from every scope, as Claude Code merges it
+    ("Denylists merge from every scope regardless")."""
+    names: set[str] = set()
+    urls: list[str] = []
+    for layer in layers:
+        entries = layer.get("deniedMcpServers")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("serverName"), str):
+                names.add(entry["serverName"])
+            if isinstance(entry.get("serverUrl"), str):
+                urls.append(entry["serverUrl"])
+            # serverCommand entries match stdio servers, which are never importable.
+    return _Denylist(frozenset(names), tuple(urls))
 
 
 class _Reader:
@@ -275,12 +361,14 @@ def _candidate(
         if isinstance(raw_scopes, str):
             scopes = tuple(s for s in raw_scopes.split() if s)
 
+    blocked = url_problem(url, CLAUDE_CODE_SYNTAX)
     return replace(
         base,
         headers=tuple(headers),
         scopes=scopes,
         withheld=tuple(withheld),
-        blocked=url_problem(url, CLAUDE_CODE_SYNTAX),
+        blocked=blocked,
+        risk=url_secret_risk(url) if blocked is None else None,
     )
 
 
@@ -393,11 +481,42 @@ class ClaudeCodeSource:
                 reader, paths, (user_settings, project_settings, local_settings)
             )
         )
+
+        managed_settings: dict[str, Any] = {}
+        exclusive = False
+        if paths.managed_dir is not None:
+            managed_path = paths.managed_dir / "managed-settings.json"
+            managed_settings = reader.mapping(managed_path)
+            if "managedMcpServers" in managed_settings:
+                reader.problems.append(
+                    f"{managed_path}: managedMcpServers (servers your organization provides) "
+                    "is not read yet, so those servers are not listed"
+                )
+            managed_mcp = paths.managed_dir / "managed-mcp.json"
+            if managed_mcp.is_file():
+                exclusive = True
+                reader.problems.append(
+                    f"{managed_mcp}: Claude Code loads only the servers it defines on this "
+                    "machine; rote does not read it yet, and lists every other server as unused"
+                )
+        denied = _denylist((user_settings, project_settings, local_settings, managed_settings))
+        checked: list[ImportCandidate] = []
+        for candidate in ordered:
+            why = denied.why(candidate)
+            if why is not None:
+                candidate = replace(candidate, blocked=why, risk=None)
+            elif exclusive and candidate.inactive is None:
+                candidate = replace(
+                    candidate,
+                    inactive="Claude Code loads only managed-mcp.json servers on this machine",
+                )
+            checked.append(candidate)
         return SourceReading(
             client=CLIENT_ID,
-            candidates=tuple(ordered),
+            candidates=tuple(checked),
             files_read=tuple(reader.files_read),
             problems=tuple(reader.problems),
+            limits=LIMITS,
         )
 
     @staticmethod

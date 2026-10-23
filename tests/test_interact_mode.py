@@ -37,6 +37,9 @@ def _mode(env: dict[str, str] | None = None, **kw: Any) -> Mode:
         ({"GEMINI_CLI": "1"}, "gemini", "caller", "GEMINI_CLI"),
         ({"AGENT": "amp"}, "amp", "caller", "AGENT"),
         ({"ZED_TERM": "true"}, "zed", "host", "ZED_TERM"),
+        # Both are set in a person's own shell, so they only say "host".
+        ({"REPL_ID": "r"}, "replit", "host", "REPL_ID"),
+        ({"GOOSE_PROVIDER": "anthropic"}, "goose", "host", "GOOSE_PROVIDER"),
         # A caller outranks a host, whatever the order of the table.
         ({"CLAUDECODE": "1", "CODEX_SANDBOX": "seatbelt"}, "codex", "caller", "CODEX_SANDBOX"),
     ],

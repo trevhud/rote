@@ -99,7 +99,8 @@ flowchart TD
 Agent signals have a **role**. A *caller* (`CLAUDE_CODE_CHILD_SESSION`,
 `CODEX_THREAD_ID`, `GEMINI_CLI`, `AI_AGENT`, ...) means an agent process
 started rote: no prompts. A *host* (`CLAUDECODE`, `CURSOR_TRACE_ID`,
-`ZED_TERM`) only says which client's terminal this is. Claude Code sets
+`ZED_TERM`, and `REPL_ID` and `GOOSE_PROVIDER`, both set in a person's own
+shell) only says which client's terminal this is. Claude Code sets
 `CLAUDECODE=1` in IDE terminals too, where a person types. Hosts rank the
 import sources and never turn prompts off. `AI_AGENT` is matched by prefix:
 Claude Code 2.1.302 sets `AI_AGENT=claude-code_2-1-302_agent`.
@@ -152,11 +153,12 @@ be a default.
 ```python
 Effect = FileWrite(path, summary, existed, replaces, file_mode)
        | Contact(host, purpose)        # a bare host: never a URL
-       | Launch(program, purpose)      # a browser, `claude -p`
+       | Launch(program, purpose, paid)  # a browser, `claude -p`
        | Spend(low_usd, high_usd, payer, flag)
 
-Action(id, title, effects: tuple[Effect, ...], run: Callable[[], None], command: str | None)
+Action(id, title, effects: tuple[Effect, ...], run: Callable[[], object], command: str | None)
 Plan(title, actions, notes)
+Outcome(action_id, status, error, result)   # result = what run() returned
 ```
 
 - An `Action` with no effects is refused: if nothing needs previewing it is
@@ -165,7 +167,17 @@ Plan(title, actions, notes)
   so the confirmation is about the real effects.
 - `Action.command` is the exact standalone command that does the same thing
   (`rote mcp login figma`), which is what an agent runs later.
-- `FileWrite.existed` is snapshotted when the plan is made (Terraform-style).
+- **A write is re-checked at apply.** `write_file_action` records the file's
+  state when the plan is made (absent, or the SHA-256 of its bytes), and its
+  `run()` refuses with `StaleFile` ("changed since the plan was made; nothing
+  written, re-run") when the file no longer matches. The check runs after the
+  new content is staged and right before the rename, so the window left is the
+  rename, not the minutes a person spends at "Apply this plan?". Without it, a
+  plan confirmed as a create (so `--yes` alone sufficed) would silently replace
+  a file that appeared meanwhile.
+- **A paid launch carries its spend.** `Launch(paid=True)` (a compile, a skill
+  run through `claude -p`) is refused by `Action` unless the same action holds
+  a `Spend`, whose flag is what keeps `--yes` from ever starting it.
 
 ```mermaid
 sequenceDiagram
@@ -271,7 +283,21 @@ does the same for `ClientContext.current()`, dropping `CLAUDE_CONFIG_DIR`,
 - **Display**: `ImportCandidate.to_dict()` has the host, never the URL; header
   names and templates, never values; and `withheld`, each item with its reason.
   `headersHelper` and `oauth.clientId` (issued to Claude Code) are withheld.
+- **A credential-shaped URL path** (`url_secret_risk`): a path segment of 20+
+  characters mixing letters and digits with Shannon entropy of 3.5+ bits per
+  character, or a 32+ hex run (UUID dashes removed), sets
+  `ImportCandidate.risk`. Decided by the string's form, never a word list.
+  Hosted servers put keys there (Zapier's `/mcp/<key>/sse`). Such a candidate
+  is importable but not `preselectable`: no default and no `--yes` picks it;
+  `rote mcp import` needs a per-server opt-in that names the risk
+  (`--allow-url-secret <name>`). The reason never quotes the segment.
 - `is_work_host(host, work_domains)`: suffix match on whole labels.
+- **Collisions** (`rote.clients.collisions.find_collisions(candidates,
+  registered)`): two active, importable candidates that map to one identifier
+  with different URLs (`acme-crm`, `acme_crm`), or a name already registered
+  with another URL. Found while planning, so `rote mcp import` resolves each
+  one in the plan the user confirms (skip with a note, or `--rename`), never at
+  the write. The rule for resolving them belongs to that PR.
 
 Claude Code (this PR) reads user scope, local scope (nearest ancestor key of
 `projects` in `~/.claude.json`), `.mcp.json` with its approval rules
@@ -284,6 +310,18 @@ local > project > user with the loser marked shadowed, enabled plugins
 `mcpServers` as a map, a JSON path, or a list; `.mcpb` bundles reported), and
 `CLAUDE_CONFIG_DIR`. Shapes were checked against a real install by key name
 only.
+
+Managed policy (code.claude.com/docs/en/managed-mcp): `deniedMcpServers` is
+merged from every settings file plus the system `managed-settings.json`
+(`/Library/Application Support/ClaudeCode/` on macOS, `/etc/claude-code/` on
+Linux, under `ClientContext.system_dir`), and a match blocks the candidate.
+`serverName` matches exactly; `serverUrl` is read wider than Claude Code does
+(ports ignored, case-insensitive), because a deny that matches too much only
+skips an import. A `managed-mcp.json` marks every other server unused, since
+Claude Code then loads only its servers. Not read, and said on every reading
+(`SourceReading.limits`): MDM profiles, the Windows registry, claude.ai
+server-managed settings, and `allowedMcpServers`; `managedMcpServers` is a
+`problems` line when present.
 
 Per-client facts for the follow-up sources (verify each against current docs
 before coding its parser): Codex `$CODEX_HOME/config.toml` `[mcp_servers.<n>]`
@@ -330,6 +368,11 @@ class Step(Protocol):
 run_steps(steps, ctx, prompter, granted=()) -> list[StepReport]
 ```
 
+`run_steps` writes `ctx.results[step.id] = {action_id: result}` after the
+step's plan is applied, from each action's `run()` return value. A step never
+writes results while planning: the plan may be declined or fail, and the next
+step must read what happened, not what was intended.
+
 Resumability comes from `status()` reading the world (servers in the registry,
 token files, a chosen skill), not from a setup state file: an interrupted run
 re-runs, the finished steps say "done already", and the rest continue. The one
@@ -355,6 +398,14 @@ defaults step, and `rote init` stays as an alias.
   (`--runtime` is asked only for local hosting). `--yes` answers all of them.
 
 ## Open items the follow-up PRs own
+
+- **`rote init --login` without a person** is refused (the device flow polls
+  for a browser approval nobody can give). It works once `rote login` gets the
+  `--no-wait` / `--complete` split.
+- **Two raw `input()` prompts remain in `cli.py`**: the baseline-input confirm
+  ("Run the baseline with this input?") and the "Send them?" confirm. They
+  predate this layer; move both onto `Prompter` + `Plan` (the baseline run is a
+  paid `Launch` with its `Spend`).
 
 - **`${VAR}` in registry headers.** The registry stores headers as literal
   strings and neither runtime helper expands them. `rote mcp import` must add

@@ -43,8 +43,11 @@ class StepStatus:
 class SetupContext:
     mode: Mode
     out: Output
-    #: What earlier steps decided, by step id, for later steps to read.
-    results: dict[str, Any] = field(default_factory=dict)
+    #: What earlier steps produced, by step id then action id: each
+    #: action's return value, written by :func:`run_steps` after the action
+    #: ran. A step never writes here while planning, since a plan may be
+    #: declined or fail, and a later step must read what happened.
+    results: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 class Step(Protocol):
@@ -103,6 +106,7 @@ def run_steps(
             reports.append(StepReport(step.id, "declined", "not applied", plan))
             break
         outcomes = tuple(apply_plan(plan))
+        ctx.results[step.id] = {o.action_id: o.result for o in outcomes if o.status == "done"}
         failed = [o for o in outcomes if o.status != "done"]
         state: Literal["applied", "failed"] = "failed" if failed else "applied"
         detail = failed[0].error or "failed" if failed else f"{len(outcomes)} action(s) applied"

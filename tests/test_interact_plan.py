@@ -139,6 +139,56 @@ def test_write_action_writes_atomically_and_only_when_applied(tmp_path: Path) ->
     }
 
 
+def test_a_file_created_after_the_plan_is_not_overwritten(tmp_path: Path) -> None:
+    """The review's reproduction: a create confirmed with --yes alone (no
+    --force needed, the file was absent), then the file appears before
+    apply. The write must refuse, not report done over lost content."""
+    path = tmp_path / "f.txt"
+    plan = Plan(
+        "p",
+        (
+            write_file_action(
+                id="w", title="write", path=path, content="new", summary="s", replaces=False
+            ),
+        ),
+    )
+    assert confirm_plan(plan, NOBODY, yes=True) is True  # no --force asked for
+    path.write_text("someone else's content", encoding="utf-8")
+    [outcome] = apply_plan(plan)
+    assert outcome.status == "failed"
+    assert outcome.error is not None
+    assert outcome.error.startswith("StaleFile: ")
+    assert "was created since the plan was made; nothing written, re-run" in outcome.error
+    assert path.read_text(encoding="utf-8") == "someone else's content"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["f.txt"]  # no temp left
+
+
+def test_a_file_edited_after_the_plan_is_not_overwritten(tmp_path: Path) -> None:
+    action = _write(tmp_path, replaces=True)
+    (tmp_path / "f.txt").write_text("edited meanwhile", encoding="utf-8")
+    [outcome] = apply_plan(Plan("p", (action,)))
+    assert outcome.status == "failed"
+    assert outcome.error is not None and "changed since the plan was made" in outcome.error
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "edited meanwhile"
+
+
+def test_an_unchanged_file_is_replaced_and_the_result_is_the_path(tmp_path: Path) -> None:
+    action = _write(tmp_path, replaces=True)
+    [outcome] = apply_plan(Plan("p", (action,)))
+    assert (outcome.status, outcome.result) == ("done", tmp_path / "f.txt")
+    assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "new"
+
+
+def test_a_paid_launch_needs_its_spend() -> None:
+    with pytest.raises(ValueError, match="declares no Spend"):
+        _action("compile", Launch("claude", "compile the skill", paid=True))
+    ok = _action("compile", Launch("claude", "compile the skill", paid=True), SPEND)
+    plan = Plan("p", (ok,))
+    with pytest.raises(ConfirmationRequired) as e:
+        confirm_plan(plan, NOBODY, yes=True)
+    assert e.value.missing == ("--live",)  # --yes can never start it
+
+
 def test_a_failed_atomic_write_keeps_the_old_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

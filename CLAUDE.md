@@ -2485,11 +2485,15 @@ run on `rote.interact`; the architecture is
   previewed and confirmed (`confirm_plan`) before `apply_plan` runs it.
   Replacing a file needs `--force` beyond `--yes`, and spending needs the
   `Spend`'s own flag: `--yes` never spends money. A `Contact` holds a
-  bare host, never a URL.
+  bare host, never a URL. A paid `Launch` must sit beside its `Spend`.
+  Writes go through `write_file_action`, which refuses at apply when the
+  file changed since the plan (a confirmed "create" must not replace a
+  file that appeared while the person read it).
 
 Client config readers (`rote.clients`) only read: never run the client,
 contact a server, or resolve a placeholder, and display hosts, never URLs
-or header values. They reach the machine only through `ClientContext`;
+or header values. A credential-shaped URL path sets `risk`, which keeps
+the server out of every default until the user opts in by name. They reach the machine only through `ClientContext`;
 `ROTE_CLIENT_HOME_DIR` (in `STATE_PATHS`) keeps tests and
 `scripts/isolated-rote` away from the user's real AI-client configs.
 

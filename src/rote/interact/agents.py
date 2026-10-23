@@ -59,10 +59,13 @@ SIGNALS: tuple[Signal, ...] = (
     Signal("OPENCODE_CLIENT", "opencode", "caller"),
     Signal("AMP_CURRENT_THREAD_ID", "amp", "caller", verified=False),
     Signal("AGENT", "amp", "caller", value="amp"),
-    Signal("GOOSE_PROVIDER", "goose", "caller"),
+    # Set in a person's own shell by Goose's setup, so it says nothing about
+    # who is typing.
+    Signal("GOOSE_PROVIDER", "goose", "host"),
     Signal("AGENT_SESSION_ID", "goose", "caller", verified=False),
     Signal("ZED_TERM", "zed", "host"),
-    Signal("REPL_ID", "replit", "caller"),
+    # Set in every Replit shell, a person's included.
+    Signal("REPL_ID", "replit", "host"),
 )
 
 #: ``AI_AGENT`` values (the emerging cross-vendor convention) that name a

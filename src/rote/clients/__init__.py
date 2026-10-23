@@ -16,14 +16,17 @@ from rote.clients.base import (
     SourceReading,
 )
 from rote.clients.claude_code import ClaudeCodeSource
+from rote.clients.collisions import Collision, find_collisions
 
 __all__ = [
     "SOURCES",
     "ClientContext",
     "ClientSource",
+    "Collision",
     "HeaderTemplate",
     "ImportCandidate",
     "SourceReading",
+    "find_collisions",
     "ordered_sources",
     "source",
 ]

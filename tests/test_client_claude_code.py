@@ -339,3 +339,91 @@ def test_current_context_honors_the_isolation_override(
     ctx = ClientContext.current()
     assert ctx.home == Path(os.environ["ROTE_CLIENT_HOME_DIR"])
     assert "CLAUDE_CONFIG_DIR" not in ctx.env  # would lead back to the real files
+
+
+ZAPIER_SHAPED = "https://actions.zapier.com/mcp/sk-ak-9fQ2xLm4Rt7Vb8Np3Kd6Wz1Hc5Jy0Ts/sse"
+
+
+def _one_server_machine(tmp_path: Path, servers: dict[str, Any], **settings: Any) -> ClientContext:
+    home = tmp_path / "home"
+    _write(home / ".claude.json", {"mcpServers": servers})
+    if settings:
+        _write(home / ".claude" / "settings.json", settings)
+    return ClientContext(home=home, cwd=tmp_path, env={})
+
+
+def test_a_credential_shaped_url_path_needs_an_opt_in(tmp_path: Path) -> None:
+    ctx = _one_server_machine(
+        tmp_path,
+        {
+            "zapier": {"type": "sse", "url": ZAPIER_SHAPED},
+            "figma": _http("https://mcp.figma.com/mcp"),
+        },
+    )
+    found = {c.original_name: c for c in ClaudeCodeSource().read(ctx).candidates}
+    zapier = found["zapier"]
+    assert zapier.importable  # the user may still opt in, by name
+    assert zapier.risk is not None and "may be an API key" in zapier.risk
+    assert not zapier.preselectable  # never a default, never --yes
+    assert found["figma"].risk is None and found["figma"].preselectable
+    shown = json.dumps(zapier.to_dict())
+    assert "9fQ2xLm4" not in shown and zapier.to_dict()["host"] == "actions.zapier.com"
+
+
+def test_denied_servers_are_blocked_by_name_or_url(tmp_path: Path) -> None:
+    ctx = _one_server_machine(
+        tmp_path,
+        {
+            "named": _http("https://named.example.com/mcp"),
+            "staging": _http("https://staging.example.com:8443/api"),
+            "fine": _http("https://fine.example.com/mcp"),
+        },
+        deniedMcpServers=[
+            {"serverName": "named"},
+            {"serverUrl": "https://staging.example.com/*"},
+            {"serverCommand": ["npx", "x"]},
+        ],
+    )
+    found = {c.original_name: c for c in ClaudeCodeSource().read(ctx).candidates}
+    assert found["named"].blocked is not None and "serverName" in found["named"].blocked
+    # Claude Code would match port 443 only; rote reads the deny wider.
+    assert found["staging"].blocked is not None and "serverUrl" in found["staging"].blocked
+    assert found["fine"].blocked is None
+
+
+def test_managed_policy_files_are_read_from_the_system_dir(tmp_path: Path) -> None:
+    ctx = _one_server_machine(tmp_path, {"fine": _http("https://fine.example.com/mcp")})
+    system = tmp_path / "system"
+    _write(
+        system / "ClaudeCode" / "managed-settings.json",
+        {
+            "deniedMcpServers": [{"serverUrl": "https://*.example.com/*"}],
+            "managedMcpServers": {"org": _http("https://org.example.com/mcp")},
+        },
+    )
+    mac = ClientContext(home=ctx.home, cwd=ctx.cwd, env={}, system_dir=system, platform="darwin")
+    reading = ClaudeCodeSource().read(mac)
+    [fine] = reading.candidates
+    assert fine.blocked is not None and "deniedMcpServers" in fine.blocked
+    assert any("managedMcpServers" in p and "not read yet" in p for p in reading.problems)
+
+    # Linux keeps it under /etc/claude-code; the macOS dir is not read there.
+    linux = ClientContext(home=ctx.home, cwd=ctx.cwd, env={}, system_dir=system, platform="linux")
+    assert ClaudeCodeSource().read(linux).candidates[0].blocked is None
+    _write(system / "claude-code" / "managed-mcp.json", {"mcpServers": {}})
+    exclusive = ClaudeCodeSource().read(linux)
+    assert exclusive.candidates[0].inactive == (
+        "Claude Code loads only managed-mcp.json servers on this machine"
+    )
+    assert any("managed-mcp.json" in p for p in exclusive.problems)
+
+
+def test_every_reading_states_what_it_does_not_read(tmp_path: Path) -> None:
+    reading = ClaudeCodeSource().read(ClientContext(home=tmp_path, cwd=tmp_path, env={}))
+    assert any("MDM" in limit and "server-managed" in limit for limit in reading.limits)
+    assert any("allowedMcpServers is not evaluated" in limit for limit in reading.limits)
+    assert reading.to_dict()["limits"] == list(reading.limits)
+
+
+def test_the_isolated_context_reads_no_system_dir() -> None:
+    assert ClientContext.current().system_dir is None

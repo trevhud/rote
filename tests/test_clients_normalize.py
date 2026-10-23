@@ -11,6 +11,7 @@ from rote.clients.normalize import (
     rewrite_placeholders,
     server_identifier,
     url_problem,
+    url_secret_risk,
 )
 
 
@@ -91,6 +92,34 @@ def test_url_problem(url: str, problem: str | None) -> None:
     else:
         assert found is not None and problem in found
         assert url not in found
+
+
+ZAPIER_SHAPED = "https://actions.zapier.com/mcp/sk-ak-9fQ2xLm4Rt7Vb8Np3Kd6Wz1Hc5Jy0Ts/sse"
+
+
+@pytest.mark.parametrize(
+    ("url", "risky"),
+    [
+        (ZAPIER_SHAPED, True),
+        ("https://x.example.com/w/550e8400-e29b-41d4-a716-446655440000/mcp", True),
+        ("https://x.example.com/t/" + "ab12" * 8, True),  # a 32-char hex run
+        ("https://mcp.figma.com/mcp", False),
+        ("https://x.example.com/api/mcp/streamable-http-transport", False),
+        ("https://x.example.com/servers/github-enterprise-cloud/mcp", False),
+        ("https://x.example.com/v1/2025-03-26/mcp", False),
+        ("https://x.example.com/a/abc123def456ghi789/mcp", False),  # 18 chars: an id
+        # Long and mixing letters and digits, but far from random (2.27 and
+        # 2.54 bits per character): the entropy floor keeps these importable.
+        ("https://x.example.com/p/project-00000000000001/mcp", False),
+        ("https://x.example.com/v2-2025-03-26-2025-03-26/mcp", False),
+    ],
+)
+def test_url_secret_risk_reads_the_form_of_each_path_segment(url: str, risky: bool) -> None:
+    risk = url_secret_risk(url)
+    assert (risk is not None) is risky
+    if risk is not None:
+        assert "may be an API key" in risk
+        assert "9fQ2" not in risk and "550e" not in risk  # never quotes the segment
 
 
 @pytest.mark.parametrize(

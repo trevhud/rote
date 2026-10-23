@@ -27,11 +27,11 @@ class FakeStep:
         return StepStatus("done" if self.done else "pending", "state")
 
     def plan(self, ctx: SetupContext, prompter: Prompter) -> Plan:
-        def run() -> None:
+        def run() -> str:
             self.ran.append(self.id)
             if self.fail:
                 raise RuntimeError("nope")
-            ctx.results[self.id] = True
+            return f"{self.id}-result"
 
         return Plan(self.id, (Action(f"{self.id}-a", "a", (Launch("x", "y"),), run),))
 
@@ -55,7 +55,8 @@ def test_done_steps_are_skipped_and_the_rest_apply_in_order() -> None:
         ("three", "applied"),
     ]
     assert steps[0].ran == [] and steps[1].ran == ["two"]
-    assert ctx.results == {"two": True, "three": True}
+    # The runner records what each applied action returned, after it ran.
+    assert ctx.results == {"two": {"two-a": "two-result"}, "three": {"three-a": "three-result"}}
 
 
 def test_a_failure_or_a_no_stops_the_later_steps() -> None:

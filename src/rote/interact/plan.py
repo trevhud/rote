@@ -26,6 +26,7 @@ defaults, and a default never replaces a file or spends money.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import tempfile
 from collections.abc import Callable, Collection, Sequence
@@ -110,10 +111,16 @@ class Contact:
 
 @dataclass(frozen=True)
 class Launch:
-    """A program this action starts on the user's machine (a browser, ``claude -p``)."""
+    """A program this action starts on the user's machine (a browser, ``claude -p``).
+
+    ``paid``: the program bills someone when it runs (``claude -p``, a
+    compile). An action holding a paid launch must also hold the
+    :class:`Spend` it causes (:class:`Action` refuses one without it), so
+    the spend's flag gates it and ``--yes`` alone can never start it."""
 
     program: str
     purpose: str
+    paid: bool = False
 
     kind: Literal["launch"] = "launch"
 
@@ -125,7 +132,12 @@ class Launch:
         return f"start {self.program} ({self.purpose})"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "program": self.program, "purpose": self.purpose}
+        return {
+            "kind": self.kind,
+            "program": self.program,
+            "purpose": self.purpose,
+            "paid": self.paid,
+        }
 
 
 @dataclass(frozen=True)
@@ -182,8 +194,10 @@ class Action:
     id: str
     title: str
     effects: tuple[Effect, ...]
-    #: Runs the action. Raises on failure; the error is the report.
-    run: Callable[[], None] = field(repr=False, compare=False)
+    #: Runs the action and returns what it produced (a registered name, a
+    #: compiled path), which lands in :attr:`Outcome.result`. Raises on
+    #: failure; the error is the report.
+    run: Callable[[], object] = field(repr=False, compare=False)
     #: The exact command that does the same thing, for an agent or a
     #: script to run later. None when no single command does it.
     command: str | None = None
@@ -193,6 +207,12 @@ class Action:
             raise ValueError(
                 f"action {self.id!r} has no effects: an action with nothing to "
                 "preview is not a side effect and does not belong in a plan"
+            )
+        paid = [e for e in self.effects if isinstance(e, Launch) and e.paid]
+        if paid and not any(isinstance(e, Spend) for e in self.effects):
+            raise ValueError(
+                f"action {self.id!r} starts {paid[0].program}, which bills someone, but "
+                "declares no Spend: the Spend's flag is what keeps --yes from starting it"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -305,6 +325,9 @@ class Outcome:
     action_id: str
     status: Literal["done", "failed", "not-run"]
     error: str | None = None
+    #: What :attr:`Action.run` returned. Not in :meth:`to_dict`: it is for
+    #: the next step to read (``rote.setup``), not a display value.
+    result: object = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.action_id, "status": self.status, "error": self.error}
@@ -321,23 +344,53 @@ def apply_plan(plan: Plan) -> list[Outcome]:
             outcomes.append(Outcome(action.id, "not-run"))
             continue
         try:
-            action.run()
+            result = action.run()
         except Exception as e:  # the report carries it; the caller decides the exit code
             outcomes.append(Outcome(action.id, "failed", f"{type(e).__name__}: {e}"))
             failed = True
         else:
-            outcomes.append(Outcome(action.id, "done"))
+            outcomes.append(Outcome(action.id, "done", result=result))
     return outcomes
 
 
-def atomic_write_text(path: Path, text: str, *, file_mode: int = 0o644) -> None:
-    """Write ``text`` to ``path`` all at once: a crash leaves the old file or the new one."""
+#: A file's state when a plan was made: None when it did not exist, else
+#: the SHA-256 of its bytes.
+FileState = str | None
+
+
+def file_state(path: Path) -> FileState:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+class StaleFile(RuntimeError):
+    """The file changed between the plan and its apply."""
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    file_mode: int = 0o644,
+    expect: FileState | Literal["any"] = "any",
+) -> None:
+    """Write ``text`` to ``path`` all at once: a crash leaves the old file or the new one.
+
+    With ``expect`` (a :func:`file_state`), the write is refused when the
+    file no longer matches it. The check runs after the new content is
+    staged, right before the rename, so the window it leaves is the rename
+    itself, not the time a person spent reading the plan."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         os.chmod(tmp_name, file_mode)
+        if expect != "any" and file_state(path) != expect:
+            what = "was created" if expect is None else "changed"
+            raise StaleFile(f"{path} {what} since the plan was made; nothing written, re-run")
         os.replace(tmp_name, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -356,7 +409,17 @@ def write_file_action(
     file_mode: int = 0o644,
     command: str | None = None,
 ) -> Action:
-    """An action that writes ``content`` to ``path`` atomically."""
+    """An action that writes ``content`` to ``path`` atomically, and only
+    if the file is still as it was when the plan was made: a plan approved
+    as "create" must not replace a file that appeared while the person read
+    it, and one approved against a file's content must not overwrite an
+    edit made since."""
+    state = file_state(path)
+
+    def run() -> Path:
+        atomic_write_text(path, content, file_mode=file_mode, expect=state)
+        return path
+
     return Action(
         id=id,
         title=title,
@@ -364,11 +427,11 @@ def write_file_action(
             FileWrite(
                 path=path,
                 summary=summary,
-                existed=path.exists(),
+                existed=state is not None,
                 replaces=replaces,
                 file_mode=file_mode,
             ),
         ),
-        run=lambda: atomic_write_text(path, content, file_mode=file_mode),
+        run=run,
         command=command,
     )

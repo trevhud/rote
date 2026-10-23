@@ -19,6 +19,7 @@ what was withheld and why. The URL itself is kept for the write
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,6 +48,18 @@ CLIENT_HOME_ENV = "ROTE_CLIENT_HOME_DIR"
 CLIENT_DIR_VARS = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME")
 
 
+def _system_dir() -> Path | None:
+    """The root admin-deployed client policy lives under on this OS (Claude
+    Code: code.claude.com/docs/en/managed-mcp, "Deploy managed-mcp.json")."""
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support")
+    if sys.platform.startswith("linux"):
+        return Path("/etc")
+    if sys.platform == "win32":
+        return Path("C:/Program Files")
+    return None
+
+
 @dataclass(frozen=True)
 class ClientContext:
     """Everything a source may read from the machine, injected."""
@@ -57,6 +70,13 @@ class ClientContext:
     #: (``CLAUDE_CONFIG_DIR``, ``CODEX_HOME``, ``XDG_CONFIG_HOME``), never to
     #: resolve a placeholder.
     env: Mapping[str, str] = field(default_factory=dict)
+    #: The OS-wide directory administrators deploy client policy under
+    #: (``/Library/Application Support`` on macOS, ``/etc`` on Linux). Each
+    #: source adds its own subdirectory. None: not read, which is what the
+    #: isolation override gives.
+    system_dir: Path | None = None
+    #: ``sys.platform`` for the machine whose files these are.
+    platform: str = sys.platform
 
     @classmethod
     def current(cls) -> ClientContext:
@@ -66,7 +86,7 @@ class ClientContext:
             for var in CLIENT_DIR_VARS:
                 env.pop(var, None)
             return cls(home=Path(moved), cwd=Path.cwd(), env=env)
-        return cls(home=Path.home(), cwd=Path.cwd(), env=env)
+        return cls(home=Path.home(), cwd=Path.cwd(), env=env, system_dir=_system_dir())
 
 
 @dataclass(frozen=True)
@@ -107,12 +127,23 @@ class ImportCandidate:
     #: Why the client itself does not use this entry right now (disabled,
     #: not approved, shadowed by a higher scope). None: the client uses it.
     inactive: str | None = None
+    #: A risk the user must accept by name before this server is imported
+    #: (a credential-shaped URL path segment). Importable, but never picked
+    #: by a default or by ``--yes``: ``rote mcp import`` needs a per-server
+    #: opt-in that names the risk (``--allow-url-secret <name>``).
+    risk: str | None = None
     #: The plugin that ships it, for ``scope == "plugin"``.
     plugin: str | None = None
 
     @property
     def importable(self) -> bool:
         return self.blocked is None
+
+    @property
+    def preselectable(self) -> bool:
+        """Whether a default (or ``--yes``) may pick this server: importable,
+        used by the client, and carrying no risk to opt into."""
+        return self.importable and self.inactive is None and self.risk is None
 
     @property
     def renamed(self) -> bool:
@@ -144,6 +175,8 @@ class ImportCandidate:
             "blocked": self.blocked,
             "active": self.inactive is None,
             "inactive": self.inactive,
+            "risk": self.risk,
+            "preselectable": self.preselectable,
             "withheld": list(self.withheld),
         }
 
@@ -158,6 +191,9 @@ class SourceReading:
     candidates: tuple[ImportCandidate, ...] = ()
     files_read: tuple[Path, ...] = ()
     problems: tuple[str, ...] = ()
+    #: What this source does not read at all, stated every time so a
+    #: listing never implies more than it checked.
+    limits: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -165,6 +201,7 @@ class SourceReading:
             "candidates": [c.to_dict() for c in self.candidates],
             "files_read": [str(p) for p in self.files_read],
             "problems": list(self.problems),
+            "limits": list(self.limits),
         }
 
 

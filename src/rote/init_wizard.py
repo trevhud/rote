@@ -262,6 +262,16 @@ def build_plan(
             notes.append(f"already logged in to rote cloud as {credential.user or credential.url}")
         else:
             wants_login = flags.login
+            if wants_login and not prompter.interactive:
+                # The device flow polls until someone approves in a browser;
+                # with nobody at the terminal it would block with no one to
+                # see the code. Lift this when `rote login` gets the
+                # --no-wait / --complete split (docs/design/first-run.md).
+                raise InitError(
+                    "--login needs a person at the terminal (the device login waits for "
+                    "approval in a browser); run `rote login` in a terminal, or pass "
+                    "--no-login and log in later"
+                )
             if wants_login is None and prompter.interactive:
                 wants_login = prompter.confirm(
                     "Log in to rote cloud now?", flag="--login", default=True
