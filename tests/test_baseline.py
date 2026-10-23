@@ -192,6 +192,11 @@ def _install_fake_claude(
     def fake_run(args: list[str], **kwargs: Any) -> _FakeProc:
         captured["args"] = args
         captured["kwargs"] = kwargs
+        # The config lives in the trial's temp workdir, gone after the run:
+        # read what the child would have read, at spawn time.
+        if "--mcp-config" in args:
+            config = Path(args[args.index("--mcp-config") + 1])
+            captured["mcp_config"] = json.loads(config.read_text(encoding="utf-8"))
         if write_result is not None:
             (Path(kwargs["cwd"]) / "result.json").write_text(
                 json.dumps(write_result), encoding="utf-8"
@@ -248,11 +253,140 @@ def test_trial_wires_mcp_config_strictly(skill_dir: Path, monkeypatch: pytest.Mo
     args = captured["args"]
     assert "--strict-mcp-config" in args
     config_path = Path(args[args.index("--mcp-config") + 1])
-    allowed = args[args.index("--allowedTools") + 1]
-    assert "mcp__gmail__search_threads" in allowed
-    assert "mcp__gmail__*" not in allowed  # read-only gate: explicit ids only
+    assert captured["mcp_config"] == {
+        "mcpServers": {"gmail": {"type": "http", "url": "https://g.example/mcp"}}
+    }
+    allowed = args[args.index("--allowedTools") + 1].split(",")
+    assert allowed == [
+        "Read",
+        "Glob",
+        "Grep",
+        "Write(./**)",
+        "Edit(./**)",
+        "mcp__gmail__search_threads",
+    ]  # read-only gate: explicit ids only, never mcp__gmail__*
     # Config file existed at spawn time inside the trial workdir.
     assert config_path.name == "mcp-config.json"
+    assert config_path.parent == Path(captured["kwargs"]["cwd"])
+
+
+def test_trial_with_no_servers_is_still_strict_and_sees_none(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty registry used to mean no --strict-mcp-config, so the run saw
+    every server the user has in Claude Code (work servers, claude.ai
+    connectors). Strict with an empty config is the only way to see none."""
+    captured = _install_fake_claude(monkeypatch, [_result_event()], write_result={})
+    run_baseline_trial(skill_dir, {}, model="m")
+    args = captured["args"]
+    assert "--strict-mcp-config" in args
+    assert captured["mcp_config"] == {"mcpServers": {}}
+    allowed = args[args.index("--allowedTools") + 1].split(",")
+    assert not [t for t in allowed if t.startswith("mcp__")]
+    assert "--disallowedTools" not in args
+
+
+def test_trial_does_not_inherit_the_users_settings_or_permission_mode(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--allowedTools only pre-approves. Under the user's `defaultMode: auto`
+    a real run called a server the allowlist excluded and searched the web.
+    The child loads none of the user's settings, runs in dontAsk (anything
+    not allowed is denied), and has no Bash/WebSearch/WebFetch at all."""
+    from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS
+
+    captured = _install_fake_claude(monkeypatch, [_result_event()], write_result={})
+    run_baseline_trial(
+        skill_dir,
+        {},
+        model="m",
+        mcp_servers={"gmail": {"type": "http", "url": "https://g.example/mcp"}},
+        mcp_tool_ids=["mcp__gmail__search_threads"],
+        denied_mcp_tool_ids=["mcp__gmail__send_email", "mcp__gmail__delete_thread"],
+    )
+    args = captured["args"]
+    # The same tuple the compiler driver and the judge lane use, in order.
+    start = args.index(CLI_CONTEXT_ISOLATION_FLAGS[0])
+    assert tuple(args[start : start + len(CLI_CONTEXT_ISOLATION_FLAGS)]) == (
+        CLI_CONTEXT_ISOLATION_FLAGS
+    )
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert args[args.index("--permission-mode") + 1] == "dontAsk"
+    assert args[args.index("--tools") + 1] == "Read,Write,Edit,Glob,Grep"
+    for tool in ("Bash", "WebSearch", "WebFetch"):
+        assert tool not in args[args.index("--tools") + 1].split(",")
+        assert tool not in args[args.index("--allowedTools") + 1].split(",")
+    assert args[args.index("--disallowedTools") + 1] == (
+        "mcp__gmail__send_email,mcp__gmail__delete_thread"
+    )
+    # The skill's own files stay readable: its dir is a working directory.
+    assert args[args.index("--add-dir") + 1] == str(skill_dir.resolve())
+    assert "Read" in args[args.index("--allowedTools") + 1].split(",")
+
+
+def test_trial_reports_the_servers_the_skill_names_but_never_called(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: t\n---\nCall `search` on the `mslearn` MCP server, then\n"
+        "`read_wiki_structure` on the `deepwiki` MCP server, then\n"
+        "`lookup` on the `catalog` MCP server.\n"
+    )
+    lines = [
+        _tool_use_event("t1", "mcp__mslearn__search", {"q": "x"}),
+        _tool_result_event("t1", "r"),
+        _result_event(
+            permission_denials=[
+                {"tool_name": "mcp__catalog__lookup", "tool_use_id": "t2", "tool_input": {}}
+            ]
+        ),
+    ]
+    _install_fake_claude(monkeypatch, lines, write_result={"ok": True})
+    run, _, _ = run_baseline_trial(
+        skill,
+        {},
+        model="m",
+        mcp_servers={
+            "mslearn": {"type": "http", "url": "https://m.example/mcp"},
+            "catalog": {"type": "http", "url": "https://c.example/mcp"},
+        },
+        mcp_tool_ids=["mcp__mslearn__search"],
+        denied_mcp_tool_ids=["mcp__catalog__lookup"],
+    )
+    assert run.succeeded  # it wrote a result ...
+    assert run.missing_mcp_servers == {  # ... without two of its servers
+        "catalog": "the read-only gate refused mcp__catalog__lookup",
+        "deepwiki": "not registered with rote: rote mcp add deepwiki <url>",
+    }
+    assert run.denied_tools == ("mcp__catalog__lookup",)
+    assert "missing_mcp_servers" in run.flags
+    assert not run.representative
+
+
+def test_trial_that_calls_every_named_server_is_not_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\nUse the `deepwiki` MCP server.\n")
+    lines = [
+        _tool_use_event("t1", "mcp__deepwiki__read_wiki_structure", {"repoName": "a/b"}),
+        _tool_result_event("t1", "r"),
+        _result_event(),
+    ]
+    _install_fake_claude(monkeypatch, lines, write_result={"ok": True})
+    run, _, _ = run_baseline_trial(
+        skill,
+        {},
+        model="m",
+        mcp_servers={"deepwiki": {"type": "http", "url": "https://d.example/mcp"}},
+        mcp_tool_ids=["mcp__deepwiki__read_wiki_structure"],
+    )
+    assert run.missing_mcp_servers == {}
+    assert run.denied_tools == ()
+    assert run.flags == ()
 
 
 def test_trial_failure_reports_error_and_flags(
@@ -330,7 +464,8 @@ def test_run_baseline_allow_writes_wildcards_all_servers(
 
     args = captured["args"]
     allowed = args[args.index("--allowedTools") + 1]
-    assert "mcp__gmail__*" in allowed
+    assert "mcp__gmail__*" in allowed.split(",")
+    assert "--disallowedTools" not in args  # writes allowed: nothing is held back
 
 
 def test_run_baseline_read_only_gate_uses_annotations(
@@ -386,10 +521,17 @@ def test_run_baseline_read_only_gate_uses_annotations(
 
     result = run_baseline(skill_dir, {}, tmp_path / "out", model="m")
 
-    allowed = captured["args"][captured["args"].index("--allowedTools") + 1]
+    args = captured["args"]
+    allowed = args[args.index("--allowedTools") + 1]
     assert "mcp__gmail__search_threads" in allowed
     assert "send_email" not in allowed
     assert "push_record" not in allowed
+    # The excluded tool is denied outright (and so out of the model's
+    # context), not merely left off an allowlist that denies nothing.
+    assert args[args.index("--disallowedTools") + 1] == "mcp__gmail__send_email"
+    # A server contributing no callable tool is not wired at all.
+    assert set(captured["mcp_config"]["mcpServers"]) == {"gmail"}
+    assert result.servers_wired == ("gmail",)
     assert "pushy" in result.servers_skipped
     assert "readOnlyHint" in result.servers_skipped["pushy"]
 
@@ -465,9 +607,13 @@ def test_derive_input_payload_parses_plain_json(
     captured = _install_fake_derive_claude(monkeypatch, '{"campaign": "expo-2026"}')
     payload = derive_input_payload(skill_dir)
     assert payload == {"campaign": "expo-2026"}
-    # Cheap and toolless by construction.
+    # Cheap and toolless by construction, and blind to the user's setup:
+    # no built-in tool, no MCP server, none of the user's settings.
     args = captured["args"]
-    assert args[args.index("--allowedTools") + 1] == ""
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert "--mcp-config" not in args  # strict with nothing passed = no servers
     assert args[args.index("--max-turns") + 1] == "2"
 
 

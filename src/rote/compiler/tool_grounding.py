@@ -186,6 +186,80 @@ def servers_to_contact(
     return {n: why for n, why in found.items() if why is not None}
 
 
+#: A server the skill names AS a server: `` `deepwiki` MCP server ``,
+#: `` `slack` server ``. The name must be a code span: "the Drive MCP" in
+#: "Google Drive MCP" is half a name, and a guessed name is worse than none.
+_DECLARED_SERVER_RE = re.compile(
+    r"`([A-Za-z0-9][A-Za-z0-9_.-]{0,63})`\s+(?:MCP\b|server\b)", re.IGNORECASE
+)
+#: A tool id names its server: ``mcp__hubspot_crm__get_contact``.
+_TOOL_ID_SERVER_RE = re.compile(r"\bmcp__([A-Za-z0-9][\w.-]*?)__\w+")
+
+
+def _server_shaped(name: str, text: str, table: frozenset[str]) -> str | None:
+    """Evidence that ``text`` names the registered server ``name`` as a server.
+
+    Narrower than :func:`_mention`, which decides only what a compile may
+    list: here a match makes a run that never called the server a degraded
+    run, so a proper noun in prose ("post it in Slack") is not enough. The
+    name followed by "MCP" or "server", or the skill's tool table mapping a
+    tool to it, is.
+    """
+    if name in table:
+        return f"the skill's tool table names {name!r}"
+    words = _phrase(name).split()
+    if not words:
+        return None
+    pattern = r"\b" + r"[\W_]+".join(map(re.escape, words)) + r"`?\s+(?:mcp|server)\b"
+    m = re.search(pattern, text, re.IGNORECASE)
+    return m.group(0) if m else None
+
+
+def servers_named(skill_dir: Path, registered: Iterable[str] = ()) -> dict[str, str]:
+    """``{server: evidence}`` for every MCP server the skill names as one.
+
+    Static detection, checked against a run's observed calls by
+    :func:`rote.eval.baseline.run_baseline_trial`. Only explicit forms
+    count, because a false entry fails a correct run: a code-span name
+    followed by "MCP"/"server", an ``mcp__<server>__<tool>`` id, a server in
+    the skill's bundled tool snapshot, and, for a ``registered`` server, its
+    name followed by "MCP"/"server" or a tool table mapping a tool to it. A
+    tool table alone does not name an unregistered server: the parser reads
+    any table of code spans as one (expense-audit's policy table would name
+    a ``category_caps`` server).
+    """
+    from rote.tool_schema import BUNDLED_TOOLS_FILENAME, load_bundled_tools
+
+    text = _skill_text(skill_dir)
+    found: dict[str, str] = {}
+    for m in _DECLARED_SERVER_RE.finditer(text):
+        found.setdefault(m.group(1), m.group(0))
+    for m in _TOOL_ID_SERVER_RE.finditer(text):
+        found.setdefault(m.group(1), m.group(0))
+    for server in load_bundled_tools(skill_dir):
+        found.setdefault(server, f"the skill's {BUNDLED_TOOLS_FILENAME}")
+    table = frozenset(skill_tool_table_servers(skill_dir))
+    for server in sorted(set(registered) - set(found)):
+        why = _server_shaped(server, text, table)
+        if why is not None:
+            found[server] = why
+    return dict(sorted(found.items()))
+
+
+def skill_tool_table_servers(skill_dir: Path) -> set[str]:
+    """Servers the skill's own tool table maps a tool to (System-1's parser).
+
+    A skill it cannot parse safely names no server this way; its prose
+    still can.
+    """
+    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
+
+    try:
+        return set(parse_skill(skill_dir).tool_registry.values())
+    except UnsafeSkillText:
+        return set()
+
+
 async def discover(
     servers: Iterable[str],
     on_skip: Callable[[str, str], None] | None = None,

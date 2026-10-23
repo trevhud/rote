@@ -39,12 +39,11 @@ from statistics import mean
 from typing import TYPE_CHECKING, Any
 
 from rote._dbos import dbos_system_database_url as _dbos_system_database_url
-from rote.compiler.drivers.claude import DEFAULT_ALLOWED_TOOLS
 from rote.eval.gate_server import GATE_SERVER, GATE_TOOL
 from rote.eval.pricing import PricingCatalog
 from rote.eval.priors import Priors
 from rote.extras import extra_for_missing_module, install_hint
-from rote.inference import build_subscription_env
+from rote.inference import CLI_CONTEXT_ISOLATION_FLAGS, build_subscription_env
 from rote.ir import NodeKind, Pipeline
 from rote.xdg import data_home
 
@@ -53,6 +52,75 @@ if TYPE_CHECKING:
 
 RESULT_FILENAME = "result.json"
 MCP_CONFIG_FILENAME = "mcp-config.json"
+
+#: The built-in tools a skill run has, and the only ones: read the skill
+#: and its references, write ``result.json``. Nothing that runs code or
+#: reaches the network (no Bash, WebSearch, WebFetch), so the MCP gate is
+#: the run's only way out. Passed as ``--tools``, which removes every other
+#: built-in from the model's context, not just from its permissions.
+SKILL_RUN_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep")
+
+#: What those tools are allowed to do without asking. Reads anywhere (the
+#: skill dir comes in through ``--add-dir``; reading is not a side effect),
+#: writes only under the run's own temp working directory: ``./**`` is
+#: anchored at the cwd (verified on Claude Code 2.1.308, a Write outside it
+#: is denied under ``dontAsk``).
+_SKILL_RUN_ALLOWED = ("Read", "Glob", "Grep", "Write(./**)", "Edit(./**)")
+
+
+def skill_run_isolation_args(
+    workdir: Path,
+    mcp_servers: Mapping[str, Mapping[str, Any]] | None,
+    allowed_mcp_tools: Sequence[str],
+    denied_mcp_tools: Sequence[str] = (),
+) -> list[str]:
+    """The ``claude -p`` flags that keep a skill run inside rote's gate.
+
+    One function for every skill run (``rote run <skill>``, the baseline,
+    ``rote eval --run``, the bench's fidelity references), because each
+    flag closes a hole a real run went through:
+
+    * :data:`rote.inference.CLI_CONTEXT_ISOLATION_FLAGS`: the user's
+      settings, hooks, plugins, CLAUDE.md and permission mode stay out
+      (a ``defaultMode: auto`` in them approved calls the allowlist did not
+      name), and ``--strict-mcp-config`` is ALWAYS on, with an empty
+      ``--mcp-config`` when nothing is wired. Without it an empty registry
+      meant the run saw every MCP server the user has in Claude Code,
+      work servers and claude.ai connectors included.
+    * ``--permission-mode dontAsk``: anything ``--allowedTools`` does not
+      name is denied, not prompted (``-p`` cannot prompt) or classified.
+      ``--allowedTools`` alone only pre-approves; it denies nothing.
+    * ``--disallowedTools``: the wired servers' tools the read-only gate
+      excludes. ``dontAsk`` already denies them; a deny rule also takes
+      them out of the model's context, so it never plans around them.
+    """
+    config_path = workdir / MCP_CONFIG_FILENAME
+    config_path.write_text(
+        json.dumps({"mcpServers": dict(mcp_servers or {})}, indent=2), encoding="utf-8"
+    )
+    args = [
+        *CLI_CONTEXT_ISOLATION_FLAGS,
+        "--mcp-config",
+        str(config_path),
+        "--tools",
+        ",".join(SKILL_RUN_TOOLS),
+        "--permission-mode",
+        "dontAsk",
+        "--allowedTools",
+        ",".join([*_SKILL_RUN_ALLOWED, *allowed_mcp_tools]),
+    ]
+    if denied_mcp_tools:
+        args += ["--disallowedTools", ",".join(denied_mcp_tools)]
+    return args
+
+
+def permission_denials(meta: Mapping[str, Any]) -> tuple[str, ...]:
+    """The tools the run tried and the gate refused, from the result envelope."""
+    denials = meta.get("permission_denials")
+    if not isinstance(denials, list):
+        return ()
+    return tuple(str(d["tool_name"]) for d in denials if isinstance(d, dict) and d.get("tool_name"))
+
 
 # IR transport values → Claude Code mcp-config `type` values. The CLI
 # spells Streamable HTTP as plain "http" (verified against the current
@@ -224,6 +292,14 @@ class MeasuredRun:
     a measurement) / ``suspiciously_few_turns`` (fewer turns than the
     pipeline has data pulls — the agent never did the work) /
     ``missing_mcp_servers`` (the skill's tools weren't all available)."""
+    #: Skill side: ``{server: why}`` for each MCP server the skill names that
+    #: the run never called (not registered, excluded by the gate, or
+    #: simply not reached). A run without them did a different task, often
+    #: on data the agent substituted.
+    missing_mcp_servers: Mapping[str, str] = field(default_factory=dict)
+    #: Skill side: tools the run reached for and the gate refused
+    #: (Claude Code's ``permission_denials``), one entry per refusal.
+    denied_tools: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
@@ -313,7 +389,6 @@ def run_skill_trial(
     *,
     model: str,
     max_turns: int = 60,
-    allowed_tools: str = DEFAULT_ALLOWED_TOOLS,
     executable: str = "claude",
     timeout_seconds: float = 1800.0,
     output_fields: list[str] | None = None,
@@ -328,9 +403,10 @@ def run_skill_trial(
     reported ``total_cost_usd`` is Claude Code's list-price notional.
 
     ``mcp_servers`` (from :func:`mcp_servers_for_pipeline`) is written to
-    a config file and passed via ``--mcp-config --strict-mcp-config`` —
-    strict, so the trial exercises exactly the pipeline-declared servers,
-    never whatever happens to be configured on the host. Each wired
+    a config file and passed via ``--mcp-config`` under
+    :func:`skill_run_isolation_args` (strict even when empty), so the trial
+    exercises exactly the pipeline-declared servers, never whatever happens
+    to be configured on the host. Each wired
     server's tools are allowlisted wholesale (``mcp__<server>__*``): the
     skill may legitimately use more of a server's tools than the pipeline
     binds. ``missing_mcp_servers`` and ``min_expected_turns`` feed the
@@ -347,10 +423,6 @@ def run_skill_trial(
     prompt = _skill_prompt(skill_path, input_payload, output_fields)
     with tempfile.TemporaryDirectory(prefix="rote-eval-skill-") as workdir_str:
         workdir = Path(workdir_str)
-        if mcp_servers:
-            allowed_tools = ",".join(
-                [allowed_tools, *(f"mcp__{name}__*" for name in sorted(mcp_servers))]
-            )
         args = [
             executable,
             "-p",
@@ -359,19 +431,16 @@ def run_skill_trial(
             model,
             "--add-dir",
             str(skill_path),
-            "--allowedTools",
-            allowed_tools,
+            *skill_run_isolation_args(
+                workdir,
+                mcp_servers,
+                [f"mcp__{name}__*" for name in sorted(mcp_servers or {})],
+            ),
             "--output-format",
             "json",
             "--max-turns",
             str(max_turns),
         ]
-        if mcp_servers:
-            mcp_config_path = workdir / MCP_CONFIG_FILENAME
-            mcp_config_path.write_text(
-                json.dumps({"mcpServers": mcp_servers}, indent=2), encoding="utf-8"
-            )
-            args += ["--mcp-config", str(mcp_config_path), "--strict-mcp-config"]
         started = time.monotonic()
         try:
             proc = subprocess.run(
@@ -440,6 +509,11 @@ def run_skill_trial(
             min_expected_turns=min_expected_turns,
             missing_mcp_servers=missing_mcp_servers,
         ),
+        missing_mcp_servers={
+            s: f"the pipeline binds it and no endpoint resolves (set ROTE_MCP_{s.upper()}_URL)"
+            for s in missing_mcp_servers or ()
+        },
+        denied_tools=permission_denials(meta),
     )
 
 
@@ -827,6 +901,8 @@ def measured_run_record(r: MeasuredRun) -> dict[str, Any]:
         "output_tokens": r.output_tokens,
         "succeeded": r.succeeded,
         "flags": list(r.flags),
+        "missing_mcp_servers": dict(r.missing_mcp_servers),
+        "denied_tools": list(r.denied_tools),
     }
 
 

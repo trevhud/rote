@@ -899,6 +899,9 @@ def _cmd_compile(args: argparse.Namespace) -> int:
                 f"  baseline: {r.wall_seconds:.0f}s, {r.turns} turns, {cost}{note}",
                 file=sys.stderr,
             )
+            # A degraded baseline still informs the compile (what it did
+            # record is real), but its numbers are not the skill's.
+            _print_skill_run_gaps(r, sys.stderr)
     else:
         print(
             "rote compile: tip — add --baseline to measure the raw skill first "
@@ -3218,6 +3221,7 @@ def _cmd_baseline(args: argparse.Namespace) -> int:
         cost = f"${r.cost_usd:.2f}" if r.cost_usd is not None else "cost n/a"
         turns = f"{r.turns} turns" if r.turns is not None else "turns n/a"
         print(f"  {r.wall_seconds:.0f}s, {turns}, {cost}{note}", file=summary_stream)
+        _print_skill_run_gaps(r, summary_stream)
     if result.observations:
         print(
             f"  observed MCP traffic: {len(result.observations)} call(s) across "
@@ -3368,6 +3372,20 @@ def _cmd_live_check(args: argparse.Namespace) -> int:
     return 1 if report.drifted or report.errors else 0
 
 
+def _print_skill_run_gaps(run: Any, stream: Any) -> None:
+    """Say what a skill run did not get: servers it never called, tools refused.
+
+    One wording for ``rote run``, ``rote baseline`` and ``compile
+    --baseline``. A run without a server the skill names still writes a
+    result, usually on data the agent substituted, so this is never silent.
+    """
+    for server, why in run.missing_mcp_servers.items():
+        print(f"  missing MCP server {server}: {why}", file=stream)
+    if run.denied_tools:
+        refused = ", ".join(sorted(set(run.denied_tools)))
+        print(f"  refused by the gate: {refused}", file=stream)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     """One-off local execution of a skill or an emitted pipeline.
 
@@ -3415,8 +3433,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
             )
             run = outcome.run
             gate_note = "read-only MCP gate" if outcome.read_only else "writes allowed"
-            status = "succeeded" if run.succeeded else f"failed: {run.error}"
+            if not run.succeeded:
+                status = f"failed: {run.error}"
+            elif run.missing_mcp_servers:
+                status = "degraded: it never called MCP server(s) the skill names"
+            else:
+                status = "succeeded"
             print(f"rote run (skill): {status} ({gate_note})", file=sys.stderr)
+            _print_skill_run_gaps(run, sys.stderr)
             cost = f"${run.cost_usd:.2f}" if run.cost_usd is not None else "cost n/a"
             turns = f"{run.turns} turns" if run.turns is not None else "turns n/a"
             print(f"  {run.wall_seconds:.0f}s, {turns}, {cost}", file=sys.stderr)
@@ -3445,7 +3469,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 )
             elif run.output is not None:
                 print(json.dumps(run.output, indent=2))
-            return 0 if run.succeeded else 1
+            if not run.succeeded:
+                return 1
+            if run.missing_mcp_servers and not args.allow_missing_servers:
+                print(
+                    "rote run (skill): exiting 1 because the output may rest on "
+                    "substituted data; pass --allow-missing-servers to accept it",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
 
         # Before input derivation (an LLM call) and gate prompts: a run
         # that cannot start should say so before asking for anything.
@@ -4766,6 +4799,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "that may write are called (side effects included). Without it, "
             "only tools the server marks readOnlyHint, or every tool on a "
             "server registered with `rote mcp add --read-only`, are called"
+        ),
+    )
+    run_p.add_argument(
+        "--allow-missing-servers",
+        action="store_true",
+        help=(
+            "Skill runs: exit 0 even when the run never called an MCP server "
+            "the skill names (not registered, refused by the read-only gate, "
+            "or not reached). The run is still reported as degraded"
         ),
     )
     run_p.add_argument(
