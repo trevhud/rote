@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from rote.clients import ClientContext
-from rote.clients.amp import AmpSource
+from rote.clients.amp import AmpSource, spec_hash
 from rote.clients.goose import GooseSource
 from tests._clients import (
     CLIENT_ID,
@@ -144,6 +144,12 @@ def test_goose_path_root_and_malformed(tmp_path: Path) -> None:
     assert reading.candidates == ()
 
 
+#: Computed with Node 22's JSON.stringify and crypto over Amp's own U3i/jht
+#: (recovered from the CLI bundle), not with rote's port, so these pin the
+#: port to the JavaScript it copies.
+APPROVED_HASH = "529bb205000048b739254a326d2e5caefd52993237829b210b07b4634ff2b84b"
+DENIED_HASH = "f00a807cf4a039c64c79ba7232bd689437ee96091cc068803868857bdf7a7b99"
+
 AMP_USER = f"""{{
   // Amp settings are JSONC
   "amp.mcpServers": {{
@@ -161,8 +167,9 @@ AMP_USER = f"""{{
     "rejected": {{ "url": "https://blocked.example.com/mcp" }},
   }},
   "amp.mcpTrustedServers": [
-    {{ "serverName": "approved", "specHash": "x", "allow": true }},
-    {{ "serverName": "denied", "specHash": "y", "allow": false }}
+    {{ "serverName": "approved", "specHash": "{APPROVED_HASH}", "allow": true }},
+    {{ "serverName": "denied", "specHash": "{DENIED_HASH}", "allow": false }},
+    {{ "serverName": "edited", "specHash": "{APPROVED_HASH}", "allow": true }}
   ],
   "amp.mcpPermissions": [
     {{ "matches": {{ "url": "https://blocked.example.com/*" }}, "action": "reject" }}
@@ -182,6 +189,8 @@ def _amp(tmp_path: Path) -> ClientContext:
                 "approved": {"url": "https://approved.example.com/mcp"},
                 "denied": {"url": "https://denied.example.com/mcp"},
                 "shared": {"url": "https://workspace.example.com/mcp"},
+                # Approved under the hash of another entry: Amp asks again.
+                "edited": {"url": "https://edited.example.com/mcp"},
             }
         },
     )
@@ -189,14 +198,48 @@ def _amp(tmp_path: Path) -> ClientContext:
     return ClientContext(home=home, cwd=repo / "src", env={})
 
 
-def test_amp_workspace_approval(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("entry", "digest"),
+    [
+        ({"url": "https://approved.example.com/mcp"}, APPROVED_HASH),
+        ({"url": "https://denied.example.com/mcp"}, DENIED_HASH),
+        (
+            {
+                "url": "https://h.example.com/mcp",
+                "transport": "sse",
+                "headers": {"X-B": "${B}", "Authorization": "Bearer ${T}", "é": "ü"},
+            },
+            "11938c5ea1e638681f96347c82087fc78bec8ca90d824993228a7fe954027c93",
+        ),
+        (
+            {"command": "npx", "args": ["-y", "pkg"], "env": {"Z": "1", "A": "2"}},
+            "4e31e6ceff2f47494f44fd72054500c3e378787fd13ef3b218b18dace90bd6b1",
+        ),
+    ],
+)
+def test_amp_spec_hash_matches_the_javascript(entry: dict[str, object], digest: str) -> None:
+    assert spec_hash(entry) == digest
+
+
+def test_amp_workspace_approval_is_verified_by_hash(tmp_path: Path) -> None:
     found = by_name(AmpSource().read(_amp(tmp_path)))
-    assert found[("project", "approved")].inactive is None
-    assert found[("project", "denied")].inactive == "denied in Amp for this workspace"
-    # An unapproved workspace entry still replaces the user's by name.
+    approved = found[("project", "approved")]
+    assert approved.inactive is None and approved.trust == "trusted" and approved.preselectable
+    denied = found[("project", "denied")]
+    assert denied.inactive == "denied in Amp for this workspace" and denied.trust == "untrusted"
+    # The name is approved, but for another entry: not verifiable as approved.
+    edited = found[("project", "edited")]
+    assert edited.trust == "unknown" and not edited.preselectable
+    assert edited.trust_note is not None
+    assert edited.trust_note.startswith("trust in Amp could not be checked: ")
+    assert "earlier version of this entry" in edited.trust_note
+    # No local approval: only ampcode.com could say. It still replaces the
+    # user's entry by name.
     pending = found[("project", "shared")]
-    assert pending.inactive == "awaiting approval in Amp (amp mcp approve shared)"
+    assert pending.trust == "unknown" and "amp mcp approve shared" in (pending.trust_note or "")
+    assert pending.needs_opt_in == (pending.trust_note,)
     assert found[("user", "shared")].inactive == "shadowed by the workspace entry of the same name"
+    assert found[("user", "linear")].trust == "trusted"  # user servers need no approval
 
 
 def test_amp_trusting_the_whole_workspace(tmp_path: Path) -> None:
@@ -209,8 +252,9 @@ def test_amp_trusting_the_whole_workspace(tmp_path: Path) -> None:
     )
     write_text(settings, text)
     found = by_name(AmpSource().read(ctx))
-    assert found[("project", "shared")].inactive is None
-    assert found[("project", "denied")].inactive is None
+    for name in ("shared", "denied", "edited"):
+        assert found[("project", name)].inactive is None
+        assert found[("project", name)].trust == "trusted", name
 
 
 def test_amp_entries(tmp_path: Path) -> None:

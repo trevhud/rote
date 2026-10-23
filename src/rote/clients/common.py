@@ -326,6 +326,35 @@ def switch_off(
     ]
 
 
+def trust_unknown(
+    candidates: Iterable[ImportCandidate], client: str, why: str
+) -> list[ImportCandidate]:
+    """Mark candidates whose scope the client gates on trust rote cannot
+    read. They stay listed as the client's (``inactive`` untouched), but no
+    default picks them: ``rote mcp import`` asks for each by name."""
+    note = f"trust in {client} could not be checked: {why}"
+    return [replace(c, trust="unknown", trust_note=note) for c in candidates]
+
+
+def trust_failed(candidates: Iterable[ImportCandidate], why: str) -> list[ImportCandidate]:
+    """Mark candidates whose trust gate rote read and found closed: untrusted
+    and inactive, so they win no precedence."""
+    return [
+        replace(c, trust="untrusted", trust_note=why, inactive=c.inactive or why)
+        for c in candidates
+    ]
+
+
+def expand_home(raw: str, ctx: ClientContext) -> Path:
+    """``raw`` with a leading ``~`` expanded against ``ctx.home``, never the
+    process's real home (``Path.expanduser`` reads ``$HOME``)."""
+    if raw == "~":
+        return ctx.home
+    if raw.startswith(("~/", "~\\")):
+        return ctx.home / raw[2:]
+    return Path(raw)
+
+
 def xdg_config_home(ctx: ClientContext) -> Path:
     """``$XDG_CONFIG_HOME``, else ``~/.config`` (the XDG Base Directory default)."""
     override = ctx.env.get("XDG_CONFIG_HOME", "").strip()

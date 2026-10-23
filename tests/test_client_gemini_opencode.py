@@ -114,6 +114,7 @@ def test_gemini_precedence_and_switches(tmp_path: Path) -> None:
 def test_gemini_untrusted_workspace_is_not_loaded(tmp_path: Path, trust: str | None) -> None:
     found = by_name(GeminiSource().read(_gemini(tmp_path, trust=trust)))
     assert "does not trust" in (found[("project", "shared")].inactive or "")
+    assert found[("project", "shared")].trust == "untrusted"
     assert found[("user", "shared")].inactive is None
 
 
@@ -125,6 +126,19 @@ def test_gemini_trust_parent_and_env_override(tmp_path: Path) -> None:
     assert by_name(GeminiSource().read(ctx))[("project", "shared")].inactive is None
     restricted = ClientContext(ctx.home, ctx.cwd, {"GEMINI_CLI_TRUST_WORKSPACE": "false"})
     assert by_name(GeminiSource().read(restricted))[("project", "shared")].inactive is not None
+
+
+def test_gemini_trusted_folder_tilde_is_the_contexts_home(tmp_path: Path) -> None:
+    ctx = _gemini(tmp_path, trust=None)
+    repo = ctx.home / "code" / "repo"
+    (repo / ".git").mkdir(parents=True)
+    write_json(
+        repo / ".gemini" / "settings.json",
+        {"mcpServers": {"here": {"httpUrl": "https://here.example.com/mcp"}}},
+    )
+    write_json(ctx.home / ".gemini" / "trustedFolders.json", {"~/code/repo": "TRUST_FOLDER"})
+    found = by_name(GeminiSource().read(ClientContext(ctx.home, repo, {})))
+    assert found[("project", "here")].trust == "trusted"
 
 
 def test_gemini_allowed_list_and_system_scope(tmp_path: Path) -> None:
@@ -215,7 +229,10 @@ def test_opencode_entries_and_placeholders(tmp_path: Path) -> None:
     dollar = found[("user", "literal-dollar")]
     assert dollar.headers == ()
     assert any(w.startswith("header X-Mixed: a literal value") for w in dollar.withheld)
-    assert found[("user", "oauth")].scopes == ("read", "write")
+    oauth = found[("user", "oauth")]
+    assert oauth.scopes == ("read", "write")
+    assert any(w.startswith("oauth.clientId: issued to OpenCode") for w in oauth.withheld)
+    assert any(w.startswith("oauth.clientSecret: a secret") for w in oauth.withheld)
     assert found[("user", "local")].transport == "stdio"
     assert "type None" in (found[("user", "notype")].blocked or "")
     assert ("project", "deep") in found

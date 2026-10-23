@@ -46,6 +46,7 @@ from rote.clients.common import (
     rank,
     remote,
     switch_off,
+    trust_unknown,
     xdg_config_home,
 )
 from rote.clients.normalize import NO_PLACEHOLDERS
@@ -53,8 +54,6 @@ from rote.clients.normalize import NO_PLACEHOLDERS
 CLIENT_ID = "zed"
 
 LIMITS = (
-    "worktree trust is not read: servers in .zed/settings.json are listed as active even "
-    "where Zed's Restricted Mode keeps them from starting",
     "a same-named server in user and project settings is treated as the project entry "
     "replacing the user one; Zed merges settings objects, which could combine fields",
 )
@@ -128,9 +127,15 @@ class ZedSource:
         for scope, path in files:
             settings = reader.mapping(path, "jsonc")
             servers = reader.section(path, settings, "context_servers")
-            groups.append(
-                (scope, [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()])
-            )
+            found = [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()]
+            if scope == "project":
+                found = trust_unknown(
+                    found,
+                    self.label,
+                    "Zed starts .zed/settings.json servers only in a trusted worktree, and "
+                    "keeps that answer in its database",
+                )
+            groups.append((scope, found))
             for name, entry in servers.items():
                 if isinstance(entry, dict) and entry.get("enabled") is False:
                     off[(path, name)] = "turned off in Zed (enabled: false)"

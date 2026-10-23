@@ -39,6 +39,13 @@ IMPORTABLE_TRANSPORTS: frozenset[str] = frozenset({"streamable-http", "sse"})
 #: ``/etc/goose/config.yaml``).
 Scope = Literal["user", "local", "project", "plugin", "system"]
 
+#: Whether a client's trust gate for the entry's scope passed. ``trusted``:
+#: there is no gate, or rote read it and it passed. ``untrusted``: rote read
+#: it and it failed (the entry is inactive too). ``unknown``: the client
+#: gates this scope on trust rote cannot read (VS Code's Restricted Mode,
+#: Zed's worktree trust), so whether the client loads it is not known.
+Trust = Literal["trusted", "untrusted", "unknown"]
+
 
 #: Moves the home directory client sources read. tests/conftest.py and
 #: ``scripts/isolated-rote`` point it at an empty dir (it is in
@@ -176,6 +183,12 @@ class ImportCandidate:
     #: by a default or by ``--yes``: ``rote mcp import`` needs a per-server
     #: opt-in that names the risk (``--allow-url-secret <name>``).
     risk: str | None = None
+    #: See :data:`Trust`. ``unknown`` is never preselected, and, like
+    #: :attr:`risk`, needs a per-server opt-in in ``rote mcp import``.
+    trust: Trust = "trusted"
+    #: Why trust is not ``trusted``: "trust in <client> could not be checked:
+    #: ..." for ``unknown``, the failed gate for ``untrusted``.
+    trust_note: str | None = None
     #: The plugin that ships it, for ``scope == "plugin"``.
     plugin: str | None = None
 
@@ -184,10 +197,24 @@ class ImportCandidate:
         return self.blocked is None
 
     @property
+    def needs_opt_in(self) -> tuple[str, ...]:
+        """What the user must accept by name before this server is imported:
+        a credential-shaped URL, trust rote could not check. Empty: nothing."""
+        reasons = [self.risk] if self.risk is not None else []
+        if self.trust == "unknown" and self.trust_note is not None:
+            reasons.append(self.trust_note)
+        return tuple(reasons)
+
+    @property
     def preselectable(self) -> bool:
         """Whether a default (or ``--yes``) may pick this server: importable,
-        used by the client, and carrying no risk to opt into."""
-        return self.importable and self.inactive is None and self.risk is None
+        used by the client, trusted, and with nothing to opt into."""
+        return (
+            self.importable
+            and self.inactive is None
+            and self.trust == "trusted"
+            and not self.needs_opt_in
+        )
 
     @property
     def renamed(self) -> bool:
@@ -226,6 +253,9 @@ class ImportCandidate:
             "active": self.inactive is None,
             "inactive": self.inactive,
             "risk": self.risk,
+            "trust": self.trust,
+            "trust_note": self.trust_note,
+            "needs_opt_in": list(self.needs_opt_in),
             "preselectable": self.preselectable,
             "withheld": list(self.withheld),
         }

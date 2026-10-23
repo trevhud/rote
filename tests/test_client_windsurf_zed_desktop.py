@@ -15,6 +15,7 @@ from tests._clients import (
     CLIENT_SECRET,
     SECRET,
     assert_display_safe,
+    assert_trust_unknown,
     by_name,
     refuse_real_home,
     write_json,
@@ -76,8 +77,22 @@ def test_windsurf_scopes_precedence_and_disabled(tmp_path: Path) -> None:
         ("project", "shadowed by the local entry of the same name"),
         ("user", "shadowed by the local entry of the same name"),
     ]
+    found = by_name(reading)
+    assert found[("local", "shared")].trust == "unknown"
+    assert found[("project", "shared")].trust == "unknown"
+    assert found[("user", "github")].trust == "trusted"
     old = by_name(reading)[("user", "old")]
     assert old.importable and old.host == "old.example.com"
+
+
+def test_windsurf_repository_servers_need_an_opt_in(tmp_path: Path) -> None:
+    home, repo = _repo(tmp_path)
+    write_json(
+        repo / ".devin" / "mcp_config.json",
+        {"mcpServers": {"repo": {"url": "https://repo.example.com/mcp"}}},
+    )
+    found = by_name(WindsurfSource().read(ClientContext(home=home, cwd=repo, env={})))
+    assert_trust_unknown(found[("project", "repo")], "Windsurf / Devin Desktop")
 
 
 def test_windsurf_placeholders_and_secrets(tmp_path: Path) -> None:
@@ -160,8 +175,19 @@ def test_zed_per_os_and_shapes(tmp_path: Path, platform: str) -> None:
     assert found[("user", "legacy")].transport == "stdio"
     assert "extension" in (found[("user", "ext")].blocked or "")
     assert found[("project", "shared")].inactive == "turned off in Zed (enabled: false)"
+    assert found[("project", "shared")].trust == "unknown"
+    assert found[("user", "remote")].trust == "trusted"
     assert found[("user", "shared")].inactive == "shadowed by the project entry of the same name"
     assert_display_safe(reading)
+
+
+def test_zed_project_servers_wait_on_worktree_trust(tmp_path: Path) -> None:
+    ctx = _zed(tmp_path)
+    write_json(
+        tmp_path / "repo" / ".zed" / "settings.json",
+        {"context_servers": {"proj": {"url": "https://proj.example.com/mcp"}}},
+    )
+    assert_trust_unknown(by_name(ZedSource().read(ctx))[("project", "proj")], "Zed")
 
 
 def test_zed_linux_honors_xdg_but_macos_does_not(tmp_path: Path) -> None:

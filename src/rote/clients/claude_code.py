@@ -57,6 +57,7 @@ from rote.clients.common import (
     WEBSOCKET_BLOCKED,
     Reader,
     blocked,
+    expand_home,
     new_candidate,
     not_an_object,
     remote,
@@ -101,7 +102,7 @@ LIMITS = (
 def _paths(ctx: ClientContext) -> _Paths:
     override = ctx.env.get("CLAUDE_CONFIG_DIR", "").strip()
     if override:
-        config_dir = Path(override).expanduser()
+        config_dir = expand_home(override, ctx)
         claude_json = config_dir / ".claude.json"
     else:
         config_dir = ctx.home / ".claude"

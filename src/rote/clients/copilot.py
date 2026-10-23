@@ -46,14 +46,13 @@ from rote.clients.common import (
     servers_in,
     str_list,
     switch_off,
+    trust_unknown,
 )
 from rote.clients.normalize import COPILOT_SYNTAX
 
 CLIENT_ID = "copilot"
 
 LIMITS = (
-    "folder trust is not read: project .mcp.json servers are listed as active even in a "
-    "folder Copilot CLI has not trusted, where it skips them",
     "plugin servers, built-in servers and --additional-mcp-config are not listed",
     "a repository's own Copilot settings can add disabledMcpServers entries; only "
     "~/.copilot/settings.json is read",
@@ -162,7 +161,13 @@ class CopilotSource:
             if servers is None:
                 reader.problems.append(f"{path}: no mcpServers object")
                 continue
-            groups.append(("project", self._candidates(servers, "project", path)))
+            found = trust_unknown(
+                self._candidates(servers, "project", path),
+                self.label,
+                "Copilot CLI loads project MCP files only in a trusted folder, and the docs do "
+                "not say where it keeps that answer",
+            )
+            groups.append(("project", found))
         home = copilot_home(ctx)
         user_path = home / "mcp-config.json"
         user = reader.section(user_path, reader.mapping(user_path), "mcpServers")

@@ -46,6 +46,7 @@ client_secret = "{CLIENT_SECRET}"
 url = "https://h.example.com/mcp"
 http_headers_helper = ["print-headers"]
 auth = "chatgpt"
+bearer_token = "{SECRET}"
 
 [mcp_servers.local]
 command = "npx"
@@ -107,6 +108,8 @@ def test_remote_entries_and_header_indirection(tmp_path: Path) -> None:
     helper = found[("user", "helper")]
     assert any(w.startswith("http_headers_helper:") for w in helper.withheld)
     assert any(w.startswith("auth = chatgpt") for w in helper.withheld)
+    assert any(w.startswith("bearer_token: an inline token") for w in helper.withheld)
+    assert helper.headers == ()
 
 
 def test_stdio_disabled_and_keyed_url(tmp_path: Path) -> None:
@@ -128,6 +131,8 @@ def test_trusted_project_layers_merge_field_by_field(tmp_path: Path) -> None:
     assert merged.inactive == "disabled in Codex (enabled = false)"
     assert ("user", "overridden") not in found
     assert found[("project", "project-only")].inactive is None
+    # Codex's trust is read, so a trusted project is verified, not unknown.
+    assert found[("project", "project-only")].trust == "trusted"
 
 
 def test_an_untrusted_project_is_listed_but_unused(tmp_path: Path) -> None:
@@ -135,6 +140,7 @@ def test_an_untrusted_project_is_listed_but_unused(tmp_path: Path) -> None:
     assert found[("user", "overridden")].inactive is None  # the project layer is left out
     project_only = found[("project", "project-only")]
     assert project_only.inactive is not None and "does not trust" in project_only.inactive
+    assert project_only.trust == "untrusted" and project_only.trust_note == project_only.inactive
 
 
 def test_codex_home_moves_the_user_file(tmp_path: Path) -> None:

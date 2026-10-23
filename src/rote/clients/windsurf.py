@@ -45,6 +45,7 @@ from rote.clients.common import (
     rank,
     remote,
     switch_off,
+    trust_unknown,
     xdg_config_home,
 )
 from rote.clients.normalize import WINDSURF_SYNTAX
@@ -135,9 +136,15 @@ class WindsurfSource:
         off: dict[tuple[Path, str], str] = {}
         for label, scope, path in _files(ctx):
             servers = reader.section(path, reader.mapping(path, "jsonc"), "mcpServers")
-            groups.append(
-                (label, [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()])
-            )
+            found = [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()]
+            if scope in ("project", "local"):
+                found = trust_unknown(
+                    found,
+                    self.label,
+                    "whether Devin loads a repository's .devin/ servers without asking is not "
+                    "documented",
+                )
+            groups.append((label, found))
             for n, e in servers.items():
                 if isinstance(e, dict) and e.get("disabled") is True:
                     off[(path, n)] = "disabled in Devin/Windsurf (disabled: true)"

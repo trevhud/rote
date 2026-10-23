@@ -311,6 +311,13 @@ def test_claude_config_dir_moves_everything(tmp_path: Path) -> None:
     assert names == ["moved"]
 
 
+def test_claude_config_dir_tilde_is_the_contexts_home(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write(home / "claude-work" / ".claude.json", {"mcpServers": {"m": _http("https://m.ex")}})
+    ctx = ClientContext(home=home, cwd=tmp_path, env={"CLAUDE_CONFIG_DIR": "~/claude-work"})
+    assert [c.original_name for c in ClaudeCodeSource().read(ctx).candidates] == ["m"]
+
+
 def test_detect_and_an_empty_machine(tmp_path: Path) -> None:
     ctx = ClientContext(home=tmp_path, cwd=tmp_path, env={})
     assert not ClaudeCodeSource().detect(ctx)

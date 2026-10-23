@@ -120,3 +120,28 @@ def test_isolation_drops_every_variable_a_source_reads(monkeypatch: pytest.Monke
     ctx = ClientContext.current()
     assert not set(CLIENT_DIR_VARS) & set(ctx.env)
     assert ctx.etc_dir is None and ctx.system_dir is None
+
+
+def test_unknown_trust_is_never_preselected_and_needs_an_opt_in(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from rote.clients import ImportCandidate
+
+    base = ImportCandidate(
+        client="x",
+        name="srv",
+        original_name="srv",
+        scope="project",
+        origin=tmp_path / "f.json",
+        transport="streamable-http",
+        url="https://srv.example.com/mcp",
+    )
+    assert base.trust == "trusted" and base.preselectable and base.needs_opt_in == ()
+    unknown = replace(base, trust="unknown", trust_note="trust in X could not be checked: why")
+    assert not unknown.preselectable
+    assert unknown.needs_opt_in == ("trust in X could not be checked: why",)
+    both = replace(unknown, risk="path segment 2 may be an API key")
+    assert both.needs_opt_in == ("path segment 2 may be an API key", unknown.trust_note)
+    untrusted = replace(base, trust="untrusted", trust_note="gate closed")
+    assert not untrusted.preselectable and untrusted.needs_opt_in == ()
+    assert untrusted.to_dict()["trust"] == "untrusted"

@@ -49,6 +49,19 @@ def by_name(reading: SourceReading) -> dict[tuple[str, str], ImportCandidate]:
     return {(c.scope, c.original_name): c for c in reading.candidates}
 
 
+def assert_trust_unknown(candidate: ImportCandidate, client_label: str) -> None:
+    """Listed as the client's, but never picked without the user's word."""
+    assert candidate.trust == "unknown", candidate.original_name
+    assert candidate.trust_note is not None
+    assert candidate.trust_note.startswith(f"trust in {client_label} could not be checked: ")
+    assert candidate.inactive is None  # the client may well use it
+    assert not candidate.preselectable
+    assert candidate.trust_note in candidate.needs_opt_in
+    shown = candidate.to_dict()
+    assert shown["trust"] == "unknown" and shown["trust_note"] == candidate.trust_note
+    assert shown["needs_opt_in"] == list(candidate.needs_opt_in)
+
+
 def assert_display_safe(reading: SourceReading, *secrets: str) -> None:
     """No planted secret, and no URL, in any rendering of ``reading``."""
     rendered = json.dumps(reading.to_dict()) + repr(reading)

@@ -13,6 +13,7 @@ from tests._clients import (
     CLIENT_SECRET,
     SECRET,
     assert_display_safe,
+    assert_trust_unknown,
     by_name,
     refuse_real_home,
     write_text,
@@ -77,6 +78,8 @@ def test_placeholders_become_one_form_and_others_are_withheld(tmp_path: Path) ->
 def test_project_wins_over_user(tmp_path: Path) -> None:
     found = by_name(CursorSource().read(_machine(tmp_path)))
     assert found[("project", "shared")].inactive is None
+    assert_trust_unknown(found[("project", "shared")], "Cursor")
+    assert found[("user", "github")].trust == "trusted"
     assert found[("user", "shared")].inactive == "shadowed by the project entry of the same name"
 
 

@@ -58,6 +58,7 @@ from rote.clients.common import (
     rank,
     remote,
     servers_in,
+    trust_unknown,
     xdg_config_home,
 )
 from rote.clients.copilot import portable_candidate
@@ -67,8 +68,7 @@ CLIENT_ID = "vscode"
 _LABEL = "VS Code"
 
 LIMITS = (
-    "a server switched off in VS Code (kept in its storage, not a file) and workspace "
-    "servers in an untrusted (Restricted Mode) folder are still listed as active",
+    "a server switched off in VS Code (kept in its storage, not a file) is still listed as active",
     "named profiles (User/profiles/<id>/mcp.json), remote and dev container configs, and "
     "servers extensions register are not read",
     "servers VS Code discovers from other clients (chat.mcp.discovery.enabled, Copilot CLI's "
@@ -161,6 +161,12 @@ class VSCodeSource:
             )
             for n, e in (root_servers or {}).items()
         ]
+        workspace = trust_unknown(
+            workspace,
+            _LABEL,
+            "VS Code loads workspace servers only in a trusted folder (not Restricted Mode), "
+            "and keeps that answer in its storage",
+        )
 
         candidates: list[ImportCandidate] = []
         for label, product in _PRODUCTS:

@@ -349,10 +349,34 @@ holds the parts they share:
 | `gemini` | system, trusted `<cwd>/.gemini/settings.json`, `~/.gemini/settings.json`, system defaults, extensions | `httpUrl`, `url` + `type`, `tcp` | `$X`, `${X}`, `${X:-d}`. Extension variables unsupported | `mcp.allowed`, `mcp.excluded`, `admin.mcp.enabled`, `mcp-server-enablement.json`. `trustedFolders.json` |
 | `opencode` | managed, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_CONFIG_DIR`, `.opencode/`, project `opencode.json(c)`, `OPENCODE_CONFIG`, global. Deep-merged | `type: remote`, `url`, `headers`, `oauth` | `{env:X}`. `{file:...}` unsupported | `enabled: false` (v2: `disabled`) |
 | `zed` | `.zed/settings.json`, user `settings.json` per OS | `url`, `headers`, `oauth.client_id` (Streamable HTTP) | none | `enabled: false` |
-| `amp` | nearest `.amp/settings.json(c)`, user `settings.json(c)` | `url`, `transport`, `headers`, `oauth` | `${X}`. `${amp:...}` unsupported | workspace servers need `amp mcp approve`. An `amp.mcpPermissions` reject blocks |
+| `amp` | nearest `.amp/settings.json(c)`, user `settings.json(c)` | `url`, `transport`, `headers`, `oauth` | `${X}`. `${amp:...}` unsupported | workspace servers need `amp mcp approve`, verified by Amp's spec hash. An `amp.mcpPermissions` reject blocks |
 | `goose` | user `config.yaml`, `GOOSE_ADDITIONAL_CONFIG_FILES`, `/etc/goose`. Merged per field | `type: streamable_http`, `uri`, `headers` (`sse` entries no longer load) | `${X}` / `$X`, filled only from the entry's `envs` / `env_keys` | `enabled: false` |
 | `windsurf` | `.devin/mcp_config.local.json`, `.devin/mcp_config.json`, `~/.config/devin/mcp_config.json`, legacy `~/.codeium/windsurf*/` | `serverUrl` or `url`, `transport`, `headers` | `${env:X}`. `${file:...}` unsupported | `disabled: true` |
 | `claude-desktop` | `claude_desktop_config.json` per OS | none: remote servers are claude.ai connectors | none | none |
+
+**Trust** is part of the shared model: `ImportCandidate.trust` is
+`trusted`, `untrusted` or `unknown`, with `trust_note` saying why.
+
+- `trusted` means the scope has no gate, or rote read the gate and it passed.
+- `untrusted` means rote read the gate and it failed. The entry is inactive
+  too, so it wins no precedence. Examples: Codex `trust_level`, Gemini
+  `trustedFolders.json`, an Amp denial.
+- `unknown` means the client gates the scope on trust that rote cannot read.
+  The note reads "trust in <client> could not be checked: ...". This covers
+  VS Code's Restricted Mode, Copilot CLI folder trust, Zed worktree trust,
+  and Cursor and Devin project files, where the docs do not say. It also
+  covers an Amp workspace server with no local approval, since only
+  ampcode.com could say.
+
+An `unknown` entry stays listed as the client's. It is never `preselectable`,
+and it appears in `needs_opt_in` beside a URL secret `risk`.
+`rote mcp import` reads `needs_opt_in` and asks for each such server by name.
+
+Amp's approvals are checked the way Amp checks them, not by name. The hash
+and the trust check were recovered from the CLI bundle (`rGt` / `U3i` and
+`Ggr.isTrusted`). `specHash` is SHA-256 over `JSON.stringify` of the entry's
+url, sorted headers and transport. `tests/test_client_goose_amp.py` pins the
+port to hashes computed by Node itself.
 
 `ClientContext.etc_dir` is the second machine-wide root, used by Codex,
 Goose, Gemini CLI and OpenCode: `/etc` on every Unix, `%ProgramData%` on
@@ -372,7 +396,7 @@ or a `withheld` note:
 - field-level merges across scopes, shown as one merged candidate at its
   highest file
 - on/off state a client keeps outside its files (Cursor, VS Code)
-- folder trust kept in app storage (VS Code, Zed, Copilot CLI)
+- folder trust kept in app storage (VS Code, Zed, Copilot CLI): `trust: "unknown"`
 - servers that live in an account: Claude Desktop connectors, Amp remote
   servers, Cursor team servers
 

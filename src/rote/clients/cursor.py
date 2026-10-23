@@ -43,6 +43,7 @@ from rote.clients.common import (
     rank,
     remote,
     str_list,
+    trust_unknown,
 )
 from rote.clients.normalize import CURSOR_SYNTAX
 
@@ -55,6 +56,13 @@ LIMITS = (
     'type "sse" is listed as Streamable HTTP',
     "servers an extension registers (vscode.cursor.mcp.registerServer) and team servers "
     "from the Cursor dashboard are not in any file and are not listed",
+)
+
+
+#: Cursor's docs do not say whether a project's mcp.json loads before the
+#: person approves it, nor where such an answer would be kept.
+_PROJECT_TRUST = (
+    "whether Cursor loads a project's .cursor/mcp.json without asking is not documented"
 )
 
 
@@ -118,12 +126,10 @@ class CursorSource:
         for scope, path in files:
             data = reader.mapping(path, "jsonc")
             servers = reader.section(path, data, "mcpServers")
-            groups.append(
-                (
-                    scope,
-                    [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()],
-                )
-            )
+            found = [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()]
+            if scope == "project":
+                found = trust_unknown(found, self.label, _PROJECT_TRUST)
+            groups.append((scope, found))
         return SourceReading(
             client=CLIENT_ID,
             candidates=tuple(rank(groups)),

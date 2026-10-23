@@ -37,7 +37,6 @@ https://developers.openai.com/codex/config-reference.md:
 from __future__ import annotations
 
 import re
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +52,7 @@ from rote.clients.common import (
     remote,
     str_list,
     switch_off,
+    trust_failed,
 )
 from rote.clients.normalize import NO_PLACEHOLDERS
 
@@ -205,12 +205,9 @@ class CodexSource:
                         new_candidate(CLIENT_ID, name, scope="project", origin=path), entry
                     )
                 )
-                untrusted.append(
-                    replace(
-                        candidate,
-                        inactive="in a project Codex does not trust; it skips "
-                        ".codex/config.toml there",
-                    )
+                untrusted += trust_failed(
+                    [candidate],
+                    "in a project Codex does not trust; it skips .codex/config.toml there",
                 )
 
         candidates: list[ImportCandidate] = []

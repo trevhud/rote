@@ -15,6 +15,7 @@ from rote.clients.base import (
     HeaderTemplate,
     ImportCandidate,
     SourceReading,
+    Trust,
 )
 from rote.clients.claude_code import ClaudeCodeSource
 from rote.clients.claude_desktop import ClaudeDesktopSource
@@ -37,6 +38,7 @@ __all__ = [
     "HeaderTemplate",
     "ImportCandidate",
     "SourceReading",
+    "Trust",
     "find_collisions",
     "ordered_sources",
     "source",

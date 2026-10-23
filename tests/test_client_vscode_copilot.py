@@ -13,6 +13,7 @@ from tests._clients import (
     CLIENT_ID,
     SECRET,
     assert_display_safe,
+    assert_trust_unknown,
     by_name,
     refuse_real_home,
     write_json,
@@ -115,6 +116,9 @@ def test_vscode_placeholders_inputs_and_shapes(tmp_path: Path) -> None:
     portable = found[("project", "portable")]
     assert [h.template for h in portable.headers] == ["Bearer ${PORTABLE_TOKEN}"]
     assert any("legacy mcp key" in p for p in reading.problems)
+    for key in (("project", "github"), ("project", "portable")):
+        assert_trust_unknown(found[key], "VS Code")
+    assert found[("user", "literal")].trust == "trusted"
     assert_display_safe(reading)
 
 
@@ -182,6 +186,8 @@ def _copilot_machine(tmp_path: Path, **env: str) -> ClientContext:
 def test_copilot_closer_project_files_win(tmp_path: Path) -> None:
     reading = CopilotSource().read(_copilot_machine(tmp_path))
     shared = [c for c in reading.candidates if c.original_name == "shared"]
+    assert_trust_unknown(shared[0], "GitHub Copilot CLI")
+    assert shared[2].trust == "trusted"
     assert [(c.host, c.inactive is None) for c in shared] == [
         ("closer.example.com", True),
         ("root.example.com", False),

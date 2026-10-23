@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -60,12 +59,14 @@ from rote.clients.common import (
     WEBSOCKET_BLOCKED,
     Reader,
     blocked,
+    expand_home,
     new_candidate,
     not_an_object,
     rank,
     remote,
     str_list,
     switch_off,
+    trust_failed,
 )
 from rote.clients.normalize import PlaceholderSyntax
 
@@ -152,7 +153,7 @@ def _trusted(ctx: ClientContext, reader: Reader, folder_trust: Any) -> bool:
     cwd = ctx.cwd.resolve()
     best: tuple[int, bool] | None = None
     for raw, verdict in rules.items():
-        root = Path(raw).expanduser()
+        root = expand_home(raw, ctx)
         if verdict == "TRUST_PARENT":
             root = root.parent
         if cwd != root and root not in cwd.parents:
@@ -276,7 +277,7 @@ class GeminiSource:
             servers = reader.section(path, data, "mcpServers")
             found = [_candidate(n, e, scope=scope, origin=path) for n, e in servers.items()]
             if label == "workspace" and not trusted:
-                found = [replace(c, inactive=c.inactive or _UNTRUSTED) for c in found]
+                found = trust_failed(found, _UNTRUSTED)
             groups.append((label, found))
         groups.append(("extension", self._extension_candidates(reader, directory)))
         ranked = rank(groups)
