@@ -1,7 +1,8 @@
 # First-run onboarding: architecture
 
-Status: foundation landed (#241); every client source landed (PR 2). `rote setup` and its steps are follow-up
-PRs built to the interfaces below. Product design: "rote first-run design"
+Status: foundation landed (#241); every client source landed (PR 2); `rote mcp import`
+landed (PR 3, below). `rote setup` and its other steps are follow-up PRs built to the
+interfaces below. Product design: "rote first-run design"
 (approved 2026-10-22, all nine recommendations taken).
 
 The rule everything here serves: **every side effect is an Action in a Plan,
@@ -168,8 +169,12 @@ Outcome(action_id, status, error, result)   # result = what run() returned
   so the confirmation is about the real effects.
 - `Action.command` is the exact standalone command that does the same thing
   (`rote mcp login figma`), which is what an agent runs later.
-- **A write is re-checked at apply.** `write_file_action` records the file's
-  state when the plan is made (absent, or the SHA-256 of its bytes), and its
+- **A write is re-checked at apply, against the caller's own read.**
+  `write_file_action(read=snapshot(path), ...)` takes the `Snapshot` the
+  caller built its content from (a merge parses `read.data`), so the content
+  and the stale check describe the same bytes: an edit landing between the
+  caller's read and the action is caught too (review6). It records the
+  file's state from that read (absent, or the SHA-256 of its bytes), and its
   `run()` refuses with `StaleFile` ("changed since the plan was made; nothing
   written, re-run") when the file no longer matches. The check runs after the
   new content is staged and right before the rename, so the window left is the
@@ -285,9 +290,13 @@ does the same for `ClientContext.current()`, dropping `CLAUDE_CONFIG_DIR`,
   names and templates, never values; and `withheld`, each item with its reason.
   `headersHelper` and `oauth.clientId` (issued to Claude Code) are withheld.
 - **A credential-shaped URL path** (`url_secret_risk`): a path segment of 20+
-  characters mixing letters and digits with Shannon entropy of 3.5+ bits per
-  character, or a 32+ hex run (UUID dashes removed), sets
-  `ImportCandidate.risk`. Decided by the string's form, never a word list.
+  characters with Shannon entropy of 3.5+ bits per character in which one
+  part, split on `-`, `_` and `.`, is 8+ characters mixing letters and
+  digits (a key's random body: `sk-ak-<body>`, `ghp_<body>`), or a 32+ hex
+  run (UUID dashes removed), sets `ImportCandidate.risk`. The part rule keeps
+  slugs such as `my-awesome-server-2024` and
+  `salesforce-opportunity-management-v2` importable: their letters and
+  digits mix only across words. Decided by the string's form, never a word list.
   Hosted servers put keys there (Zapier's `/mcp/<key>/sse`). Such a candidate
   is importable but not `preselectable`: no default and no `--yes` picks it;
   `rote mcp import` needs a per-server opt-in that names the risk
@@ -317,8 +326,9 @@ merged from every settings file plus the system `managed-settings.json`
 (`/Library/Application Support/ClaudeCode/` on macOS, `/etc/claude-code/` on
 Linux, under `ClientContext.system_dir`), and a match blocks the candidate.
 `serverName` matches exactly; `serverUrl` is read wider than Claude Code does
-(ports ignored, case-insensitive), because a deny that matches too much only
-skips an import. A `managed-mcp.json` marks every other server unused, since
+(scheme and port ignored, case-insensitive, one trailing `/` dropped on both
+sides), because a deny that matches too much only skips an import and one
+that matches too little imports a denied server. A `managed-mcp.json` marks every other server unused, since
 Claude Code then loads only its servers. Not read, and said on every reading
 (`SourceReading.limits`): MDM profiles, the Windows registry, claude.ai
 server-managed settings, and `allowedMcpServers`; `managedMcpServers` is a
@@ -482,24 +492,106 @@ defaults step, and `rote init` stays as an alias.
   predate this layer; move both onto `Prompter` + `Plan` (the baseline run is a
   paid `Launch` with its `Spend`).
 
-- **`${VAR}` in registry headers.** The registry stores headers as literal
-  strings and neither runtime helper expands them. `rote mcp import` must add
-  `${VAR}` expansion to `rote.mcp._runtime_helper` and the three TS helpers
-  (one shared rule, a parity test, a missing variable as a config error like
-  `RoteMcpConfigError`) before it can write a templated header.
-- **Work domains** are a list; `rote.config` holds strings only. The import PR
-  adds a `work_domains` key (comma-separated, validated as hostnames) or a list
-  type to config, plus `--work-domain`.
-- **Name collisions**: two clients (or a plugin and the user scope) mapping to
-  one identifier, and an identifier already in the registry with another URL.
-  Import resolves them in its plan (skip with a note, or `--rename a=b`).
+- **`rote mcp login --no-wait`** (PR 4) lifts `rote mcp import --login`'s
+  person-only rule, as it does `rote init --login`'s.
+
+## `rote mcp import` (PR 3)
+
+```
+rote mcp import [--from <client>] [--only a,b | --servers-for <skill dir>]
+                [--allow-url-secret <name>]... [--allow-untrusted <name>]...
+                [--rename old=new]... [--replace <name>]... [--work-domain <d>]...
+                [--login a,b | --no-login] [--yes] [--force] [--json]
+```
+
+`rote.setup.mcp_import.ImportPlanner` builds one `ImportPlan` (the `Plan` plus
+a `Row` per server found, the collisions and the readings); `_cmd_mcp_import`
+shows, confirms and applies it like `rote init`, and `McpImportStep` is the
+same planner as a setup step (done when every preselectable, non-work server a
+client uses is registered, by endpoint).
+
+1. **Read** every detected `ClientSource` (detected client first), or the one
+   `--from` names. A source that is not installed is skipped.
+2. **Work domains, once.** `work_domains` is the first list setting in
+   `rote.config` (`ConfigKey(kind="list")`, `resolve_list`): a YAML list of
+   domains, strict like every key (a scalar, a scheme, a path, a port or a
+   wildcard is a `ConfigError`), shown by `rote config`. Unlike a string
+   setting, every layer adds and none removes, so a committed project
+   `rote.yaml` saying `work_domains: []` cannot switch off the user's own
+   (Claude Code merges `deniedMcpServers` the same way). Asked when no layer
+   holds the key and the answer matters: a person at the picker, or
+   `--servers-for` (a default would pick). The question has no default, so
+   even `--yes` stops on it; `--work-domain none` answers "none". The answer is
+   saved to the user config as an Action in the same plan. An explicit
+   `--only` never asks.
+3. **Pick.** One checkbox (flag `--only`): host, client and scope, `WORK`,
+   inactive reason, "needs your yes: ..." and how many settings were not
+   copied; a blocked server is a row, not a choice; an endpoint already
+   registered is disabled. Nothing is preselected but what `--servers-for`
+   names (`tool_grounding.servers_wanted`: `servers_named` plus what a compile
+   would contact), and of those only `preselectable` ones off work domains.
+   `--only` matches the client's name first, then a `client:scope:name` key,
+   then the rote name; two different servers under one name is an error
+   naming the keys.
+4. **Per-server yes.** Every reason a candidate is not `preselectable`, other
+   than being inactive in the client, needs its own yes by name
+   (`opt_ins`): a URL secret (`--allow-url-secret`), unknown client trust
+   (`--allow-untrusted`, "trust in <client> could not be checked", read from
+   `ImportCandidate.trust` when a source sets it), and any reason this version
+   does not know (`--allow-untrusted` too), so a new source's non-preselectable
+   state is never imported on a default. A person gets a confirm whose default
+   is no; nobody at the terminal gets `PromptRequired` naming
+   `--allow-url-secret <name>` (a switch: `next` passes it bare), and `--yes`
+   declines it.
+5. **Plan.** At most three kinds of Action: the work-domain write, one
+   registry write, and a login per chosen server.
+   - The registry write is built from one `Snapshot` and merges into it:
+     `add`, `present` (the endpoint is registered under any name), `changed`
+     (same name and endpoint, other transport, headers or scopes: rote's entry
+     is kept), `replace` (only with `--replace`), and the rows that write
+     nothing (`not-importable`, `not-selected`, `declined`, `duplicate`). Only
+     `add`/`replace` write. A replace loses content, so its `FileWrite` has
+     `replaces=True` and needs `--force` without a person. File mode 0600.
+     Re-running writes nothing new.
+   - **Collision rule.** A picked server whose name is registered for another
+     endpoint, or that wants the same name as another pick, is never written
+     over: it is added under the first free `<name>_2`, `<name>_3`, ..., and
+     the row says so with the two alternatives, `--rename old=new` (refused
+     onto a taken name) and `--replace <name>`. URLs compare normalized
+     (`normalize_server_url`), in `find_collisions` too.
+   - Headers are written as templates (`Bearer ${ACME_TOKEN}`), never
+     resolved; a note names each variable and whether this shell has it.
+     Withheld settings (`oauth.clientId`, `headersHelper`, literal headers)
+     are notes.
+   - **Logins** are offered to a person only (a checkbox, flag `--login`,
+     default: the picked servers that need OAuth and are not on a work
+     domain), each its own Action: `Contact(host)` plus `Launch(your browser)`,
+     command `rote mcp login <name>`, run after the registry write. A server
+     with headers has no OAuth login (`rote mcp login` refuses one).
+     `--login` without a person is an error until PR 4.
+
+The human display prints the rows that change or cannot import and counts the
+unpicked ones; `--json` lists every server (hosts, never URLs), and an
+`action_required` stop carries what was found so an agent can relay the pick.
+
+**`${NAME}` in registry headers** is filled at every connection by one rule,
+`expand_headers` (Python helper, agent loop `--mcp-config`, `rote mcp
+headers`, compile-time listing) and its TS twin `_HEADER_TEMPLATE_TS`, spliced
+into the Node helper. Only the Node helper reads registry headers: the Workers
+helper authenticates from provisioned OAuth secrets and the binding helper
+through the platform. An unset or empty variable, or a value with a line break
+or NUL, is a `RoteMcpConfigError` naming server, header and variable, never an
+empty header and never a retry. Skill runs pass a templated header as a
+`headersHelper`, so the value never lands in the `--mcp-config` file.
+`tests/test_mcp_header_template_parity_e2e.py` runs the TS rule on the Python
+table and both helpers against one real server.
 
 ## Remaining PRs
 
 | # | PR | Builds on | Parallel with |
 | --- | --- | --- | --- |
 | 2 | Other client sources (Codex, Cursor, VS Code/Copilot, Gemini, OpenCode, Zed, Amp, Goose, Windsurf/Devin, Claude Desktop), one module each: **landed** | `ClientSource`, `normalize` | 3, 4, 5, 6 |
-| 3 | `rote mcp import` (+ header expansion in the runtime helpers, work domains, collision rules) | `ClientSource`, `Plan`, `Prompter` | 2, 4, 5, 6 |
+| 3 | `rote mcp import` (+ header expansion in the runtime helpers, work domains, collision rules): **landed** | `ClientSource`, `Plan`, `Prompter` | 2, 4, 5, 6 |
 | 4 | `rote mcp login --no-wait` / `--complete` (Stripe's pending-file shape, atomic) | `Plan`, `report` | 2, 3, 5, 6 |
 | 5 | Skill discovery and ranking (client skill dirs, enabled plugins, ranked by servers registered and logged in) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
 | 6 | Bundle docs-digest into examples/ and the wheel, with a recorded reference run | none | 2, 3, 4, 5 |

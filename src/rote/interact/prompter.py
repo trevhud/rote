@@ -58,12 +58,23 @@ class Choice(Generic[T]):
 class PromptRequired(RuntimeError):
     """A question was reached with nobody to answer it and no default to take."""
 
-    def __init__(self, message: str, flag: str, why: str, choices: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        flag: str,
+        why: str,
+        choices: Sequence[str] = (),
+        *,
+        takes_value: bool = True,
+    ) -> None:
         self.question = message
         self.flag = flag
         self.why = why
         #: The values the flag takes, when the question was a choice.
         self.choices = tuple(choices)
+        #: False for a yes/no question: its flag is a switch (``--login``),
+        #: so the command to run next passes it bare, with no ``<value>``.
+        self.takes_value = takes_value
         values = f" <{'|'.join(self.choices)}>" if self.choices else ""
         super().__init__(f"{message.rstrip('?: ')}: pass {flag}{values} ({why})")
 
@@ -147,6 +158,8 @@ class NonInteractivePrompter:
         flag: str,
         default: Any,
         choices: Sequence[Choice[Any]] = (),
+        *,
+        takes_value: bool = True,
     ) -> Any:
         if self.accept_defaults and default is not None:
             return default
@@ -157,7 +170,7 @@ class NonInteractivePrompter:
         else:
             why = self.why
         values = [str(c.value) for c in choices if c.disabled is None]
-        raise PromptRequired(message, flag, why, values)
+        raise PromptRequired(message, flag, why, values, takes_value=takes_value)
 
     def select(
         self, message: str, choices: Sequence[Choice[T]], *, flag: str, default: T | None = None
@@ -180,7 +193,7 @@ class NonInteractivePrompter:
         return list(value)
 
     def confirm(self, message: str, *, flag: str, default: bool) -> bool:
-        value: bool = self._default_or_raise(message, flag, default)
+        value: bool = self._default_or_raise(message, flag, default, takes_value=False)
         return value
 
     def text(

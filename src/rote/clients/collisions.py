@@ -58,8 +58,12 @@ def find_collisions(
 ) -> tuple[Collision, ...]:
     """Collisions among ``candidates`` and against ``registered`` (rote name
     to URL, from ``rote.mcp.registry``). Two candidates with the same URL
-    are one server found twice, not a collision."""
+    are one server found twice, not a collision, and URLs compare in the
+    form two spellings of one endpoint share (``normalize_server_url``: case,
+    default port, trailing slash)."""
     from urllib.parse import urlsplit
+
+    from rote.mcp._runtime_helper import normalize_server_url
 
     by_name: dict[str, list[ImportCandidate]] = {}
     for candidate in candidates:
@@ -67,11 +71,11 @@ def find_collisions(
             by_name.setdefault(candidate.name, []).append(candidate)
     found: list[Collision] = []
     for name, group in sorted(by_name.items()):
-        urls = {c.url for c in group}
+        urls = {normalize_server_url(c.url) for c in group if c.url is not None}
         if len(urls) > 1:
             found.append(Collision(name, "same-identifier", tuple(group)))
         existing = registered.get(name)
-        if existing is not None and existing not in urls:
+        if existing is not None and normalize_server_url(existing) not in urls:
             host = urlsplit(existing).hostname
             found.append(Collision(name, "registered-elsewhere", tuple(group), host))
     return tuple(found)

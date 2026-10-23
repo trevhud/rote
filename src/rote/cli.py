@@ -2145,6 +2145,129 @@ def _cmd_mcp_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_mcp_import(args: argparse.Namespace) -> int:
+    """Copy MCP servers from the user's AI clients into rote's registry.
+
+    Reads the clients' configs, asks what to import, shows the plan (the
+    registry write, the work-domain answer, any logins) and applies it only
+    on a yes (``rote.setup.mcp_import``). Nobody at the terminal: every
+    question takes its flag, a missing one stops naming it (exit 2,
+    ``action_required`` under ``--json``), and the plan needs ``--yes``.
+    """
+    from rote import config as rote_config
+    from rote.clients import ClientContext
+    from rote.interact.mode import Mode
+    from rote.interact.output import Output
+    from rote.interact.plan import FORCE_FLAG, ConfirmationRequired, apply_plan, confirm_plan
+    from rote.interact.prompter import PromptCancelled, PromptRequired, prompter_for
+    from rote.interact.report import EXIT_ACTION_REQUIRED, action_required
+    from rote.mcp.registry import registry_path
+    from rote.setup.mcp_import import (
+        ImportFlags,
+        ImportPlan,
+        ImportPlanner,
+        McpImportError,
+        render_rows,
+        split_names,
+    )
+
+    try:
+        mode = Mode.resolve(json=args.json, yes=args.yes, agent_mode=args.agent_mode)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    renames: list[tuple[str, str]] = []
+    for item in args.rename or []:
+        old, sep, new = item.partition("=")
+        if not sep or not old.strip() or not new.strip():
+            print(f"error: --rename expects old=new, got {item!r}", file=sys.stderr)
+            return 2
+        renames.append((old.strip(), new.strip()))
+    login: tuple[str, ...] | None = None
+    if args.no_login:
+        login = ()
+    elif args.login:
+        login = split_names(args.login)
+    flags = ImportFlags(
+        from_client=args.from_client,
+        only=split_names(args.only) if args.only else None,
+        servers_for=Path(args.servers_for) if args.servers_for else None,
+        allow_url_secret=split_names(args.allow_url_secret or []),
+        allow_untrusted=split_names(args.allow_untrusted or []),
+        rename=tuple(renames),
+        replace=split_names(args.replace or []),
+        work_domains=split_names(args.work_domain or []),
+        login=login,
+    )
+    try:
+        layers = rote_config.load_layers()
+    except rote_config.ConfigError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    out = Output(mode)
+    prompter = prompter_for(mode)
+    planner = ImportPlanner(
+        flags=flags,
+        prompter=prompter,
+        out=out,
+        ctx=ClientContext.current(),
+        layers=layers,
+        registry_path=registry_path(),
+        user_config_path=rote_config.user_config_path(),
+        detected_client=mode.detected.client if mode.detected is not None else None,
+    )
+    argv: list[str] = getattr(args, "raw_argv", sys.argv[1:])
+    planned: ImportPlan | None = None
+    try:
+        planned = planner.build()
+        for line in render_rows(planned.rows):
+            out.say(line)
+        out.plan(planned.plan)
+        granted = {FORCE_FLAG} if args.force else set()
+        if not confirm_plan(planned.plan, prompter, yes=mode.yes, granted=granted):
+            out.say("rote mcp import: nothing was written")
+            out.result(
+                {"ok": False, "applied": False, "plan": planned.plan.to_dict(), **planned.to_dict()}
+            )
+            return 1
+    except (PromptRequired, ConfirmationRequired) as e:
+        out.error(str(e))
+        payload = action_required(e, argv)
+        # What was found, so an agent can relay the choice with hosts and
+        # flags: the same display-safe shape (hosts, never URLs).
+        if planned is not None:
+            payload.update(planned.to_dict())
+        else:
+            payload["servers"] = [c.to_dict() for c in planner.found]
+        out.result(payload)
+        return EXIT_ACTION_REQUIRED
+    except McpImportError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    except PromptCancelled:
+        out.say("rote mcp import: cancelled; nothing was written")
+        return 130
+    outcomes = apply_plan(planned.plan)
+    for outcome in outcomes:
+        line = f"  {outcome.status}: {outcome.action_id}"
+        if outcome.error:
+            line += f" ({outcome.error})"
+        out.say(line)
+    ok = all(o.status == "done" for o in outcomes)
+    if ok and planned.plan.actions:
+        out.say("  see them with: rote mcp list")
+    out.result(
+        {
+            "ok": ok,
+            "applied": True,
+            "plan": planned.plan.to_dict(),
+            "outcomes": [o.to_dict() for o in outcomes],
+            **planned.to_dict(),
+        }
+    )
+    return 0 if ok else 1
+
+
 def _cmd_mcp_list(args: argparse.Namespace) -> int:
     import json as _json
 
@@ -2699,7 +2822,8 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
 
     This is what Claude Code's ``headersHelper`` invokes (per
     connection, and again on a 401 retry), so it must always emit
-    currently-valid credentials: static headers verbatim, or the
+    currently-valid credentials: static headers with each ``${NAME}``
+    filled from the environment (the runtime helpers' rule), or the
     stored access token refreshed through the OAuth provider when
     stale. stdout is the contract; everything else goes to stderr.
     """
@@ -2707,6 +2831,7 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
     import json as _json
 
     from rote.mcp import McpAuthError, load_registry
+    from rote.mcp._runtime_helper import RoteMcpConfigError, expand_headers
     from rote.mcp.auth import fresh_access_token
 
     registry = load_registry()
@@ -2715,7 +2840,11 @@ def _cmd_mcp_headers(args: argparse.Namespace) -> int:
         print(f"error: no MCP server named {args.name!r}", file=sys.stderr)
         return 2
     if config.headers:
-        print(_json.dumps(config.headers))
+        try:
+            print(_json.dumps(expand_headers(args.name, config.headers)))
+        except RoteMcpConfigError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
         return 0
     try:
         token = asyncio.run(fresh_access_token(args.name, config))
@@ -4153,6 +4282,12 @@ def _cmd_config(args: argparse.Namespace) -> int:
         resolved = {
             key.name: rote_config.resolve(key.name, None, layers=layers)
             for key in rote_config.CONFIG_KEYS
+            if key.kind == "str"
+        }
+        lists = {
+            key.name: rote_config.resolve_list(key.name, layers=layers)
+            for key in rote_config.CONFIG_KEYS
+            if key.kind == "list"
         }
     except rote_config.ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -4194,6 +4329,13 @@ def _cmd_config(args: argparse.Namespace) -> int:
             resolved["inference"].source,
         ),
     }
+    work = lists["work_domains"]
+    effective["work_domains"] = (
+        ", ".join(work.values)
+        if work.values
+        else ("none" if work.is_set else "not set (rote mcp import asks once)"),
+        work.source,
+    )
 
     if args.json:
         # Machine consumers get real values or null, never display prose:
@@ -4211,6 +4353,9 @@ def _cmd_config(args: argparse.Namespace) -> int:
             "structure": resolved["structure"].value or DEFAULT_STRUCTURE,
             "inference": resolved["inference"].value,
         }
+        list_values: dict[str, list[str] | None] = {
+            name: list(r.values) if r.is_set else None for name, r in lists.items()
+        }
         payload = {
             "user_config": {
                 "path": str(layers.user_path),
@@ -4221,7 +4366,10 @@ def _cmd_config(args: argparse.Namespace) -> int:
                 "present": layers.project_path is not None,
             },
             "settings": {
-                name: {"value": json_values[name], "source": source}
+                name: {
+                    "value": list_values[name] if name in list_values else json_values[name],
+                    "source": source,
+                }
                 for name, (_value, source) in effective.items()
             },
             "cloud": {
@@ -5543,6 +5691,99 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     mcp_add.set_defaults(func=_cmd_mcp_add)
+
+    mcp_import = mcp_sub.add_parser(
+        "import",
+        help="Copy MCP servers from your AI clients (Claude Code) into rote's registry",
+        description=(
+            "Read the MCP servers your AI clients use, pick the ones to import, and "
+            "apply the plan only on a yes: one additive write of rote's registry "
+            "(what is there is never changed without --replace), your work domains "
+            "the first time, and an optional rote mcp login per server. Nothing is "
+            "preselected but the servers --servers-for <skill> needs, and never one on "
+            "a work domain or one whose URL may carry a key. In a terminal it asks; "
+            "otherwise each question takes its flag, and the plan needs --yes."
+        ),
+    )
+    from rote.clients import SOURCES as _CLIENT_SOURCES
+
+    mcp_import.add_argument(
+        "--from",
+        dest="from_client",
+        default=None,
+        metavar="CLIENT",
+        help=(
+            "read one client only ("
+            + ", ".join(s.id for s in _CLIENT_SOURCES)
+            + "); default: every client found, the one you run in first"
+        ),
+    )
+    picks = mcp_import.add_mutually_exclusive_group()
+    picks.add_argument(
+        "--only",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="import exactly these servers (names, or the client:scope:name keys shown)",
+    )
+    picks.add_argument(
+        "--servers-for",
+        default=None,
+        metavar="SKILL_DIR",
+        help="preselect the servers this skill names (work and risky servers excepted)",
+    )
+    mcp_import.add_argument(
+        "--allow-url-secret",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="import NAME although its URL path looks like it carries a key (repeatable)",
+    )
+    mcp_import.add_argument(
+        "--allow-untrusted",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "import NAME although rote could not check the client's trust in it "
+            "(a project server in a client whose approvals rote cannot read; repeatable)"
+        ),
+    )
+    mcp_import.add_argument(
+        "--rename",
+        action="append",
+        default=None,
+        metavar="OLD=NEW",
+        help="register server OLD under the name NEW (repeatable)",
+    )
+    mcp_import.add_argument(
+        "--replace",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help="overwrite rote's entry NAME with the client's (needs --force without a person)",
+    )
+    mcp_import.add_argument(
+        "--work-domain",
+        action="append",
+        default=None,
+        metavar="DOMAIN",
+        help=(
+            "a work domain whose servers are never preselected, saved in your user config "
+            "(repeatable; 'none' for none)"
+        ),
+    )
+    logins = mcp_import.add_mutually_exclusive_group()
+    logins.add_argument(
+        "--login",
+        action="append",
+        default=None,
+        metavar="NAME[,NAME]",
+        help="log in to these imported servers after the write (needs a person: a browser)",
+    )
+    logins.add_argument("--no-login", action="store_true", help="do not offer logins")
+    _add_onboarding_mode_flags(mcp_import)
+    mcp_import.set_defaults(func=_cmd_mcp_import)
 
     mcp_list = mcp_sub.add_parser("list", help="List registered servers and auth status")
     mcp_list.add_argument("--json", action="store_true")

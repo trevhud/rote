@@ -96,11 +96,31 @@ def test_url_problem(url: str, problem: str | None) -> None:
 
 ZAPIER_SHAPED = "https://actions.zapier.com/mcp/sk-ak-9fQ2xLm4Rt7Vb8Np3Kd6Wz1Hc5Jy0Ts/sse"
 
+# Fake key shapes, assembled so the repo's secret scanner (which matches the
+# real prefixes) never sees one whole. Every body is made up.
+_BODY = "9fQ2xLm4Rt7Vb8Np3Kd6Wz1Hc5Jy0TsAa"
+OPENAI_SHAPED = "https://x.example.com/mcp/" + "sk-" + "proj-" + _BODY + "/sse"
+GITHUB_SHAPED = "https://x.example.com/mcp/" + "gh" + "p_" + _BODY[:36].ljust(36, "Q") + "/mcp"
+SLACK_SHAPED = (
+    "https://x.example.com/mcp/"
+    + ("xo" + "xb-")
+    + "1234567890123-1234567890123-"
+    + _BODY[:24]
+    + "/mcp"
+)
+HEX40_SHAPED = "https://x.example.com/k/" + "3fa9c0d1e2b4" * 3 + "a1b2c3d4" + "/mcp"
+BASE64URL22_SHAPED = "https://x.example.com/s/k3Jd9sLq2xPw8Zr4TnVb_Q/mcp"
+
 
 @pytest.mark.parametrize(
     ("url", "risky"),
     [
         (ZAPIER_SHAPED, True),
+        (OPENAI_SHAPED, True),
+        (GITHUB_SHAPED, True),
+        (SLACK_SHAPED, True),
+        (HEX40_SHAPED, True),
+        (BASE64URL22_SHAPED, True),
         ("https://x.example.com/w/550e8400-e29b-41d4-a716-446655440000/mcp", True),
         ("https://x.example.com/t/" + "ab12" * 8, True),  # a 32-char hex run
         ("https://mcp.figma.com/mcp", False),
@@ -112,6 +132,11 @@ ZAPIER_SHAPED = "https://actions.zapier.com/mcp/sk-ak-9fQ2xLm4Rt7Vb8Np3Kd6Wz1Hc5
         # 2.54 bits per character): the entropy floor keeps these importable.
         ("https://x.example.com/p/project-00000000000001/mcp", False),
         ("https://x.example.com/v2-2025-03-26-2025-03-26/mcp", False),
+        # review6's false positives: long, varied slugs whose letters and
+        # digits mix only across words. No single part is a key's body.
+        ("https://x.example.com/servers/my-awesome-server-2024/", False),
+        ("https://x.example.com/salesforce-opportunity-management-v2/", False),
+        ("https://x.example.com/mcp/release.2026.10.build-123456/", False),
     ],
 )
 def test_url_secret_risk_reads_the_form_of_each_path_segment(url: str, risky: bool) -> None:

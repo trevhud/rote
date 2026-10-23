@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from rote.config import CONFIG_KEYS, render_config, user_config_path
 from rote.extras import install_hint
 from rote.interact.output import Output
-from rote.interact.plan import Action, Contact, Launch, Plan, write_file_action
+from rote.interact.plan import Action, Contact, Launch, Plan, snapshot, write_file_action
 from rote.interact.prompter import Choice, Prompter
 
 #: Runtime menu: (name, one-line pitch). Order = recommendation order,
@@ -244,15 +244,15 @@ def build_plan(
 
     # ── The plan ──
     target = (cwd or Path.cwd()) / "rote.yaml" if project else user_config_path()
-    existed = target.is_file()
+    read = snapshot(target)
     actions: list[Action] = [
         write_file_action(
             id="write-config",
             title=f"Save {len(values)} default{'s' if len(values) != 1 else ''}",
-            path=target,
+            read=read,
             content=render_config(values),
             summary=", ".join(f"{k}: {values[k]}" for k in _ordered(values)),
-            replaces=existed,
+            replaces=read.existed,
         )
     ]
     notes: list[str] = []

@@ -8,7 +8,8 @@
  * - Auth: the rote token store (~/.local/share/rote/mcp-tokens/<server>.json,
  *   written by `rote mcp login`), refreshing stale access tokens via the
  *   OAuth refresh grant and writing rotated tokens back atomically; else
- *   static headers from the registry entry; else unauthenticated.
+ *   static headers from the registry entry, each ${NAME} in them filled
+ *   from the environment; else unauthenticated.
  * - Never interactive: anything that needs a human (no refresh path, a
  *   401 the refresh cannot fix) throws RoteMcpAuthNeeded — the emitted
  *   workflow parks durably on it until `rote mcp login <server>` (or a
@@ -275,6 +276,44 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
     return granted.access_token;
 }
 
+/**
+ * `headers` with every ${NAME} replaced by that variable's value from
+ * `env`. Same rule as the Python helper's expand_headers: only ${NAME} is
+ * a reference, each is replaced once and never expanded again, and the
+ * text around it is kept. An unset or empty variable, or a value holding
+ * a line break or NUL, throws RoteMcpConfigError naming it: a header is
+ * never sent with an empty value.
+ */
+export function expandHeaders(
+    server: string,
+    headers: Record<string, string>,
+    env: Record<string, string | undefined>,
+): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [name, template] of Object.entries(headers)) {
+        out[name] = template.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_ref, v: string) => {
+            const value = env[v] ?? "";
+            if (!value) {
+                throw new RoteMcpConfigError(
+                    `MCP server '${server}': header '${name}' needs ${v}, which is not set. ` +
+                        `Set ${v} in the environment the run starts in (rote never sends a ` +
+                        "header with an empty value). This is configuration, so the step is not " +
+                        "retried.",
+                );
+            }
+            if (/[\r\n\0]/.test(value)) {
+                throw new RoteMcpConfigError(
+                    `MCP server '${server}': header '${name}': ${v} holds a line break or NUL, ` +
+                        "which no header value may carry. This is configuration, so the step is " +
+                        "not retried.",
+                );
+            }
+            return value;
+        });
+    }
+    return out;
+}
+
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
 export async function freshHeaders(
     server: string,
@@ -283,7 +322,7 @@ export async function freshHeaders(
 ): Promise<Record<string, string> | null> {
     const entry = registryServers()[server];
     if (entry?.headers && Object.keys(entry.headers).length > 0) {
-        return { ...entry.headers };
+        return expandHeaders(server, entry.headers, process.env);
     }
     const doc = readTokenDoc(server);
     const access = doc?.tokens?.access_token;

@@ -122,35 +122,47 @@ def _paths(ctx: ClientContext) -> _Paths:
 
 
 def _url_key(url: str) -> str | None:
-    """``scheme://host/path`` with the host lowercased and the port dropped."""
+    """``host/path`` with the host lowercased, the scheme and port dropped,
+    and one trailing ``/`` removed."""
     try:
         parts = urlsplit(url)
     except ValueError:
         return None
     if not parts.hostname:
         return None
-    return f"{parts.scheme}://{parts.hostname.rstrip('.')}{parts.path or '/'}"
+    return f"{parts.hostname.rstrip('.')}{parts.path}".removesuffix("/")
 
 
-_PATTERN_PORT = re.compile(r"^([^:/]*://[^/:]*)(:(\*|\d+))?")
+#: A pattern's scheme (any, ``*`` included) and its port, both ignored.
+_PATTERN_SCHEME = re.compile(r"^[^:/]*://")
+_PATTERN_PORT = re.compile(r"^([^:/]*)(:(\*|\d+))?")
 
 
 def _url_denied(url: str, pattern: str) -> bool:
-    """Claude Code's ``serverUrl`` match, read wider where it differs: ports
-    are ignored and the whole URL, path included, compares case-insensitively. A deny that
-    matches too much only blocks an import; one that matches too little
-    would import a server the user's policy blocks."""
+    """Claude Code's ``serverUrl`` match, read wider where it differs. A deny
+    that matches too much only blocks an import; one that matches too little
+    would import a server the user's policy blocks, so every difference
+    between two spellings of one endpoint is ignored on both sides: the
+    scheme (``http`` and ``https`` alike), the port, letter case, and one
+    trailing ``/``."""
     key = _url_key(url)
     if key is None:
         return False
-    head = _PATTERN_PORT.match(pattern)
-    if head is None:
+    rest = _PATTERN_SCHEME.sub("", pattern.strip(), count=1)
+    head = _PATTERN_PORT.match(rest)
+    if head is None or not head.group(1):
         return False
-    host_part, rest = head.group(1), pattern[head.end() :]
-    if rest in ("", "/"):
-        rest = "/*"  # a pattern with no path matches any path (docs/en/managed-mcp)
-    regex = ".*".join(re.escape(piece) for piece in f"{host_part.lower()}{rest}".split("*"))
-    return re.fullmatch(regex, key, flags=re.IGNORECASE) is not None
+    host_part, path = head.group(1), rest[head.end() :]
+    if path in ("", "/"):
+        path = "/*"  # a pattern with no path matches any path (docs/en/managed-mcp)
+    wanted = f"{host_part.lower().rstrip('.')}{path}".removesuffix("/")
+    regex = ".*".join(re.escape(piece) for piece in wanted.split("*"))
+    # The key lost its trailing "/", and an empty path is "/": "x.com" must
+    # still match "x.com/*".
+    return any(
+        re.fullmatch(regex, candidate, flags=re.IGNORECASE) is not None
+        for candidate in (key, f"{key}/")
+    )
 
 
 @dataclass(frozen=True)

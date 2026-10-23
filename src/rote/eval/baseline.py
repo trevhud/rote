@@ -169,6 +169,7 @@ def mcp_servers_from_registry() -> dict[str, dict[str, Any]]:
 
     from rote.eval.empirical import _TRANSPORT_TO_MCP_TYPE
     from rote.mcp import access_token_state, load_registry, read_token_file
+    from rote.mcp.registry import has_references
 
     registry = load_registry()
     servers: dict[str, dict[str, Any]] = {}
@@ -177,8 +178,14 @@ def mcp_servers_from_registry() -> dict[str, dict[str, Any]]:
             "type": _TRANSPORT_TO_MCP_TYPE[entry.transport],
             "url": entry.url,
         }
-        if entry.headers:
+        if entry.headers and not has_references(entry.headers):
             config["headers"] = dict(entry.headers)
+        elif entry.headers:
+            # ${NAME} references are filled when the client connects, by the
+            # same rule the runtime helpers use, and never land in a file.
+            config["headersHelper"] = (
+                f"{shlex.quote(sys.executable)} -m rote mcp headers {shlex.quote(name)}"
+            )
         else:
             doc = read_token_file(name)
             if doc is not None and access_token_state(doc)[0] is not None:

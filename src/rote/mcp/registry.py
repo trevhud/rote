@@ -138,12 +138,38 @@ def read_only_servers() -> dict[str, str]:
     }
 
 
+def has_references(headers: dict[str, str]) -> bool:
+    """Whether any header value holds a ``${NAME}`` reference, which the
+    runtime helpers fill from the environment at each connection."""
+    from rote.mcp._runtime_helper import HEADER_REFERENCE
+
+    return any(HEADER_REFERENCE.search(value) for value in headers.values())
+
+
 def load_registry(path: Path | None = None) -> McpRegistry:
     p = path or registry_path()
     if not p.is_file():
         return McpRegistry()
-    with p.open("r", encoding="utf-8") as f:
-        return McpRegistry.model_validate(json.load(f))
+    return parse_registry(p.read_bytes())
+
+
+def parse_registry(data: bytes | None) -> McpRegistry:
+    """The registry in ``data`` (a file's bytes; None: no file yet).
+
+    For a caller that merges into the file and must check, at write time,
+    that it still holds these same bytes (``rote.interact.plan.Snapshot``)."""
+    if data is None:
+        return McpRegistry()
+    return McpRegistry.model_validate(json.loads(data.decode("utf-8")))
+
+
+#: The registry file's permission bits: it may hold client secrets.
+REGISTRY_FILE_MODE = 0o600
+
+
+def render_registry(registry: McpRegistry) -> str:
+    """The registry file's text, exactly as :func:`save_registry` writes it."""
+    return json.dumps(registry.model_dump(exclude_none=True), indent=2) + "\n"
 
 
 def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
@@ -153,9 +179,8 @@ def save_registry(registry: McpRegistry, path: Path | None = None) -> Path:
     fd, tmp_name = tempfile.mkstemp(dir=p.parent, prefix=".mcp-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(registry.model_dump(exclude_none=True), f, indent=2)
-            f.write("\n")
-        os.chmod(tmp_name, 0o600)
+            f.write(render_registry(registry))
+        os.chmod(tmp_name, REGISTRY_FILE_MODE)
         os.replace(tmp_name, p)
     except BaseException:
         with contextlib.suppress(OSError):

@@ -23,6 +23,7 @@ from rote.interact.plan import (
     atomic_write_text,
     confirm_plan,
     render_plan,
+    snapshot,
     write_file_action,
 )
 from rote.interact.prompter import Answer, NonInteractivePrompter, ScriptedPrompter
@@ -42,7 +43,7 @@ def _write(tmp_path: Path, replaces: bool = False) -> Action:
     if replaces:
         path.write_text("old", encoding="utf-8")
     return write_file_action(
-        id="w", title="write", path=path, content="new", summary="s", replaces=replaces
+        id="w", title="write", read=snapshot(path), content="new", summary="s", replaces=replaces
     )
 
 
@@ -148,7 +149,12 @@ def test_a_file_created_after_the_plan_is_not_overwritten(tmp_path: Path) -> Non
         "p",
         (
             write_file_action(
-                id="w", title="write", path=path, content="new", summary="s", replaces=False
+                id="w",
+                title="write",
+                read=snapshot(path),
+                content="new",
+                summary="s",
+                replaces=False,
             ),
         ),
     )
@@ -170,6 +176,35 @@ def test_a_file_edited_after_the_plan_is_not_overwritten(tmp_path: Path) -> None
     assert outcome.status == "failed"
     assert outcome.error is not None and "changed since the plan was made" in outcome.error
     assert (tmp_path / "f.txt").read_text(encoding="utf-8") == "edited meanwhile"
+
+
+def test_the_stale_check_uses_the_callers_read_not_a_second_one(tmp_path: Path) -> None:
+    """review6: a merge built from one read must be checked against that
+    read. An edit landing between the caller's read and building the action
+    is lost if write_file_action reads the file again for its check."""
+    path = tmp_path / "registry.json"
+    path.write_text('{"servers": {"a": 1}}', encoding="utf-8")
+    read = snapshot(path)
+    merged = read.text()
+    assert merged is not None
+    path.write_text('{"servers": {"a": 1, "b": 2}}', encoding="utf-8")  # someone else's edit
+    action = write_file_action(
+        id="w",
+        title="merge",
+        read=read,
+        content=merged.replace("}}", ', "c": 3}}'),
+        summary="add c",
+        replaces=False,
+    )
+    [outcome] = apply_plan(Plan("p", (action,)))
+    assert outcome.status == "failed"
+    assert outcome.error is not None and "changed since the plan was made" in outcome.error
+    assert path.read_text(encoding="utf-8") == '{"servers": {"a": 1, "b": 2}}'
+
+
+def test_a_snapshot_of_a_missing_file_is_a_state() -> None:
+    read = snapshot(Path("/nonexistent/rote/test/file"))
+    assert (read.existed, read.state, read.text()) == (False, None, None)
 
 
 def test_an_unchanged_file_is_replaced_and_the_result_is_the_path(tmp_path: Path) -> None:

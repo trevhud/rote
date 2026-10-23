@@ -1211,6 +1211,51 @@ function textContentPayload(content: unknown): unknown {
 }
 """
 
+#: How a TS helper fills a registry header's ``${NAME}`` references: the
+#: twin of ``rote.mcp._runtime_helper.expand_headers``, same rule and same
+#: messages (tests/test_mcp_header_template_parity_e2e.py runs both on one
+#: table). Only the Node helper reads registry headers; the Workers helper
+#: authenticates from provisioned OAuth secrets and the binding helper
+#: through the platform, so neither has a static header to fill.
+_HEADER_TEMPLATE_TS = r"""/**
+ * `headers` with every ${NAME} replaced by that variable's value from
+ * `env`. Same rule as the Python helper's expand_headers: only ${NAME} is
+ * a reference, each is replaced once and never expanded again, and the
+ * text around it is kept. An unset or empty variable, or a value holding
+ * a line break or NUL, throws RoteMcpConfigError naming it: a header is
+ * never sent with an empty value.
+ */
+export function expandHeaders(
+    server: string,
+    headers: Record<string, string>,
+    env: Record<string, string | undefined>,
+): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [name, template] of Object.entries(headers)) {
+        out[name] = template.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_ref, v: string) => {
+            const value = env[v] ?? "";
+            if (!value) {
+                throw new RoteMcpConfigError(
+                    `MCP server '${server}': header '${name}' needs ${v}, which is not set. ` +
+                        `Set ${v} in the environment the run starts in (rote never sends a ` +
+                        "header with an empty value). This is configuration, so the step is not " +
+                        "retried.",
+                );
+            }
+            if (/[\r\n\0]/.test(value)) {
+                throw new RoteMcpConfigError(
+                    `MCP server '${server}': header '${name}': ${v} holds a line break or NUL, ` +
+                        "which no header value may carry. This is configuration, so the step is " +
+                        "not retried.",
+                );
+            }
+            return value;
+        });
+    }
+    return out;
+}
+"""
+
 #: The read-only-run gate for a direct-client TS helper: the TS twin of
 #: ``rote.mcp._runtime_helper.write_refusal`` (and its predicate
 #: ``tool_is_read_only``), spliced into the Node and Workers helpers.
@@ -1338,7 +1383,8 @@ ROTE_MCP_HELPER_TS = (
  * - Auth: the rote token store (~/.local/share/rote/mcp-tokens/<server>.json,
  *   written by `rote mcp login`), refreshing stale access tokens via the
  *   OAuth refresh grant and writing rotated tokens back atomically; else
- *   static headers from the registry entry; else unauthenticated.
+ *   static headers from the registry entry, each ${NAME} in them filled
+ *   from the environment; else unauthenticated.
  * - Never interactive: anything that needs a human (no refresh path, a
  *   401 the refresh cannot fix) throws RoteMcpAuthNeeded — the emitted
  *   workflow parks durably on it until `rote mcp login <server>` (or a
@@ -1556,6 +1602,7 @@ async function refreshAccessToken(server: string, doc: TokenDoc): Promise<string
     return granted.access_token;
 }
 
+__HEADER_TEMPLATE_TS__
 /** Currently-valid auth headers for `server`, or null (unauthenticated). */
 export async function freshHeaders(
     server: string,
@@ -1564,7 +1611,7 @@ export async function freshHeaders(
 ): Promise<Record<string, string> | null> {
     const entry = registryServers()[server];
     if (entry?.headers && Object.keys(entry.headers).length > 0) {
-        return { ...entry.headers };
+        return expandHeaders(server, entry.headers, process.env);
     }
     const doc = readTokenDoc(server);
     const access = doc?.tokens?.access_token;
@@ -1855,6 +1902,7 @@ function isUnauthorized(err: unknown): boolean {
     .replace("__FASTMCP_UNWRAP_TS__", _FASTMCP_UNWRAP_TS)
     .replace("__WRITE_REFUSAL_TS__", _WRITE_REFUSAL_TS)
     .replace("__MCP_TEXT_PAYLOAD_TS__", _MCP_TEXT_PAYLOAD_TS)
+    .replace("__HEADER_TEMPLATE_TS__", _HEADER_TEMPLATE_TS)
 )
 
 

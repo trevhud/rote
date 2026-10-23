@@ -1254,10 +1254,9 @@ def _mcp_config_for(
                 ) from None
             continue  # not known to be needed; the allowlist still binds
         config: dict[str, Any] = {"type": "http", "url": url}
-        entry = registry.get(name)
-        headers = entry.get("headers") if isinstance(entry, dict) else None
+        headers = _rote_mcp.registry_headers(name)
         if headers:
-            config["headers"] = dict(headers)
+            config["headers"] = headers
         servers[name] = config
     allowed = [
         (server, tool)

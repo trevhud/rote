@@ -853,6 +853,10 @@ def test_resolved_tool_servers_narrow_the_allowlist(monkeypatch: pytest.MonkeyPa
         def resolve_url(name: str, _pipeline_url: None) -> str:
             return registry[name]["url"]
 
+        @staticmethod
+        def registry_headers(_name: str) -> None:
+            return None
+
     monkeypatch.setitem(sys.modules, "extracted", types.SimpleNamespace(_rote_mcp=_FakeMcp))
     monkeypatch.setitem(sys.modules, "extracted._rote_mcp", _FakeMcp)
 

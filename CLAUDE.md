@@ -2546,9 +2546,35 @@ run on `rote.interact`; the architecture is
   Replacing a file needs `--force` beyond `--yes`, and spending needs the
   `Spend`'s own flag: `--yes` never spends money. A `Contact` holds a
   bare host, never a URL. A paid `Launch` must sit beside its `Spend`.
-  Writes go through `write_file_action`, which refuses at apply when the
-  file changed since the plan (a confirmed "create" must not replace a
-  file that appeared while the person read it).
+  Writes go through `write_file_action(read=snapshot(path), ...)`, which
+  refuses at apply when the file no longer matches the caller's own read
+  (a confirmed "create" must not replace a file that appeared while the
+  person read it, and a merge must be checked against the bytes it
+  merged into, not a second read).
+
+`rote mcp import` (`rote.setup.mcp_import`, design in first-run.md) keeps
+three rules:
+
+- **Never preselect what needs a yes.** Only `--servers-for` preselects,
+  and only `preselectable` candidates off the user's `work_domains`. Every
+  other reason a candidate is not preselectable, except being inactive in
+  the client, needs a per-server opt-in (`opt_ins`: `--allow-url-secret`,
+  `--allow-untrusted`, which also covers any reason this version does not
+  name), so a client source that adds a new not-preselectable state is
+  safe with no change to import. A bare `--yes` declines all of them.
+- **Additive, and collisions never write over.** A taken name gets the
+  first free `<name>_N`; `--rename` picks one, `--replace` (plus `--force`
+  without a person) overwrites. An endpoint registered under any name is
+  "already registered".
+- **`work_domains` is a list setting: every layer adds, none removes**
+  (`resolve_list`), so a project `rote.yaml` cannot switch off the user's
+  own. It is asked once, with no default (a default cannot know which
+  domains are work), and only when an answer matters.
+
+A registry header's `${NAME}` is filled at connection time by one rule in
+every helper (`expand_headers`, TS `_HEADER_TEMPLATE_TS` in the Node
+helper); unset or empty is a `RoteMcpConfigError`, never an empty header.
+`tests/test_mcp_header_template_parity_e2e.py` pins the twins together.
 
 Client config readers (`rote.clients`) only read: never run the client,
 contact a server, or resolve a placeholder, and display hosts, never URLs

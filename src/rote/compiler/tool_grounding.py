@@ -251,6 +251,26 @@ def servers_named(skill_dir: Path, registered: Iterable[str] = ()) -> dict[str, 
     return dict(sorted(found.items()))
 
 
+def servers_wanted(skill_dir: Path, names: Iterable[str]) -> dict[str, str]:
+    """``{name: evidence}`` for each of ``names`` the skill needs, for
+    ``rote mcp import --servers-for``.
+
+    A name counts when :func:`servers_named` finds the skill naming it as a
+    server, or when a compile of the skill would list it
+    (:func:`servers_to_contact`, ``named``), which is what importing it is
+    for. Names the skill mentions but the user does not have are left out:
+    there is nothing to import for them."""
+    wanted = sorted(set(names))
+    named = servers_named(skill_dir, wanted)
+    found = {n: named[n] for n in wanted if n in named}
+    contact = servers_to_contact(
+        wanted, _skill_text(skill_dir), "named", skill_tool_table_servers(skill_dir)
+    )
+    for name, why in contact.items():
+        found.setdefault(name, why)
+    return dict(sorted(found.items()))
+
+
 def skill_tool_table_servers(skill_dir: Path) -> set[str]:
     """Servers the skill's own tool table maps a tool to (System-1's parser).
 
