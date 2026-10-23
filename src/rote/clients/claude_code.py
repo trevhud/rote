@@ -38,7 +38,6 @@ an error to Claude Code itself (a missing type means stdio).
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -48,19 +47,25 @@ from urllib.parse import urlsplit
 
 from rote.clients.base import (
     ClientContext,
-    HeaderTemplate,
     ImportCandidate,
     Scope,
     SourceReading,
     Transport,
 )
-from rote.clients.normalize import (
-    CLAUDE_CODE_SYNTAX,
-    header_template,
-    server_identifier,
-    url_problem,
-    url_secret_risk,
+from rote.clients.common import (
+    STDIO_BLOCKED,
+    WEBSOCKET_BLOCKED,
+    Reader,
+    blocked,
+    expand_home,
+    new_candidate,
+    not_an_object,
+    remote,
+    servers_in,
+    str_list,
+    trust_verified,
 )
+from rote.clients.normalize import CLAUDE_CODE_SYNTAX
 
 CLIENT_ID = "claude-code"
 
@@ -98,7 +103,7 @@ LIMITS = (
 def _paths(ctx: ClientContext) -> _Paths:
     override = ctx.env.get("CLAUDE_CONFIG_DIR", "").strip()
     if override:
-        config_dir = Path(override).expanduser()
+        config_dir = expand_home(override, ctx)
         claude_json = config_dir / ".claude.json"
     else:
         config_dir = ctx.home / ".claude"
@@ -183,38 +188,6 @@ def _denylist(layers: Iterable[Mapping[str, Any]]) -> _Denylist:
     return _Denylist(frozenset(names), tuple(urls))
 
 
-class _Reader:
-    """Reads JSON files once each and records what it read and what failed."""
-
-    def __init__(self) -> None:
-        self.files_read: list[Path] = []
-        self.problems: list[str] = []
-        self._cache: dict[Path, Any] = {}
-
-    def json(self, path: Path) -> Any:
-        if path in self._cache:
-            return self._cache[path]
-        value: Any = None
-        if path.is_file():
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-                self.problems.append(f"{path}: could not read it ({type(e).__name__})")
-            else:
-                self.files_read.append(path)
-        self._cache[path] = value
-        return value
-
-    def mapping(self, path: Path) -> dict[str, Any]:
-        value = self.json(path)
-        if value is None:
-            return {}
-        if not isinstance(value, dict):
-            self.problems.append(f"{path}: expected a JSON object, got {type(value).__name__}")
-            return {}
-        return value
-
-
 def _project_entry(claude_json: Mapping[str, Any], cwd: Path) -> tuple[Path | None, dict[str, Any]]:
     """The ``projects`` entry for ``cwd`` or its nearest ancestor that has one."""
     projects = claude_json.get("projects")
@@ -241,10 +214,6 @@ def _project_root(cwd: Path, known: Path | None) -> Path | None:
     return None
 
 
-def _str_list(value: Any) -> list[str]:
-    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
-
-
 @dataclass(frozen=True)
 class _Approval:
     enable_all: bool
@@ -267,9 +236,9 @@ def _approval(
     disabled: set[str] = set()
     enable_all = False
     for layer in settings:
-        disabled.update(_str_list(layer.get("disabledMcpjsonServers")))
+        disabled.update(str_list(layer.get("disabledMcpjsonServers")))
     for layer in counted:
-        enabled.update(_str_list(layer.get("enabledMcpjsonServers")))
+        enabled.update(str_list(layer.get("enabledMcpjsonServers")))
         enable_all = enable_all or layer.get("enableAllProjectMcpServers") is True
     return _Approval(enable_all, frozenset(enabled), frozenset(disabled))
 
@@ -282,23 +251,9 @@ def _candidate(
     origin: Path,
     plugin: str | None = None,
 ) -> ImportCandidate:
-    try:
-        name = server_identifier(original_name)
-    except ValueError:
-        name = "_"
-    base = ImportCandidate(
-        client=CLIENT_ID,
-        name=name,
-        original_name=original_name,
-        scope=scope,
-        origin=origin,
-        transport="other",
-        plugin=plugin,
-    )
-    if name == "_":
-        return replace(base, blocked="the name has no letters or digits rote can keep")
+    base = new_candidate(CLIENT_ID, original_name, scope=scope, origin=origin, plugin=plugin)
     if not isinstance(entry, dict):
-        return replace(base, blocked=f"the entry is a {type(entry).__name__}, not an object")
+        return not_an_object(base, entry)
 
     raw_type = entry.get("type")
     url = entry.get("url")
@@ -307,79 +262,46 @@ def _candidate(
             return replace(
                 base,
                 url=url,
-                blocked="the entry has a url but no type, which Claude Code itself rejects",
+                blocked=base.blocked
+                or "the entry has a url but no type, which Claude Code itself rejects",
             )
         raw_type = "stdio"
     transport = _TRANSPORTS.get(str(raw_type), "other")
-    base = replace(base, transport=transport)
     if transport == "stdio":
-        return replace(
-            base,
-            blocked=(
-                "a stdio server (a local command); rote's registry holds HTTP and SSE servers only"
-            ),
-        )
+        return blocked(base, transport, STDIO_BLOCKED)
     if transport == "websocket":
-        return replace(base, blocked="a WebSocket server; rote connects over HTTP and SSE only")
+        return blocked(base, transport, WEBSOCKET_BLOCKED)
     if transport == "other":
-        return replace(base, blocked=f"type {raw_type!r} is not a server rote can reach")
-    if not isinstance(url, str) or not url:
-        return replace(base, blocked="the entry has no url")
-    base = replace(base, url=url)
+        return blocked(base, transport, f"type {raw_type!r} is not a server rote can reach")
 
     withheld: list[str] = []
-    headers: list[HeaderTemplate] = []
-    raw_headers = entry.get("headers")
-    if isinstance(raw_headers, dict):
-        for header, value in raw_headers.items():
-            if not isinstance(value, str):
-                withheld.append(f"header {header}: not a string")
-                continue
-            verdict = header_template(name, str(header), value, CLAUDE_CODE_SYNTAX)
-            if verdict.header is not None:
-                headers.append(verdict.header)
-            if verdict.withheld is not None:
-                withheld.append(verdict.withheld)
-            withheld.extend(verdict.notes)
     if "headersHelper" in entry:
         withheld.append(
             "headersHelper: it runs a command to make headers, and rote does not run another "
-            f"app's commands; set headers with rote mcp add {name} <url> --header"
+            f"app's commands; set headers with rote mcp add {base.name} <url> --header"
         )
-
     scopes: tuple[str, ...] = ()
     oauth = entry.get("oauth")
     if isinstance(oauth, dict):
         if "clientId" in oauth:
             withheld.append(
                 "oauth.clientId: issued to Claude Code; rote registers its own client at "
-                f"rote mcp login {name}"
+                f"rote mcp login {base.name}"
             )
         if "authServerMetadataUrl" in oauth:
             withheld.append("oauth.authServerMetadataUrl: rote discovers the authorization server")
         raw_scopes = oauth.get("scopes")
         if isinstance(raw_scopes, str):
             scopes = tuple(s for s in raw_scopes.split() if s)
-
-    blocked = url_problem(url, CLAUDE_CODE_SYNTAX)
-    return replace(
+    return remote(
         base,
-        headers=tuple(headers),
+        url=url,
+        transport=transport,
+        syntax=CLAUDE_CODE_SYNTAX,
+        headers=entry.get("headers"),
+        withheld=withheld,
         scopes=scopes,
-        withheld=tuple(withheld),
-        blocked=blocked,
-        risk=url_secret_risk(url) if blocked is None else None,
     )
-
-
-def _servers_in(value: Any) -> dict[str, Any] | None:
-    """A ``.mcp.json``'s servers: wrapped in ``mcpServers`` or a bare map."""
-    if not isinstance(value, dict):
-        return None
-    inner = value.get("mcpServers")
-    if isinstance(inner, dict):
-        return inner
-    return value if "mcpServers" not in value else None
 
 
 class ClaudeCodeSource:
@@ -406,7 +328,7 @@ class ClaudeCodeSource:
 
     @staticmethod
     def _claude_json_quiet(paths: _Paths) -> dict[str, Any]:
-        reader = _Reader()
+        reader = Reader()
         return reader.mapping(paths.claude_json)
 
     def detect(self, ctx: ClientContext) -> bool:
@@ -415,7 +337,7 @@ class ClaudeCodeSource:
 
     def read(self, ctx: ClientContext) -> SourceReading:
         paths = _paths(ctx)
-        reader = _Reader()
+        reader = Reader()
         claude_json = reader.mapping(paths.claude_json)
         project_dir, project_entry = _project_entry(claude_json, ctx.cwd)
         root = _project_root(ctx.cwd, project_dir)
@@ -444,8 +366,8 @@ class ClaudeCodeSource:
                 )
         if root is not None:
             mcp_json_path = root / ".mcp.json"
-            mcp_json = reader.json(mcp_json_path)
-            project_servers = _servers_in(mcp_json) if mcp_json is not None else None
+            mcp_json = reader.load(mcp_json_path)
+            project_servers = servers_in(mcp_json) if mcp_json is not None else None
             if mcp_json is not None and project_servers is None:
                 reader.problems.append(f"{mcp_json_path}: no mcpServers object")
             approval = _approval(
@@ -459,9 +381,14 @@ class ClaudeCodeSource:
             )
             for name, entry in (project_servers or {}).items():
                 candidate = _candidate(name, entry, scope="project", origin=mcp_json_path)
-                by_scope["project"].append(replace(candidate, inactive=approval.why_inactive(name)))
+                why = approval.why_inactive(name)
+                if why is None:
+                    [candidate] = trust_verified([candidate])
+                else:
+                    candidate = replace(candidate, inactive=why, trust="untrusted", trust_note=why)
+                by_scope["project"].append(candidate)
 
-        toggled_off = set(_str_list(project_entry.get("disabledMcpServers")))
+        toggled_off = set(str_list(project_entry.get("disabledMcpServers")))
         ordered: list[ImportCandidate] = []
         winner: dict[str, Scope] = {}
         for scope in _PRECEDENCE:
@@ -521,7 +448,7 @@ class ClaudeCodeSource:
 
     @staticmethod
     def _plugin_candidates(
-        reader: _Reader, paths: _Paths, settings: Iterable[Mapping[str, Any]]
+        reader: Reader, paths: _Paths, settings: Iterable[Mapping[str, Any]]
     ) -> list[ImportCandidate]:
         enabled: dict[str, bool] = {}
         for layer in settings:  # later layers win: user < project < local
@@ -550,15 +477,15 @@ class ClaudeCodeSource:
         return found
 
 
-def _plugin_servers(reader: _Reader, root: Path) -> list[tuple[Path, dict[str, Any]]]:
+def _plugin_servers(reader: Reader, root: Path) -> list[tuple[Path, dict[str, Any]]]:
     """Every server map a plugin declares, with the file it came from."""
     found: list[tuple[Path, dict[str, Any]]] = []
     mcp_json = root / ".mcp.json"
-    servers = _servers_in(reader.json(mcp_json))
+    servers = servers_in(reader.load(mcp_json))
     if servers:
         found.append((mcp_json, servers))
     manifest_path = root / ".claude-plugin" / "plugin.json"
-    manifest = reader.json(manifest_path)
+    manifest = reader.load(manifest_path)
     if not isinstance(manifest, dict) or "mcpServers" not in manifest:
         return found
     declared = manifest["mcpServers"]
@@ -570,7 +497,7 @@ def _plugin_servers(reader: _Reader, root: Path) -> list[tuple[Path, dict[str, A
             if not target.is_relative_to(root.resolve()):
                 reader.problems.append(f"{manifest_path}: mcpServers path leaves the plugin")
                 continue
-            servers = _servers_in(reader.json(target))
+            servers = servers_in(reader.load(target))
             if servers and target != mcp_json.resolve():
                 found.append((target, servers))
         elif isinstance(item, str):

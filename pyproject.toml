@@ -68,6 +68,10 @@ dependencies = [
     "questionary>=2.1.1,<3",
     # Styled stderr output for onboarding (rote.interact.output).
     "rich>=15.0.0,<16",
+    # Reading other AI clients' JSONC configs (rote.clients: Zed, VS Code,
+    # OpenCode, Cursor...), which allow comments and trailing commas.
+    # Pure Python, typed.
+    "json5>=0.17.3,<1",
 ]
 
 [project.optional-dependencies]

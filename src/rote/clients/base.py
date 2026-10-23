@@ -31,9 +31,28 @@ from urllib.parse import urlsplit
 Transport = Literal["streamable-http", "sse", "stdio", "websocket", "other"]
 IMPORTABLE_TRANSPORTS: frozenset[str] = frozenset({"streamable-http", "sse"})
 
-#: Where in the client the entry lives. ``local`` is Claude Code's
-#: per-project private scope; ``plugin`` is a server an enabled plugin ships.
-Scope = Literal["user", "local", "project", "plugin"]
+#: Where in the client the entry lives. ``local`` is a per-project private
+#: scope (Claude Code's ``~/.claude.json`` projects entry, Devin's
+#: ``.devin/mcp_config.local.json``); ``plugin`` is a server an enabled
+#: plugin or extension ships; ``system`` is a machine-wide file an
+#: administrator deploys (Gemini CLI's system settings, Goose's
+#: ``/etc/goose/config.yaml``).
+Scope = Literal["user", "local", "project", "plugin", "system"]
+
+#: Whether a client's trust gate for the entry's scope passed. ``trusted``:
+#: there is no gate, or rote read it and it passed. ``untrusted``: rote read
+#: it and it failed (the entry is inactive too). ``unknown``: the client
+#: gates this scope on trust rote cannot read (VS Code's Restricted Mode,
+#: Zed's worktree trust), so whether the client loads it is not known.
+Trust = Literal["trusted", "untrusted", "unknown"]
+
+#: Scopes a repository supplies, which a client may gate on trust. A
+#: candidate in one starts ``unknown``: a source must set ``trusted`` after
+#: reading the gate, so one that forgets fails closed.
+GATED_SCOPES: frozenset[str] = frozenset({"project"})
+#: The note an ungated default carries. A reading that still shows it means
+#: the source never decided (tests/test_clients_registry.py fails on it).
+UNCHECKED_TRUST = "no trust gate was read for this scope"
 
 
 #: Moves the home directory client sources read. tests/conftest.py and
@@ -42,10 +61,31 @@ Scope = Literal["user", "local", "project", "plugin"]
 #: clients.
 CLIENT_HOME_ENV = "ROTE_CLIENT_HOME_DIR"
 
-#: Variables that move a client's config dir away from the home. Under
+#: Variables that move a client's config files away from the home (or, for
+#: ``OPENCODE_CONFIG_CONTENT``, hold the config itself). Under
 #: :data:`CLIENT_HOME_ENV` they are dropped, or they would lead a source
-#: straight back to the real files.
-CLIENT_DIR_VARS = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME")
+#: straight back to the real files. A source that reads a new one adds it
+#: here.
+CLIENT_DIR_VARS = (
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "XDG_CONFIG_HOME",
+    "APPDATA",
+    "COPILOT_HOME",
+    "VSCODE_PORTABLE",
+    "VSCODE_APPDATA",
+    "FLATPAK_XDG_CONFIG_HOME",
+    "GOOSE_PATH_ROOT",
+    "GOOSE_ADDITIONAL_CONFIG_FILES",
+    "AMP_SETTINGS_FILE",
+    "GEMINI_CLI_HOME",
+    "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+    "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+    "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+    "OPENCODE_CONFIG_CONTENT",
+)
 
 
 def _system_dir() -> Path | None:
@@ -60,21 +100,34 @@ def _system_dir() -> Path | None:
     return None
 
 
+def _etc_dir() -> Path | None:
+    """Where machine-wide client config lives that is not under
+    :func:`_system_dir`: ``/etc`` on every Unix, macOS included (Codex
+    ``/etc/codex``, Goose ``/etc/goose``), and ``%ProgramData%`` on Windows
+    (Gemini CLI, OpenCode, Codex)."""
+    if sys.platform == "win32":
+        return Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
+    return Path("/etc")
+
+
 @dataclass(frozen=True)
 class ClientContext:
     """Everything a source may read from the machine, injected."""
 
     home: Path
     cwd: Path
-    #: Read only for the variables that move a client's config dir
-    #: (``CLAUDE_CONFIG_DIR``, ``CODEX_HOME``, ``XDG_CONFIG_HOME``), never to
-    #: resolve a placeholder.
+    #: Read only for the variables that move a client's config files
+    #: (:data:`CLIENT_DIR_VARS`) and the few that switch a client's files on
+    #: or off, never to resolve a placeholder.
     env: Mapping[str, str] = field(default_factory=dict)
     #: The OS-wide directory administrators deploy client policy under
     #: (``/Library/Application Support`` on macOS, ``/etc`` on Linux). Each
     #: source adds its own subdirectory. None: not read, which is what the
     #: isolation override gives.
     system_dir: Path | None = None
+    #: ``/etc`` on macOS and Linux, ``%ProgramData%`` on Windows: the other
+    #: machine-wide root clients read (see ``_etc_dir``). None: not read.
+    etc_dir: Path | None = None
     #: ``sys.platform`` for the machine whose files these are.
     platform: str = sys.platform
 
@@ -86,7 +139,13 @@ class ClientContext:
             for var in CLIENT_DIR_VARS:
                 env.pop(var, None)
             return cls(home=Path(moved), cwd=Path.cwd(), env=env)
-        return cls(home=Path.home(), cwd=Path.cwd(), env=env, system_dir=_system_dir())
+        return cls(
+            home=Path.home(),
+            cwd=Path.cwd(),
+            env=env,
+            system_dir=_system_dir(),
+            etc_dir=_etc_dir(),
+        )
 
 
 @dataclass(frozen=True)
@@ -132,6 +191,14 @@ class ImportCandidate:
     #: by a default or by ``--yes``: ``rote mcp import`` needs a per-server
     #: opt-in that names the risk (``--allow-url-secret <name>``).
     risk: str | None = None
+    #: See :data:`Trust`. ``unknown`` is never preselected, and, like
+    #: :attr:`risk`, needs a per-server opt-in in ``rote mcp import``. None
+    #: at construction takes the scope's default: ``unknown`` for
+    #: :data:`GATED_SCOPES`, ``trusted`` otherwise; it is never None after.
+    trust: Trust | None = None
+    #: Why trust is not ``trusted``: "trust in <client> could not be checked:
+    #: ..." for ``unknown``, the failed gate for ``untrusted``.
+    trust_note: str | None = None
     #: The plugin that ships it, for ``scope == "plugin"``.
     plugin: str | None = None
 
@@ -139,11 +206,36 @@ class ImportCandidate:
     def importable(self) -> bool:
         return self.blocked is None
 
+    def __post_init__(self) -> None:
+        if self.trust is not None:
+            return
+        if self.scope in GATED_SCOPES:
+            object.__setattr__(self, "trust", "unknown")
+            if self.trust_note is None:
+                note = f"trust in {self.client} could not be checked: {UNCHECKED_TRUST}"
+                object.__setattr__(self, "trust_note", note)
+        else:
+            object.__setattr__(self, "trust", "trusted")
+
+    @property
+    def needs_opt_in(self) -> tuple[str, ...]:
+        """What the user must accept by name before this server is imported:
+        a credential-shaped URL, trust rote could not check. Empty: nothing."""
+        reasons = [self.risk] if self.risk is not None else []
+        if self.trust == "unknown" and self.trust_note is not None:
+            reasons.append(self.trust_note)
+        return tuple(reasons)
+
     @property
     def preselectable(self) -> bool:
         """Whether a default (or ``--yes``) may pick this server: importable,
-        used by the client, and carrying no risk to opt into."""
-        return self.importable and self.inactive is None and self.risk is None
+        used by the client, trusted, and with nothing to opt into."""
+        return (
+            self.importable
+            and self.inactive is None
+            and self.trust == "trusted"
+            and not self.needs_opt_in
+        )
 
     @property
     def renamed(self) -> bool:
@@ -154,10 +246,16 @@ class ImportCandidate:
         """The URL's host (and port), never its path, query or credentials."""
         if self.url is None:
             return None
-        parts = urlsplit(self.url)
+        try:
+            parts = urlsplit(self.url)
+            port = parts.port
+        except ValueError:
+            # A host that is a placeholder (``https://${env:HOST}/mcp``) reads
+            # as a bad port; such a URL is blocked and has no host to show.
+            return None
         if parts.hostname is None:
             return None
-        return parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
+        return parts.hostname if port is None else f"{parts.hostname}:{port}"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -176,6 +274,9 @@ class ImportCandidate:
             "active": self.inactive is None,
             "inactive": self.inactive,
             "risk": self.risk,
+            "trust": self.trust,
+            "trust_note": self.trust_note,
+            "needs_opt_in": list(self.needs_opt_in),
             "preselectable": self.preselectable,
             "withheld": list(self.withheld),
         }

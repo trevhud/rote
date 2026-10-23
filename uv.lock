@@ -1090,6 +1090,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json5"
+version = "0.17.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/16/1f/58a4d7ee466f81bc3c7337036380fc6d49de3afb7855d74f8121b1e89b32/json5-0.17.3.tar.gz", hash = "sha256:8d0278ad34ebaa9c3af76d9519274811830224a2d1cd5af156dbd067f461b8a4", size = 54234, upload-time = "2026-10-09T21:19:28.335Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/39/e689b616c4279a821d5842a8a85c1874540f8d58e35028df93f2182120c2/json5-0.17.3-py3-none-any.whl", hash = "sha256:2c8b22a893c35cd6a3c5ccbf1dd1c7d02c25dc1b5897fea658f9bf08c2e05f9a", size = 34809, upload-time = "2026-10-09T21:19:27.357Z" },
+]
+
+[[package]]
 name = "jsonref"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2019,6 +2028,7 @@ name = "rote-cli"
 source = { editable = "." }
 dependencies = [
     { name = "graphql-core" },
+    { name = "json5" },
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pyyaml" },
@@ -2083,6 +2093,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "httpx", marker = "extra == 'mcp'", specifier = ">=0.28" },
     { name = "httpx", marker = "extra == 'serve'", specifier = ">=0.28" },
+    { name = "json5", specifier = ">=0.17.3,<1" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "openai", marker = "extra == 'dev'", specifier = ">=2.45" },
     { name = "openai", marker = "extra == 'openai-api'", specifier = ">=2.45" },
