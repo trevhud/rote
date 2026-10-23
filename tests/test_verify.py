@@ -12,7 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from rote.compiler.verify import SIDECAR_INVALID, run_generated_tests, verify_deliverable
+from rote.compiler.verify import (
+    SIDECAR_INVALID,
+    UNUSED_CONSTANT,
+    Verification,
+    run_generated_tests,
+    verify_deliverable,
+)
 
 PIPELINE = """\
 name: two-steps
@@ -642,3 +648,103 @@ def test_an_input_the_code_never_uses_is_listed_for_review(tmp_path: Path) -> No
         _unused_root(tmp_path / "b", "return {'ids': lines, 'n': convert['n']}"), run_tests=False
     )
     assert not [q for q in used.questions if q.node_id == "duplicates"]
+
+
+# ───────── constants the impl takes and never reads ─────────
+
+_CONSTANT_IR = """\
+name: constants
+input: {type: In, required: [results]}
+nodes:
+  - id: pick
+    kind: pure_function
+    description: keep the first results
+    impl: extracted/pick.py:pick
+    inputs: {results: pipeline.input.results}
+    constants: {result_limit: 5}
+edges: []
+entry_nodes: [pick]
+exit_nodes: [pick]
+"""
+
+
+def _constant_root(tmp_path: Path, module: str) -> Path:
+    (tmp_path / "extracted").mkdir(parents=True)
+    (tmp_path / "pipeline.yaml").write_text(_CONSTANT_IR)
+    (tmp_path / "extracted" / "pick.py").write_text(module)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_pick.py").write_text(
+        "from extracted.pick import pick\n\n\ndef test_pick():\n    pick([1])\n"
+    )
+    return tmp_path
+
+
+def _dead(v: Verification) -> list[str]:
+    # A pipeline that fails to load has no findings at all, which would make
+    # every "not flagged" case pass for the wrong reason.
+    assert v.pipeline_error is None, v.pipeline_error
+    assert [i.status for i in v.implementations] in (["implemented"], ["stub"])
+    return [f.node_id for f in v.review_gaps if f.kind == UNUSED_CONSTANT]
+
+
+def test_a_constant_the_impl_takes_and_ignores_goes_back_for_repair(tmp_path: Path) -> None:
+    """docs-digest: `result_limit` was a parameter, and the slice used the
+    module's own RESULT_LIMIT, so editing the IR's constant changed nothing."""
+    root = _constant_root(
+        tmp_path,
+        "RESULT_LIMIT = 5\n\n\n"
+        "def pick(results, result_limit=5):\n    return {'kept': results[:RESULT_LIMIT]}\n",
+    )
+    v = verify_deliverable(root, run_tests=False)
+    assert _dead(v) == ["pick"]
+    [gap] = v.review_gaps
+    assert (gap.severity, gap.path) == ("warning", "extracted/pick.py")
+    assert gap.message.startswith(
+        "pick() takes the constant `result_limit` (pipeline.yaml: 5) but never reads it"
+    )
+    # Repaired, not a failure, and not counted as provenance.
+    assert v.ok, v.errors
+    instruction = v.repair_instruction(root)
+    assert instruction is not None
+    assert "Dead configuration (close each one):\n- pick (extracted/pick.py): pick() takes" in (
+        instruction
+    )
+    assert "Provenance gaps" not in instruction
+    assert v.provenance_report()["review_gaps"] == 0
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "def pick(results, result_limit):\n    return {'kept': results[:result_limit]}\n",
+        "def pick(results, **kwargs):\n    return {'kept': results[: kwargs['result_limit']]}\n",
+        "def pick(results, result_limit):\n"
+        "    return {'kept': results[: locals()['result_limit']]}\n",
+        # Not a parameter: constant_not_accepted's business, not this check's.
+        "def pick(results, limit=5):\n    return {'kept': results[:limit]}\n",
+    ],
+    ids=["read", "kwargs", "locals", "not-a-parameter"],
+)
+def test_a_constant_the_logic_reads_is_not_flagged(tmp_path: Path, module: str) -> None:
+    v = verify_deliverable(_constant_root(tmp_path, module), run_tests=False)
+    assert _dead(v) == []
+    assert "Dead configuration" not in (v.repair_instruction(tmp_path) or "")
+
+
+def test_a_default_or_a_decorator_naming_the_constant_is_not_a_read(tmp_path: Path) -> None:
+    root = _constant_root(
+        tmp_path,
+        "import functools\nresult_limit = 5\n\n\n"
+        "@functools.lru_cache(maxsize=result_limit)\n"
+        "def pick(results, result_limit=result_limit):\n    return {'kept': results[:5]}\n",
+    )
+    assert _dead(verify_deliverable(root, run_tests=False)) == ["pick"]
+
+
+def test_a_stub_is_not_checked_for_dead_constants(tmp_path: Path) -> None:
+    root = _constant_root(
+        tmp_path,
+        "def pick(results, result_limit):\n"
+        "    raise NotImplementedError('the skill does not say how many to keep')\n",
+    )
+    assert _dead(verify_deliverable(root, run_tests=False)) == []

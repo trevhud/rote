@@ -18,8 +18,10 @@ What "implement" means:
 
 1. **Every rule the skill states becomes code.** Thresholds compare
    with the operator the prose implies (`>= 10`, `> 5%`, `below 90%`).
-   Lift each number into the node's `constants:` and a module-level
-   constant, and enforce it in code.
+   Lift each number into the node's `constants:` and enforce it in code
+   through the parameter it arrives as. A module-level copy is only the
+   default for a direct call; logic that applies its own copy makes the
+   IR's constant dead config, and rote sends it back.
 2. **Input you cannot see is parsed by what the skill names.** A
    pure_function that parses an MCP result whose exact format no
    `probe-context/` shows still gets written. Accept the most direct
