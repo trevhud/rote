@@ -1,0 +1,79 @@
+"""The MCP server the compiled-skill driver tests call. Run as a script.
+
+``python tests/_skill_mcp_server.py <port> <hits.jsonl>``
+
+Every tool call appends ``{"tool": ..., "arguments": ...}`` to the hit log
+first, so a test counts what reached the server. ``search``, ``lookup``
+and ``flaky`` are marked read-only; ``write_note`` is not, so a read-only
+run must refuse it before calling. ``microsoft_docs_search`` and
+``read_wiki_structure`` answer with docs-digest's recorded results
+(``examples/docs-digest/reference.json``), whatever they are asked.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+from fastmcp import FastMCP
+from mcp_types import ToolAnnotations
+
+REPO = Path(__file__).resolve().parent.parent
+HITS = Path(sys.argv[2])
+READ_ONLY = ToolAnnotations(readOnlyHint=True)
+RECORDED = {
+    c["tool"]: c["result"]
+    for c in json.loads((REPO / "examples/docs-digest/reference.json").read_text())["pipeline_run"][
+        "tool_calls"
+    ]
+}
+
+mcp = FastMCP("skill-fixtures")
+
+
+def _hit(tool: str, **arguments: object) -> None:
+    with HITS.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"tool": tool, "arguments": arguments}) + "\n")
+
+
+@mcp.tool(annotations=READ_ONLY)
+def search(query: str) -> list[dict]:
+    _hit("search", query=query)
+    return [{"title": f"{query} {i}", "rank": i} for i in range(3)]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def lookup(id: str) -> dict:
+    _hit("lookup", id=id)
+    return {"id": id, "score": len(id)}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def flaky(key: str) -> dict:
+    """Fails on the first call for each key, then answers."""
+    seen = [json.loads(line) for line in HITS.read_text().splitlines()] if HITS.exists() else []
+    _hit("flaky", key=key)
+    if not any(h["tool"] == "flaky" and h["arguments"]["key"] == key for h in seen):
+        raise RuntimeError(f"transient failure for {key}")
+    return {"key": key, "ok": True}
+
+
+@mcp.tool
+def write_note(text: str) -> dict:
+    _hit("write_note", text=text)
+    return {"written": text}
+
+
+@mcp.tool(annotations=READ_ONLY)
+def microsoft_docs_search(query: str) -> dict:
+    _hit("microsoft_docs_search", query=query)
+    return RECORDED["microsoft_docs_search"]
+
+
+@mcp.tool(annotations=READ_ONLY)
+def read_wiki_structure(repoName: str) -> str:  # noqa: N803 (the real tool's argument name)
+    _hit("read_wiki_structure", repoName=repoName)
+    return RECORDED["read_wiki_structure"]
+
+
+if __name__ == "__main__":
+    mcp.run(transport="http", host="127.0.0.1", port=int(sys.argv[1]), show_banner=False)

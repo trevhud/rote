@@ -38,6 +38,8 @@ STATE_PATHS: dict[str, str] = {
     "ROTE_SERVE_REGISTRY_PATH": "serve/registry.json",
     "ROTE_EVAL_CORPUS_PATH": "eval/eval-corpus.jsonl",
     "ROTE_PRICING_CACHE_DIR": "pricing-cache",
+    # A compiled skill's run journals (rote.skill_target._driver.run_root).
+    "ROTE_SKILL_RUN_DIR": "skill-runs",
     # Not rote state: the home dir other AI clients' configs are read from
     # (rote.clients). Moved so isolated runs and tests never read them.
     "ROTE_CLIENT_HOME_DIR": "client-home",
