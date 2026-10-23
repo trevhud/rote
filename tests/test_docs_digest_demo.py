@@ -294,6 +294,12 @@ _BREAKS: dict[str, tuple[Any, str]] = {
         lambda r: r["servers"]["mslearn"].update(url="https://learn.microsoft.com/api/mcp?k=1"),
         "server 'mslearn': the URL has a query string",
     ),
+    "key in the path": (
+        lambda r: r["servers"]["mslearn"].update(
+            url="https://learn.microsoft.com/api/mcp/s/k7Qz9xV2pL4mN8rT1wY6bC3d/sse"
+        ),
+        "server 'mslearn': path segment 4 of the URL (24 characters, random-looking)",
+    ),
     "placeholder": (
         lambda r: r["servers"]["mslearn"].update(url="https://${HOST}/api/mcp"),
         "server 'mslearn': the URL depends on HOST",

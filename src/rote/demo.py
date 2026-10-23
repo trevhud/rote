@@ -156,7 +156,7 @@ def load_reference(path: Path | None = None) -> Reference:
 
     Every section is type-checked, every server must be one ``rote mcp
     add`` can take as written (the README and ``rote example`` tell the
-    user to run exactly that), field names are unique, at least one field
+    user to run exactly that), with no key in its path, field names are unique, at least one field
     is ``"equal"``, and every field resolves in both recorded outputs, so
     a reference that cannot be compared never loads.
     """
@@ -222,7 +222,7 @@ def _object(
 
 
 def _server(name: str, entry: object, fail: Any) -> Server:
-    from rote.clients.normalize import CLAUDE_CODE_SYNTAX, url_problem
+    from rote.clients.normalize import CLAUDE_CODE_SYNTAX, url_problem, url_secret_risk
     from rote.ir import _IDENTIFIER_RE, _MCP_TOOL_RE
 
     if not _IDENTIFIER_RE.fullmatch(name):
@@ -232,7 +232,7 @@ def _server(name: str, entry: object, fail: Any) -> Server:
     url, tool = entry.get("url"), entry.get("tool")
     if not isinstance(url, str):
         raise fail(f"server {name!r} has no url string")
-    problem = url_problem(url, CLAUDE_CODE_SYNTAX)
+    problem = url_problem(url, CLAUDE_CODE_SYNTAX) or url_secret_risk(url)
     if problem is None and not url.startswith("https://"):
         problem = "the URL is not https"
     if problem is not None:
