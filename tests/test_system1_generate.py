@@ -7,6 +7,7 @@ the shared answer schema, cache priming, concurrency) is what is tested.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import shutil
@@ -94,10 +95,16 @@ def _blank() -> dict[str, Any]:
     }
 
 
-def _module_for(prompt: str, node_id: str) -> tuple[str, str]:
+def _module_for(prompt: str, node_id: str, *, read_params: bool = True) -> tuple[str, str]:
     """A module that uses the request's def line verbatim, and a test of it."""
     line = next(ln for ln in prompt.splitlines() if ln.startswith(f"def {node_id}("))
-    module = f"{line}\n    return {{'total': 1.0, 'items': []}}\n"
+    # Read every parameter, constants included: a module that ignores one
+    # is dead config, which verification sends back for repair.
+    fn = ast.parse(f"{line}\n    pass\n").body[0]
+    assert isinstance(fn, ast.FunctionDef)
+    names = [a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]]
+    reads = f"    _ = ({', '.join(names)},)\n" if names and read_params else ""
+    module = f"{line}\n{reads}    return {{'total': 1.0, 'items': []}}\n"
     test = (
         f"from extracted.{node_id} import {node_id}\n\n\n"
         f"def test_{node_id}():\n    assert callable({node_id})\n"
@@ -122,6 +129,8 @@ class FakeGenerator:
         self.fail: set[str] = set()
         #: labels that fail on their first call only (a transient error).
         self.fail_once: set[str] = set()
+        #: labels whose first module ignores its parameters (dead constants).
+        self.dead_once: set[str] = set()
         #: seconds a label's call takes (default 0.01).
         self.delay: dict[str, float] = {}
 
@@ -162,7 +171,11 @@ class FakeGenerator:
                         "Decide. Return your decision via the structured output tool."
                     )
                 else:
-                    answer["module"], answer["test"] = _module_for(request.prompt, node.id)
+                    dead = node.id in self.dead_once
+                    self.dead_once.discard(node.id)
+                    answer["module"], answer["test"] = _module_for(
+                        request.prompt, node.id, read_params=not dead
+                    )
             return Generation(
                 payload=answer,
                 model="claude-sonnet-5-5",
@@ -405,6 +418,30 @@ async def test_a_failed_check_is_re_asked_alone_with_the_problem(tmp_path: Path)
     assert "def wrong():" in asked[1].prompt  # the earlier answer, as text, for edits
     module = (ctx.work_dir / "extracted" / f"{node.id}.py").read_text()
     assert f"def {node.id}(" in module
+
+
+@pytest.mark.asyncio
+async def test_a_constant_the_module_ignores_goes_back_to_that_piece(tmp_path: Path) -> None:
+    """Dead config is a review gap: the verification round re-asks the node
+    that owns it, with the finding, and the fixed module reads the constant."""
+    ctx, plan = _context(tmp_path)
+    fake = FakeGenerator({n.id: n for n in ctx.pipeline.nodes})
+    node = _node(ctx, NodeKind.PURE_FUNCTION, constants=True)
+    fake.dead_once.add(node.id)
+    result = await _write(ctx, plan, fake)
+    assert result.metadata["repair_rounds"] == 1
+    asked = [r for r in fake.requests if r.label == node.id]
+    assert len(asked) == 2
+    key = next(iter(node.constants))
+    assert f"takes the constant `{key}`" in asked[1].prompt
+    assert "never reads it" in asked[1].prompt
+    module = (ctx.work_dir / "extracted" / f"{node.id}.py").read_text()
+    assert key in module.split("\n", 1)[1]  # read in the body, not only the def line
+    # Only the owner was re-asked.
+    others = [n.id for n in ctx.pipeline.nodes if n.kind is NodeKind.PURE_FUNCTION]
+    assert all(
+        [r.label for r in fake.requests].count(other) == 1 for other in others if other != node.id
+    )
 
 
 @pytest.mark.asyncio

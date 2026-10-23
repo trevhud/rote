@@ -1744,7 +1744,12 @@ Three rules now, each learned the hard way:
   module-level copy is only the default for a direct call. A module that
   accepts a constant and then applies its own value turns the IR's
   constant into dead config (expense-audit did this until
-  `test_editing_a_constant_in_the_ir_changes_the_rule`).
+  `test_editing_a_constant_in_the_ir_changes_the_rule`). Verification
+  now finds it from the AST: a constant the impl takes as a parameter and
+  never names in its body (no `**kwargs`, `locals()` or `vars()`) is an
+  `unused_constant` review gap, repaired like a provenance gap and a
+  warning if it survives (`verify.unused_constant_findings`; docs-digest
+  shipped `result_limit` beside its own `RESULT_LIMIT = 5`).
 
 Related, found by the loop test: the SDK tool runner does not serialize a
 dict tool result, it iterates it, so the model saw only the keys.
