@@ -1,0 +1,496 @@
+{
+ "nodes": {
+  "shipment_containers_read": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "shipment_containers_file_id": "1ExampleShipmentContainersFileId00000000000"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "google_drive",
+      "tool": "read_file_content",
+      "args": {
+       "file_id": "shipment_containers_file_id"
+      }
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "google_drive"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    }
+   ]
+  },
+  "shipment_containers_summary": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed table parsing and threshold check."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "shipment_containers_read": "shipment_containers_read.output"
+     },
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed table parsing and threshold check."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed table parsing and threshold check."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "completion_flag_threshold": "75%"
+     },
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed table parsing and threshold check."
+    }
+   ]
+  },
+  "dock_pending_read": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "dock_pending_file_id": "1ExampleDockPendingLogFileId0000000000000000"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "google_drive",
+      "tool": "read_file_content",
+      "args": {
+       "file_id": "dock_pending_file_id"
+      }
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "google_drive"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive file read with a known file ID."
+    }
+   ]
+  },
+  "dock_pending_summary": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.9,
+     "rule": "structure pass: Deterministic row filter and group counts."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "dock_pending_read": "dock_pending_read.output"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Deterministic row filter and group counts."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Deterministic row filter and group counts."
+    }
+   ]
+  },
+  "dock_emails_search": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "dock_email_query": "label:dock-activity newer_than:1d"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "gmail",
+      "tool": "search_threads",
+      "args": {
+       "query": "dock_email_query"
+      }
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "gmail"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Gmail search with a known query."
+    }
+   ]
+  },
+  "dock_email_summary": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.7,
+     "rule": "structure pass: Counting and status matching; email text parsing may need judgment."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "dock_emails_search": "dock_emails_search.output"
+     },
+     "confidence": 0.7,
+     "rule": "structure pass: Counting and status matching; email text parsing may need judgment."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.7,
+     "rule": "structure pass: Counting and status matching; email text parsing may need judgment."
+    }
+   ]
+  },
+  "open_dwell_read": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "external_call",
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "dwell_ticket_file_id": "1ExampleDwellTicketLogFileId0000000000000000",
+      "dwell_ticket_tab": "Dwell Log - Form Responses"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    },
+    {
+     "field": "mcp",
+     "value": {
+      "server": "google_drive",
+      "tool": "read_file_content",
+      "args": {
+       "file_id": "dwell_ticket_file_id",
+       "tab": "dwell_ticket_tab"
+      }
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    },
+    {
+     "field": "system",
+     "value": {
+      "io": "read",
+      "how": "declared_tool",
+      "name": "google_drive"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Fixed Drive read of a named tab."
+    }
+   ]
+  },
+  "open_dwell_filter": {
+   "unit": 1,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.9,
+     "rule": "structure pass: Row filter and numeric thresholds."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "open_dwell_read": "open_dwell_read.output"
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Row filter and numeric thresholds."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.9,
+     "rule": "structure pass: Row filter and numeric thresholds."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "missort_warning_packages": 25,
+      "missort_alert_packages": 41,
+      "possible_misload_carrier": 80
+     },
+     "confidence": 0.9,
+     "rule": "structure pass: Row filter and numeric thresholds."
+    }
+   ]
+  },
+  "manual_data_gate": {
+   "unit": 2,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "hitl_gate",
+     "confidence": 0.85,
+     "rule": "structure pass: Explicit human-provided data before the report can be built."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input"
+     },
+     "confidence": 0.85,
+     "rule": "structure pass: Explicit human-provided data before the report can be built."
+    },
+    {
+     "field": "after",
+     "value": [
+      "shipment_containers_summary",
+      "dock_pending_summary",
+      "dock_email_summary",
+      "open_dwell_filter"
+     ],
+     "confidence": 0.85,
+     "rule": "structure pass: Explicit human-provided data before the report can be built."
+    },
+    {
+     "field": "signal",
+     "value": "manual_data",
+     "confidence": 0.85,
+     "rule": "structure pass: Explicit human-provided data before the report can be built."
+    },
+    {
+     "field": "payload",
+     "value": [
+      "dock_appointment_completion",
+      "sorter_metrics",
+      "current_dwell"
+     ],
+     "confidence": 0.85,
+     "rule": "structure pass: Explicit human-provided data before the report can be built."
+    }
+   ]
+  },
+  "manual_data_flags": {
+   "unit": 2,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.8,
+     "rule": "structure pass: Numeric threshold checks on provided data."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "manual_data_gate": "manual_data_gate.output"
+     },
+     "confidence": 0.8,
+     "rule": "structure pass: Numeric threshold checks on provided data."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.8,
+     "rule": "structure pass: Numeric threshold checks on provided data."
+    },
+    {
+     "field": "constants",
+     "value": {
+      "sorter_fail_rate_threshold": "5%",
+      "sorter_volume_drop_threshold": "15%",
+      "brand_warning_range": "25-40",
+      "brand_alert_threshold": "41+",
+      "carrier_misload_threshold": "80+"
+     },
+     "confidence": 0.8,
+     "rule": "structure pass: Numeric threshold checks on provided data."
+    }
+   ]
+  },
+  "executive_report": {
+   "unit": 3,
+   "decisions": [
+    {
+     "field": "kind",
+     "value": "pure_function",
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed-format report assembly from structured results."
+    },
+    {
+     "field": "inputs",
+     "value": {
+      "request": "pipeline.input",
+      "shipment_containers_summary": "shipment_containers_summary.output",
+      "dock_pending_summary": "dock_pending_summary.output",
+      "dock_email_summary": "dock_email_summary.output",
+      "open_dwell_filter": "open_dwell_filter.output",
+      "manual_data_flags": "manual_data_flags.output"
+     },
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed-format report assembly from structured results."
+    },
+    {
+     "field": "mandatory",
+     "value": true,
+     "confidence": 0.85,
+     "rule": "structure pass: Fixed-format report assembly from structured results."
+    }
+   ]
+  }
+ },
+ "review": [
+  "structure pass: `manual_data_gate`: signal 'manual_data_provided' renamed to the sample's 'manual_data'"
+ ],
+ "rule_tables": [],
+ "structure": {
+  "model": "claude-haiku-5-5",
+  "lane": "claude -p (subscription)",
+  "rounds": 1,
+  "contradictions": [
+   []
+  ],
+  "resolved": [
+   "`manual_data_gate`: signal 'manual_data_provided' renamed to the sample's 'manual_data'"
+  ],
+  "redecided": [],
+  "checked": [],
+  "changed": [],
+  "kept": [],
+  "cost_usd": 0.005956,
+  "usage": [
+   {
+    "model": "claude-haiku-5-5",
+    "input_tokens": 2,
+    "output_tokens": 8064,
+    "cache_write_tokens": 9523,
+    "cache_read_tokens": 1872,
+    "cost_usd": 0.00595552
+   }
+  ]
+ },
+ "checker": {
+  "decider": "rules",
+  "why": "--decider rules"
+ }
+}

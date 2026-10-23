@@ -1,0 +1,255 @@
+name: ops-report
+version: 0.1.0
+description: Scheduled daily executive operations report for a parcel fulfillment
+  network. Auto-pulls shipment-container and dock/dwell spreadsheets from Google Drive
+  and dock-activity emails from Gmail, asks the duty manager for the handful of numbers
+  that live behind interactive dashboards, then assembles a three-section executive
+  summary with a KPI header and color-coded dwell alerts.
+input:
+  type: OpsReportInput
+  input_schema:
+    type: object
+    properties:
+      report_date:
+        type: string
+    required:
+    - report_date
+nodes:
+- id: shipment_containers_read
+  kind: external_call
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Pull the shipment-container spreadsheet
+    from Google Drive so the facility summary can be parsed.'
+  inputs:
+    request: pipeline.input
+  output: dict
+  mandatory: true
+  constants:
+    shipment_containers_file_id: 1ExampleShipmentContainersFileId00000000000
+  impl: extracted/shipment_containers_read.py:shipment_containers_read
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id: shipment_containers_file_id
+- id: shipment_containers_summary
+  kind: pure_function
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Compute per-site container counts and
+    completion % and flag sites under 75% completion.'
+  inputs:
+    request: pipeline.input
+    shipment_containers_read: shipment_containers_read.output
+  output:
+    site_container_flow: Any
+    low_completion_sites: Any
+  mandatory: true
+  constants:
+    completion_flag_threshold: 75%
+  impl: extracted/shipment_containers_summary.py:shipment_containers_summary
+- id: dock_pending_read
+  kind: external_call
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Pull the dock pending log from Google
+    Drive to count open items.'
+  inputs:
+    request: pipeline.input
+  output: dict
+  mandatory: true
+  constants:
+    dock_pending_file_id: 1ExampleDockPendingLogFileId0000000000000000
+  impl: extracted/dock_pending_read.py:dock_pending_read
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id: dock_pending_file_id
+- id: dock_pending_summary
+  kind: pure_function
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Count unresolved dock pending rows and
+    break them down by site and issue type.'
+  inputs:
+    request: pipeline.input
+    dock_pending_read: dock_pending_read.output
+  output:
+    dock_pending_total: Any
+    dock_pending_by_site: Any
+    dock_pending_by_issue_type: Any
+  mandatory: true
+  impl: extracted/dock_pending_summary.py:dock_pending_summary
+- id: dock_emails_search
+  kind: external_call
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Search Gmail for the last day''s dock-activity
+    emails.'
+  inputs:
+    request: pipeline.input
+  output: dict
+  mandatory: true
+  constants:
+    dock_email_query: label:dock-activity newer_than:1d
+  impl: extracted/dock_emails_search.py:dock_emails_search
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: gmail
+    tool: search_threads
+    args:
+      query: dock_email_query
+- id: dock_email_summary
+  kind: pure_function
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Count approved versus requested dock appointments
+    and list outstanding requests.'
+  inputs:
+    request: pipeline.input
+    dock_emails_search: dock_emails_search.output
+  output:
+    approved_count: Any
+    requested_count: Any
+    outstanding_requests: Any
+  mandatory: true
+  impl: extracted/dock_email_summary.py:dock_email_summary
+- id: open_dwell_read
+  kind: external_call
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Pull the dwell ticket log tab from Google
+    Drive.'
+  inputs:
+    request: pipeline.input
+  output: dict
+  mandatory: true
+  constants:
+    dwell_ticket_file_id: 1ExampleDwellTicketLogFileId0000000000000000
+    dwell_ticket_tab: Dwell Log - Form Responses
+  impl: extracted/open_dwell_read.py:open_dwell_read
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: google_drive
+    tool: read_file_content
+    args:
+      file_id: dwell_ticket_file_id
+      tab: dwell_ticket_tab
+- id: open_dwell_filter
+  kind: pure_function
+  source:
+    section: 'Data sources to auto-pull:'
+  description: 'Data sources to auto-pull:: Keep open dwell tickets and flag package
+    and carrier thresholds on them.'
+  inputs:
+    request: pipeline.input
+    open_dwell_read: open_dwell_read.output
+  output:
+    open_dwell_tickets: Any
+    open_ticket_count: Any
+    dwell_ticket_flags: Any
+  mandatory: true
+  constants:
+    missort_warning_packages: 25
+    missort_alert_packages: 41
+    possible_misload_carrier: 80
+  impl: extracted/open_dwell_filter.py:open_dwell_filter
+- id: manual_data_gate
+  kind: hitl_gate
+  source:
+    section: 'Manual data to request from user:'
+  description: 'Manual data to request from user:: Pause until the duty manager supplies
+    the dock appointment, sorter, and current dwell numbers that live behind dashboards.'
+  inputs:
+    request: pipeline.input
+  output:
+    dock_appointment_completion: Any
+    sorter_metrics: Any
+    current_dwell: Any
+  signal: manual_data
+- id: manual_data_flags
+  kind: pure_function
+  source:
+    section: 'Manual data to request from user:'
+  description: 'Manual data to request from user:: Apply the sorter, appointment non-compliance,
+    and dwell thresholds to the duty manager''s numbers.'
+  inputs:
+    request: pipeline.input
+    manual_data_gate: manual_data_gate.output
+  output:
+    appointment_escalations: Any
+    sorter_flags: Any
+    current_dwell_alerts: Any
+  mandatory: true
+  constants:
+    sorter_fail_rate_threshold: 5%
+    sorter_volume_drop_threshold: 15%
+    brand_warning_range: 25-40
+    brand_alert_threshold: 41+
+    carrier_misload_threshold: 80+
+  impl: extracted/manual_data_flags.py:manual_data_flags
+- id: executive_report
+  kind: pure_function
+  source:
+    section: 'Report format:'
+  description: 'Report format:: Assemble the KPI header and the three sections from
+    all pulled and flagged data.'
+  inputs:
+    request: pipeline.input
+    shipment_containers_summary: shipment_containers_summary.output
+    dock_pending_summary: dock_pending_summary.output
+    dock_email_summary: dock_email_summary.output
+    open_dwell_filter: open_dwell_filter.output
+    manual_data_flags: manual_data_flags.output
+  output:
+    executive_report: Any
+  mandatory: true
+  impl: extracted/executive_report.py:executive_report
+edges:
+- from: shipment_containers_read
+  to: shipment_containers_summary
+- from: dock_pending_read
+  to: dock_pending_summary
+- from: dock_emails_search
+  to: dock_email_summary
+- from: open_dwell_read
+  to: open_dwell_filter
+- from: manual_data_gate
+  to: manual_data_flags
+- from: shipment_containers_summary
+  to: executive_report
+- from: dock_pending_summary
+  to: executive_report
+- from: dock_email_summary
+  to: executive_report
+- from: open_dwell_filter
+  to: executive_report
+- from: manual_data_flags
+  to: executive_report
+- from: shipment_containers_summary
+  to: manual_data_gate
+- from: dock_pending_summary
+  to: manual_data_gate
+- from: dock_email_summary
+  to: manual_data_gate
+- from: open_dwell_filter
+  to: manual_data_gate
+entry_nodes:
+- shipment_containers_read
+- dock_pending_read
+- dock_emails_search
+- open_dwell_read
+exit_nodes:
+- executive_report

@@ -668,7 +668,9 @@ def run_pipeline_case(
     return {
         "completed": run.error is None,
         "error": _last_line(run.error),
-        "failure": None if run.error is None else failure_site(app, pipeline, case.input),
+        "failure": (
+            None if run.error is None else failure_site(app, pipeline, case.input, run.error)
+        ),
         "objects": objects,
         "steps": steps,
         "calls": [_portable_call(c) for c in calls],
@@ -707,7 +709,7 @@ else:
 
 
 def failure_site(
-    app: Path, pipeline: Pipeline, case_input: dict[str, Any]
+    app: Path, pipeline: Pipeline, case_input: dict[str, Any], run_error: str | None = None
 ) -> dict[str, Any] | None:
     """Which node a failed run died in, and the line of its code that raised.
 
@@ -716,7 +718,14 @@ def failure_site(
     node is the step DBOS recorded as an error; its inputs are rebuilt from
     the outputs DBOS recorded for its upstream nodes, the gate payloads it
     received, and the case input, and its implementation is called once
-    more to see where it raises. ``None`` when nothing can be replayed
+    more to see where it raises.
+
+    A run can also die between steps, in the workflow body that builds a
+    node's payload: a ``<node>.output.<field>`` reference into a recorded
+    result that is not an object, or lacks the field (a tool that returns
+    text where the IR expected ``{content: ...}``). No step recorded an
+    error then, so the failure is the first such binding, named with the
+    run's own error (``run_error``). ``None`` when nothing can be located
     (the run never started, or the failing node has no ``impl``).
     """
     from dbos import DBOSClient
@@ -754,7 +763,7 @@ def failure_site(
     finally:
         client.destroy()
     if failed is None:
-        return None
+        return _binding_failure(pipeline, outputs, _last_line(run_error))
     node = by_id[failed]
     recorded = (
         None
@@ -797,6 +806,47 @@ def failure_site(
     except (IndexError, json.JSONDecodeError):
         site = {"exception": _last_line(proc.stderr)}
     return {"node": failed, **site}
+
+
+def _binding_failure(
+    pipeline: Pipeline, outputs: dict[str, Any], exception: str | None
+) -> dict[str, Any] | None:
+    """The first field reference a run could not resolve from what DBOS recorded.
+
+    Only nodes that never ran are candidates, and only references into a
+    node whose output was recorded: those are the payloads the workflow
+    body was building when it raised.
+    """
+    from rote.ir import parse_input_ref
+
+    for wave in pipeline.execution_waves():
+        for node in wave:
+            if node.id in outputs:
+                continue
+            for param, ref in (node.inputs or {}).items():
+                parsed = parse_input_ref(ref)
+                if parsed.node_id is None or parsed.field is None:
+                    continue
+                if parsed.node_id not in outputs:
+                    continue
+                source = outputs[parsed.node_id]
+                if isinstance(source, dict) and parsed.field in source:
+                    continue
+                got = (
+                    f"an object with keys {sorted(source)}"
+                    if isinstance(source, dict)
+                    else f"a {type(source).__name__}"
+                )
+                return {
+                    "node": node.id,
+                    "exception": exception,
+                    "at": (
+                        f"input {param}: {ref} ({parsed.node_id} returned {got}, "
+                        f"which has no field {parsed.field!r})"
+                    ),
+                    "code": None,
+                }
+    return None
 
 
 def _last_line(error: str | None) -> str | None:
