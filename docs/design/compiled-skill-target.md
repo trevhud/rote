@@ -13,17 +13,39 @@ skill on the same input, in subagents, and compare the results.
 This doc settles the shape. Where it departs from the outline that was
 approved, it says so and gives the evidence.
 
+## Three tiers: program, agent, human
+
+A compiled skill is a Python program that runs as far as it can on its own.
+It escalates in one direction only: program, then agent, then human.
+
+| Tier | Does | Escalates when |
+| --- | --- | --- |
+| Program (the driver) | every tool call, every pure function, retries, validation | a step needs a model (`DECIDE`, `LOOP`) or a person (`HUMAN`) |
+| Agent (the session model) | judges and agent loops, answered by itself | a block is `HUMAN`. It never asks the user about a `DECIDE` or a `LOOP` |
+| Human (through the agent) | gate approvals and logins | never |
+
+The program never talks to the person directly. The agent sits between them
+because a person answers in any form: a sentence, a "yes", a pasted table.
+The agent relays the question in plain words, then translates the reply
+into the answer schema. If the reply does not map cleanly onto the schema,
+the agent asks the person again. It never guesses a field the person did
+not give.
+
+The tier is a checked fact, not a convention. A gate answer must carry the
+person's words (`--said`), the driver refuses `--said` on an agent answer,
+and the journal records who answered (section 2).
+
 ## Decisions at a glance
 
 | # | Question | Decision |
 | --- | --- | --- |
 | 1 | How the skill runs its code | `rote skill run <name> <verb> ...`, not `python3 scripts/run.py`. The skill's own scripts still do the work. rote only finds them, checks them against the emit manifest, and runs them with an interpreter that has fastmcp. |
-| 2 | How input and answers reach the driver | One single-quoted JSON argument, or `--file <path>` for a large one. Never a heredoc or stdin: Claude Code's allow rules refused both heredoc forms in a probe. |
-| 3 | What the driver prints | One block per call. The first line is `ROTE/1 <KIND> ...`, where KIND is `JUDGE`, `ASK`, `LOOP`, `DONE` or `ERROR`. The outline had three kinds. Agent loops need `LOOP`, and failures need `ERROR`. A missing login is an `ASK`. |
-| 4 | Fanned judges | One `JUDGE` block holds a batch of items, chunked by a token budget. Items are validated one by one, and a bad item is asked again alone. Sending N separate blocks buys no isolation, because all N payloads stay in the same conversation. |
+| 2 | How input and answers reach the driver | One single-quoted JSON argument, or `--file <path>` for a large one or one already in a file. Never a heredoc or stdin: Claude Code's allow rules refused both heredoc forms in a probe. |
+| 3 | What the driver prints | One block per call. The first line is `ROTE/1 <KIND> ...`, where KIND is `DECIDE`, `LOOP`, `HUMAN`, `DONE` or `ERROR`. The kind names the tier that answers. A missing login is a `HUMAN kind=login`. |
+| 4 | Fanned judges | One `DECIDE` block holds a batch of items, chunked by a token budget. Items are validated one by one, and a bad item is asked again alone. Sending N separate blocks buys no isolation, because all N payloads stay in the same conversation. |
 | 5 | Agent loops | `LOOP`: the session's own model runs the bounded task. It can call only the loop's declared tools, through `rote skill run ... tool`, and the driver counts each call against `max_iterations`. The inference helper is an opt-in at emit time (`--judges helper`), never a silent fallback. |
 | 6 | Who pays | The session's model, by default. Nothing in the compiled skill bills anyone else unless `--judges helper` was chosen at emit. |
-| 7 | MCP auth | rote's registry and token store, through the verbatim `_rote_mcp.py`. A server that needs a login stops the run with an `ASK` that names `rote mcp login`. The run waits in its folder, and `resume` retries the step. |
+| 7 | MCP auth | rote's registry and token store, through the verbatim `_rote_mcp.py`. A server that needs a login stops the run with a `HUMAN kind=login` that names `rote mcp login`. The run waits in its folder, and `resume` retries the step. |
 | 8 | Standalone or rote installed | rote installed. The driver code is stdlib plus fastmcp, so `uv run scripts/run.py` also works without rote for servers that need no login. That is a documented second way in, not a fallback. |
 | 9 | Writes | Read-only by default. A skill whose steps write (HubSpot upserts) needs `rote skill trust <name> --allow-writes`, a confirmed Plan that lists every writing tool. The driver bypasses the client's per-tool approval prompts, so this consent cannot be skipped. |
 | 10 | Dependencies | If the skill target becomes the first-run default, the base install takes `fastmcp-slim[client]` (+36.6 MB), and dbos goes back to an extra (34.9 MB). That extra is installed on demand, as a confirmed Action, when the user picks a dbos runtime. |
@@ -142,17 +164,20 @@ Start with one shell command, the input as a single-quoted argument:
 
     rote skill run docs-digest start '{"topic": "...", "repo": "..."}'
 
-It prints one block. DONE: the JSON after the first line is the result; give
-it to the user. ERROR: tell the user what it says; do not work around it.
+If the input is already in a file, pass `--file <path>` instead.
+
+It prints one block. DONE: give the user the summary, and read the
+result.json it names only if they need more. ERROR: tell the user what it
+says, and do not work around it.
 ```
 
 A pipeline with judges, gates or loops adds one line per kind, and every
 block carries its own next command in full:
 
 ```markdown
-- JUDGE: decide as the block asks, then run the `answer` command it shows.
-- ASK: put the question to the user, then run `answer` with their reply.
-- LOOP: do the task using only the tools it lists, then run `answer`.
+- DECIDE: decide it yourself, as the block asks. Do not ask the user. Then run `answer`.
+- LOOP: do the task yourself with only the tools it lists. Do not ask the user. Then run `answer`.
+- HUMAN: do not answer it yourself. Ask the user, then run `answer` with `--said` and their exact words.
 - If you lose track: `rote skill run <name> status` prints the pending block again.
 ```
 
@@ -166,7 +191,7 @@ spec requires.
 
 ### Prompts a user will see
 
-| Client | `start` | Later calls in the same turn (JUDGE, LOOP tools) | `answer` after the user replies to an ASK |
+| Client | `start` | Later calls in the same turn (DECIDE, LOOP tools) | `answer` after the user replies to a HUMAN |
 | --- | --- | --- | --- |
 | Claude Code | none (`allowed-tools`) | none | one Bash prompt, unless "don't ask again" was chosen once |
 | Codex | the sandboxed try fails, then an escalation prompt | none after "don't ask again for `rote skill run docs-digest`" | none |
@@ -189,12 +214,16 @@ client (`rote skill run <name> *`).
 ```
 rote skill run <name> start '<input json>' | --file <path>
 rote skill run <name> answer <run> <step> '<json>' | --file <path>
+    [--said '<the person's words>' | --said-file <path>]          # HUMAN kind=gate only
 rote skill run <name> tool <run> <step> <tool> '<arguments json>'     # LOOP only
 rote skill run <name> resume <run>        # after a login, or after a crash
 rote skill run <name> status [<run>]      # print the pending block again
 rote skill run <name> cancel <run>
 rote skill runs [--prune]                 # list runs, sweep expired ones
 ```
+
+A gate answer without `--said` or `--said-file` is refused, and so is
+`--said` on a `DECIDE` or `LOOP` answer. Both refusals are usage errors.
 
 `<name>` resolves through the apps registry (`rote.app_registry`), where
 `rote emit --runtime skill` and `rote skill install <dir>` record the skill
@@ -212,12 +241,11 @@ a skill run.
 
 Each call prints exactly one block on stdout and exits 0. ERROR exits 1. A
 usage error exits 2 with an `ERROR` block. Progress lines ("calling
-mslearn.microsoft_docs_search") go to stderr, which clients show but models
-mostly ignore.
+mslearn.microsoft_docs_search") go to stderr, kept short.
 
 ```
-ROTE/1 JUDGE deal-monitor run=7f3a9c2e41d0 step=classify_thread_step batch=1/2 attempt=1
-Decide each item below on its own, as TASK says. Use only what is here.
+ROTE/1 DECIDE deal-monitor run=7f3a9c2e41d0 step=classify_thread_step batch=1/2 attempt=1
+Decide each item yourself, as TASK says. Do not ask the user. Use only what is here.
 --- TASK ---
 <the judge's prompt template; {{ thread }} means each item's `thread`>
 --- ITEMS (json) ---
@@ -228,36 +256,78 @@ Decide each item below on its own, as TASK says. Use only what is here.
 rote skill run deal-monitor answer 7f3a9c2e41d0 classify_thread_step '<your JSON>'
 ```
 
-- **JUDGE.** For a judge that is not fanned, TASK is the prompt rendered
+```
+ROTE/1 HUMAN ops-report run=91c0d2b7aa43 step=approve_report kind=gate deadline=2026-10-26T14:00Z
+Do not answer this yourself. Ask the user, in plain words, and wait for their reply.
+--- QUESTION ---
+<the gate's description and rendered message>
+--- SHOW THEM (json) ---
+<the gate's declared inputs only>
+--- ANSWER SCHEMA (json) ---
+{"type": "object", "properties": {"approved": {"type": "boolean"}, ...}}
+--- NEXT ---
+rote skill run ops-report answer 91c0d2b7aa43 approve_report '<JSON from their reply>' --said '<their exact words>'
+```
+
+- **DECIDE.** For a judge that is not fanned, TASK is the prompt rendered
   exactly as the emitted judge renders it (`_interpolate(PROMPT, inputs)`,
   one shared function). There are no ITEMS, and the answer is one object.
-  The emitted judge sends the model only the rendered template, so a field
-  the template does not reference is not sent here either. A referenced
-  value goes through the same projection the judge's input model applies:
-  undeclared keys are dropped where the schema closes the object, and
-  nothing is truncated. That is the "only what it needs" rule, and it is
-  the compiled pipeline's own rule, not a new one. ANSWER SCHEMA is the
-  output schema as written, constraints included.
-- **ASK.** Two kinds. `kind=gate` carries the gate's description, its
-  rendered `notify.message_template`, what the person needs to see (the
-  gate's `inputs:` if it declares any, else the results of the nodes with
-  an edge into it, projected the same way), the answer schema and the
-  deadline. `kind=login` names the server and the commands: `rote mcp login
-  <server>` for a person at a terminal, or `rote mcp login <server>
-  --no-wait`, then `--complete` (PR #244), for an agent relaying a URL.
-  After either one, `resume <run>`.
+  The block carries only the fields the template references, projected
+  through the judge's input schema: undeclared keys are dropped where the
+  schema closes the object, and nothing is truncated. That is the compiled
+  pipeline's own rule, not a new one. ANSWER SCHEMA is the output schema as
+  written, constraints included.
+- **HUMAN.** Two kinds, and the first instruction line of both says the
+  agent must not answer it and must ask the person. `kind=gate` carries the
+  gate's description, its rendered `notify.message_template`, the gate's
+  declared `inputs:` and nothing else, the answer schema and the deadline.
+  A gate that declares no inputs shows only its description and message,
+  never a dump of upstream results. `kind=login` names the server and the
+  commands: `rote mcp login <server>` for a person at a terminal, or `rote
+  mcp login <server> --no-wait`, then `--complete` (PR #244), for an agent
+  relaying a URL. After either one, `resume <run>`.
 - **LOOP.** The task (`_agent_task_prompt`, the same function the loop
   lanes use), the inputs, the tools as `tool` commands with each tool's
   input schema, the turn cap, and the declared output schema for `answer`.
-- **DONE.** The exit nodes' results, the same object `run_pipeline`
-  returns, followed by `run=<id>` and the path to `result.json`.
+- **DONE.** The driver writes the exit nodes' results (the object
+  `run_pipeline` returns) to `result.json` in the run folder. The block
+  prints a summary plus `run=<id>` and that path, never the whole result.
+  The summary lists the top-level keys, with scalar values inline and only
+  the size of a list or object, bounded to about 400 bytes. This is not
+  opt-in: in the measured runs, agents ignored an `--out` flag.
 - **ERROR.** One cause sentence and the fix command, matching rote's
   first-run error style. The run folder is kept.
+
+### Keeping it context cheap
+
+Every byte a block prints stays in the conversation for every later turn.
+The three-skill measurement (section 6) lost ground only on overhead this
+design added, so these rules are part of the protocol:
+
+1. **A block carries only declared fields.** The measured gate blocks
+   showed every upstream result: 3.2 KB on ops-report and 5.8 KB on
+   expense-audit, re-read on every later turn.
+2. **DONE prints a bounded summary.** ops-report's full DONE was 3.5 KB,
+   more than the raw tool data it replaced.
+3. **The agent never retypes input.** `start --file <path>` takes input
+   that already lives in a file. Retyping expense-audit's input as an
+   argument cost 1.4k output tokens and 12 s.
+4. **Fast start.** The driver imports only the stdlib at module level.
+   fastmcp is imported when a step first calls MCP. A fast-suite test
+   holds driver start-up to a budget. docs-digest's driver call took
+   5.5 s, and about 2.5 s of it was imports and new MCP sessions.
+5. **Nothing repeats.** A re-ask prints only the error paths and the item
+   ids still missing. `status` reprints the pending block and nothing
+   else.
+6. **The SKILL.md body stays about 12 lines.** Trimming further is not
+   worth it. Bash's own tool definition, about 3k tokens a turn, is larger
+   and is present in every real Claude Code session.
 
 ### The run loop
 
 ```mermaid
 sequenceDiagram
+  participant P as person
   participant A as agent (session model)
   participant R as rote skill run
   participant D as driver (_rote_skill.py)
@@ -275,16 +345,18 @@ sequenceDiagram
     D->>F: node result, atomic write
   end
   alt judge
-    D-->>A: JUDGE block
+    D-->>A: DECIDE block
     A->>R: answer <run> <step> '<json>'
     R->>D: validate against schema
     alt invalid (bounded)
-      D-->>A: JUDGE again: only the errors and the items still missing
+      D-->>A: DECIDE again: only the errors and the items still missing
     end
   else gate or login
-    D-->>A: ASK block
-    A->>A: asks the user (or the user runs rote mcp login)
-    A->>R: answer ... or resume <run>
+    D-->>A: HUMAN block
+    A->>P: the question, in plain words
+    P-->>A: a reply in any form (or runs rote mcp login)
+    A->>R: answer ... --said '<their words>', or resume <run>
+    R->>D: validate, journal answered_by=human
   else agent loop
     D-->>A: LOOP block
     loop at most max_iterations
@@ -304,6 +376,10 @@ sequenceDiagram
   step (node, batch, attempt) and timestamps. `nodes/<id>.json` holds each
   finished node's result. Every write is `atomic_write_text`: a temp file
   in the same dir, then `os.replace`.
+- **Who answered.** Each decision records `answered_by` and a timestamp.
+  A gate answer records `answered_by: "human"` and the `said` text. A
+  `DECIDE` or `LOOP` answer records `answered_by: "agent"`. That is the
+  audit trail for every approval.
 - **Re-entry runs from the journal.** Each call loads the journal, skips
   every node with a result, and runs forward to the next decision. So a
   crash, a killed client or a lost conversation costs only the step that
@@ -342,6 +418,8 @@ example IR's output schemas through both validators.
   (`answers[3].step: 7 is not one of [1, 2, 3, 4, 5, 6]`) and the ids still
   missing. The payload is already in the conversation, so it is not printed
   again.
+- On a `HUMAN` re-ask, the agent asks the person again when their reply
+  does not supply the missing field. It does not fill the field itself.
 - In a batch, the valid items are kept, and only the bad or missing ones
   are asked for again.
 - `MAX_ANSWER_ATTEMPTS = 3` per step. After that, the result is an `ERROR`
@@ -376,7 +454,9 @@ dirs holding a `run.json` it can parse, so a stray path is never deleted.
 | --- | --- | --- |
 | Input missing a required field, or not an object | ERROR (no run folder created) | the field names |
 | No endpoint for a server (`RoteMcpConfigError`) | ERROR | `rote mcp add <server> <url>`, `ROTE_MCP_<SERVER>_URL` |
-| Login needed (`RoteMcpAuthNeeded`) | ASK kind=login | `rote mcp login <server>`, then `resume` |
+| Login needed (`RoteMcpAuthNeeded`) | HUMAN kind=login | `rote mcp login <server>`, then `resume` |
+| A gate answer without `--said` | ERROR, exit 2, nothing recorded | ask the person, then `answer ... --said` |
+| `--said` on a `DECIDE` or `LOOP` answer | ERROR, exit 2, nothing recorded | answer without `--said` |
 | A write tool in a read-only skill | ERROR | `rote skill trust <name> --allow-writes` |
 | A server asks for input mid-call (`RoteMcpInputRequired`) | ERROR | none. A plain failure, as on every runtime |
 | A tool still failing after the IR's retries | ERROR | the tool's error text, `resume` to retry |
@@ -393,7 +473,7 @@ Accuracy first, then tokens. The comparison point is what the original
 skill did, because the compiled skill is measured against it.
 
 **In-session judges.** The original skill made every judgment inside one
-agent context, next to every tool result it had read. A `JUDGE` block keeps
+agent context, next to every tool result it had read. A `DECIDE` block keeps
 the same model, but shows it only what the compiled pipeline's judge would
 see. On accuracy, that is at least as good as the original. It can differ
 from the workflow runtimes in two ways, and both are disclosed in the
@@ -465,7 +545,7 @@ logins play no part. The setup path is the one first-run already builds:
 that need OAuth.
 
 **When a server is not logged in:** the driver raises nothing past its own
-loop. It records the step as waiting on `login:<server>` and prints `ASK
+loop. It records the step as waiting on `login:<server>` and prints `HUMAN
 kind=login`. That is park-on-auth with the run folder in place of DBOS's
 `recv`: the run waits on disk, the user (or the agent, with `--no-wait` /
 `--complete`) logs in, and `resume` runs the step again. The driver never
@@ -491,15 +571,15 @@ opens a browser, which keeps the helper's never-interactive rule.
 | --- | --- |
 | `pure_function` | code, `impl(**{**payload, <constants>})`, IR retries as visible loops |
 | `external_call` + `mcp:` | `call_mcp_tool` with `mcp_tool_arguments`, never retried on config, auth or input-required errors |
-| `external_call` + `impl` (`--backend api`) | the module's code; refused at emit if it is a stub |
-| `llm_judge` | `JUDGE`, or the inference helper under `--judges helper` |
+| `external_call` + `impl` (`--backend api`) | the module's code. A stub is refused at emit |
+| `llm_judge` | `DECIDE`, or the inference helper under `--judges helper` |
 | `agent_loop` | `LOOP` with the tool proxy |
-| `hitl_gate` | `ASK kind=gate`. The deadline comes from `timeout`, and the answer is the gate's result |
+| `hitl_gate` | `HUMAN kind=gate`. The deadline comes from `timeout`, the answer is the gate's result, and `--said` is required |
 | `mandatory: true` | the node is in the plan unconditionally. The driver has no skip path |
 | `constants` | merged last in the step body, as every Python runtime does. `require_constant_parameters` runs at emit |
 | input schema | `_missing_inputs_error` before the run folder exists. Optional fields are left out, not None |
 | `fan_out` (code nodes) | one call per element, in input order, `_fan_out_list`'s message when the list is missing |
-| `fan_out` (judges) | batched `JUDGE`, per-item validation |
+| `fan_out` (judges) | batched `DECIDE`, per-item validation |
 | parallel waves | a thread pool for MCP and code nodes, as the python adapter does |
 
 **What holds, stated honestly.** Inside the driver the guarantees are the
@@ -513,16 +593,17 @@ not to call it. Three cases:
   says not to. The measured runs did not (the denied run reported the
   denial and stopped). The eval treats a result with no matching run folder
   as a failure, "bypassed the driver".
-- **The agent can answer an ASK itself.** No in-band check can tell a
-  person's answer from the agent's. A gate whose point is a real human's
-  approval belongs on a durable runtime, and the compile report says so for
-  each gate.
-- **JUDGE answers are the model's judgment.** They are validated for shape,
+- **The agent could invent a person's answer.** The block tells it not to,
+  and the driver refuses a gate answer without the person's words. It
+  cannot prove a person said them. The journal keeps the `said` text, so an
+  invented approval is visible in the audit trail rather than silent.
+- **DECIDE answers are the model's judgment.** They are validated for shape,
   not for truth. That is the same as every runtime's judge.
 
 The README and compile report state it in one line: "Steps run as compiled.
 Whether the agent runs the skill through its driver, and what it answers
-at JUDGE and ASK, is up to the agent."
+at DECIDE, is up to the agent. HUMAN answers are recorded with the person's
+words."
 
 ## 6. Context accounting
 
@@ -551,83 +632,55 @@ of the user's session pays for again, is `K_T`, the residual.
   batches, G gates, L loop tool calls, and the final reply. The eval
   harness adds one turn to write `result.json`, on both sides.
 
-Token counts below are chars / 3.8 (`Priors.chars_per_token`, rote's
-labeled heuristic) unless they say "measured".
+### Measured on three skills
 
-### docs-digest, measured
+Medians of three runs per side, 2026-10-23: `claude -p`, claude-sonnet-4-6,
+the isolated skill-run harness (`skill_run_isolation_args`), and each case's
+committed input. The compiled side is a hand-built prototype of this design,
+measured before the context-cheap rules in section 2 existed. Input tokens
+count every cache bucket. Fidelity is `rote bench --fidelity`'s score, or
+byte equality for docs-digest's digest. The whole measurement cost $3.21.
 
-Both runs used the isolated skill-run harness (`skill_run_isolation_args`),
-`claude -p`, claude-sonnet-4-6, on `skill/input.json`. The compiled side is
-a hand-built prototype of this design: the stub above, plus a driver that
-calls the two tools through the real `_rote_mcp.py` (fastmcp 4.1.3, clean
-venv) and runs the committed `extracted/` functions. Its digest was
-byte-identical to the recorded skill run's and pipeline run's.
+| Skill | Shape | Side | Turns | Input | Output | Wall | Cost | Fidelity |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| expense-audit | compute-heavy | original | 7 | 88.5k | 11.8k | 133 s | $0.304 | 0.83 |
+| | | compiled | 5 | 84.7k | 3.6k | 41 s | $0.135 | 0.83 |
+| ops-report (busy_day) | tool-and-copy | original | 7 | 46.0k | 4.3k | 57 s | $0.124 | 0.97 |
+| | | compiled | 5 | 72.8k | 3.5k | 42 s | $0.175 | 0.92 |
+| docs-digest | tool-and-copy | original | 4 | 45.5k | 1.0k | 15 s | $0.095 | equal, 3 of 3 |
+| | | compiled | 3 | 35.1k | 1.0k | 19 s | $0.044 | equal, 3 of 3 |
 
-| | Original (reference.json, 2026-10-22) | Compiled (prototype, 2026-10-23) |
-| --- | --- | --- |
-| Turns | 4 | 3 |
-| Input tokens, measured | 45,461 (5 + 34,948 read + 10,508 write) | 34,968 (5 + 31,899 read + 3,064 write) |
-| Output tokens, measured | 966 | 988 |
-| Wall time, measured | 14.9 s | 19.6 s (the driver alone: 2.4-2.9 s) |
-| Cost (client estimate) | $0.088 | $0.043 (cache warm from a run 2 minutes earlier. That cold run cost $0.092) |
-| Skill text `S` | 1,067 chars, 281 tok | 859 chars, 226 tok |
-| Tool results in context | 28,831 chars, 7,587 tok (Microsoft Learn's search, page excerpts and all) | 0 |
-| Blocks printed | n/a | DONE, 1,587 chars, 418 tok |
-| Residual `K_T` (+ result.json write) | ~8,300 tok | ~1,050 tok (**-87%**) |
+The result depends on the skill's shape, so the doc does not promise one
+number:
 
-What this shows, and what it does not:
+- **Compute-heavy skills win big.** expense-audit's original agent worked
+  the audit out in its own output, 11.8k tokens of it. The compiled skill
+  runs that in code. Wall time drops 69% and cost 56%, at the same
+  fidelity.
+- **Tool-and-copy skills are roughly even until rules 1 to 4 land.**
+  docs-digest's 28 KB search result never reaches the model, and the
+  residual it leaves in the session drops from about 8.3k to 1.05k tokens
+  (87%). But the run is 4 s slower, because the driver call took 5.5 s.
+  ops-report is 15 s faster, but its input grew 58%. Its gate block
+  printed 3.2 KB of upstream results and its DONE printed 3.5 KB, and both
+  were re-read on every later turn.
+- **The toolsets were not equal.** The compiled side carried the Bash tool,
+  about 3k tokens a turn, and the original harness leaves it out. Over five
+  turns that is about 15k of ops-report's 26.8k extra input. In a real
+  Claude Code session Bash is always loaded, so the eval loads it on both
+  sides (section 7).
+- **ops-report's compiled fidelity is lower** (0.92 against 0.97, from its
+  outputs score) on all three runs. The cause is not yet known. PR 7 must
+  explain or fix it before the default can flip.
+- **Cost from a single run is noise.** The same compiled docs-digest run
+  cost $0.092 cold and $0.043 warm. The eval reports means over trials
+  with the cache state recorded.
 
-- **The residual drops 87%.** That is the number that matters in a real
-  session. The search results stay in the conversation after the original
-  skill finishes, and every later message re-reads them.
-- **Total input drops only 23% here**, because `B` dominates a skill this
-  small. The compiled run's last turn read 12,440 tokens, of which about
-  11.4k is the base. The compiled side's base is also larger than the
-  original's: it carries the Bash tool, which the original harness leaves
-  out on purpose. Solving the original's turns for its base gives about
-  4.9k. So in this harness, Bash's definition costs about 6k tokens a turn,
-  and that skews the comparison against the compiled skill. In a real
-  Claude Code session, Bash is always loaded and `B` is the same on both
-  sides. The eval must remove this skew (see section 7).
-- **Cost is not comparable from two single runs.** The cache state decided
-  it: the same compiled run cost $0.092 cold and $0.043 warm. Cost belongs
-  in the eval as a mean over trials with the cache state recorded.
-- **Wall time did not improve** in one sample each: the model turns
-  (about 5-6 s each) dominate, and the 2.5 s driver is not the bottleneck.
-  Fewer turns is the lever, which is why fanned judges are batched.
-
-### ops-report, expense-audit, bdr-outreach, from IRs and fixtures
-
-The original side is measured: the fidelity references, three trials per
-case, claude-sonnet-4-6, same harness. The compiled side is computed from
-the IR and the committed fixtures with the formula, using `B = 11.4k` (the
-measured base with Bash) for both sides, so the toolsets match.
-
-| Skill (case) | Original, measured | Original `S` + data in context | Compiled `T` | Compiled `K_T` | Billed input, same `B` (est.) |
-| --- | --- | --- | --- | --- | --- |
-| ops-report (busy_day) | 12-14 turns, $0.28-0.32, 68-84 s | SKILL.md 862 + 4 tool results 659 + ask/answer 386 + output 178 = ~2.1k tok | 5 (start, ask, answer, write, reply) | stub ~240 + ASK ~450 + answer 140 + DONE 178 + write 178 = ~1.2k | ~168k to ~61k (**-64%**) |
-| expense-audit (base) | 8-9 turns, $0.47-0.66, 148-241 s | SKILL.md + 3 refs 2,093 + input 640 + ask 368 + output 428 = ~3.5k | 5 | stub ~320 + input 640 + ASK ~500 + DONE 428 + write 428 = ~2.3k | ~121k to ~65k (**-46%**) |
-| bdr-outreach (25 contacts, assumed) | not recorded | SKILL.md + 6 refs, 42.4k chars = 11.2k, plus every ZoomInfo and HubSpot result | 2 LOOPs (their tool calls), 1 JUDGE batch for `personalize_email`, 2 ASKs | the loops' tool traffic + ~3.5k JUDGE input + ~2k answers | not estimated: the loops dominate, and neither the loops' turn counts nor their tool results have fixtures |
-
-Where the savings come from differs by skill, and the doc should not
-promise one number:
-
-- **docs-digest** saves on data: one 28 KB tool result never reaches the
-  model.
-- **ops-report and expense-audit** save on turns. Their fixtures are small
-  (2.5 KB and an input of 2.4 KB), but the original agent took 8-14 turns,
-  and each turn re-read `B`. The compiled skill takes 5.
-- **bdr-outreach** saves least, relative to its size. Its two heaviest
-  phases are agent loops, and a loop's tool results enter context in both
-  versions. The saving is the 11.2k of references, the batched
-  personalization, and the HubSpot and exclusion steps moving into code.
-  Its `expected/` external_calls are also stubs today, so it cannot run as
-  a compiled skill until they are implemented or bound to MCP.
-
-One more thing to watch: expense-audit's input (640 tokens) is typed out by
-the agent as the `start` argument, and output tokens cost five times input
-tokens. When the user's input is already a file, the SKILL.md tells the
-agent to pass `--file <path>`.
+bdr-outreach is not measured. Its two heaviest phases are agent loops, and
+a loop's tool results enter context in both versions, so it should save the
+least relative to its size. Its `expected/` external_calls are also stubs
+today, so it cannot run as a compiled skill until they are implemented or
+bound to MCP.
 
 ## 7. Testing
 
@@ -636,7 +689,7 @@ agent to pass `--file <path>`.
 - **Emission.** The SKILL.md frontmatter keeps the source's `name` and
   `description` byte for byte (from `pipeline.source_skill`). The body
   lists exactly the block kinds the pipeline can produce: docs-digest has
-  no JUDGE line, deal-monitor has one. The emitted `_rote_mcp.py` and
+  no DECIDE line, deal-monitor has one. The emitted `_rote_mcp.py` and
   `_rote_skill.py` are byte-equal to their modules, as
   `tests/test_inference.py` pins the inference helper. Emitted text goes
   through `safe_docstring_line` and `escape_invisible`, so a description
@@ -647,37 +700,49 @@ agent to pass `--file <path>`.
   `tests/_helpers` fixture MCP servers, with scripted answers and isolated
   state. It needs no model. One test per behavior, each written to fail:
   - docs-digest returns the recorded digest from the reference's tool
-    calls (the same fixtures `test_docs_digest_demo.py` uses);
+    calls (the same fixtures `test_docs_digest_demo.py` uses).
   - deal-monitor's fanned judge comes back as ceil(N/10) batches, and
-    `FAN_OUT_ELEMENTS` > 1, so a no-op fan cannot pass;
-  - an answer with one bad item gets back only that item; three bad
-    answers end in ERROR; an answer for a step already done changes
-    nothing;
-  - killing the driver after the first wave and calling `resume` does not
+    `FAN_OUT_ELEMENTS` > 1, so a no-op fan cannot pass.
+  - An answer with one bad item gets back only that item. Three bad
+    answers end in ERROR. An answer for a step already done changes
+    nothing.
+  - A gate answer without `--said` is refused and records nothing.
+    `--said` on a DECIDE answer is refused too. An accepted gate answer
+    journals `answered_by: "human"` with the `said` text.
+  - A DECIDE block holds only the fields its template references, and a
+    gate with no declared inputs shows no upstream results.
+  - DONE prints at most about 400 bytes, and `result.json` holds the full
+    result.
+  - The driver starts within its time budget, and importing it loads no
+    fastmcp module.
+  - Killing the driver after the first wave and calling `resume` does not
     call the first wave's tools again (the fixture server's hit log is
-    the evidence);
-  - a 401 from the fixture prints `ASK kind=login`, and `resume` after a
-    token appears completes the run;
-  - a write tool in a read-only skill is refused before it is called;
-  - a changed `extracted/` file is refused by the manifest check;
-  - two concurrent `answer` calls leave one journal entry;
-  - the run folder lands under `ROTE_SKILL_RUN_DIR`, mode 0700, and the
+    the evidence).
+  - A 401 from the fixture prints `HUMAN kind=login`, and `resume` after a
+    token appears completes the run.
+  - A write tool in a read-only skill is refused before it is called.
+  - A changed `extracted/` file is refused by the manifest check.
+  - Two concurrent `answer` calls leave one journal entry.
+  - The run folder lands under `ROTE_SKILL_RUN_DIR`, mode 0700, and the
     sweep removes an expired run and leaves a foreign dir alone.
 - **Plan parity.** `rote.plan` serves the prefix runner and the driver. A
   test runs both on the same plan and recorded calls, and requires the same
   node results.
-- **Mutations to try** (CLAUDE.md's discipline): drop the per-item re-ask;
-  send fields the template does not reference; skip the manifest check;
-  make `answer` non-idempotent; retry a config error. Each one must fail
-  the suite.
+- **Mutations to try** (CLAUDE.md's discipline): drop the per-item re-ask,
+  send fields the template does not reference, accept a gate answer
+  without `--said`, print the whole result at DONE, skip the manifest
+  check, make `answer` non-idempotent, retry a config error. Each one must
+  fail the suite.
 
 ### Evals (inference, run on purpose)
 
 `rote.eval.skill_ab` runs the original and the compiled skill as `claude
 -p` subagents on the same input, through `skill_run_isolation_args`. The
-compiled side also gets `Bash(rote skill run <name> *)`, and both sides get
-the rote gates server, so an ASK and the original's `ask_person` receive the
-case's fixed answers. For each pair it reports:
+toolset is the same on both sides: both load Bash, and the compiled side's
+only extra is the allow rule `Bash(rote skill run <name> *)`. Both sides get
+the rote gates server, so a HUMAN block and the original's `ask_person`
+receive the case's fixed answers from the same simulated person. For each
+pair it reports:
 
 - **Fields:** the `rote.proof` field-by-field statuses (`matched`,
   `differs`, `drifted`), from the IR's exit nodes and the case's
@@ -686,11 +751,16 @@ case's fixed answers. For each pair it reports:
   misreports DONE shows up.
 - **Bypass:** a compiled result with no matching run folder fails as
   "bypassed the driver".
-- **Context:** `K` per side, measured as `I - T*B`, where `B` comes from a
-  control run per toolset (the same flags, the prompt "reply ok"; about
-  $0.01 each, once per eval). This removes the Bash skew measured above.
+- **Tiers:** every gate answer in the journal carries `answered_by:
+  "human"` and the simulated person's words. A gate the agent answered
+  itself fails the pair.
+- **Context:** `K` per side, measured as `I - T*B`. `B` comes from one
+  control run (the same flags, the prompt "reply ok", about $0.01, once per
+  eval), which now holds for both sides.
 - **Totals:** input tokens per cache bucket, output tokens, turns, wall
   time and cost, as means over trials, with the cache state recorded.
+- **By shape:** results are grouped as compute-heavy or tool-and-copy,
+  because the two shapes behave differently (section 6).
 
 **`rote try` is rebuilt on this** (#250 is paused for it):
 
@@ -768,32 +838,33 @@ break-the-code check.
 
 | # | PR | Builds on | Minutes |
 | --- | --- | --- | --- |
-| 1 | `rote.plan`: move `build_plan` out of prefix, add judge, gate and loop steps and a live-MCP mode; extend `_schema_errors` to the Pydantic subset, with the parity test | none | 150 |
-| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first) | 1 | 300 |
+| 1 | `rote.plan`: move `build_plan` out of prefix, add judge, gate and loop steps and a live-MCP mode. Extend `_schema_errors` to the Pydantic subset, with the parity test | none | 150 |
+| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus bounded summary, lazy fastmcp import and the start-up budget test | 1 | 360 |
 | 3 | `--runtime skill` adapter: SKILL.md stub, README, `plan.json`, verbatim helpers, manifest, apps-registry entry, stub refusal, `--judges session\|helper` | 1, 2 | 150 |
-| 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, manifest check, `--allow-writes` consent Plan | 3 | 150 |
+| 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, manifest check, `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |
 | 6 | Driver e2e suite against fixture MCP servers (the list in section 7), wired into the Python e2e CI job | 4, 5 | 180 |
-| 7 | `rote.eval.skill_ab`: the paired subagent runs, control runs for `B`, field compare, bypass check, corpus records; one measured eval on docs-digest, ops-report and expense-audit (about $3) | 4 | 180 |
+| 7 | `rote.eval.skill_ab`: paired subagent runs with Bash on both sides, the control run for `B`, field compare, bypass and tier checks, results by shape, corpus records. One measured eval on docs-digest, ops-report and expense-audit (about $3), which explains ops-report's fidelity gap, and the batch-size sweep | 4 | 210 |
 | 8 | `rote try` rebuilt on 7, closing #250, with review6's three fixes | 7 | 150 |
-| 9 | Dependencies: `fastmcp-slim[client]` in the base; dbos, serve and temporal as extras installed by a confirmed Action; supersede #249 | 3 | 120 |
+| 9 | Dependencies: `fastmcp-slim[client]` in the base, and dbos, serve and temporal as extras installed by a confirmed Action. Supersedes #249 | 3 | 120 |
 | 10 | Make the skill target the first-run default (`rote init`, `rote setup`'s skill step, docs, CHANGELOG), once 7's numbers are in | 8, 9 | 60 |
 
-Total: about 1,620 minutes (27 hours). PRs 1 to 6 are the product. Number 7
+Total: about 1,740 minutes (29 hours). PRs 1 to 6 are the product. Number 7
 is what decides whether 10 happens: the default should flip on measured
 field fidelity and context, not on this doc's estimates.
 
-## Open questions for the product owner
+## Defaults for the former open questions
 
-1. **Batch size against accuracy.** The batch caps (10 items, about 12k
-   tokens) are guesses. PR 7 should sweep 1, 5, 10 and 20 on deal-monitor's
-   two fanned judges against `--judges helper`, and set the default from
-   that.
-2. **Gates that need a real person.** Should the compiler refuse
-   `--runtime skill` for a gate the skill marks as an approval, or only
-   warn? This doc warns.
-3. **Cross-turn ASK in Claude Code.** After the user replies, `allowed-tools`
-   no longer covers `answer`, so there is one prompt unless the user saved
-   the rule. Should `rote skill install` offer to write the rule into the
-   user's Claude Code settings as a confirmed Action? That would touch the
-   client's config, so this doc does not assume it.
+The product owner can override any of these.
+
+1. **Gates that need a real person.** Every gate is a `HUMAN` block, always
+   relayed to a person, so the earlier warn-or-refuse question goes away.
+   The compiler emits gates for `--runtime skill` like any other node.
+2. **Saving the Claude Code allow rule.** `rote skill install` offers to
+   write `Bash(rote skill run <name> *)` into the user's Claude Code
+   settings, as a confirmed Action. It touches the client's config, so it
+   is always asked and never implied by `--yes`.
+3. **Batch size.** The caps (10 items, about 12k tokens of items, 8k output
+   tokens) stay named constants in the driver. PR 7 sweeps 1, 5, 10 and 20
+   on deal-monitor's two fanned judges against `--judges helper`, and sets
+   the defaults from that.
