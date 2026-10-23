@@ -119,7 +119,7 @@ def test_baseline_inference_and_the_cross_check_unwrap_with_the_declared_schema(
 
 
 def test_the_prefix_run_replays_what_the_step_receives(tmp_path: Path) -> None:
-    from rote.compiler.prefix import build_plan
+    from rote.compiler.prefix import prefix_plan
 
     work = tmp_path / "work"
     work.mkdir()
@@ -127,7 +127,7 @@ def test_the_prefix_run_replays_what_the_step_receives(tmp_path: Path) -> None:
     ctx = Context.load(work, plan, Grounding())
     from rote.compiler.grounding import load_sample
 
-    built = build_plan(
+    built = prefix_plan(
         ctx.pipeline,
         work,
         load_sample(SKILL / "input.json"),

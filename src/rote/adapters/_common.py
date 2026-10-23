@@ -1061,6 +1061,36 @@ def _format_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
 
 
+def keyed_output_schema(
+    output: dict[str, str], evidence: dict[str, Any]
+) -> tuple[dict[str, Any], str, dict[str, list[str]]]:
+    """``(schema, TS type, undefined named types)`` for an ``output:`` key map.
+
+    Every declared key is required and no other key is allowed, because the
+    steps downstream index exactly those keys. A key's ``output_schema``
+    property (evidence) beats its type name. Shared by an agent loop's
+    submitted output and a gate's answer (:mod:`rote.plan`), the two
+    results a model or a person hands back.
+    """
+    observed = evidence.get("properties") if isinstance(evidence, dict) else None
+    typed: dict[str, tuple[dict[str, Any], str]] = {}
+    named: dict[str, list[str]] = {}
+    for key, name in output.items():
+        found: set[str] = set()
+        typed[key] = ir_type(name, found)
+        if found and key not in (observed or {}):
+            named[key] = sorted(found)
+    properties = {key: (observed or {}).get(key, schema) for key, (schema, _) in typed.items()}
+    schema = {
+        "type": "object",
+        "properties": properties,
+        "required": list(output),
+        "additionalProperties": False,
+    }
+    ts = "{ " + "; ".join(f"{json.dumps(k)}: {t}" for k, (_, t) in typed.items()) + " }"
+    return schema, ts, named
+
+
 def agent_loop_output(node: Node) -> AgentLoopOutput:
     """The declared-output contract of an ``agent_loop`` node.
 
@@ -1074,25 +1104,10 @@ def agent_loop_output(node: Node) -> AgentLoopOutput:
     output = node.output
     evidence = node.output_schema or {}
     if isinstance(output, dict) and output:
-        observed = evidence.get("properties") if isinstance(evidence, dict) else None
-        typed: dict[str, tuple[dict[str, Any], str]] = {}
-        named: dict[str, list[str]] = {}
-        for key, name in output.items():
-            found: set[str] = set()
-            typed[key] = ir_type(name, found)
-            if found and key not in (observed or {}):
-                named[key] = sorted(found)
-        properties = {key: (observed or {}).get(key, schema) for key, (schema, _) in typed.items()}
-        schema = {
-            "type": "object",
-            "properties": properties,
-            "required": list(output),
-            "additionalProperties": False,
-        }
-        ts = "{ " + "; ".join(f"{json.dumps(k)}: {t}" for k, (_, t) in typed.items()) + " }"
+        schema, ts, named = keyed_output_schema(output, evidence)
         return AgentLoopOutput(schema, None, ts, named)
     if isinstance(output, str) and output.strip():
-        found = set()
+        found: set[str] = set()
         value_schema, ts = ir_type(output, found)
         schema = {
             "type": "object",
