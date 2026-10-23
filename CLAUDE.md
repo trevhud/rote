@@ -2537,6 +2537,14 @@ or header values. A credential-shaped URL path sets `risk`, which keeps
 the server out of every default until the user opts in by name. They reach the machine only through `ClientContext`;
 `ROTE_CLIENT_HOME_DIR` (in `STATE_PATHS`) keeps tests and
 `scripts/isolated-rote` away from the user's real AI-client configs.
+One module per client (12 today) shares `rote.clients.common`; a new client
+is a module plus a line in `SOURCES`. Three traps. A variable a source reads
+to find files must join `CLIENT_DIR_VARS`, or isolation leads back to the
+real files (`tests/test_clients_registry.py` derives the set and fails).
+YAML goes through `common.Reader`'s YAML 1.2 loader, because PyYAML reads a
+Goose extension named `off` as `False`. A client whose entry wins by name
+even when disabled marks it with `switch_off` after `rank`, never before,
+or a disabled project entry uncovers the user's.
 
 ## Workflow expectations
 

@@ -1,6 +1,6 @@
 # First-run onboarding: architecture
 
-Status: foundation landed (this PR). `rote setup` and its steps are follow-up
+Status: foundation landed (#241); every client source landed (PR 2). `rote setup` and its steps are follow-up
 PRs built to the interfaces below. Product design: "rote first-run design"
 (approved 2026-10-22, all nine recommendations taken).
 
@@ -54,7 +54,8 @@ flowchart LR
     base[base.py<br/>ClientSource, ImportCandidate]
     normalize[normalize.py<br/>names, placeholders, headers, URLs]
     claude[claude_code.py]
-    more[codex.py, cursor.py, ...<br/>follow-up PRs]
+    common[common.py<br/>reader, candidate, rank, merge]
+    more[codex.py, cursor.py, vscode.py, ...<br/>one module per client]
   end
   setup[rote.setup<br/>Step, run_steps]
   init[init_wizard.py<br/>rote init]
@@ -64,8 +65,8 @@ flowchart LR
   plan --> output
   prompter --> report
   plan --> report
-  normalize --> claude --> base
-  more --> base
+  normalize --> common --> claude --> base
+  common --> more --> base
   init --> prompter & plan & output
   setup --> prompter & plan & output
   cli --> mode & init & setup & report
@@ -252,7 +253,7 @@ class ClientSource(Protocol):
     def detect(self, ctx: ClientContext) -> bool
     def read(self, ctx: ClientContext) -> SourceReading   # never raises for a bad file
 
-ClientContext(home, cwd, env)          # injected; ClientContext.current() for real runs
+ClientContext(home, cwd, env, system_dir, etc_dir, platform)  # injected; .current() for real runs
 SourceReading(client, candidates, files_read, problems)
 ImportCandidate(client, name, original_name, scope, origin, transport, url (never shown),
                 headers: tuple[HeaderTemplate], scopes, withheld, blocked, inactive, plugin)
@@ -323,19 +324,57 @@ Claude Code then loads only its servers. Not read, and said on every reading
 server-managed settings, and `allowedMcpServers`; `managedMcpServers` is a
 `problems` line when present.
 
-Per-client facts for the follow-up sources (verify each against current docs
-before coding its parser): Codex `$CODEX_HOME/config.toml` `[mcp_servers.<n>]`
-(`url`, `bearer_token_env_var`, `env_http_headers`, `http_headers`); Cursor
-`~/.cursor/mcp.json` and `.cursor/mcp.json` (`${env:VAR}`); VS Code
-`.vscode/mcp.json` (`servers` + `inputs`, `${input:id}` unsupported) and
-`~/.copilot/mcp-config.json`; Gemini `~/.gemini/settings.json` (`url` is SSE,
-`httpUrl` is HTTP); OpenCode `~/.config/opencode/opencode.json` `mcp.<n>`
-(`type: remote|local`, `{env:VAR}`); Zed `~/.config/zed/settings.json`
-`context_servers`; Amp `~/.config/amp/settings.json` `amp.mcpServers`; Goose
-`~/.config/goose/config.yaml` `extensions`; Windsurf/Devin
-`~/.codeium/windsurf/mcp_config.json` or `~/.config/devin/mcp_config.json`
-(`serverUrl` or `url`); Claude Desktop is stdio only, so every entry is listed
-as not importable.
+### Every client (PR 2)
+
+There is one module per client under `rote.clients`. Each docstring cites the
+docs or source it was checked against on 2026-10-22. `rote.clients.common`
+holds the parts they share:
+
+- `Reader` parses JSON, JSONC (through json5), TOML and YAML. YAML uses 1.2
+  booleans, so a Goose extension named `off` stays a string.
+- `new_candidate`, `blocked` and `remote` apply the normalize rules in one
+  place.
+- `rank`: the whole entry wins by name, and the losers are marked shadowed.
+- `merge_entries` serves clients that merge an entry field by field across
+  layers.
+- `switch_off` covers a disabled entry that still wins by name. It turns the
+  server off instead of uncovering a lower entry.
+
+| id | Files, highest precedence first | Remote shape | Placeholders | Off / approval |
+| --- | --- | --- | --- | --- |
+| `codex` | trusted `.codex/config.toml` (root to cwd), `$CODEX_HOME/config.toml`, `/etc/codex/config.toml`. Merged per field | `url` (Streamable HTTP only), `bearer_token_env_var`, `env_http_headers`, literal `http_headers` | none: env vars only by name | `enabled = false`. Servers in an untrusted project are listed inactive |
+| `cursor` | `.cursor/mcp.json`, `~/.cursor/mcp.json` | `url`, `headers`, `auth.CLIENT_ID` | `${env:X}`. `${workspaceFolder}` and `${userHome}` unsupported | not in the file (a limit) |
+| `vscode` | `.vscode/mcp.json` (`servers`), workspace `.mcp.json`, user `mcp.json` per OS (plus Insiders). Names compare case-insensitively | `type` http/sse, `url`, `headers`, `oauth.clientId` | `${env:X}`. `${input:id}` unsupported | `chat.mcp.access: "none"`. On/off state kept in VS Code storage is a limit |
+| `copilot` | `.mcp.json` / `.github/mcp.json` from cwd up to the git root (closer wins), `$COPILOT_HOME/mcp-config.json` | `type` http/sse (default local), `oauthClientId`, `tools` | `$X`, `${X}`, `${X:-d}` | `disabledMcpServers` in `settings.json` |
+| `gemini` | system, trusted `<cwd>/.gemini/settings.json`, `~/.gemini/settings.json`, system defaults, extensions | `httpUrl`, `url` + `type`, `tcp` | `$X`, `${X}`, `${X:-d}`. Extension variables unsupported | `mcp.allowed`, `mcp.excluded`, `admin.mcp.enabled`, `mcp-server-enablement.json`. `trustedFolders.json` |
+| `opencode` | managed, `OPENCODE_CONFIG_CONTENT`, `OPENCODE_CONFIG_DIR`, `.opencode/`, project `opencode.json(c)`, `OPENCODE_CONFIG`, global. Deep-merged | `type: remote`, `url`, `headers`, `oauth` | `{env:X}`. `{file:...}` unsupported | `enabled: false` (v2: `disabled`) |
+| `zed` | `.zed/settings.json`, user `settings.json` per OS | `url`, `headers`, `oauth.client_id` (Streamable HTTP) | none | `enabled: false` |
+| `amp` | nearest `.amp/settings.json(c)`, user `settings.json(c)` | `url`, `transport`, `headers`, `oauth` | `${X}`. `${amp:...}` unsupported | workspace servers need `amp mcp approve`. An `amp.mcpPermissions` reject blocks |
+| `goose` | user `config.yaml`, `GOOSE_ADDITIONAL_CONFIG_FILES`, `/etc/goose`. Merged per field | `type: streamable_http`, `uri`, `headers` (`sse` entries no longer load) | `${X}` / `$X`, filled only from the entry's `envs` / `env_keys` | `enabled: false` |
+| `windsurf` | `.devin/mcp_config.local.json`, `.devin/mcp_config.json`, `~/.config/devin/mcp_config.json`, legacy `~/.codeium/windsurf*/` | `serverUrl` or `url`, `transport`, `headers` | `${env:X}`. `${file:...}` unsupported | `disabled: true` |
+| `claude-desktop` | `claude_desktop_config.json` per OS | none: remote servers are claude.ai connectors | none | none |
+
+`ClientContext.etc_dir` is the second machine-wide root, used by Codex,
+Goose, Gemini CLI and OpenCode: `/etc` on every Unix, `%ProgramData%` on
+Windows. Like `system_dir`, it is None under `ROTE_CLIENT_HOME_DIR`.
+
+Every variable a source reads to find files is in `CLIENT_DIR_VARS`, and
+isolation drops them all. `tests/test_clients_registry.py` derives that set
+from the modules.
+
+`ordered_sources(detected, ctx)` offers clients in this order: the one the
+environment names, then the ones with config on this machine.
+
+The interface cannot express the following. Each one becomes a `limits` line
+or a `withheld` note:
+
+- per-tool filters (`enabled_tools`, `includeTools`, `tools`)
+- field-level merges across scopes, shown as one merged candidate at its
+  highest file
+- on/off state a client keeps outside its files (Cursor, VS Code)
+- folder trust kept in app storage (VS Code, Zed, Copilot CLI)
+- servers that live in an account: Claude Desktop connectors, Amp remote
+  servers, Cursor team servers
 
 ## Setup: steps, resumable from the world
 
@@ -423,7 +462,7 @@ defaults step, and `rote init` stays as an alias.
 
 | # | PR | Builds on | Parallel with |
 | --- | --- | --- | --- |
-| 2 | Other client sources (Codex, Cursor, VS Code/Copilot, Gemini, OpenCode, Zed, Amp, Goose, Windsurf/Devin, Claude Desktop), one module each | `ClientSource`, `normalize` | 3, 4, 5, 6 (split per client if wanted) |
+| 2 | Other client sources (Codex, Cursor, VS Code/Copilot, Gemini, OpenCode, Zed, Amp, Goose, Windsurf/Devin, Claude Desktop), one module each: **landed** | `ClientSource`, `normalize` | 3, 4, 5, 6 |
 | 3 | `rote mcp import` (+ header expansion in the runtime helpers, work domains, collision rules) | `ClientSource`, `Plan`, `Prompter` | 2, 4, 5, 6 |
 | 4 | `rote mcp login --no-wait` / `--complete` (Stripe's pending-file shape, atomic) | `Plan`, `report` | 2, 3, 5, 6 |
 | 5 | Skill discovery and ranking (client skill dirs, enabled plugins, ranked by servers registered and logged in) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
