@@ -478,6 +478,7 @@ dirs holding a `run.json` it can parse, so a stray path is never deleted.
 | An extracted function raises | ERROR | file:line, as the prefix runner reports it |
 | A stub (`STUB_SENTINEL`) | refused at emit, like `rote run`'s preflight | `rote compile` again, or `--allow-stubs` |
 | Network disabled by the Codex sandbox | ERROR, before any call | rerun with escalation |
+| Another live call holds the wave (`run busy`) | ERROR, names the step | wait for that call, then `status` |
 
 Config, auth and input-required errors are never retried, exactly as the
 other runtimes' retry opt-outs exclude them.
@@ -856,7 +857,8 @@ If the skill target becomes the first-run default:
   method (`uv tool install --with 'rote-cli[dbos]'`, `pip install
   'rote-cli[dbos]'`, `uvx --from 'rote-cli[dbos]'`). That function does not
   exist on main. It comes from #249, and bringing it over is part of PR 9.
-  A person confirms the Action. Without a person, `--yes` applies it. It is never done silently.
+  A person confirms the Action. Without a person, `--yes` applies it. It
+  is never done silently.
 - **#249 should not merge as written.** Its base-dependency move should be
   narrowed to fastmcp-slim, and its doctor checks and hint split kept.
 
@@ -869,7 +871,7 @@ break-the-code check.
 | # | PR | Builds on | Minutes |
 | --- | --- | --- | --- |
 | 1 | `rote.plan`: move `build_plan` out of prefix, add judge, gate and loop steps and a live-MCP mode. Extend `_schema_errors` to the Pydantic subset, with the parity test | none | 150 |
-| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus bounded summary, lazy fastmcp import and the start-up budget test | 1 | 360 |
+| 2 | `rote.skill_target._driver` (stdlib): the resumable interpreter, journal, locking, blocks, per-item validation and re-ask, retries, the sweep, the `CODEX_SANDBOX_NETWORK_DISABLED` check (verified on the real CLI first). The wave claim with its process id, and re-entry's refusal of a gate result without `answered_by` and `said`. The tier checks (`--said` required on gates and refused elsewhere, `answered_by` and `said` in the journal), declared-field-only blocks, DONE's `result.json` plus bounded summary, lazy fastmcp import and the start-up budget test | 1 | 360 |
 | 3 | `--runtime skill` adapter: SKILL.md stub, README, `plan.json`, verbatim helpers, manifest, apps-registry entry, stub refusal, `--judges session\|helper` | 1, 2 | 150 |
 | 4 | `rote skill run / status / resume / cancel / runs / trust / install`: name resolution, the manifest hash in the apps registry, the manifest check (unlisted files refused), `start --file`, the `--allow-writes` consent Plan, and install's confirmed Action that saves the Claude Code allow rule | 3 | 180 |
 | 5 | `LOOP`: the tool proxy, iteration cap, body sub-nodes, output contract | 2, 4 | 180 |
