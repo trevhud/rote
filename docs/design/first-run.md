@@ -409,6 +409,49 @@ or a `withheld` note:
 - servers that live in an account: Claude Desktop connectors, Amp remote
   servers, Cursor team servers
 
+## Skill discovery (`rote.skills`)
+
+`rote.skills.discover(ctx, registry=)` lists every skill the user's
+clients load, `<root>/<name>/SKILL.md`, one level down, and ranks them for
+setup's skill step. Roots, in the order a duplicate is credited to:
+
+| Client | Project (cwd up to the repo root) | User |
+| --- | --- | --- |
+| rote | the bundled examples that ship a skill (`rote.examples.BUNDLED`) | |
+| Claude Code | `.claude/skills` | `<config dir>/skills` (`CLAUDE_CONFIG_DIR`), each enabled plugin's `skills/` |
+| cross-client | `.agents/skills` | `~/.agents/skills` (Codex, Gemini CLI, OpenCode) |
+| Codex | | `$CODEX_HOME/skills`, the older location Codex still reads |
+| Gemini CLI | `.gemini/skills` | `~/.gemini/skills` |
+| OpenCode | `.opencode/skills` | `$XDG_CONFIG_HOME/opencode/skills` |
+
+Enabled plugins come from `rote.clients.claude_code.claude_code_layout`,
+the same resolution the MCP source uses (`enabledPlugins` across user,
+project and local settings, `installed_plugins.json` install paths). Not
+read: Codex's admin `/etc/codex/skills`, Claude Code's managed and
+`--add-dir` skills, and nested `skills/<a>/<b>/SKILL.md`, which no client
+documents loading.
+
+- **Dedupe** by resolved path: a skill symlinked into two roots is one
+  skill whose `found_in` lists both.
+- **Frontmatter**: the first 64 KB, `yaml.safe_load`, never raises. No
+  frontmatter means the directory name (Claude Code's rule); bad YAML, an
+  unclosed block or a non-mapping is a `problems` line. Displayed text
+  drops control and format characters (bidi overrides, zero-width
+  spaces) and is cut to 300 characters.
+- **Readiness**, from `tool_grounding.servers_named` against the
+  registry and token store (`auth_status`): `bundled`, then `ready`
+  (every named server registered with usable auth, or none named), then
+  `needs_login` (fewest logins first), then `needs_server`, then
+  `unreadable`. Each carries a reason sentence, the per-server facts, and
+  the `next` commands (`rote mcp add`, `rote mcp login`).
+- **Speed**: measured on a real home (178 skills: 56 Claude Code user, 61
+  from enabled plugins, 39 `~/.agents`, 21 Codex, 1 bundled) at 0.33 s
+  warm, 0.48 s for the first call in a process; every installed plugin's skills (199) take 0.88 s. The
+  tool-table read used to run the whole System-1 parse; it is now
+  `system1.parse.tool_registry`, a third of the cost.
+
+`rote skills list [--json] [--limit N]` prints the ranking.
+
 ## Setup: steps, resumable from the world
 
 ```mermaid
@@ -501,7 +544,7 @@ defaults step, and `rote init` stays as an alias.
 | 2 | Other client sources (Codex, Cursor, VS Code/Copilot, Gemini, OpenCode, Zed, Amp, Goose, Windsurf/Devin, Claude Desktop), one module each: **landed** | `ClientSource`, `normalize` | 3, 4, 5, 6 |
 | 3 | `rote mcp import` (+ header expansion in the runtime helpers, work domains, collision rules) | `ClientSource`, `Plan`, `Prompter` | 2, 4, 5, 6 |
 | 4 | `rote mcp login --no-wait` / `--complete` (Stripe's pending-file shape, atomic) | `Plan`, `report` | 2, 3, 5, 6 |
-| 5 | Skill discovery and ranking (client skill dirs, enabled plugins, ranked by servers registered and logged in) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
+| 5 | Skill discovery and ranking (`rote.skills`, landed; see above) | `ClientContext`, `Prompter` | 2, 3, 4, 6 |
 | 6 | Bundle docs-digest into examples/ and the wheel, with a recorded reference run | none | 2, 3, 4, 5 |
 | 7 | `rote try` (precompiled proof, then the live path with `Spend(flag="--live")`, field-by-field report) | 6, `Plan` | 2, 3, 4, 5 |
 | 8 | `rote setup` (steps from 3, 5, 7 plus init's defaults; first-run banner on bare `rote`) | 3, 4, 5, 7 | 9 once its JSON is fixed |

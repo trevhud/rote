@@ -520,10 +520,7 @@ def signal_hits(text: str, heading: str) -> dict[str, list[str]]:
     return hits
 
 
-def parse_skill(skill_dir: Path) -> SkillParse:
-    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    fm, body, offset = parse_frontmatter(text)
-    root = parse_sections(body, offset)
+def _tool_registry(skill_dir: Path, root: Section) -> dict[str, str]:
     registry: dict[str, str] = {}
     for s in walk(root):
         for line in s.body.splitlines():
@@ -540,6 +537,31 @@ def parse_skill(skill_dir: Path) -> SkillParse:
                     if line.strip().startswith("|"):
                         for t in _BACKTICK_TOOL.findall(line):
                             registry.setdefault(t, slug(s.title.split("(")[0]))
+    return registry
+
+
+def tool_registry(skill_dir: Path) -> dict[str, str]:
+    """``{tool: server}`` from the skill's tool tables: :attr:`SkillParse.tool_registry`
+    without the rest of :func:`parse_skill`, which costs ten times more and is
+    not needed to read the tables (rote.skills ranks hundreds of skills by it).
+
+    Raises :class:`UnsafeSkillText` exactly when :func:`parse_skill` would for
+    a reference file name.
+    """
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    _, body, offset = parse_frontmatter(text)
+    ref_dir = skill_dir / "references"
+    if ref_dir.is_dir():
+        for ref in sorted(ref_dir.glob("*.md")):
+            safe_reference_name(ref.name)
+    return _tool_registry(skill_dir, parse_sections(body, offset))
+
+
+def parse_skill(skill_dir: Path) -> SkillParse:
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    fm, body, offset = parse_frontmatter(text)
+    root = parse_sections(body, offset)
+    registry = _tool_registry(skill_dir, root)
     h1 = next((s for s in walk(root) if s.level == 1), None)
     units: list[Unit] = []
     group = 0

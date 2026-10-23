@@ -257,10 +257,10 @@ def skill_tool_table_servers(skill_dir: Path) -> set[str]:
     A skill it cannot parse safely names no server this way; its prose
     still can.
     """
-    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
+    from rote.compiler.system1.parse import UnsafeSkillText, tool_registry
 
     try:
-        return set(parse_skill(skill_dir).tool_registry.values())
+        return set(tool_registry(skill_dir).values())
     except UnsafeSkillText:
         return set()
 
