@@ -73,7 +73,7 @@ def codex_home(ctx: ClientContext) -> Path:
     return Path(override) if override else ctx.home / ".codex"
 
 
-def _project_dirs(cwd: Path) -> list[Path]:
+def project_dirs(cwd: Path) -> list[Path]:
     """From the project root (the nearest ``.git``) down to ``cwd``;
     ``cwd`` alone outside a repository."""
     chain: list[Path] = []
@@ -164,7 +164,7 @@ class CodexSource:
 
     def config_paths(self, ctx: ClientContext) -> tuple[Path, ...]:
         home = codex_home(ctx)
-        project = [d / ".codex" / "config.toml" for d in reversed(_project_dirs(ctx.cwd))]
+        project = [d / ".codex" / "config.toml" for d in reversed(project_dirs(ctx.cwd))]
         system = self._system_file(ctx)
         return (
             *(p for p in project if p.parent != home),
@@ -184,7 +184,7 @@ class CodexSource:
         system = reader.mapping(system_path, "toml") if system_path is not None else {}
         projects = deep_merge(system, user).get("projects")
 
-        dirs = _project_dirs(ctx.cwd)
+        dirs = project_dirs(ctx.cwd)
         layers: list[tuple[Scope, Path, dict[str, Any]]] = []
         if system_path is not None:
             layers.append(("system", system_path, system))

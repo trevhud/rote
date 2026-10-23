@@ -75,14 +75,47 @@ def reference_paths(skill_dir: Path, *, recursive: bool) -> list[Path]:
     return sorted(p for p in found if p.is_file() and p.resolve().is_relative_to(root))
 
 
-def read_references(skill_dir: Path, *, recursive: bool) -> list[tuple[Path, str]]:
-    """``(path, text)`` for :func:`reference_paths`, refused as a whole above
-    :data:`REFERENCES_MAX_BYTES` before any of them is read."""
-    paths = reference_paths(skill_dir, recursive=recursive)
+def _check_total(paths: list[Path]) -> None:
     total = sum(p.stat().st_size for p in paths)
     if total > REFERENCES_MAX_BYTES:
         raise SkillTooLarge(
             f"{REFERENCES_DIR}/ holds {total / MIB:.1f} MB of markdown; rote reads at most "
             f"{REFERENCES_MAX_BYTES // MIB} MB"
         )
+
+
+def read_references(skill_dir: Path, *, recursive: bool) -> list[tuple[Path, str]]:
+    """``(path, text)`` for :func:`reference_paths`, refused as a whole above
+    :data:`REFERENCES_MAX_BYTES` before any of them is read."""
+    paths = reference_paths(skill_dir, recursive=recursive)
+    _check_total(paths)
     return [(p, p.read_text(encoding="utf-8")) for p in paths]
+
+
+def outside_references(skill_dir: Path) -> list[Path]:
+    """What :func:`reference_paths` skips because it resolves outside the
+    skill: ``references/`` itself when it does, else each such ``*.md``
+    file or symlinked directory directly or deeper under it. For a warning,
+    so the walk is the same bounded one."""
+    refs = skill_dir / REFERENCES_DIR
+    if not refs.is_dir():
+        return []
+    root = skill_dir.resolve()
+    if not refs.resolve().is_relative_to(root):
+        return [refs]
+    skipped: list[Path] = []
+    for directory, dirs, files in os.walk(refs, followlinks=False):
+        for name in [*dirs, *(f for f in files if f.endswith(".md"))]:
+            path = Path(directory) / name
+            if path.is_symlink() and not path.resolve().is_relative_to(root):
+                skipped.append(path)
+    return sorted(skipped)
+
+
+def preflight(skill_dir: Path) -> list[Path]:
+    """Refuse a skill too large to read, before anything reads it: SKILL.md
+    and the references' total, by ``stat``. Returns :func:`outside_references`."""
+    check_size(skill_dir / SKILL_MD, SKILL_MD_MAX_BYTES, SKILL_MD)
+    paths = reference_paths(skill_dir, recursive=True)
+    _check_total(paths)
+    return outside_references(skill_dir)

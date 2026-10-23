@@ -178,14 +178,11 @@ class Discovery:
 
 
 def _project_dirs(cwd: Path) -> list[Path]:
-    """The cwd and each parent up to the repository root (the nearest
-    ancestor holding ``.git``), nearest first. No repository: the cwd only."""
-    walked: list[Path] = []
-    for directory in (cwd, *cwd.parents):
-        walked.append(directory)
-        if (directory / ".git").exists():
-            return walked
-    return [cwd]
+    """The cwd and each parent up to the repository root, nearest first:
+    the Codex source's walk (:func:`rote.clients.codex.project_dirs`), reversed."""
+    from rote.clients.codex import project_dirs
+
+    return list(reversed(project_dirs(cwd)))
 
 
 def bundled_roots() -> list[tuple[str, Path]]:
@@ -209,14 +206,15 @@ def bundled_roots() -> list[tuple[str, Path]]:
 
 def skill_roots(ctx: ClientContext) -> tuple[list[SkillRoot], list[str]]:
     """Every root, in crediting order, and what could not be read finding them."""
+    # Each client's own dir resolution, from its MCP source (rote.clients).
     from rote.clients.claude_code import claude_code_layout
+    from rote.clients.codex import codex_home
+    from rote.clients.common import xdg_config_home
+    from rote.clients.gemini import gemini_dir
 
     layout = claude_code_layout(ctx)
     projects = _project_dirs(ctx.cwd)
     home = ctx.home
-    codex_home = Path(ctx.env["CODEX_HOME"]).expanduser() if ctx.env.get("CODEX_HOME") else None
-    xdg = ctx.env.get("XDG_CONFIG_HOME", "").strip()
-    config_home = Path(xdg).expanduser() if xdg else home / ".config"
 
     roots: list[SkillRoot] = []
     roots += [SkillRoot("claude-code", "project", d / ".claude" / "skills") for d in projects]
@@ -226,11 +224,11 @@ def skill_roots(ctx: ClientContext) -> tuple[list[SkillRoot], list[str]]:
     ]
     roots += [SkillRoot("agents", "project", d / ".agents" / "skills") for d in projects]
     roots.append(SkillRoot("agents", "user", home / ".agents" / "skills"))
-    roots.append(SkillRoot("codex", "user", (codex_home or home / ".codex") / "skills"))
+    roots.append(SkillRoot("codex", "user", codex_home(ctx) / "skills"))
     roots += [SkillRoot("gemini", "project", d / ".gemini" / "skills") for d in projects]
-    roots.append(SkillRoot("gemini", "user", home / ".gemini" / "skills"))
+    roots.append(SkillRoot("gemini", "user", gemini_dir(ctx) / "skills"))
     roots += [SkillRoot("opencode", "project", d / ".opencode" / "skills") for d in projects]
-    roots.append(SkillRoot("opencode", "user", config_home / "opencode" / "skills"))
+    roots.append(SkillRoot("opencode", "user", xdg_config_home(ctx) / "opencode" / "skills"))
     return roots, list(layout.problems)
 
 

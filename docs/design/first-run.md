@@ -421,7 +421,7 @@ setup's skill step. Roots, in the order a duplicate is credited to:
 | Claude Code | `.claude/skills` | `<config dir>/skills` (`CLAUDE_CONFIG_DIR`), each enabled plugin's `skills/` |
 | cross-client | `.agents/skills` | `~/.agents/skills` (Codex, Gemini CLI, OpenCode) |
 | Codex | | `$CODEX_HOME/skills`, the older location Codex still reads |
-| Gemini CLI | `.gemini/skills` | `~/.gemini/skills` |
+| Gemini CLI | `.gemini/skills` | `~/.gemini/skills` (`GEMINI_CLI_HOME` moves `~`) |
 | OpenCode | `.opencode/skills` | `$XDG_CONFIG_HOME/opencode/skills` |
 
 Enabled plugins come from `rote.clients.claude_code.claude_code_layout`,
@@ -449,6 +449,10 @@ documents loading.
   resolved path leaves the skill directory is skipped, and the walk never
   follows a symlinked directory (`references -> /` had walked the whole
   filesystem); `mcp-tools.json` over 16 MB is refused.
+  `rote compile` runs the same checks first (`skill_files.preflight` in
+  `Compiler._compile_inner`), so an oversized skill is a one-line
+  `rote compile:` error before any driver runs, and a skipped reference
+  that resolves outside the skill is one warning line.
 - **Readiness**, from `tool_grounding.servers_named` against the
   registry and token store (`auth_status`): `bundled`, then `ready`
   (every named server registered with usable auth, or none named), then
