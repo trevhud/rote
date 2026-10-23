@@ -34,11 +34,14 @@ The run's journal lives in its own folder (:func:`run_root`), mode 0700:
 ``nodes/<id>.json`` per finished node, ``result.json`` at the end. Every
 write is atomic, and every read and write holds ``run.lock`` (``flock``,
 waited for at most :data:`LOCK_WAIT_SECONDS`). The lock is never held across
-a tool call: a call running a wave records ``{wave, pid}`` in the journal,
-and another call that finds a live pid there says the run is busy, while
-one that finds a dead pid takes the wave over. Re-entry runs from the
-journal, so a crash costs only the step that was running (at-least-once
-tool calls, the guarantee the durable runtimes give).
+a tool call. A call that runs steps claims the run: it records its pid in
+the journal and holds an ``flock`` on ``claim.lock`` until it prints its
+block. Another call that finds that lock held says the run is busy; one
+that finds it free takes the run over, because the OS drops the lock when
+its holder exits, so a reused pid never reads as busy. Re-entry runs from
+the journal, a fan_out step's finished elements included, so a crash costs
+only what was running (at-least-once tool calls, the guarantee the durable
+runtimes give).
 
 Not here yet, on purpose: ``LOOP`` (an agent loop needs the tool proxy, the
 ``tool`` command that is its only way to its tools; until then ``start``
@@ -166,16 +169,6 @@ def _atomic_write(path: Path, text: str) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
-
-
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 # ───────── values ─────────
@@ -368,6 +361,8 @@ class Driver:
         self.steps: list[dict[str, Any]] = self.plan["steps"]
         self.by_id = {s["id"]: s for s in self.steps}
         self.root = run_root() / self.name
+        #: The open ``claim.lock`` while this call holds its run (see _claim_free).
+        self._claim_handle: Any = None
 
     # ── blocks ──
 
@@ -379,14 +374,13 @@ class Driver:
         self,
         run: str | None,
         cause: str,
-        fix: str | None = None,
+        fix: str,
         *,
         step: str | None = None,
         usage: bool = False,
     ) -> Block:
-        lines = [cause]
-        if fix:
-            lines.append(f"Fix: {fix}")
+        """An ERROR block. ``fix`` is required: every error says what to do next."""
+        lines = [cause, f"Fix: {fix}"]
         lines.append(
             "Fix the command and run it again."
             if usage
@@ -402,7 +396,14 @@ class Driver:
 
     def _dir(self, run: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", run):
-            raise Stop(self._error(None, f"{run!r} is not a run id.", usage=True))
+            raise Stop(
+                self._error(
+                    None,
+                    f"{run!r} is not a run id.",
+                    f"use the run=<id> from a block, or list them: {self.command} runs",
+                    usage=True,
+                )
+            )
         path = self.root / run
         if not (path / "run.json").is_file():
             raise Stop(self._error(None, f"no run {run} of {self.name}.", f"{self.command} runs"))
@@ -436,7 +437,13 @@ class Driver:
     def _read(self, path: Path) -> dict[str, Any]:
         state: dict[str, Any] = json.loads((path / "run.json").read_text(encoding="utf-8"))
         if state.get("format") != RUN_FORMAT:
-            raise Stop(self._error(path.name, f"run.json is not a {RUN_FORMAT} journal."))
+            raise Stop(
+                self._error(
+                    path.name,
+                    f"run.json is not a {RUN_FORMAT} journal, so this run cannot go on.",
+                    f"start a new run: {self.command} start '<input json>'",
+                )
+            )
         if state.get("plan_hash") != self.plan_hash:
             raise Stop(
                 self._error(
@@ -460,9 +467,12 @@ class Driver:
     def _results(self, path: Path, state: dict[str, Any]) -> dict[str, Any]:
         """Every finished node's result, refusing a decision nobody recorded.
 
-        A node file is plain JSON on disk, so an agent could write one for a
-        gate and resume past it. A gate's result counts only when both the
-        file and the journal say a person answered it, with their words.
+        A gate's result counts only when its node file and ``run.json``'s
+        answer log both say a person answered it, with the same words, so a
+        single hand-written file is refused. That is a consistency check,
+        not a barrier: a process running as the same user can write both
+        files, and nothing in a journal can stop it. The journal is an audit
+        trail of who answered what (``answered_by``, ``said``, ``at``).
         """
         results: dict[str, Any] = {}
         nodes = path / "nodes"
@@ -504,22 +514,36 @@ class Driver:
         return results
 
     def _claim_free(self, path: Path, state: dict[str, Any]) -> None:
-        """Refuse while another live call runs a wave; a dead one's wave is taken over."""
+        """Refuse while another call holds the run; take over from one that died.
+
+        Call under the journal lock. Whether the holder lives is not read
+        from its pid, which the OS reuses: a holder keeps an ``flock`` on
+        ``claim.lock`` for as long as it runs steps, and the OS drops that
+        lock when the process exits, however it exits. So a free lock is a
+        dead (or finished) holder, whatever process now has its pid. The pid
+        in the journal is only for the message.
+        """
+        if self._claim_handle is not None:
+            return  # this call holds it
+        import fcntl
+
         wave = state.get("wave")
-        if not wave:
-            return
-        pid = int(wave.get("pid", 0))
-        if pid != os.getpid() and pid > 0 and _pid_alive(pid):
-            raise Stop(
-                self._error(
-                    path.name,
-                    f"run busy: another call (pid {pid}) is running its steps.",
-                    f"wait, then: {self.command} status {path.name}",
-                )
-            )
-        if pid != os.getpid():
-            _progress(f"taking over wave {wave.get('index')} from pid {pid}, which has exited")
-        state["wave"] = None
+        with open(path / "claim.lock", "a+") as probe:
+            try:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                pid = (wave or {}).get("pid", "unknown")
+                raise Stop(
+                    self._error(
+                        path.name,
+                        f"run busy: another call (pid {pid}) is running its steps.",
+                        f"wait, then: {self.command} status {path.name}",
+                    )
+                ) from None
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        if wave:
+            _progress(f"taking over from pid {wave.get('pid')}, which no longer holds the run")
+            state["wave"] = None
 
     # ── commands ──
 
@@ -589,7 +613,11 @@ class Driver:
             runs = sorted(self._runs(), key=lambda r: r[1].get("updated", 0), reverse=True)
             live = [r for r in runs if r[1].get("state") not in _FINISHED]
             if not live:
-                return self._error(None, f"no run of {self.name} is waiting.")
+                return self._error(
+                    None,
+                    f"no run of {self.name} is waiting.",
+                    f"start one: {self.command} start '<input json>'",
+                )
             run = live[0][0].name
         path = self._dir(run)
         with self._locked(path):
@@ -846,16 +874,30 @@ class Driver:
                 self._release(path, self._read(path))
 
     def _claim(self, path: Path, state: dict[str, Any], wave: int | None = None) -> None:
-        """Hold the run for this call (call under the lock)."""
+        """Hold the run for this call (call under the journal lock)."""
+        import fcntl
+
         self._claim_free(path, state)
+        if self._claim_handle is None:
+            handle = open(path / "claim.lock", "a+")  # noqa: SIM115 (held until release)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._claim_handle = handle
         state["wave"] = {"index": wave, "pid": os.getpid(), "since": _now()}
         self._write(path, state)
 
     def _release(self, path: Path, state: dict[str, Any]) -> None:
-        wave = state.get("wave")
-        if wave and int(wave.get("pid", 0)) == os.getpid():
+        if self._claim_handle is None:
+            return
+        if state.get("wave"):
             state["wave"] = None
             self._write(path, state)
+        self.close()
+
+    def close(self) -> None:
+        """Drop this call's claim on its run, if it holds one."""
+        if self._claim_handle is not None:
+            self._claim_handle.close()  # closing the file releases its flock
+            self._claim_handle = None
 
     def _run_forward(self, path: Path, results: dict[str, Any]) -> Block:
         for wave in sorted({int(s["wave"]) for s in self.steps}):
@@ -892,12 +934,17 @@ class Driver:
 
         def one(step: dict[str, Any]) -> None:
             try:
-                value = self._run_step(step, state["input"], results)
+                value = self._run_step(path, step, state["input"], results)
             except BaseException as exc:  # noqa: BLE001 (reported as the step's failure)
                 outcomes[step["id"]] = exc
                 return
             with self._locked(path):
                 self._write_node(path, step["id"], {"result": value, "at": _now()})
+                parts = path / "nodes" / f"{step['id']}.parts"
+                if parts.is_dir() and not parts.is_symlink():
+                    import shutil
+
+                    shutil.rmtree(parts)
             outcomes[step["id"]] = value
             results[step["id"]] = value
 
@@ -915,20 +962,66 @@ class Driver:
         return None
 
     def _run_step(
-        self, step: dict[str, Any], run_input: dict[str, Any], results: dict[str, Any]
+        self, path: Path, step: dict[str, Any], run_input: dict[str, Any], results: dict[str, Any]
     ) -> Any:
+        """One step's result. A fan_out step runs each element on its own.
+
+        Each element has its own retry budget, as in the python runtime,
+        and is journaled as it finishes (``nodes/<id>.parts/<i>.json``), so a
+        failing element never re-runs one that finished, now or on resume.
+        """
         payload = _payload(step, run_input, results)
+        if step["kind"] == "mcp":
+            _progress(f"calling {step['server']}.{step['tool']}")
+        else:
+            _progress(f"running {step['id']}")
         fan = step.get("fan_param")
-        elements = None if fan is None else _fan_list(payload.get(fan), step["id"], fan)
+        if fan is None:
+            return self._checked(step["id"], self._attempts(step, step["id"], payload))
+        elements = _fan_list(payload.get(fan), step["id"], fan)
+        parts = path / "nodes" / f"{step['id']}.parts"
+        done = {
+            int(p.stem): json.loads(p.read_text(encoding="utf-8"))["result"]
+            for p in (parts.glob("*.json") if parts.is_dir() else ())
+        }
+        failures: dict[int, BaseException] = {}
+
+        def element(index: int) -> None:
+            label = f"{step['id']}[{index}]"
+            try:
+                value = self._checked(
+                    label, self._attempts(step, label, {**payload, fan: elements[index]})
+                )
+            except BaseException as exc:  # noqa: BLE001 (reported as the step's failure)
+                failures[index] = exc
+                return
+            with self._locked(path):
+                parts.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _atomic_write(parts / f"{index}.json", json.dumps({"result": value}))
+            done[index] = value
+
+        todo = [i for i in range(len(elements)) if i not in done]
+        if step["kind"] == "mcp" and len(todo) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_STEPS, len(todo))) as pool:
+                list(pool.map(element, todo))
+        else:
+            for index in todo:
+                element(index)
+                if failures:
+                    break
+        if failures:
+            raise failures[min(failures)]
+        return [done[i] for i in range(len(elements))]
+
+    def _attempts(self, step: dict[str, Any], label: str, payload: dict[str, Any]) -> Any:
+        """One call, retried per the IR, never for the failures no retry fixes."""
         policy = step.get("retry") or {"attempts": 1, "backoff": "constant"}
         attempts = int(policy["attempts"])
         for attempt in range(1, attempts + 1):
             try:
-                if step["kind"] == "mcp":
-                    value = self._mcp(step, payload, fan, elements)
-                else:
-                    value = self._call(step, payload, fan, elements)
-                break
+                return self._once(step, payload)
             except Exception as exc:
                 if type(exc).__name__ in NEVER_RETRIED or attempt == attempts:
                     raise
@@ -936,53 +1029,30 @@ class Driver:
                     "exponential": RETRY_BASE_DELAY_SECONDS * 2 ** (attempt - 1),
                     "linear": RETRY_BASE_DELAY_SECONDS * attempt,
                 }.get(policy["backoff"], RETRY_BASE_DELAY_SECONDS)
-                _progress(
-                    f"{step['id']} failed ({type(exc).__name__}); retry {attempt} in {delay:g}s"
-                )
+                _progress(f"{label} failed ({type(exc).__name__}); retry {attempt} in {delay:g}s")
                 time.sleep(delay)
+        raise AssertionError("unreachable: the retry loop returns or raises")
+
+    @staticmethod
+    def _checked(label: str, value: Any) -> Any:
         where = _not_json(value)
         if where:
-            raise _NotJson(f"{step['id']} returned a value that is not plain JSON: {where}")
+            raise _NotJson(f"{label} returned a value that is not plain JSON: {where}")
         return value
 
-    def _call(
-        self, step: dict[str, Any], payload: dict[str, Any], fan: str | None, elements: Any
-    ) -> Any:
-        _progress(f"running {step['id']}")
-        module = importlib.import_module(step["module"])
-        fn = getattr(module, step["symbol"])
-        constants = step.get("constants") or {}
-        if fan is None:
-            return _serialize(_call_impl(fn, {**payload, **constants}))
-        return [
-            _serialize(_call_impl(fn, {**payload, fan: item, **constants})) for item in elements
-        ]
-
-    def _mcp(
-        self, step: dict[str, Any], payload: dict[str, Any], fan: str | None, elements: Any
-    ) -> Any:
-        _progress(f"calling {step['server']}.{step['tool']}")
+    def _once(self, step: dict[str, Any], payload: dict[str, Any]) -> Any:
+        if step["kind"] == "call":
+            fn = getattr(importlib.import_module(step["module"]), step["symbol"])
+            return _serialize(_call_impl(fn, {**payload, **(step.get("constants") or {})}))
         mcp = importlib.import_module("_rote_mcp")
-
-        def arguments(p: dict[str, Any]) -> dict[str, Any]:
-            if step["args"] is None:
-                return p
-            return {
-                arg: value if origin in ("constant", "literal") else p[value]
+        if step["args"] is None:
+            arguments = payload
+        else:
+            arguments = {
+                arg: value if origin in ("constant", "literal") else payload[value]
                 for arg, origin, value in step["args"]
             }
-
-        def call(p: dict[str, Any]) -> Any:
-            return mcp.call_mcp_tool(step["server"], step["url"], step["tool"], arguments(p))
-
-        if fan is None:
-            return _run_async(call(payload))
-        import asyncio
-
-        async def gather() -> list[Any]:
-            return list(await asyncio.gather(*[call({**payload, fan: e}) for e in elements]))
-
-        return _run_async(gather())
+        return _run_async(mcp.call_mcp_tool(step["server"], step["url"], step["tool"], arguments))
 
     def _failure_block(
         self, path: Path, state: dict[str, Any], step: dict[str, Any], exc: BaseException
@@ -998,12 +1068,23 @@ class Driver:
         state["error"] = f"{name}: {exc}"
         if name == "RoteMcpConfigError":
             message = str(exc)
-            fix = None
+            server = str(step.get("server") or "")
             if "this run is read-only" in message:
                 fix = f"rote skill trust {self.name} --allow-writes (after the user agrees)"
+            else:
+                fix = (
+                    f"rote mcp add {server} <url> (or set ROTE_MCP_{server.upper()}_URL), "
+                    f"then: {self.command} resume {run}"
+                )
             return self._error(run, message, fix, step=step["id"])
         if name == "RoteMcpInputRequired":
-            return self._error(run, str(exc), step=step["id"])
+            return self._error(
+                run,
+                str(exc),
+                "the step cannot run unattended until the server takes that input as tool "
+                "arguments; tell the user, and compile it for a workflow runtime meanwhile",
+                step=step["id"],
+            )
         if isinstance(exc, (BindingError, _NotJson)):
             return self._error(
                 run,
@@ -1168,10 +1249,13 @@ class Driver:
             "--- QUESTION ---",
             step["description"],
         ]
+        shown: set[str] = set()
         if step.get("message"):
-            lines.append(_render_message(step["message"], payload))
-        if payload:
-            lines += ["--- THEY SEE (json) ---", _compact(payload)]
+            message, shown = _render_message(step["message"], payload)
+            lines.append(message)
+        unshown = {k: v for k, v in payload.items() if k not in shown}
+        if unshown:
+            lines += ["--- THEY SEE (json) ---", _compact(unshown)]
         lines += [
             "--- ANSWER SCHEMA (json) ---",
             _compact(step["answer_schema"]),
@@ -1207,7 +1291,11 @@ class Driver:
                 "DONE", self._head(run, "cancelled"), [note] if note else ["The run is cancelled."]
             )
         if state["state"] == "expired":
-            return self._error(run, "a gate's deadline passed and the run has ended.")
+            return self._error(
+                run,
+                "a gate's deadline passed and the run has ended.",
+                f"start a new run: {self.command} start '<input json>'",
+            )
         if state["state"] == "error":
             return self._error(
                 run,
@@ -1245,13 +1333,20 @@ class Driver:
     # ── housekeeping ──
 
     def _runs(self) -> list[tuple[Path, dict[str, Any]]]:
+        """This skill's run folders: real directories (never a symlink) whose own
+        ``run.json`` (never a symlink either) this driver wrote. Anything else,
+        or anything unreadable, is skipped, so one bad entry breaks nothing."""
         found: list[tuple[Path, dict[str, Any]]] = []
-        if not self.root.is_dir():
+        if self.root.is_symlink() or not self.root.is_dir():
             return found
         for child in self.root.iterdir():
             try:
-                state = json.loads((child / "run.json").read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+                journal = child / "run.json"
+                if child.is_symlink() or not child.is_dir() or journal.is_symlink():
+                    continue
+                state = json.loads(journal.read_text(encoding="utf-8"))
+                float(state.get("updated", 0))
+            except (OSError, ValueError, TypeError, AttributeError):
                 continue
             if isinstance(state, dict) and state.get("format") == RUN_FORMAT:
                 found.append((child, state))
@@ -1265,17 +1360,22 @@ class Driver:
         day = 86400.0
         removed = []
         for path, state in self._runs():
-            updated = float(state.get("updated", 0))
-            pending = state.get("pending") or {}
-            if state.get("state") in (*_FINISHED, "error"):
-                expired = now - updated > SWEEP_FINISHED_DAYS * day
-            elif pending.get("deadline"):
-                expired = now > float(pending["deadline"]) + SWEEP_GRACE_DAYS * day
-            else:
-                expired = now - updated > SWEEP_WAITING_DAYS * day
-            if expired:
-                shutil.rmtree(path)
-                removed.append(path.name)
+            try:
+                updated = float(state.get("updated", 0))
+                pending = state.get("pending") or {}
+                if state.get("state") in (*_FINISHED, "error"):
+                    expired = now - updated > SWEEP_FINISHED_DAYS * day
+                elif pending.get("deadline"):
+                    expired = now > float(pending["deadline"]) + SWEEP_GRACE_DAYS * day
+                else:
+                    expired = now - updated > SWEEP_WAITING_DAYS * day
+                # Checked again right before removing: rmtree on a symlink swapped
+                # in since the listing would remove what it points at.
+                if expired and not path.is_symlink() and path.is_dir():
+                    shutil.rmtree(path)
+                    removed.append(path.name)
+            except (OSError, ValueError, TypeError, AttributeError) as exc:
+                _progress(f"sweep skipped {path.name}: {exc}")
         return removed
 
     # ── input ──
@@ -1312,16 +1412,19 @@ def _location(exc: BaseException, root: Path) -> str:
     return found
 
 
-def _render_message(template: str, payload: dict[str, Any]) -> str:
-    """A gate's ``{name}`` placeholders filled from its declared scalar inputs."""
+def _render_message(template: str, payload: dict[str, Any]) -> tuple[str, set[str]]:
+    """A gate's ``{name}`` placeholders filled from its declared scalar inputs,
+    and the names it filled (the block does not show those values twice)."""
+    used: set[str] = set()
 
     def _sub(match: re.Match[str]) -> str:
         value = payload.get(match.group(1), _MISSING)
         if value is _MISSING or isinstance(value, (dict, list)):
             return match.group(0)
+        used.add(match.group(1))
         return "" if value is None else str(value)
 
-    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, template)
+    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, template), used
 
 
 def _answer_tokens(schema: Any, depth: int = 0) -> float:
@@ -1449,24 +1552,53 @@ def dispatch(driver: Driver, argv: list[str]) -> Block:
     except ValueError as e:
         return driver._error(None, str(e) + ".", f"{driver.command} {USAGE}", usage=True)
     except OSError as e:
-        return driver._error(None, f"cannot read {e.filename}: {e.strerror}.", usage=True)
-    return driver._error(None, f"usage: {driver.command} {USAGE}", usage=True)
+        return driver._error(
+            None,
+            f"cannot read {e.filename}: {e.strerror}.",
+            "pass the path of a readable file",
+            usage=True,
+        )
+    return driver._error(
+        None,
+        f"{argv[0] if argv else 'no command'} is not a command here.",
+        f"{driver.command} {USAGE}",
+        usage=True,
+    )
 
 
-def main(argv: list[str], scripts: Path | None = None, command: str | None = None) -> int:
-    """Run one command and print its one block. The skill's scripts dir goes first on the path."""
+def main(
+    argv: list[str],
+    scripts: Path | None = None,
+    command: str | None = None,
+    *,
+    allow_writes: bool = False,
+) -> int:
+    """Run one command and print its one block. The skill's scripts dir goes first on the path.
+
+    ``allow_writes`` is the user's consent to write tools, and it is a
+    parameter, never read from the environment: the agent's shell sets the
+    environment. The caller that holds the consent record (``rote skill
+    run``, from the trust registry) passes it; until that exists every
+    write tool is refused before it is called. For the same reason the
+    read-only server list the MCP helper honors is cleared here.
+    """
     scripts = (scripts or Path(__file__).resolve().parent).resolve()
     if str(scripts) not in sys.path:
         sys.path.insert(0, str(scripts))
-    # Read-only unless the user consented to writes (`rote skill trust
-    # --allow-writes` sets this): a write tool is refused before it is called.
-    if os.environ.get("ROTE_SKILL_ALLOW_WRITES") != "1":
+    if allow_writes:
+        os.environ.pop("ROTE_MCP_READ_ONLY", None)
+    else:
         os.environ["ROTE_MCP_READ_ONLY"] = "1"
+    os.environ.pop("ROTE_MCP_READ_ONLY_SERVERS", None)
+    driver: Driver | None = None
     try:
         driver = Driver(scripts, command or os.environ.get("ROTE_SKILL_COMMAND") or None)
         block = dispatch(driver, argv)
     except Stop as stop:
         block = stop.block
+    finally:
+        if driver is not None:
+            driver.close()
     sys.stdout.write(block.text())
     sys.stdout.flush()
     return block.status

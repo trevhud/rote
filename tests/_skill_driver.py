@@ -61,15 +61,22 @@ def load_driver(scripts: Path, patch: dict[str, Any] | None = None) -> Any:
     return module
 
 
-def drive(scripts: Path, *argv: str, patch: dict[str, Any] | None = None) -> tuple[int, str]:
-    """Run one driver command in-process: ``(exit status, stdout)``."""
+def drive(
+    scripts: Path, *argv: str, patch: dict[str, Any] | None = None, **main_kwargs: Any
+) -> tuple[int, str]:
+    """Run one driver command in-process: ``(exit status, stdout)``.
+
+    Every ERROR block must name a fix; this checks it on every call."""
     saved_path, saved_env = list(sys.path), dict(os.environ)
     try:
         module = load_driver(scripts, patch)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            status = module.main(list(argv), scripts)
-        return status, out.getvalue()
+            status = module.main(list(argv), scripts, **main_kwargs)
+        text = out.getvalue()
+        if text.startswith("ROTE/1 ERROR"):
+            assert "\nFix: " in text, text
+        return status, text
     finally:
         sys.path[:] = saved_path
         os.environ.clear()

@@ -161,6 +161,62 @@ def test_a_raising_function_is_an_error_naming_its_line_and_resume_retries(
     assert status == 0 and header(again)["kind"] == "DONE"
 
 
+FLAKY_ELEMENT = """\
+import pathlib
+
+LOG = pathlib.Path({log!r})
+
+
+def check(n):
+    calls = LOG.read_text().split() if LOG.exists() else []
+    LOG.write_text(" ".join(calls + [str(n)]))
+    if n == 2 and calls.count("2") < 1:
+        raise RuntimeError("element 2 failed once")
+    return n * 10
+"""
+
+
+def _fanned(tmp_path: Path, retry: int) -> tuple[Path, Path]:
+    log = tmp_path / "calls.txt"
+    node: dict[str, Any] = {
+        "id": "checked",
+        "kind": "pure_function",
+        "description": "Check each item.",
+        "impl": "extracted/fan.py:check",
+        "fan_out": True,
+        "inputs": {"n": "pipeline.input.items"},
+    }
+    if retry:
+        node["retry"] = {"max": retry, "backoff": "constant"}
+    scripts = make_skill(
+        tmp_path, _pipeline([node], []), {"fan.py": FLAKY_ELEMENT.format(log=str(log))}
+    )
+    return scripts, log
+
+
+def test_a_fan_element_is_retried_alone(tmp_path: Path) -> None:
+    """As in the python runtime: element 2's retry never re-runs 1 or 3."""
+    scripts, log = _fanned(tmp_path, retry=1)
+    status, out = drive(scripts, "start", '{"items": [1, 2, 3]}', patch=FAST)
+    assert status == 0 and result_of(out) == {"checked": [10, 20, 30]}
+    assert log.read_text().split() == ["1", "2", "2", "3"]
+    assert not (run_dir(out) / "nodes" / "checked.parts").exists()  # folded into the node
+
+
+def test_a_resume_after_a_mid_fan_failure_runs_only_the_unfinished_elements(
+    tmp_path: Path,
+) -> None:
+    scripts, log = _fanned(tmp_path, retry=0)
+    status, out = drive(scripts, "start", '{"items": [1, 2, 3]}', patch=FAST)
+    assert status == 1 and "element 2 failed once" in out
+    assert log.read_text().split() == ["1", "2"]
+    parts = run_dir(out) / "nodes" / "checked.parts"
+    assert sorted(p.name for p in parts.iterdir()) == ["0.json"]
+    status, done = drive(scripts, "resume", header(out)["run"], patch=FAST)
+    assert status == 0 and result_of(done) == {"checked": [10, 20, 30]}
+    assert log.read_text().split() == ["1", "2", "2", "3"]  # element 1 ran once
+
+
 def test_an_agent_loop_is_refused_at_start_not_half_run(tmp_path: Path) -> None:
     pipeline = _pipeline(
         [
@@ -408,7 +464,7 @@ def test_status_reprints_the_pending_block_and_nothing_else(decide_skill: Path) 
 
 GATED = """\
 def table(notes):
-    return {"table": "| " + " | ".join(notes) + " |", "big": "X" * 5000}
+    return {"table": "| " + " | ".join(notes) + " |", "rows": len(notes), "big": "X" * 5000}
 
 
 def finish(approval):
@@ -457,7 +513,8 @@ def _gated(inputs: dict[str, str] | None) -> dict:
 
 @pytest.fixture
 def gate_skill(tmp_path: Path) -> Path:
-    return make_skill(tmp_path, _gated({"table": "tabled.output.table"}), {"gate.py": GATED})
+    inputs = {"table": "tabled.output.table", "rows": "tabled.output.rows"}
+    return make_skill(tmp_path, _gated(inputs), {"gate.py": GATED})
 
 
 def test_a_gate_asks_a_person_through_the_agent_with_only_its_inputs(gate_skill: Path) -> None:
@@ -467,7 +524,9 @@ def test_a_gate_asks_a_person_through_the_agent_with_only_its_inputs(gate_skill:
     assert (head["kind"], head["step"], head["of"]) == ("HUMAN", "approve", "gate")
     assert out.splitlines()[1].startswith("Do not answer this yourself. Ask the person")
     assert "Review: | a | b |" in out  # the message, its declared input filled in
-    assert '--- THEY SEE (json) ---\n{"table":"| a | b |"}' in out
+    # What the message already shows is not shown again; the rest is.
+    assert out.count("| a | b |") == 1
+    assert '--- THEY SEE (json) ---\n{"rows":2}' in out
     assert "XXXX" not in out  # an undeclared upstream field never shows
     assert "--said '<their words, verbatim>'" in out
     assert len(out.encode()) < 900, len(out.encode())
@@ -507,8 +566,10 @@ def test_a_gate_answer_that_does_not_fit_asks_the_person_again(gate_skill: Path)
     assert "THEY SEE" not in again and "QUESTION" not in again
 
 
-def test_a_hand_written_gate_result_cannot_pass_the_gate(gate_skill: Path) -> None:
-    """An agent that writes nodes/<gate>.json itself and resumes is refused."""
+def test_a_single_hand_written_gate_file_is_refused(gate_skill: Path) -> None:
+    """A gate result in nodes/ that run.json's answer log does not match is
+    refused. This is a consistency check, not a barrier: a process running as
+    the user can write both files, and the journal is an audit trail."""
     _, out = drive(gate_skill, "start", '{"notes": ["a"]}')
     run = header(out)["run"]
     forged = {"result": {"approved": True, "approver": "me"}, "answered_by": "human", "said": "ok"}
@@ -554,32 +615,70 @@ def test_a_reemitted_plan_ends_the_run(gate_skill: Path) -> None:
     assert journal(out)["plan_hash"] != plan_hash(plan.read_text())
 
 
-def _sleeper() -> subprocess.Popen[bytes]:
-    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+def _holding(lock: Path) -> subprocess.Popen[str]:
+    """A process that holds ``lock``'s flock, as a call running steps does."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, sys, time\n"
+            "f = open(sys.argv[1], 'a+')\n"
+            "fcntl.flock(f.fileno(), fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(60)\n",
+            str(lock),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+    return proc
 
 
-def test_a_wave_held_by_a_live_call_is_busy_and_a_dead_ones_is_taken_over(
-    code_skill: Path,
-) -> None:
+def _between_steps(skill: Path) -> tuple[str, Path, dict[str, Any]]:
+    """A run whose first step failed and was fixed, ready to resume."""
     broken = MATH.replace("return n * factor", "raise ValueError('x')")
-    (code_skill / "extracted" / "math.py").write_text(broken, encoding="utf-8")
-    _, out = drive(code_skill, "start", '{"items": [1]}')
-    (code_skill / "extracted" / "math.py").write_text(MATH, encoding="utf-8")
-    run, folder = header(out)["run"], run_dir(out)
+    (skill / "extracted" / "math.py").write_text(broken, encoding="utf-8")
+    _, out = drive(skill, "start", '{"items": [1]}')
+    (skill / "extracted" / "math.py").write_text(MATH, encoding="utf-8")
     state = journal(out)
     state.update(state="running", error=None)
-    live = _sleeper()
+    return header(out)["run"], run_dir(out), state
+
+
+def test_a_run_claimed_by_a_live_call_is_busy_and_a_dead_ones_is_taken_over(
+    code_skill: Path,
+) -> None:
+    run, folder, state = _between_steps(code_skill)
+    holder = _holding(folder / "claim.lock")
     try:
-        state["wave"] = {"index": 0, "pid": live.pid, "since": time.time()}
+        state["wave"] = {"index": 0, "pid": holder.pid, "since": time.time()}
         (folder / "run.json").write_text(json.dumps(state), encoding="utf-8")
         status, busy = drive(code_skill, "resume", run)
-        assert status == 1 and f"run busy: another call (pid {live.pid})" in busy
+        assert status == 1 and f"run busy: another call (pid {holder.pid})" in busy
         assert not (folder / "result.json").exists()
     finally:
-        live.kill()
-        live.wait()
-    # The same pid, now exited: its wave is taken over and the run finishes.
+        holder.kill()
+        holder.wait()
+    # The holder exited, so the OS dropped its lock: the run is taken over.
     status, done = drive(code_skill, "resume", run)
+    assert status == 0 and result_of(done)["summed"]["sum"] == 102
+    assert journal(done)["wave"] is None
+
+
+def test_a_reused_pid_does_not_read_as_busy(code_skill: Path) -> None:
+    """The journal names a pid that is alive but is not the holder (the OS gave
+    a dead holder's pid to another process): the free lock says the holder
+    is gone, so the run goes on."""
+    run, folder, state = _between_steps(code_skill)
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        state["wave"] = {"index": 0, "pid": stranger.pid, "since": time.time()}
+        (folder / "run.json").write_text(json.dumps(state), encoding="utf-8")
+        status, done = drive(code_skill, "resume", run)
+    finally:
+        stranger.kill()
+        stranger.wait()
     assert status == 0 and result_of(done)["summed"]["sum"] == 102
 
 
@@ -683,6 +782,39 @@ def test_a_waiting_run_is_swept_only_after_its_deadline(gate_skill: Path) -> Non
     later = time.time() + 3600 + 86400 + 5
     drive(gate_skill, "runs", "--prune", patch={"_now": lambda: later})
     assert not run_dir(out).exists()
+
+
+def _expired_run(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    state = {"format": "rote-skill-run/1", "state": "done", "updated": 0}
+    (folder / "run.json").write_text(json.dumps(state), encoding="utf-8")
+    (folder / "precious.txt").write_text("keep me", encoding="utf-8")
+
+
+def test_the_sweep_never_follows_a_symlink_and_survives_bad_entries(
+    code_skill: Path, tmp_path: Path
+) -> None:
+    _, first = drive(code_skill, "start", '{"items": [1]}')
+    skill_dir = run_dir(first).parent
+    # An expired-looking run outside the run dir, reached two ways by symlink.
+    outside = tmp_path / "elsewhere" / "bbbbbbbbbbbb"
+    _expired_run(outside)
+    (skill_dir / "cccccccccccc").symlink_to(outside, target_is_directory=True)
+    linked_journal = skill_dir / "dddddddddddd"
+    linked_journal.mkdir()
+    (linked_journal / "run.json").symlink_to(outside / "run.json")
+    # Entries that cannot be read as a journal.
+    (skill_dir / "eeeeeeeeeeee").mkdir()
+    (skill_dir / "eeeeeeeeeeee" / "run.json").write_text('{"updated": "soon"}')
+    (skill_dir / "ffffffffffff").mkdir()
+    (skill_dir / "ffffffffffff" / "run.json").write_text("[1, 2]")
+    (skill_dir / "a-file").write_text("not a dir")
+    _expired_run(skill_dir / "aaaaaaaaaaaa")  # a real expired run, for contrast
+    status, out = drive(code_skill, "start", '{"items": [2]}')  # start sweeps
+    assert status == 0 and header(out)["kind"] == "DONE"
+    assert (outside / "precious.txt").read_text() == "keep me"
+    assert (skill_dir / "cccccccccccc").is_symlink() and linked_journal.exists()
+    assert not (skill_dir / "aaaaaaaaaaaa").exists()
 
 
 # ───────── MCP, live, against a real fastmcp server ─────────
@@ -820,13 +952,21 @@ def test_a_write_tool_is_refused_before_it_is_called(tmp_path: Path, fx: Fixture
     assert status == 1 and "fx.write_note may write" in out
     assert "Fix: rote skill trust drv --allow-writes" in out
     assert fx.calls("write_note") == []
-    status, done = drive(scripts, "resume", header(out)["run"])
-    assert status == 1 and fx.calls("write_note") == []  # still read-only on resume
-    os.environ["ROTE_SKILL_ALLOW_WRITES"] = "1"
+    # The environment cannot grant consent: the agent's shell sets it.
+    for key, value in (
+        ("ROTE_SKILL_ALLOW_WRITES", "1"),
+        ("ROTE_MCP_READ_ONLY", "0"),
+        ("ROTE_MCP_READ_ONLY_SERVERS", json.dumps({"fx": fx.url})),
+    ):
+        os.environ[key] = value
     try:
-        status, done = drive(scripts, "resume", header(out)["run"])
+        status, again = drive(scripts, "resume", header(out)["run"])
     finally:
-        del os.environ["ROTE_SKILL_ALLOW_WRITES"]
+        for key in ("ROTE_SKILL_ALLOW_WRITES", "ROTE_MCP_READ_ONLY", "ROTE_MCP_READ_ONLY_SERVERS"):
+            del os.environ[key]
+    assert status == 1 and "may write" in again and fx.calls("write_note") == []
+    # Consent arrives only as main()'s parameter (rote skill run, from the trust record).
+    status, done = drive(scripts, "resume", header(out)["run"], allow_writes=True)
     assert status == 0 and result_of(done) == {"noted": {"written": "hi"}}
 
 
