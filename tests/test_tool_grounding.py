@@ -1007,3 +1007,27 @@ def test_servers_named_needs_a_server_shaped_mention_for_a_registered_name(
     assert servers_named(shaped) == {}
     bdr = REPO / "examples" / "bdr-outreach" / "skill"
     assert set(servers_named(bdr, ["zoominfo", "gmail"])) == {"zoominfo"}
+
+
+def test_servers_named_does_not_take_half_a_longer_name(tmp_path: Path) -> None:
+    """A registered `drive` is not named by "Google Drive MCP", nor `sheets`
+    by "Google Sheets MCP" or "google-sheets MCP": each is the tail of
+    another server's name. The full name still matches, and so does the
+    short name on its own."""
+    from rote.compiler.tool_grounding import servers_named
+
+    longer = _skill(
+        tmp_path,
+        "Read the file with the Google Drive MCP.\n\n"
+        "Then append rows (Google Sheets MCP), or via the google-sheets MCP.",
+    )
+    assert servers_named(longer, ["drive", "sheets"]) == {}
+    assert servers_named(longer, ["google_drive", "google_sheets"]) == {
+        "google_drive": "Google Drive MCP",
+        "google_sheets": "Google Sheets MCP",
+    }
+    alone = _skill(tmp_path, "Read the file with the Drive MCP, then the `sheets` server.")
+    assert servers_named(alone, ["drive", "sheets"]) == {
+        "drive": "Drive MCP",
+        "sheets": "`sheets` server",
+    }

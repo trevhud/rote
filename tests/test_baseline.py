@@ -258,16 +258,46 @@ def test_trial_wires_mcp_config_strictly(skill_dir: Path, monkeypatch: pytest.Mo
     }
     allowed = args[args.index("--allowedTools") + 1].split(",")
     assert allowed == [
-        "Read",
-        "Glob",
-        "Grep",
-        "Write(./**)",
+        "Read(./**)",
+        f"Read(/{skill_dir.resolve().as_posix()}/**)",
         "Edit(./**)",
         "mcp__gmail__search_threads",
     ]  # read-only gate: explicit ids only, never mcp__gmail__*
     # Config file existed at spawn time inside the trial workdir.
     assert config_path.name == "mcp-config.json"
     assert config_path.parent == Path(captured["kwargs"]["cwd"])
+
+
+def test_trial_scopes_file_access_to_the_cwd_and_the_skill(
+    skill_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A third-party SKILL.md could have the agent read ~/.ssh and send the
+    secret out as a read-only MCP tool's argument. No file tool may be
+    allowed unscoped: a bare Read/Glob/Grep (or Write/Edit) allows the whole
+    machine. Read rules are what Glob and Grep are checked against, so they
+    carry no rule of their own."""
+    captured = _install_fake_claude(monkeypatch, [_result_event()], write_result={})
+    run_baseline_trial(skill_dir, {}, model="m")
+    allowed = captured["args"][captured["args"].index("--allowedTools") + 1].split(",")
+    file_rules = [r for r in allowed if not r.startswith("mcp__")]
+    for tool in ("Read", "Glob", "Grep", "Write", "Edit"):
+        assert tool not in file_rules, f"{tool} is allowed unscoped"
+    skill_root = skill_dir.resolve().as_posix()
+    assert file_rules == ["Read(./**)", f"Read(/{skill_root}/**)", "Edit(./**)"]
+    assert f"Read(/{skill_root}/**)".startswith("Read(//")  # `//` = absolute path
+
+
+def test_trial_refuses_a_skill_dir_a_rule_would_read_as_a_pattern(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rote.eval.empirical import EmpiricalError
+
+    skill = tmp_path / "skills*"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: t\n---\nDo it.\n")
+    _install_fake_claude(monkeypatch, [_result_event()], write_result={})
+    with pytest.raises(EmpiricalError, match="cannot scope"):
+        run_baseline_trial(skill, {}, model="m")
 
 
 def test_trial_with_no_servers_is_still_strict_and_sees_none(
@@ -319,9 +349,11 @@ def test_trial_does_not_inherit_the_users_settings_or_permission_mode(
     assert args[args.index("--disallowedTools") + 1] == (
         "mcp__gmail__send_email,mcp__gmail__delete_thread"
     )
-    # The skill's own files stay readable: its dir is a working directory.
+    # The skill's own files stay readable: its dir is a working directory
+    # and a read rule names it.
     assert args[args.index("--add-dir") + 1] == str(skill_dir.resolve())
-    assert "Read" in args[args.index("--allowedTools") + 1].split(",")
+    allowed = args[args.index("--allowedTools") + 1].split(",")
+    assert f"Read(/{skill_dir.resolve().as_posix()}/**)" in allowed
 
 
 def test_trial_reports_the_servers_the_skill_names_but_never_called(

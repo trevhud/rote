@@ -203,16 +203,21 @@ def _server_shaped(name: str, text: str, table: frozenset[str]) -> str | None:
     list: here a match makes a run that never called the server a degraded
     run, so a proper noun in prose ("post it in Slack") is not enough. The
     name followed by "MCP" or "server", or the skill's tool table mapping a
-    tool to it, is.
+    tool to it, is. Half a longer name is not: a registered ``drive`` is not
+    named by "Google Drive MCP", nor ``sheets`` by "Google Sheets MCP" or
+    "google-sheets MCP" (:func:`_inside_longer_name`, plus a name joined on
+    by ``-``, ``_`` or ``.``).
     """
     if name in table:
         return f"the skill's tool table names {name!r}"
     words = _phrase(name).split()
     if not words:
         return None
-    pattern = r"\b" + r"[\W_]+".join(map(re.escape, words)) + r"`?\s+(?:mcp|server)\b"
-    m = re.search(pattern, text, re.IGNORECASE)
-    return m.group(0) if m else None
+    pattern = r"(?<![\w.-])" + r"[\W_]+".join(map(re.escape, words)) + r"`?\s+(?:mcp|server)\b"
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        if not _inside_longer_name(text, m.start()):
+            return m.group(0)
+    return None
 
 
 def servers_named(skill_dir: Path, registered: Iterable[str] = ()) -> dict[str, str]:

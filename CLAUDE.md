@@ -2147,9 +2147,14 @@ Claude Code 2.1.308, each with a real run:
 - **`--permission-mode dontAsk`** denies anything `--allowedTools` does not
   name. The result envelope lists each refusal in `permission_denials`,
   and the run reports them. **`--tools Read,Write,Edit,Glob,Grep`** removes every other
-  built-in (Bash, WebSearch, WebFetch) from the model's context. Writes are
-  allowed only as `Write(./**)` / `Edit(./**)`, anchored at the temp cwd.
-  Reads stay open: the skill dir comes in through `--add-dir`.
+  built-in (Bash, WebSearch, WebFetch) from the model's context.
+- **File access is scoped** (`skill_run_file_rules`): `Read(./**)`,
+  `Read(//<abs skill dir>/**)` and `Edit(./**)`, nothing bare. A bare
+  `Read,Glob,Grep` let a probe read a directory outside the run, and a
+  third-party SKILL.md could pass `~/.ssh` out as a read-only tool's
+  argument. Glob and Grep are checked against Read rules (a `Glob(path)` or
+  `Write(path)` rule is accepted and never matches, and `Edit(path)` covers
+  Write). `//` starts an absolute path, `./` is the cwd.
 - **`--disallowedTools`** names the wired servers' tools the read-only gate
   excludes (explicit ids, never `mcp__<server>__*`: deny beats allow). A
   registered server that contributes no callable tool is not wired at all.

@@ -452,7 +452,7 @@ def run_baseline_trial(
             "--add-dir",
             str(skill_path),
             *skill_run_isolation_args(
-                workdir, mcp_servers, mcp_tool_ids or [], denied_mcp_tool_ids or []
+                workdir, skill_path, mcp_servers, mcp_tool_ids or [], denied_mcp_tool_ids or []
             ),
             "--output-format",
             "stream-json",

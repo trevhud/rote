@@ -60,16 +60,41 @@ MCP_CONFIG_FILENAME = "mcp-config.json"
 #: built-in from the model's context, not just from its permissions.
 SKILL_RUN_TOOLS = ("Read", "Write", "Edit", "Glob", "Grep")
 
-#: What those tools are allowed to do without asking. Reads anywhere (the
-#: skill dir comes in through ``--add-dir``; reading is not a side effect),
-#: writes only under the run's own temp working directory: ``./**`` is
-#: anchored at the cwd (verified on Claude Code 2.1.308, a Write outside it
-#: is denied under ``dontAsk``).
-_SKILL_RUN_ALLOWED = ("Read", "Glob", "Grep", "Write(./**)", "Edit(./**)")
+#: Characters a permission rule's path reads as a pattern. A skill dir
+#: holding one cannot be scoped exactly, so it is refused, never widened.
+_RULE_PATTERN_CHARS = frozenset("*?[]{}!\\,")
+
+
+def skill_run_file_rules(skill_dir: Path) -> list[str]:
+    """What the built-in tools may do without asking: the cwd and the skill.
+
+    Reads are scoped, not open: a third-party SKILL.md can tell the agent to
+    read ``~/.ssh`` or a token store and send the secret out as the argument
+    of a read-only MCP tool (a search query, a repository name). Measured on
+    Claude Code 2.1.308 under ``dontAsk``: a bare ``Read,Glob,Grep`` let all
+    three reach a directory outside the run; ``Read(./**)`` plus
+    ``Read(//<skill dir>/**)`` lets SKILL.md, references/, and Glob and Grep
+    inside the skill through, and denies all three outside.
+
+    * ``Read(path)`` rules are what Glob and Grep are checked against too; a
+      ``Glob(path)`` or ``Grep(path)`` rule is accepted and never matches,
+      and a bare ``Glob`` / ``Grep`` would allow them anywhere.
+    * ``Edit(path)`` covers Write as well (a ``Write(path)`` rule never
+      matches), so writes stay under the run's own temp cwd.
+    * ``./**`` is anchored at the cwd, ``//`` starts an absolute path.
+    """
+    resolved = skill_dir.resolve()
+    if _RULE_PATTERN_CHARS & set(str(resolved)):
+        raise EmpiricalError(
+            f"cannot scope a skill run's reads to {resolved}: the path holds a "
+            "character permission rules read as a pattern. Move or rename the skill dir"
+        )
+    return ["Read(./**)", f"Read(/{resolved.as_posix()}/**)", "Edit(./**)"]
 
 
 def skill_run_isolation_args(
     workdir: Path,
+    skill_dir: Path,
     mcp_servers: Mapping[str, Mapping[str, Any]] | None,
     allowed_mcp_tools: Sequence[str],
     denied_mcp_tools: Sequence[str] = (),
@@ -93,6 +118,8 @@ def skill_run_isolation_args(
     * ``--disallowedTools``: the wired servers' tools the read-only gate
       excludes. ``dontAsk`` already denies them; a deny rule also takes
       them out of the model's context, so it never plans around them.
+    * :func:`skill_run_file_rules`: file access only in the cwd and the
+      skill dir, so nothing else on the machine can become a tool argument.
     """
     config_path = workdir / MCP_CONFIG_FILENAME
     config_path.write_text(
@@ -107,7 +134,7 @@ def skill_run_isolation_args(
         "--permission-mode",
         "dontAsk",
         "--allowedTools",
-        ",".join([*_SKILL_RUN_ALLOWED, *allowed_mcp_tools]),
+        ",".join([*skill_run_file_rules(skill_dir), *allowed_mcp_tools]),
     ]
     if denied_mcp_tools:
         args += ["--disallowedTools", ",".join(denied_mcp_tools)]
@@ -433,6 +460,7 @@ def run_skill_trial(
             str(skill_path),
             *skill_run_isolation_args(
                 workdir,
+                skill_path,
                 mcp_servers,
                 [f"mcp__{name}__*" for name in sorted(mcp_servers or {})],
             ),
