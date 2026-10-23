@@ -731,6 +731,27 @@ def test_a_constant_the_logic_reads_is_not_flagged(tmp_path: Path, module: str) 
     assert "Dead configuration" not in (v.repair_instruction(tmp_path) or "")
 
 
+def test_kwargs_does_not_excuse_a_named_constant_it_never_holds(tmp_path: Path) -> None:
+    """review6: `**kw` never holds `result_limit`, so this never reads it."""
+    root = _constant_root(
+        tmp_path, "def pick(results, result_limit, **kw):\n    return {'kept': results, **kw}\n"
+    )
+    assert _dead(verify_deliverable(root, run_tests=False)) == ["pick"]
+
+
+def test_kwargs_does_not_excuse_an_unused_node_input_either(tmp_path: Path) -> None:
+    """The same rule for #213's unused-input questions, which share the lookup."""
+    root = _unused_root(tmp_path, "return {'ids': sorted(set(lines))}")
+    steps = root / "extracted" / "steps.py"
+    steps.write_text(
+        steps.read_text().replace(
+            "def duplicates(lines, convert):", "def duplicates(lines, convert, **kw):"
+        )
+    )
+    v = verify_deliverable(root, run_tests=False)
+    assert [q.node_id for q in v.questions if "never uses it" in q.text] == ["duplicates"]
+
+
 def test_a_default_or_a_decorator_naming_the_constant_is_not_a_read(tmp_path: Path) -> None:
     root = _constant_root(
         tmp_path,

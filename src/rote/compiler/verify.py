@@ -518,7 +518,11 @@ def _impl_reads(
     """The node's impl function and every name its body reads, or ``None``
     when that cannot be decided from the code: no impl, a module that does
     not parse, no top-level function by that name, or a body that can read
-    any argument without naming it (``**kwargs``, ``locals()``, ``vars()``).
+    a named parameter without naming it (``locals()``, ``vars()``).
+
+    ``**kwargs`` is no such way: it never holds a named parameter, so
+    ``def f(x, limit, **kw): return kw`` still never reads ``limit``. An
+    exemption for it hid exactly that dead config.
     """
     if node.impl is None:
         return None
@@ -538,10 +542,7 @@ def _impl_reads(
         ),
         None,
     )
-    # ``**kwargs`` never holds a named parameter, so for a named one this
-    # exemption is unobservable (an equivalent mutant); it stays as the
-    # conservative reading of a signature that forwards what it gets.
-    if fn is None or fn.args.kwarg is not None:
+    if fn is None:
         return None
     # The body only: a default value or a decorator is not a read.
     used = {n.id for stmt in fn.body for n in ast.walk(stmt) if isinstance(n, ast.Name)}
@@ -614,7 +615,8 @@ def unused_constant_findings(
     docs-digest compile took ``result_limit`` and sliced with its own
     module-level ``RESULT_LIMIT = 5``. Decided from the code alone: the
     parameter is named nowhere in the function body, and the body has no
-    ``**kwargs``, ``locals()`` or ``vars()`` that could read it unnamed. A
+    ``locals()`` or ``vars()`` that could read it unnamed (``**kwargs``
+    cannot: it never holds a named parameter). A
     review gap, not an error: it goes back for repair, and a reviewer
     closes it if it survives."""
     implemented = {i.node_id for i in implementations if i.status == "implemented"}
