@@ -362,7 +362,9 @@ def replay_callback(pending: PendingLogin, callback_url: str) -> None:
     """Deliver the URL a browser on another machine ended on to the listener.
 
     Only a loopback ``/callback`` URL on the listener's own port is sent,
-    so this can never be pointed at another host.
+    so this can never be pointed at another host. And only while this
+    login's listener is alive and waiting: once it has stopped, its port is
+    free, and whatever binds it next would receive the code and state.
     """
     import httpx
 
@@ -372,7 +374,25 @@ def replay_callback(pending: PendingLogin, callback_url: str) -> None:
             "--callback-url must be the http://localhost:<port>/callback?... URL the "
             "browser was sent back to"
         )
-    if pending.port is None or parts.port != pending.port or parts.path != "/callback":
+    try:
+        port = parts.port
+    except ValueError as e:
+        raise PendingLoginError(f"--callback-url has an invalid port ({e})") from e
+    current = read_pending(pending.id)
+    if current is None or current.status != "waiting" or current.expired():
+        state = "gone" if current is None else ("expired" if current.expired() else current.status)
+        raise PendingLoginError(
+            f"pending login {pending.id} is {state}, so its listener no longer waits for "
+            f"a callback; nothing was sent. Start again: rote mcp login {pending.server} "
+            "--no-wait"
+        )
+    if not _pid_alive(current.pid):
+        raise PendingLoginError(
+            f"the listener for pending login {pending.id} has stopped; nothing was sent. "
+            f"Start again: rote mcp login {pending.server} --no-wait"
+        )
+    pending = current
+    if pending.port is None or port != pending.port or parts.path != "/callback":
         raise PendingLoginError(
             f"--callback-url is not this login's callback (expected port {pending.port}, "
             "path /callback): was it copied from another login?"
@@ -465,6 +485,10 @@ def _redact(text: str, secrets_seen: list[str]) -> str:
     return text
 
 
+class _Deadline(Exception):
+    """The record's expiry arrived while the listener was still working."""
+
+
 def _caused_by_timeout(exc: BaseException) -> bool:
     """Whether a TimeoutError is anywhere in ``exc``'s chain or groups
     (fastmcp wraps the callback timeout in its own connection error)."""
@@ -540,18 +564,32 @@ def _listen(pending_id: str) -> int:
                 on_rejected_callback=rejected,
             )
         )
+        deadline = pending.expires_at - _LISTENER_MARGIN_SECONDS
         while not task.done():
             await asyncio.wait({task}, timeout=_WATCH_INTERVAL_SECONDS)
-            if not task.done() and not pending_path(pending_id).exists():
+            if task.done():
+                break
+            # The callback server's own timeout starts only once discovery,
+            # registration and the preflight are done; this deadline holds
+            # from the start, so an expired record never has a live listener.
+            expired = time.time() >= deadline
+            if expired or not pending_path(pending_id).exists():
                 task.cancel()  # the record was deleted: the login was cancelled
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
+                if expired:
+                    raise _Deadline
                 raise asyncio.CancelledError
         doc = task.result()
         return result_summary(doc, config)
 
     try:
         summary = asyncio.run(run())
+    except _Deadline:
+        error = "it expired before the browser returned"
+        _update(pending_id, status="failed", error=error)
+        send({"event": "failed", "error": error})
+        return 1
     except asyncio.CancelledError:
         send({"event": "failed", "error": "the login was cancelled"})
         return 1

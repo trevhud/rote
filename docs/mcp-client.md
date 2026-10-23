@@ -588,12 +588,17 @@ rote mcp login --complete <pending_id> --json  # reports the stored login
   exit 2 with the same `authorization_pending` object; done, failed and
   expired remove the record, so each id completes once.
 - A browser on another machine cannot reach this loopback and ends on a
-  page that fails to load. `--complete <id> --callback-url '<that URL>'`
-  replays it to the listener, only to `127.0.0.1` on the record's own
-  port. The pasted code is useless to anything else: it is single-use
-  and bound to the verifier only the listener holds.
+  page that fails to load. `--complete <id> --callback-url -` reads that
+  URL from stdin (an argument works too, but shows in `ps`) and replays
+  it to the listener, only to `127.0.0.1` on the record's own port, and
+  only while the record is `waiting`, unexpired, and its listener's pid
+  is alive: a stopped listener's port is free, and a squatter on it
+  would otherwise receive the code and state. The pasted code is useless
+  to anything else: it is single-use and bound to the verifier only the
+  listener holds.
 - The record expires after 10 minutes; the listener stops at that
-  deadline. `--cancel [<id>]` deletes the record, and the listener, which
+  deadline, counted from its start (not from when the callback server
+  comes up, after discovery and registration). `--cancel [<id>]` deletes the record, and the listener, which
   watches it, exits. A second `--no-wait` for a server with a live
   login is refused naming the first id; another server takes the next
   free published port.

@@ -17,6 +17,7 @@ Slow: a real AS process, real listener processes and real callbacks.
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import os
 import signal
@@ -158,7 +159,8 @@ def test_start_then_browser_then_complete(
     url = started["authorization_url"]
     assert urlsplit(url).path == "/as-a/authorize"
     assert started["next"][0]["command"] == f"rote mcp login --complete {pending_id}"
-    assert started["next"][1]["command"].endswith("--callback-url <url>")
+    assert started["next"][1]["command"].endswith("--callback-url -")
+    assert started["next"][1]["stdin"] == "<url>"
     assert [o["status"] for o in started["outcomes"]] == ["done"]
 
     record_path = pending_login.pending_path(pending_id)
@@ -274,7 +276,7 @@ def test_a_second_login_for_the_same_server_is_refused_another_server_gets_the_n
 
 
 def test_a_pasted_callback_url_completes_a_login_whose_browser_could_not_return(
-    fx: OAuthFixture, capsys: pytest.CaptureFixture[str]
+    fx: OAuthFixture, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     started = _start(capsys)
     pending_id = started["pending_id"]
@@ -288,8 +290,10 @@ def test_a_pasted_callback_url_completes_a_login_whose_browser_could_not_return(
     assert "not this login's callback" in err
     assert fx.events("token") == []
 
+    # Pasted on stdin, so the code and state never appear in the process list.
+    monkeypatch.setattr("sys.stdin", io.StringIO(pasted + "\n"))
     code, done, err = _rote(
-        capsys, "mcp", "login", "--complete", pending_id, "--callback-url", pasted, "--json"
+        capsys, "mcp", "login", "--complete", pending_id, "--callback-url", "-", "--json"
     )
     assert code == 0, err
     assert done["ok"] is True
@@ -363,3 +367,68 @@ def test_the_listener_outlives_the_shell_tool_that_ran_the_command(fx: OAuthFixt
     assert record is not None and record.status == "waiting"
     assert pending_login._pid_alive(record.pid)
     assert not _port_free(CALLBACK_PORTS[0])
+
+
+def test_a_listener_stuck_in_discovery_is_gone_when_its_record_expires(
+    fx: OAuthFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A server that never answers discovery: the callback server never comes
+    up, so only the listener's own deadline can stop it. It must be dead by
+    the record's expiry, and the start reports the expiry, not a hang."""
+    import socket
+    import threading
+
+    from rote.mcp import McpAuthError
+
+    hold: list[socket.socket] = []
+    stuck = socket.socket()
+    stuck.bind(("127.0.0.1", 0))
+    stuck.listen()
+
+    def accept_and_never_answer() -> None:
+        while True:
+            try:
+                conn, _ = stuck.accept()
+            except OSError:
+                return
+            hold.append(conn)
+
+    threading.Thread(target=accept_and_never_answer, daemon=True).start()
+    url = f"http://127.0.0.1:{stuck.getsockname()[1]}/mcp"
+    save_registry(McpRegistry(servers={"stuck": McpServerConfig(url=url)}))
+    monkeypatch.setattr(pending_login, "PENDING_TTL_SECONDS", 4)
+    pids: list[int] = []
+
+    def watch() -> None:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not pids:
+            for pending in pending_login.list_pending():
+                if pending.pid is not None:
+                    pids.append(pending.pid)
+            time.sleep(0.05)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    began = time.time()
+    try:
+        with pytest.raises(McpAuthError, match="expired before the browser returned"):
+            pending_login.start_pending_login("stuck", McpServerConfig(url=url), timeout=30)
+        watcher.join(timeout=5)
+        assert pids, "the listener never recorded its pid"
+        expires_at = began + 4
+        while time.time() < expires_at and pending_login._pid_alive(pids[0]):
+            time.sleep(0.05)
+        time.sleep(0.3)  # let the exited process be reaped
+        assert not _alive_or_zombie(pids[0]), "the listener outlived its record"
+    finally:
+        stuck.close()
+        for conn in hold:
+            conn.close()
+
+
+def _alive_or_zombie(pid: int) -> bool:
+    """A child that exited but was not reaped still answers kill(pid, 0)."""
+    import subprocess
+
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return state.returncode == 0 and not state.stdout.strip().startswith("Z")

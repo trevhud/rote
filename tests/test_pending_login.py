@@ -6,9 +6,14 @@ browser) is tests/test_mcp_login_no_wait_e2e.py.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import stat
+import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
@@ -90,6 +95,8 @@ def test_a_listener_that_died_is_a_failure_not_a_wait() -> None:
         ("http://localhost:33419/callback?code=x&state=y", "not this login's callback"),
         ("http://localhost:33418/other?code=x&state=y", "not this login's callback"),
         ("http://localhost:33418/callback?state=y", "carries no code"),
+        ("http://localhost:abc/callback?code=x&state=y", "invalid port"),
+        ("http://localhost:99999/callback?code=x&state=y", "invalid port"),
     ],
 )
 def test_a_pasted_callback_is_only_ever_sent_to_this_logins_listener(
@@ -97,7 +104,8 @@ def test_a_pasted_callback_is_only_ever_sent_to_this_logins_listener(
 ) -> None:
     sent: list[str] = []
     monkeypatch.setattr("httpx.get", lambda target, **_: sent.append(target))
-    pending = _record(status="waiting", port=33418)
+    # A live listener: this test process stands in for it.
+    pending = _record(status="waiting", port=33418, pid=os.getpid())
     with pytest.raises(PendingLoginError, match=message):
         pending_login.replay_callback(pending, url)
     assert sent == []
@@ -135,7 +143,7 @@ def test_the_authorization_pending_object_matches_action_required() -> None:
     assert (payload["status"], payload["reason"]) == ("action_required", "authorization_pending")
     assert [n["command"] for n in payload["next"]] == [
         "rote mcp login --complete 0123456789abcdef",
-        "rote mcp login --complete 0123456789abcdef --callback-url <url>",
+        "rote mcp login --complete 0123456789abcdef --callback-url -",
     ]
     waiting = authorization_pending(
         server="vendor",
@@ -173,3 +181,115 @@ def test_complete_without_a_pending_login_says_how_to_start_one(
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert "rote mcp login <server> --no-wait" in payload["error"]
+
+
+class _Squatter(BaseHTTPRequestHandler):
+    """Whatever bound a callback port after the listener let it go."""
+
+    seen: list[str] = []
+
+    def do_GET(self) -> None:  # noqa: N802 (http.server's name)
+        _Squatter.seen.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"status": "done", "pid": 2**22 + 12345},
+        {"status": "failed", "pid": 2**22 + 12345},
+        {"status": "waiting", "pid": 2**22 + 12345},  # the listener died
+        {"status": "waiting", "pid": None},
+        {"status": "waiting", "pid": os.getpid(), "expires_at": time.time() - 1},
+    ],
+)
+def test_a_pasted_callback_never_reaches_a_port_the_listener_left(state: dict[str, Any]) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Squatter)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    _Squatter.seen = []
+    try:
+        port = server.server_address[1]
+        pending = _record(port=port, **state)
+        url = f"http://localhost:{port}/callback?code=the-code&state=the-state"
+        with pytest.raises(PendingLoginError, match="nothing was sent"):
+            pending_login.replay_callback(pending, url)
+        assert _Squatter.seen == []
+        # The same URL does reach a listener that is alive and waiting.
+        live = _record(server="other", port=port, status="waiting", pid=os.getpid())
+        pending_login.replay_callback(live, url)
+        assert _Squatter.seen == ["/callback?code=the-code&state=the-state"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _listen_with(fake_login: Any, monkeypatch: pytest.MonkeyPatch, **record: Any) -> PendingLogin:
+    """Run the listener in this process with ``fake_login`` in place of the OAuth dance."""
+    from rote.mcp import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(servers={"vendor": McpServerConfig(url="https://vendor.example/mcp")})
+    )
+    pending = _record(**record)
+    monkeypatch.setattr("rote.mcp.auth.login", fake_login)
+    monkeypatch.setattr(sys, "stdout", io.StringIO())  # the handshake pipe
+    assert pending_login._listen(pending.id) == 1
+    return pending
+
+
+def test_a_listener_error_that_quotes_the_state_is_stored_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "s3cret-state-value-0123456789"
+
+    async def fake_login(server: str, config: Any, *, handoff: Any, **_: Any) -> None:
+        await handoff(
+            f"https://as.example/authorize?state={secret}"
+            "&redirect_uri=http%3A%2F%2Flocalhost%3A33418%2Fcallback"
+        )
+        raise RuntimeError(f"State parameter mismatch: forged != {secret}")
+
+    pending = _listen_with(fake_login, monkeypatch)
+    stored = pending_login.read_pending(pending.id)
+    assert stored is not None and stored.status == "failed"
+    assert secret not in (stored.error or "")
+    assert stored.error == "RuntimeError: State parameter mismatch: forged != <redacted>"
+
+
+def test_a_slow_discovery_never_outlives_the_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The callback server's timeout starts after discovery; the listener's own
+    deadline must hold from the start: an expired record never has a live listener."""
+    import asyncio
+
+    async def stuck_in_discovery(server: str, config: Any, **_: Any) -> None:
+        await asyncio.sleep(15)  # bounded, so a regression fails instead of hanging
+
+    now = time.time()
+    began = time.monotonic()
+    pending = _listen_with(stuck_in_discovery, monkeypatch, created_at=now, expires_at=now + 3.0)
+    assert time.monotonic() - began < 3.0  # returned before the record expired
+    stored = pending_login.read_pending(pending.id)
+    assert stored is not None and stored.status == "failed"
+    assert stored.error == "it expired before the browser returned"
+
+
+def test_the_blocking_login_says_when_it_ignored_a_wrong_state_callback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from rote.mcp import McpRegistry, McpServerConfig, save_registry
+
+    save_registry(
+        McpRegistry(servers={"vendor": McpServerConfig(url="https://vendor.example/mcp")})
+    )
+
+    async def fake_login(server: str, config: Any, *, on_rejected_callback: Any, **_: Any) -> None:
+        on_rejected_callback()
+        return None
+
+    monkeypatch.setattr("rote.mcp.auth.login", fake_login)
+    assert cli_main(["mcp", "login", "vendor"]) == 0
+    assert "ignored a callback with the wrong state" in capsys.readouterr().err

@@ -109,7 +109,8 @@ def authorization_pending(
         "next": [
             {"command": complete, "when": "the user approved access in the browser"},
             {
-                "command": f"{complete} --callback-url <url>",
+                "command": f"{complete} --callback-url -",
+                "stdin": "<url>",
                 "when": "the browser ran on another machine: <url> is the "
                 "http://localhost:.../callback?... address it ended on",
             },

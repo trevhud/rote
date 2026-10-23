@@ -2250,7 +2250,18 @@ def _cmd_mcp_login(args: argparse.Namespace) -> int:
         return _mcp_login_no_wait(args, config, mode, out)
     try:
         doc = asyncio.run(
-            login(args.name, config, no_browser=args.no_browser, callback_port=args.callback_port)
+            login(
+                args.name,
+                config,
+                no_browser=args.no_browser,
+                callback_port=args.callback_port,
+                on_rejected_callback=lambda: print(
+                    "note: ignored a callback with the wrong state (not this login's "
+                    "browser); still waiting",
+                    file=sys.stderr,
+                    flush=True,
+                ),
+            )
         )
     except McpAuthError as e:
         print(f"error: {e}", file=sys.stderr)
@@ -2415,8 +2426,8 @@ def _mcp_login_no_wait(args: argparse.Namespace, config: Any, mode: Any, out: An
     out.say(f"Then run: rote mcp login --complete {pending.id}")
     out.say(
         "A browser on another machine ends on a page that cannot load: copy that "
-        f"page's URL and run: rote mcp login --complete {pending.id} "
-        "--callback-url '<that URL>'"
+        f"page's URL, run: rote mcp login --complete {pending.id} --callback-url - "
+        "and paste it on stdin"
     )
     out.say(f"This login expires in {minutes} minutes.")
     out.result(
@@ -2442,7 +2453,11 @@ def _mcp_login_complete(args: argparse.Namespace, out: Any) -> int:
 
     pending = resolve_pending(args.complete or None, args.name)
     if args.callback_url is not None:
-        replay_callback(pending, args.callback_url)
+        url = args.callback_url
+        if url == "-":
+            # Off argv, so the code and state never show in `ps`.
+            url = sys.stdin.readline().strip()
+        replay_callback(pending, url)
     outcome = wait_for_outcome(pending, wait=args.wait)
     current = outcome.pending
     if current.rejected_callbacks:
@@ -5586,7 +5601,8 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="URL",
         help=(
             "With --complete: the http://localhost:<port>/callback?... URL a browser on "
-            "another machine ended on; rote hands it to the waiting listener"
+            "another machine ended on; rote hands it to the waiting listener. '-' reads "
+            "it from stdin, which keeps it out of the process list"
         ),
     )
     mcp_login.add_argument(
