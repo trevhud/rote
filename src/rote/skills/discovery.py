@@ -278,6 +278,10 @@ def read_frontmatter(skill_md: Path) -> tuple[dict[str, Any], str | None]:
         mark = getattr(e, "problem_mark", None)
         where = f" (line {mark.line + 2})" if mark is not None else ""
         return {}, f"its frontmatter is not valid YAML{where}"
+    except RecursionError:
+        return {}, "its frontmatter nests too deeply to read"
+    except Exception as e:  # a constructor's own error (a bad date): the file's, not ours
+        return {}, f"its frontmatter could not be read ({type(e).__name__})"
     if loaded is None:
         return {}, None
     if not isinstance(loaded, dict):
@@ -309,9 +313,14 @@ class RegistryView:
 def readiness_of(skill_dir: Path, registry: RegistryView, *, bundled: bool) -> Readiness:
     """Where ``skill_dir`` stands: its named servers against ``registry``."""
     from rote.compiler.tool_grounding import servers_named
+    from rote.skill_files import SkillTooLarge
 
     try:
         named = servers_named(skill_dir, registry.auth.keys())
+    except SkillTooLarge as e:
+        return Readiness("unreadable", f"too large to read: {e}")
+    except RecursionError:
+        return Readiness("unreadable", "rote could not read the skill (it nests too deeply)")
     except Exception as e:  # one broken skill is reported, never hides the rest
         return Readiness("unreadable", f"rote could not read the skill ({type(e).__name__})")
     servers = tuple(
@@ -354,6 +363,25 @@ def readiness_of(skill_dir: Path, registry: RegistryView, *, bundled: bool) -> R
 
 
 def _read_skill(skill_dir: Path, found_in: tuple[SkillRoot, ...], registry: RegistryView) -> Skill:
+    """One skill, never raising: a skill in a cloned repository is hostile
+    input, and whatever it does is its own problem, not the listing's."""
+    try:
+        return _read_skill_unchecked(skill_dir, found_in, registry)
+    except Exception as e:
+        why = f"rote could not read the skill ({type(e).__name__})"
+        return Skill(
+            name=_display(skill_dir.name, 80) or skill_dir.name,
+            description=None,
+            path=skill_dir,
+            found_in=found_in,
+            readiness=Readiness("unreadable", why),
+            problems=(why,),
+        )
+
+
+def _read_skill_unchecked(
+    skill_dir: Path, found_in: tuple[SkillRoot, ...], registry: RegistryView
+) -> Skill:
     meta, problem = read_frontmatter(skill_dir / SKILL_FILE)
     problems = [problem] if problem else []
     name = _display(meta.get("name"), 80) or _display(skill_dir.name, 80) or skill_dir.name

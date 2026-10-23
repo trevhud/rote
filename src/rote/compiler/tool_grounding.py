@@ -625,11 +625,12 @@ def sent_arguments(node: Node) -> dict[str, Any]:
 
 
 def _skill_text(skill_dir: Path) -> str:
-    """SKILL.md and every reference file under the skill."""
-    parts = [(skill_dir / "SKILL.md").read_text(encoding="utf-8")]
-    refs = skill_dir / "references"
-    if refs.is_dir():
-        parts += [ref.read_text(encoding="utf-8") for ref in sorted(refs.rglob("*.md"))]
+    """SKILL.md and every reference file under the skill, read with bounds
+    (:mod:`rote.skill_files`: size caps, nothing outside the skill dir)."""
+    from rote.skill_files import read_references, read_skill_md
+
+    parts = [read_skill_md(skill_dir)]
+    parts += [text for _, text in read_references(skill_dir, recursive=True)]
     return "\n".join(parts)
 
 

@@ -438,6 +438,17 @@ documents loading.
   unclosed block or a non-mapping is a `problems` line. Displayed text
   drops control and format characters (bidi overrides, zero-width
   spaces) and is cut to 300 characters.
+- **Hostile skills** (a `.claude/skills/<x>` in a cloned repository is
+  scanned without anyone choosing it): each skill is read under a guard,
+  so anything it raises (deeply nested YAML raised `RecursionError`) is
+  that skill's `unreadable` entry, never the listing's crash. Its text is
+  read through `rote.skill_files`, the same bounded reader compile's
+  tool grounding and System-1 parser use: `SKILL.md` over 4 MB, or
+  `references/` over 16 MB in total, is refused by `stat` before a byte is
+  read (a 1.5 GB SKILL.md had cost 7.3 GB of RSS); a reference whose
+  resolved path leaves the skill directory is skipped, and the walk never
+  follows a symlinked directory (`references -> /` had walked the whole
+  filesystem); `mcp-tools.json` over 16 MB is refused.
 - **Readiness**, from `tool_grounding.servers_named` against the
   registry and token store (`auth_status`): `bundled`, then `ready`
   (every named server registered with usable auth, or none named), then

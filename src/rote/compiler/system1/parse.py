@@ -527,16 +527,16 @@ def _tool_registry(skill_dir: Path, root: Section) -> dict[str, str]:
             if line.strip().startswith("|"):
                 for t in _BACKTICK_TOOL.findall(line):
                     registry[t] = slug(s.title.split("(")[0])
-    ref_dir = skill_dir / "references"
-    if ref_dir.is_dir():
-        # A reference file's tool tables name tools as surely as SKILL.md's do.
-        for ref in sorted(ref_dir.glob("*.md")):
-            _, ref_body, ref_offset = parse_frontmatter(ref.read_text(encoding="utf-8"))
-            for s in walk(parse_sections(ref_body, ref_offset)):
-                for line in s.body.splitlines():
-                    if line.strip().startswith("|"):
-                        for t in _BACKTICK_TOOL.findall(line):
-                            registry.setdefault(t, slug(s.title.split("(")[0]))
+    from rote.skill_files import read_references
+
+    # A reference file's tool tables name tools as surely as SKILL.md's do.
+    for _, ref_text in read_references(skill_dir, recursive=False):
+        _, ref_body, ref_offset = parse_frontmatter(ref_text)
+        for s in walk(parse_sections(ref_body, ref_offset)):
+            for line in s.body.splitlines():
+                if line.strip().startswith("|"):
+                    for t in _BACKTICK_TOOL.findall(line):
+                        registry.setdefault(t, slug(s.title.split("(")[0]))
     return registry
 
 
@@ -548,17 +548,18 @@ def tool_registry(skill_dir: Path) -> dict[str, str]:
     Raises :class:`UnsafeSkillText` exactly when :func:`parse_skill` would for
     a reference file name.
     """
-    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    _, body, offset = parse_frontmatter(text)
-    ref_dir = skill_dir / "references"
-    if ref_dir.is_dir():
-        for ref in sorted(ref_dir.glob("*.md")):
-            safe_reference_name(ref.name)
+    from rote.skill_files import read_skill_md, reference_paths
+
+    _, body, offset = parse_frontmatter(read_skill_md(skill_dir))
+    for ref in reference_paths(skill_dir, recursive=False):
+        safe_reference_name(ref.name)
     return _tool_registry(skill_dir, parse_sections(body, offset))
 
 
 def parse_skill(skill_dir: Path) -> SkillParse:
-    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    from rote.skill_files import read_skill_md
+
+    text = read_skill_md(skill_dir)
     fm, body, offset = parse_frontmatter(text)
     root = parse_sections(body, offset)
     registry = _tool_registry(skill_dir, root)
@@ -639,11 +640,12 @@ def parse_skill(skill_dir: Path) -> SkillParse:
             )
         if len(parts) == 1:
             by_section[id(sec)] = units[-1]
+    from rote.skill_files import reference_paths
+
     tables = tables_in(skill_dir / "SKILL.md", "SKILL.md")
-    ref_dir = skill_dir / "references"
-    if ref_dir.is_dir():
-        for ref in sorted(ref_dir.glob("*.md")):
-            tables += tables_in(ref, f"references/{safe_reference_name(ref.name)}")
+    # Already size-checked, with the same paths, by _tool_registry above.
+    for ref in reference_paths(skill_dir, recursive=False):
+        tables += tables_in(ref, f"references/{safe_reference_name(ref.name)}")
     return SkillParse(
         name=str(fm.get("name") or skill_dir.name),
         description=" ".join(str(fm.get("description") or "").split()),

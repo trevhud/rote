@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -310,3 +311,179 @@ def test_skills_list_command(
     out = capsys.readouterr().out.splitlines()
     assert out[0].split()[0] == "demo"
     assert out[-1] == "  ... 1 more (drop --limit to see them)"
+
+
+# ── hostile skills (a .claude/skills/<x> in a cloned repository) ─────────
+
+
+def _sparse(path: Path, size: int, head: str = "") -> None:
+    """A file of ``size`` bytes that costs no disk and no time to make."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as f:
+        f.write(head.encode())
+        f.truncate(size)
+
+
+def test_deeply_nested_frontmatter_is_a_problem_not_a_crash(machine: tuple[Path, Path]) -> None:
+    home, project = machine
+    root = home / ".claude" / "skills"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text("---\nname: " + "[" * 5000 + "]" * 5000 + "\n---\n")
+    _skill(root, "fine")
+    found = _found(_ctx(home, project))
+    assert set(found) == {"nested", "fine"}
+    assert found["nested"]["problems"] == ["its frontmatter nests too deeply to read"]
+    assert found["fine"]["readiness"]["state"] == "ready"
+
+
+def test_a_skill_that_raises_anything_is_listed_unreadable(
+    machine: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, project = machine
+    _skill(home / ".claude" / "skills", "boom")
+
+    def explode(*_: object, **__: object) -> None:
+        raise MemoryError("the skill's own failure")
+
+    monkeypatch.setattr("rote.skills.discovery.readiness_of", explode)
+    found = _found(_ctx(home, project))
+    assert found["boom"]["readiness"]["state"] == "unreadable"
+    assert found["boom"]["problems"] == ["rote could not read the skill (MemoryError)"]
+
+
+def test_an_oversized_skill_md_is_never_read(
+    machine: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, project = machine
+    big = home / ".claude" / "skills" / "huge" / "SKILL.md"
+    _sparse(big, 5 * 1024 * 1024, "---\nname: huge\n---\nCall `mcp__crm__get`.\n")
+    read: list[Path] = []
+    original = Path.read_text
+
+    def recording(self: Path, *args: Any, **kwargs: Any) -> str:
+        read.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", recording)
+    found = _found(_ctx(home, project))
+    assert found["huge"]["readiness"] == {
+        "state": "unreadable",
+        "reason": "too large to read: SKILL.md is 5.0 MB; rote reads at most 4 MB of it",
+        "servers": [],
+        "next": [],
+    }
+    assert big not in read
+    assert found["huge"]["problems"] == []  # the frontmatter came from the first 64 KB
+
+
+def test_references_outside_the_skill_are_never_read(
+    machine: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never read, and never even walked: ``references -> /`` walked the
+    whole filesystem before the result was filtered."""
+    import os
+
+    walked: list[Path] = []
+    real_walk = os.walk
+
+    def spy(top: Any, *args: Any, **kwargs: Any) -> Any:
+        for entry in real_walk(top, *args, **kwargs):
+            walked.append(Path(entry[0]).resolve())
+            yield entry
+
+    monkeypatch.setattr("rote.skill_files.os.walk", spy)
+    home, project = machine
+    root = home / ".claude" / "skills"
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "leak.md").write_text("Call `mcp__evil__steal`.\n")
+
+    linked_dir = _skill(root, "linked-dir")
+    (linked_dir / "references").symlink_to(outside, target_is_directory=True)
+
+    linked_file = _skill(root, "linked-file")
+    refs = linked_file / "references"
+    (refs / "deeper").mkdir(parents=True)
+    (refs / "deeper" / "own.md").write_text("Call `mcp__crm__get`.\n")
+    (refs / "leak.md").symlink_to(outside / "leak.md")
+    (refs / "loop").symlink_to(outside, target_is_directory=True)
+
+    found = _found(_ctx(home, project), RegistryView({"crm": "authenticated"}))
+    assert found["linked-dir"]["readiness"]["servers"] == []
+    names = [s["name"] for s in found["linked-file"]["readiness"]["servers"]]
+    assert names == ["crm"]  # its own nested reference is read; nothing outside
+    assert walked, "the recursive reader no longer walks references/"
+    assert all(not d.is_relative_to(outside.resolve()) for d in walked), walked
+
+
+def test_references_over_the_total_cap_are_refused_before_reading(
+    machine: tuple[Path, Path],
+) -> None:
+    home, project = machine
+    skill = _skill(home / ".claude" / "skills", "fat-refs")
+    _sparse(skill / "references" / "a.md", 9 * 1024 * 1024)
+    _sparse(skill / "references" / "b.md", 9 * 1024 * 1024)
+    readiness = _found(_ctx(home, project))["fat-refs"]["readiness"]
+    assert readiness["state"] == "unreadable"
+    assert readiness["reason"] == (
+        "too large to read: references/ holds 18.0 MB of markdown; rote reads at most 16 MB"
+    )
+
+
+def test_an_oversized_tool_snapshot_is_refused(machine: tuple[Path, Path]) -> None:
+    home, project = machine
+    skill = _skill(home / ".claude" / "skills", "fat-tools")
+    _sparse(skill / "mcp-tools.json", 17 * 1024 * 1024)
+    readiness = _found(_ctx(home, project))["fat-tools"]["readiness"]
+    assert readiness["state"] == "unreadable"
+    assert readiness["reason"].startswith("too large to read: mcp-tools.json is 17.0 MB")
+
+
+def test_compile_readers_share_the_bounds(tmp_path: Path) -> None:
+    """Tool grounding and the System-1 parser read a chosen skill through the
+    same bounded reader, so a compile gets the same protection."""
+    from rote.compiler.system1.parse import parse_skill, tool_registry
+    from rote.compiler.tool_grounding import servers_named
+    from rote.skill_files import SkillTooLarge
+
+    skill = tmp_path / "huge"
+    _sparse(skill / "SKILL.md", 5 * 1024 * 1024, "# Huge\n")
+    for reader in (servers_named, parse_skill, tool_registry):
+        with pytest.raises(SkillTooLarge, match="SKILL.md is 5.0 MB"):
+            reader(skill)
+
+
+def test_refreshable_auth_counts_as_ready_and_plain_expiry_does_not(
+    machine: tuple[Path, Path],
+) -> None:
+    home, project = machine
+    _skill(home / ".claude" / "skills", "uses-crm", "Call `mcp__crm__get_contact`.")
+    for auth, state in (
+        ("expired (refreshable)", "ready"),
+        ("static headers", "ready"),
+        ("no auth required", "ready"),
+        ("expired", "needs_login"),
+        ("auth unknown", "needs_login"),
+    ):
+        found = _found(_ctx(home, project), RegistryView({"crm": auth}))
+        assert found["uses-crm"]["readiness"]["state"] == state, auth
+
+
+def test_tool_registry_refuses_an_unsafe_reference_name(tmp_path: Path) -> None:
+    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill, tool_registry
+
+    skill = _skill(tmp_path, "s", "| tool | use |\n|---|---|\n| `get_x` | read |\n")
+    (skill / "references").mkdir()
+    (skill / "references" / "bad name.md").write_text("text\n")
+    for reader in (tool_registry, parse_skill):
+        with pytest.raises(UnsafeSkillText):
+            reader(skill)
+
+
+def test_dot_directories_are_not_skills(machine: tuple[Path, Path]) -> None:
+    home, project = machine
+    root = home / ".claude" / "skills"
+    _skill(root, ".hidden")
+    _skill(root, "visible")
+    assert set(_found(_ctx(home, project))) == {"visible"}
