@@ -192,20 +192,6 @@ def _write_compile_metrics(result: DriverResult, output_dir: Path) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def _tool_table_servers(skill_dir: Path) -> set[str]:
-    """Servers the skill's own tool table maps a tool to (System-1's parser).
-
-    A skill it cannot parse safely names no server this way; its prose
-    still can.
-    """
-    from rote.compiler.system1.parse import UnsafeSkillText, parse_skill
-
-    try:
-        return set(parse_skill(skill_dir).tool_registry.values())
-    except UnsafeSkillText:
-        return set()
-
-
 def _default_compiler_skill_dir() -> Path:
     """Locate the rote-compile skill bundled with the rote source.
 
@@ -1095,7 +1081,10 @@ class Compiler:
         registered = sorted(load_registry().servers)
         texts = [p.read_text(encoding="utf-8", errors="replace") for p in skill_dir.rglob("*.md")]
         contact = tool_grounding.servers_to_contact(
-            registered, "\n".join(texts), self.tool_discovery, _tool_table_servers(skill_dir)
+            registered,
+            "\n".join(texts),
+            self.tool_discovery,
+            tool_grounding.skill_tool_table_servers(skill_dir),
         )
         declared: tool_grounding.ToolSchemas = {}
         for server, why in contact.items():

@@ -374,11 +374,11 @@ def run_skill(
     (:mod:`rote.eval.gate_server`), one answer per ask, when the run
     reaches each gate. ``gates_asked`` says how many it asked for.
     """
-    servers, mcp_tool_ids, skipped = resolve_mcp_wiring(allow_writes=allow_writes)
+    wiring = resolve_mcp_wiring(allow_writes=allow_writes)
     with tempfile.TemporaryDirectory(prefix="rote-gates-") as tmp:
         work = Path(tmp)
-        wired = dict(servers)
-        tool_ids = list(mcp_tool_ids or [])
+        wired = dict(wiring.servers)
+        tool_ids = list(wiring.allowed)
         if signals:
             entry, gate_tool = gate_answers_server(list(signals.values()), work)
             wired[GATE_SERVER] = entry
@@ -388,10 +388,12 @@ def run_skill(
             input_payload,
             model=model,
             max_turns=max_turns,
-            mcp_tool_ids=tool_ids or None,
+            mcp_tool_ids=tool_ids,
+            denied_mcp_tool_ids=wiring.denied,
             executable=executable,
             timeout_seconds=timeout_seconds,
-            mcp_servers=wired or None,
+            mcp_servers=wired,
+            servers_skipped=wiring.skipped,
             extra_instructions=GATE_INSTRUCTIONS if signals else None,
         )
         asks = work / "calls.jsonl"
@@ -403,8 +405,8 @@ def run_skill(
     return SkillRunOutcome(
         run=run,
         observations=tuple(o for o in observed if o.server != GATE_SERVER),
-        servers_wired=tuple(sorted(servers)),
-        servers_skipped=skipped,
+        servers_wired=tuple(sorted(wiring.servers)),
+        servers_skipped=wiring.skipped,
         read_only=not allow_writes,
         gates_asked=gates_asked,
     )

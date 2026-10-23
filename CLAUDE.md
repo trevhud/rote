@@ -2136,6 +2136,47 @@ a template, so the output depended on where the command was typed.
 compiler, run it against a copy of the skill outside the repo anyway:
 an older installed rote has none of this.
 
+### A skill run is gated by permissions, not by an allowlist
+
+`rote run <skill>`, `rote baseline`, `compile --baseline`, `rote eval
+--run` and the bench's fidelity references all build their `claude -p`
+child through `rote.eval.empirical.skill_run_isolation_args`. A
+walkthrough found the old shape leaking both ways: `--strict-mcp-config`
+was only added when rote had servers, so an empty registry showed the run
+every server the user has in Claude Code (work servers and claude.ai
+connectors included), and `--allowedTools` only pre-approves, so under the
+user's `defaultMode: auto` the run called a server the gate excluded and
+used WebSearch while the summary said "read-only MCP gate". Verified on
+Claude Code 2.1.308, each with a real run:
+
+- **Always strict**, with an empty `{"mcpServers": {}}` config when nothing
+  is wired (init event: `mcp_servers: []`). Plus the shared
+  `CLI_CONTEXT_ISOLATION_FLAGS`, so the user's settings and permission
+  mode never load.
+- **`--permission-mode dontAsk`** denies anything `--allowedTools` does not
+  name. The result envelope lists each refusal in `permission_denials`,
+  and the run reports them. **`--tools Read,Write,Edit,Glob,Grep`** removes every other
+  built-in (Bash, WebSearch, WebFetch) from the model's context.
+- **File access is scoped** (`skill_run_file_rules`): `Read(./**)`,
+  `Read(//<abs skill dir>/**)` and `Edit(./**)`, nothing bare. A bare
+  `Read,Glob,Grep` let a probe read a directory outside the run, and a
+  third-party SKILL.md could pass `~/.ssh` out as a read-only tool's
+  argument. Glob and Grep are checked against Read rules (a `Glob(path)` or
+  `Write(path)` rule is accepted and never matches, and `Edit(path)` covers
+  Write). `//` starts an absolute path, `./` is the cwd.
+- **`--disallowedTools`** names the wired servers' tools the read-only gate
+  excludes (explicit ids, never `mcp__<server>__*`: deny beats allow). A
+  registered server that contributes no callable tool is not wired at all.
+- **A run that never called a server its skill names is degraded**
+  (`missing_mcp_servers`, from `tool_grounding.servers_named`): `rote run`
+  exits 1 unless `--allow-missing-servers`, and every summary names the
+  server and its fix. Only explicit forms count (`` `x` MCP server ``,
+  `mcp__x__tool`, a bundled `mcp-tools.json`, and for a registered name
+  "X MCP" or a tool-table mapping), because a false entry fails a correct
+  run: a tool table alone reads expense-audit's caps table as a
+  `category_caps` server. The empty-registry docs-digest run that "worked"
+  wrote its digest from memory.
+
 ### A failed `claude -p` compile is still a paid one, and the output cap resumes
 
 A real invoice-push compile died after 28 minutes and 8 turns with

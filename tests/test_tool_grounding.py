@@ -951,3 +951,83 @@ def test_the_fixtures_still_refuse_what_they_refused_on_the_committed_schemas() 
     )
     assert "unknown argument(s): label" in str(_schema_error(search, {"query": "x", "label": 1}))
     assert _schema_error(search, {"query": "x"}) is None
+
+
+# ───────── servers_named: what a skill run is checked against ─────────
+
+
+def _skill(tmp_path: Path, body: str) -> Path:
+    skill = tmp_path / "skill"
+    skill.mkdir(exist_ok=True)
+    (skill / "SKILL.md").write_text(f"---\nname: s\n---\n{body}\n", encoding="utf-8")
+    return skill
+
+
+def test_servers_named_reads_code_span_servers_and_tool_ids(tmp_path: Path) -> None:
+    from rote.compiler.tool_grounding import servers_named
+
+    docs_digest = REPO / "tests" / "fixtures" / "mcp_results" / "docs-digest"
+    assert set(servers_named(docs_digest)) == {"mslearn", "deepwiki"}
+    skill = _skill(tmp_path, "Then call `mcp__hubspot_crm__get_contact` for each lead.")
+    assert servers_named(skill) == {"hubspot_crm": "mcp__hubspot_crm__get_contact"}
+
+
+def test_servers_named_takes_a_bundled_snapshot_as_naming_its_servers() -> None:
+    from rote.compiler.tool_grounding import servers_named
+
+    assert set(servers_named(OPS / "skill")) == {"gmail", "google_drive"}
+
+
+def test_servers_named_does_not_read_a_policy_table_as_a_server() -> None:
+    """System-1's tool-table parser reads any table of code spans as tools
+    (expense-audit's caps table names a `category_caps` server). A false
+    entry here fails a correct run, so a table alone names no unregistered
+    server."""
+    from rote.compiler.tool_grounding import servers_named, skill_tool_table_servers
+
+    expense = REPO / "examples" / "expense-audit" / "skill"
+    assert "category_caps" in skill_tool_table_servers(expense)  # the parser's reading
+    assert servers_named(expense) == {}
+
+
+def test_servers_named_needs_a_server_shaped_mention_for_a_registered_name(
+    tmp_path: Path,
+) -> None:
+    """A registered name counts when the skill calls it a server or its tool
+    table maps a tool to it; a proper noun in prose ("post it in Slack")
+    does not, though it is enough for a compile to list the server."""
+    from rote.compiler.tool_grounding import servers_named, servers_to_contact
+
+    prose = _skill(tmp_path, "When done, post the summary in Slack for the team.")
+    assert servers_named(prose, ["slack"]) == {}
+    assert "slack" in servers_to_contact(["slack"], (prose / "SKILL.md").read_text())
+    shaped = _skill(tmp_path, "Post the summary with the Slack MCP.")
+    assert servers_named(shaped, ["slack"]) == {"slack": "Slack MCP"}
+    # Unregistered, the same words name nothing: the name may not be "slack".
+    assert servers_named(shaped) == {}
+    bdr = REPO / "examples" / "bdr-outreach" / "skill"
+    assert set(servers_named(bdr, ["zoominfo", "gmail"])) == {"zoominfo"}
+
+
+def test_servers_named_does_not_take_half_a_longer_name(tmp_path: Path) -> None:
+    """A registered `drive` is not named by "Google Drive MCP", nor `sheets`
+    by "Google Sheets MCP" or "google-sheets MCP": each is the tail of
+    another server's name. The full name still matches, and so does the
+    short name on its own."""
+    from rote.compiler.tool_grounding import servers_named
+
+    longer = _skill(
+        tmp_path,
+        "Read the file with the Google Drive MCP.\n\n"
+        "Then append rows (Google Sheets MCP), or via the google-sheets MCP.",
+    )
+    assert servers_named(longer, ["drive", "sheets"]) == {}
+    assert servers_named(longer, ["google_drive", "google_sheets"]) == {
+        "google_drive": "Google Drive MCP",
+        "google_sheets": "Google Sheets MCP",
+    }
+    alone = _skill(tmp_path, "Read the file with the Drive MCP, then the `sheets` server.")
+    assert servers_named(alone, ["drive", "sheets"]) == {
+        "drive": "Drive MCP",
+        "sheets": "`sheets` server",
+    }

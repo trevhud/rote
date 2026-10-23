@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from rote.eval.baseline import McpWiring
 from rote.eval.empirical import MeasuredRun
 from rote.runners import (
     RUNNABLE_RUNTIMES,
@@ -242,12 +243,13 @@ def test_resolve_gate_signals_interactive_invalid_json(monkeypatch: pytest.Monke
 def test_run_skill_applies_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def fake_wiring(*, allow_writes: bool) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    def fake_wiring(*, allow_writes: bool) -> McpWiring:
         captured["allow_writes"] = allow_writes
-        return (
-            {"srv": {"type": "http", "url": "http://x"}},
-            ["mcp__srv__lookup"],
-            {"other": "unreachable"},
+        return McpWiring(
+            servers={"srv": {"type": "http", "url": "http://x"}},
+            allowed=["mcp__srv__lookup"],
+            denied=["mcp__srv__delete"],
+            skipped={"other": "unreachable"},
         )
 
     def fake_trial(skill_dir: Any, payload: Any, **kwargs: Any) -> tuple[Any, list[Any], list[str]]:
@@ -260,6 +262,8 @@ def test_run_skill_applies_wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     outcome = run_skill(tmp_path, {"q": 1}, model="m")
     assert captured["allow_writes"] is False
     assert captured["kwargs"]["mcp_tool_ids"] == ["mcp__srv__lookup"]
+    assert captured["kwargs"]["denied_mcp_tool_ids"] == ["mcp__srv__delete"]
+    assert captured["kwargs"]["servers_skipped"] == {"other": "unreachable"}
     assert captured["kwargs"]["mcp_servers"] == {"srv": {"type": "http", "url": "http://x"}}
     assert outcome.read_only is True
     assert outcome.servers_wired == ("srv",)
@@ -291,7 +295,7 @@ def test_rote_run_hands_a_skill_its_gate_answers_from_signal(
         captured["answers"] = json.loads(Path(entry["args"][2]).read_text(encoding="utf-8"))
         return MeasuredRun(wall_seconds=1.0, output={"ok": True}), [], []
 
-    monkeypatch.setattr("rote.runners.resolve_mcp_wiring", lambda **_: ({}, [], {}))
+    monkeypatch.setattr("rote.runners.resolve_mcp_wiring", lambda **_: McpWiring())
     monkeypatch.setattr("rote.runners.run_baseline_trial", fake_trial)
     argv = ["run", str(skill), "--input", "{}", "--signal", f"approval=@{answer}"]
     assert cli_main([*argv, "--signal", 'second={"n": 2}']) == 0
@@ -913,3 +917,46 @@ def test_temporal_runner_enables_the_dev_ui(
         run_temporal(tmp_path, {}, signals={})
     assert captured["ui"] is True
     assert isinstance(captured["ui_port"], int)
+
+
+def test_rote_run_skill_missing_a_named_server_exits_1_unless_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A skill run that never called a server its skill names still writes a
+    result, on whatever the agent substituted. It must not read as a plain
+    success: exit 1, the server named with its fix, unless the caller
+    passes --allow-missing-servers (then 0, still reported)."""
+    from rote.cli import main as cli_main
+
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: s\n---\nUse the `deepwiki` MCP server.\n")
+    missing = {"deepwiki": "not registered with rote: rote mcp add deepwiki <url>"}
+
+    def degraded_trial(
+        skill_dir: Any, payload: Any, **kwargs: Any
+    ) -> tuple[Any, list[Any], list[str]]:
+        run = MeasuredRun(
+            wall_seconds=1.0,
+            output={"digest": "made up"},
+            flags=("missing_mcp_servers",),
+            missing_mcp_servers=missing,
+        )
+        return run, [], []
+
+    monkeypatch.setattr("rote.runners.resolve_mcp_wiring", lambda **_: McpWiring())
+    monkeypatch.setattr("rote.runners.run_baseline_trial", degraded_trial)
+
+    assert cli_main(["run", str(skill), "--input", "{}"]) == 1
+    err = capsys.readouterr().err
+    assert "degraded" in err
+    assert "succeeded" not in err
+    assert "missing MCP server deepwiki: not registered with rote: rote mcp add deepwiki" in err
+
+    assert cli_main(["run", str(skill), "--input", "{}", "--allow-missing-servers"]) == 0
+    err = capsys.readouterr().err
+    assert "missing MCP server deepwiki" in err  # accepted, still said
+
+    assert cli_main(["run", str(skill), "--input", "{}", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["run"]["missing_mcp_servers"] == missing
