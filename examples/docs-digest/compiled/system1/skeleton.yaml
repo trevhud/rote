@@ -1,0 +1,98 @@
+name: docs-digest
+version: 0.1.0
+description: Build a short reading list on a Microsoft technology from Microsoft Learn,
+  plus the wiki outline of the open-source repo that goes with it.
+input:
+  type: DocsDigestInput
+  input_schema:
+    type: object
+    properties:
+      repo:
+        type: string
+      topic:
+        type: string
+    required:
+    - repo
+    - topic
+nodes:
+- id: search_microsoft_learn
+  kind: external_call
+  source:
+    section: 1. Search Microsoft Learn
+  description: '1. Search Microsoft Learn: Search Microsoft Learn for the topic to
+    gather candidate reading results.'
+  inputs:
+    request: pipeline.input
+    arg_query: pipeline.input.topic
+  output: dict
+  mandatory: true
+  impl: extracted/search_microsoft_learn.py:search_microsoft_learn
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: mslearn
+    tool: microsoft_docs_search
+    args:
+      query: arg_query
+- id: pick_reading_list
+  kind: pure_function
+  source:
+    section: 2. Pick the reading list
+  description: '2. Pick the reading list: Trim the search results to the first 5 and
+    keep only each result''s title and link for the reading list.'
+  inputs:
+    request: pipeline.input
+    search_microsoft_learn: search_microsoft_learn.output
+  output:
+    reading_list: Any
+  mandatory: true
+  constants:
+    result_count: 5
+  impl: extracted/pick_reading_list.py:pick_reading_list
+- id: read_repo_outline
+  kind: external_call
+  source:
+    section: 3. Read the repo's wiki outline
+  description: '3. Read the repo''s wiki outline: Fetch the wiki outline of the companion
+    open-source repository.'
+  inputs:
+    request: pipeline.input
+    arg_repoName: pipeline.input.repo
+  output: dict
+  mandatory: true
+  impl: extracted/read_repo_outline.py:read_repo_outline
+  retry:
+    max: 3
+    backoff: exponential
+  mcp:
+    server: deepwiki
+    tool: read_wiki_structure
+    args:
+      repoName: arg_repoName
+- id: write_digest
+  kind: pure_function
+  source:
+    section: 4. Write the digest
+  description: '4. Write the digest: Render the markdown digest with a Reading list
+    section and a Repo outline section from the trimmed results and the wiki outline.'
+  inputs:
+    request: pipeline.input
+    pick_reading_list: pick_reading_list.output
+    read_repo_outline: read_repo_outline.output
+  output:
+    digest: Any
+  mandatory: true
+  impl: extracted/write_digest.py:write_digest
+edges:
+- from: search_microsoft_learn
+  to: pick_reading_list
+- from: pick_reading_list
+  to: write_digest
+- from: read_repo_outline
+  to: write_digest
+entry_nodes:
+- search_microsoft_learn
+- read_repo_outline
+exit_nodes:
+- write_digest

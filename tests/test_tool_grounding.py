@@ -966,7 +966,7 @@ def _skill(tmp_path: Path, body: str) -> Path:
 def test_servers_named_reads_code_span_servers_and_tool_ids(tmp_path: Path) -> None:
     from rote.compiler.tool_grounding import servers_named
 
-    docs_digest = REPO / "tests" / "fixtures" / "mcp_results" / "docs-digest"
+    docs_digest = REPO / "examples" / "docs-digest" / "skill"
     assert set(servers_named(docs_digest)) == {"mslearn", "deepwiki"}
     skill = _skill(tmp_path, "Then call `mcp__hubspot_crm__get_contact` for each lead.")
     assert servers_named(skill) == {"hubspot_crm": "mcp__hubspot_crm__get_contact"}

@@ -8,9 +8,10 @@ in :data:`BUNDLED` into the wheel at ``rote/examples/<name>/`` (a test
 pins that the two lists agree), the same arrangement as the compiler's
 skill bundle.
 
-Only examples whose extracted modules are real code belong here. The
-others stop at ``NotImplementedError`` stubs until someone writes a
-vendor client, which is not a first run.
+Only examples whose extracted modules are real code belong here (or, as
+in docs-digest, run through an MCP binding to a public server that needs
+no login). The others stop at ``NotImplementedError`` stubs until
+someone writes a vendor client, which is not a first run.
 """
 
 from __future__ import annotations
@@ -101,6 +102,37 @@ BUNDLED: dict[str, Example] = {
             ("/tmp/expense-audit-temporal", "{dir}/app-temporal"),
             ("/tmp/expense-audit", "{dir}/app-python"),
             ("examples/expense-audit/", "{dir}/"),
+        ),
+    ),
+    # The demo `rote try` and `rote setup` run (see rote.demo). Its two
+    # MCP servers are public and need no login.
+    "docs-digest": Example(
+        name="docs-digest",
+        summary=(
+            "Reading list from Microsoft Learn plus a repo's DeepWiki outline: two "
+            "public MCP servers, no login, no tokens to run the compiled pipeline."
+        ),
+        files=("README.md", "skill", "compiled", "reference.json"),
+        commands=(
+            (
+                "Register the two public servers as read-only (no login)",
+                "rote mcp add mslearn https://learn.microsoft.com/api/mcp --auth none --read-only",
+            ),
+            ("", "rote mcp add deepwiki https://mcp.deepwiki.com/mcp --auth none --read-only"),
+            (
+                "Emit and run the precompiled pipeline (needs the dbos extra)",
+                "rote emit {dir}/compiled/pipeline.yaml --runtime dbos --out {dir}/app-dbos",
+            ),
+            ("", "rote run {dir}/app-dbos --input {dir}/skill/input.json"),
+            (
+                "Run the skill itself as an agent, read-only (bills your Claude subscription)",
+                "rote run {dir}/skill --input {dir}/skill/input.json",
+            ),
+        ),
+        readme_rewrites=(
+            ("From the repo root:", "From the directory you ran `rote example` in:"),
+            ("/tmp/docs-digest-dbos", "{dir}/app-dbos"),
+            ("examples/docs-digest/", "{dir}/"),
         ),
     ),
 }

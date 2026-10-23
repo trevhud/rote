@@ -126,6 +126,7 @@ jobs:
             tests/test_mcp_park_e2e.py \
             tests/test_mcp_config_error_e2e.py \
             tests/test_examples_command.py \
+            tests/test_packaging.py \
             tests/test_bad_input_one_line.py \
             tests/test_mcp_oauth_e2e.py \
             tests/test_mcp_oauth_registration_e2e.py \

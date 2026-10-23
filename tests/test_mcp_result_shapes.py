@@ -32,7 +32,7 @@ from rote.probe import cross_check, infer_tool_schemas, parse_tool_result
 
 FIXTURES = Path(__file__).parent / "fixtures" / "mcp_results"
 DATA = json.loads((FIXTURES / "docs_digest.json").read_text(encoding="utf-8"))
-SKILL = FIXTURES / "docs-digest"
+SKILL = Path(__file__).resolve().parent.parent / "examples" / "docs-digest" / "skill"
 DEEPWIKI = ("deepwiki", "read_wiki_structure")
 MSLEARN = ("mslearn", "microsoft_docs_search")
 
@@ -130,7 +130,7 @@ def test_the_prefix_run_replays_what_the_step_receives(tmp_path: Path) -> None:
     built = build_plan(
         ctx.pipeline,
         work,
-        load_sample(SKILL / "sample-input.json"),
+        load_sample(SKILL / "input.json"),
         [],
         tuple(_observations()),
         _declared(),
