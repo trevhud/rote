@@ -192,7 +192,10 @@ stops with the servers it found (names, hosts, scopes, never URLs) and
 the plan (`confirmation_required`), show it, and add `--yes` to apply it.
 `--servers-for <skill dir>` preselects what a skill needs, and the first
 time also needs `--work-domain <domain>` (or `--work-domain none`): servers
-on a work domain are never preselected. A server whose URL may carry a key,
+on a work domain are never preselected. Only the user's answer counts: CI
+that sets `ROTE_WORK_DOMAINS` (or a project `rote.yaml` with
+`work_domains`) still passes `--work-domain`, or has `work_domains` in the
+user config, for `--servers-for`. A server whose URL may carry a key,
 or whose client trust could not be checked, needs its own
 `--allow-url-secret <name>` / `--allow-untrusted <name>`. Logins need a
 person; tell the user to run `rote mcp login <name>`.

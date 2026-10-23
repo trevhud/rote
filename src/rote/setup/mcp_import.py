@@ -177,20 +177,22 @@ class OptIn:
 
 
 def opt_ins(c: ImportCandidate, client_label: str) -> tuple[OptIn, ...]:
-    """Every per-server yes ``c`` needs, from what keeps it from being
-    preselectable. Being inactive in the client needs none: picking it is
-    the person's own choice. Anything else that makes a server not
-    preselectable needs an opt-in, including a reason this version does not
-    know, so a new one (a trust state a client source adds) is never
-    imported on a default or a bare ``--yes``."""
+    """Every per-server yes ``c`` needs: its ``needs_opt_in`` reasons, each
+    with the flag that gives it (a URL secret, ``--allow-url-secret``; trust
+    the client's gate did not let rote check, ``--allow-untrusted``). Being
+    inactive in the client needs none: picking it is the person's own
+    choice. Any other reason a server is not preselectable needs an opt-in
+    too, so one a later version adds is never imported on a default or a
+    bare ``--yes``."""
     if not c.importable or c.preselectable:
         return ()
     found: list[OptIn] = []
     if c.risk is not None:
         found.append(OptIn(c.risk, "--allow-url-secret"))
-    if getattr(c, "trust", None) == "unknown":
-        found.append(OptIn(f"trust in {client_label} could not be checked", "--allow-untrusted"))
-    if not found and c.inactive is None:
+    if c.trust == "unknown":
+        note = c.trust_note or f"trust in {client_label} could not be checked"
+        found.append(OptIn(note, "--allow-untrusted"))
+    if not found and c.inactive is None and c.trust != "untrusted":
         # Not preselectable, not inactive, no reason this version names.
         found.append(OptIn("rote could not check that this server is safe", "--allow-untrusted"))
     return tuple(found)

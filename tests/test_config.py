@@ -278,6 +278,8 @@ def test_a_setting_is_edited_in_place_keeping_comments(tmp_path: Path) -> None:
     assert edited.splitlines()[:2] == ["# my notes", "runtime: temporal  # why I picked it"]
     assert edited.splitlines()[3:] == ["# trailing note", "model: m"]
     assert parse_config_text(edited, path)["work_domains"] == ("old.example", "new.example")
+    quoted = set_in_place('"work_domains": [a.example]\n', "work_domains", ("b.example",), path)
+    assert quoted is not None and quoted.count("work_domains") == 1
     appended = set_in_place("runtime: dbos  # mine", "work_domains", (), path)
     assert appended is not None and appended.startswith("runtime: dbos  # mine\nwork_domains: []")
     # A layout the line edit cannot read back is refused, never half-written.

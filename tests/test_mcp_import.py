@@ -520,17 +520,6 @@ def test_a_risky_url_needs_its_own_yes(tmp_path: Path) -> None:
 
 
 @dataclass(frozen=True)
-class _WithTrust(ImportCandidate):
-    """The trust state PR #245 adds, ahead of it: unknown trust is not preselectable."""
-
-    trust: str = "trusted"
-
-    @property
-    def preselectable(self) -> bool:
-        return super().preselectable and self.trust == "trusted"
-
-
-@dataclass(frozen=True)
 class _NewReason(ImportCandidate):
     """A non-preselectable reason this version does not know."""
 
@@ -565,21 +554,26 @@ def _fake(cls: type[ImportCandidate], name: str, **kw: Any) -> ImportCandidate:
         origin=Path("/fake/.mcp.json"),
         transport="streamable-http",
         url=f"https://{name}.example/mcp",
-        **kw,
+        **{"trust": "trusted", **kw},
     )
 
 
 def test_any_reason_not_to_preselect_needs_its_own_yes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Built against preselectable, so a trust state a client source adds is
-    covered with no change here: never a default, a bare --yes declines it,
-    and its own flag (or a person's yes) imports it."""
+    """Unknown trust (#245's field), and any other reason a server is not
+    preselectable: never a default, a bare --yes declines it, and its own
+    flag (or a person's yes) imports it."""
     import rote.setup.mcp_import as mcp_import
 
     source = _FakeSource(
         [
-            _fake(_WithTrust, "untrusted", trust="unknown"),
+            _fake(
+                ImportCandidate,
+                "untrusted",
+                trust="unknown",
+                trust_note="trust in Fake Client could not be checked",
+            ),
             _fake(_NewReason, "novel"),
             _fake(ImportCandidate, "off", inactive="disabled in Fake Client"),
             _fake(ImportCandidate, "plain"),

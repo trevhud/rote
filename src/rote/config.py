@@ -483,7 +483,7 @@ def set_in_place(text: str, name: str, value: ConfigValue, path: Path) -> str | 
     instead."""
     lines = text.splitlines(keepends=True)
     line = render_setting_line(name, value) + "\n"
-    head = re.compile(rf"^{re.escape(name)}\s*:")
+    head = re.compile(rf"""^["']?{re.escape(name)}["']?\s*:""")
     start = next((i for i, row in enumerate(lines) if head.match(row)), None)
     if start is None:
         if lines and not lines[-1].endswith("\n"):

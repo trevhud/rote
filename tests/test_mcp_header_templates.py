@@ -14,6 +14,7 @@ from __future__ import annotations
 import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -262,7 +263,7 @@ def test_an_agent_loop_never_puts_a_header_value_in_its_config(
     assert "headers" not in servers["gh"]
     assert "secret-value" not in json.dumps(servers)
     helper = servers["gh"]["headersHelper"]
-    assert "_runtime_helper.py headers gh" in helper
+    assert " -P " in helper and "_runtime_helper.py headers gh" in helper
     run = subprocess.run(shlex.split(helper), capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == {"Authorization": "Bearer secret-value"}
@@ -270,6 +271,45 @@ def test_an_agent_loop_never_puts_a_header_value_in_its_config(
     run = subprocess.run(shlex.split(helper), capture_output=True, text=True, timeout=60)
     assert (run.returncode, run.stdout) == (1, "")
     assert "needs GH_T, which is not set" in run.stderr
+
+
+def test_the_headers_helper_ignores_modules_planted_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """review: `python extracted/_rote_mcp.py` puts extracted/ first on
+    sys.path, where agent-written modules live, so a planted json.py ran in
+    the process holding the filled credential. -P keeps it off."""
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+    import types
+
+    from rote.inference import _runtime_helper as inference
+    from rote.mcp import _runtime_helper as mcp_helper
+
+    extracted = tmp_path / "app" / "extracted"
+    extracted.mkdir(parents=True)
+    copy = extracted / "_rote_mcp.py"
+    shutil.copy(mcp_helper.__file__, copy)
+    marker = tmp_path / "planted-ran"
+    (extracted / "json.py").write_text(
+        f"open({str(marker)!r}, 'w').write('x')\nraise SystemExit('planted json.py ran')\n",
+        encoding="utf-8",
+    )
+    planted = types.SimpleNamespace(**vars(mcp_helper))
+    planted.__file__ = str(copy)
+    _two_servers()
+    monkeypatch.setenv("GH_T", "secret-value")
+    monkeypatch.setitem(sys.modules, "extracted", types.SimpleNamespace(_rote_mcp=planted))
+    monkeypatch.setitem(sys.modules, "extracted._rote_mcp", planted)
+    servers, *_ = inference._mcp_config_for(["lookup"], {"lookup": "gh"})
+    run = subprocess.run(
+        shlex.split(servers["gh"]["headersHelper"]), capture_output=True, text=True, timeout=60
+    )
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == {"Authorization": "Bearer secret-value"}
+    assert not marker.exists()
 
 
 def test_compile_time_listing_skips_a_server_whose_variable_is_unset(

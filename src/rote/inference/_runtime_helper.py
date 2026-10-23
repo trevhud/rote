@@ -1279,12 +1279,16 @@ def _headers_helper_command(_rote_mcp: Any, server: str) -> str:
     """The shell command that prints ``server``'s registry headers, filled.
 
     Runs the emitted MCP helper file itself (its ``headers`` entry point),
-    so the agent loop's config names a command, never a header value."""
+    so the agent loop's config names a command, never a header value.
+    ``-P`` (Python 3.11+) keeps the script's own directory, ``extracted/``,
+    off ``sys.path``: agent-written modules live there, and an
+    ``extracted/json.py`` would otherwise shadow the stdlib in the one
+    process that holds the filled credential."""
     import shlex
     import sys
 
     return " ".join(
-        shlex.quote(part) for part in (sys.executable, _rote_mcp.__file__, "headers", server)
+        shlex.quote(part) for part in (sys.executable, "-P", _rote_mcp.__file__, "headers", server)
     )
 
 
